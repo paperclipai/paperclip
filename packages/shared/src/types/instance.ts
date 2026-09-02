@@ -3,10 +3,6 @@ import type { FeedbackDataSharingPreference } from "./feedback.js";
 export const DAILY_RETENTION_PRESETS = [3, 7, 14] as const;
 export const WEEKLY_RETENTION_PRESETS = [1, 2, 4] as const;
 export const MONTHLY_RETENTION_PRESETS = [1, 3, 6] as const;
-export const DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24;
-export const MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 1;
-export const MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24 * 30;
-
 export interface BackupRetentionPolicy {
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
@@ -63,7 +59,6 @@ export interface InstanceExperimentalSettings {
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
-  enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableExternalObjects: boolean;
@@ -75,6 +70,8 @@ export interface InstanceExperimentalSettings {
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
+  /** Shows internal Paperclip maintainer tools and observability links. */
+  enablePaperclipDeveloperMode: boolean;
   /**
    * Instructs agents to write user-interaction content (confirmations,
    * questions, suggested tasks, checkbox prompts) in ASD-STE100 Simplified
@@ -83,7 +80,6 @@ export interface InstanceExperimentalSettings {
    */
   enableSimplifiedEnglishInteractions: boolean;
   autoRestartDevServerWhenIdle: boolean;
-  enableIssueGraphLivenessAutoRecovery: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
   /**
@@ -102,6 +98,11 @@ export interface InstanceExperimentalSettings {
    */
   enableSandboxDuplexBridge: boolean;
   /**
+   * @deprecated Compatibility-only. Provider WebSocket ingress now follows
+   * enableNativeRunner and this value has no runtime effect.
+   */
+  enableRunnerPreviewIngress: boolean;
+  /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When
    * this is enabled the worktree-instance scheduling suppression is lifted so
@@ -118,7 +119,6 @@ export interface InstanceExperimentalSettings {
    * from another instance fail closed.
    */
   worktreeRunExecutionActivationInstanceId: string | null;
-  issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 
 /**
@@ -156,35 +156,4 @@ export interface InstanceSettings {
   experimental: InstanceExperimentalSettingsWithManaged;
   createdAt: Date;
   updatedAt: Date;
-}
-
-export interface IssueGraphLivenessAutoRecoveryPreviewItem {
-  issueId: string;
-  identifier: string | null;
-  title: string;
-  state: string;
-  severity: string;
-  reason: string;
-  recoveryIssueId: string;
-  recoveryIdentifier: string | null;
-  recoveryTitle: string | null;
-  recommendedOwnerAgentId: string | null;
-  incidentKey: string;
-  latestDependencyUpdatedAt: string;
-  dependencyPath: Array<{
-    issueId: string;
-    identifier: string | null;
-    title: string;
-    status: string;
-  }>;
-}
-
-export interface IssueGraphLivenessAutoRecoveryPreview {
-  lookbackHours: number;
-  cutoff: string;
-  generatedAt: string;
-  findings: number;
-  recoverableFindings: number;
-  skippedOutsideLookback: number;
-  items: IssueGraphLivenessAutoRecoveryPreviewItem[];
 }

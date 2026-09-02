@@ -1,4 +1,4 @@
-# ADR 0001: Runner and Testing Package Boundaries
+# ADR 0001: Runner, Testing, and Eval Package Boundaries
 
 - Status: Accepted
 - Date: 2026-08-11
@@ -23,7 +23,7 @@ Ownership is:
 | Owner | Stable responsibility |
 |---|---|
 | Paperclip App | PRP schemas and fixtures, canonical semantic catalog and dispatcher, runnerd/client interfaces, `ControlPlanePort`, the production binding, deterministic mock, and mock/real parity fixtures |
-| External eval repositories | Scenario corpus, provider configuration, experiment reports, and provider-backed orchestration |
+| Eval consumers | Scenario corpus, provider configuration, experiment reports, and provider-backed orchestration |
 
 The production binding remains App code at
 `server/src/services/native-runtime/paperclip-control-plane-port.ts`. It
@@ -35,6 +35,7 @@ Public runner exports are:
 | Export | Stability and purpose |
 |---|---|
 | `@paperclipai/paperclip-runner` | Runtime contracts, runner clients/backends, PRP validation/replay, canonical catalog/dispatcher, and compatibility preflight |
+| `@paperclipai/paperclip-runner/evals` | Versioned native-attempt/build metadata, compatibility negotiation, and explicit runnerd artifact resolution |
 | `@paperclipai/paperclip-runner/testing` | Deterministic mocks, PRP port conformance, and provider-neutral semantic conformance kit |
 | `./browser`, `./react`, `./standalone`, `./styles.css` | Existing explicitly named UI/standalone consumers |
 
@@ -49,11 +50,12 @@ consumer or version cadence currently justifies another package. Split it only
 after an independent release requirement exists; a directory preference is not
 sufficient.
 
-The credential-free matrix engine used by runner conformance remains
-package-local test implementation. A separately versioned eval kernel and any
-provider-backed campaign are deferred. The runner's dependency,
-optional-dependency, peer-dependency, and workspace importer sets remain free
-of eval packages.
+Generic credential-free matrix orchestration lives in the separately versioned,
+workspace-private `@paperclipai/paperclip-eval-kernel` package. It contains no
+runner imports, provider configuration, scenario corpus, scorer, or report
+renderer. The runner may use it only as a development dependency; runtime,
+optional, and peer dependency sets remain free of eval packages. Paid provider
+campaigns remain external.
 
 The dependency graph is acyclic:
 
@@ -64,7 +66,9 @@ Paperclip App production binding
 @paperclipai/paperclip-runner (runtime contracts)
             ^
             |
-External conformance consumers --> @paperclipai/paperclip-runner/testing
+Eval consumers ----> @paperclipai/paperclip-runner/evals
+       |             @paperclipai/paperclip-runner/testing
+       +-----------> @paperclipai/paperclip-eval-kernel
 ```
 
 No arrow points from App runtime to an external eval repository.
@@ -82,6 +86,7 @@ contracts are published in `PAPERCLIP_RUNNER_COMPATIBILITY`:
 | runnerd artifact | 2 | Binary metadata/package disagreement or digest mismatch fails before launch |
 | Harness driver | 1 | Breaking descriptor/config/session/conformance behavior requires a new version |
 | Native execution | 1 | Breaking App attempt-bundle semantics require a new schema version and converter |
+| Evals integration | 1 | Breaking package/binary/catalog/driver join behavior requires a new version |
 | Control-plane adapter | 1 | Breaking `ControlPlanePort` or production-binding expectations require a new version |
 | Testkit | 1 | Breaking mock seed, vector, observation, or conformance behavior requires a new version |
 | Eval corpus | 1 | Runner declares a supported inclusive corpus-version range; out-of-range bundles fail before execution |
@@ -102,7 +107,7 @@ pnpm --filter @paperclipai/paperclip-runner check:clean-consumers
 ```
 
 The second command builds and packs the runner, installs its tarball into a
-clean consumer, imports only the root and `./testing` exports, executes
+clean consumer, imports only the root, `./evals`, and `./testing` exports, executes
 deterministic PRP, harness-driver, and semantic conformance, and verifies the
 separately staged runnerd artifact digest. The consumer uses no workspace
 protocol, source-relative import, or deep package path. This is the packaging

@@ -105,6 +105,12 @@ import type {
   ImportIssueWorkProductRow,
   ImportIssueAttachmentRow,
 } from "./import-write-types.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+} from "./native-runtime/provider-profile.js";
+import { managedAgentProfileService } from "./managed-agent-profiles.js";
+import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 
 const EXPORT_READ_CONCURRENCY = 8;
 const EXPORT_ISSUE_READ_CONCURRENCY = 2;
@@ -1304,15 +1310,33 @@ function parseFiniteNumberLike(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
+function sanitizeImportedAgentRuntimeConfig(runtimeConfig: unknown) {
   const next = clonePortableRecord(runtimeConfig) ?? {};
+  delete next.modelProfiles;
   const heartbeat = isPlainRecord(next.heartbeat) ? { ...next.heartbeat } : {};
   heartbeat.enabled = false;
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
     heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
   }
   next.heartbeat = heartbeat;
+  if (isPlainRecord(next.debug)) {
+    const debug = { ...next.debug };
+    // Company imports are available below the instance-admin trust boundary.
+    // Never let a portable bundle enable persistent capture of raw provider
+    // traffic; an administrator can opt in afterward through the guarded
+    // agent configuration route.
+    delete debug.providerTrace;
+    if (Object.keys(debug).length === 0) delete next.debug;
+    else next.debug = debug;
+  }
   return next;
+}
+
+function sanitizeImportedIssueAssigneeAdapterOverrides(value: unknown) {
+  const next = clonePortableRecord(value);
+  if (!next) return null;
+  delete next.modelProfile;
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 function normalizePortableProjectWorkspaceExtension(
@@ -3563,15 +3587,30 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   }
 
   async function assertImportAdapterConfigConstraints(
+    companyId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
   ) {
     if (adapterType === "paperclip_runner") {
-      const provider = adapterConfig.provider ?? "codex";
-      if (provider !== "codex") {
-        throw unprocessable(
-          "Imported Paperclip Runner agents currently support only the Codex provider.",
-          { code: "paperclip_runner_provider_unavailable" },
+      let profile;
+      try {
+        profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
+      } catch (error) {
+        if (error instanceof PaperclipRunnerProviderProfileError) {
+          throw unprocessable(error.message, { code: error.code });
+        }
+        throw error;
+      }
+      if (profile.provider === "claude_managed") {
+        await managedAgentProfileService(db).requireQualified(
+          companyId,
+          profile.managedProfileId,
+        );
+      } else if (profile.provider === "aws_agentcore") {
+        await remoteAgentProfileService(db).requireQualified(
+          companyId,
+          profile.agentCoreProfileId,
+          "aws_bedrock_agentcore_harness",
         );
       }
       return;
@@ -3611,7 +3650,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       nextAdapterConfig,
       { strictMode: strictSecretsMode, adapterType: effectiveAdapterType },
     );
-    await assertImportAdapterConfigConstraints(effectiveAdapterType, normalizedAdapterConfig);
+    await assertImportAdapterConfigConstraints(
+      companyId,
+      effectiveAdapterType,
+      normalizedAdapterConfig,
+    );
     return {
       adapterType: effectiveAdapterType,
       adapterConfig: normalizedAdapterConfig,
@@ -5591,7 +5634,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
             adapterConfig: normalizedAdapter.adapterConfig,
-            runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+            runtimeConfig: sanitizeImportedAgentRuntimeConfig(manifestAgent.runtimeConfig),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,
@@ -6239,7 +6282,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
               : "medium",
             billingCode: manifestIssue.billingCode ?? null,
-            assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides ?? null,
+            assigneeAdapterOverrides: sanitizeImportedIssueAssigneeAdapterOverrides(
+              manifestIssue.assigneeAdapterOverrides,
+            ),
             executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
             labelIds: resolvedLabelIds,
             monitorNotes,

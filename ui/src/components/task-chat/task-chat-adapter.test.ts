@@ -56,6 +56,31 @@ describe("commentsToTaskChatItems", () => {
     expect(item.author).toBe("system");
   });
 
+  it("attaches verification caveats using durable comment run provenance", () => {
+    const verificationCaveats = [{
+      commandOrCheck: "external-validator",
+      reasonCode: "tool_unavailable",
+      detail: "The optional validator is unavailable.",
+    }];
+    const comments = [{
+      id: "c-final",
+      body: "Implemented and locally verified.",
+      authorType: "agent",
+      authorAgentId: "agent-1",
+      createdByRunId: "run-1",
+      createdAt: "2026-08-22T09:00:00.000Z",
+    } as unknown as IssueChatComment];
+
+    const items = commentsToTaskChatItems(comments, {
+      verificationCaveatsByRunId: new Map([["run-1", verificationCaveats]]),
+    });
+
+    expect(items).toEqual([expect.objectContaining({
+      kind: "message",
+      verificationCaveats,
+    })]);
+  });
+
   it("carries presentation, metadata, and the raw timestamp for system comments", () => {
     const presentation = {
       kind: "system_notice",

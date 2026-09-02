@@ -80,6 +80,7 @@ fn task_context_tool_set() -> AuthorizedToolSet {
 fn durable_config(directory: &Path) -> DurableRunnerConfig {
     DurableRunnerConfig {
         connect_url: "ws://127.0.0.1:3000/runner".to_owned(),
+        ca_bundle_path: None,
         state_dir: directory.to_path_buf(),
         runner_instance_id: "runner-1".to_owned(),
         environment_lease_id: "lease-1".to_owned(),
@@ -89,10 +90,13 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
         item_id: "item-1".to_owned(),
         runner_version: "test-1".to_owned(),
         runner_digest: format!("sha256:{}", "a".repeat(64)),
+        acpx_launch_profile: None,
+        opencode_launch_profile: None,
         max_outbox_bytes: 16 * 1024 * 1024,
         p0_reserve_bytes: 1024 * 1024,
         max_frame_bytes: 1024 * 1024,
         reconnect_delay: std::time::Duration::from_millis(1),
+        reconnect_grace: None,
         max_runtime: std::time::Duration::from_secs(5),
     }
 }
@@ -1284,24 +1288,31 @@ fn ambiguous_or_dead_replacement_start_preserves_result_not_exit_authority() {
         provider
             .start_turn("Accept replacement work before failing.", &config.cwd)
             .expect_err("the accepted replacement turn has no valid response");
-        let ambiguous_start_exit = (0..64).find_map(|_| {
-            match provider
-                .poll()
-                .expect("poll exit after ambiguous replacement start")
-            {
-                Some(CodexProviderEvent::Exited {
-                    success,
-                    completed_turn_authoritative,
-                    completion_reconciles_exit,
-                    ..
-                }) => Some((
-                    success,
-                    completed_turn_authoritative,
-                    completion_reconciles_exit,
-                )),
-                _ => None,
-            }
-        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let ambiguous_start_exit = (0..)
+            .take_while(|_| std::time::Instant::now() < deadline)
+            .find_map(|_| {
+                match provider
+                    .poll()
+                    .expect("poll exit after ambiguous replacement start")
+                {
+                    Some(CodexProviderEvent::Exited {
+                        success,
+                        completed_turn_authoritative,
+                        completion_reconciles_exit,
+                        ..
+                    }) => Some((
+                        success,
+                        completed_turn_authoritative,
+                        completion_reconciles_exit,
+                    )),
+                    Some(_) => None,
+                    None => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        None
+                    }
+                }
+            });
         assert_eq!(
             ambiguous_start_exit,
             Some((false, true, false)),
@@ -1425,44 +1436,51 @@ fn ambiguous_replacement_turn_adopts_one_later_completion_identity() {
 
         let mut replacement_started = false;
         let mut replacement_completed = false;
-        let replacement_exit = (0..128).find_map(|_| {
-            match provider
-                .poll()
-                .expect("poll evidence for accepted replacement turn")
-            {
-                Some(CodexProviderEvent::Notification { method, params })
-                    if method == "turn/started" =>
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let replacement_exit = (0..)
+            .take_while(|_| std::time::Instant::now() < deadline)
+            .find_map(|_| {
+                match provider
+                    .poll()
+                    .expect("poll evidence for accepted replacement turn")
                 {
-                    assert_eq!(
-                        params.pointer("/turn/id").and_then(Value::as_str),
-                        Some("provider-turn-2")
-                    );
-                    replacement_started = true;
-                    None
+                    Some(CodexProviderEvent::Notification { method, params })
+                        if method == "turn/started" =>
+                    {
+                        assert_eq!(
+                            params.pointer("/turn/id").and_then(Value::as_str),
+                            Some("provider-turn-2")
+                        );
+                        replacement_started = true;
+                        None
+                    }
+                    Some(CodexProviderEvent::Notification { method, params })
+                        if method == "turn/completed" =>
+                    {
+                        assert_eq!(
+                            params.pointer("/turn/id").and_then(Value::as_str),
+                            Some("provider-turn-2")
+                        );
+                        replacement_completed = true;
+                        None
+                    }
+                    Some(CodexProviderEvent::Exited {
+                        success,
+                        completed_turn_authoritative,
+                        completion_reconciles_exit,
+                        ..
+                    }) => Some((
+                        success,
+                        completed_turn_authoritative,
+                        completion_reconciles_exit,
+                    )),
+                    Some(_) => None,
+                    None => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        None
+                    }
                 }
-                Some(CodexProviderEvent::Notification { method, params })
-                    if method == "turn/completed" =>
-                {
-                    assert_eq!(
-                        params.pointer("/turn/id").and_then(Value::as_str),
-                        Some("provider-turn-2")
-                    );
-                    replacement_completed = true;
-                    None
-                }
-                Some(CodexProviderEvent::Exited {
-                    success,
-                    completed_turn_authoritative,
-                    completion_reconciles_exit,
-                    ..
-                }) => Some((
-                    success,
-                    completed_turn_authoritative,
-                    completion_reconciles_exit,
-                )),
-                _ => None,
-            }
-        });
+            });
         assert!(
             replacement_started,
             "the replacement identity should be established before replaying its output for {label}"

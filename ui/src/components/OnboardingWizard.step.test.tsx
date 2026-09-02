@@ -229,6 +229,53 @@ describe("OnboardingWizard — which step it lands on", () => {
     vi.clearAllMocks();
   });
 
+  /**
+   * The progress strip counts the walk the customer is actually on, and the two
+   * runs that enter on the agent step are on different walks.
+   *
+   * Both have a company already, so `entryStep` cannot tell them apart. What
+   * does is `enableManagedSandboxOnly` — the cloud-tenant shape. A cloud tenant
+   * was asked for its organization's name by Cloud, one screen earlier, so its
+   * walk is four and this is the second. A self-hosted company that simply has
+   * no agents yet was asked nothing before this, so its walk is three.
+   */
+  describe("progress strip length", () => {
+    function announcedCount(): string | null {
+      return (
+        [...document.querySelectorAll(".sr-only")]
+          .map((element) => element.textContent?.trim() ?? "")
+          .find((text) => /^Step \d+ of \d+$/.test(text)) ?? null
+      );
+    }
+
+    it("counts four on a cloud tenant, continuing the count Cloud started", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: true,
+      });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      expect(currentStep()).toBe("agent");
+      expect(announcedCount()).toBe("Step 2 of 4");
+    });
+
+    it("counts three on a self-hosted company that has no agents yet", async () => {
+      // Nothing was asked before this step here, so a fourth segment would be
+      // one the run can never fill — and it would credit the customer with a
+      // step they never walked.
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: false,
+      });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      expect(currentStep()).toBe("agent");
+      expect(announcedCount()).toBe("Step 1 of 3");
+    });
+  });
+
   it("opens a company that already has its mission on the agent step", async () => {
     // The point of the change: Cloud collected the mission at signup and the
     // seed wrote it as a company-level goal, so asking for it again asks a
@@ -736,6 +783,50 @@ describe("OnboardingWizard — which step it lands on", () => {
     // here rather than read as a pass.
     expect(currentStep()).toBe("agent");
     expect(companyState.setSelectedCompanyId).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Organization created, but onboarding switched to another organization.",
+    );
+  });
+
+  it("finishes advancing when the returned company was already adopted", async () => {
+    // The company-created live update can make the surrounding app adopt the
+    // returned company before the POST continuation runs. That is not a
+    // different-company takeover: both signals name the same company, so
+    // dropping the continuation leaves the customer on the name step even
+    // though the organization now exists.
+    let resolveCreate: (company: { id: string; issuePrefix: string }) => void = () => {};
+    mockCompaniesApi.create.mockReturnValue(
+      new Promise<{ id: string; issuePrefix: string }>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    routerState.pathname = "/onboarding";
+    await render();
+    await settle();
+
+    const nameInput = document.body.querySelector("input")! as HTMLInputElement;
+    setControlledValue(nameInput, "Initech");
+    await settle();
+    const next = [...document.body.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Continue",
+    )!;
+    await act(async () => {
+      next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Model the surrounding app adopting exactly the company that the pending
+    // request is about, without choosing a new step on the wizard's behalf.
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = { companyId: "company-created" };
+    await rerender();
+    await settle();
+
+    await act(async () => resolveCreate({ id: "company-created", issuePrefix: "INI" }));
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+    expect(companyState.setSelectedCompanyId).toHaveBeenCalledWith("company-created");
+    expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
   });
 
   it("applies the step again when the wizard is re-opened", async () => {

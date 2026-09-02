@@ -3,7 +3,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
-import { resolvePaperclipDesiredSkillNames } from "@paperclipai/adapter-utils/server-utils";
+import { isToolConnectionAttentionHealth } from "@paperclipai/shared";
+import {
+  PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  resolvePaperclipDesiredSkillNames,
+} from "@paperclipai/adapter-utils/server-utils";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -18,7 +22,6 @@ import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { agentInstructionsService } from "../agent-instructions.js";
 import { toolAccessService } from "../tool-access.js";
 
-export const LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY = "paperclipai/paperclip/paperclip" as const;
 const MAX_ASSET_FILES = 10_000;
 const MAX_ASSET_BYTES = 64 * 1024 * 1024;
 type RuntimeAgent = { id: string; companyId: string; name: string; adapterType?: string | null; adapterConfig: unknown };
@@ -147,9 +150,10 @@ async function materializeInstructionBundle(agent: RuntimeAgent) {
   return { entryPath, bundle: await materializeAsset(files) };
 }
 
-async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], rejectLegacy: boolean) {
-  const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries);
-  if (rejectLegacy && desiredKeys.includes(LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY)) throw new Error(`paperclip_runner does not support legacy operational skill ${LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY}; remove it from this agent`);
+async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean) {
+  const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries).filter(
+    (key) => !omitLegacy || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  );
   const byKey = new Map(entries.map((entry) => [entry.key, entry]));
   return Promise.all(desiredKeys.sort().map(async (key) => {
     const entry = byKey.get(key);
@@ -162,17 +166,23 @@ async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>,
 export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pick<RuntimeAgent, "id" | "companyId">; runId: string }) {
   const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(input.agent.companyId, input.agent.id);
   const permitted = new Set([...effective.entries.filter((entry) => entry.effect === "include" && entry.connectionId).map((entry) => entry.connectionId!), ...effective.allowedTools.map((tool) => tool.connectionId)]);
-  const unhealthy = effective.installedConnections.filter((connection) =>
+  // App access is optional runtime context. Keep usable assignments pinned, but
+  // do not stop unrelated work because an assigned app needs attention.
+  const availableConnectionIds = new Set(effective.installedConnections.filter((connection) =>
     permitted.has(connection.id)
+    && connection.status === "active"
+    && connection.enabled
+    && !isToolConnectionAttentionHealth(connection.healthStatus)
     && ["mcp_remote", "local_stdio"].includes(connection.transport)
-    && (!connection.enabled || connection.status !== "active" || ["degraded", "failed", "error", "missing_secret"].includes(connection.healthStatus)),
-  );
-  if (unhealthy.length) throw new Error(`assigned native MCP connection is unavailable: ${unhealthy.map((connection) => connection.id).join(", ")}`);
+  ).map((connection) => connection.id));
   const assignment = {
     version: 1,
     agentId: input.agent.id,
-    connections: effective.installedConnections.filter((connection) => permitted.has(connection.id) && connection.status === "active" && connection.enabled && ["mcp_remote", "local_stdio"].includes(connection.transport)).map((connection) => connection.id).sort(),
-    tools: effective.allowedTools.map((tool) => tool.id).sort(),
+    connections: [...availableConnectionIds].sort(),
+    tools: effective.allowedTools
+      .filter((tool) => availableConnectionIds.has(tool.connectionId))
+      .map((tool) => tool.id)
+      .sort(),
   };
   const assignmentDigest = sha256(JSON.stringify(assignment));
   return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length ? `native-mcp:${input.runId}` : null };

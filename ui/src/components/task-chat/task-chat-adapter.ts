@@ -10,7 +10,7 @@
 import type { Agent } from "@paperclipai/shared";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { resolveCommentAttribution } from "@/lib/comment-attribution";
-import type { TaskChatAuthorKind, TaskChatItem } from "./task-chat-model";
+import type { TaskChatAuthorKind, TaskChatItem, TaskChatMessageItem } from "./task-chat-model";
 
 export interface TaskChatAdapterContext {
   agentMap?: Map<string, Agent>;
@@ -21,6 +21,7 @@ export interface TaskChatAdapterContext {
    * writes and get a "for {user}" attribution chip (the open cross-task write design (attribution)).
    */
   issueAssigneeAgentId?: string | null;
+  verificationCaveatsByRunId?: ReadonlyMap<string, TaskChatMessageItem["verificationCaveats"]>;
 }
 
 function effectiveAgentId(comment: IssueChatComment): string | null {
@@ -83,6 +84,15 @@ export function commentsToTaskChatItems(
         : comment.createdAt
           ? String(comment.createdAt)
           : undefined;
+    // Durable run-authored comments already carry their source run directly.
+    // Activity-derived `runId` is a useful fallback for older rows, but it may
+    // arrive later (or be omitted entirely for server-materialized final
+    // replies). Prefer the stored provenance so settled-response decorations
+    // such as verification caveats are never lost.
+    const sourceRunId = comment.createdByRunId
+      ?? comment.runId
+      ?? comment.derivedCreatedByRunId
+      ?? null;
     items.push({
       id: comment.id || comment.clientId || `${comment.createdAt}`,
       kind: "message",
@@ -92,6 +102,9 @@ export function commentsToTaskChatItems(
       timestamp: formatTaskChatTimestamp(comment.createdAt),
       optimistic,
       queueTargetRunId: queued ? comment.queueTargetRunId ?? null : null,
+      verificationCaveats: sourceRunId
+        ? ctx.verificationCaveatsByRunId?.get(sourceRunId)
+        : undefined,
       agentIcon,
       onBehalfOfUserName,
       // System notices carry their structured hints through to the render

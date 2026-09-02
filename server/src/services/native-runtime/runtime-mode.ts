@@ -3,6 +3,11 @@ import {
   type NativeAuthoritativeIssueStatus,
   type NativeStatusDecision,
 } from "./status-arbiter.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+  type PaperclipRunnerProviderProfile,
+} from "./provider-profile.js";
 
 /**
  * Public compatibility resolver version. This value is persisted by the
@@ -24,7 +29,7 @@ export type HeartbeatRuntimeResolution =
       kind: "native";
       resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
       reason: "explicit_paperclip_runner" | "persisted_native_selection";
-      provider: "codex";
+      provider: PaperclipRunnerProviderProfile["provider"];
     };
 
 export type NativeRuntimeResolution =
@@ -40,11 +45,27 @@ export type NativeRuntimeResolution =
       reason: "eligible_opt_in";
       profile: {
         mode: "native";
-        backend: "codex_app_server";
+        backend:
+          | "codex_app_server"
+          | "opencode_server"
+          | "claude_managed_agents_api"
+          | "aws_agentcore_harness_api"
+          | "acpx_runtime";
         protocolVersion: 1;
       };
       authorityDecision: NativeStatusDecision;
     };
+
+/**
+ * Runner ingress follows the resolved runtime decision, not a second instance
+ * flag. Persisted native runs therefore keep their transport during recovery
+ * after the rollout flag is disabled, while legacy runs never gain ingress.
+ */
+export function isRunnerIngressAuthorized(
+  resolution: NativeRuntimeResolution,
+): boolean {
+  return resolution.kind === "native";
+}
 
 export class NativeRunnerSelectionError extends Error {
   constructor(readonly code: string, message: string) {
@@ -100,18 +121,14 @@ export function resolveNativeRuntimeMode(input: {
       "Paperclip Runner is experimental and disabled on this instance.",
     );
   }
-  const adapterConfig = input.adapterConfig;
-  const runnerProvider =
-    typeof adapterConfig === "object"
-    && adapterConfig !== null
-    && !Array.isArray(adapterConfig)
-      ? (adapterConfig as Record<string, unknown>).provider ?? "codex"
-      : "codex";
-  if (runnerProvider !== "codex") {
-    throw ineligible(
-      "paperclip_runner_provider_unsupported",
-      "Paperclip Runner currently supports only the Codex provider.",
-    );
+  let runnerProfile: PaperclipRunnerProviderProfile;
+  try {
+    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig);
+  } catch (error) {
+    if (error instanceof PaperclipRunnerProviderProfileError) {
+      throw ineligible(error.code, error.message);
+    }
+    throw error;
   }
   if (
     input.agent.adapterType !== "paperclip_runner"
@@ -127,12 +144,6 @@ export function resolveNativeRuntimeMode(input: {
     throw ineligible(
       "paperclip_runner_issue_ineligible",
       "Paperclip Runner requires a standard, planning, or ask task.",
-    );
-  }
-  if (!input.target || input.target.kind !== "local") {
-    throw ineligible(
-      "paperclip_runner_environment_unsupported",
-      "Paperclip Runner currently requires a local execution environment.",
     );
   }
   const rollout = resolveNativeMigrationStatus({
@@ -152,7 +163,7 @@ export function resolveNativeRuntimeMode(input: {
     reason: "eligible_opt_in",
     profile: {
       mode: "native",
-      backend: "codex_app_server",
+      backend: runnerProfile.backend,
       protocolVersion: 1,
     },
     authorityDecision: rollout,
@@ -225,7 +236,15 @@ export function resolveHeartbeatRuntimeMode(input: {
     kind: "native",
     resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
     reason: "explicit_paperclip_runner",
-    provider: "codex",
+    provider: resolution.profile.backend === "opencode_server"
+      ? "opencode"
+      : resolution.profile.backend === "claude_managed_agents_api"
+        ? "claude_managed"
+        : resolution.profile.backend === "aws_agentcore_harness_api"
+          ? "aws_agentcore"
+      : resolution.profile.backend === "acpx_runtime"
+          ? "acpx"
+          : "codex",
   };
 }
 
@@ -267,13 +286,21 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
         );
       }
       const driverKind = input.persisted.driverKind;
-      const backend = driverKind === null
-        || driverKind === undefined
-        || driverKind === "codex"
-        || driverKind === "codex_app_server"
-        ? "codex_app_server"
-        : null;
-      if (!backend) {
+      const backend = driverKind === "opencode_server"
+        ? "opencode_server"
+        : driverKind === "claude_managed_agents_api"
+          ? "claude_managed_agents_api"
+          : driverKind === "aws_agentcore_harness_api"
+            ? "aws_agentcore_harness_api"
+        : driverKind === "acpx_runtime"
+            ? "acpx_runtime"
+            : driverKind === null
+              || driverKind === undefined
+              || driverKind === "codex"
+              || driverKind === "codex_app_server"
+            ? "codex_app_server"
+            : null;
+      if (backend === null) {
         throw ineligible(
           "paperclip_runner_driver_unsupported",
           `Persisted Paperclip Runner driver is unsupported: ${driverKind}`,

@@ -14,7 +14,7 @@
                          byte-identical Conformance result
 
 Paperclip App production binding --> implements ControlPlanePort
-External conformance consumers --> use packed runtime + ./testing exports
+Eval/conformance consumers --> use packed runtime + ./evals + ./testing exports
 ```
 
 The dependency arrow always points from an implementation toward a contract.
@@ -28,10 +28,13 @@ recorded in [ADR 0001](adr/0001-runner-testing-eval-package-boundaries.md).
 
 - The package root is runtime-only: PRP, runner/client contracts, normalized
   backends, catalog/dispatcher, and compatibility preflight.
+- `./evals` exposes the stable native-attempt/build-metadata join and explicit
+  digest-verified runnerd artifact resolution.
 - `./testing` contains deterministic mocks and conformance kits.
-- Package-local deterministic matrices remain internal test implementation.
-  A separately versioned eval package and provider-backed campaigns are
-  deferred and are not workspace dependencies or public exports.
+- The workspace-private `@paperclipai/paperclip-eval-kernel` contains generic
+  structural matrix orchestration and is a development-only dependency.
+  Runner-specific cases, scorers, and reports remain package-local; paid
+  campaigns remain external.
 
 ## Core contracts
 
@@ -66,8 +69,9 @@ boundary and checks the same fixture summaries. Local runner adds the package-lo
 `paperclip-runnerd` and `fake-harness` binaries without changing that dependency
 direction.
 
-The clean-consumer gate packs the declared root and `./testing` exports and
-stages the release runnerd executable as a separately checksummed artifact.
+The clean-consumer gate packs the declared root, `./evals`, and `./testing`
+exports and stages the release runnerd executable as a separately checksummed
+artifact.
 
 ## Language ownership
 

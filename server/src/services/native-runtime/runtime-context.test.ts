@@ -2,7 +2,10 @@ import { mkdtemp, mkdir, readFile, readdir, chmod, lstat, rm, stat, writeFile } 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
+import {
+  PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  type PaperclipSkillEntry,
+} from "@paperclipai/adapter-utils/server-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const serviceMocks = vi.hoisted(() => ({
@@ -20,10 +23,7 @@ vi.mock("../tool-access.js", () => ({
   }),
 }));
 
-import {
-  LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY,
-  buildNativeRuntimeContext,
-} from "./runtime-context.js";
+import { buildNativeRuntimeContext } from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
 let previousPaperclipHome: string | undefined;
@@ -83,6 +83,102 @@ afterEach(async () => {
 });
 
 describe("buildNativeRuntimeContext", () => {
+  it.each(["disabled", "degraded"] as const)(
+    "omits an unavailable native MCP connection when it is %s without aborting runtime context creation",
+    async (unavailableState) => {
+      serviceMocks.exportFiles.mockResolvedValue({
+        entryFile: "AGENTS.md",
+        files: { "AGENTS.md": "Continue work without unavailable apps.\n" },
+      });
+      serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+        agentId: "agent-1",
+        profiles: [],
+        entries: [{ effect: "include", connectionId: "connection-1" }],
+        bindings: [],
+        allowedTools: [{ id: "tool-1", connectionId: "connection-1" }],
+        allowedToolNames: ["issues.read"],
+        installedConnections: [{
+          id: "connection-1",
+          transport: "mcp_remote",
+          enabled: unavailableState !== "disabled",
+          status: unavailableState === "disabled" ? "disabled" : "active",
+          healthStatus: unavailableState === "degraded" ? "degraded" : "healthy",
+        }],
+      });
+
+      const context = await buildNativeRuntimeContext({
+        db: {} as Db,
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Reviewer",
+          adapterType: "paperclip_runner",
+          adapterConfig: {},
+        },
+        runId: "run-1",
+        runtimeConfig: {},
+        runtimeSkillEntries: [],
+      });
+
+      expect(context.mcp.bindingId).toBeNull();
+      expect(context.mcp.assignmentSetId).toMatch(/^sha256:[a-f0-9]{64}$/);
+    },
+  );
+
+  it("keeps healthy native MCP connections when another assigned connection is unavailable", async () => {
+    serviceMocks.exportFiles.mockResolvedValue({
+      entryFile: "AGENTS.md",
+      files: { "AGENTS.md": "Continue work with the apps that are available.\n" },
+    });
+    serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [
+        { effect: "include", connectionId: "connection-expired" },
+        { effect: "include", connectionId: "connection-healthy" },
+      ],
+      bindings: [],
+      allowedTools: [
+        { id: "tool-expired", connectionId: "connection-expired" },
+        { id: "tool-healthy", connectionId: "connection-healthy" },
+      ],
+      allowedToolNames: ["expired.read", "healthy.read"],
+      installedConnections: [
+        {
+          id: "connection-expired",
+          transport: "mcp_remote",
+          enabled: true,
+          status: "active",
+          healthStatus: "degraded",
+        },
+        {
+          id: "connection-healthy",
+          transport: "mcp_remote",
+          enabled: true,
+          status: "active",
+          healthStatus: "healthy",
+        },
+      ],
+    });
+
+    const context = await buildNativeRuntimeContext({
+      db: {} as Db,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Reviewer",
+        adapterType: "paperclip_runner",
+        adapterConfig: {},
+      },
+      runId: "run-1",
+      runtimeConfig: {},
+      runtimeSkillEntries: [],
+    });
+
+    expect(context.mcp.bindingId).toBe("native-mcp:run-1");
+    expect(context.mcp.assignmentSetId).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+
   it("materializes every instruction and selected-skill file as immutable, content-addressed context", async () => {
     serviceMocks.exportFiles.mockResolvedValue({
       entryFile: "AGENTS.md",
@@ -151,7 +247,7 @@ describe("buildNativeRuntimeContext", () => {
     expect(repeated.skills[0]!.bundle.rootPath).toBe(context.skills[0]!.bundle.rootPath);
   });
 
-  it("fails closed for a missing assigned skill and the unsupported legacy operational skill", async () => {
+  it("fails closed for a missing assigned skill and omits a stale legacy operational skill", async () => {
     serviceMocks.exportFiles.mockResolvedValue({ entryFile: "AGENTS.md", files: { "AGENTS.md": "Test\n" } });
     const base = {
       db: {} as Db,
@@ -175,14 +271,29 @@ describe("buildNativeRuntimeContext", () => {
         missingDetail: "assigned skill checkout is unavailable",
       }],
     })).rejects.toThrow("assigned skill checkout is unavailable");
-    await expect(buildNativeRuntimeContext({
+    const supportedRoot = await mkdtemp(path.join(tmpdir(), "paperclip-native-supported-skill-"));
+    temporaryRoots.push(supportedRoot);
+    await writeFile(path.join(supportedRoot, "SKILL.md"), "# Supported\n");
+    const context = await buildNativeRuntimeContext({
       ...base,
-      runtimeConfig: { paperclipSkillSync: { desiredSkills: [LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY] } },
-      runtimeSkillEntries: [{
-        key: LEGACY_PAPERCLIP_OPERATIONAL_SKILL_KEY,
-        runtimeName: "paperclip",
-        source: "/unused",
-      }],
-    })).rejects.toThrow("does not support legacy operational skill");
+      runtimeConfig: {
+        paperclipSkillSync: {
+          desiredSkills: [PAPERCLIP_OPERATIONAL_SKILL_KEY, "company-1/supported"],
+        },
+      },
+      runtimeSkillEntries: [
+        {
+          key: PAPERCLIP_OPERATIONAL_SKILL_KEY,
+          runtimeName: "paperclip",
+          source: "/unused",
+        },
+        {
+          key: "company-1/supported",
+          runtimeName: "supported",
+          source: supportedRoot,
+        },
+      ],
+    });
+    expect(context.skills.map((skill) => skill.key)).toEqual(["company-1/supported"]);
   });
 });

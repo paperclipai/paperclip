@@ -3,6 +3,7 @@ node_modules/
 **/node_modules
 **/node_modules/
 dist/
+dist-preview/
 packages/paperclip-runner/runner/target/
 ui/storybook-static/
 .env

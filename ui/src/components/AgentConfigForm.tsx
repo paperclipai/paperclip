@@ -29,7 +29,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert, Bug } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
@@ -51,7 +51,6 @@ import {
   help,
   adapterLabels,
 } from "./agent-config-primitives";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
@@ -107,6 +106,8 @@ type AgentConfigFormProps = {
   showAdapterTestEnvironmentButton?: boolean;
   showCreateRunPolicySection?: boolean;
   hideInstructionsFile?: boolean;
+  /** Allow instance administrators to configure short-lived raw provider capture. */
+  canConfigureProviderTrace?: boolean;
   /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
   hidePromptTemplate?: boolean;
   /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
@@ -133,6 +134,7 @@ const emptyOverlay: AgentConfigOverlay = {
   identity: {},
   adapterConfig: {},
   heartbeat: {},
+  debug: {},
   runtime: {},
 };
 
@@ -149,8 +151,8 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     o.adapterType !== undefined ||
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
-    Object.keys(o.runtime).length > 0 ||
-    o.modelProfiles?.cheap !== undefined
+    Object.keys(o.debug).length > 0 ||
+    Object.keys(o.runtime).length > 0
   );
 }
 
@@ -241,11 +243,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
+  const canConfigureProviderTrace = props.canConfigureProviderTrace === true;
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
 
-  // Sync disabled adapter types from server so dropdown filters them out
+  // Sync disabled adapter types from server so dropdown filters them out.
   const disabledTypes = useDisabledAdaptersSync();
 
   const { data: availableSecrets = [] } = useQuery({
@@ -287,6 +290,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
   });
+  const adapterPickerDisabledTypes = useMemo(() => {
+    const next = new Set(disabledTypes);
+    // Fail closed while settings load. Existing native agents still render
+    // their current value in edit mode, but the picker does not offer a fresh
+    // native selection until the explicit experimental opt-in is known true.
+    if (experimentalSettings?.enableNativeRunner !== true) {
+      next.add("paperclip_runner");
+    }
+    return next;
+  }, [disabledTypes, experimentalSettings?.enableNativeRunner]);
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   // Managed-sandbox-only policy: every agent runs in the platform-managed
   // environment, so the form hides each host filesystem path and each
@@ -365,7 +378,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const isDirty = !isCreate && isOverlayDirty(overlay);
 
-  type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "runtime";
+  type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "debug" | "runtime";
 
   /** Read effective value: overlay if dirty, else original */
   function eff<T>(group: RecordOverlayGroup, field: string, original: T): T {
@@ -451,6 +464,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
+  const debug = !isCreate ? ((runtimeConfig.debug ?? {}) as Record<string, unknown>) : {};
 
   const adapterType = isCreate
     ? props.values.adapterType
@@ -762,29 +776,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
-  const [cheapModelOpen, setCheapModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
-
-  // Cheap model profile state — only relevant when the adapter advertises
-  // `supportsModelProfiles`. Defaults are sourced from the adapter's
-  // /model-profiles endpoint so the UI does not encode adapter-specific
-  // cheap defaults.
-  const supportsModelProfiles = adapterCaps.supportsModelProfiles;
-  const { data: adapterCheapProfileDefinitions } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModelProfiles(selectedCompanyId, adapterType)
-      : ["agents", "none", "adapter-model-profiles", adapterType],
-    queryFn: () => agentsApi.adapterModelProfiles(selectedCompanyId!, adapterType),
-    enabled: Boolean(selectedCompanyId) && supportsModelProfiles,
-  });
-  const adapterCheapDefault = useMemo(() => {
-    return (adapterCheapProfileDefinitions ?? []).find((profile) => profile.key === "cheap") ?? null;
-  }, [adapterCheapProfileDefinitions]);
-  const adapterCheapDefaultModel = useMemo(() => {
-    const adapterConfig = adapterCheapDefault?.adapterConfig ?? {};
-    const value = (adapterConfig as Record<string, unknown>).model;
-    return typeof value === "string" ? value : "";
-  }, [adapterCheapDefault]);
 
   function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
     if (isCreate) {
@@ -802,86 +794,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return omitUndefinedEntries(next);
   }
 
-  function buildCheapAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
-    const adapterDefaultConfig = asObject(adapterCheapDefault?.adapterConfig);
-    const createCheapModel = isCreate ? (val!.cheapModel ?? "").trim() : "";
-    const cheapAdapterConfig = isCreate
-      ? {
-          ...adapterDefaultConfig,
-          ...(createCheapModel ? { model: createCheapModel } : {}),
-        }
-      : {
-          ...adapterDefaultConfig,
-          ...cheapProfileFromAgent.adapterConfig,
-          ...asObject(cheapOverlay?.adapterConfig),
-        };
-    return buildAdapterConfigForTest({ ...cheapAdapterConfig, ...adapterConfigPatch });
-  }
-
-  function getCheapModelTestCase(adapterConfigPatch?: Record<string, unknown>): { model: string; adapterConfig: Record<string, unknown> } | null {
-    if (!currentCheapEnabled) return null;
-    const adapterConfig = buildCheapAdapterConfigForTest(adapterConfigPatch);
-    const configModel = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
-    const model = configModel || currentCheapModel.trim();
-    if (!model) return null;
-    adapterConfig.model = model;
-    return { model, adapterConfig };
-  }
-
-  function prefixEnvironmentTestChecks(
-    result: AdapterEnvironmentTestResult,
-    label: string,
-    model: string | null,
-  ): AdapterEnvironmentTestResult {
-    const modelLabel = model ? ` (${model})` : "";
-    return {
-      ...result,
-      checks: [
-        {
-          code: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_test_started`,
-          level: "info",
-          message: `${label} test${modelLabel}`,
-        },
-        ...result.checks.map((check) => ({
-          ...check,
-          message: `${label} test${modelLabel}: ${check.message}`,
-        })),
-      ],
-    };
-  }
-
-  async function runEnvironmentTestCase(
-    label: string,
-    model: string | null,
-    adapterConfig: Record<string, unknown>,
-    environmentId: string | null,
-  ): Promise<AdapterEnvironmentTestResult> {
-    const result = await agentsApi.testEnvironment(selectedCompanyId!, adapterType, {
-      adapterConfig,
-      environmentId,
-    });
-    return prefixEnvironmentTestChecks(result, label, model);
-  }
-
-  function mergeEnvironmentTestResults(
-    results: AdapterEnvironmentTestResult[],
-  ): AdapterEnvironmentTestResult {
-    const checks = results.flatMap((result) => result.checks);
-    const status = results.some((result) => result.status === "fail")
-      ? "fail"
-      : results.some((result) => result.status === "warn")
-        ? "warn"
-        : "pass";
-    const testedAt = results[results.length - 1]?.testedAt ?? new Date().toISOString();
-
-    return {
-      adapterType,
-      status,
-      checks,
-      testedAt,
-    };
-  }
-
   const testEnvironment = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
@@ -889,8 +801,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       const flushedEnv = flushEnvironmentDraft();
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
-      const primaryModel = currentModelId.trim() || null;
-      const cheapTestCase = getCheapModelTestCase(adapterConfigPatch);
       // Probe where a real run would actually execute: the agent's own
       // environment, else the instance default. Testing the host for an
       // agent that runs in the instance-default sandbox reports failures
@@ -958,35 +868,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // managed sandbox instead of sending the hidden local id to the server.
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
-      const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
-        {
-          label: "Primary model",
-          model: primaryModel,
-          result: await runEnvironmentTestCase(
-            "Primary model",
-            primaryModel,
-            buildAdapterConfigForTest(adapterConfigPatch),
-            environmentId,
-          ),
-        },
-      ];
-
-      if (cheapTestCase) {
-        testResults.push({
-          label: "Cheap model",
-          model: cheapTestCase.model,
-          result: await runEnvironmentTestCase(
-            "Cheap model",
-            cheapTestCase.model,
-            cheapTestCase.adapterConfig,
-            environmentId,
-          ),
-        });
-      }
-
-      return testResults.length > 1
-        ? mergeEnvironmentTestResults(testResults.map(({ result }) => result))
-        : testResults[0]!.result;
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
+        adapterConfig: buildAdapterConfigForTest(adapterConfigPatch),
+        environmentId,
+      });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1212,70 +1097,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
-  // Cheap profile read/write helpers. Edit-mode values come from
-  // runtimeConfig.modelProfiles.cheap with overlay overrides on top; create-mode
-  // values come straight from CreateConfigValues (cheapModel + cheapModelEnabled).
-  const cheapProfileFromAgent = useMemo(() => {
-    const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
-    const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
-    const cheapAdapterConfig = asObject(cheap.adapterConfig);
-    return {
-      enabled: cheap.enabled !== false,
-      adapterConfig: cheapAdapterConfig,
-      model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
-    };
-  }, [runtimeConfig]);
-  const cheapOverlay = !isCreate ? overlay.modelProfiles?.cheap : undefined;
-  const currentCheapEnabled = isCreate
-    ? val!.cheapModelEnabled ?? false
-    : cheapOverlay?.enabled ?? cheapProfileFromAgent.enabled;
-  const currentCheapModel = isCreate
-    ? val!.cheapModel ?? ""
-    : (() => {
-        const overlayModel = (cheapOverlay?.adapterConfig as Record<string, unknown> | undefined)?.model;
-        if (typeof overlayModel === "string") return overlayModel;
-        return cheapProfileFromAgent.model;
-      })();
-
-  function setCheapEnabled(next: boolean) {
-    if (isCreate) {
-      set!({ cheapModelEnabled: next });
-      return;
-    }
-    setOverlay((prev) => ({
-      ...prev,
-      modelProfiles: {
-        cheap: {
-          ...(prev.modelProfiles?.cheap ?? {}),
-          enabled: next,
-        },
-      },
-    }));
-  }
-
-  function setCheapModel(next: string) {
-    if (isCreate) {
-      set!({ cheapModel: next });
-      return;
-    }
-    setOverlay((prev) => {
-      const existing = prev.modelProfiles?.cheap ?? {};
-      const nextAdapterConfig = {
-        ...((existing.adapterConfig ?? {}) as Record<string, unknown>),
-        model: next || undefined,
-      };
-      return {
-        ...prev,
-        modelProfiles: {
-          cheap: {
-            ...existing,
-            adapterConfig: nextAdapterConfig,
-          },
-        },
-      };
-    });
-  }
-
   const effectiveRuntimeConfig = useMemo(() => {
     if (isCreate) {
       return {
@@ -1538,7 +1359,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <Field label="Adapter type" hint={help.adapterType}>
               <AdapterTypeDropdown
                 value={adapterType}
-                disabledTypes={disabledTypes}
+                disabledTypes={adapterPickerDisabledTypes}
                 onChange={(t) => {
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
@@ -1563,7 +1384,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      modelProfiles: { cheap: { cleared: true } },
                       adapterConfig: {
                         model:
                           t === "gemini_local"
@@ -1706,9 +1526,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </Field>
               )}
 
-              {supportsModelProfiles && (
-                <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Primary model</div>
-              )}
               <ModelDropdown
                 models={models}
                 value={currentModelId}
@@ -1754,20 +1571,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 <p className="text-xs text-muted-foreground">
                   Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for {currentDefaultEnvironment.name}.
                 </p>
-              )}
-
-              {supportsModelProfiles && (
-                <CheapModelSection
-                  enabled={currentCheapEnabled}
-                  model={currentCheapModel}
-                  models={models}
-                  adapterType={adapterType}
-                  adapterDefaultModel={adapterCheapDefaultModel}
-                  onEnabledChange={setCheapEnabled}
-                  onModelChange={setCheapModel}
-                  open={cheapModelOpen}
-                  onOpenChange={setCheapModelOpen}
-                />
               )}
 
               {showThinkingEffort && (
@@ -2019,6 +1822,46 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       ) : null}
 
+      {/* ---- Debugging ---- */}
+      {!isCreate && canConfigureProviderTrace ? (
+        <div className={cn(!cards && "border-b border-border")}>
+          {cards ? (
+            <h3 className="mb-3 flex items-center gap-2 text-sm font-medium">
+              <Bug className="h-3 w-3" /> Debugging
+            </h3>
+          ) : (
+            <div className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-muted-foreground">
+              <Bug className="h-3 w-3" /> Debugging
+            </div>
+          )}
+          <div
+            className={cn(
+              "border-border bg-accent/30",
+              cards
+                ? "rounded-lg border p-4"
+                : "mx-4 mb-4 rounded-md border px-3 py-3",
+            )}
+          >
+            <ToggleField
+              label="Capture raw provider traces"
+              hint="Stores exact provider traffic for every future run until disabled. Traces may contain sensitive prompts and tool arguments, are administrator-only, and expire after 24 hours."
+              checked={eff<unknown>("debug", "providerTrace", debug.providerTrace) === "raw"}
+              onChange={(enabled) =>
+                mark("debug", "providerTrace", enabled ? "raw" : undefined)
+              }
+            />
+            {eff<unknown>("debug", "providerTrace", debug.providerTrace) === "raw" ? (
+              <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-background/60 px-3 py-2 text-xs text-foreground">
+                <Bug className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  Raw tracing is on for future runs. Paperclip keeps at most 64 MiB per run and automatically deletes it after 24 hours.
+                </span>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
     </div>
   );
 }
@@ -2136,6 +1979,26 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
 // The login panel dispatcher. It picks the panel from the projected panel mode,
 // not from the adapter name. The `submitted_browser_code` mode shows the
 // submitted-browser-code panel; every other mode shows the displayed-code panel.
+/**
+ * The account a source signs in to, named where one is known.
+ *
+ * "Sign in to the environment" describes the plumbing — a login performed inside
+ * a sandbox — and is the honest label when the provider is unknown. But for the
+ * two sources onboarding offers, the customer is signing in to Anthropic or to
+ * OpenAI, and naming that is what tells them which password manager entry to
+ * reach for. The generic wording stays for anything not listed, where a guess
+ * would be worse than a description.
+ */
+const ADAPTER_LOGIN_PROVIDER: Record<string, string> = {
+  claude_local: "Anthropic",
+  codex_local: "OpenAI",
+};
+
+function adapterLoginTitle(adapterType: string): string {
+  const provider = ADAPTER_LOGIN_PROVIDER[adapterType];
+  return provider ? `Sign in to ${provider}` : "Sign in to the environment";
+}
+
 export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   const getCapabilities = useAdapterCapabilities();
   const panelMode = getCapabilities(props.adapterType).login?.panelMode;
@@ -2210,9 +2073,14 @@ function DisplayedCodeLoginPanel({
   const startDisabled = startLogin.isPending || isActive;
 
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 flex flex-col gap-2">
+      {/* `gap`, not `space-y`: the live region below collapses to
+          `display: none` whenever it has nothing to announce, and
+          `space-y` would still put its 8px on the row above — dead space
+          inside the card that pushes the row off centre. A gap only
+          applies between children that render. */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
+        <span className="text-xs font-medium text-foreground">{adapterLoginTitle(adapterType)}</span>
         <div className="flex items-center gap-1.5">
           {isActive && (
             <Button
@@ -2234,7 +2102,7 @@ function DisplayedCodeLoginPanel({
             disabled={startDisabled}
             onClick={() => startLogin.mutate()}
           >
-            Log in
+            Sign in
           </Button>
         </div>
       </div>
@@ -2341,6 +2209,7 @@ const CLAUDE_LOGIN_TIMED_OUT_MESSAGE = "The login timed out. Start the login aga
 // only the server `stored` state as success, and it never shows the OAuth token.
 function SubmittedBrowserCodeLoginPanel({
   companyId,
+  adapterType,
   environmentId,
   onStored,
   onApplyStored,
@@ -2658,9 +2527,14 @@ function SubmittedBrowserCodeLoginPanel({
   };
 
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 flex flex-col gap-2">
+      {/* `gap`, not `space-y`: the live region below collapses to
+          `display: none` whenever it has nothing to announce, and
+          `space-y` would still put its 8px on the row above — dead space
+          inside the card that pushes the row off centre. A gap only
+          applies between children that render. */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
+        <span className="text-xs font-medium text-foreground">{adapterLoginTitle(adapterType)}</span>
         <div className="flex items-center gap-1.5">
           {isActive && (
             <Button
@@ -2699,7 +2573,7 @@ function SubmittedBrowserCodeLoginPanel({
             disabled={startDisabled}
             onClick={() => startLogin.mutate()}
           >
-            {storedToken && !isActive && !isStored ? "Log in to replace" : "Log in"}
+            {storedToken && !isActive && !isStored ? "Sign in to replace" : "Sign in"}
           </Button>
         </div>
       </div>
@@ -3270,72 +3144,6 @@ export function ModelDropdown({
         </PopoverContent>
       </Popover>
     </Field>
-  );
-}
-
-function CheapModelSection({
-  enabled,
-  model,
-  models,
-  adapterType,
-  adapterDefaultModel,
-  onEnabledChange,
-  onModelChange,
-  open,
-  onOpenChange,
-}: {
-  enabled: boolean;
-  model: string;
-  models: AdapterModel[];
-  adapterType: string;
-  adapterDefaultModel: string;
-  onEnabledChange: (next: boolean) => void;
-  onModelChange: (next: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const placeholderHint = adapterDefaultModel
-    ? `Adapter default · ${adapterDefaultModel}`
-    : "No adapter default — choose a cheaper model";
-  return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Cheap model</div>
-          <p className="text-xs text-muted-foreground">
-            Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.
-          </p>
-        </div>
-        <ToggleSwitch checked={enabled} onCheckedChange={onEnabledChange} />
-      </div>
-      {enabled ? (
-        <ModelDropdown
-          models={models}
-          value={model}
-          onChange={onModelChange}
-          open={open}
-          onOpenChange={onOpenChange}
-          allowDefault
-          required={false}
-          groupByProvider={adapterType === "opencode_local"}
-          creatable
-          detectedModel={null}
-          detectedModelCandidates={[]}
-          emptyDetectHint={placeholderHint}
-          defaultLabel={placeholderHint}
-        />
-      ) : null}
-      {enabled && !model && adapterDefaultModel ? (
-        <p className="text-(length:--text-micro) text-muted-foreground">
-          No explicit cheap model selected — runtime falls back to <code>{adapterDefaultModel}</code>.
-        </p>
-      ) : null}
-      {enabled && !model && !adapterDefaultModel ? (
-        <p className="text-(length:--text-micro) text-amber-500">
-          No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
-        </p>
-      ) : null}
-    </div>
   );
 }
 

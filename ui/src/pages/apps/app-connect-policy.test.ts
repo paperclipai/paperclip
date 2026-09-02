@@ -29,7 +29,17 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown"))).toBe(false);
-    expect(canEnterAppsConnect(new URLSearchParams("byo=1&source=zapier"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("byo=1"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("byo=1&source=zapier"))).toBe(false);
+  });
+
+  it("keeps only exact custom MCP reconnects on the legacy BYO query contract", () => {
+    expect(canEnterAppsConnect(new URLSearchParams(
+      "byo=1&reconnect=connection-1&applicationId=application-1&link=https%3A%2F%2Fmcp.example.com",
+    ))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams(
+      "byo=1&reconnect=connection-1&applicationId=application-1",
+    ))).toBe(false);
   });
 
   it("admits retained hidden-provider reconnects without opening fresh setup", () => {

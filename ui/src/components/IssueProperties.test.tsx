@@ -20,7 +20,6 @@ import { queryKeys } from "../lib/queryKeys";
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   adapterModels: vi.fn(),
-  adapterModelProfiles: vi.fn(),
 }));
 
 const mockProjectsApi = vi.hoisted(() => ({
@@ -462,7 +461,6 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
@@ -497,7 +495,6 @@ describe("IssueProperties", () => {
       ],
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
     });
   });
 
@@ -505,18 +502,10 @@ describe("IssueProperties", () => {
     document.body.innerHTML = "";
   });
 
-  it("keeps the Plan tab visible for a planning-mode issue without a plan document", async () => {
+  it("does not show a Plan tab for a planning-mode issue without a plan document", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: false,
     });
-    mockIssuesApi.listInteractions.mockResolvedValue([
-      {
-        kind: "request_confirmation",
-        status: "pending",
-        payload: { target: { type: "issue_document", key: "plan" } },
-      },
-    ]);
     const root = renderProperties(container, {
       issue: createIssue({ workMode: "planning" }),
       childIssues: [],
@@ -525,18 +514,8 @@ describe("IssueProperties", () => {
     });
 
     await waitForAssertion(() => {
-      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Plan")).toBe(true);
-    });
-
-    const planTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Plan");
-    await act(async () => {
-      // Radix Tabs triggers select on mousedown (button 0), not on click.
-      planTab!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
-    });
-
-    await waitForAssertion(() => {
-      expect(container.textContent).toContain("This task is in plan mode but no plan document has been written yet.");
-      expect(container.textContent).toContain("A plan confirmation is pending, but the plan document it should confirm is missing.");
+      expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Plan")).toBe(false);
+      expect(container.textContent).not.toContain("This task is in plan mode but no plan document has been written yet.");
     });
 
     act(() => root.unmount());
@@ -572,7 +551,6 @@ describe("IssueProperties", () => {
       latestRevisionId: "revision-evidence",
     } satisfies IssueDocument;
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: false,
     });
     mockIssuesApi.getDocument.mockResolvedValue(planDocument);
@@ -876,7 +854,6 @@ describe("IssueProperties", () => {
     // The chat shell hosts the full tree in the center pane; the slim pill row
     // + its Add sub-task button only render in the classic layout (PAP-496).
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
     const onAddSubIssue = vi.fn();
@@ -921,24 +898,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("hides watchdog setup controls while the experimental flag is off", async () => {
-    const root = renderProperties(container, {
-      issue: createIssue(),
-      childIssues: [],
-      onUpdate: vi.fn(),
-    });
-    await flush();
-
-    expect(container.textContent).not.toContain("Watchdog");
-    expect(container.textContent).not.toContain("Set watchdog");
-
-    act(() => root.unmount());
-  });
-
-  it("shows watchdog setup controls when the experimental flag is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
-    });
+  it("always shows watchdog setup controls", async () => {
     const root = renderProperties(container, {
       issue: createIssue(),
       childIssues: [],
@@ -1223,7 +1183,6 @@ describe("IssueProperties", () => {
     // The sub-task pill row (with its collapse control) is classic-layout only
     // now — the chat shell promotes sub-tasks to their own pane tab (PAP-496).
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
     const blockedBy = Array.from({ length: 7 }, (_, index) => ({
@@ -2534,7 +2493,6 @@ describe("IssueProperties", () => {
 
   it("shows the empty watchdog state and saves a new watchdog via the API", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
@@ -2601,7 +2559,6 @@ describe("IssueProperties", () => {
 
   it("updates cached issue detail when saving a watchdog", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const savedWatchdog = createWatchdogSummary({
@@ -2656,7 +2613,6 @@ describe("IssueProperties", () => {
 
   it("renders an existing watchdog and removes it via the API", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
@@ -2698,7 +2654,6 @@ describe("IssueProperties", () => {
 
   it("truncates the watchdog instructions one-line summary in the properties value column", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const instructions = "get greptile to stop re-reviewing the same task unless a fresh code change lands";
@@ -2737,7 +2692,6 @@ describe("IssueProperties", () => {
 
   it("links to the generated watchdog task when one exists", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const root = renderProperties(container, {

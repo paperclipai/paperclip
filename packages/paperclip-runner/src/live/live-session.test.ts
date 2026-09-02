@@ -22,6 +22,7 @@ import {
 } from "./live-session.js";
 import { DurableCapabilityLiveSessionStore } from "./durable-live-session-store.js";
 import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
+import { captureTurnRejection } from "../../test/capture-turn-rejection.js";
 
 class AsyncNotifications implements AsyncIterable<CodexRpcNotification> {
   #values: CodexRpcNotification[] = [];
@@ -781,7 +782,7 @@ describe("Capability live runnerd and Codex session", () => {
       turnTimeoutMs: 500,
     });
     state.holdAfterTool = true;
-    const killedTurn = first.sendMessage("Apply idempotent progress once.");
+    const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once."));
     await vi.waitFor(async () => {
       expect((await firstStore.load(binding.sessionId))?.mockState).toContain(
         "Progress persisted through the live Codex tool loop.",
@@ -799,7 +800,7 @@ describe("Capability live runnerd and Codex session", () => {
       costNanodollars: 1_500,
     })).resolves.toBe("committed");
     await state.transports[0]?.close();
-    await expect(killedTurn).rejects.toThrow("timed out");
+    await expect(killedTurn).resolves.toMatchObject({ message: expect.stringContaining("timed out") });
 
     // A new service models worker termination: it owns no in-memory session.
     const resumedService = new CapabilityLiveSessionService({
@@ -864,6 +865,46 @@ describe("Capability live runnerd and Codex session", () => {
     });
   });
 
+  it("persists a resumed turnTimeoutMs override so a later resume that omits it keeps the value", async () => {
+    const state = providerState();
+    const store = new InMemoryCapabilityLiveSessionStore();
+    const sessionId = "session-turn-timeout-persists";
+    const firstService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    await firstService.create({
+      runId: "run-turn-timeout-persists",
+      sessionId,
+      attemptId: "attempt-first",
+    });
+
+    const secondService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    const secondResume = await secondService.resume({
+      sessionId,
+      attemptId: "attempt-second",
+      resumeOf: "attempt-first",
+      turnTimeoutMs: 5_000,
+    });
+    expect(secondResume.snapshot().config.turnTimeoutMs).toBe(5_000);
+    expect((await store.load(sessionId))?.config.turnTimeoutMs).toBe(5_000);
+
+    const thirdService = new CapabilityLiveSessionService({
+      store,
+      transportFactory: fakeTransportFactory(state),
+    });
+    const thirdResume = await thirdService.resume({
+      sessionId,
+      attemptId: "attempt-third",
+      resumeOf: "attempt-second",
+    });
+    expect(thirdResume.snapshot().config.turnTimeoutMs).toBe(5_000);
+    expect((await store.load(sessionId))?.config.turnTimeoutMs).toBe(5_000);
+  });
+
   it("replays only a durable duplicate after restore reconciles the provider turn as interrupted", async () => {
     const state = providerState();
     const store = new InMemoryCapabilityLiveSessionStore();
@@ -878,10 +919,7 @@ describe("Capability live runnerd and Codex session", () => {
       turnTimeoutMs: 50,
     });
     state.holdAfterTool = true;
-    const killedTurn = first.sendMessage("Apply idempotent progress once.").then(
-      () => null,
-      (error: unknown) => error,
-    );
+    const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once."));
     await vi.waitFor(async () => {
       expect((await store.load(first.id))?.mockState).toContain("progress-governed-once");
     });
@@ -1037,6 +1075,20 @@ describe("Capability live runnerd and Codex session", () => {
     await expect(store.load(binding.sessionId)).rejects.toThrow("capability_live_checkpoint_corrupt");
   });
 
+  it("still asserts a turn-timeout rejection after a delay longer than the turn timeout", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ turnTimeoutMs: 50 });
+    state.holdAfterTool = true;
+    const heldTurn = captureTurnRejection(session.sendMessage("Apply idempotent progress once."));
+    // This delay outlasts turnTimeoutMs, so the rejection settles before this
+    // test attaches its own assertion. Vitest fails a file on an unhandled
+    // rejection, so this test would fail the file on its own without a
+    // handler already attached at the moment the turn promise was created.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await expect(heldTurn).resolves.toMatchObject({ message: expect.stringContaining("timed out") });
+  });
+
   it.skipIf(process.platform === "win32" || !existsSync(defaultCapabilityRunnerdBinary()))(
     "terminates real runnerd after a durable receipt and resumes its exact provider thread",
     async () => {
@@ -1063,7 +1115,7 @@ describe("Capability live runnerd and Codex session", () => {
         attemptId: "attempt-real-killed",
         turnTimeoutMs: 2_000,
       });
-      const killedTurn = first.sendMessage("Apply the governed idempotent effect.");
+      const killedTurn = captureTurnRejection(first.sendMessage("Apply the governed idempotent effect."));
       await vi.waitFor(async () => {
         const checkpoint = await store.load(binding.sessionId);
         expect(checkpoint?.mockState).toContain("One durable governed effect.");
@@ -1084,7 +1136,7 @@ describe("Capability live runnerd and Codex session", () => {
       const runnerPid = killedCheckpoint?.process?.runnerPid;
       expect(runnerPid).toBeTypeOf("number");
       process.kill(runnerPid!, "SIGKILL");
-      await expect(killedTurn).rejects.toThrow();
+      await expect(killedTurn).resolves.toBeInstanceOf(Error);
 
       const resumedService = new CapabilityLiveSessionService({
         store: new DurableCapabilityLiveSessionStore({ directory, binding }),
@@ -1094,6 +1146,9 @@ describe("Capability live runnerd and Codex session", () => {
         sessionId: binding.sessionId,
         attemptId: "attempt-real-resumed",
         resumeOf: "attempt-real-killed",
+        // Smaller than this test's own timeout, so a stalled turn reports
+        // which turn stalled instead of surfacing only as a bare test timeout.
+        turnTimeoutMs: 10_000,
       });
       expect(resumed.snapshot().providerThreadId).toBe("thread-durable-runnerd");
       const reconciled = await resumed.reconcileActiveTurn();
@@ -1118,6 +1173,7 @@ describe("Capability live runnerd and Codex session", () => {
       ]));
       await resumedService.shutdown(resumed.id, "test complete");
     },
-    15_000,
+    // CI exercises two real process generations here and can exceed the unit default under load.
+    30_000,
   );
 });

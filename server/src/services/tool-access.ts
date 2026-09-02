@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { and, asc, desc, eq, gte, inArray, isNull, lt, max, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, max, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -157,7 +157,7 @@ import {
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
-import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
+import { readSignedToolArgumentsPayload, TOOL_ACTION_REQUEST_SIGNING_GRACE_MS } from "./tool-content-guards.js";
 import {
   effectiveToolProfileBindings,
   narrowestScopeBindings,
@@ -5575,7 +5575,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       db
         .select()
         .from(toolActionRequests)
-        .where(and(eq(toolActionRequests.companyId, companyId), eq(toolActionRequests.status, "pending"))),
+        .where(and(
+          eq(toolActionRequests.companyId, companyId),
+          eq(toolActionRequests.status, "pending"),
+          isNotNull(toolActionRequests.signedArguments),
+        )),
       db
         .select()
         .from(toolInvocations)
@@ -12434,7 +12438,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // that window. Hide such a request from the queue, but do not cancel it —
         // cancelling here races the two-step create and makes the later approve
         // fail with action_not_pending. Only cancel a request that carries a
-        // signature we cannot verify (secret rotation or tampering).
+        // signature we cannot verify (secret rotation or tampering), or an
+        // unsigned row whose creator has exceeded the signing grace period.
         const unsignedRequestIds = new Set<string>();
         const invalidRequestIds: string[] = [];
         for (const request of requests) {
@@ -12444,7 +12449,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             continue;
           }
           if (request.signedArguments === null) {
-            unsignedRequestIds.add(request.id);
+            if (Date.now() - request.createdAt.getTime() >= TOOL_ACTION_REQUEST_SIGNING_GRACE_MS) {
+              invalidRequestIds.push(request.id);
+            } else {
+              unsignedRequestIds.add(request.id);
+            }
             continue;
           }
           let readable = false;

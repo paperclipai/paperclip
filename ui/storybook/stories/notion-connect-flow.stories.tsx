@@ -113,6 +113,7 @@ function OAuthStateHost({
         phase={phase}
         error={error}
         onRetry={() => undefined}
+        onBack={() => undefined}
         onCancel={() => undefined}
       />
     </div>

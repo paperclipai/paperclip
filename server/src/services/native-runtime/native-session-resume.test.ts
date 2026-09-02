@@ -20,6 +20,7 @@ function execution(runId: string, cwd = "/workspace") {
     agentId,
     workspace: { id: runId, cwd, repoUrl: null, repoRef: null, branchName: null },
     normalizedSessionId,
+    provider: "codex",
     completionContract: {
       id: "70000000-0000-4000-8000-000000000007",
       sha256: `sha256:${"a".repeat(64)}`,
@@ -43,6 +44,7 @@ function planningExecution(runId: string, revisionId: string) {
     agentId,
     workspace: { id: runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
     normalizedSessionId,
+    provider: "codex",
     executionMode: "plan",
     planningContext: {
       documentId: "80000000-0000-4000-8000-000000000008",
@@ -189,7 +191,7 @@ describe("rebindNativeSessionCheckpoint", () => {
 });
 
 describe("buildNativeExecutionInput wake projection", () => {
-  it("writes native v4 and pins the complete Codex configuration", () => {
+  it("writes native v4 and pins every provider's complete effective configuration", () => {
     const common = {
       companyId,
       runId: currentRunId,
@@ -203,14 +205,117 @@ describe("buildNativeExecutionInput wake projection", () => {
     } as const;
     const codex = buildNativeExecutionInput({
       ...common,
+      provider: "codex",
       codexApprovalPolicy: "on-request",
+    });
+    const opencode = buildNativeExecutionInput({
+      ...common,
+      provider: "opencode",
+      model: "openrouter/z-ai/glm-5.2",
+      opencodePermissionMode: "ask",
+    });
+    const acpx = buildNativeExecutionInput({
+      ...common,
+      provider: "acpx",
+      acpxAgent: "claude",
+      model: "claude-sonnet-5",
+      acpxPermissionMode: "deny-all",
+    });
+    const claudeManaged = buildNativeExecutionInput({
+      ...common,
+      provider: "claude_managed",
+      model: "claude-sonnet-5",
+      managedProfile: {
+        profileId: "managed-profile",
+        anthropicAgentId: "agent-remote",
+        agentVersion: "7",
+        environmentId: "environment-remote",
+        betaVersion: "managed-agents-2026-04-01",
+      },
+      maxSessionListCostUsd: 0.75,
+    });
+    const agentCore = buildNativeExecutionInput({
+      ...common,
+      provider: "aws_agentcore",
+      model: "global.anthropic.claude-sonnet-4-6",
+      agentCoreProfile: {
+        profileId: "agentcore-profile",
+        region: "us-east-1",
+        accountId: "123456789012",
+        harnessArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:harness/h-1",
+        harnessVersion: "3",
+        endpointArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:endpoint/e-1",
+        endpointQualifier: "prod",
+        agentRuntimeArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/r-1",
+        memoryArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:memory/m-1",
+        memoryId: "m-1",
+        invocationRoleArn: "arn:aws:iam::123456789012:role/invoke",
+        contextBucket: "paperclip-context",
+        contextPrefix: "runner/",
+        contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
+        qualificationRevision: "aws-agentcore-harness-v1",
+        eventExpiryDays: 90,
+      },
+      maxEstimatedSessionCostUsd: 1.25,
+      invocationLimits: {
+        maxIterations: 8,
+        maxOutputTokens: 4_096,
+        timeoutSeconds: 300,
+      },
+    });
+    const defaultOpenCode = buildNativeExecutionInput({
+      ...common,
+      provider: "opencode",
+      model: "openrouter/z-ai/glm-5.2",
+    });
+    const defaultAcpx = buildNativeExecutionInput({
+      ...common,
+      provider: "acpx",
+      model: "gpt-5.6-sol",
     });
 
     expect(codex).toMatchObject({
       schema: "paperclip.native-execution-input.v4",
       provider: { kind: "codex", approvalPolicy: "on-request" },
     });
-    expect(JSON.stringify(codex))
+    expect(opencode).toMatchObject({
+      schema: "paperclip.native-execution-input.v4",
+      provider: { kind: "opencode", permissionMode: "ask" },
+    });
+    expect(acpx).toMatchObject({
+      schema: "paperclip.native-execution-input.v4",
+      provider: { kind: "acpx", permissionMode: "deny-all" },
+    });
+    expect(claudeManaged).toMatchObject({
+      session: { driverKind: "claude_managed_agents_api" },
+      provider: {
+        kind: "claude_managed",
+        managedProfile: { profileId: "managed-profile" },
+        maxSessionListCostUsd: 0.75,
+      },
+    });
+    expect(agentCore).toMatchObject({
+      session: { driverKind: "aws_agentcore_harness_api" },
+      provider: {
+        kind: "aws_agentcore",
+        agentCoreProfile: {
+          profileId: "agentcore-profile",
+          eventExpiryDays: 90,
+        },
+        maxEstimatedSessionCostUsd: 1.25,
+      },
+    });
+    expect(defaultOpenCode).toMatchObject({
+      provider: { kind: "opencode", permissionMode: "ask" },
+    });
+    expect(defaultAcpx).toMatchObject({
+      provider: {
+        kind: "acpx",
+        agent: "codex",
+        permissionMode: "approve-reads",
+      },
+    });
+    expect(JSON.stringify([codex, opencode, claudeManaged, agentCore, acpx]))
       .not.toMatch(/OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_SECRET_ACCESS_KEY|PAPERCLIP_API_KEY/);
   });
 
@@ -257,6 +362,8 @@ describe("buildNativeExecutionInput wake projection", () => {
         branchName: null,
       },
       normalizedSessionId,
+      provider: "opencode",
+      model: "openrouter/z-ai/glm-5.2",
       completionContract: {
         id: "70000000-0000-4000-8000-000000000007",
         sha256: `sha256:${"a".repeat(64)}`,

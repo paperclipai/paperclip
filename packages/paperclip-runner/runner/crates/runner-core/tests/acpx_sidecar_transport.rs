@@ -13,6 +13,7 @@ fn transport(mode: &str, timeout: Duration) -> AcpxSidecarTransport {
     AcpxSidecarTransport::start(&AcpxSidecarTransportConfig {
         command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
         args: vec!["--mode".to_owned(), mode.to_owned()],
+        verified_launch: None,
         request_timeout: timeout,
         shutdown_grace: Duration::from_millis(50),
     })

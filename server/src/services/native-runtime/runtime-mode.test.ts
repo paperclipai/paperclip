@@ -4,6 +4,7 @@ import { BUILTIN_ADAPTER_TYPES } from "../../adapters/builtin-adapter-types.js";
 import {
   NativeRunnerSelectionError,
   NativeRuntimeEligibilityError,
+  isRunnerIngressAuthorized,
   resolveHeartbeatNativeRuntimeMode,
   resolveHeartbeatRuntimeMode,
   resolveNativeRuntimeMode,
@@ -62,19 +63,109 @@ describe("resolveNativeRuntimeMode", () => {
     }));
   });
 
-  it("rejects fresh OpenCode and ACPX starts until their app profiles are activated", () => {
-    expect(() => resolveNativeRuntimeMode({
+  it("admits fresh local, managed, and qualified ACPX profiles", () => {
+    expect(resolveNativeRuntimeMode({
       ...eligible,
       adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+    })).toMatchObject({
+      kind: "native",
+      profile: { backend: "opencode_server" },
+    });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: {
+        provider: "claude_managed",
+        managedProfileId: "managed-primary",
+        managedAgentsRetentionAcknowledged: true,
+      },
+    })).toMatchObject({
+      kind: "native",
+      profile: { backend: "claude_managed_agents_api" },
+    });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: {
+        provider: "aws_agentcore",
+        agentCoreProfileId: "agentcore-primary",
+        agentCoreRetentionAcknowledged: true,
+      },
+    })).toMatchObject({
+      kind: "native",
+      profile: { backend: "aws_agentcore_harness_api" },
+    });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" },
+    })).toMatchObject({
+      kind: "native",
+      profile: { backend: "acpx_runtime" },
+    });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: { provider: "acpx", acpxAgent: "codex", model: "gpt-5.6-sol" },
+    })).toMatchObject({
+      kind: "native",
+      profile: { backend: "acpx_runtime" },
+    });
+  });
+
+  it("rejects malformed OpenCode and unqualified ACPX profiles", () => {
+    expect(() => resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: { provider: "opencode", model: "gpt-5.6-sol" },
     })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_provider_unsupported",
+      code: "paperclip_runner_opencode_model_invalid",
     }));
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
-      adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" },
+      adapterConfig: {
+        provider: "acpx",
+        acpxAgent: "pi",
+        model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      },
     })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_provider_unsupported",
+      code: "paperclip_runner_acpx_agent_unavailable",
     }));
+    expect(() => resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5" },
+    })).toThrow(expect.objectContaining({
+      code: "paperclip_runner_acpx_model_unqualified",
+    }));
+  });
+
+  it("rejects incomplete managed-provider selections before a run is persisted", () => {
+    expect(() => resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: {
+        provider: "claude_managed",
+        managedProfileId: "managed-primary",
+      },
+    })).toThrow(expect.objectContaining({
+      code: "paperclip_runner_claude_managed_retention_required",
+    }));
+    expect(() => resolveNativeRuntimeMode({
+      ...eligible,
+      adapterConfig: {
+        provider: "aws_agentcore",
+        agentCoreRetentionAcknowledged: true,
+      },
+    })).toThrow(expect.objectContaining({
+      code: "paperclip_runner_aws_agentcore_profile_required",
+    }));
+  });
+
+  it("uses adapterConfig as the fresh provider authority", () => {
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      runtimeConfig: {
+        nativeRunner: { provider: "opencode" },
+      },
+      adapterConfig: { provider: "codex" },
+    })).toMatchObject({
+      kind: "native",
+      profile: { backend: "codex_app_server" },
+    });
   });
 
   it("preserves legacy as the default and as the kill-switch behavior", () => {
@@ -120,6 +211,40 @@ describe("resolveNativeRuntimeMode", () => {
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_rollout_disabled",
     }));
+  });
+
+  it("authorizes ingress from the native runtime decision without a second flag", () => {
+    const freshNative = resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      persisted: {
+        runtimeMode: null,
+        runtimeModeReason: null,
+        runtimeModeResolvedAt: null,
+      },
+    });
+    const persistedNative = resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+      persisted: {
+        runtimeMode: "native",
+        runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date(),
+      },
+    });
+    const directLegacy = resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+      agent: { ...eligible.agent, adapterType: "codex_local" },
+      persisted: {
+        runtimeMode: null,
+        runtimeModeReason: null,
+        runtimeModeResolvedAt: null,
+      },
+    });
+
+    expect(isRunnerIngressAuthorized(freshNative)).toBe(true);
+    expect(isRunnerIngressAuthorized(persistedNative)).toBe(true);
+    expect(isRunnerIngressAuthorized(directLegacy)).toBe(false);
   });
 
   it.each(["paused", "terminated", "pending_approval"])(
@@ -172,6 +297,59 @@ describe("resolveNativeRuntimeMode", () => {
     }));
   });
 
+  it("keeps a persisted OpenCode recovery on its immutable driver", () => {
+    expect(resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+      persisted: {
+        runtimeMode: "native",
+        runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date(),
+        driverKind: "opencode_server",
+      },
+    })).toEqual(expect.objectContaining({
+      profile: { mode: "native", backend: "opencode_server", protocolVersion: 1 },
+    }));
+  });
+
+  it.each([
+    "claude_managed_agents_api",
+    "aws_agentcore_harness_api",
+  ] as const)("keeps a persisted %s recovery on its immutable driver", (driverKind) => {
+    expect(resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+      persisted: {
+        runtimeMode: "native",
+        runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date(),
+        driverKind,
+      },
+    })).toEqual(expect.objectContaining({
+      profile: { mode: "native", backend: driverKind, protocolVersion: 1 },
+    }));
+  });
+
+  it("keeps a persisted ACPX recovery even when fresh selection is disabled", () => {
+    expect(resolveHeartbeatNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+      adapterConfig: {
+        provider: "acpx",
+        acpxAgent: "pi",
+        model: "historical",
+      },
+      persisted: {
+        runtimeMode: "native",
+        runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date(),
+        driverKind: "acpx_runtime",
+      },
+    })).toEqual(expect.objectContaining({
+      profile: { mode: "native", backend: "acpx_runtime", protocolVersion: 1 },
+    }));
+  });
+
   it("rejects an explicit native profile outside the approved boundary", () => {
     expect(resolveNativeRuntimeMode({ ...eligible, agent: { ...eligible.agent, adapterType: "claude_local" } }))
       .toEqual(expect.objectContaining({ kind: "legacy", reason: "direct_adapter" }));
@@ -179,16 +357,19 @@ describe("resolveNativeRuntimeMode", () => {
       .toThrow(NativeRuntimeEligibilityError);
   });
 
-  it("rejects remote targets for fresh paperclip_runner starts", () => {
-    expect(() => resolveNativeRuntimeMode({
+  it("admits remote targets only through paperclip_runner", () => {
+    expect(resolveNativeRuntimeMode({
       ...eligible,
       target: { kind: "remote" },
       runtimeConfig: {},
       adapterConfig: { provider: "codex" },
       agent: { ...eligible.agent, adapterType: "paperclip_runner" },
-    })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_environment_unsupported",
-    }));
+    })).toMatchObject({ kind: "native" });
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      target: { kind: "remote" },
+      agent: { ...eligible.agent, adapterType: "codex_local" },
+    })).toMatchObject({ kind: "legacy", reason: "direct_adapter" });
   });
 
   it("allows paperclip_runner to use a transient local workspace for projectless issues", () => {

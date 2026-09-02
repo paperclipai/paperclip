@@ -232,7 +232,7 @@ describe("P6-25 pre-result native session recovery", () => {
         nextAttemptAt: new Date(0),
         failureCode: "native_session_interrupted",
         failureDetail: {
-          message: "provider_initialize_timeout: provider=codex stage=health",
+          message: "provider_initialize_timeout: provider=opencode stage=health",
           originalFailureCode: "provider_initialize_timeout",
           recoveryMode: "bootstrap_retry",
           providerSessionEstablished: false,
@@ -288,7 +288,7 @@ describe("P6-25 pre-result native session recovery", () => {
     await expect(db.select().from(nativeRunFinalizations)).resolves.toHaveLength(8);
   });
 
-  it("uses checkpoint-free bootstrap retry only when durable evidence proves no provider session existed", async () => {
+  it("uses provider-neutral checkpoint-free bootstrap retry only when durable evidence proves no session existed", async () => {
     await expect(claimNativeSessionResumptions({
       db,
       runnerInstanceId: "reaper",

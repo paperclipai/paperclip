@@ -45,12 +45,14 @@ const apiPrefixes: Record<string, string> = {
   "issues.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
+  "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
   "resource-memberships.ts": "/api",
+  "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
@@ -303,6 +305,23 @@ describe("openapi routes", () => {
     });
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["403"]).toBeDefined();
+    expect(spec.paths["/api/companies/{companyId}/managed-agent-profiles"].post.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    expect(spec.paths["/api/companies/{companyId}/remote-agent-profiles"].get.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    const remoteAgentProfileBody =
+      spec.paths["/api/companies/{companyId}/remote-agent-profiles"].post.requestBody.content[
+        "application/json"
+      ].schema;
+    expect(remoteAgentProfileBody.properties.service).toMatchObject({
+      type: "string",
+      enum: ["aws_bedrock_agentcore_harness"],
+    });
+    expect(remoteAgentProfileBody.properties.credentialSecretId).toBeUndefined();
     expect(spec.paths["/api/instance/database-backups"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/invites/{token}/accept"].post.responses["202"]).toBeDefined();
     expect(spec.paths["/api/board-api-keys"].post.responses["201"]).toBeDefined();

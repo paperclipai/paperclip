@@ -412,6 +412,170 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(discard.status).toBe(403);
   });
 
+  it("leaves the selected row queued when no native steering session is attached", async () => {
+    const seeded = await seedQueue();
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(initial.body.steeringDisposition).toBe("temporarily_unavailable");
+
+    const steered = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+
+    expect(steered.status).toBe(409);
+    expect(steered.body.details).toMatchObject({
+      code: "steering_temporarily_unavailable",
+      retryable: true,
+    });
+    const queueAfterFailure = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(queueAfterFailure.body.entries.map((entry: any) => entry.comment.id)).toEqual(seeded.commentIds);
+  });
+
+  it("returns the persisted acknowledgement when the final steering response is retried", async () => {
+    const seeded = await seedQueue();
+    await db.delete(issueComments).where(eq(issueComments.id, seeded.commentIds[1]));
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "cancelled",
+        finishedAt: new Date("2026-08-22T15:04:00.000Z"),
+        payload: {
+          issueId: seeded.issueId,
+          commentId: seeded.commentIds[0],
+          _paperclipWakeContext: {
+            commentId: seeded.commentIds[0],
+            wakeCommentId: seeded.commentIds[0],
+            wakeCommentIds: [seeded.commentIds[0]],
+          },
+        },
+      })
+      .where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          queuedSteeringAcknowledgements: {
+            [seeded.commentIds[0]]: {
+              status: "acknowledged",
+              queueId: seeded.wakeId,
+              turnId: "turn-acknowledged",
+              acknowledgedAt: "2026-08-22T15:04:00.000Z",
+            },
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+
+    const retried = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({
+        queueId: seeded.wakeId,
+        targetRunId: seeded.runId,
+        revision: "response-was-lost-before-the-client-stored-the-revision",
+      });
+
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(retried.body).toMatchObject({
+      issueId: seeded.issueId,
+      queueId: null,
+      state: null,
+      entries: [],
+    });
+    const activity = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.queued_comment_steered"))
+      .then((rows) => rows[0]);
+    expect(activity?.details).toMatchObject({
+      commentId: seeded.commentIds[0],
+      targetRunId: seeded.runId,
+      turnId: "turn-acknowledged",
+      duplicate: true,
+    });
+  });
+
+  it("does not reuse an acknowledgement from a different queue", async () => {
+    const seeded = await seedQueue();
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          queuedSteeringAcknowledgements: {
+            [seeded.commentIds[0]]: {
+              status: "acknowledged",
+              queueId: randomUUID(),
+              turnId: "turn-from-another-queue",
+              acknowledgedAt: "2026-08-22T15:04:00.000Z",
+            },
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+
+    const steered = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({
+        queueId: seeded.wakeId,
+        targetRunId: seeded.runId,
+        revision: initial.body.revision,
+      });
+
+    expect(steered.status).toBe(409);
+    expect(steered.body.details).toMatchObject({
+      code: "steering_temporarily_unavailable",
+      retryable: true,
+    });
+    const queueAfterFailure = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(queueAfterFailure.body.entries.map((entry: any) => entry.comment.id))
+      .toEqual(seeded.commentIds);
+  });
+
+  it("keeps queue edits available during handoff but rejects stale same-turn steering", async () => {
+    const seeded = await seedQueue();
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date("2026-08-22T15:05:00.000Z") })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+
+    const edit = await request(app(seeded.companyId))
+      .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({
+        queueId: seeded.wakeId,
+        revision: initial.body.revision,
+        body: "edited during handoff",
+      });
+
+    expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+    const stored = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.id, seeded.commentIds[0]))
+      .then((rows) => rows[0]);
+    expect(stored?.body).toBe("edited during handoff");
+    const steer = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({
+        queueId: seeded.wakeId,
+        targetRunId: seeded.runId,
+        revision: edit.body.revision,
+      });
+    expect(steer.status).toBe(409);
+    expect(steer.body.details?.code).toBe("queued_comment_stale_target");
+    const wake = await db
+      .select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, seeded.wakeId))
+      .then((rows) => rows[0]);
+    expect(wake?.status).toBe("deferred_issue_execution");
+    expect((wake?.payload as any)?._paperclipWakeContext?.wakeCommentIds).toEqual(seeded.commentIds);
+  });
+
   it("cancels a queued continuation whose comments disappeared before claim", async () => {
     const seeded = await seedQueue();
     const queueRunId = await promoteQueue(seeded);
@@ -435,6 +599,27 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       errorCode: "queued_comment_discarded",
     });
     expect(wake?.status).toBe("cancelled");
+  });
+
+  it("keeps a persisted legacy queue on the legacy protocol after the agent changes adapters", async () => {
+    const seeded = await seedQueue();
+    const queueRunId = await promoteQueue(seeded);
+    await db
+      .update(heartbeatRuns)
+      .set({ runtimeMode: "legacy" })
+      .where(eq(heartbeatRuns.id, queueRunId));
+
+    const queued = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+
+    expect(queued.status, JSON.stringify(queued.body)).toBe(200);
+    expect(queued.body).toMatchObject({
+      queueId: seeded.wakeId,
+      state: "queued",
+      targetRunId: null,
+      protocol: "legacy",
+      steeringDisposition: "unsupported",
+    });
   });
 
   it("serializes discard against queued-run claim", async () => {

@@ -862,11 +862,16 @@ describe("OpenCodeServerDriver", () => {
     roots.push(root, workspace);
     let failSessionCreate = true;
     const spawns: number[] = [];
+    const commandLifecycle: string[] = [];
     const driver = new OpenCodeServerDriver({
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
       runtimeDirectory: root,
       command: fixture,
       environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+      commandLifecycle: {
+        beforeSpawn: () => { commandLifecycle.push("before"); },
+        afterSpawn: () => { commandLifecycle.push("after"); },
+      },
       fetch: async (input, init) => {
         if (failSessionCreate && String(input).endsWith("/session") && init?.method === "POST") {
           failSessionCreate = false;
@@ -879,6 +884,7 @@ describe("OpenCodeServerDriver", () => {
     const session = await driver.openSession({ runId: "run-retry", normalizedSessionId: "retry", workingDirectory: workspace });
     expect(session.ids().providerSessionId).toBe("ses_fake_1");
     expect(spawns).toHaveLength(2);
+    expect(commandLifecycle).toEqual(["before", "after", "before", "after"]);
     await session.close({ reason: "test" });
   });
 

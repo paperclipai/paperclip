@@ -1485,7 +1485,12 @@ function connectorEnrollmentPrincipal(req: Request): string {
 
   router.get("/tool-connections/:connectionId", async (req, res) => {
     assertBoard(req);
-    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    const connection = await getAccessibleResource(
+      req,
+      res,
+      svc.getConnection(req.params.connectionId as string),
+      "Tool connection not found",
+    );
     if (!connection) return;
     res.json(connection);
   });
@@ -1831,15 +1836,29 @@ function connectorEnrollmentPrincipal(req: Request): string {
         title: agent.title,
         status: agent.status,
         orgDepth: orgDepthByAgentId.get(agent.id) ?? 0,
-        effectiveAccess: await options.toolGateway.summarizeConnectionAccessForAgent({
-          companyId: connection.companyId,
-          connectionId: connection.id,
-          agentId: agent.id,
-        }),
       });
     }
     candidates.sort((a, b) => a.orgDepth - b.orgDepth || a.name.localeCompare(b.name));
     res.json({ agents: candidates });
+  });
+
+  router.get("/tool-connections/:connectionId/test-agents/:agentId/access", async (req, res) => {
+    assertBoard(req);
+    if (!options.toolGateway) {
+      res.status(501).json({ error: "Tool gateway service is not configured" });
+      return;
+    }
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return;
+    await assertBoardAnyToolPermission(req, connection.companyId, ["tools:use", "tools:manage_connections"]);
+    const agentId = req.params.agentId as string;
+    await assertCanTestAsAgent(req, connection.companyId, agentId);
+    const accessSummary = await options.toolGateway.summarizeConnectionAccessForAgent({
+      companyId: connection.companyId,
+      connectionId: connection.id,
+      agentId,
+    });
+    res.json({ access: accessSummary });
   });
 
   router.post("/tool-connections/:connectionId/test-calls", validate(toolConnectionTestCallSchema), async (req, res) => {

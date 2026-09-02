@@ -53,7 +53,7 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableNativeRunner: {
     title: "Paperclip Runner",
     description:
-      "Allow new Codex agents to use the experimental Rust Paperclip Runner transport.",
+      "Allow new Codex agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -120,16 +120,8 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableTaskWatchdogs: {
-    title: "Task Watchdogs",
-    description:
-      "Show task detail controls for configuring watchdog agents that verify stopped task subtrees and restore live paths when work should continue.",
-    tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
   enableIssuePlanDecompositions: {
-    title: "Task Plan Decomposition Panel",
+    title: "Task Plan Decomposition",
     description: "Show accepted-plan decomposition history on task detail pages.",
     tier: "managed",
     cloudDefault: false,
@@ -221,19 +213,19 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enablePaperclipDeveloperMode: {
+    title: "Paperclip Developer Mode",
+    description:
+      "Show internal Paperclip maintainer tools and observability links, including Honeycomb trace queries on run pages.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   autoRestartDevServerWhenIdle: {
     title: "Auto-Restart Dev Server When Idle",
     description:
       "In local development, wait for queued and running agent runs to finish, then restart the server automatically when backend changes make the current boot stale.",
     tier: "preference",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
-  enableIssueGraphLivenessAutoRecovery: {
-    title: "Auto-Create Recovery Tasks",
-    description:
-      "Let the heartbeat scheduler create recovery tasks for task dependency chains found inside the configured lookback window.",
-    tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
   },
@@ -265,6 +257,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Sandbox Duplex Bridge",
     description:
       "Let a run open the sandbox duplex command-stream bridge when the provider grants the capability. The host reads this per run before it selects the transport. Off keeps the file bridge for every run.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableRunnerPreviewIngress: {
+    title: "Runner Preview Ingress (Deprecated)",
+    description:
+      "Compatibility-only key retained for older managed configs. Runner ingress follows the Paperclip Runner setting.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,

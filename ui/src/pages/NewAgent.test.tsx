@@ -14,7 +14,6 @@ import { NewAgent } from "./NewAgent";
 // `env` map, which is the contract this page test verifies.
 
 const mockAgentsApi = vi.hoisted(() => ({
-  adapterModelProfiles: vi.fn(),
   adapterModels: vi.fn(),
   detectModel: vi.fn(),
   list: vi.fn(),
@@ -46,10 +45,15 @@ const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAssetsApi = vi.hoisted(() => ({ uploadImage: vi.fn() }));
 const mockClipboard = vi.hoisted(() => ({ copyTextToClipboard: vi.fn() }));
 const navigateMock = vi.hoisted(() => vi.fn());
+const mockAdapterAvailability = vi.hoisted(() => ({
+  disabled: new Set<string>(),
+  loaded: true,
+}));
+const mockSearchParams = vi.hoisted(() => ({ value: new URLSearchParams() }));
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => navigateMock,
-  useSearchParams: () => [new URLSearchParams(), vi.fn()],
+  useSearchParams: () => [mockSearchParams.value, vi.fn()],
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -73,7 +77,8 @@ vi.mock("../lib/clipboard", () => ({
 }));
 
 vi.mock("../adapters/use-disabled-adapters", () => ({
-  useDisabledAdaptersSync: () => new Set<string>(),
+  useDisabledAdaptersSync: () => mockAdapterAvailability.disabled,
+  useAdapterRegistryLoaded: () => mockAdapterAvailability.loaded,
 }));
 
 // The form reads the projected adapter login capability to pick the login flow
@@ -96,7 +101,6 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
       supportsSkills: true,
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
-      supportsModelProfiles: true,
       supportsAcp: true,
       ...(login ? { login } : {}),
     };
@@ -226,8 +230,8 @@ async function renderNewAgent() {
 // start the login, and let the panel reach the server `stored` state.
 async function completeClaudeLogin(container: HTMLElement) {
   await clickByText(container, "Test Agent");
-  await flushUntil(() => Boolean(findButton(container, "Log in")));
-  await clickByText(container, "Log in");
+  await flushUntil(() => Boolean(findButton(container, "Sign in")));
+  await clickByText(container, "Sign in");
   await flushUntil(() => (container.textContent ?? "").includes("Authenticated"));
 }
 
@@ -235,7 +239,9 @@ describe("NewAgent Claude subscription login", () => {
   let roots: Root[] = [];
 
   beforeEach(() => {
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
+    mockAdapterAvailability.disabled = new Set<string>();
+    mockAdapterAvailability.loaded = true;
+    mockSearchParams.value = new URLSearchParams();
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     // No existing agents: the page treats the new agent as the first (CEO) and
@@ -319,12 +325,12 @@ describe("NewAgent Claude subscription login", () => {
     roots.push(result.root);
 
     // Before the test the page shows no login affordance.
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
 
     await clickByText(result.container, "Test Agent");
-    await flushUntil(() => Boolean(findButton(result.container, "Log in")));
+    await flushUntil(() => Boolean(findButton(result.container, "Sign in")));
 
-    const loginButton = findButton(result.container, "Log in");
+    const loginButton = findButton(result.container, "Sign in");
     const createButton = findButton(result.container, "Create agent");
     expect(loginButton).toBeTruthy();
     expect(createButton).toBeTruthy();
@@ -392,8 +398,8 @@ describe("NewAgent Claude subscription login", () => {
     await clickByText(result.container, "Test Agent");
     // The panel shows the replace action only after it reads the stored-token
     // status, so the button label proves the panel captured the version.
-    await flushUntil(() => Boolean(findButton(result.container, "Log in to replace")));
-    await clickByText(result.container, "Log in to replace");
+    await flushUntil(() => Boolean(findButton(result.container, "Sign in to replace")));
+    await clickByText(result.container, "Sign in to replace");
     await flushUntil(() => mockAgentsApi.startClaudeSetupTokenLogin.mock.calls.length > 0);
 
     expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith("company-1", {
@@ -403,5 +409,25 @@ describe("NewAgent Claude subscription login", () => {
         expectedLatestVersion: 3,
       },
     });
+  });
+
+  it("ignores a native-runner URL preset while the experimental adapter is disabled", async () => {
+    mockSearchParams.value = new URLSearchParams("adapterType=paperclip_runner");
+    mockAdapterAvailability.disabled = new Set(["paperclip_runner"]);
+
+    const result = await renderNewAgent();
+    roots.push(result.root);
+
+    expect(result.container.textContent).not.toContain("Paperclip Runner");
+    expect(result.container.textContent).toContain("Claude Code");
+  });
+
+  it("accepts a native-runner URL preset after the experimental adapter is enabled", async () => {
+    mockSearchParams.value = new URLSearchParams("adapterType=paperclip_runner");
+
+    const result = await renderNewAgent();
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("Paperclip Runner");
   });
 });

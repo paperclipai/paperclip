@@ -754,15 +754,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           },
         },
         runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                env: {
-                  ROUTINE_ASSIGNEE_RUNTIME_SECRET: { type: "plain", value: sentinelSecret },
-                },
-              },
-            },
-          },
+          privateRuntimeSetting: { token: sentinelSecret },
         },
       })
       .where(eq(agents.id, agentId));

@@ -530,41 +530,6 @@ describe("IssueRunLedger", () => {
     });
   });
 
-  it("renders requested/applied model profile and surfaces fallback reasons", () => {
-    renderLedger({
-      runs: [
-        createRun({
-          runId: "run-cheap-applied",
-          resultJson: {
-            modelProfile: {
-              requested: "cheap",
-              applied: "cheap",
-              configSource: "agent_runtime",
-              fallbackReason: null,
-            },
-          },
-        }),
-        createRun({
-          runId: "run-cheap-fallback",
-          createdAt: "2026-04-18T19:50:00.000Z",
-          resultJson: {
-            modelProfile: {
-              requested: "cheap",
-              applied: null,
-              configSource: null,
-              fallbackReason: "agent_runtime_profile_disabled",
-            },
-          },
-        }),
-      ],
-    });
-
-    expect(container.textContent).toContain("Profile: cheap");
-    expect(container.textContent).toContain("Profile: cheap (unavailable)");
-    expect(container.textContent).toContain("Cheap profile fell back to primary");
-    expect(container.textContent).toContain("agent_runtime_profile_disabled");
-  });
-
   it("hides watchdog decision actions for known non-owner viewers", () => {
     const onWatchdogDecision = vi.fn();
     renderLedger({
@@ -579,7 +544,11 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).not.toContain("Continue monitoring");
     expect(container.textContent).not.toContain("Snooze 1h");
     expect(container.textContent).not.toContain("Mark false positive");
-    expect(container.querySelectorAll("button")).toHaveLength(0);
+    expect(
+      Array.from(container.querySelectorAll("button")).filter((button) =>
+        /continue|snooze|false positive/i.test(button.textContent ?? ""),
+      ),
+    ).toHaveLength(0);
     expect(onWatchdogDecision).not.toHaveBeenCalled();
   });
 

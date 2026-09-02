@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from "react";
-import type { CSSProperties } from "react";
+import type { ComponentType, CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { MotionConfig, motion } from "motion/react";
 import type {
@@ -11,6 +11,7 @@ import type {
 } from "@paperclipai/shared";
 import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { AdapterLoginPanel } from "./AgentConfigForm";
+import { secretsApi } from "../api/secrets";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -83,8 +84,19 @@ import {
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { PillGuy } from "./onboarding/PillGuy";
-import { AGENT_ARC_WIZARD_STEPS, Stepper, agentArcStepFor } from "./onboarding/Stepper";
+import { SleepingZs } from "./onboarding/SleepingZs";
+import {
+  AGENT_ARC_WIZARD_STEPS,
+  ONBOARDING_STEP_LABELS,
+  ONBOARDING_WIZARD_STEPS,
+  Stepper,
+  agentArcStepFor,
+  onboardingStepPositionFor,
+} from "./onboarding/Stepper";
 import { AgentPreview } from "./onboarding/AgentPreview";
+import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceTiles";
+import { CredentialModeLink } from "./onboarding/CredentialModeLink";
+import { ApiKeyField, ConnectInputCanvas } from "./onboarding/ConnectInputCanvas";
 import { FooterNav } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
@@ -113,6 +125,21 @@ const MISSION_PROMPT_CHIPS = [
   "Scale a content business",
   "Launch a marketplace"
 ];
+
+// First-run onboarding stays on the proven direct adapters even when an
+// instance administrator has opted into Paperclip Runner elsewhere. The
+// experimental flag only exposes the runner in explicit agent configuration.
+const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
+  "process",
+  "http",
+  "paperclip_runner",
+]);
+
+function restoreOnboardingAdapterType(savedAdapterType: unknown): AdapterType {
+  return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
+    ? savedAdapterType
+    : "claude_local";
+}
 
 function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
   const parts: string[] = [];
@@ -159,6 +186,52 @@ function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boole
     return typeof binding.value === "string" && binding.value.trim().length > 0;
   }
   return binding.type === "secret_ref" || binding.type === "user_secret_ref";
+}
+
+/**
+ * Full-colour brand marks for the sources this step offers.
+ *
+ * The registry's own icons are monochrome, drawn to sit in dense config UI
+ * where a row of saturated logos would be noise. This step is the opposite
+ * case: two large tiles carrying the whole choice, where the brand is the
+ * fastest thing to recognise.
+ *
+ * Keyed by adapter type with a fallback, so the row stays registry-driven. An
+ * adapter with no brand file here still renders — with its registry icon —
+ * rather than a gap where a tile should be.
+ */
+const MODEL_SOURCE_BRAND_MARKS: Record<string, string> = {
+  claude_local: "/brands/claude-color.svg",
+  codex_local: "/brands/codex-color.svg",
+};
+
+/**
+ * The environment variable each source reads its key from.
+ *
+ * Named rather than described in the field above it, because the customer knows
+ * which key they are holding and does not know where this step will put it. The
+ * mapping already existed in this file as prose inside the environment-check
+ * hint; this is the same knowledge, in a form the key field can use.
+ */
+const API_KEY_ENV_KEYS: Record<string, string> = {
+  claude_local: ANTHROPIC_API_KEY_ENV_KEY,
+  codex_local: "OPENAI_API_KEY",
+};
+
+function apiKeyEnvKeyFor(adapterType: string): string {
+  return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
+}
+
+function ModelSourceMark({
+  type,
+  Fallback,
+}: {
+  type: string;
+  Fallback: ComponentType<{ className?: string }>;
+}) {
+  const brand = MODEL_SOURCE_BRAND_MARKS[type];
+  if (!brand) return <Fallback className="size-full" />;
+  return <img src={brand} alt="" className="size-full" />;
 }
 
 // Exported so tests write/read the exact key the component uses, instead of
@@ -473,12 +546,26 @@ function OnboardingWizardInner({
     // one.
     (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
   );
-  const [adapterType, setAdapterType] = useState<AdapterType>((saved?.adapterType as AdapterType) ?? "claude_local");
+  const [adapterType, setAdapterType] = useState<AdapterType>(() =>
+    restoreOnboardingAdapterType(saved?.adapterType),
+  );
+  const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
-  const [model, setModel] = useState((saved?.model as string) ?? "");
-  const [command, setCommand] = useState((saved?.command as string) ?? "");
-  const [args, setArgs] = useState((saved?.args as string) ?? "");
-  const [url, setUrl] = useState((saved?.url as string) ?? "");
+  // Native drafts may carry provider-specific configuration that is invalid
+  // for the legacy adapter selected above. Keep the portable working
+  // directory, but clear runner-specific execution fields while restoring.
+  const [model, setModel] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.model as string) ?? "",
+  );
+  const [command, setCommand] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.command as string) ?? "",
+  );
+  const [args, setArgs] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.args as string) ?? "",
+  );
+  const [url, setUrl] = useState(
+    savedNativeRunnerDraft ? "" : (saved?.url as string) ?? "",
+  );
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
   const [adapterEnvError, setAdapterEnvError] = useState<string | null>(null);
@@ -487,6 +574,22 @@ function OnboardingWizardInner({
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
   const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  /**
+   * Whether the connect step is asking for a subscription sign-in or an API key.
+   *
+   * Restored from the draft like everything else on this step: someone who
+   * picked keys, left, and came back should not be handed a sign-in panel they
+   * already said no to.
+   */
+  const [credentialMode, setCredentialMode] = useState<CredentialMode>(
+    (saved?.credentialMode as CredentialMode) ?? "subscription",
+  );
+  /**
+   * The key itself, held only for as long as the wizard is open. It is written
+   * into the adapter config at hire time and never into the draft — a draft is
+   * `localStorage`, and a provider key does not belong there.
+   */
+  const [apiKey, setApiKey] = useState("");
   // The owner's stored Claude subscription login, read right before the hire
   // (see handleGiveHeartbeat). Onboarding applies it with no extra control,
   // so nothing else reads this state yet.
@@ -536,6 +639,13 @@ function OnboardingWizardInner({
   // the binding cannot answer for a config that now does — see the reuse
   // check in `handleGiveHeartbeat`.
   const adapterEnvResultAppliedStoredLoginRef = useRef(false);
+  /**
+   * The secret a key typed on this step was stored as, remembered for the key it
+   * holds. Connect can be pressed more than once — a hire that fails leaves the
+   * customer on the step to try again — and without this each press would store
+   * another copy of the same credential.
+   */
+  const apiKeySecretRef = useRef<{ key: string } | null>(null);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The mission of the company actually in hand, which is not always the one
@@ -728,6 +838,8 @@ function OnboardingWizardInner({
     const state = {
       step, companyName, companyGoal, missionPath, missionConfirmed,
       q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
+      // The mode, never the key: this blob is localStorage.
+      credentialMode,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -736,6 +848,7 @@ function OnboardingWizardInner({
   }, [
     effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
     q1, q2, q3, q4, agentName, agentRole, adapterType, cwd, model, command, args, url,
+    credentialMode,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
     onboardingPath, growWorkflows, growPainPoints, growAutomate,
@@ -777,10 +890,13 @@ function OnboardingWizardInner({
     queryFn: () => instanceSettingsApi.get(),
     enabled: effectiveOnboardingOpen && step === 4,
   });
+  // Wanted across the whole arc, not just the connect step. The progress strip
+  // reads it too — see `enteredFromCloud` — and a value fetched only on step 4
+  // would let the strip change length as the customer walked through it.
   const { data: experimentalSettingsForLogin } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    enabled: effectiveOnboardingOpen && step === 4,
+    enabled: effectiveOnboardingOpen && step >= 3 && step <= 5,
   });
   const resolvedLoginEnvironmentId = useMemo(() => {
     try {
@@ -863,6 +979,17 @@ function OnboardingWizardInner({
   const authSignalStatus = authSignalQuery.data?.status ?? null;
   const showAdapterLoginPanel =
     canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
+  /**
+   * The signal is being fetched and has not answered yet.
+   *
+   * Worth its own state rather than folding into "no panel to show". Until it
+   * answers, `authSignalStatus` is null and every not-signed-in customer looks
+   * momentarily identical to a signed-in one — so the card would assert that
+   * they are already signed in, for exactly as long as the request takes, and
+   * then replace it with a sign-in prompt. A reassurance that is wrong and then
+   * withdrawn is worse than saying nothing for a beat.
+   */
+  const authSignalUndecided = canShowAdapterLogin && authSignalStatus === null;
 
   const isLocalAdapterCaps =
     adapterCaps.supportsInstructionsBundle ||
@@ -881,10 +1008,9 @@ function OnboardingWizardInner({
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
-    const SYSTEM_ADAPTER_TYPES = new Set(["process", "http"]);
     const all = listUIAdapters()
       .filter((a) =>
-        !SYSTEM_ADAPTER_TYPES.has(a.type) &&
+        !ONBOARDING_EXCLUDED_ADAPTER_TYPES.has(a.type) &&
         !disabledTypes.has(a.type) &&
         isVisualAdapterChoice(a.type)
       )
@@ -895,6 +1021,25 @@ function OnboardingWizardInner({
       moreAdapters: all.filter((a) => !a.recommended),
     };
   }, [disabledTypes]);
+
+  /**
+   * A source chosen from the visible row. Read off the row rather than off
+   * `adapterType` alone, because a restored draft can name an adapter this step
+   * no longer offers — a selection the customer cannot see.
+   */
+  const sourceSelected = recommendedAdapters.some((opt) => opt.type === adapterType);
+
+  /**
+   * When the input canvas is open.
+   *
+   * A selected source is the ordinary reason — the card is the answer to the
+   * tile that was just pressed, so an untouched row leaves nothing under it. But
+   * it opens for a pending sign-in regardless of the row, because the adapter
+   * needing credentials does not depend on it having a tile: a restored draft
+   * naming an adapter this step no longer offers still cannot hire without one,
+   * and hiding the panel would leave that dead end with nothing to press.
+   */
+  const canvasOpen = sourceSelected || showAdapterLoginPanel;
 
   // The default (or a saved) adapterType can name an adapter the server has
   // since disabled — e.g. a cloud sandbox registry without claude_local. The
@@ -942,12 +1087,22 @@ function OnboardingWizardInner({
     command.trim() ||
     (COMMAND_PLACEHOLDERS[adapterType] ?? adapterType.replace(/_local$/, ""));
 
+  // Throw the cached probe away whenever the thing it probed changes. Every
+  // input to `buildAdapterConfig` belongs in this list, `credentialMode` and
+  // `apiKey` included: the Connect handler reuses a passing result instead of
+  // re-probing, so a dependency missing here is a hire that skips the check.
+  //
+  // That is reachable rather than theoretical. The hire runs after the probe
+  // inside one try/catch, so a hire that fails — a network error, a server
+  // error — leaves the pass sitting in state. Switch to an API key, paste one,
+  // press Connect again, and without these two the wizard would hire against a
+  // key nothing ever tested.
   useEffect(() => {
     if (step !== 4) return;
     setAdapterEnvResult(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url]);
+  }, [step, adapterType, model, command, args, url, credentialMode, apiKey]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -1065,6 +1220,26 @@ function OnboardingWizardInner({
     return createdCompanyIdRef.current === companyIdAtStart;
   }
 
+  /**
+   * Whether a just-created company can still be committed to this wizard.
+   *
+   * Company-list refreshes can make the surrounding app adopt the POST result
+   * before the continuation runs. That is the same successful transition, not
+   * a takeover. A different id still means navigation moved the wizard to a
+   * different organization while the request was in flight.
+   */
+  function canCommitCreatedCompany(
+    companyIdAtStart: string | null,
+    returnedCompanyId: string,
+  ) {
+    const companyIdNow = createdCompanyIdRef.current;
+    if (companyIdNow === companyIdAtStart || companyIdNow === returnedCompanyId) {
+      return true;
+    }
+    setError("Organization created, but onboarding switched to another organization.");
+    return false;
+  }
+
   async function handleLaunchToDashboard() {
     if (!createdCompanyId || !createdAgentId) {
       setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
@@ -1144,7 +1319,67 @@ function OnboardingWizardInner({
     }
   }
 
-  function buildAdapterConfig(): Record<string, unknown> {
+  /**
+   * Store the typed key as the customer's own user secret, and report whether it
+   * is in place.
+   *
+   * A user secret rather than a company one, to match the subscription half of
+   * this very step: signing in stores the Claude token as a user secret and
+   * binds a `user_secret_ref`. Two credential modes on one step that scoped
+   * their secrets differently would be hard to justify and easy to get wrong
+   * later. It also keeps the key to the person who typed it instead of exposing
+   * it to everyone with company secret access, and agent runs still resolve it
+   * through the company's responsible user.
+   *
+   * A user secret needs a definition to hang off. The Claude token's is fixed
+   * and server-owned; there is no such definition for API keys, so onboarding
+   * creates one on first use. That needs company owner or admin rights, which
+   * whoever just created this company in onboarding has.
+   *
+   * Returns false on failure, having set the error. Callers must treat false as
+   * a stop: there is deliberately no path that hands the raw key back, because
+   * the only thing left to do with it would be to embed it.
+   */
+  async function storeApiKeyUserSecret(companyId: string): Promise<boolean> {
+    const key = apiKey.trim();
+    const envKey = apiKeyEnvKeyFor(adapterType);
+    if (apiKeySecretRef.current?.key === key) return true;
+    try {
+      const entries = await secretsApi.listMyUserSecrets(companyId);
+      const existing = entries.find((entry) => entry.definition.key === envKey);
+      const definitionId =
+        existing?.definition.id ??
+        (
+          await secretsApi.createUserSecretDefinition(companyId, {
+            key: envKey,
+            name: `${envKey} for onboarding`,
+            description: "Created while connecting a model during onboarding.",
+          })
+        ).id;
+      // Rotate rather than create when a value is already stored, because
+      // creating a second value for one definition is what the server refuses.
+      if (existing?.secret) {
+        await secretsApi.rotateMyUserSecret(companyId, existing.secret.id, { value: key });
+      } else {
+        await secretsApi.createMyUserSecret(companyId, {
+          definitionId,
+          definitionKey: envKey,
+          value: key,
+        });
+      }
+      apiKeySecretRef.current = { key };
+      return true;
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? `Could not store the API key: ${err.message}`
+          : "Could not store the API key.",
+      );
+      return false;
+    }
+  }
+
+  function buildAdapterConfig(bindApiKey = false): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
     const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
@@ -1177,6 +1412,35 @@ function OnboardingWizardInner({
           ? { ...(config.env as Record<string, unknown>) }
           : {};
       env.ANTHROPIC_API_KEY = { type: "plain", value: "" };
+      config.env = env;
+    }
+    // A key typed on this step is the credential the agent is being hired with,
+    // so it has to reach the configuration the hire sends — and the same one the
+    // environment test probes, or the test would pass on a config the hire does
+    // not use. Only when the mode asks for it: leaving a stale reference in the
+    // config after switching back to a subscription is what the server rejects
+    // alongside the Claude OAuth binding.
+    //
+    // A reference, never the key itself. The adapter configuration is
+    // persisted and revisioned, so a `{ type: "plain", value }` here would leave
+    // a live credential at rest in every copy of it. This mirrors
+    // `buildFixedClaudeOAuthBinding`, which holds a reference to the stored
+    // Claude token for the same reason.
+    //
+    // Guarded on the caller having stored the secret, not on the key being
+    // present. If storing failed this stays false, and the right outcome is a
+    // configuration with no credential — which the hire then blocks on — rather
+    // than one that quietly falls back to embedding the value.
+    if (credentialMode === "api" && bindApiKey) {
+      const env =
+        typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+          ? { ...(config.env as Record<string, unknown>) }
+          : {};
+      env[apiKeyEnvKeyFor(adapterType)] = {
+        type: "user_secret_ref",
+        key: apiKeyEnvKeyFor(adapterType),
+        version: "latest",
+      };
       config.env = env;
     }
     return config;
@@ -1337,6 +1601,7 @@ function OnboardingWizardInner({
     }
     setLoading(true);
     setError(null);
+    const companyIdAtStart = createdCompanyIdRef.current;
     try {
       const company = await companiesApi.create({ name: companyName.trim() });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -1345,7 +1610,7 @@ function OnboardingWizardInner({
       // a company while the request was open has taken over the wizard, and
       // adopting the company just created would fight it — and would leave the
       // customer on a company they never navigated to.
-      if (!stillTheSameCompany(null)) return;
+      if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
       setCreatedCompanyId(company.id);
       // Keep the mirror current here rather than waiting for the next render.
       // The goal write below asks `stillTheSameCompany(company.id)`, and a ref
@@ -1401,6 +1666,7 @@ function OnboardingWizardInner({
     creatingCompanyRef.current = true;
     setLoading(true);
     setError(null);
+    const companyIdAtStart = createdCompanyIdRef.current;
     try {
       const company = await companiesApi.create({ name: companyName.trim() });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -1409,7 +1675,7 @@ function OnboardingWizardInner({
       // taken over the wizard, and adopting the company just created would
       // fight it — and would leave the customer on a company they never
       // navigated to.
-      if (!stillTheSameCompany(null)) return;
+      if (!canCommitCreatedCompany(companyIdAtStart, company.id)) return;
       setCreatedCompanyId(company.id);
       // Keep the mirror current rather than waiting for the next render, for
       // the same reason the mission path does: anything downstream that asks
@@ -1432,6 +1698,15 @@ function OnboardingWizardInner({
   // doesn't hire a second agent.
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
+    // The grid and restore path both exclude native runner. Keep this final
+    // guard at the mutation boundary so a stale or modified client cannot use
+    // first-run onboarding to create a native agent.
+    if (adapterType === "paperclip_runner") {
+      setAdapterType("claude_local");
+      setModel("");
+      setError("Paperclip Runner is not available during onboarding. Choose a legacy adapter.");
+      return;
+    }
     // Guarded at the button and the Enter path too; repeated here because this
     // seeds the agent's instructions from `companyGoal`, and hiring with an
     // unhydrated mission fails silently - the agent exists, and simply never
@@ -1493,7 +1768,15 @@ function OnboardingWizardInner({
       // configuration the hire sends — a config without the binding can
       // report missing authentication for a user the binding would have
       // covered.
-      const baseAdapterConfig = buildAdapterConfig();
+      // Store the key before anything is built from it, so both the probe and the
+      // hire describe it the same way — as a reference. A failure here stops the
+      // hire rather than falling through to a configuration with no credential.
+      let apiKeyStored = false;
+      if (credentialMode === "api" && apiKey.trim()) {
+        apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
+        if (!apiKeyStored) return;
+      }
+      const baseAdapterConfig = buildAdapterConfig(apiKeyStored);
       let storedClaudeLogin: ClaudeOAuthTokenStatusResponse | null = null;
       if (
         adapterType === "claude_local" &&
@@ -1724,7 +2007,21 @@ function OnboardingWizardInner({
   }
 
   const isAgentArcStep = agentArcStepFor(step) !== null;
-  const showsAgentArcStepper = isAgentArcStep && entryStep >= 3;
+  /**
+   * True when the organization was named in Cloud rather than here.
+   *
+   * `enableManagedSandboxOnly` is the cloud-tenant shape — the connect step
+   * already resolves its login environment through it. A tenant wearing it did
+   * not ask for the organization's name, because Cloud did, so the walk the
+   * customer is on is four steps and this is the second.
+   *
+   * A self-hosted run that enters at the agent step is a different case with
+   * the same `entryStep`: an existing company that has no agents yet. There was
+   * no naming screen before it, so its walk really is three, and it keeps the
+   * shorter strip.
+   */
+  const enteredFromCloud = experimentalSettingsForLogin?.enableManagedSandboxOnly === true;
+  const showsAgentArcStepper = isAgentArcStep && entryStep >= 3 && !enteredFromCloud;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
@@ -1773,13 +2070,24 @@ function OnboardingWizardInner({
           >
             <div
               className={cn(
+                // my-auto, not items-center on the column: they look identical
+                // until a step is taller than the window, where centring by
+                // alignment overflows in both directions and the top cannot be
+                // scrolled to. Auto margins collapse to zero with no free space.
                 "mx-auto my-auto shrink-0",
-                // The arc sits in the prototype's card frame; the earlier steps
-                // keep the split-panel layout they were designed for. One
-                // element styled two ways, not two wrappers, so the step
-                // content below renders exactly once.
-                isAgentArcStep
-                  ? "w-(--sz-560px) max-w-full rounded-xl border border-border bg-card px-8 py-10 sm:px-10 sm:py-11"
+                // No card. The steps sit on the page ground rather than in a
+                // bordered, filled frame — the frame was drawing a box around
+                // content that is already the only thing on screen, and its
+                // edge competed with the tiles' own strokes. The two branches
+                // now differ only in measure. One element styled two ways, not
+                // two wrappers, so the step content below renders exactly once.
+                // Step 1 takes the arc's measure too. Its footer is now the
+                // same pair, and a pair styled identically but sitting 96px
+                // narrower than the next screen's makes the whole frame jump on
+                // Continue — which is the thing that read as "off" to begin
+                // with, and is more obvious once the buttons match.
+                isAgentArcStep || step === 1
+                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
             >
@@ -1794,31 +2102,21 @@ function OnboardingWizardInner({
                   a segment for it would be one the run can never fill, and the
                   count would visibly skip from 1 to 3. */}
               {!showsAgentArcStepper && (
-              <div className="flex items-center gap-1.5 mb-8">
-                {([1, 3, 4, 5] as const).map((s) => {
-                  const filled = step >= s;
-                  const canJump = canJumpToOnboardingStep({
-                    targetStep: s,
-                    currentStep: step,
-                    entryStep,
-                  });
-                  return (
-                    <button
-                      key={s}
-                      type="button"
-                      aria-label={`Step ${s}`}
-                      aria-current={s === step ? "step" : undefined}
-                      disabled={!canJump}
-                      onClick={() => canJump && setStep(s as Step)}
-                      className={cn(
-                        "h-1 flex-1 rounded-full transition-colors",
-                        filled ? "bg-foreground" : "bg-muted",
-                        canJump ? "cursor-pointer" : "cursor-default"
-                      )}
-                    />
-                  );
-                })}
-              </div>
+                <Stepper
+                  step={onboardingStepPositionFor(step)}
+                  total={ONBOARDING_WIZARD_STEPS.length}
+                  labels={ONBOARDING_STEP_LABELS}
+                  canJumpToStep={(target) =>
+                    canJumpToOnboardingStep({
+                      targetStep: ONBOARDING_WIZARD_STEPS[target - 1]!,
+                      currentStep: step,
+                      entryStep,
+                    })
+                  }
+                  onJumpToStep={(target) =>
+                    setStep(ONBOARDING_WIZARD_STEPS[target - 1]! as Step)
+                  }
+                />
               )}
 
               {/* The agent arc's progress strip. Numbered 1–3 over the wizard's
@@ -1850,7 +2148,14 @@ function OnboardingWizardInner({
                   {/* mb-6 continues the prototype's single rhythm past this
                       block: it groups the hero and heading, and the step's own
                       controls sit a step below on the same spacing. */}
-                  <div className="mb-6 space-y-6">
+                  {/* The gap under the agent — its name to the step's title —
+                      is tighter than the step's other rows on purpose. The name
+                      labels the character directly above it, so the two read as
+                      one object; at the full row rhythm the name floated between
+                      the character and the title and belonged to neither. 24px
+                      against the 36px used elsewhere, a little over a third
+                      less. `mb-9` still holds the block off the step content. */}
+                  <div className="mb-9 space-y-6">
                     <motion.div
                       initial={capsuleHeroMotion.initial}
                       animate={capsuleHeroMotion.animate}
@@ -1860,10 +2165,19 @@ function OnboardingWizardInner({
                       {/* Dormant until the agent is actually hired. Review is
                           the first step where one exists, so that is where it
                           wakes — the arc's payoff, not a flourish along it. */}
-                      <PillGuy
-                        state={step === 5 ? "alive" : "dormant"}
-                        className="size-(--sz-72px)"
-                      />
+                      {/* `relative` is load-bearing: the sleep marks anchor
+                          to this box and travel out past its top-right
+                          corner. */}
+                      <div className="relative size-(--sz-72px)">
+                        <PillGuy
+                          state={step === 5 ? "alive" : "dormant"}
+                          className="size-full"
+                        />
+                        {/* Only while it is actually asleep. A still grey
+                            silhouette reads as a placeholder that failed to
+                            load rather than as something waiting its turn. */}
+                        {step < 5 && <SleepingZs />}
+                      </div>
                       <AgentPreview agentName={agentName} agentRole="" />
                     </motion.div>
 
@@ -1893,7 +2207,7 @@ function OnboardingWizardInner({
 
               {/* Step content */}
               {step === 2 && onboardingPath === "grow" && (
-                <div className="space-y-5">
+                <div className="space-y-8">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       <Sparkles className="h-5 w-5 text-muted-foreground" />
@@ -1978,18 +2292,29 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {/* Step 1: name the organization (both paths). One question, one
-                  design: this mirrors the funnel's naming screen — same
-                  question, same sub, same left-aligned heading in a centered
-                  column — so a customer creating their second organization
-                  in-app is asked exactly what their first one asked them. */}
+              {/* Step 1: name the organization (both paths).
+                  Dressed as the arc steps that follow it — centred heading, no
+                  lede, and the same footer pair — because a customer walks
+                  straight from here into them, and one screen reading as a
+                  different product is more jarring than this one no longer
+                  matching the funnel's naming screen exactly. The question
+                  itself is still the funnel's, so the ask has not changed.
+
+                  The lede went because it said what the field already says: a
+                  labelled "Name" under "What is the name of your organization?"
+                  does not need a sentence explaining that it names the
+                  organization. */}
               {step === 1 && (
-                <div className="mx-auto w-full max-w-md space-y-6">
+                <div className="mx-auto w-full space-y-9">
                   <OnboardingHeading
+                    center
                     title="What is the name of your organization?"
-                    lede="This will be the name of your Paperclip organization — choose something your team will recognize."
                   />
-                  <div className="group">
+                  {/* The field takes the agent step's measure rather than the
+                      column's, so the two questions the wizard asks — name the
+                      organization, name the agent — present the same target.
+                      The heading stays full width above it, as it does there. */}
+                  <div className="group mx-auto w-full max-w-(--sz-320px)">
                     <label
                       className={cn(
                         "text-xs mb-1 block transition-colors",
@@ -2015,18 +2340,12 @@ function OnboardingWizardInner({
                       autoFocus
                     />
                   </div>
-                  <button
-                    className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => { setOnboardingPath(null); setStep(0); }}
-                  >
-                    ← Back to start
-                  </button>
                 </div>
               )}
 
               {/* Step 2: Define your mission */}
               {step === 2 && onboardingPath !== "grow" && (
-                <div className="space-y-5">
+                <div className="space-y-8">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       <Building2 className="h-5 w-5 text-muted-foreground" />
@@ -2222,12 +2541,12 @@ function OnboardingWizardInner({
                   `general` role; a specific one can be set later, where there
                   is context to choose it in. */}
               {step === 3 && (
-                <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-6">
+                <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-9">
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="onboarding-agent-name">Name</Label>
                     <Input
                       id="onboarding-agent-name"
-                      placeholder="e.g. Chief of staff, Designer, Ron, Clippy..."
+                      placeholder="e.g. Chief of staff, Designer, Ron..."
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       autoFocus
@@ -2238,132 +2557,130 @@ function OnboardingWizardInner({
 
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
-                <div className="space-y-5">
+                <div className="space-y-8">
                   {/* The two cards are self-describing; an "Adapter type"
                       eyebrow above them named the mechanism rather than the
                       choice. */}
                   <div>
-                    <div className="grid grid-cols-2 gap-2">
-                      {recommendedAdapters.map((opt) => (
-                        <button
-                          key={opt.type}
-                          className={cn(
-                            "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                            adapterType === opt.type
-                              ? "border-foreground bg-accent"
-                              : "border-border hover:bg-accent/50"
-                          )}
-                          onClick={() => {
-                            const nextType = opt.type;
-                            setAdapterType(nextType);
-                            if (nextType === "codex_local") {
-                              return;
-                            }
-                            if (nextType === "opencode_local") {
-                              setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                              return;
-                            }
-                            setModel("");
-                          }}
-                        >
-                          {/* No "Recommended" badge: it sat on both options,
-                              so it recommended nothing and only added the one
-                              saturated colour on the screen. */}
-                          <opt.icon className="h-4 w-4" />
-                          <span className="font-medium">{opt.label}</span>
-                          <span className="text-muted-foreground text-(length:--text-nano)">
-                            {opt.description}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                    {/* The row is `ModelSourceTiles`, the same component the
+                        connect-step prototype is drawn with, so the shipped step
+                        and the design under review cannot drift apart.
 
-                    <button
-                      className="flex items-center gap-1.5 mt-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      onClick={() => setShowMoreAdapters((v) => !v)}
-                    >
-                      <ChevronDown
-                        className={cn(
-                          "h-3 w-3 transition-transform",
-                          showMoreAdapters ? "rotate-0" : "-rotate-90"
-                        )}
-                      />
-                      Advanced settings
-                    </button>
-
-                    {showMoreAdapters && (
-                      <div className="grid grid-cols-2 gap-2 mt-2">
-                        {moreAdapters.map((opt) => (
-                           <button
-                             key={opt.type}
-                             disabled={!!opt.comingSoon}
-                             className={cn(
-                               "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
-                               opt.comingSoon
-                                 ? "border-border opacity-40 cursor-not-allowed"
-                                 : adapterType === opt.type
-                                 ? "border-foreground bg-accent"
-                                 : "border-border hover:bg-accent/50"
-                             )}
-                             onClick={() => {
-                               if (opt.comingSoon) return;
-                               const nextType = opt.type;
-                              setAdapterType(nextType);
-                              if (nextType === "gemini_local" && !model) {
-                                setModel(DEFAULT_GEMINI_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "kimi_local" && !model) {
-                                setModel(DEFAULT_KIMI_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "cursor" && !model) {
-                                setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                                return;
-                              }
-                              if (nextType === "opencode_local") {
-                                setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                                return;
-                              }
-                              setModel("");
-                            }}
-                          >
-                            <opt.icon className="h-4 w-4" />
-                            <span className="font-medium">{opt.label}</span>
-                            <span className="text-muted-foreground text-(length:--text-nano)">
-                              {opt.comingSoon
-                                ? opt.disabledLabel ?? "Coming soon"
-                                : opt.description}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Shows as soon as the cheap auth signal reports no ready
-                      credential, well before any adapter environment test
-                      runs. Reuses the same panel the agent configuration form
-                      shows after a test — see AdapterLoginPanel in
-                      AgentConfigForm.tsx. No "Use saved login" control: the
-                      hire step already applies a stored login on its own. */}
-                  {showAdapterLoginPanel && createdCompanyId && resolvedLoginEnvironmentId && (
-                    <AdapterLoginPanel
-                      key={`${adapterType}:${resolvedLoginEnvironmentId}`}
-                      companyId={createdCompanyId}
-                      adapterType={adapterType}
-                      environmentId={resolvedLoginEnvironmentId}
-                      onStored={() => {
-                        queryClient.invalidateQueries({
-                          queryKey: queryKeys.agents.authSignal(
-                            createdCompanyId,
-                            adapterType,
-                            resolvedLoginEnvironmentId,
-                          ),
-                        });
+                        Sources come from `recommendedAdapters`, not a list
+                        written here. That filter is `recommended` in the display
+                        registry, which today means Claude Code and Codex and
+                        nothing else — so the row stays two tiles because the
+                        registry says so, and a third would appear here the day
+                        someone marks one rather than the day someone remembers
+                        to edit this file. */}
+                    <ModelSourceTiles
+                      label="Model source"
+                      sources={recommendedAdapters.map((opt) => ({
+                        id: opt.type,
+                        label: opt.label,
+                        icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
+                      }))}
+                      mode={credentialMode}
+                      selectedId={
+                        recommendedAdapters.some((opt) => opt.type === adapterType)
+                          ? adapterType
+                          : null
+                      }
+                      onSelect={(id) => {
+                        setAdapterType(id);
+                        if (id === "codex_local") return;
+                        if (id === "opencode_local") {
+                          setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                          return;
+                        }
+                        setModel("");
                       }}
                     />
-                  )}
+
+                    {/* The credential switch stands where the adapter
+                        disclosure used to. That disclosure existed to reach the
+                        adapters this step does not offer, and with the row down
+                        to the two that are supported it was a control whose
+                        whole contents were out of scope. The question actually
+                        left on this step is how the two are authenticated, so
+                        that is what the line asks.
+
+                        It names the destination rather than the state, which is
+                        what a sentence has to do where a checkbox does not —
+                        and it is only readable because the tiles' own tags,
+                        directly above, say where you are. */}
+                    <div className="-ml-3 mt-1">
+                      <CredentialModeLink
+                        mode={credentialMode}
+                        onChange={setCredentialMode}
+                      />
+                    </div>
+
+                  </div>
+
+                  {/* One canvas under the tiles, holding whatever the current
+                      choice needs: a browser-code login for Claude, a
+                      displayed-code login for Codex, or a key field for either
+                      when the mode is keys. Four inputs, one place — so the
+                      Connect button below does not move every time the answer
+                      changes.
+
+                      Closed until a source is picked. `contentKey` is the
+                      source and the mode together, because either one changing
+                      means a different input, and that is what the canvas
+                      swaps on. */}
+                  <ConnectInputCanvas
+                    open={canvasOpen}
+                    contentKey={`${adapterType}:${credentialMode}`}
+                  >
+                    {credentialMode === "api" ? (
+                      <ApiKeyField
+                        envKey={apiKeyEnvKeyFor(adapterType)}
+                        value={apiKey}
+                        onChange={setApiKey}
+                      />
+                    ) : showAdapterLoginPanel &&
+                      createdCompanyId &&
+                      resolvedLoginEnvironmentId ? (
+                      /* Shows as soon as the cheap auth signal reports no ready
+                         credential, well before any adapter environment test
+                         runs. Reuses the same panel the agent configuration
+                         form shows after a test — see AdapterLoginPanel in
+                         AgentConfigForm.tsx. No "Use saved login" control: the
+                         hire step already applies a stored login on its own. */
+                      <AdapterLoginPanel
+                        key={`${adapterType}:${resolvedLoginEnvironmentId}`}
+                        companyId={createdCompanyId}
+                        adapterType={adapterType}
+                        environmentId={resolvedLoginEnvironmentId}
+                        onStored={() => {
+                          queryClient.invalidateQueries({
+                            queryKey: queryKeys.agents.authSignal(
+                              createdCompanyId,
+                              adapterType,
+                              resolvedLoginEnvironmentId,
+                            ),
+                          });
+                        }}
+                      />
+                    ) : (
+                      /* No panel to show, and the two reasons for that are not
+                         the same news. Saying either is better than an empty
+                         card — the canvas is open because a source is selected,
+                         and a blank one reads as something that failed to load —
+                         but they must not be conflated: telling someone with no
+                         sandbox that they are "already signed in" on it is
+                         false, and it hides the one thing actually blocking
+                         them. */
+                      <p className="text-xs text-muted-foreground">
+                        {authSignalUndecided
+                          ? "Checking this source's credentials…"
+                          : canShowAdapterLogin
+                            ? "This source is already signed in on the managed sandbox."
+                            : "No managed sandbox is available to sign in against yet."}
+                      </p>
+                    )}
+                  </ConnectInputCanvas>
 
                   {/* Conditional adapter fields */}
                   {/* No model picker. Every adapter this step offers resolves
@@ -2531,37 +2848,67 @@ function OnboardingWizardInner({
                 </div>
               )}
 
-              {isAgentArcStep && (
+              {/* Step 1 shares the arc's footer so the pair keeps its shape and
+                  position from the first screen onward. Its Back is the only one
+                  that leaves the wizard's steps rather than walking them: step 1
+                  is where a company is named, and behind it is the path chooser,
+                  so `canGoBackFromOnboardingStep` — which bounds a run to the
+                  steps it entered on — does not decide this one. */}
+              {(isAgentArcStep || step === 1) && (
                 <FooterNav
                   onBack={
-                    canGoBackFromOnboardingStep({ currentStep: step, entryStep })
-                      ? () => setStep(backStepFrom(step))
-                      : undefined
+                    step === 1
+                      ? () => {
+                          setOnboardingPath(null);
+                          setStep(0);
+                        }
+                      : canGoBackFromOnboardingStep({ currentStep: step, entryStep })
+                        ? () => setStep(backStepFrom(step))
+                        : undefined
                   }
                   // The prototype's cloud flow hires on this step and calls the
                   // action "Create". Here the model step sits between, so this
                   // one advances — which is exactly the distinction the
                   // prototype's own local flow draws with "Next".
-                  primaryLabel={step === 3 ? "Next" : step === 4 ? "Connect" : "Get started"}
-                  loadingLabel={step === 4 ? "Connecting..." : "Launching..."}
+                  primaryLabel={
+                    step === 1
+                      ? "Continue"
+                      : step === 3
+                        ? "Next"
+                        : step === 4
+                          ? "Connect"
+                          : "Get started"
+                  }
+                  loadingLabel={
+                    step === 1
+                      ? "Creating..."
+                      : step === 4
+                        ? "Connecting..."
+                        : "Launching..."
+                  }
                   loading={step === 3 ? false : loading}
                   primaryDisabled={
-                    step === 3
-                      ? !agentName.trim()
-                      : step === 4
-                        ? loading || adapterEnvLoading || missionUnresolvedForHire
-                        : loading || launchStateIncomplete
+                    step === 1
+                      ? !companyName.trim() || loading
+                      : step === 3
+                        ? !agentName.trim()
+                        : step === 4
+                          ? loading || adapterEnvLoading || missionUnresolvedForHire
+                          : loading || launchStateIncomplete
                   }
                   onPrimary={() => {
-                    if (step === 3) setStep(4);
+                    if (step === 1) {
+                      if (skipsMissionStep) void handleCreateCompany();
+                      else setStep(2);
+                    } else if (step === 3) setStep(4);
                     else if (step === 4) handleGiveHeartbeat();
                     else handleLaunchToDashboard();
                   }}
                 />
               )}
 
-              {/* Footer navigation */}
-              {!isAgentArcStep && (
+              {/* Footer navigation for the steps that still use the old pair. */}
+              {!isAgentArcStep && step !== 1 && (
               <div className="flex items-center justify-between mt-8">
                 <div>
                   {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
@@ -2577,22 +2924,6 @@ function OnboardingWizardInner({
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {step === 1 && (
-                    <Button
-                      size="sm"
-                      disabled={!companyName.trim() || loading}
-                      onClick={() => {
-                        if (skipsMissionStep) void handleCreateCompany();
-                        else setStep(2);
-                      }}
-                    >
-                      {loading ? (
-                        <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                      ) : null}
-                      Continue
-                      <ArrowRight className="h-3.5 w-3.5 ml-1" />
-                    </Button>
-                  )}
                   {step === 2 && (
                     <Button
                       size="sm"

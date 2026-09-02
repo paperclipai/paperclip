@@ -36,6 +36,7 @@ import {
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
+  PAPERCLIP_OPERATIONAL_SKILL_KEY,
   parseObject,
   resolvePaperclipInstanceRootForAdapter,
   readPaperclipSkillSyncPreference,
@@ -79,7 +80,6 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
-  AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
@@ -99,7 +99,6 @@ import {
   findServerAdapter,
   listServerAdapters,
   listAdapterModels,
-  listAdapterModelProfiles,
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
@@ -210,6 +209,12 @@ import {
   changeConsentGateService,
   touchesAgentProfileChangeConsentFields,
 } from "../services/change-consent-gate.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+} from "../services/native-runtime/provider-profile.js";
+import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
+import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
 
@@ -658,7 +663,12 @@ export function agentRoutes(
               "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
             );
           }
-          if (outcome !== "promoted") {
+          // A `kept` outcome is a successful login too: the company home
+          // already holds a same-account credential that is not older than
+          // this one (for example, a teardown copy-back installed a fresher
+          // copy while this login was in progress), so a later run still
+          // authenticates as the same account.
+          if (outcome !== "promoted" && outcome !== "kept") {
             throw new Error(`device-login credential promotion rejected: ${outcome}`);
           }
         },
@@ -1677,17 +1687,45 @@ export function agentRoutes(
     );
   }
 
-  function assertFreshPaperclipRunnerProvider(
+  async function assertFreshPaperclipRunnerProvider(
+    companyId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
     if (adapterType !== "paperclip_runner") return;
-    const provider = adapterConfig.provider;
-    if (provider === undefined || provider === "codex") return;
-    throw unprocessable(
-      "Paperclip Runner currently supports Codex for new or changed agent configurations.",
-      { code: "paperclip_runner_provider_unavailable" },
-    );
+    let profile;
+    try {
+      profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
+    } catch (error) {
+      if (error instanceof PaperclipRunnerProviderProfileError) {
+        throw unprocessable(error.message, { code: error.code });
+      }
+      throw error;
+    }
+    if (profile.provider === "claude_managed") {
+      await managedAgentProfileService(db).requireQualified(
+        companyId,
+        profile.managedProfileId,
+      );
+    } else if (profile.provider === "aws_agentcore") {
+      await remoteAgentProfileService(db).requireQualified(
+        companyId,
+        profile.agentCoreProfileId,
+        "aws_bedrock_agentcore_harness",
+      );
+    }
+  }
+
+  function assertProviderTraceSettingTransition(
+    req: Request,
+    nextRuntimeConfig: unknown,
+    previousRuntimeConfig?: unknown,
+  ): void {
+    const previousRaw =
+      asRecord(asRecord(previousRuntimeConfig)?.debug)?.providerTrace === "raw";
+    const nextRaw =
+      asRecord(asRecord(nextRuntimeConfig)?.debug)?.providerTrace === "raw";
+    if (previousRaw !== nextRaw) assertInstanceAdmin(req);
   }
 
   async function assertAgentDefaultEnvironmentSelection(
@@ -1785,19 +1823,6 @@ export function agentRoutes(
     return value as Record<string, unknown>;
   }
 
-  function assertCanPersistRawProviderTrace(
-    req: Request,
-    runtimeConfig: unknown,
-  ): void {
-    const debug = asRecord(asRecord(runtimeConfig)?.debug);
-    if (debug?.providerTrace === "raw") {
-      // Raw provider payloads can contain prompts, tool inputs, and provider
-      // metadata. Apply the same instance-admin boundary on every persistence
-      // path so create/hire cannot bypass the PATCH guard.
-      assertInstanceAdmin(req);
-    }
-  }
-
   function asNonEmptyString(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
@@ -1863,24 +1888,7 @@ export function agentRoutes(
     };
   }
 
-  async function listNewAgentAdapterModelProfiles(
-    adapterType: string,
-  ): Promise<AdapterModelProfileDefinition[]> {
-    try {
-      return await listAdapterModelProfiles(adapterType);
-    } catch (error) {
-      logger.warn(
-        { err: error, adapterType },
-        "Failed to discover adapter model profiles while normalizing a new agent; continuing without profile defaults",
-      );
-      return [];
-    }
-  }
-
-  async function normalizeNewAgentRuntimeConfig(
-    adapterType: string,
-    runtimeConfig: unknown,
-  ): Promise<Record<string, unknown>> {
+  function normalizeNewAgentRuntimeConfig(runtimeConfig: unknown): Record<string, unknown> {
     const parsedRuntimeConfig = asRecord(runtimeConfig);
     const normalizedRuntimeConfig = parsedRuntimeConfig ? { ...parsedRuntimeConfig } : {};
     const parsedHeartbeat = asRecord(normalizedRuntimeConfig.heartbeat);
@@ -1895,55 +1903,7 @@ export function agentRoutes(
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
 
-    const parsedModelProfiles = asRecord(normalizedRuntimeConfig.modelProfiles);
-    const modelProfiles = parsedModelProfiles ? { ...parsedModelProfiles } : {};
-    if (!Object.prototype.hasOwnProperty.call(modelProfiles, "cheap")) {
-      const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
-      if (adapterModelProfiles.some((profile) => profile.key === "cheap")) {
-        modelProfiles.cheap = { enabled: false };
-      }
-    }
-    if (Object.keys(modelProfiles).length > 0) {
-      normalizedRuntimeConfig.modelProfiles = modelProfiles;
-    }
-
     return normalizedRuntimeConfig;
-  }
-
-  function listRuntimeModelProfileAdapterConfigs(runtimeConfig: unknown): Array<{
-    profileKey: string;
-    profile: Record<string, unknown>;
-    adapterConfig: Record<string, unknown>;
-    path: string;
-  }> {
-    const runtimeRecord = asRecord(runtimeConfig);
-    const modelProfiles = asRecord(runtimeRecord?.modelProfiles);
-    if (!modelProfiles) return [];
-
-    const entries: Array<{
-      profileKey: string;
-      profile: Record<string, unknown>;
-      adapterConfig: Record<string, unknown>;
-      path: string;
-    }> = [];
-    for (const [profileKey, rawProfile] of Object.entries(modelProfiles)) {
-      const profile = asRecord(rawProfile);
-      const adapterConfig = asRecord(profile?.adapterConfig);
-      if (!profile || !adapterConfig) continue;
-      entries.push({
-        profileKey,
-        profile,
-        adapterConfig,
-        path: `runtimeConfig.modelProfiles.${profileKey}.adapterConfig`,
-      });
-    }
-    return entries;
-  }
-
-  function assertNoAgentRuntimeConfigAdapterConfigMutation(req: Request, runtimeConfig: unknown) {
-    for (const entry of listRuntimeModelProfileAdapterConfigs(runtimeConfig)) {
-      assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
-    }
   }
 
   async function normalizeMediatedAdapterConfigForPersistence(input: {
@@ -1961,48 +1921,13 @@ export function agentRoutes(
       },
     );
     await assertAdapterConfigConstraints(
+      input.companyId,
       input.adapterType,
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
     );
     return normalizedAdapterConfig;
-  }
-
-  async function normalizeRuntimeConfigAdapterConfigsForPersistence(
-    companyId: string,
-    adapterType: string,
-    runtimeConfig: Record<string, unknown>,
-    baseAdapterConfig: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const entries = listRuntimeModelProfileAdapterConfigs(runtimeConfig);
-    if (entries.length === 0) return runtimeConfig;
-    const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
-
-    const normalizedRuntimeConfig = { ...runtimeConfig };
-    const modelProfiles = asRecord(runtimeConfig.modelProfiles) ?? {};
-    const normalizedModelProfiles = { ...modelProfiles };
-    normalizedRuntimeConfig.modelProfiles = normalizedModelProfiles;
-
-    for (const entry of entries) {
-      const adapterProfile = adapterModelProfiles.find((profile) => profile.key === entry.profileKey);
-      const adapterDefaultConfig = asRecord(adapterProfile?.adapterConfig) ?? {};
-      const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
-        companyId,
-        adapterType,
-        adapterConfig: entry.adapterConfig,
-        constraintAdapterConfig: {
-          ...baseAdapterConfig,
-          ...adapterDefaultConfig,
-        },
-      });
-      normalizedModelProfiles[entry.profileKey] = {
-        ...entry.profile,
-        adapterConfig: normalizedAdapterConfig,
-      };
-    }
-
-    return normalizedRuntimeConfig;
   }
 
   function generateEd25519PrivateKeyPem(): string {
@@ -2092,9 +2017,14 @@ export function agentRoutes(
   }
 
   async function assertAdapterConfigConstraints(
+    companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "paperclip_runner") {
+      await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
@@ -2348,7 +2278,9 @@ export function agentRoutes(
     if (role !== "ceo") return undefined;
     const adapter = findActiveServerAdapter(adapterType);
     if (!adapter?.listSkills && !adapter?.syncSkills) return undefined;
-    return PAPERCLIP_CORE_SKILL_KEYS.map((key) => ({ key, versionId: null }));
+    return PAPERCLIP_CORE_SKILL_KEYS
+      .filter((key) => adapterType !== "paperclip_runner" || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY)
+      .map((key) => ({ key, versionId: null }));
   }
 
   function withDefaultRoleSkillSelections(
@@ -2471,11 +2403,12 @@ export function agentRoutes(
 
     const desiredSkillEntries = mergeDesiredSkillEntries(currentSkillEntries, requestedSkillEntries, mode);
     if (
-      adapterType === "paperclip_runner" &&
-      desiredSkillEntries.some((entry) => entry.key === "paperclipai/paperclip/paperclip")
+      adapterType === "paperclip_runner"
+      && mode !== "remove"
+      && requestedSkillEntries.some((entry) => entry.key === PAPERCLIP_OPERATIONAL_SKILL_KEY)
     ) {
       throw unprocessable(
-        "paperclip_runner does not support the legacy Paperclip operational skill (paperclipai/paperclip/paperclip); remove it from this agent",
+        `paperclip_runner does not support the legacy Paperclip operational skill (${PAPERCLIP_OPERATIONAL_SKILL_KEY}); remove it from this agent`,
       );
     }
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
@@ -2604,14 +2537,6 @@ export function agentRoutes(
       ? await refreshAdapterModels(type)
       : await listAdapterModels(type);
     res.json(models);
-  });
-
-  router.get("/companies/:companyId/adapters/:type/model-profiles", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const type = assertKnownAdapterType(req.params.type as string);
-    const profiles = await listAdapterModelProfiles(type);
-    res.json(profiles);
   });
 
   router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
@@ -3503,6 +3428,11 @@ export function agentRoutes(
     if (!rollbackConfig) {
       throw unprocessable("Invalid revision snapshot");
     }
+    assertProviderTraceSettingTransition(
+      req,
+      rollbackConfig.runtimeConfig,
+      existing.runtimeConfig,
+    );
     const rollbackAdapterType = assertKnownAdapterType(
       typeof rollbackConfig.adapterType === "string"
         ? rollbackConfig.adapterType
@@ -3512,13 +3442,12 @@ export function agentRoutes(
       await assertSelectableAdapterType(rollbackAdapterType);
     }
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
-    const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     if (
       rollbackAdapterType !== existing.adapterType ||
-      (rollbackAdapterType === "paperclip_runner" &&
-        rollbackAdapterConfig.provider !== existingAdapterConfig.provider)
+      rollbackAdapterType === "paperclip_runner"
     ) {
-      assertFreshPaperclipRunnerProvider(
+      await assertFreshPaperclipRunnerProvider(
+        existing.companyId,
         rollbackAdapterType,
         rollbackAdapterConfig,
       );
@@ -3623,7 +3552,9 @@ export function agentRoutes(
     } = req.body;
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
-    assertFreshPaperclipRunnerProvider(
+    assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
+    await assertFreshPaperclipRunnerProvider(
+      companyId,
       hireInput.adapterType,
       rawHireAdapterConfig,
     );
@@ -3632,8 +3563,6 @@ export function agentRoutes(
       rawHireAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
-    assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
-    assertCanPersistRawProviderTrace(req, hireInput.runtimeConfig);
     const hiredAgentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3659,12 +3588,7 @@ export function agentRoutes(
       adapterType: hireInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
     });
-    const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
-      companyId,
-      hireInput.adapterType,
-      await normalizeNewAgentRuntimeConfig(hireInput.adapterType, hireInput.runtimeConfig),
-      normalizedAdapterConfig,
-    );
+    const normalizedRuntimeConfig = normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig);
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
@@ -3847,7 +3771,9 @@ export function agentRoutes(
     } = req.body;
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
-    assertFreshPaperclipRunnerProvider(
+    assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
+    await assertFreshPaperclipRunnerProvider(
+      companyId,
       createInput.adapterType,
       rawCreateAdapterConfig,
     );
@@ -3856,8 +3782,6 @@ export function agentRoutes(
       rawCreateAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
-    assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
-    assertCanPersistRawProviderTrace(req, createInput.runtimeConfig);
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3883,12 +3807,7 @@ export function agentRoutes(
       adapterType: createInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
     });
-    const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
-      companyId,
-      createInput.adapterType,
-      await normalizeNewAgentRuntimeConfig(createInput.adapterType, createInput.runtimeConfig),
-      normalizedAdapterConfig,
-    );
+    const normalizedRuntimeConfig = normalizeNewAgentRuntimeConfig(createInput.runtimeConfig);
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
     await assertAgentDefaultEnvironmentSelection(companyId, createInput.defaultEnvironmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
@@ -4300,8 +4219,11 @@ export function agentRoutes(
         res.status(422).json({ error: "runtimeConfig must be an object" });
         return;
       }
-      assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
-      assertCanPersistRawProviderTrace(req, runtimeConfig);
+      assertProviderTraceSettingTransition(
+        req,
+        runtimeConfig,
+        existing.runtimeConfig,
+      );
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =
@@ -4349,9 +4271,11 @@ export function agentRoutes(
       if (
         changingAdapterType ||
         (requestedAdapterType === "paperclip_runner" &&
-          rawEffectiveAdapterConfig.provider !== existingRunnerProvider)
+          (requestedAdapterConfig !== null ||
+            rawEffectiveAdapterConfig.provider !== existingRunnerProvider))
       ) {
-        assertFreshPaperclipRunnerProvider(
+        await assertFreshPaperclipRunnerProvider(
+          existing.companyId,
           requestedAdapterType,
           rawEffectiveAdapterConfig,
         );
@@ -4372,15 +4296,7 @@ export function agentRoutes(
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }
-    if (requestedRuntimeConfig) {
-      const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
-      patchData.runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
-        existing.companyId,
-        requestedAdapterType,
-        requestedRuntimeConfig,
-        baseAdapterConfig,
-      );
-    }
+    if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,

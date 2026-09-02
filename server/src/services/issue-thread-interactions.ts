@@ -1786,7 +1786,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         issueContext.id,
       );
       const acceptedPlanStartsExecution =
-        acceptedPlanTarget?.issueId === issueContext.id
+        lockedCurrent.kind === "request_confirmation"
+        && acceptedPlanTarget?.issueId === issueContext.id
         && acceptedPlanTarget.key === "plan"
         && issueContext.workMode === "planning";
       if (isNativeCompletionReview(lockedCurrent)) {

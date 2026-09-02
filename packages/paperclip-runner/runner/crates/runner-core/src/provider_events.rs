@@ -296,8 +296,8 @@ fn project_runtime_request_origin(origin: Option<&Value>) -> Result<Value, Local
     let Some(origin) = origin else {
         return Ok(json!({
             "adapter": "codex-acpx",
-            "provider": "codex",
-            "method": "runtime.input_requested",
+            "provider": "acpx",
+            "method": "item/tool/requestUserInput",
         }));
     };
     let object = origin.as_object().ok_or_else(|| {

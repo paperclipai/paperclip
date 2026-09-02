@@ -109,6 +109,7 @@ import {
   readSignedToolArgumentsPayload,
   signToolArguments,
   summarizeToolValue,
+  TOOL_ACTION_REQUEST_SIGNING_GRACE_MS,
   ToolActionSigningSecretMissingError,
   ToolContentValidationError,
   validateToolContent,
@@ -162,7 +163,6 @@ const ACTION_REQUEST_EXECUTION_WAIT_MS = APPROVED_EXECUTION_TIMEOUT_MS + 5_000;
 // treat an unsigned row as abandoned after this grace time from createdAt. This
 // grace must exceed the normal sign path (approval-snapshot fetch + interaction
 // create) so a live create keeps its own row.
-const UNSIGNED_ACTION_REQUEST_ABANDON_MS = 2 * 60 * 1000;
 const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -5692,7 +5692,7 @@ export function createToolGatewayService(
     const pendingUnsigned =
       pendingRequest.status === "pending"
       && pendingRequest.signedArguments === null
-      && Date.now() - pendingRequest.createdAt.getTime() >= UNSIGNED_ACTION_REQUEST_ABANDON_MS;
+      && Date.now() - pendingRequest.createdAt.getTime() >= TOOL_ACTION_REQUEST_SIGNING_GRACE_MS;
     const pendingExpired =
       pendingRequest.status === "pending"
       && pendingRequest.expiresAt !== null
@@ -6365,14 +6365,39 @@ export function createToolGatewayService(
         const approvalSnapshot = await connectedRemoteApprovalSnapshot(session, tool, {
           requireResolvedCredentials: true,
         });
-        const signedArguments = signToolArguments({
-          invocationId,
-          toolName: tool.name,
-          canonicalArguments,
-          approvalSnapshot: approvalSnapshot ?? undefined,
-          executionOnApprove: true,
-          signingSecret: options.toolActionSigningSecret,
-        });
+        let signedArguments: ReturnType<typeof signToolArguments>;
+        try {
+          signedArguments = signToolArguments({
+            invocationId,
+            toolName: tool.name,
+            canonicalArguments,
+            approvalSnapshot: approvalSnapshot ?? undefined,
+            executionOnApprove: true,
+            signingSecret: options.toolActionSigningSecret,
+          });
+        } catch (error) {
+          await db
+            .update(toolActionRequests)
+            .set({ status: "cancelled", resolvedAt: new Date(), updatedAt: new Date() })
+            .where(and(eq(toolActionRequests.id, recorded.actionRequest.id), eq(toolActionRequests.status, "pending")));
+          if (error instanceof ToolActionSigningSecretMissingError) {
+            await db
+              .update(toolInvocations)
+              .set({
+                status: "failed",
+                errorCode: "signing_secret_unconfigured",
+                errorMessage: error.message,
+                completedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(eq(toolInvocations.id, invocationId));
+            throw new ToolGatewayHttpError(500, error.message, "signing_secret_unconfigured", {
+              invocationId,
+              tool: tool.name,
+            });
+          }
+          throw error;
+        }
         const previewMarkdown = buildHumanizedActionPreview({ tool, argumentsSummary: argumentValidation.summary });
         await db
           .update(toolActionRequests)

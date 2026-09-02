@@ -42,11 +42,13 @@ const baseAgent = {
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getConfigRevision: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
   activatePendingApproval: vi.fn(),
   terminate: vi.fn(),
   update: vi.fn(),
+  rollbackConfigRevision: vi.fn(),
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
@@ -288,11 +290,13 @@ describe.sequential("agent permission routes", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockAgentService.getById.mockReset();
+    mockAgentService.getConfigRevision.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.create.mockReset();
     mockAgentService.activatePendingApproval.mockReset();
     mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
+    mockAgentService.rollbackConfigRevision.mockReset();
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
@@ -332,6 +336,7 @@ describe.sequential("agent permission routes", () => {
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockAgentService.getById.mockResolvedValue(baseAgent);
+    mockAgentService.getConfigRevision.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([baseAgent]);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: baseAgent });
@@ -429,9 +434,7 @@ describe.sequential("agent permission routes", () => {
         env: { PAPERCLIP_API_KEY: "secret-test-key" },
       },
       runtimeConfig: {
-        modelProfiles: {
-          default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
-        },
+        heartbeat: { enabled: false },
       },
     });
 
@@ -451,9 +454,7 @@ describe.sequential("agent permission routes", () => {
       env: { PAPERCLIP_API_KEY: "secret-test-key" },
     });
     expect(res.body.runtimeConfig).toMatchObject({
-      modelProfiles: {
-        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
-      },
+      heartbeat: { enabled: false },
     });
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
   }, 20_000);
@@ -570,6 +571,63 @@ describe.sequential("agent permission routes", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
+  it("allows instance administrators to create and hire with raw provider traces", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "instance-admin-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+    const body = {
+      name: "Trace capture agent",
+      adapterType: "process",
+      runtimeConfig: { debug: { providerTrace: "raw" } },
+    };
+
+    const createResponse = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send(body),
+    );
+    const hireResponse = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/companies/${companyId}/agent-hires`)
+        .send(body),
+    );
+
+    expect(createResponse.status, JSON.stringify(createResponse.body)).toBe(201);
+    expect(hireResponse.status, JSON.stringify(hireResponse.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects non-admin rollback into raw provider trace capture", async () => {
+    mockAgentService.getConfigRevision.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      afterConfig: {
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: { debug: { providerTrace: "raw" } },
+      },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const response = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(
+        `/api/agents/${agentId}/config-revisions/33333333-3333-4333-8333-333333333333/rollback`,
+      ),
+    );
+
+    expect(response.status).toBe(403);
+    expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+  });
+
   it("blocks api key creation for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
 
@@ -629,165 +687,6 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed workspace commands");
     expect(mockLogActivity).not.toHaveBeenCalled();
-  });
-
-  it("blocks agent-authenticated self-updates that set cheap-profile host-executed workspace commands", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterType: "codex_local",
-    });
-
-    const app = await createApp({
-      type: "agent",
-      agentId,
-      companyId,
-      source: "agent_key",
-      runId: "run-1",
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}`)
-      .send({
-        runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                workspaceStrategy: {
-                  type: "git_worktree",
-                  provisionCommand: "touch /tmp/paperclip-rce",
-                },
-              },
-            },
-          },
-        },
-      }));
-
-    expect(res.status).toBe(403);
-    expect(res.body.error).toContain("host-executed workspace commands");
-    expect(res.body.error).toContain(
-      "runtimeConfig.modelProfiles.cheap.adapterConfig.workspaceStrategy.provisionCommand",
-    );
-    expect(mockLogActivity).not.toHaveBeenCalled();
-  });
-
-  it("allows board updates that set cheap-profile workspace commands", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterType: "codex_local",
-    });
-
-    const app = await createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const runtimeConfig = {
-      modelProfiles: {
-        cheap: {
-          adapterConfig: {
-            workspaceStrategy: {
-              type: "git_worktree",
-              provisionCommand: "bash ./scripts/provision-worktree.sh",
-            },
-          },
-        },
-      },
-    };
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}`)
-      .send({ runtimeConfig }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      agentId,
-      expect.objectContaining({ runtimeConfig }),
-      expect.anything(),
-    );
-    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      action: "agent.updated",
-    }));
-  });
-
-  it("normalizes cheap-profile env bindings through the adapter config secret pipeline", async () => {
-    mockAgentService.getById.mockResolvedValue({
-      ...baseAgent,
-      adapterType: "codex_local",
-    });
-    mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => ({
-      ...config,
-      env: {
-        API_TOKEN: {
-          type: "secret_ref",
-          secretId: "33333333-3333-4333-8333-333333333333",
-          version: "latest",
-        },
-      },
-    }));
-
-    const app = await createApp({
-      type: "board",
-      userId: "board-user",
-      source: "local_implicit",
-      isInstanceAdmin: true,
-      companyIds: [companyId],
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .patch(`/api/agents/${agentId}`)
-      .send({
-        runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                model: "gpt-5.3-codex-spark",
-                env: {
-                  API_TOKEN: {
-                    type: "secret_ref",
-                    secretId: "33333333-3333-4333-8333-333333333333",
-                    version: "latest",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }));
-
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
-      companyId,
-      expect.objectContaining({
-        model: "gpt-5.3-codex-spark",
-        env: expect.any(Object),
-      }),
-      { strictMode: false, adapterType: "codex_local" },
-    );
-    expect(mockAgentService.update).toHaveBeenCalledWith(
-      agentId,
-      expect.objectContaining({
-        runtimeConfig: {
-          modelProfiles: {
-            cheap: {
-              adapterConfig: {
-                model: "gpt-5.3-codex-spark",
-                env: {
-                  API_TOKEN: {
-                    type: "secret_ref",
-                    secretId: "33333333-3333-4333-8333-333333333333",
-                    version: "latest",
-                  },
-                },
-              },
-            },
-          },
-        },
-      }),
-      expect.anything(),
-    );
   });
 
   it("blocks agent-authenticated self-updates that set instructions bundle roots", async () => {
@@ -1040,79 +939,10 @@ describe.sequential("agent permission routes", () => {
             intervalSec: 3600,
             maxConcurrentRuns: 20,
           },
-          modelProfiles: {
-            cheap: { enabled: false },
-          },
         },
       }),
       { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
-  });
-
-  it("creates agents when optional adapter model profile discovery fails", async () => {
-    const { registerServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
-    registerServerAdapter({
-      type: "failing_profile_discovery",
-      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
-      testEnvironment: async () => ({
-        adapterType: "failing_profile_discovery",
-        status: "pass",
-        checks: [],
-        testedAt: new Date(0).toISOString(),
-      }),
-      listModelProfiles: async () => {
-        throw new Error("profile discovery unavailable");
-      },
-    });
-
-    try {
-      const app = await createApp({
-        type: "board",
-        userId: "board-user",
-        source: "local_implicit",
-        isInstanceAdmin: true,
-        companyIds: [companyId],
-      });
-
-      const res = await requestApp(app, (baseUrl) => request(baseUrl)
-        .post(`/api/companies/${companyId}/agents`)
-        .send({
-          name: "Builder",
-          role: "engineer",
-          adapterType: "failing_profile_discovery",
-          adapterConfig: {},
-          runtimeConfig: {
-            modelProfiles: {
-              cheap: {
-                enabled: true,
-                adapterConfig: {},
-              },
-            },
-          },
-        }));
-
-      expect(res.status, JSON.stringify(res.body)).toBe(201);
-      expect(mockAgentService.create).toHaveBeenCalledWith(
-        companyId,
-        expect.objectContaining({
-          runtimeConfig: {
-            heartbeat: {
-              enabled: false,
-              maxConcurrentRuns: 20,
-            },
-            modelProfiles: {
-              cheap: {
-                enabled: true,
-                adapterConfig: {},
-              },
-            },
-          },
-        }),
-        { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
-      );
-    } finally {
-      unregisterServerAdapter("failing_profile_discovery");
-    }
   });
 
   it("seeds opencode agent creation with the static default model without live discovery", async () => {
@@ -1221,9 +1051,6 @@ describe.sequential("agent permission routes", () => {
             enabled: false,
             intervalSec: 3600,
             maxConcurrentRuns: 20,
-          },
-          modelProfiles: {
-            cheap: { enabled: false },
           },
         },
       }),

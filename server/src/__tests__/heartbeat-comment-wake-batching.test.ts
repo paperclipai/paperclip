@@ -2014,8 +2014,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(payloads).toHaveLength(2);
       expect(runs[1]?.contextSnapshot).toMatchObject({
         retryReason: "missing_issue_comment",
-        modelProfile: "cheap",
       });
+      expect(runs[1]?.contextSnapshot).not.toHaveProperty("modelProfile");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -2218,7 +2218,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           ),
       );
       expect(missingCommentRetries).toHaveLength(1);
-      expect(missingCommentRetries[0]?.payload).toMatchObject({ modelProfile: "cheap" });
+      expect(missingCommentRetries[0]?.payload).not.toHaveProperty("modelProfile");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

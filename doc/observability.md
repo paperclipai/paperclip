@@ -211,14 +211,20 @@ run-log copy is unaffected.
 ## Sentry Error Monitoring
 
 Paperclip ships with **opt-in** Sentry error monitoring for the server
-process and the browser app. The operator activates it with one
-environment variable, `SENTRY_DSN`. The server and the browser both read
-this same value, so both report to **one** Sentry project. The feature
-uses built-in Sentry options only. It adds no `beforeSend` hook and no
-custom filter code.
+process and the browser app. The operator activates it with two
+environment variables: `SENTRY_DSN_FRONTEND` for the browser and
+`SENTRY_DSN_BACKEND` for the server. Each variable is optional. A
+specific variable always wins for its own component; a legacy variable,
+`SENTRY_DSN`, supplies a component that has no specific value set. An
+empty string counts as absent for all three variables. The feature uses
+built-in Sentry options only. It adds no `beforeSend` hook and no custom
+filter code.
 
-When `SENTRY_DSN` is unset, the feature is fully inactive. The server
-imports no Sentry package. The browser fetches no Sentry chunk.
+The server is inactive when the backend DSN resolves to `null`; then it
+imports no Sentry package. The browser is inactive when the front-end DSN
+resolves to `null`; then it fetches no Sentry chunk. The two components
+resolve their DSN independently, so the operator can activate one
+component and leave the other inactive.
 
 ### Enabling Sentry
 
@@ -229,11 +235,12 @@ version this feature is audited against (see "Server request data"
 below). Install it in the server, the same way you install the
 OpenTelemetry packages above. `@sentry/node` is an *optional peer
 dependency*: it is not in the default lockfile, and the server loads it
-dynamically only when `SENTRY_DSN` is set. `server/package.json` declares
-this exact version; installing a different version defeats the audit, so
-the server checks the installed version against the declared one at
-startup and logs one diagnostic instead of enabling error monitoring on a
-mismatch (see "Server request data" below).
+dynamically only when the backend DSN resolves to a value.
+`server/package.json` declares this exact version; installing a different
+version defeats the audit, so the server checks the installed version
+against the declared one at startup and logs one diagnostic instead of
+enabling error monitoring on a mismatch (see "Server request data"
+below).
 
 ```bash
 pnpm add @sentry/node@10.71.0
@@ -242,7 +249,8 @@ pnpm add @sentry/node@10.71.0
 **The hosted image variant ships this package pre-installed.** A managed
 tenant runs the image built from the Dockerfile's `cloud` target, and that
 target installs the declared version of `@sentry/node` at build time. A
-managed tenant needs only `SENTRY_DSN` set; no install step is needed.
+managed tenant needs only `SENTRY_DSN_BACKEND` set (or `SENTRY_DSN_FRONTEND`
+for the browser); no install step is needed.
 
 A self-hosted operator runs the image built from the `production` target.
 That image holds no Sentry package, the same as before this feature
@@ -259,17 +267,31 @@ below.
 #### 2. Set the environment
 
 ```bash
-export SENTRY_DSN="https://<public-key>@<host>/<project-id>"
+export SENTRY_DSN_FRONTEND="https://<public-key>@<host>/<project-id>"
+export SENTRY_DSN_BACKEND="https://<public-key>@<host>/<project-id>"
 ```
 
-No other variable is needed.
+The operator can set either variable alone. The component with no value
+set stays inactive.
 
-### One Sentry project
+### Two Sentry projects
 
-The server and the browser report to **one** Sentry project, because both
-read the same `SENTRY_DSN` value. The server reads it from the process
-environment. The browser reads it from the authenticated
+The server and the browser report to two separate Sentry projects by
+default, one per component. The server reads its DSN,
+`SENTRY_DSN_BACKEND`, from the process environment. The browser reads its
+DSN, `SENTRY_DSN_FRONTEND`, from the authenticated
 `GET /api/auth/get-session` response.
+
+The legacy `SENTRY_DSN` variable still works. When the operator sets only
+`SENTRY_DSN`, both components use it, so both report to **one** Sentry
+project. In that mode the server prints one warning at start. The warning
+names the three variables (`SENTRY_DSN`, `SENTRY_DSN_FRONTEND`,
+`SENTRY_DSN_BACKEND`) and prints no DSN value.
+
+To add a DSN for a new component later, add a field to the `SentryDsns`
+type, add a variable with the `SENTRY_DSN_` prefix, and resolve it with
+the same precedence rule: the specific variable wins, and `SENTRY_DSN`
+supplies a component that has no specific value set.
 
 ### DSN delivery to the browser
 
@@ -277,12 +299,13 @@ The browser never reads the DSN from a `<meta>` tag or from any other part
 of `index.html`. The served `index.html` holds no DSN — it is a static
 file, built once and served unchanged to every request.
 
-Instead, the browser receives the DSN inside the authenticated
-`GET /api/auth/get-session` response body, next to the signed-in session
-and the user profile. A signed-out browser calls this route with no board
-actor, so the route answers 401 and sends no DSN. A signed-out browser
-therefore loads no Sentry chunk and sends no event. These pages run
-signed out:
+Instead, the browser receives the front-end DSN inside the authenticated
+`GET /api/auth/get-session` response body, in the `sentryDsn` field, next
+to the signed-in session and the user profile. The backend DSN stays in
+the server process and never reaches the browser. A signed-out browser
+calls this route with no board actor, so the route answers 401 and sends
+no DSN. A signed-out browser therefore loads no Sentry chunk and sends no
+event. These pages run signed out:
 
 - `/auth`
 - `/cli-auth/:id`
@@ -419,12 +442,13 @@ Two controls belong to the operator. This feature ships neither one.
 1. **Set a rate limit and a quota alert.** Set a per-client-key ingestion
    rate limit and a quota alert in the Sentry project. The feature sends
    no built-in rate limit of its own.
-2. **Give a self-hosted sink a reachable host name.** If `SENTRY_DSN`
-   points at a self-hosted Sentry instance, give it an externally
-   reachable ingest host name, not an internal-only host name. The
-   browser sends its events from the operator's network, not from the
-   server's network, so an internal-only host name fails silently for
-   the browser even when it works for the server.
+2. **Give a self-hosted sink a reachable host name.** If
+   `SENTRY_DSN_FRONTEND` (or the legacy `SENTRY_DSN`) points at a
+   self-hosted Sentry instance, give it an externally reachable ingest
+   host name, not an internal-only host name. The browser sends its
+   events from the operator's network, not from the server's network, so
+   an internal-only host name fails silently for the browser even when it
+   works for the server.
 
 ## Sandbox Startup Trace Spans
 

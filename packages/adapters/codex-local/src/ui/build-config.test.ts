@@ -87,6 +87,8 @@ describe("buildPaperclipRunnerConfig", () => {
 
     expect(config).toMatchObject({
       provider: "codex",
+      codexPermissionMode: "untrusted",
+      lifecycleMode: "per_turn",
       model: "gpt-5.4",
       timeoutSec: 0,
       graceSec: 15,
@@ -107,43 +109,187 @@ describe("buildPaperclipRunnerConfig", () => {
     }
   });
 
-  it("builds a bounded OpenCode runner profile from schema values", () => {
+  it("persists bounded Codex permission and warm lifecycle values", () => {
     const config = buildPaperclipRunnerConfig(makeValues({
       adapterType: "paperclip_runner",
-      model: "",
-      codexEngine: "acp",
-      dangerouslyBypassSandbox: true,
-      adapterSchemaValues: {
-        provider: "opencode",
-        opencodePermissionMode: "ask",
-        lifecycleMode: "warm",
-        idleTimeoutMs: 45_000,
-      },
+      codexPermissionMode: "untrusted",
+      paperclipRunnerLifecycleMode: "warm",
+      paperclipRunnerIdleTimeoutMs: 45_000,
     }));
 
     expect(config).toMatchObject({
-      provider: "opencode",
-      model: "openrouter/deepseek/deepseek-v4-flash-0731",
-      opencodePermissionMode: "ask",
+      provider: "codex",
+      codexPermissionMode: "untrusted",
       lifecycleMode: "warm",
       idleTimeoutMs: 45_000,
     });
-    expect(config).not.toHaveProperty("engine");
-    expect(config).not.toHaveProperty("dangerouslyBypassApprovalsAndSandbox");
   });
 
-  it("falls back to safe OpenCode defaults for invalid schema values", () => {
-    expect(buildPaperclipRunnerConfig(makeValues({
+  it("fails closed to the Codex profile and safe defaults for stale schema values", () => {
+    const config = buildPaperclipRunnerConfig(makeValues({
       adapterSchemaValues: {
-        provider: "opencode",
-        opencodePermissionMode: "unrestricted",
+        provider: "unknown",
+        codexPermissionMode: "unrestricted",
         lifecycleMode: "forever",
         idleTimeoutMs: -1,
       },
-    }))).toMatchObject({
-      provider: "opencode",
-      opencodePermissionMode: "allow",
+    }));
+    expect(config).toMatchObject({
+      provider: "codex",
+      codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
     });
+  });
+
+  it("builds a qualified OpenCode profile from schema-backed values", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "",
+      adapterSchemaValues: {
+        provider: "opencode",
+        opencodePermissionMode: "allow",
+      },
+    }))).toMatchObject({
+      provider: "opencode",
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      opencodePermissionMode: "allow",
+      codexPermissionMode: "untrusted",
+      acpxPermissionMode: "approve-reads",
+    });
+  });
+
+  it("does not let a stale schema model override the active Codex model", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "gpt-5.6-sol",
+      adapterSchemaValues: {
+        provider: "codex",
+        model: "openrouter/stale-model",
+        codexPermissionMode: "on-request",
+      },
+    }))).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      codexPermissionMode: "on-request",
+    });
+  });
+
+  it.each([
+    ["claude", "claude-sonnet-5"],
+    ["codex", "gpt-5.6-sol"],
+  ] as const)("builds the qualified ACPX %s profile", (acpxAgent, model) => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "stale-model-from-another-provider",
+      adapterSchemaValues: {
+        provider: "acpx",
+        acpxAgent,
+        acpxPermissionMode: "approve-all",
+      },
+    }))).toMatchObject({
+      provider: "acpx",
+      acpxAgent,
+      model,
+      acpxPermissionMode: "approve-all",
+    });
+  });
+
+  it("does not materialize the unavailable ACPX Pi profile", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "",
+      adapterSchemaValues: {
+        provider: "acpx",
+        acpxAgent: "pi",
+      },
+    }))).toMatchObject({
+      provider: "acpx",
+      acpxAgent: "claude",
+      model: "claude-sonnet-5",
+    });
+  });
+
+  it("builds a Claude Managed profile reference with explicit retention and spend controls", () => {
+    const config = buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "claude-sonnet-5",
+      adapterSchemaValues: {
+        provider: "claude_managed",
+        managedProfileId: "managed-primary",
+        managedAgentsRetentionAcknowledged: true,
+        maxSessionListCostUsd: 0.5,
+        anthropicAgentId: "editable-resource-id-must-not-survive",
+      },
+    }));
+    expect(config).toMatchObject({
+      provider: "claude_managed",
+      managedProfileId: "managed-primary",
+      model: "claude-sonnet-5",
+      managedAgentsRetentionAcknowledged: true,
+      maxSessionListCostUsd: 0.5,
+    });
+    expect(config).not.toHaveProperty("anthropicAgentId");
+  });
+
+  it("builds an AgentCore profile reference with bounded invocation controls", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "",
+      adapterSchemaValues: {
+        provider: "aws_agentcore",
+        agentCoreProfileId: "agentcore-primary",
+        agentCoreRetentionAcknowledged: true,
+        maxEstimatedSessionCostUsd: 0.75,
+        maxIterations: 8,
+        maxOutputTokens: 2_048,
+        timeoutSeconds: 45,
+      },
+    }))).toMatchObject({
+      provider: "aws_agentcore",
+      agentCoreProfileId: "agentcore-primary",
+      model: "global.anthropic.claude-sonnet-4-6",
+      agentCoreRetentionAcknowledged: true,
+      maxEstimatedSessionCostUsd: 0.75,
+      maxIterations: 8,
+      maxOutputTokens: 2_048,
+      timeoutSeconds: 45,
+    });
+  });
+
+  it.each([
+    ["maxIterations", 0],
+    ["maxIterations", 9],
+    ["maxIterations", "8"],
+    ["maxOutputTokens", 4_097],
+    ["timeoutSeconds", 301],
+  ])("rejects an unsafe AgentCore %s value", (field, value) => {
+    expect(() => buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      adapterSchemaValues: {
+        provider: "aws_agentcore",
+        agentCoreProfileId: "agentcore-primary",
+        agentCoreRetentionAcknowledged: true,
+        [field]: value,
+      },
+    }))).toThrow("must be an integer between");
+  });
+
+  it("bounds warm lifecycle values to the shared safe default", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      paperclipRunnerLifecycleMode: "warm",
+      paperclipRunnerIdleTimeoutMs: 86_400_001,
+    }))).toMatchObject({
+      lifecycleMode: "warm",
+      idleTimeoutMs: 300_000,
+    });
+  });
+
+  it("omits an idle timeout for turn-by-turn sessions", () => {
+    const config = buildPaperclipRunnerConfig(makeValues({
+      paperclipRunnerLifecycleMode: "per_turn",
+      paperclipRunnerIdleTimeoutMs: 45_000,
+    }));
+
+    expect(config).not.toHaveProperty("idleTimeoutMs");
   });
 });

@@ -27,6 +27,8 @@ import {
   rehydrateRunnerdTurnNotification,
   rehydrateRunnerdUsageNotification,
   rehydrateRunnerdWorkspaceChangeNotification,
+  runnerdLaunchProfileInternals,
+  resolveRunnerdAcpxPermissionMode,
   resolveRunnerdSessionIdentity,
   resolveSourceCodexHome,
   trustedRuntimeReadOnlyRoots,
@@ -34,6 +36,53 @@ import {
   unwrapRunnerdProviderNotifications,
   withCodexCollaborationRuntimeInstructions,
 } from "./runnerd-codex-transport.js";
+
+it("defaults runnerd ACPX permissions to approve reads", () => {
+  expect(resolveRunnerdAcpxPermissionMode(undefined)).toBe("approve-reads");
+  expect(resolveRunnerdAcpxPermissionMode("deny-all")).toBe("deny-all");
+});
+
+it("rejects caller-selected local ACPX artifacts even when they are self-hashed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "paperclip-acpx-authority-"));
+  const command = join(directory, "node");
+  const sidecar = join(directory, "sidecar.js");
+  await writeFile(command, "caller-selected command", { mode: 0o700 });
+  await writeFile(sidecar, "caller-selected sidecar", { mode: 0o600 });
+  const digest = (value: string) =>
+    `sha256:${createHash("sha256").update(value).digest("hex")}`;
+  try {
+    expect(() =>
+      runnerdLaunchProfileInternals.acpxRunnerLaunchProfile(
+        {
+          providerNodeCommand: command,
+          providerNodeCommandSha256: digest("caller-selected command"),
+          acpxSidecarPath: sidecar,
+          acpxSidecarSha256: digest("caller-selected sidecar"),
+        },
+        command,
+        sidecar,
+      ),
+    ).toThrow("ACPX local launch must use build-owned artifacts");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("requires a provider-pack authority for remote ACPX artifact hashes", () => {
+  expect(() =>
+    runnerdLaunchProfileInternals.acpxRunnerLaunchProfile(
+      {
+        runnerFilesystemRoot: "/runner",
+        providerNodeCommand: "/provider-pack/node",
+        providerNodeCommandSha256: `sha256:${"a".repeat(64)}`,
+        acpxSidecarPath: "/provider-pack/acpx-sidecar.js",
+        acpxSidecarSha256: `sha256:${"b".repeat(64)}`,
+      },
+      "/provider-pack/node",
+      "/provider-pack/acpx-sidecar.js",
+    ),
+  ).toThrow("omitted its provider-pack authority");
+});
 
 it("adds Codex-style turn updates only when collaboration instructions are enabled", () => {
   const base = "Base Paperclip instructions.";
@@ -62,7 +111,16 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
     options: {
       provider: "opencode",
       stateDirectory: "/isolated/session",
-      environment: { PATH: "/bin", OPENROUTER_API_KEY: "test-provider-key" },
+      opencodePermissionMode: "deny",
+      environment: {
+        PATH: "/bin",
+        OPENROUTER_API_KEY: "test-provider-key",
+        HOME: "/host/home",
+        CODEX_HOME: "/host/codex-home",
+        DATABASE_URL: "must-not-reach-runnerd",
+        PAPERCLIP_API_KEY: "must-not-reach-runnerd",
+        NODE_OPTIONS: "--require=/untrusted/bootstrap.cjs",
+      },
       opencodeCommand: "/provider-pack/opencode",
       opencodeRuntimeDirectory: "/isolated/session/opencode",
     },
@@ -79,7 +137,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
     hasRuntimeContext: true,
   });
   expect(environment).toMatchObject({
-    PAPERCLIP_OPENCODE_COMMAND: "/provider-pack/opencode",
+    PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/isolated/session/opencode",
     PAPERCLIP_RUNNER_INSTANCE_ID: "runner-1",
     PAPERCLIP_RUN_ID: "run-1",
@@ -87,6 +145,36 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
     PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: "/isolated/runtime-context.json",
     OPENROUTER_API_KEY: "test-provider-key",
   });
+  expect(environment.HOME).toBeUndefined();
+  expect(environment.CODEX_HOME).toBeUndefined();
+  expect(environment.DATABASE_URL).toBeUndefined();
+  expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
+  expect(environment.NODE_OPTIONS).toBeUndefined();
+  expect(environment.PAPERCLIP_OPENCODE_COMMAND).toBeUndefined();
+
+  const defaultPermissionEnvironment =
+    createCapabilityRunnerdProviderEnvironment({
+      provider: "opencode",
+      options: {
+        provider: "opencode",
+        stateDirectory: "/isolated/session",
+        environment: { PATH: "/bin" },
+      },
+      identity: {
+        runnerInstanceId: "runner-1",
+        environmentLeaseId: "lease-1",
+        runId: "run-1",
+        normalizedSessionId: "session-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+      },
+      codexHome: "/isolated/codex-home",
+      runtimeContextPath: "/isolated/runtime-context.json",
+      hasRuntimeContext: false,
+    });
+  expect(defaultPermissionEnvironment.PAPERCLIP_OPENCODE_PERMISSION_MODE).toBe(
+    "ask",
+  );
 });
 
 it("passes the configured Codex API key only through the provider process environment", () => {
@@ -121,6 +209,98 @@ it("passes the configured Codex API key only through the provider process enviro
     CODEX_API_KEY: "configured-automation-key",
   });
   expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
+});
+
+it("passes only the Anthropic credential to Claude Managed runnerd", () => {
+  const environment = createCapabilityRunnerdProviderEnvironment({
+    provider: "claude_managed",
+    options: {
+      provider: "claude_managed",
+      environment: {
+        PATH: "/bin",
+        ANTHROPIC_API_KEY: "anthropic-canary",
+        PAPERCLIP_NATIVE_MCP_NAME: "paperclip",
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "must-not-reach-provider",
+        PAPERCLIP_API_KEY: "must-not-reach-provider",
+        DATABASE_URL: "must-not-reach-provider",
+      },
+    },
+    identity: {
+      runnerInstanceId: "runner-1",
+      environmentLeaseId: "lease-1",
+      runId: "run-1",
+      normalizedSessionId: "session-1",
+      turnId: "turn-1",
+      itemId: "item-1",
+    },
+    codexHome: "/isolated/codex-home",
+    runtimeContextPath: "/isolated/runtime-context.json",
+    hasRuntimeContext: true,
+  });
+  expect(environment).toMatchObject({
+    PATH: "/bin",
+    ANTHROPIC_API_KEY: "anthropic-canary",
+    PAPERCLIP_RUNNER_INSTANCE_ID: "runner-1",
+    PAPERCLIP_RUN_ID: "run-1",
+    PAPERCLIP_NORMALIZED_SESSION_ID: "session-1",
+  });
+  expect(environment.PAPERCLIP_NATIVE_MCP_NAME).toBeUndefined();
+  expect(environment.PAPERCLIP_NATIVE_MCP_URL).toBeUndefined();
+  expect(environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
+  expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
+  expect(environment.DATABASE_URL).toBeUndefined();
+});
+
+it("uses file-backed AWS workload identity without forwarding access keys or Paperclip tokens", () => {
+  const environment = createCapabilityRunnerdProviderEnvironment({
+    provider: "aws_agentcore",
+    options: {
+      provider: "aws_agentcore",
+      environment: {
+        PATH: "/bin",
+        HOME: "/host/home",
+        AWS_PROFILE: "host-profile",
+        AWS_CONFIG_FILE: "/host/home/.aws/config",
+        AWS_SHARED_CREDENTIALS_FILE: "/host/home/.aws/credentials",
+        AWS_REGION: "us-east-1",
+        AWS_ROLE_ARN: "arn:aws:iam::123456789012:role/runner",
+        AWS_WEB_IDENTITY_TOKEN_FILE: "/identity/token",
+        AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/identity/container-token",
+        AWS_ACCESS_KEY_ID: "must-not-reach-provider",
+        AWS_SECRET_ACCESS_KEY: "must-not-reach-provider",
+        AWS_SESSION_TOKEN: "must-not-reach-provider",
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "must-not-reach-provider",
+      },
+    },
+    identity: {
+      runnerInstanceId: "runner-1",
+      environmentLeaseId: "lease-1",
+      runId: "run-1",
+      normalizedSessionId: "session-1",
+      turnId: "turn-1",
+      itemId: "item-1",
+    },
+    codexHome: "/isolated/codex-home",
+    runtimeContextPath: "/isolated/runtime-context.json",
+    hasRuntimeContext: false,
+  });
+  expect(environment).toMatchObject({
+    HOME: "/isolated/codex-home",
+    AWS_REGION: "us-east-1",
+    AWS_ROLE_ARN: "arn:aws:iam::123456789012:role/runner",
+    AWS_WEB_IDENTITY_TOKEN_FILE: "/identity/token",
+    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/identity/container-token",
+  });
+  expect(environment.AWS_ACCESS_KEY_ID).toBeUndefined();
+  expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  expect(environment.AWS_SESSION_TOKEN).toBeUndefined();
+  expect(environment.AWS_PROFILE).toBeUndefined();
+  expect(environment.AWS_CONFIG_FILE).toBeUndefined();
+  expect(environment.AWS_SHARED_CREDENTIALS_FILE).toBeUndefined();
+  expect(environment.PAPERCLIP_NATIVE_MCP_URL).toBeUndefined();
+  expect(environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
 });
 
 it.each([

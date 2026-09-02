@@ -408,7 +408,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     );
   });
 
-  it("cancels to the original connection setup route without creating another draft", async () => {
+  it("backs up to the original connection setup route without creating another draft", async () => {
     await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
     toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
 
@@ -417,12 +417,27 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     });
     await flushReact();
     await act(async () => {
-      buttonStartingWith("Back to apps")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonStartingWith("Back")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/setup");
     expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
     expect(toolsApiMock.startOAuth).not.toHaveBeenCalled();
+  });
+
+  it("cancels the OAuth checkpoint to the apps page", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("javascript:alert(1)"));
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonStartingWith("Cancel")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/apps");
   });
 
   it("does not offer Continue for a stdio draft (draft-only, no link to hand off)", async () => {
