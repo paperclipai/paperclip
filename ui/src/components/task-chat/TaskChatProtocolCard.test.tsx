@@ -146,6 +146,11 @@ describe("TaskChatProtocolCard", () => {
     expect(container.textContent).toContain("+17 −5 · 3 files");
     expect(container.textContent).toContain("Merged");
     expect(container.textContent).not.toContain("Completed");
+
+    const action = container.querySelector('a[aria-label="Open on GitHub: Ship rich work-product cards"]');
+    expect(action?.querySelector("span")?.className).toContain("hidden @sm:inline");
+    const stats = Array.from(container.querySelectorAll("p")).find((node) => node.textContent === "+17 −5 · 3 files");
+    expect(stats?.className).toContain("whitespace-nowrap");
   });
 
   it("shows pending artifacts with a dashed Pending chip", () => {

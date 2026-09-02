@@ -214,7 +214,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   return (
     <article
       className={cn(
-        "flex min-w-0 rounded-md border border-border bg-card/60",
+        "@container flex min-w-0 rounded-md border border-border bg-card/60",
         compact ? "items-center gap-2 px-2.5 py-1.5" : "items-start gap-3 px-3 py-2.5",
       )}
       data-testid={`task-chat-rich-work-product-${workProduct.type}`}
@@ -233,13 +233,13 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       <div className="min-w-0 flex-1">
         <strong className="block truncate text-sm font-medium text-foreground">{workProduct.title}</strong>
         {visibleMeta.length > 0 ? <p className="mt-1 truncate text-xs text-muted-foreground">{visibleMeta.join(" · ")}</p> : null}
-        {statsLabel ? <p className="mt-1 text-xs text-muted-foreground">{statsLabel}</p> : null}
+        {statsLabel ? <p className="mt-1 whitespace-nowrap text-xs text-muted-foreground">{statsLabel}</p> : null}
       </div>
       <div className={cn("flex shrink-0 items-center", compact ? "gap-1.5" : "gap-2")}>
         {chip ? <Chip chip={chip} /> : null}
         {href ? (
-          <a href={href} aria-label={compact ? `${action}: ${workProduct.title}` : undefined} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline" target={href.startsWith("http") ? "_blank" : undefined} rel={href.startsWith("http") ? "noreferrer" : undefined}>
-            {compact ? null : action}<ExternalLink aria-hidden className="h-3 w-3" />
+          <a href={href} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline" target={href.startsWith("http") ? "_blank" : undefined} rel={href.startsWith("http") ? "noreferrer" : undefined}>
+            {compact ? null : <span className="hidden @sm:inline">{action}</span>}<ExternalLink aria-hidden className="h-3 w-3" />
           </a>
         ) : null}
       </div>
