@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Preview } from "@storybook/react-vite";
+import { MINIMAL_VIEWPORTS } from "storybook/viewport";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   CONNECTABLE_APP_DEFINITIONS,
@@ -766,7 +767,8 @@ const preview: Preview = {
     },
     layout: "fullscreen",
     viewport: {
-      viewports: {
+      options: {
+        ...MINIMAL_VIEWPORTS,
         mobile: {
           name: "Mobile",
           styles: { width: "390px", height: "844px" },

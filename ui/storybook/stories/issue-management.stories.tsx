@@ -850,5 +850,5 @@ export const IssuePropertiesModelOverride: Story = {
 export const IssuePropertiesMobileBlockerActions: Story = {
   name: "IssueProperties - mobile blocker actions open",
   render: () => <IssuePropertiesMobileBlockerActionsPane />,
-  parameters: { viewport: { defaultViewport: "mobile1" } },
+  globals: { viewport: { value: "mobile1" } },
 };

@@ -221,10 +221,10 @@ export const Mobile375: Story = {
   parameters: {
     layout: "fullscreen",
     viewport: {
-      defaultViewport: "mobile375",
-      viewports: { mobile375: { name: "Mobile 375", styles: { width: "375px", height: "812px" } } },
+      options: { mobile375: { name: "Mobile 375", styles: { width: "375px", height: "812px" } } },
     },
   },
+  globals: { viewport: { value: "mobile375" } },
   render: () => (
     <div className="flex w-full flex-col gap-3 p-4">
       {KINDS.map((kind) => {
