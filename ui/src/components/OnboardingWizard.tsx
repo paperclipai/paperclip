@@ -1080,6 +1080,13 @@ function OnboardingWizardInner({
     if (visible.some((a) => a.type === adapterType)) return;
     const next = visible[0].type as AdapterType;
     setAdapterType(next);
+    // The snap is not a choice. It replaces a name the customer can no longer
+    // see with the first one they can, which is the right thing to hold — but
+    // holding it *as chosen* would put a filled tile and an open sign-in panel
+    // on a step nobody has answered, and re-create by the back door exactly the
+    // preselection this step was changed to stop doing. The saved answer was
+    // unofferable, so the question is open again.
+    setSourcePicked(false);
     if (next === "codex_local") return;
     if (next === "opencode_local") {
       setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
@@ -2938,7 +2945,15 @@ function OnboardingWizardInner({
                             // could pass the model step having touched none of
                             // it, and be hired against whatever the draft
                             // happened to carry.
-                            !sourcePicked ||
+                            //
+                            // `sourceSelected`, not `sourcePicked`: the second only
+                            // says a draft named an adapter, and a draft can name
+                            // one this step no longer offers. That leaves the row
+                            // with nothing highlighted and the canvas shut — a step
+                            // that has visibly asked nothing — while the button
+                            // advances and hires against the hidden name. The gate
+                            // has to be the thing the customer can see.
+                            !sourceSelected ||
                             loading ||
                             adapterEnvLoading ||
                             missionUnresolvedForHire

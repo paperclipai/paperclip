@@ -1723,6 +1723,78 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       return { root, queryClient };
     }
 
+    it("will not advance on a saved adapter the step no longer offers", async () => {
+      // A draft can name an adapter this registry does not carry — a cloud
+      // sandbox without claude_local, an adapter since disabled. The row hides
+      // it, so the step shows an unanswered question: no tile filled, no input
+      // canvas. The CTA has to agree with that.
+      //
+      // It did not. The gate asked `sourcePicked`, which only means "a draft
+      // named something", so Next stayed live on a step that had visibly asked
+      // nothing and would hire against the hidden name. Reported by Greptile on
+      // #12726.
+      mockAdapterRegistry.list = [{ type: "codex_local" }];
+      const { root } = await openStep4({ adapterType: "some_retired_adapter" });
+
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(tiles.length, "the row should still offer what it has").toBeGreaterThan(0);
+      expect(
+        tiles.some((t) => t.getAttribute("aria-checked") === "true"),
+        "no tile should read as chosen",
+      ).toBe(false);
+
+      const cta = [...document.body.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Next",
+      );
+      expect(cta, "the step should render its Next button").toBeTruthy();
+      expect(
+        cta!.hasAttribute("disabled"),
+        "Next must not advance a question the step has not visibly asked",
+      ).toBe(true);
+
+      // And it opens again the moment the customer answers it themselves.
+      await act(async () => {
+        tiles[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 5; i++) await flushReact();
+      const ctaAfter = [...document.body.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Next",
+      );
+      expect(ctaAfter!.hasAttribute("disabled")).toBe(false);
+
+      await act(async () => root.unmount());
+    });
+
+    it("will not advance on a saved adapter the row does not show", async () => {
+      // The other shape of the same defect, and the one the snap cannot cover.
+      //
+      // The tile row is `recommendedAdapters`; the snap's idea of "visible" is
+      // recommended *plus* the advanced list. An adapter in the second but not
+      // the first — a saved `opencode_local`, say — therefore satisfies the
+      // snap, which leaves it alone, while the row it is supposed to be chosen
+      // in never shows it. Nothing is highlighted, the canvas is shut, and with
+      // the gate on `sourcePicked` the CTA was live: one press hires against an
+      // adapter the customer has not seen on this screen.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "opencode_local" }];
+      const { root } = await openStep4({ adapterType: "opencode_local" });
+
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(
+        tiles.some((t) => t.getAttribute("aria-checked") === "true"),
+        "the saved adapter is not in this row, so nothing should read as chosen",
+      ).toBe(false);
+
+      const cta = [...document.body.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Next",
+      );
+      expect(
+        cta!.hasAttribute("disabled"),
+        "Next must not hire an adapter the row never offered",
+      ).toBe(true);
+
+      await act(async () => root.unmount());
+    });
+
     it("starts no call to the test-environment route on adapter selection", async () => {
       const { root } = await openStep4();
       expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
