@@ -184,7 +184,11 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
     unhealthyChip ??
     stateChipFor(
       workProduct.type,
-      workProduct.status,
+      workProduct.type === "runtime_service" &&
+        workProduct.status === "active" &&
+        workProduct.healthStatus !== "healthy"
+        ? null
+        : workProduct.status,
       workProduct.reviewState,
     );
   const visibleMeta = meta.filter((value): value is string => Boolean(value));

@@ -192,6 +192,30 @@ describe("TaskChatProtocolCard", () => {
     expect(container.textContent).not.toContain("Running");
   });
 
+  it("does not show running for an active runtime with unknown health", () => {
+    const product = workProduct({
+      type: "runtime_service",
+      provider: "paperclip",
+      status: "active",
+      healthStatus: "unknown",
+      title: "Storybook",
+      metadata: { service: "storybook", port: 6006 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "runtime service · active",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.textContent).not.toContain("Running");
+    expect(container.textContent).not.toContain("Stopped");
+  });
+
   it("renders provider plan steps and status", () => {
     renderCard(root, {
       id: "provider-plan",
