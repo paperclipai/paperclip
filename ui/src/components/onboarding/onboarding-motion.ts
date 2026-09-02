@@ -147,6 +147,17 @@ export const CANVAS_EASE = TAG_SWAP_EASE;
  * legible was time added to a swap that had nothing to wait for. A spinner
  * standing in for no work is a slower screen that also says something untrue.
  */
+
+/**
+ * How far the input canvas descends into place when a source is picked.
+ *
+ * Larger than the swap's travel, and in the opposite direction. A swap trades
+ * one input for another in a space that already exists, so it barely moves; this
+ * is a surface arriving where there was none, and it comes down from above so
+ * the movement reads as the tile above it opening out.
+ */
+export const CANVAS_ENTER_TRAVEL = 10;
+
 export const CANVAS_CONTENT_ENTER = TAG_SWAP_ENTER;
 export const CANVAS_CONTENT_EXIT = TAG_SWAP_EXIT;
 export const CANVAS_CONTENT_TRAVEL = TAG_SWAP_TRAVEL;

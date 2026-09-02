@@ -1424,7 +1424,7 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
     await startLogin(result.container);
 
-    expect(result.container.textContent).toContain("Preparing the login");
+    expect(result.container.textContent).toContain("Preparing...");
     expect(result.container.textContent).not.toContain("https://");
   });
 

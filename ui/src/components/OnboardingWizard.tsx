@@ -112,7 +112,6 @@ import {
   Check,
   Loader2,
   ChevronDown,
-  X
 } from "lucide-react";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -548,6 +547,22 @@ function OnboardingWizardInner({
   );
   const [adapterType, setAdapterType] = useState<AdapterType>(() =>
     restoreOnboardingAdapterType(saved?.adapterType),
+  );
+  /**
+   * Whether a model source has been chosen, as opposed to which one
+   * `adapterType` happens to hold.
+   *
+   * The two are not the same, and reading the second as the first is what made
+   * this step arrive with a tile already lit and its input already open: the
+   * hire needs an adapter, so `adapterType` always carries one, restored or
+   * defaulted. A customer who never touched the row could reach the end of the
+   * step having chosen nothing.
+   *
+   * Restored true when the draft names a source. Someone returning here has
+   * already answered, and asking again would throw that answer away.
+   */
+  const [sourcePicked, setSourcePicked] = useState<boolean>(
+    () => typeof saved?.adapterType === "string" && saved.adapterType.length > 0,
   );
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
@@ -1027,7 +1042,8 @@ function OnboardingWizardInner({
    * `adapterType` alone, because a restored draft can name an adapter this step
    * no longer offers — a selection the customer cannot see.
    */
-  const sourceSelected = recommendedAdapters.some((opt) => opt.type === adapterType);
+  const sourceSelected =
+    sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
 
   /**
    * When the input canvas is open.
@@ -2040,16 +2056,19 @@ function OnboardingWizardInner({
             RemoveScroll which blocks wheel events on our custom (non-DialogContent)
             scroll container. A plain div preserves the background without scroll-locking. */}
         <div className="fixed inset-0 z-50 bg-background" />
-        <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
-          {/* Close button */}
-          <button
-            onClick={handleClose}
-            className="absolute top-4 left-4 z-10 rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
-          >
-            <X className="h-5 w-5" />
-            <span className="sr-only">Close</span>
-          </button>
+        {/* A deliberate hook for "the wizard mounted".
 
+            The tests that assert it opens used to prove it by finding any text
+            in the document — which, with the front door mocked to null in that
+            suite, was only ever the close button's screen-reader label. Removing
+            the button took the proof with it, and those tests would have gone on
+            passing indefinitely if it had stayed. A named anchor says what they
+            mean rather than depending on whatever happens to render. */}
+        <div
+          data-testid="onboarding-wizard"
+          className="fixed inset-0 z-50 flex"
+          onKeyDown={handleKeyDown}
+        >
           {/* Step 0: Front Door — full-screen choice */}
           {step === 0 && (
             <div className="w-full flex flex-col overflow-y-auto">
@@ -2195,7 +2214,7 @@ function OnboardingWizardInner({
                       // sentence restating it only pushes the fields down.
                       lede={
                         step === 3 ? undefined : step === 4 ? (
-                          <>Paperclip works with your existing subscription or API keys.</>
+                          <>Paperclip works with your subscription or API keys.</>
                         ) : (
                           <>{agentName.trim() || "Your first agent"} is ready to work!</>
                         )
@@ -2543,7 +2562,7 @@ function OnboardingWizardInner({
               {step === 3 && (
                 <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-9">
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-agent-name">Name</Label>
+                    <Label htmlFor="onboarding-agent-name">Agent name</Label>
                     <Input
                       id="onboarding-agent-name"
                       placeholder="e.g. Chief of staff, Designer, Ron..."
@@ -2582,11 +2601,13 @@ function OnboardingWizardInner({
                       }))}
                       mode={credentialMode}
                       selectedId={
+                        sourcePicked &&
                         recommendedAdapters.some((opt) => opt.type === adapterType)
                           ? adapterType
                           : null
                       }
                       onSelect={(id) => {
+                        setSourcePicked(true);
                         setAdapterType(id);
                         if (id === "codex_local") return;
                         if (id === "opencode_local") {
@@ -2873,11 +2894,9 @@ function OnboardingWizardInner({
                   primaryLabel={
                     step === 1
                       ? "Continue"
-                      : step === 3
-                        ? "Next"
-                        : step === 4
-                          ? "Connect"
-                          : "Get started"
+                      : step === 5
+                        ? "Get started"
+                        : "Next"
                   }
                   loadingLabel={
                     step === 1
@@ -2893,7 +2912,15 @@ function OnboardingWizardInner({
                       : step === 3
                         ? !agentName.trim()
                         : step === 4
-                          ? loading || adapterEnvLoading || missionUnresolvedForHire
+                          ? // Nothing is chosen on arrival, so the step cannot
+                            // advance until something is. Without this a customer
+                            // could pass the model step having touched none of
+                            // it, and be hired against whatever the draft
+                            // happened to carry.
+                            !sourcePicked ||
+                            loading ||
+                            adapterEnvLoading ||
+                            missionUnresolvedForHire
                           : loading || launchStateIncomplete
                   }
                   onPrimary={() => {

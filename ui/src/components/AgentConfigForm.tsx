@@ -2119,7 +2119,7 @@ function DisplayedCodeLoginPanel({
         {isActive && !prompt && (
           <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
             <Loader2 className="size-3 animate-spin shrink-0" />
-            <span>Preparing the login…</span>
+            <span>Preparing...</span>
           </div>
         )}
 
@@ -2128,19 +2128,14 @@ function DisplayedCodeLoginPanel({
             <div className="text-(length:--text-micro) text-muted-foreground">
               Open the authentication page and enter the code.
             </div>
+          {/* URL first, then the code. The instruction above says to open the
+              page and *then* enter the code, and the numbering now says the
+              same — so the order the two rows appear in has to agree with both,
+              rather than handing over the code before the page it belongs to. */}
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                Code
-              </div>
-              <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
-            </div>
-            <AdapterLoginCopyButton value={prompt.code} label="Copy code" />
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                Authentication URL
+                1. Authentication URL
               </div>
               <span className="font-mono text-xs text-foreground break-all">{prompt.url}</span>
             </div>
@@ -2160,6 +2155,15 @@ function DisplayedCodeLoginPanel({
                 </a>
               </Button>
             </div>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                2. Code
+              </div>
+              <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
+            </div>
+            <AdapterLoginCopyButton value={prompt.code} label="Copy code" />
           </div>
         </div>
         )}
@@ -2607,7 +2611,7 @@ function SubmittedBrowserCodeLoginPanel({
         {isActive && !authorizationUrl && !isCompleting && (
           <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
             <Loader2 className="size-3 animate-spin shrink-0" />
-            <span>Preparing the login…</span>
+            <span>Preparing...</span>
           </div>
         )}
 
@@ -2630,7 +2634,7 @@ function SubmittedBrowserCodeLoginPanel({
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                  Authorization URL
+                  1. Authorization URL
                 </div>
                 <span className="font-mono text-xs text-foreground break-all">{authorizationUrl}</span>
               </div>
@@ -2653,7 +2657,7 @@ function SubmittedBrowserCodeLoginPanel({
             </div>
             <div className="space-y-1">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                Browser code
+                2. Browser code
               </div>
               <div className="flex items-center gap-2">
                 <input

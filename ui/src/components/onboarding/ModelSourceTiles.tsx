@@ -82,12 +82,17 @@ function ModelSourceTile({
         // and lending it to focus as well would mean tabbing across the row
         // looked like picking every tile in turn.
         "outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)",
-        // Hover brings the surface up to the same half-strength ground the
-        // selected tile already sits on, and stops there. Pointing at a tile
-        // should say "this one is live", not "this one is chosen" — so the
-        // bright stroke stays reserved for the choice, and the only thing
-        // separating hover from selection is the border.
-        selected ? "border-foreground bg-accent/50" : "border-border hover:bg-accent/50",
+        // Selection is a lighter surface, not a brighter edge. Both states keep
+        // the same border — it draws the tile, not the choice — and the fill
+        // carries the state. A bright stroke on one tile made the row read as
+        // one outlined object beside one plain one, rather than two of a kind
+        // with one of them picked.
+        //
+        // Hover stops short of the selected fill, so pointing at a tile says
+        // "this one is live" rather than "this one is chosen".
+        selected
+          ? "border-border bg-accent"
+          : "border-border bg-card hover:bg-accent/40",
       )}
     >
       <span className="flex size-(--sz-30px) shrink-0 items-center justify-center">
