@@ -20,7 +20,7 @@ export {
   OpenCodeServerDriver,
   type OpenCodeServerDriverOptions,
 } from "./drivers/opencode/opencode-server-driver.js";
-export { parseCodexTurnDiff } from "./drivers/codex/codex-turn-diff.js";
+export { parseCodexTurnDiff, summarizeCodexTurnDiff } from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
 export {
   DurablePrpControlPlane,

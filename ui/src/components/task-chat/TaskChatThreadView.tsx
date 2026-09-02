@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import type {
   TaskChatInteractionItem,
@@ -65,6 +66,7 @@ interface TaskChatThreadViewProps {
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
+  attachments?: IssueAttachment[];
 }
 
 function renderItem(
@@ -84,6 +86,7 @@ function renderItem(
   retryableMarkerId?: string,
   onRetryFailedRun?: (runId: string) => Promise<void> | void,
   retryFailedRunId?: string | null,
+  attachments: IssueAttachment[] = [],
 ) {
   switch (item.kind) {
     case "message": {
@@ -117,6 +120,12 @@ function renderItem(
               undefined,
               onRuntimeRequestDecision,
               item.attachedTurn?.standaloneHeader ? "runner" : "classic",
+              undefined,
+              false,
+              undefined,
+              undefined,
+              undefined,
+              attachments,
             )
           }
         />
@@ -146,6 +155,7 @@ function renderItem(
           tryAgainNoLiveExecutionPathPending={
             tryAgainNoLiveExecutionPathPending
           }
+          attachments={attachments}
         />
       );
     }
@@ -199,6 +209,13 @@ function renderItem(
                 undefined,
                 undefined,
                 onRuntimeRequestDecision,
+                activityAppearance,
+                undefined,
+                false,
+                undefined,
+                undefined,
+                undefined,
+                attachments,
               )
             )
           }
@@ -233,6 +250,12 @@ function renderItem(
               undefined,
               onRuntimeRequestDecision,
               item.standaloneHeader ? "runner" : "classic",
+              undefined,
+              false,
+              undefined,
+              undefined,
+              undefined,
+              attachments,
             )
           }
         />
@@ -275,6 +298,7 @@ export function TaskChatThreadView({
   contentKey,
   className,
   scroll = true,
+  attachments = [],
 }: TaskChatThreadViewProps) {
   const retryableMarkerId =
     onRetryFailedRun || onTryAgainNoLiveExecutionPath
@@ -326,6 +350,7 @@ export function TaskChatThreadView({
             retryableMarkerId,
             onRetryFailedRun,
             retryFailedRunId,
+            attachments,
           )}
         </div>
       ))}

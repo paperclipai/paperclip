@@ -2346,6 +2346,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         ) : (
           <TaskChatThreadView
             items={items}
+            attachments={attachments}
             header={threadHeaderWithBlockers}
             renderInteraction={renderInteraction}
             renderBrief={

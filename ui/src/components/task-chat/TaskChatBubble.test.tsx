@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ReactNode } from "react";
+import type { IssueAttachment } from "@paperclipai/shared";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -24,12 +25,16 @@ describe("TaskChatBubble attachment chips", () => {
     container.remove();
   });
 
-  function renderMessage(text: string, author: TaskChatMessageItem["author"] = "human") {
+  function renderMessage(
+    text: string,
+    author: TaskChatMessageItem["author"] = "human",
+    attachments: IssueAttachment[] = [],
+  ) {
     const item: TaskChatMessageItem = { id: "m1", kind: "message", author, text };
     flushSync(() =>
       root!.render(
         <ThemeProvider>
-          <TaskChatBubble item={item} />
+          <TaskChatBubble item={item} attachments={attachments} />
         </ThemeProvider>,
       ),
     );
@@ -64,7 +69,93 @@ describe("TaskChatBubble attachment chips", () => {
     expect(container.querySelector('[data-testid="task-chat-bubble-attachments"]')).toBeNull();
     expect(container.textContent).toContain("Just words");
   });
+
+  it("renders an extensionless PNG attachment as a thumbnail", () => {
+    renderMessage(
+      "Done.\n\n[desktop Default](/api/attachments/img/content)",
+      "agent",
+      [
+        attachment({
+          id: "img",
+          originalFilename: "desktop Default",
+          contentType: "image/png",
+          byteSize: 4096,
+        }),
+      ],
+    );
+
+    const media = container.querySelector('[data-testid="task-chat-bubble-media"]');
+    expect(media).not.toBeNull();
+    expect(media?.querySelector("img")?.getAttribute("alt")).toBe("desktop Default");
+    expect(container.querySelector('[data-testid="task-chat-bubble-attachments"]')).toBeNull();
+  });
+
+  it("shows three thumbnails and an overflow tile for five images", () => {
+    const links = Array.from(
+      { length: 5 },
+      (_, index) => `[shot ${index + 1}](/api/attachments/img${index + 1}/content)`,
+    ).join("\n");
+    const attachments = Array.from({ length: 5 }, (_, index) =>
+      attachment({
+        id: `img${index + 1}`,
+        originalFilename: `shot ${index + 1}`,
+        contentType: "image/png",
+      }),
+    );
+    renderMessage(links, "agent", attachments);
+
+    const media = container.querySelector('[data-testid="task-chat-bubble-media"]');
+    expect(media?.querySelectorAll("img")).toHaveLength(3);
+    expect(media?.textContent).toContain("+2");
+
+    const secondThumbnail = media?.querySelectorAll("button")[1];
+    flushSync(() => secondThumbnail?.click());
+    expect(document.body.textContent).toContain("2 / 5");
+  });
+
+  it("shows a typed file chip with its stored size", () => {
+    renderMessage(
+      "[verification.log](/api/attachments/log/content)",
+      "agent",
+      [
+        attachment({
+          id: "log",
+          originalFilename: "verification.log",
+          contentType: "text/plain",
+          byteSize: 14 * 1024,
+        }),
+      ],
+    );
+
+    const group = container.querySelector('[data-testid="task-chat-bubble-attachments"]');
+    expect(group?.textContent).toContain("Log · 14.0 KB");
+  });
 });
+
+function attachment(overrides: Partial<IssueAttachment>): IssueAttachment {
+  const id = overrides.id ?? "attachment";
+  return {
+    id,
+    companyId: "company",
+    issueId: "issue",
+    issueCommentId: "m1",
+    assetId: `asset-${id}`,
+    provider: "paperclip",
+    objectKey: id,
+    contentType: "application/octet-stream",
+    byteSize: 1,
+    sha256: id,
+    originalFilename: id,
+    createdByAgentId: "agent",
+    createdByUserId: null,
+    createdAt: new Date("2026-09-02T00:00:00Z"),
+    updatedAt: new Date("2026-09-02T00:00:00Z"),
+    contentPath: `/api/attachments/${id}/content`,
+    openPath: `/api/attachments/${id}/content`,
+    downloadPath: `/api/attachments/${id}/content?download=1`,
+    ...overrides,
+  };
+}
 
 describe("TaskChatBubble accent-bubble text color", () => {
   let container: HTMLDivElement;

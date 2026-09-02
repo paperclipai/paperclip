@@ -616,6 +616,9 @@ export type {
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
   AttachmentArtifactWorkProductMetadata,
+  PullRequestWorkProductState,
+  PullRequestWorkProductMetadata,
+  CommitWorkProductMetadata,
 } from "./work-product.js";
 export type {
   CompanyArtifact,

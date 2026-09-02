@@ -377,7 +377,10 @@ export const issuesApi = {
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
-  listWorkProducts: (id: string) => api.get<IssueWorkProduct[]>(`/issues/${id}/work-products`),
+  listWorkProducts: (id: string, options?: { refreshPullRequests?: boolean }) =>
+    api.get<IssueWorkProduct[]>(
+      `/issues/${id}/work-products${options?.refreshPullRequests ? "?refreshPullRequests=true" : ""}`,
+    ),
   ensureWorkProductReviewDocument: (id: string, workProductId: string) =>
     api.post<IssueDocument>(`/issues/${id}/work-products/${workProductId}/review-document`, {}),
   createWorkProduct: (id: string, data: Record<string, unknown>) =>
