@@ -2144,16 +2144,6 @@ export function buildInvocationEnvForLogs(
 }
 
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
-  const normalizeHostname = (rawHost: string): string => {
-    const hostname = rawHost.trim().toLowerCase();
-    return hostname.startsWith("[") && hostname.endsWith("]")
-      ? hostname.slice(1, -1)
-      : hostname;
-  };
-  const isLoopbackHostname = (hostname: string): boolean =>
-    hostname === "localhost" || hostname.startsWith("127.") || hostname === "::1";
-  const isWildcardHostname = (hostname: string): boolean =>
-    hostname === "0.0.0.0" || hostname === "::";
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -2167,43 +2157,14 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const rawRuntimeHost = process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost";
   const runtimeHost = resolveHostForUrl(rawRuntimeHost);
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
-  // An explicit PAPERCLIP_API_URL override must win over the derived runtime
-  // URL. The derived URL can be unreachable from an isolated runtime.
-  const primaryApiUrl =
+  // An explicit PAPERCLIP_API_URL override must win over the derived runtime URL.
+  // Isolated runtimes receive the per-run bridge URL in their adapter launch path.
+  const apiUrl =
     process.env.PAPERCLIP_API_URL ??
     process.env.PAPERCLIP_RUNTIME_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
-  const runtimeApiCandidates = (() => {
-    try {
-      const parsed = JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]");
-      return Array.isArray(parsed)
-        ? parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-        : [];
-    } catch {
-      return [];
-    }
-  })();
-  // Agents launched in an isolated runtime cannot use the host's loopback
-  // interface. The server discovers interface URLs at startup; use the first
-  // non-loopback candidate for direct launches, while keeping loopback as the
-  // fallback for ordinary local development.
-  const runtimeListensBeyondLoopback = !isLoopbackHostname(normalizeHostname(rawRuntimeHost));
-  const reachableCandidate = runtimeListensBeyondLoopback
-    ? runtimeApiCandidates.find((candidate) => {
-        try {
-          const hostname = normalizeHostname(new URL(candidate).hostname);
-          return !isLoopbackHostname(hostname) && !isWildcardHostname(hostname);
-        } catch {
-          return false;
-        }
-      })
-    : undefined;
-  const apiUrl = reachableCandidate ?? primaryApiUrl;
   vars.PAPERCLIP_API_URL = apiUrl;
   vars.PAPERCLIP_RUNTIME_API_URL = apiUrl;
-  if (runtimeApiCandidates.length > 0) {
-    vars.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
-  }
   return vars;
 }
 

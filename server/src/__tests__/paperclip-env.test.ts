@@ -73,80 +73,19 @@ describe("buildPaperclipEnv", () => {
     expect(env.PAPERCLIP_API_URL).toBe("http://localhost:4100");
   });
 
-  it("uses a discovered non-loopback runtime candidate for isolated launches", () => {
+  it("does not inject a discovered interface candidate for direct launches", () => {
     process.env.PAPERCLIP_RUNTIME_API_URL = "http://localhost:3100";
     process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
     process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
       "http://localhost:3100",
       "http://192.0.2.10:3100",
-    ]);
-
-    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
-
-    expect(env.PAPERCLIP_API_URL).toBe("http://192.0.2.10:3100");
-    expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://192.0.2.10:3100");
-    expect(JSON.parse(env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual([
-      "http://localhost:3100",
-      "http://192.0.2.10:3100",
-    ]);
-  });
-
-  it.each([
-    ["bracketed IPv6 loopback", "http://[::1]:3100"],
-    ["unbracketed IPv6 loopback", "::1"],
-    ["IPv4 loopback", "http://127.0.0.1:3100"],
-    ["IPv4 loopback block", "http://127.42.0.9:3100"],
-    ["localhost", "http://localhost:3100"],
-    ["IPv4 wildcard", "http://0.0.0.0:3100"],
-    ["bracketed IPv6 wildcard", "http://[::]:3100"],
-    ["unbracketed IPv6 wildcard", "::"],
-    ["invalid URL", "not a URL"],
-  ])("rejects %s runtime candidates", (_description, rejectedCandidate) => {
-    process.env.PAPERCLIP_RUNTIME_API_URL = "http://localhost:3100";
-    process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
-    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
-      rejectedCandidate,
-      "http://192.0.2.10:3100",
-    ]);
-
-    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
-
-    expect(env.PAPERCLIP_API_URL).toBe("http://192.0.2.10:3100");
-    expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://192.0.2.10:3100");
-  });
-
-  it("keeps the primary runtime URL when the server only listens on loopback", () => {
-    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3100";
-    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
-    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
-      "http://127.0.0.1:3100",
-      "http://192.0.2.10:3100",
-    ]);
-
-    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
-
-    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
-    expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
-  });
-
-  it("keeps the primary runtime URL when no discovered candidate is addressable", () => {
-    process.env.PAPERCLIP_RUNTIME_API_URL = "http://localhost:3100";
-    process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
-    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
-      "http://[::1]:3100",
-      "::1",
-      "http://127.0.0.1:3100",
-      "http://localhost:3100",
-      "http://0.0.0.0:3100",
-      "http://[::]:3100",
-      "::",
-      "not a URL",
     ]);
 
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
     expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://localhost:3100");
+    expect(env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON).toBeUndefined();
   });
 
   it("uses runtime listen host/port when explicit URL is not set", () => {
