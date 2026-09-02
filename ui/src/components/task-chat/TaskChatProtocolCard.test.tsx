@@ -261,6 +261,30 @@ describe("TaskChatProtocolCard", () => {
     expect(container.textContent).not.toContain("Unhealthy");
   });
 
+  it("shows an unhealthy runtime with a non-standard open status as unhealthy", () => {
+    const product = workProduct({
+      type: "runtime_service",
+      provider: "paperclip",
+      status: "open",
+      healthStatus: "unhealthy",
+      title: "Storybook",
+      metadata: { service: "storybook", port: 6006 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "runtime service · open",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.textContent).toContain("Unhealthy");
+    expect(container.textContent).not.toContain("Running");
+  });
+
   it("shows a closed runtime as stopped even when its last health check failed", () => {
     const product = workProduct({
       type: "runtime_service",
