@@ -1677,6 +1677,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
       mockAgentsApi.getAdapterAuthSignal.mockReset();
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+      // The row has to actually offer the adapter these drafts name. The login
+      // panel lives inside the input canvas, and the canvas opens for a chosen
+      // source — a saved adapter the row cannot show is not a chosen one, so
+      // without this the panel is absent for a reason that has nothing to do
+      // with the auth signal these tests are about.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
     });
 
     /** Drives the wizard to the Connect step with a company already created. */

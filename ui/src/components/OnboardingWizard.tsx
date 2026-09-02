@@ -1046,16 +1046,22 @@ function OnboardingWizardInner({
     sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
 
   /**
-   * When the input canvas is open.
+   * When the input canvas is open: exactly when a source has been chosen.
    *
-   * A selected source is the ordinary reason — the card is the answer to the
-   * tile that was just pressed, so an untouched row leaves nothing under it. But
-   * it opens for a pending sign-in regardless of the row, because the adapter
-   * needing credentials does not depend on it having a tile: a restored draft
-   * naming an adapter this step no longer offers still cannot hire without one,
-   * and hiding the panel would leave that dead end with nothing to press.
+   * The card is the answer to the tile that was just pressed, so an untouched
+   * row leaves nothing under it — a sign-in bar offered before the question was
+   * answered says the step already knows which provider is meant, which it does
+   * not.
+   *
+   * This used to open for a pending sign-in as well, `|| showAdapterLoginPanel`,
+   * so that a restored draft naming an adapter this step no longer offers still
+   * had something to press. That reasoning came from when the row arrived with a
+   * selection already made and an invisible one was a dead end. It is not one
+   * now: the row is a question, an unofferable saved adapter simply leaves it
+   * unanswered, and the visible tiles are the thing to press. `showAdapterLoginPanel`
+   * still decides what goes *inside* the canvas — only not whether it exists.
    */
-  const canvasOpen = sourceSelected || showAdapterLoginPanel;
+  const canvasOpen = sourceSelected;
 
   // The default (or a saved) adapterType can name an adapter the server has
   // since disabled — e.g. a cloud sandbox registry without claude_local. The
