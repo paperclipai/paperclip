@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import {
@@ -20,7 +21,11 @@ import {
 import {
   extractAttachmentRefs,
   extractImageRefs,
-  fileKindForName,
+  fileKindForAttachment,
+  formatFileSize,
+  hydrateAttachmentRefs,
+  isImageAttachment,
+  stripStandaloneImageEmbeds,
 } from "./task-chat-attachments";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
@@ -52,6 +57,7 @@ interface TaskChatBubbleProps {
    * so this bubble skips them. Human/system bubbles pass nothing.
    */
   actions?: ReactNode;
+  attachments?: IssueAttachment[];
 }
 
 function initialsForName(name: string) {
@@ -106,13 +112,17 @@ export function TaskChatAgentIdentity({
  * surface with an avatar author header (the agent's assigned icon + name);
  * system notices are centered and recede.
  */
-function galleryItemForImage(src: string, name?: string): GalleryMediaItem {
+function galleryItemForImage(
+  src: string,
+  name?: string,
+  attachment?: ReturnType<typeof hydrateAttachmentRefs>[number],
+): GalleryMediaItem {
   return {
-    id: src,
-    contentPath: src,
-    // The modal only inspects contentType/filename to spot videos; embedded
-    // markdown images are always images, so an empty type is safe here.
-    contentType: "",
+    id: attachment?.id ?? src,
+    contentPath: attachment?.openPath ?? src,
+    openPath: attachment?.openPath,
+    downloadPath: attachment?.downloadPath,
+    contentType: attachment?.contentType ?? "",
     originalFilename: name?.trim() ? name : "image",
   };
 }
@@ -125,6 +135,7 @@ export function TaskChatBubble({
   beforeTurn,
   hideAgentIdentity = false,
   actions,
+  attachments = [],
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
@@ -153,25 +164,34 @@ export function TaskChatBubble({
   const isHuman = item.author === "human";
   // Non-image file references ("[name](/api/attachments/…/content)") render as
   // attachment chips under the bubble; link-only lines leave the body text.
-  const { refs: attachmentRefs, text: bodyText } = extractAttachmentRefs(
-    item.text,
+  const { refs: linkedRefs, text: bodyWithoutAttachmentLinks } =
+    extractAttachmentRefs(item.text);
+  const embeddedImageRefs = extractImageRefs(bodyWithoutAttachmentLinks);
+  const bodyText = stripStandaloneImageEmbeds(bodyWithoutAttachmentLinks);
+  const hydratedLinkedRefs = hydrateAttachmentRefs(linkedRefs, attachments);
+  const hydratedEmbeddedRefs = hydrateAttachmentRefs(
+    embeddedImageRefs,
+    attachments,
   );
-  const imageRefs = extractImageRefs(bodyText);
+  const imageRefs = [
+    ...hydratedEmbeddedRefs,
+    ...hydratedLinkedRefs.filter(isImageAttachment),
+  ].filter((ref, index, refs) =>
+    refs.findIndex((candidate) => candidate.url === ref.url) === index,
+  );
+  const attachmentRefs = hydratedLinkedRefs.filter(
+    (ref) => !isImageAttachment(ref),
+  );
   const galleryItems: GalleryMediaItem[] =
     lightboxSrc !== null && !imageRefs.some((ref) => ref.url === lightboxSrc)
       ? // A clicked image the extractor missed (e.g. inline HTML) still gets a
         // single-item lightbox rather than nothing.
         [galleryItemForImage(lightboxSrc)]
-      : imageRefs.map((ref) => galleryItemForImage(ref.url, ref.name));
+      : imageRefs.map((ref) => galleryItemForImage(ref.url, ref.name, ref));
   const lightboxIndex =
     lightboxSrc === null
       ? -1
-      : Math.max(
-          0,
-          galleryItems.findIndex(
-            (galleryItem) => galleryItem.contentPath === lightboxSrc,
-          ),
-        );
+      : Math.max(0, imageRefs.findIndex((ref) => ref.url === lightboxSrc));
   return (
     <div
       className={cn(
@@ -219,35 +239,87 @@ export function TaskChatBubble({
           </MarkdownBody>
         </div>
       ) : null}
-      {attachmentRefs.length > 0 ? (
-        <AttachmentGroup
-          className="max-w-(--pct-85)"
-          data-testid="task-chat-bubble-attachments"
+      {imageRefs.length > 0 ? (
+        <div
+          className="flex max-w-(--pct-85) flex-col gap-2"
+          data-testid="task-chat-bubble-media"
         >
-          {attachmentRefs.map((ref) => {
-            const kind = fileKindForName(ref.name);
-            const KindIcon = kind.icon;
-            return (
-              <Attachment key={ref.url} size="sm">
-                <AttachmentMedia>
-                  <KindIcon aria-hidden />
-                </AttachmentMedia>
-                <AttachmentContent>
-                  <AttachmentTitle className="max-w-48">
-                    {ref.name}
-                  </AttachmentTitle>
-                  <AttachmentDescription className="max-w-48">
-                    {kind.label}
-                  </AttachmentDescription>
-                </AttachmentContent>
-                <AttachmentTrigger
-                  aria-label={`Open ${ref.name}`}
-                  render={<a href={ref.url} target="_blank" rel="noreferrer" />}
-                />
-              </Attachment>
-            );
-          })}
-        </AttachmentGroup>
+          <span className="text-xs text-muted-foreground">
+            Screenshots · {imageRefs.length}
+          </span>
+          <div className="grid grid-cols-4 gap-2">
+            {imageRefs
+              .slice(0, imageRefs.length > 4 ? 3 : 4)
+              .map((ref, index) => (
+                <button
+                  key={ref.url}
+                  type="button"
+                  className="group aspect-video min-w-0 overflow-hidden rounded-md bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={`Open ${ref.name || `image ${index + 1}`}`}
+                  onClick={() => setLightboxSrc(ref.url)}
+                >
+                  <img
+                    src={ref.openPath ?? ref.url}
+                    alt={ref.name}
+                    loading="lazy"
+                    className="h-full w-full object-cover transition-transform group-hover:scale-(--s-1_02)"
+                  />
+                </button>
+              ))}
+            {imageRefs.length > 4 ? (
+              <button
+                type="button"
+                className="aspect-video min-w-0 rounded-md bg-muted text-sm font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Open ${imageRefs.length - 3} more screenshots`}
+                onClick={() => setLightboxSrc(imageRefs[3].url)}
+              >
+                +{imageRefs.length - 3}
+              </button>
+            ) : null}
+          </div>
+          <span className="truncate text-xs text-muted-foreground">
+            {imageRefs.map((ref) => ref.name || "image").join(" · ")}
+          </span>
+        </div>
+      ) : null}
+      {attachmentRefs.length > 0 ? (
+        <div className="flex max-w-(--pct-85) flex-col gap-2">
+          <span className="text-xs text-muted-foreground">
+            Files · {attachmentRefs.length}
+          </span>
+          <AttachmentGroup data-testid="task-chat-bubble-attachments">
+            {attachmentRefs.map((ref) => {
+              const kind = fileKindForAttachment(ref);
+              const KindIcon = kind.icon;
+              const size = formatFileSize(ref.byteSize);
+              return (
+                <Attachment key={ref.url} size="sm">
+                  <AttachmentMedia>
+                    <KindIcon aria-hidden />
+                  </AttachmentMedia>
+                  <AttachmentContent>
+                    <AttachmentTitle className="max-w-48">
+                      {ref.name}
+                    </AttachmentTitle>
+                    <AttachmentDescription className="max-w-48">
+                      {size ? `${kind.label} · ${size}` : kind.label}
+                    </AttachmentDescription>
+                  </AttachmentContent>
+                  <AttachmentTrigger
+                    aria-label={`Open ${ref.name}`}
+                    render={
+                      <a
+                        href={ref.openPath ?? ref.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      />
+                    }
+                  />
+                </Attachment>
+              );
+            })}
+          </AttachmentGroup>
+        </div>
       ) : null}
       {!isHuman && item.verificationCaveats?.length ? (
         <div
