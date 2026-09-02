@@ -575,11 +575,59 @@ describe("Capability live runnerd and Codex session", () => {
     expect(state.transports[0]?.processInfo().exited).toBe(true);
 
     const active = session.sendMessage("start a long turn");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await vi.waitFor(() => expect(session.snapshot().activeTurnId).not.toBeNull());
     expect(session.snapshot().status).toBe("running");
     await session.interrupt("test cleanup");
     await expect(active).resolves.toMatchObject({ status: "interrupted" });
     await service.shutdown(session.id);
+  });
+
+  it("interrupts pending admission without starting provider work", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } });
+
+    const turn = session.sendMessage("do not admit this turn");
+    expect(session.snapshot().transcript).toEqual([
+      expect.objectContaining({ role: "user", text: "do not admit this turn" }),
+    ]);
+    await session.interrupt("cancel during workspace preflight");
+    const result = await turn;
+
+    expect(result.status).toBe("interrupted");
+    expect(result.snapshot.status).toBe("warm_idle");
+    expect(result.snapshot.terminalTurns).toEqual([
+      expect.objectContaining({ turnId: result.turnId, status: "interrupted" }),
+    ]);
+    expect(state.transports[0]?.requests.filter((request) => request.method === "turn/start"))
+      .toEqual([]);
+    await service.shutdown(session.id);
+  });
+
+  it("fails visibly instead of blocking teardown on an unabortable provider start", async () => {
+    const state = providerState();
+    state.onTurnStart = () => new Promise<void>(() => undefined);
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } });
+    const events: CapabilityLiveTurnEvent[] = [];
+    session.subscribe((event) => events.push(event));
+
+    const abandonedTurn = session.sendMessage("start a provider request that never returns");
+    void abandonedTurn.catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(state.transports[0]?.requests.some((request) => request.method === "turn/start"))
+        .toBe(true);
+    });
+
+    await expect(session.suspend("bounded admission teardown")).resolves.toBeUndefined();
+    expect(session.snapshot().status).toBe("failed");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "error",
+        message: expect.stringContaining("did not stop after transport close"),
+      }),
+    ]));
+    expect(state.transports[0]?.processInfo().exited).toBe(true);
   });
 
   it("persists the selected provider and passes it to the live runner transport", async () => {
@@ -1001,7 +1049,7 @@ describe("Capability live runnerd and Codex session", () => {
       requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731",
     });
     const longTurn = session.sendMessage("Start a long turn.");
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    await vi.waitFor(() => expect(session.snapshot().activeTurnId).not.toBeNull());
     await session.interrupt("bounded test interrupt");
     await expect(longTurn).resolves.toMatchObject({ status: "interrupted" });
     await session.sendMessage("Please report progress before reset.");

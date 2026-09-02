@@ -59,6 +59,8 @@ interface RunRecord {
   runnerProfileJson?: Record<string, unknown> | null;
   usageJson?: Record<string, unknown> | null;
   resultJson?: Record<string, unknown> | null;
+  sessionIdBefore?: string | null;
+  sessionIdAfter?: string | null;
   error?: string | null;
   errorCode?: string | null;
   startedAt?: string | null;
@@ -106,9 +108,13 @@ interface IssueDocumentRecord {
   latestRevisionNumber?: number;
 }
 interface RunEventRecord {
+  seq?: number;
   eventType?: string;
   payload?: Record<string, unknown> | null;
   sourceInstanceId?: string | null;
+  sourceEventId?: string | null;
+  sourceSeq?: number | null;
+  protocolSchemaVersion?: number | null;
 }
 const TERMINAL_RUN_STATUSES = new Set([
   "succeeded",
@@ -295,6 +301,86 @@ function renderedMarkerPattern(marker: string) {
       .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
       .join("\\\\?_"),
   );
+}
+
+function nativeRunEventIntegrityFailures(
+  run: RunRecord,
+  events: readonly RunEventRecord[],
+): string[] {
+  const failures: string[] = [];
+  let lastOuterSeq = 0;
+  const lastSourceSeq = new Map<string, number>();
+  const sourceEventIds = new Set<string>();
+  const runnerEventTypes: string[] = [];
+  const runTerminalSources: unknown[] = [];
+
+  for (const event of events) {
+    if (typeof event.seq !== "number" || event.seq <= lastOuterSeq) {
+      failures.push(
+        `run ${run.id} event sequence is not strictly monotonic at ${String(event.seq)}`,
+      );
+    } else {
+      lastOuterSeq = event.seq;
+    }
+    const envelope = record(event.payload?.prpEvent);
+    if (Object.keys(envelope).length === 0) continue;
+    if (
+      envelope.schema !== "paperclip.prp.event.v1"
+      || envelope.schemaVersion !== 1
+      || event.protocolSchemaVersion !== 1
+    ) {
+      failures.push(`run ${run.id} exposed a malformed PRP v1 envelope`);
+    }
+    if (envelope.runId !== run.id) {
+      failures.push(`run ${run.id} exposed an event bound to ${String(envelope.runId)}`);
+    }
+    if (envelope.eventType !== event.eventType) {
+      failures.push(
+        `run ${run.id} event discriminator changed from ${String(event.eventType)} to ${String(envelope.eventType)}`,
+      );
+    }
+    if (
+      envelope.sourceInstanceId !== event.sourceInstanceId
+      || envelope.sourceEventId !== event.sourceEventId
+      || envelope.sourceSeq !== event.sourceSeq
+    ) {
+      failures.push(`run ${run.id} event source identity changed during persistence/redaction`);
+    }
+    if (typeof event.sourceEventId === "string") {
+      if (sourceEventIds.has(event.sourceEventId)) {
+        failures.push(`run ${run.id} duplicated source event ${event.sourceEventId}`);
+      }
+      sourceEventIds.add(event.sourceEventId);
+    }
+    if (
+      typeof event.sourceInstanceId === "string"
+      && typeof event.sourceSeq === "number"
+    ) {
+      const previous = lastSourceSeq.get(event.sourceInstanceId) ?? 0;
+      if (event.sourceSeq <= previous) {
+        failures.push(
+          `run ${run.id} source ${event.sourceInstanceId} sequence regressed from ${previous} to ${event.sourceSeq}`,
+        );
+      }
+      lastSourceSeq.set(event.sourceInstanceId, event.sourceSeq);
+    }
+    if (envelope.sourceKind === "runner" && typeof event.eventType === "string") {
+      runnerEventTypes.push(event.eventType);
+    }
+    if (event.eventType === "run.terminal") {
+      runTerminalSources.push(envelope.sourceKind);
+    }
+  }
+
+  if (runnerEventTypes.filter((value) => value === "run.result.proposed").length !== 1) {
+    failures.push(`run ${run.id} must persist exactly one runner semantic result`);
+  }
+  if (runTerminalSources.length !== 1) {
+    failures.push(`run ${run.id} must persist exactly one terminal event`);
+  } else if (runTerminalSources[0] !== "control_plane") {
+    failures.push(`run ${run.id} terminal event must be control-plane authoritative`);
+  }
+  return failures;
 }
 
 async function expectPlanStageMarkerVisible(page: Page, marker: string) {
@@ -894,7 +980,7 @@ for (const execution of executions) {
         selectedRuns.find(
           (candidate) => candidate.id === issue!.executionRunId,
         ) ?? selectedRuns[0];
-      const [persistedAgentValue, persistedEnvironmentValue, runLogs] =
+      const [persistedAgentValue, persistedEnvironmentValue, runLogs, runEventsByRun] =
         await Promise.all([
           api.get<unknown>(`/api/agents/${fixtures.agent.id}`),
           api.get<unknown>(`/api/environments/${fixtures.environment.id}`),
@@ -910,6 +996,25 @@ for (const execution of executions) {
                     error instanceof Error ? error.message : String(error),
                 })),
             })),
+          ),
+          Promise.all(
+            selectedRuns.map(async (candidate) => {
+              try {
+                return {
+                  runId: candidate.id,
+                  events: await api.get<RunEventRecord[]>(
+                    `/api/heartbeat-runs/${candidate.id}/events?limit=1000`,
+                  ),
+                  error: null,
+                };
+              } catch (error) {
+                return {
+                  runId: candidate.id,
+                  events: [] as RunEventRecord[],
+                  error: error instanceof Error ? error.message : String(error),
+                };
+              }
+            }),
           ),
         ]);
       const runLog =
@@ -947,6 +1052,13 @@ for (const execution of executions) {
           invariantFailures.push(
             `expected run ${candidate.id} without a recovery continuation`,
           );
+      }
+      for (const captured of runEventsByRun) {
+        if (captured.error) {
+          invariantFailures.push(
+            `run ${captured.runId} events query failed: ${captured.error}`,
+          );
+        }
       }
 
       const context = record(run.contextSnapshot);
@@ -1021,32 +1133,77 @@ for (const execution of executions) {
           );
         }
       }
-      let runEvents: RunEventRecord[] = [];
-      let runEventsCaptureError: string | null = null;
+      const runEvents = runEventsByRun.find(
+        (candidate) => candidate.runId === run.id,
+      )?.events ?? [];
       if (execution.profile.generation === "native") {
-        try {
-          runEvents = await api.get<RunEventRecord[]>(
-            `/api/heartbeat-runs/${run.id}/events?limit=1000`,
-          );
-        } catch (error) {
-          runEventsCaptureError =
-            error instanceof Error ? error.message : String(error);
+        for (const candidate of selectedRuns) {
+          const candidateEvents = runEventsByRun.find(
+            (captured) => captured.runId === candidate.id,
+          )?.events ?? [];
+          const runnerInstanceObserved =
+            Boolean(candidate.runnerInstanceId) ||
+            candidateEvents.some(
+              (event) =>
+                typeof event.sourceInstanceId === "string" &&
+                event.sourceInstanceId.length > 0 &&
+                !event.sourceInstanceId.endsWith(":control"),
+            );
+          if (!runnerInstanceObserved) {
+            invariantFailures.push(
+              `expected native run ${candidate.id} events from a runner instance`,
+            );
+          }
           invariantFailures.push(
-            `native run events query failed: ${runEventsCaptureError}`,
+            ...nativeRunEventIntegrityFailures(candidate, candidateEvents),
           );
         }
-        const runnerInstanceObserved =
-          Boolean(run.runnerInstanceId) ||
-          runEvents.some(
-            (event) =>
-              typeof event.sourceInstanceId === "string" &&
-              event.sourceInstanceId.length > 0 &&
-              !event.sourceInstanceId.endsWith(":control"),
+        if (
+          (execution.profile.provider === "codex"
+            || execution.profile.provider === "opencode")
+          && selectedRuns.length > 1
+        ) {
+          const providerSessions = selectedRuns.map(
+            (candidate) => candidate.sessionIdAfter,
           );
-        if (!runnerInstanceObserved) {
-          invariantFailures.push(
-            "expected native run events from a runner instance",
-          );
+          if (
+            providerSessions.some((sessionId) => !sessionId)
+            || new Set(providerSessions).size !== 1
+          ) {
+            invariantFailures.push(
+              `expected ${execution.profile.provider} to preserve one provider session across all heartbeat runs`,
+            );
+          }
+        } else if (
+          execution.profile.provider === "acpx" &&
+          selectedRuns.length > 1
+        ) {
+          for (let index = 1; index < selectedRuns.length; index += 1) {
+            const previousSessionId = selectedRuns[index - 1]?.sessionIdAfter;
+            const current = selectedRuns[index]!;
+            const currentSessionId = current.sessionIdAfter;
+            if (!previousSessionId || !currentSessionId) {
+              invariantFailures.push(
+                "expected ACPX to record provider session identity across all heartbeat runs",
+              );
+              continue;
+            }
+            if (previousSessionId === currentSessionId) continue;
+            const currentEvents = runEventsByRun.find(
+              (captured) => captured.runId === current.id,
+            )?.events ?? [];
+            const recordedContinuityBreak = currentEvents.some(
+              (event) =>
+                event.eventType === "run.performance.span" &&
+                record(event.payload).span ===
+                  "provider.session.continuity_break",
+            );
+            if (!recordedContinuityBreak) {
+              invariantFailures.push(
+                `ACPX provider session changed from ${previousSessionId} to ${currentSessionId} without a continuity event`,
+              );
+            }
+          }
         }
         const spanPayloads = runEvents
           .filter((event) => event.eventType === "run.performance.span")
@@ -1065,13 +1222,29 @@ for (const execution of executions) {
         }
         if (execution.environment.id === "daytona") {
           const authenticated = spanPayloads.some(
-            (payload) =>
-              payload.span === "runner.prp.authenticate" &&
-              payload.outcome === "ok",
+            (event) =>
+              event.span === "runner.prp.authenticate" &&
+              event.outcome === "ok",
           );
           if (!authenticated) {
             invariantFailures.push(
               "expected authenticated native Daytona runner preview ingress",
+            );
+          }
+        }
+      } else {
+        for (const candidate of selectedRuns) {
+          const candidateEvents = runEventsByRun.find(
+            (captured) => captured.runId === candidate.id,
+          )?.events ?? [];
+          if (
+            candidate.runtimeMode !== "legacy"
+            || candidate.runnerInstanceId
+            || candidateEvents.some((event) =>
+              Object.keys(record(event.payload?.prpEvent)).length > 0)
+          ) {
+            invariantFailures.push(
+              `legacy run ${candidate.id} crossed into native runner persistence`,
             );
           }
         }
@@ -1090,7 +1263,7 @@ for (const execution of executions) {
           matcherResults,
           invariantFailures,
           runEvents,
-          runEventsCaptureError,
+          runEventsByRun,
           runLogs,
         },
         secrets,
@@ -1104,13 +1277,12 @@ for (const execution of executions) {
         `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
         { waitUntil: "domcontentloaded" },
       );
-      await expect(
-        page
-          .getByTestId("task-chat-thread")
-          .getByTestId("task-chat-agent-bubble")
-          .filter({ hasText: renderedMarkerPattern(marker) })
-          .last(),
-      ).toBeVisible({ timeout: 30_000 });
+      const visibleFinalReplies = page
+        .getByTestId("task-chat-thread")
+        .getByTestId("task-chat-agent-bubble")
+        .filter({ hasText: renderedMarkerPattern(marker) });
+      await expect(visibleFinalReplies).toHaveCount(1, { timeout: 30_000 });
+      await expect(visibleFinalReplies.first()).toBeVisible();
       await expect(
         page.getByTestId("issue-detail-header").getByRole("button", {
           name: "Change status (current: Done)",

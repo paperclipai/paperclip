@@ -1443,6 +1443,10 @@ it("cold-restores a suspended provider session under its durable run binding", a
     await first.transport.request("thread/start", {
       cwd: tmpdir(),
       dynamicTools,
+      completionContract: {
+        revision: "contract-first",
+        criterionIds: ["criterion-first"],
+      },
     });
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned"))).mode & 0o222).toBe(0);
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned", "SKILL.md"))).mode & 0o222).toBe(0);
@@ -1558,7 +1562,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
       ),
     ) as { toolBridge?: { authorized?: Record<string, unknown> } };
     expect(Object.keys(providerState.toolBridge?.authorized ?? {})).toEqual(
-      ["get_task_context"],
+      ["get_task_context", "paperclip_block", "paperclip_finish"],
     );
     await restored.transport.request("turn/start", {
       input: [{ type: "text", text: "restored process" }],

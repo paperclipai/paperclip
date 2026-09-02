@@ -22,6 +22,7 @@ import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { packageEvidence } from "./evidence.js";
 import { classifyFailure, shouldRetryFailure } from "./failure-classifier.js";
 import { buildRunnerCampaign } from "./history.js";
+import { resolvePaperclipRunnerBinaryForHarness } from "./harness-env.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import {
   assertSecretFree,
@@ -421,6 +422,10 @@ async function runAttempt(input: {
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,
       PAPERCLIP_RUNNER_E2E_WORKSPACE: workspace,
       PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(privateDir, "server.log"),
+      PAPERCLIP_RUNNER_BINARY: resolvePaperclipRunnerBinaryForHarness(
+        executions,
+        repositoryRoot,
+      ),
       // Vite's optimized dependency cache embeds revision query strings. A
       // private per-attempt cache prevents an earlier cell or local rebuild
       // from producing `504 Outdated Optimize Dep` during browser bootstrap.

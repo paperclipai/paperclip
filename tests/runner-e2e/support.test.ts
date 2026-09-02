@@ -10,7 +10,9 @@ import { classifyFailure, shouldRetryFailure } from "./failure-classifier.js";
 import {
   assertIsolatedServerEnvironment,
   buildPaperclipServerEnvironment,
+  resolvePaperclipRunnerBinaryForHarness,
 } from "./harness-env.js";
+import { runnerExecutionById } from "./catalog.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import { evaluateMatchers } from "./matchers.js";
 import {
@@ -38,6 +40,39 @@ afterEach(async () => {
       .splice(0)
       .map((directory) => rm(directory, { recursive: true, force: true })),
   );
+});
+
+describe("runner E2E local binary resolution", () => {
+  const localNativeExecution = runnerExecutionById(
+    "core-compatibility.runner-codex.local.message-marker",
+  );
+
+  it("uses the debug runner binary built by the E2E workflow", () => {
+    expect(
+      resolvePaperclipRunnerBinaryForHarness(
+        [localNativeExecution],
+        "/repository",
+        undefined,
+        "linux",
+      ),
+    ).toBe(
+      path.join(
+        "/repository",
+        "packages/paperclip-runner/runner/target/debug/paperclip-runnerd",
+      ),
+    );
+  });
+
+  it("preserves an explicit runner binary override", () => {
+    expect(
+      resolvePaperclipRunnerBinaryForHarness(
+        [localNativeExecution],
+        "/repository",
+        "/custom/paperclip-runnerd",
+        "linux",
+      ),
+    ).toBe("/custom/paperclip-runnerd");
+  });
 });
 
 describe("runner E2E sensitive API boundary", () => {
@@ -172,6 +207,11 @@ describe("runner E2E matchers", () => {
     const results = await evaluateMatchers(
       [
         { kind: "message_contains", expected: "PAPERCLIP_E2E_OK_nonce" },
+        {
+          kind: "message_occurrences",
+          expected: "PAPERCLIP_E2E_OK_nonce",
+          count: 1,
+        },
         { kind: "issue_status", expected: "done" },
         { kind: "runtime_mode", expected: "native" },
       ],
@@ -182,6 +222,15 @@ describe("runner E2E matchers", () => {
       },
     );
     expect(results.every((result) => result.passed)).toBe(true);
+  });
+
+  it("requires an exact number of complete visible markers", async () => {
+    const [result] = await evaluateMatchers(
+      [{ kind: "message_occurrences", expected: "FINAL_marker", count: 1 }],
+      { message: "FINAL\\_marker\nFINAL_marker" },
+    );
+    expect(result).toMatchObject({ passed: false });
+    expect(result?.detail).toContain("observed 2");
   });
 
   it("normalizes ordered fragments and evaluates nested JSON Schema", async () => {

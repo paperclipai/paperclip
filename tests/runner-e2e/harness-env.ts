@@ -1,4 +1,6 @@
+import path from "node:path";
 import { CREDENTIAL_NAMES } from "./types.js";
+import type { MatrixExecution } from "./types.js";
 
 const DATABASE_KEYS = ["DATABASE_URL", "DATABASE_MIGRATION_URL"] as const;
 const AMBIENT_PAPERCLIP_CREDENTIAL_KEYS = [
@@ -23,6 +25,38 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
 const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)(?:_|$)/;
+
+/**
+ * Local native cells use the debug binary produced by build:runner-binaries.
+ * Preserve an explicit override for release builds and developer workflows.
+ */
+export function resolvePaperclipRunnerBinaryForHarness(
+  executions: readonly MatrixExecution[],
+  repositoryRoot: string,
+  configuredPath = process.env.PAPERCLIP_RUNNER_BINARY,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  if (configuredPath?.trim()) return configuredPath;
+  if (
+    !executions.some(
+      (execution) =>
+        execution.environment.id === "local" &&
+        execution.profile.generation === "native",
+    )
+  ) {
+    return undefined;
+  }
+
+  return path.join(
+    repositoryRoot,
+    "packages",
+    "paperclip-runner",
+    "runner",
+    "target",
+    "debug",
+    platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd",
+  );
+}
 
 /**
  * Build the environment inherited by the Paperclip server. Paid credentials

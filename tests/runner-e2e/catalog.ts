@@ -381,7 +381,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         "Complete this task in a single run.",
         `The exact marker also appears unescaped in the task title: PAPERCLIP_E2E_OK_${nonce}`,
         `Your final visible task-thread response must be exactly this marker: PAPERCLIP_E2E_OK_${nonce}`,
-        `In a native runner, first emit that exact marker as the complete user-facing final response, then use paperclip_finish with the same marker as its summary and an objective-satisfied claim for the supplied contract revision.`,
+        `In a native runner, first call paperclip_finish with that marker as its summary and an objective-satisfied claim for the supplied contract revision. After it succeeds, emit that exact marker once as the complete user-facing final response and do not call another tool.`,
         `In a legacy runner, post a task comment containing exactly that marker and mark the task Done through the public API.`,
         "The visible task-thread response is asserted; hidden reasoning or provider terminal output alone does not count.",
         "Use underscore characters exactly as shown and do not insert backslashes.",
@@ -389,7 +389,8 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
       ].join("\n"),
     buildMatchers(nonce, execution) {
       return [
-        { kind: "message_contains", expected: `PAPERCLIP_E2E_OK_${nonce}` },
+        { kind: "message_exact", expected: `PAPERCLIP_E2E_OK_${nonce}` },
+        { kind: "message_occurrences", expected: `PAPERCLIP_E2E_OK_${nonce}`, count: 1 },
         {
           kind: "issue_status",
           expected: execution.task.expectedTerminalState.issue,
@@ -453,6 +454,11 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
           expected: `PAPERCLIP_E2E_PLAN_DONE_${nonce}`,
         },
         {
+          kind: "message_occurrences",
+          expected: `PAPERCLIP_E2E_PLAN_DONE_${nonce}`,
+          count: 1,
+        },
+        {
           kind: "issue_status",
           expected: execution.task.expectedTerminalState.issue,
         },
@@ -485,17 +491,22 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     buildPrompt: (nonce) =>
       [
         "Answer this question directly in Ask mode: what is seven plus five?",
-        `Your final visible task-thread answer must contain this complete marker, including its final suffix: E2E_ASK_12_${nonce}.`,
+        `Your final visible task-thread answer must be exactly this complete marker, including its final suffix: E2E_ASK_12_${nonce}.`,
         "Do not create or modify files, do not create a plan or additional work, and do not expose credentials.",
         "After posting the direct answer, mark this task Done.",
-        `In a native runner, emit the answer and finish with E2E_ASK_12_${nonce} as the summary.`,
-        `In a legacy runner, post a task comment containing E2E_ASK_12_${nonce} and mark the task Done through the public API.`,
+        `In a native runner, first call paperclip_finish with E2E_ASK_12_${nonce} as the summary. After it succeeds, emit exactly E2E_ASK_12_${nonce} as the complete final response and do not call another tool.`,
+        `In a legacy runner, post exactly E2E_ASK_12_${nonce} as the task comment body and mark the task Done through the public API.`,
       ].join("\n"),
     buildMatchers(nonce, execution) {
       return [
         {
-          kind: "message_contains",
+          kind: "message_exact",
           expected: `E2E_ASK_12_${nonce}`,
+        },
+        {
+          kind: "message_occurrences",
+          expected: `E2E_ASK_12_${nonce}`,
+          count: 1,
         },
         {
           kind: "issue_status",
@@ -521,6 +532,7 @@ function terminalMatchers(
 ): readonly ReturnType<RunnerTaskFixture["buildMatchers"]>[number][] {
   return [
     { kind: "message_contains", expected: nonceMarker },
+    { kind: "message_occurrences", expected: nonceMarker, count: 1 },
     {
       kind: "issue_status",
       expected: execution.task.expectedTerminalState.issue,

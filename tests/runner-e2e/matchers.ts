@@ -60,6 +60,19 @@ function readJsonPath(value: unknown, path: string): unknown {
     }, value);
 }
 
+function countOccurrences(value: string, expected: string): number {
+  if (!expected) return 0;
+  let count = 0;
+  let cursor = 0;
+  while (cursor <= value.length - expected.length) {
+    const index = value.indexOf(expected, cursor);
+    if (index < 0) break;
+    count += 1;
+    cursor = index + expected.length;
+  }
+  return count;
+}
+
 export async function evaluateMatcher(
   matcher: Matcher,
   observation: MatcherObservation,
@@ -73,6 +86,9 @@ export async function evaluateMatcher(
   } else if (matcher.kind === "message_contains") {
     actual = message;
     passed = message.includes(normalizeMessage(matcher.expected));
+  } else if (matcher.kind === "message_occurrences") {
+    actual = countOccurrences(message, normalizeMessage(matcher.expected));
+    passed = actual === matcher.count;
   } else if (matcher.kind === "message_regex") {
     actual = message;
     passed = new RegExp(matcher.pattern, matcher.flags).test(message);
