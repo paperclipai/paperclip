@@ -242,6 +242,46 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     res.json(await Promise.all(rows.slice(0, page.limit).map((proposal) => boardProposalView(req, proposal))));
   });
 
+  router.post("/companies/:companyId/secret-proposals/:id/recover-interaction", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanySecretWrite(req, companyId);
+    const proposal = await proposals.getById(companyId, req.params.id as string);
+    if (!proposal) throw notFound("Secret proposal not found");
+    await assertCanResolveProposal({
+      db,
+      actor: req.actor,
+      companyId,
+      proposal,
+    });
+    const recovered = await proposals.recoverBindingInteraction(companyId, proposal.id, {
+      recoveredByUserId: req.actor.userId ?? "board",
+      assertCanResolve: (lockedProposal, txDb) => assertCanResolveProposal({
+        db: txDb,
+        actor: req.actor,
+        companyId,
+        proposal: lockedProposal,
+      }),
+    });
+    const payload = recovered.interaction.payload && typeof recovered.interaction.payload === "object"
+      ? recovered.interaction.payload as { secretProposal?: { proposalId?: unknown } }
+      : null;
+    res.json({
+      proposalId: recovered.proposal.id,
+      proposalStatus: recovered.proposal.status,
+      proposalInteractionId: recovered.proposal.interactionId,
+      interactionId: recovered.interaction.id,
+      interactionStatus: recovered.interaction.status,
+      interactionProposalId: typeof payload?.secretProposal?.proposalId === "string"
+        ? payload.secretProposal.proposalId
+        : null,
+      issueId: recovered.interaction.issueId,
+      idempotencyKey: recovered.interaction.idempotencyKey,
+      continuationPolicy: recovered.interaction.continuationPolicy,
+      resolverPolicy: recovered.interaction.effectiveResolverPolicy,
+      created: recovered.created,
+    });
+  });
+
   router.post("/companies/:companyId/secret-proposals/:id/approve", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanySecretWrite(req, companyId);
@@ -252,7 +292,6 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       actor: req.actor,
       companyId,
       proposal,
-      assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
     });
     const resolvedByUserId = req.actor.userId ?? "board";
     const approved = await proposals.approve(companyId, proposal.id, {
@@ -264,7 +303,6 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         actor: req.actor,
         companyId,
         proposal: lockedProposal,
-        assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
       }),
     });
     await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, issues, heartbeat });
@@ -284,11 +322,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       actor: req.actor,
       companyId,
       proposal: existing,
-      assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
     });
     const resolvedByUserId = req.actor.userId ?? "board";
     const proposal = await proposals.transition(companyId, req.params.id as string, "rejected", {
-      resolvedByUserId, reason,
+      resolvedByUserId,
+      reason,
+      assertCanResolve: (lockedProposal, txDb) => assertCanResolveProposal({
+        db: txDb,
+        actor: req.actor,
+        companyId,
+        proposal: lockedProposal,
+      }),
     });
     await notifySecretProposalResolution({
       proposal: existing,

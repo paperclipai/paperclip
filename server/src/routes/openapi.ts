@@ -3131,6 +3131,17 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/{companyId}/secret-proposals/{id}/recover-interaction",
+  tags: ["secrets"],
+  summary: "Idempotently restore the server-owned confirmation for an unlinked binding proposal",
+  request: {
+    params: z.object({ companyId: z.string().guid(), id: z.string().guid() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/companies/{companyId}/secret-proposals/{id}/approve",
   tags: ["secrets"],
   summary: "Approve and execute a secret proposal as the approving board user",

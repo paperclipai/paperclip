@@ -2162,7 +2162,12 @@ export class CapabilityLiveSession {
       this.#appendEvidence("diagnostic", this.#activeTurnId, {
         message: redactCodexDiagnostic(String(error)),
       });
+      const recoverableTurnId = this.#activeTurnId;
       this.#rejectTurn(error);
+      // Losing the notification transport is not a provider terminal fact.
+      // Reject the caller, but keep the last durable active identity so a new
+      // worker can reconcile that exact turn instead of opening fresh work.
+      if (recoverableTurnId !== null) this.#activeTurnId = recoverableTurnId;
       try {
         await this.#persist();
       } catch {

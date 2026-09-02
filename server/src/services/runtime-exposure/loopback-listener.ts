@@ -19,7 +19,11 @@
  *
  * Parsing helpers are exported pure so they can be tested without /proc.
  */
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 /** One listening row from `/proc/net/tcp` or `/proc/net/tcp6`. */
 export interface ProcListenerRow {
@@ -121,15 +125,54 @@ export function listenerBindFactsForPort(
   return { present, loopbackOnly, addresses: [...new Set(addresses)] };
 }
 
-/** Read live bind facts for one port. Unreadable `/proc` yields "unknown". */
+/** Reduce the machine-readable `lsof -F0n` output to bind facts for one port. */
+export function listenerBindFactsFromLsofOutput(content: string, port: number): ListenerBindFacts {
+  const addresses: string[] = [];
+  let present = false;
+  let loopbackOnly = true;
+  const portSuffix = `:${port}`;
+
+  for (const field of content.split(/[\0\n]/)) {
+    if (!field.startsWith("n") || !field.endsWith(portSuffix)) continue;
+    let address = field.slice(1, -portSuffix.length);
+    if (address.startsWith("[") && address.endsWith("]")) {
+      address = address.slice(1, -1);
+    }
+    if (!address) continue;
+    present = true;
+    const renderedAddress = address === "*" ? "0.0.0.0/::" : address;
+    addresses.push(renderedAddress);
+    if (!(address.startsWith("127.") || address === "::1")) {
+      loopbackOnly = false;
+    }
+  }
+
+  return { present, loopbackOnly, addresses: [...new Set(addresses)] };
+}
+
+async function readLsofListenerBindFacts(port: number): Promise<ListenerBindFacts | null> {
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) return null;
+  try {
+    const { stdout } = await execFileAsync(
+      "lsof",
+      ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-F0n"],
+      { maxBuffer: 1024 * 1024 },
+    );
+    return listenerBindFactsFromLsofOutput(stdout, port);
+  } catch {
+    return null;
+  }
+}
+
+/** Read live bind facts for one port. Unsupported host inspection yields "unknown". */
 export async function readListenerBindFacts(port: number): Promise<ListenerBindFacts | null> {
   let tcp: ProcListenerRow[];
   try {
     tcp = parseProcNetListeners(await readFile("/proc/net/tcp", "utf8"));
   } catch {
-    // No /proc (non-Linux, or a restricted sandbox): the server simply cannot
-    // explain, so it stays silent and lets the broker's own gate decide.
-    return null;
+    // macOS and other Unix hosts do not expose Linux procfs. Use the same
+    // native listener inspection dependency as the local-service supervisor.
+    return readLsofListenerBindFacts(port);
   }
   let tcp6: ProcListenerRow[] = [];
   try {

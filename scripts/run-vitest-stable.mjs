@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -274,7 +274,12 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
 function runVitest(args, label) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
-  const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
+  // macOS exposes /tmp through the /private/tmp symlink. Security-sensitive
+  // tests canonicalize workspace roots before containment checks, so building
+  // fixtures through the alias makes an in-tree child appear to be outside its
+  // workspace. Start from the canonical parent and keep every derived path in
+  // the same namespace. Linux still resolves this to /tmp.
+  const tempRootParent = process.platform === "win32" ? os.tmpdir() : realpathSync("/tmp");
   const testRoot = mkdtempSync(path.join(tempRootParent, `pcvt-${process.pid}-${invocationIndex}-`));
   // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
   const env = {

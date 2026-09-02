@@ -25,6 +25,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { lockPrincipalAuthorization } from "../services/principal-authorization-lock.js";
 
 const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
 const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
@@ -512,6 +513,15 @@ export function cloudActorHeaderSourceFromHeaders(
   };
 }
 
+export async function purgeStaleCloudTenantInstanceAdminRole(db: Db, userId: string) {
+  await db.transaction(async (tx) => {
+    await lockPrincipalAuthorization(tx as unknown as Db, "user", userId, []);
+    await tx
+      .delete(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
+  });
+}
+
 export async function resolveCloudTenantActor(
   db: Db,
   req: CloudActorHeaderSource,
@@ -573,9 +583,7 @@ export async function resolveCloudTenantActor(
   // the BetterAuth session path, board API keys, and the authorization
   // service's own instanceUserRoles lookup — so actively purge them on every
   // trusted-header authentication instead of merely no longer inserting them.
-  await db
-    .delete(instanceUserRoles)
-    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
+  await purgeStaleCloudTenantInstanceAdminRole(db, userId);
 
   if (shouldSync) await insertCloudTenantCompany(db, { companyId, companyName, now });
 

@@ -41,6 +41,9 @@ import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { approvalService } from "./approvals.js";
+import { createSecretProposalsService } from "./secret-proposals.js";
+import { assertCanResolveProposal } from "./secret-proposal-authorization.js";
+import { lockPrincipalAuthorization } from "./principal-authorization-lock.js";
 import { getStorageService } from "../storage/index.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -907,6 +910,68 @@ export function buildHostServices(
     if (!allowViewer && membership.membershipRole === "viewer") {
       throw new Error(`actorUserId "${userId}" has viewer (read-only) access and cannot take this write action`);
     }
+  };
+
+  const secretProposalResolutionAuthorization = async (args: {
+    companyId: string;
+    issueId: string;
+    interaction: {
+      id: string;
+      kind: string;
+      payload: unknown;
+    };
+    actorUserId: string;
+  }) => {
+    const payload = args.interaction.kind === "request_confirmation"
+      && args.interaction.payload
+      && typeof args.interaction.payload === "object"
+      ? args.interaction.payload as { secretProposal?: { proposalId?: unknown } }
+      : null;
+    const proposalId = typeof payload?.secretProposal?.proposalId === "string"
+      ? payload.secretProposal.proposalId
+      : null;
+    if (!proposalId) return null;
+
+    const actor: AuthorizationActor = {
+      type: "board",
+      userId: args.actorUserId,
+      companyIds: [args.companyId],
+      source: "session",
+    };
+    const authorize = async (dbClient: Db) => {
+      const proposal = await createSecretProposalsService(dbClient).getById(args.companyId, proposalId);
+      if (
+        !proposal
+        || proposal.kind !== "binding"
+        || proposal.originIssueId !== args.issueId
+        || proposal.interactionId !== args.interaction.id
+      ) {
+        throw new Error("Secret proposal not found for this interaction");
+      }
+      await assertCanResolveProposal({ db: dbClient, actor, companyId: args.companyId, proposal });
+    };
+
+    await authorize(db);
+    return {
+      lock: (txDb: Db) => lockPrincipalAuthorization(txDb, "user", args.actorUserId, args.companyId),
+      assertAllowed: async (
+        txDb: Db,
+        lockedInteraction: { id: string; kind: string; payload: unknown },
+      ) => {
+        const lockedPayload = lockedInteraction.kind === "request_confirmation"
+          && lockedInteraction.payload
+          && typeof lockedInteraction.payload === "object"
+          ? lockedInteraction.payload as { secretProposal?: { proposalId?: unknown } }
+          : null;
+        if (
+          lockedInteraction.id !== args.interaction.id
+          || lockedPayload?.secretProposal?.proposalId !== proposalId
+        ) {
+          throw new Error("Secret proposal not found for this interaction");
+        }
+        await authorize(txDb);
+      },
+    };
   };
 
   /**
@@ -2516,7 +2581,16 @@ export function buildHostServices(
           return { interaction: current as any, applied: false };
         }
 
-        const actor = { userId: params.actorUserId };
+        const authorizationTransaction = await secretProposalResolutionAuthorization({
+          companyId,
+          issueId: issue.id,
+          interaction: current,
+          actorUserId: params.actorUserId,
+        });
+        const actor = {
+          userId: params.actorUserId,
+          ...(authorizationTransaction ? { authorizationTransaction } : {}),
+        };
         let resolved: typeof current;
         let continuationTarget = {
           id: issue.id,

@@ -43,7 +43,8 @@ function createFakeDb(options: {
   chain.where = () => chain;
   chain.returning = async () => [membershipRow];
   chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve(undefined).then(resolve);
-  const db = {
+  const fakeDb = {
+    execute: async () => [],
     insert: (table: unknown) => {
       insertedTables.push(table);
       return chain;
@@ -71,7 +72,9 @@ function createFakeDb(options: {
         }),
       };
     },
-  } as unknown as Db;
+  };
+  const db = fakeDb as unknown as Db;
+  (fakeDb as typeof fakeDb & { transaction: Db["transaction"] }).transaction = async (callback) => callback(db as never);
   return { db, insertedTables, deletedTables, selectWheres };
 }
 

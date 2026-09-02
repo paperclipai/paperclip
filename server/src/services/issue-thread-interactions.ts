@@ -111,6 +111,13 @@ type InteractionActor = {
     | null;
   suggestedTaskEffectsAuthorized?: boolean;
   resolutionDetails?: Record<string, unknown>;
+  authorizationTransaction?: {
+    lock: (txDb: Db) => Promise<void>;
+    assertAllowed: (
+      txDb: Db,
+      interaction: Pick<IssueThreadInteractionRow, "id" | "kind" | "payload">,
+    ) => Promise<void>;
+  };
 };
 
 type CreateInteractionOptions = {
@@ -1688,6 +1695,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     const now = new Date();
     const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      // Authorization is always the first transaction lock. Revocation writers
+      // take the same advisory lock before membership/grant row locks, so the
+      // decision below observes either the complete pre-revocation state or the
+      // complete post-revocation state.
+      await args.actor.authorizationTransaction?.lock(txDb);
       // Policy mutations and review transitions use the same issue-row lock,
       // so the authoritative review policy and requester are stable through
       // the verdict write. Terminal issue transitions also lock the issue
@@ -1714,7 +1727,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw notFound("Issue not found");
       }
 
-      await lockLinkedSecretProposal(tx as unknown as Db, args.current);
+      await lockLinkedSecretProposal(txDb, args.current);
 
       const lockedCurrent = await tx
         .select()
@@ -1736,8 +1749,9 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           "Interaction has already been resolved",
         );
       }
+      await args.actor.authorizationTransaction?.assertAllowed(txDb, lockedCurrent);
       await assertRequestConfirmationResolutionAllowedUnderLock(
-        tx as unknown as Db,
+        txDb,
         issueContext,
         lockedCurrent,
         args.actor,
@@ -1899,6 +1913,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
     const now = new Date();
     const updated = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await args.actor.authorizationTransaction?.lock(txDb);
       const issueContext = await tx
         .select({
           id: issues.id,
@@ -1922,7 +1938,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       // Terminal issue transitions expire linked proposals while holding this
       // issue row. Match their issue -> proposal -> interaction order so a
       // close/cancel race cannot invert the first two locks.
-      await lockLinkedSecretProposal(tx as unknown as Db, args.current);
+      await lockLinkedSecretProposal(txDb, args.current);
 
       const lockedCurrent = await tx
         .select()
@@ -1944,14 +1960,15 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           "Interaction has already been resolved",
         );
       }
+      await args.actor.authorizationTransaction?.assertAllowed(txDb, lockedCurrent);
       await assertRequestConfirmationResolutionAllowedUnderLock(
-        tx as unknown as Db,
+        txDb,
         issueContext,
         lockedCurrent,
         args.actor,
       );
 
-      await resolveLinkedSecretProposal(tx as unknown as Db, lockedCurrent, {
+      await resolveLinkedSecretProposal(txDb, lockedCurrent, {
         status: "rejected",
         actor: args.actor,
         reason: reason || null,
@@ -3636,13 +3653,22 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       // review queue while the card is still pending, and an executable
       // request must not outlive a withdrawn card.
       const updated = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        // Target authorization uses the same principal advisory lock as grant
+        // and membership revocation writers. Take it before any governed
+        // mutation, then recheck after the lock so withdrawal observes either
+        // the complete pre-revocation state or the complete post-revocation
+        // state. Later status guards roll this transaction back if the card is
+        // resolved concurrently.
+        await actor.authorizationTransaction?.lock(txDb);
+        await actor.authorizationTransaction?.assertAllowed(txDb, current);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],
           actor,
           now,
         });
-        await resolveLinkedSecretProposal(tx as unknown as Db, current, {
+        await resolveLinkedSecretProposal(txDb, current, {
           status: "withdrawn",
           actor,
           reason,
@@ -3777,13 +3803,16 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const reason = data.reason?.trim() || null;
       const now = new Date();
       const updated = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await actor.authorizationTransaction?.lock(txDb);
+        await actor.authorizationTransaction?.assertAllowed(txDb, current);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],
           actor,
           now,
         });
-        await resolveLinkedSecretProposal(tx as unknown as Db, current, {
+        await resolveLinkedSecretProposal(txDb, current, {
           status: "withdrawn",
           actor,
           reason: reason ?? "Skipped from the task composer",

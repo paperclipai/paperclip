@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -17,6 +18,7 @@ import { getSecretProvider } from "../secrets/provider-registry.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
 import { normalizeSecretKey, secretService } from "./secrets.js";
+import { lockPrincipalAuthorization } from "./principal-authorization-lock.js";
 
 const CONFIG_PATH_RE = /^(?:env\.[A-Za-z_][A-Za-z0-9_]*|access\.[A-Za-z_][A-Za-z0-9_]*)$/;
 const SECRET_NAME_RE = /^[^/\s]+(?:\/[^/\s]+)*$/;
@@ -36,6 +38,19 @@ export type ProposalRunContext = {
 };
 
 type Proposal = typeof companySecretProposals.$inferSelect;
+type CanonicalBindingInteractionMetadata = Required<Pick<
+  typeof issueThreadInteractions.$inferInsert,
+  | "continuationPolicy"
+  | "requestedResolverPolicy"
+  | "effectiveResolverPolicy"
+  | "resolverPolicyProvenance"
+  | "effectiveResolverPolicySource"
+  | "title"
+  | "summary"
+  | "addresseeAgentId"
+  | "addresseeUserId"
+  | "payload"
+>>;
 
 async function loadRunContext(db: Db, context: Pick<ProposalRunContext, "companyId" | "heartbeatRunId">) {
   const run = await db.select().from(heartbeatRuns).where(and(
@@ -75,6 +90,47 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function canonicalBindingInteractionMetadata(
+  proposal: Proposal,
+  sourceSecretLabel: string,
+  targetAgentName: string,
+): CanonicalBindingInteractionMetadata {
+  if (!proposal.targetId || !proposal.configPath) {
+    throw conflict("Binding proposal is incomplete");
+  }
+  return {
+    continuationPolicy: "wake_assignee",
+    requestedResolverPolicy: "human_only",
+    effectiveResolverPolicy: "human_only",
+    resolverPolicyProvenance: "explicit",
+    effectiveResolverPolicySource: "governed_action",
+    title: "Confirm secret binding",
+    summary: `Bind ${sourceSecretLabel} to ${targetAgentName} as ${proposal.configPath}`,
+    addresseeAgentId: null,
+    addresseeUserId: null,
+    payload: {
+      version: 1,
+      prompt: `Bind secret ${sourceSecretLabel} to ${targetAgentName} as ${proposal.configPath}?`,
+      acceptLabel: "Create binding",
+      rejectLabel: "Reject",
+      rejectRequiresReason: true,
+      rejectReasonLabel: "Why should this binding not be created?",
+      allowDeclineReason: true,
+      supersedeOnUserComment: false,
+      secretProposal: {
+        version: 1,
+        proposalId: proposal.id,
+        sourceSecretLabel,
+        configPath: proposal.configPath,
+        targetAgentId: proposal.targetId,
+        targetAgentName,
+        justification: proposal.justification,
+        expiresAt: proposal.expiresAt.toISOString(),
+      },
+    },
+  };
 }
 
 export function createSecretProposalsService(db: Db) {
@@ -180,6 +236,7 @@ export function createSecretProposalsService(db: Db) {
       .where(and(eq(agents.id, proposal.targetId), eq(agents.companyId, proposal.companyId)))
       .then((rows) => rows[0] ?? null);
     if (!target) throw notFound("Target agent not found");
+    const metadata = canonicalBindingInteractionMetadata(proposal, sourceSecretLabel, target.name);
 
     const [interaction] = await txDb
       .insert(issueThreadInteractions)
@@ -188,37 +245,10 @@ export function createSecretProposalsService(db: Db) {
         issueId: proposal.originIssueId,
         kind: "request_confirmation",
         status: "pending",
-        continuationPolicy: "wake_assignee",
-        requestedResolverPolicy: "human_only",
-        effectiveResolverPolicy: "human_only",
-        resolverPolicyProvenance: "explicit",
-        effectiveResolverPolicySource: "governed_action",
         idempotencyKey: `secret-proposal:${proposal.id}`,
         sourceRunId: proposal.originRunId,
-        title: "Confirm secret binding",
-        summary: `Bind ${sourceSecretLabel} to ${target.name} as ${proposal.configPath}`,
         createdByAgentId: proposal.proposedByAgentId,
-        addresseeAgentId: null,
-        payload: {
-          version: 1,
-          prompt: `Bind secret ${sourceSecretLabel} to ${target.name} as ${proposal.configPath}?`,
-          acceptLabel: "Create binding",
-          rejectLabel: "Reject",
-          rejectRequiresReason: true,
-          rejectReasonLabel: "Why should this binding not be created?",
-          allowDeclineReason: true,
-          supersedeOnUserComment: false,
-          secretProposal: {
-            version: 1,
-            proposalId: proposal.id,
-            sourceSecretLabel,
-            configPath: proposal.configPath,
-            targetAgentId: proposal.targetId,
-            targetAgentName: target.name,
-            justification: proposal.justification,
-            expiresAt: proposal.expiresAt.toISOString(),
-          },
-        },
+        ...metadata,
       })
       .returning();
 
@@ -249,6 +279,215 @@ export function createSecretProposalsService(db: Db) {
       },
     });
     return linked;
+  }
+
+  function assertRecoverableBindingInteraction(
+    proposal: Proposal,
+    interaction: typeof issueThreadInteractions.$inferSelect,
+    expectedMetadata: CanonicalBindingInteractionMetadata,
+  ) {
+    const payload = asRecord(interaction.payload);
+    const linkedProposal = asRecord(payload.secretProposal);
+    const isExactLink = interaction.companyId === proposal.companyId
+      && interaction.issueId === proposal.originIssueId
+      && interaction.kind === "request_confirmation"
+      && interaction.status === "pending"
+      && interaction.continuationPolicy === "wake_assignee"
+      && interaction.requestedResolverPolicy === "human_only"
+      && interaction.effectiveResolverPolicy === "human_only"
+      && interaction.resolverPolicyProvenance === "explicit"
+      && interaction.effectiveResolverPolicySource === "governed_action"
+      && interaction.idempotencyKey === `secret-proposal:${proposal.id}`
+      && interaction.sourceRunId === proposal.originRunId
+      && interaction.createdByAgentId === proposal.proposedByAgentId
+      && interaction.title === expectedMetadata.title
+      && interaction.summary === expectedMetadata.summary
+      && interaction.addresseeAgentId === expectedMetadata.addresseeAgentId
+      && interaction.addresseeUserId === expectedMetadata.addresseeUserId
+      && isDeepStrictEqual(interaction.payload, expectedMetadata.payload)
+      && linkedProposal.proposalId === proposal.id;
+    if (!isExactLink) {
+      throw conflict("Secret proposal recovery found a conflicting interaction link");
+    }
+  }
+
+  async function assertOnlyPendingBindingInteraction(
+    txDb: Db,
+    proposal: Proposal,
+    interactionId: string,
+  ) {
+    const linked = await txDb
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, proposal.companyId),
+        eq(issueThreadInteractions.issueId, proposal.originIssueId!),
+        eq(issueThreadInteractions.kind, "request_confirmation"),
+        eq(issueThreadInteractions.status, "pending"),
+        sql`${issueThreadInteractions.payload}->'secretProposal'->>'proposalId' = ${proposal.id}`,
+      ))
+      .for("update");
+    if (linked.length !== 1 || linked[0]?.id !== interactionId) {
+      throw conflict("Secret proposal recovery requires exactly one pending linked confirmation");
+    }
+  }
+
+  async function recoverBindingInteraction(
+    companyId: string,
+    proposalId: string,
+    input: {
+      recoveredByUserId: string;
+      assertCanResolve?: (proposal: Proposal, txDb: Db) => Promise<void>;
+    },
+  ) {
+    const initial = await getById(companyId, proposalId);
+    if (!initial) throw notFound("Secret proposal not found");
+    if (initial.kind !== "binding") throw unprocessable("Only binding proposals can recover a confirmation interaction");
+    if (!initial.originIssueId) throw conflict("Binding proposal has no origin issue");
+
+    return db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      // Authorization is the first transaction lock. Membership and grant
+      // revocation writers take this same lock before changing either input,
+      // so a recovery can never commit using an authorization snapshot that a
+      // concurrent writer has already revoked.
+      await lockPrincipalAuthorization(txDb, "user", input.recoveredByUserId, companyId);
+      const originIssue = await txDb
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, initial.originIssueId!), eq(issues.companyId, companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!originIssue) throw notFound("Binding proposal origin issue not found");
+      if (originIssue.status === "done" || originIssue.status === "cancelled") {
+        throw conflict("Cannot recover a confirmation interaction on a closed issue");
+      }
+
+      const proposal = await requirePending(companyId, proposalId, txDb, true);
+      if (proposal.kind !== "binding") {
+        throw unprocessable("Only binding proposals can recover a confirmation interaction");
+      }
+      if (proposal.originIssueId !== originIssue.id || !proposal.targetId || !proposal.configPath) {
+        throw conflict("Binding proposal is incomplete or its origin issue changed");
+      }
+      assertNotExpired(proposal);
+      await input.assertCanResolve?.(proposal, txDb);
+      await assertBindingSnapshotCurrent(proposal, txDb, true);
+
+      const target = await txDb
+        .select({ name: agents.name })
+        .from(agents)
+        .where(and(eq(agents.id, proposal.targetId), eq(agents.companyId, proposal.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!target) throw notFound("Target agent not found");
+
+      const sourceSecretLabel = proposal.secretId
+        ? await txDb
+            .select({ name: companySecrets.name })
+            .from(companySecrets)
+            .where(and(
+              eq(companySecrets.id, proposal.secretId),
+              eq(companySecrets.companyId, proposal.companyId),
+            ))
+            .then((rows) => rows[0]?.name ?? null)
+        : proposal.secretProposalId
+          ? await txDb
+              .select({ name: companySecretProposals.proposedName })
+              .from(companySecretProposals)
+              .where(and(
+                eq(companySecretProposals.id, proposal.secretProposalId),
+                eq(companySecretProposals.companyId, proposal.companyId),
+              ))
+              .then((rows) => rows[0]?.name ?? null)
+          : null;
+      if (!sourceSecretLabel) throw conflict("Binding proposal source secret label is unavailable");
+      const expectedMetadata = canonicalBindingInteractionMetadata(proposal, sourceSecretLabel, target.name);
+
+      if (proposal.interactionId) {
+        const interaction = await txDb
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, proposal.interactionId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!interaction) throw conflict("Secret proposal interaction link is missing");
+        assertRecoverableBindingInteraction(proposal, interaction, expectedMetadata);
+        await assertOnlyPendingBindingInteraction(txDb, proposal, interaction.id);
+        return { proposal, interaction, created: false };
+      }
+
+      const idempotencyKey = `secret-proposal:${proposal.id}`;
+      const existing = await txDb
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, proposal.companyId),
+          eq(issueThreadInteractions.issueId, originIssue.id),
+          eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (existing) {
+        assertRecoverableBindingInteraction(proposal, existing, expectedMetadata);
+        await assertOnlyPendingBindingInteraction(txDb, proposal, existing.id);
+        const linked = await txDb
+          .update(companySecretProposals)
+          .set({ interactionId: existing.id, updatedAt: new Date() })
+          .where(and(
+            eq(companySecretProposals.id, proposal.id),
+            eq(companySecretProposals.status, "pending"),
+          ))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!linked) throw conflict("Proposal is no longer pending");
+        return { proposal: linked, interaction: existing, created: false };
+      }
+
+      const [interaction] = await txDb
+        .insert(issueThreadInteractions)
+        .values({
+          companyId: proposal.companyId,
+          issueId: originIssue.id,
+          kind: "request_confirmation",
+          status: "pending",
+          idempotencyKey,
+          sourceRunId: proposal.originRunId,
+          createdByAgentId: proposal.proposedByAgentId,
+          ...expectedMetadata,
+        })
+        .returning();
+      const linked = await txDb
+        .update(companySecretProposals)
+        .set({ interactionId: interaction.id, updatedAt: new Date() })
+        .where(and(
+          eq(companySecretProposals.id, proposal.id),
+          eq(companySecretProposals.status, "pending"),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!linked) throw conflict("Proposal is no longer pending");
+      await assertOnlyPendingBindingInteraction(txDb, linked, interaction.id);
+      await txDb.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, originIssue.id));
+      await logActivity(txDb, {
+        companyId: proposal.companyId,
+        actorType: "user",
+        actorId: input.recoveredByUserId,
+        action: "secret.proposal.interaction_recovered",
+        entityType: "company_secret_proposal",
+        entityId: proposal.id,
+        agentId: proposal.proposedByAgentId,
+        runId: proposal.originRunId,
+        details: {
+          issueId: originIssue.id,
+          interactionId: interaction.id,
+          interactionKind: "request_confirmation",
+          interactionStatus: "pending",
+          continuationPolicy: "wake_assignee",
+          resolverPolicy: "human_only",
+        },
+      });
+      return { proposal: linked, interaction, created: true };
+    });
   }
 
   async function reflectProposalLifecycleOnInteraction(
@@ -721,6 +960,9 @@ export function createSecretProposalsService(db: Db) {
   }) {
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      if (input.assertCanResolve) {
+        await lockPrincipalAuthorization(txDb, "user", input.resolvedByUserId, companyId);
+      }
       const proposal = await requirePending(companyId, proposalId, txDb, true);
       assertNotExpired(proposal);
       await input.assertCanResolve?.(proposal, txDb);
@@ -772,14 +1014,24 @@ export function createSecretProposalsService(db: Db) {
     resolvedByUserId?: string | null;
     reason?: string | null;
     proposerAgentId?: string | null;
+    assertCanResolve?: (proposal: Proposal, txDb: Db) => Promise<void>;
   } = {}) {
-    const proposal = await requirePending(companyId, proposalId);
-    if (status === "withdrawn" && proposal.proposedByAgentId !== input.proposerAgentId) {
-      throw forbidden("Only the proposer can withdraw this proposal");
-    }
     const now = new Date();
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      if (input.assertCanResolve) {
+        await lockPrincipalAuthorization(
+          txDb,
+          "user",
+          input.resolvedByUserId ?? "board",
+          companyId,
+        );
+      }
+      const proposal = await requirePending(companyId, proposalId, txDb, true);
+      if (status === "withdrawn" && proposal.proposedByAgentId !== input.proposerAgentId) {
+        throw forbidden("Only the proposer can withdraw this proposal");
+      }
+      await input.assertCanResolve?.(proposal, txDb);
       const updated = await tx.update(companySecretProposals).set({
         status,
         resolvedByUserId: input.resolvedByUserId ?? null,
@@ -873,5 +1125,17 @@ export function createSecretProposalsService(db: Db) {
     return expiredCount;
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
+  return {
+    getById,
+    view: enrich,
+    createSecret,
+    createBinding,
+    recoverBindingInteraction,
+    listForAgent,
+    listForBoard,
+    assertBindingSnapshotCurrent,
+    approve,
+    transition,
+    sweepExpired,
+  };
 }

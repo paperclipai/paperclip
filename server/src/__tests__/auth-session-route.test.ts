@@ -31,6 +31,12 @@ function createDb() {
   } as any;
 }
 
+function addAuthorizationTransaction(db: any) {
+  db.execute = vi.fn(async () => []);
+  db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<unknown>) => run(db));
+  return db;
+}
+
 describe("actorMiddleware authenticated session profile", () => {
   const originalCloudTenantToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
 
@@ -76,7 +82,7 @@ describe("actorMiddleware authenticated session profile", () => {
   it("trusts Cloud tenant identity headers and seeds board access", async () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
     const inserts: Array<{ values: Record<string, unknown> }> = [];
-    const db = {
+    const db = addAuthorizationTransaction({
       insert: vi.fn(() => {
         const chain = {
           values(values: Record<string, unknown>) {
@@ -101,7 +107,7 @@ describe("actorMiddleware authenticated session profile", () => {
       }),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
       select: vi.fn(() => createSelectChain([])),
-    } as any;
+    } as any);
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -172,7 +178,7 @@ describe("actorMiddleware authenticated session profile", () => {
         return Promise.resolve(undefined).then(resolve);
       },
     };
-    const db = {
+    const db = addAuthorizationTransaction({
       select: vi.fn(() => ({
         from: (table: unknown) => ({
           where: () =>
@@ -185,7 +191,7 @@ describe("actorMiddleware authenticated session profile", () => {
       })),
       insert: vi.fn(() => insertChain),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-    } as any;
+    } as any);
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -248,7 +254,7 @@ describe("actorMiddleware authenticated session profile", () => {
         return Promise.resolve(undefined).then(resolve);
       },
     };
-    const db = {
+    const db = addAuthorizationTransaction({
       select: vi.fn(() => ({
         from: (table: unknown) => ({
           where: () =>
@@ -279,8 +285,7 @@ describe("actorMiddleware authenticated session profile", () => {
         },
       })),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
-    } as any;
-    db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<void>) => run(db));
+    } as any);
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -345,7 +350,7 @@ describe("actorMiddleware authenticated session profile", () => {
         return Promise.resolve(undefined).then(resolve);
       },
     };
-    const db = {
+    const db = addAuthorizationTransaction({
       select: vi.fn(() => ({
         from: (table: unknown) => ({
           where: () =>
@@ -361,7 +366,7 @@ describe("actorMiddleware authenticated session profile", () => {
           return Promise.resolve(undefined);
         },
       })),
-    } as any;
+    } as any);
     const app = express();
     app.use(
       actorMiddleware(db, {

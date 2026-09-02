@@ -146,6 +146,7 @@ import {
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
+import { lockPrincipalAuthorization } from "../services/principal-authorization-lock.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
@@ -2897,6 +2898,13 @@ export function issueRoutes(
       proposalId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    authorizeSecretProposalResolution?: (input: {
+      companyId: string;
+      issueId: string;
+      interactionId: string;
+      proposalId: string;
+      actor: { agentId?: string | null; userId?: string | null };
+    }) => Promise<boolean>;
   } = {},
 ) {
   const router = Router();
@@ -4601,6 +4609,71 @@ export function issueRoutes(
       }
     }
     return true;
+  }
+
+  async function assertSecretProposalInteractionResolutionAllowed(
+    req: Request,
+    issue: { id: string; companyId: string },
+    interaction: Awaited<ReturnType<ReturnType<typeof issueThreadInteractionService>["getForIssue"]>>,
+  ) {
+    const payload = interaction.kind === "request_confirmation" && interaction.payload
+      && typeof interaction.payload === "object"
+      ? interaction.payload as { secretProposal?: { proposalId?: unknown } }
+      : null;
+    const proposalId = typeof payload?.secretProposal?.proposalId === "string"
+      ? payload.secretProposal.proposalId
+      : null;
+    if (!proposalId) return null;
+    const actor = getActorInfo(req);
+    if (actor.actorType !== "user") {
+      throw forbidden("Secret proposal resolution requires an authenticated board user");
+    }
+
+    const authorize = async (dbClient: Db) => {
+      if (opts.authorizeSecretProposalResolution) {
+        const allowed = await opts.authorizeSecretProposalResolution({
+          companyId: issue.companyId,
+          issueId: issue.id,
+          interactionId: interaction.id,
+          proposalId,
+          actor: { agentId: actor.agentId, userId: actor.actorId },
+        });
+        if (!allowed) throw forbidden("Secret proposal resolution is not allowed for this target agent");
+        return;
+      }
+      const proposal = await createSecretProposalsService(dbClient).getById(issue.companyId, proposalId);
+      if (
+        !proposal
+        || proposal.kind !== "binding"
+        || proposal.originIssueId !== issue.id
+        || proposal.interactionId !== interaction.id
+      ) {
+        throw notFound("Secret proposal not found");
+      }
+      await assertCanResolveProposal({ db: dbClient, actor: req.actor, companyId: issue.companyId, proposal });
+    };
+
+    await authorize(db);
+    return {
+      lock: (txDb: Db) => lockPrincipalAuthorization(txDb, "user", actor.actorId, issue.companyId),
+      assertAllowed: async (
+        txDb: Db,
+        lockedInteraction: { id: string; kind: string; payload: unknown },
+      ) => {
+        const lockedPayload = lockedInteraction.kind === "request_confirmation"
+          && lockedInteraction.payload
+          && typeof lockedInteraction.payload === "object"
+          ? lockedInteraction.payload as { secretProposal?: { proposalId?: unknown } }
+          : null;
+        if (
+          lockedInteraction.id !== interaction.id
+          || lockedPayload?.secretProposal?.proposalId !== proposalId
+        ) {
+          throw notFound("Secret proposal not found");
+        }
+        await authorize(txDb);
+      },
+    };
   }
 
   async function resolvePendingReviewInteractionRestriction(
@@ -12249,6 +12322,8 @@ export function issueRoutes(
       if (current.kind === "connection_intent") {
         throw unprocessable("Connection intents must be resolved through the connection intent endpoints");
       }
+      const secretProposalAuthorizationTransaction =
+        await assertSecretProposalInteractionResolutionAllowed(req, issue, current);
       const suggestedTaskEffectsAuthorized = current.kind === "suggest_tasks"
         ? await assertSuggestedTaskEffectsAllowed(
             req,
@@ -12267,6 +12342,9 @@ export function issueRoutes(
         userId: actor.actorType === "user" ? actor.actorId : null,
         resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
         suggestedTaskEffectsAuthorized,
+        ...(secretProposalAuthorizationTransaction
+          ? { authorizationTransaction: secretProposalAuthorizationTransaction }
+          : {}),
       });
       const toolAction = interaction.payload && typeof interaction.payload === "object"
         ? (interaction.payload as { toolAction?: { actionRequestId?: unknown } }).toolAction
@@ -12503,6 +12581,8 @@ export function issueRoutes(
       if (current.kind === "connection_intent") {
         throw unprocessable("Connection intents must be resolved through the connection intent endpoints");
       }
+      const secretProposalAuthorizationTransaction =
+        await assertSecretProposalInteractionResolutionAllowed(req, issue, current);
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
@@ -12510,6 +12590,9 @@ export function issueRoutes(
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
         resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+        ...(secretProposalAuthorizationTransaction
+          ? { authorizationTransaction: secretProposalAuthorizationTransaction }
+          : {}),
       });
 
       await logActivity(db, {
@@ -12719,6 +12802,8 @@ export function issueRoutes(
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
       await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
+      const secretProposalAuthorizationTransaction =
+        await assertSecretProposalInteractionResolutionAllowed(req, issue, current);
 
       const actor = getActorInfo(req);
       let nativeRunId: string | null = null;
@@ -12730,6 +12815,9 @@ export function issueRoutes(
           agentId: actor.agentId,
           runId: actor.runId,
           userId: actor.actorType === "user" ? actor.actorId : null,
+          ...(secretProposalAuthorizationTransaction
+            ? { authorizationTransaction: secretProposalAuthorizationTransaction }
+            : {}),
         },
         {
           afterResolveInTransaction: async (tx, resolved) => {
@@ -12803,11 +12891,18 @@ export function issueRoutes(
       }
       assertBoard(req);
 
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      const secretProposalAuthorizationTransaction =
+        await assertSecretProposalInteractionResolutionAllowed(req, issue, current);
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).skipInteraction(issue, interactionId, req.body, {
+      const interaction = await interactionSvc.skipInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        ...(secretProposalAuthorizationTransaction
+          ? { authorizationTransaction: secretProposalAuthorizationTransaction }
+          : {}),
       });
 
       await logActivity(db, {

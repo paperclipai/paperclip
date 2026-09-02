@@ -48,7 +48,7 @@ afterEach(async () => {
 function serviceCommand() {
   // Answers `/api/health` the way a real Paperclip dev runtime does: managed
   // publication requires semantic health, not just a 200 (PAP-17572).
-  return `node -e 'const http=require("http");const p=Number(process.env.PORT);for(const q of [p,p+10000])http.createServer((rq,r)=>{if(rq.url==="/api/health"){r.setHeader("content-type","application/json");r.end(JSON.stringify({status:"ok"}));return}r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1");setInterval(()=>{},1000)'`;
+  return `node -e 'const http=require("http");const p=Number(process.env.PORT);const h=p<=55535?p+10000:p-10000;for(const q of [p,h])http.createServer((rq,r)=>{if(rq.url==="/api/health"){r.setHeader("content-type","application/json");r.end(JSON.stringify({status:"ok"}));return}r.statusCode=200;r.end("ok")}).listen(q,"127.0.0.1");setInterval(()=>{},1000)'`;
 }
 
 /**
@@ -83,10 +83,11 @@ const host = mode === "custom" ? (valueOf("--bind-host") ?? "127.0.0.1")
   : mode === "lan" ? "0.0.0.0"
   : "127.0.0.1";
 const p = Number(process.env.PORT);
+const h = p <= 55535 ? p + 10000 : p - 10000;
 // Even a pre-exposure checkout answered /api/health semantically; these guests
 // model bind behaviour, not health behaviour.
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
-for (const q of [p, p + 10000]) {
+for (const q of [p, h]) {
   http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, host);
 }
 setInterval(() => {}, 1000);
@@ -105,10 +106,11 @@ const argv = process.argv.slice(2);
 const at = argv.indexOf("--bind-host");
 const host = at >= 0 ? argv[at + 1] : "127.0.0.1";
 const p = Number(process.env.PORT);
+const h = p <= 55535 ? p + 10000 : p - 10000;
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
 http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(p, host);
 // No host argument: Vite's own HMR listener lands on the wildcard.
-http.createServer((_, r) => { r.statusCode = 426; r.end(); }).listen(p + 10000);
+http.createServer((_, r) => { r.statusCode = 426; r.end(); }).listen(h);
 setInterval(() => {}, 1000);
 `;
 
@@ -116,8 +118,9 @@ setInterval(() => {}, 1000);
 const ALWAYS_WILDCARD_GUEST = `
 import http from "node:http";
 const p = Number(process.env.PORT);
+const h = p <= 55535 ? p + 10000 : p - 10000;
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
-for (const q of [p, p + 10000]) {
+for (const q of [p, h]) {
   http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, "0.0.0.0");
 }
 setInterval(() => {}, 1000);
@@ -134,12 +137,13 @@ setInterval(() => {}, 1000);
 const SYNTHETIC_EADDRINUSE_ON_BASE_PORT_GUEST = `
 import http from "node:http";
 const p = Number(process.env.PORT);
+const h = p <= 55535 ? p + 10000 : p - 10000;
 if (p === 42000) {
   process.stderr.write("node:events:497\\nError: listen EADDRINUSE: address already in use 127.0.0.1:" + p + "\\n");
   process.exit(1);
 }
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
-for (const q of [p, p + 10000]) {
+for (const q of [p, h]) {
   http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, "127.0.0.1");
 }
 setInterval(() => {}, 1000);

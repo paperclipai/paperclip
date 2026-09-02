@@ -12,6 +12,8 @@ import {
   assets,
   companies,
   companyMemberships,
+  companySecretProposals,
+  companySecrets,
   costEvents,
   createDb,
   executionWorkspaces,
@@ -24,6 +26,7 @@ import {
   issues,
   pluginManagedResources,
   plugins,
+  principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
 import {
@@ -31,6 +34,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
+import { accessService } from "../services/access.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
@@ -118,8 +122,10 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(pluginManagedResources);
     await db.delete(projects);
     await db.delete(plugins);
+    await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(agents);
+    await db.delete(companySecrets);
     await db.delete(companies);
   });
 
@@ -979,6 +985,75 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     return interactionId;
   }
 
+  async function seedBindingProposalInteraction(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+  }) {
+    const runId = randomUUID();
+    const secretId = randomUUID();
+    const proposalId = randomUUID();
+    const interactionId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: "succeeded",
+    });
+    await db.insert(companySecrets).values({
+      id: secretId,
+      companyId: input.companyId,
+      key: `PLUGIN_SOURCE_${secretId.replace(/-/g, "").slice(0, 8).toUpperCase()}`,
+      name: `plugin/source/${secretId}`,
+      provider: "local_encrypted",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "governed_action",
+      sourceRunId: runId,
+      createdByAgentId: input.agentId,
+      payload: {
+        version: 1,
+        prompt: "Bind the credential?",
+        secretProposal: {
+          version: 1,
+          proposalId,
+          configPath: "access.PLUGIN_ALIAS",
+          sourceSecretLabel: `plugin/source/${secretId}`,
+          targetAgentId: input.agentId,
+          targetAgentName: "Engineer",
+          justification: "Verify plugin interaction authorization",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      } as never,
+    });
+    await db.insert(companySecretProposals).values({
+      id: proposalId,
+      companyId: input.companyId,
+      kind: "binding",
+      status: "pending",
+      justification: "Verify plugin interaction authorization",
+      secretId,
+      targetType: "agent",
+      targetId: input.agentId,
+      configPath: "access.PLUGIN_ALIAS",
+      proposedByAgentId: input.agentId,
+      originIssueId: input.issueId,
+      originRunId: runId,
+      interactionId,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    return { proposalId, interactionId };
+  }
+
   it("respondInteraction fails closed when actorUserId is omitted", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
@@ -1057,6 +1132,74 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(result.applied).toBe(true);
     const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
     expect(row?.status).toBe("accepted");
+  });
+
+  it("respondInteraction enforces target-agent authorization for linked binding rejection", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const operatorUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: operatorUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Binding decision",
+      status: "in_review",
+      priority: "medium",
+    });
+    const { proposalId, interactionId } = await seedBindingProposalInteraction({
+      companyId,
+      agentId,
+      issueId,
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+    await expect(services.issues.respondInteraction({
+      issueId,
+      interactionId,
+      companyId,
+      action: "reject",
+      actorUserId: operatorUserId,
+      reason: "Not approved",
+    })).rejects.toThrow(/Missing permission: agents:configure/);
+    expect(await db.select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId)))
+      .toEqual([{ status: "pending" }]);
+    expect(await db.select({ status: companySecretProposals.status })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposalId)))
+      .toEqual([{ status: "pending" }]);
+
+    await accessService(db).setPrincipalPermission(
+      companyId,
+      "user",
+      operatorUserId,
+      "agents:configure",
+      true,
+      null,
+    );
+    await expect(services.issues.respondInteraction({
+      issueId,
+      interactionId,
+      companyId,
+      action: "reject",
+      actorUserId: operatorUserId,
+      reason: "Not approved",
+    })).resolves.toMatchObject({ applied: true });
+    expect(await db.select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId)))
+      .toEqual([{ status: "rejected" }]);
+    expect(await db.select({ status: companySecretProposals.status })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposalId)))
+      .toEqual([{ status: "rejected" }]);
   });
 
   it.each(["accept", "reject"] as const)(

@@ -77,7 +77,9 @@ async function invokeHeartbeat(
   // with the participant's queued run. If the legacy invoke is skipped and
   // that run has already released the issue lock, recover it from the agent's
   // recent run receipts.
-  const deadline = Date.now() + 3_000;
+  // Hosted runners can take several seconds to persist the replacement run
+  // receipt while other PR shards are saturating the same database.
+  const deadline = Date.now() + 10_000;
   do {
     const issueRunLock = await getIssueRunLockState(board, issueId);
     if (issueRunLock.assigneeAgentId !== agentId) {

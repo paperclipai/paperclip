@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { ensureHumanRoleDefaultGrants } from "./services/principal-access-compatibility.js";
+import { lockPrincipalAuthorization } from "./services/principal-authorization-lock.js";
 
 const LOCAL_BOARD_USER_ID = "local-board";
 const CLAIM_TTL_MS = 1000 * 60 * 60 * 24;
@@ -92,6 +93,11 @@ export async function claimBoardOwnership(
 
   const claimedCompanyIds: string[] = [];
   await db.transaction(async (tx) => {
+    // Ownership transfer revokes the implicit local board's instance-wide
+    // authority. Take the same principal-first lock as every governed
+    // authorization decision before touching either instance-role row.
+    await lockPrincipalAuthorization(tx as unknown as Db, "user", LOCAL_BOARD_USER_ID, []);
+
     const existingTargetAdmin = await tx
       .select({ id: instanceUserRoles.id })
       .from(instanceUserRoles)

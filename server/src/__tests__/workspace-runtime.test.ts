@@ -356,6 +356,33 @@ async function findFreePort() {
   return port;
 }
 
+async function findFreePortOutsideRuntimeExposureRange(companionOffset = 0) {
+  const minPort = 20_000;
+  const maxPort = 55_535;
+  const candidateCount = maxPort - minPort + 1;
+  const startOffset = Number.parseInt(randomUUID().slice(0, 8), 16) % candidateCount;
+
+  for (let attempt = 0; attempt < candidateCount; attempt += 1) {
+    const candidate = minPort + ((startOffset + attempt) % candidateCount);
+    const ports = companionOffset > 0 ? [candidate, candidate + companionOffset] : [candidate];
+    if (ports.some((port) => port >= 42_000 && port <= 42_999)) continue;
+
+    const servers: net.Server[] = [];
+    let reserved = false;
+    try {
+      for (const port of ports) servers.push(await listenOnPort(port));
+      reserved = true;
+    } catch {
+      // Try the next fixed candidate when either required listener is occupied.
+    } finally {
+      await Promise.all(servers.map((server) => closeNetServer(server).catch(() => undefined)));
+    }
+    if (reserved) return candidate;
+  }
+
+  throw new Error("Failed to find a free test port outside the runtime exposure range");
+}
+
 async function reserveContiguousPorts(count: number) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const basePort = await findFreePort();
@@ -7734,19 +7761,6 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-https-backfill-${randomUUID()}`;
 
-    const reservePort = async () => {
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const probe = net.createServer();
-        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-        const address = probe.address();
-        const port = typeof address === "object" && address ? address.port : null;
-        await new Promise<void>((resolve, reject) => {
-          probe.close((error) => error ? reject(error) : resolve());
-        });
-        if (port && port <= 55_535 && (port < 42_000 || port > 42_999)) return port;
-      }
-      throw new Error("Failed to reserve an HTTPS backfill test port outside the broker range");
-    };
     const isLoopbackPortFree = async (port: number) => {
       const probe = net.createServer();
       return await new Promise<boolean>((resolve) => {
@@ -7759,7 +7773,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     // Stands in for the persisted template's hard-coded 45439: a pinned port
     // outside the broker's dedicated allowlist, so the backfill has to relocate.
-    const legacyPort = await reservePort();
+    const legacyPort = await findFreePortOutsideRuntimeExposureRange(10_000);
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -8075,22 +8089,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     // The reconciler stores this port on the row. A port inside that range makes
     // the reconciler treat the row as an exposure reservation and report drift,
     // so the live service never reaches the adoption path this test verifies.
-    const reservePort = async () => {
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const probe = net.createServer();
-        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-        const address = probe.address();
-        const candidate = typeof address === "object" && address ? address.port : null;
-        await new Promise<void>((resolve, reject) => {
-          probe.close((error) => error ? reject(error) : resolve());
-        });
-        if (candidate && candidate <= 55_535 && (candidate < 42_000 || candidate > 42_999)) {
-          return candidate;
-        }
-      }
-      throw new Error("Failed to reserve pnpm reconciliation test port outside the broker range");
-    };
-    const port = await reservePort();
+    const port = await findFreePortOutsideRuntimeExposureRange();
 
     const companyId = randomUUID();
     const projectId = randomUUID();

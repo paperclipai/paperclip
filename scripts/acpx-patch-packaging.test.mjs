@@ -131,10 +131,10 @@ test("bundled package staging installs only dependencies included in the tarball
   };
   const installManifest = createBundledInstallManifest(publishManifest, ["embedded-postgres"]);
 
+  assert.equal(installManifest.devDependencies, undefined);
   assert.deepEqual(installManifest.dependencies, {
     "embedded-postgres": "^18.1.0-beta.16",
   });
-  assert.equal(installManifest.devDependencies, undefined);
   assert.deepEqual(publishManifest.devDependencies, {
     "@paperclipai/paperclip-runner": "2026.723.0-canary.8",
   });
@@ -322,7 +322,10 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
 });
 
 test("bundled package dry runs preview without querying published versions", () => {
-  assert.match(releaseScript, /run_bundled_npm_pack pack --pack-destination "\$publish_dir"/);
+  assert.match(
+    releaseScript,
+    /run_bundled_npm_pack pack --pack-destination "\$publish_dir"/,
+  );
   assert.match(releaseLib, /BUNDLED_NPM_PACK_VERSION="10\.9\.7"/);
   assert.match(releaseLib, /BUNDLED_NPM_PUBLISH_VERSION="11\.18\.0"/);
   assert.match(

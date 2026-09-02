@@ -1102,6 +1102,17 @@ describe("Capability live runnerd and Codex session", () => {
         actorId: "actor-1",
         taskId: "task-1",
       };
+      const identityDigest = createHash("sha256")
+        .update(binding.sessionId)
+        .digest("hex")
+        .slice(0, 20);
+      const controlPlaneStatePath = join(
+        directory,
+        ".paperclip-runner-prp",
+        identityDigest,
+        "control-plane",
+        "control-plane-state.json",
+      );
       const store = new DurableCapabilityLiveSessionStore({ directory, binding });
       const transportOptions = {
         codexCommand: process.execPath,
@@ -1132,11 +1143,30 @@ describe("Capability live runnerd and Codex session", () => {
         outputTokens: 2,
         costNanodollars: 100,
       });
+      // The mock state proves the effect committed, but the provider cannot
+      // resume it until runnerd has durably acknowledged the tool result.
+      await vi.waitFor(async () => {
+        const controlPlane = JSON.parse(
+          await readFile(controlPlaneStatePath, "utf8"),
+        ) as { commands?: Array<{ type?: string; status?: string }> };
+        expect(controlPlane.commands).toContainEqual(
+          expect.objectContaining({
+            type: "semantic_tool.result",
+            status: "completed",
+          }),
+        );
+      }, { timeout: 5_000 });
       const killedCheckpoint = await store.load(binding.sessionId);
       const runnerPid = killedCheckpoint?.process?.runnerPid;
       expect(runnerPid).toBeTypeOf("number");
       process.kill(runnerPid!, "SIGKILL");
       await expect(killedTurn).resolves.toBeInstanceOf(Error);
+      await firstService.shutdown(first.id, "test worker terminated");
+      expect(await store.load(binding.sessionId)).toMatchObject({
+        activeTurnId: "turn-1",
+        process: { runnerExited: true, runnerSignal: "SIGKILL" },
+        usageLedger: [expect.objectContaining({ receiptId: "real-response-1" })],
+      });
 
       const resumedService = new CapabilityLiveSessionService({
         store: new DurableCapabilityLiveSessionStore({ directory, binding }),
@@ -1151,7 +1181,14 @@ describe("Capability live runnerd and Codex session", () => {
         turnTimeoutMs: 10_000,
       });
       expect(resumed.snapshot().providerThreadId).toBe("thread-durable-runnerd");
-      const reconciled = await resumed.reconcileActiveTurn();
+      const resumedSnapshot = resumed.snapshot();
+      const reconciled = resumedSnapshot.activeTurnId === null
+        ? resumedSnapshot.terminalTurns?.find(
+            (turn) =>
+              turn.turnId === "turn-1" &&
+              turn.reconciledByAttemptId === "attempt-real-resumed",
+          ) ?? null
+        : await resumed.reconcileActiveTurn();
       if (reconciled === null) throw new Error("checkpointed turn was not reconciled");
       // Recovery may observe the provider's authoritative completion before
       // the controller's interrupt wins the race; either terminal settles the

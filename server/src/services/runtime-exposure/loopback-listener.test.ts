@@ -1,12 +1,11 @@
 import net from "node:net";
 import { describe, expect, it } from "vitest";
 
-import { RUNTIME_EXPOSURE_APP_PORT_MIN, deriveViteHmrPort } from "@paperclipai/shared";
-
 import {
   diagnoseRuntimeListenerBinds,
   formatProcAddressHex,
   listenerBindFactsForPort,
+  listenerBindFactsFromLsofOutput,
   parseProcNetListeners,
 } from "./loopback-listener.js";
 
@@ -128,14 +127,40 @@ describe("listenerBindFactsForPort", () => {
   });
 });
 
-describe("diagnoseRuntimeListenerBinds against live listeners", () => {
-  const appPort = RUNTIME_EXPOSURE_APP_PORT_MIN + 900;
-  const hmrPort = deriveViteHmrPort(appPort);
+describe("listenerBindFactsFromLsofOutput", () => {
+  it("rejects a wildcard listener", () => {
+    expect(listenerBindFactsFromLsofOutput(`p123\0f12\0n*:${APP_PORT}\0`, APP_PORT)).toEqual({
+      present: true,
+      loopbackOnly: false,
+      addresses: ["0.0.0.0/::"],
+    });
+  });
 
+  it("accepts IPv4 and IPv6 loopback listeners", () => {
+    expect(listenerBindFactsFromLsofOutput(
+      `p123\0f12\0n127.0.0.1:${APP_PORT}\0f13\0n[::1]:${APP_PORT}\0`,
+      APP_PORT,
+    )).toEqual({
+      present: true,
+      loopbackOnly: true,
+      addresses: ["127.0.0.1", "::1"],
+    });
+  });
+
+  it("ignores listener fields for another port", () => {
+    expect(listenerBindFactsFromLsofOutput(`p123\0f12\0n*:${APP_PORT + 1}\0`, APP_PORT)).toEqual({
+      present: false,
+      loopbackOnly: true,
+      addresses: [],
+    });
+  });
+});
+
+describe("diagnoseRuntimeListenerBinds against live listeners", () => {
   async function withListener<T>(
     port: number,
     host: string | undefined,
-    body: () => Promise<T>,
+    body: (port: number) => Promise<T>,
   ): Promise<T> {
     const server = net.createServer();
     await new Promise<void>((resolve, reject) => {
@@ -144,20 +169,24 @@ describe("diagnoseRuntimeListenerBinds against live listeners", () => {
       else server.listen(port, host, () => resolve());
     });
     try {
-      return await body();
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Expected a TCP listener");
+      }
+      return await body(address.port);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }
 
   it("stays silent for a real loopback listener", async () => {
-    await withListener(appPort, "127.0.0.1", async () => {
+    await withListener(0, "127.0.0.1", async (appPort) => {
       expect(await diagnoseRuntimeListenerBinds([appPort])).toBeNull();
     });
   });
 
   it("names the port and the wildcard address for a real 0.0.0.0 listener", async () => {
-    await withListener(appPort, undefined, async () => {
+    await withListener(0, undefined, async (appPort) => {
       const diagnosis = await diagnoseRuntimeListenerBinds([appPort]);
       expect(diagnosis).toContain(`port ${appPort}`);
       // Node's hostless listen is dual-stack, so /proc shows :: and/or 0.0.0.0.
@@ -167,8 +196,8 @@ describe("diagnoseRuntimeListenerBinds against live listeners", () => {
   });
 
   it("catches the HMR companion port too, not just the app port", async () => {
-    await withListener(appPort, "127.0.0.1", async () => {
-      await withListener(hmrPort, undefined, async () => {
+    await withListener(0, "127.0.0.1", async (appPort) => {
+      await withListener(0, undefined, async (hmrPort) => {
         const diagnosis = await diagnoseRuntimeListenerBinds([appPort, hmrPort]);
         expect(diagnosis).toContain(`port ${hmrPort}`);
         expect(diagnosis).not.toContain(`port ${appPort} is bound`);
@@ -177,6 +206,7 @@ describe("diagnoseRuntimeListenerBinds against live listeners", () => {
   });
 
   it("stays silent for a port with no listener, leaving the verdict to the broker", async () => {
-    expect(await diagnoseRuntimeListenerBinds([appPort])).toBeNull();
+    const unusedPort = await withListener(0, "127.0.0.1", async (port) => port);
+    expect(await diagnoseRuntimeListenerBinds([unusedPort])).toBeNull();
   });
 });

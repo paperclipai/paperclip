@@ -9,7 +9,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   companySecretBindings,
   companySecretProposals,
   companySecretProviderConfigs,
@@ -17,20 +19,34 @@ import {
   companySecrets,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueThreadInteractions,
   issues,
+  instanceSettings,
+  instanceUserRoles,
+  principalPermissionGrants,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
-import { conflict } from "../errors.js";
+import {
+  claimBoardOwnership,
+  getBoardClaimWarningUrl,
+  initializeBoardClaimChallenge,
+} from "../board-claim.js";
+import { conflict, forbidden } from "../errors.js";
+import { purgeStaleCloudTenantInstanceAdminRole } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { issueRoutes } from "../routes/issues.js";
 import { secretRoutes } from "../routes/secrets.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { agentService } from "../services/agents.js";
+import { accessService } from "../services/access.js";
+import { companyService } from "../services/companies.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { secretService } from "../services/secrets.js";
 import {
@@ -57,6 +73,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await initializeBoardClaimChallenge(db, { deploymentMode: "local_trusted" });
     await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(companySecretProposals);
@@ -68,7 +85,13 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     await db.delete(userSecretDefinitions);
     await db.delete(companySecretProviderConfigs);
     await db.delete(issues);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
+    await db.delete(instanceUserRoles);
+    await db.delete(instanceSettings);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -171,6 +194,147 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     });
   }
 
+  async function holdPermissionGrantRowLock(grantId: string) {
+    let signalLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const transaction = db.transaction(async (tx) => {
+      await tx
+        .select({ id: principalPermissionGrants.id })
+        .from(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.id, grantId))
+        .for("update");
+      signalLocked();
+      await release;
+    });
+    await locked;
+    return async () => {
+      releaseLock();
+      await transaction;
+    };
+  }
+
+  async function holdMembershipRowLock(membershipId: string) {
+    let signalLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const transaction = db.transaction(async (tx) => {
+      await tx
+        .select({ id: companyMemberships.id })
+        .from(companyMemberships)
+        .where(eq(companyMemberships.id, membershipId))
+        .for("update");
+      signalLocked();
+      await release;
+    });
+    await locked;
+    return async () => {
+      releaseLock();
+      await transaction;
+    };
+  }
+
+  async function holdInstanceUserRoleRowLock(roleId: string) {
+    let signalLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const transaction = db.transaction(async (tx) => {
+      await tx
+        .select({ id: instanceUserRoles.id })
+        .from(instanceUserRoles)
+        .where(eq(instanceUserRoles.id, roleId))
+        .for("update");
+      signalLocked();
+      await release;
+    });
+    await locked;
+    return async () => {
+      releaseLock();
+      await transaction;
+    };
+  }
+
+  async function holdCompanyRowLock(companyId: string) {
+    let signalLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const transaction = db.transaction(async (tx) => {
+      await tx
+        .select({ id: companies.id })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .for("update");
+      signalLocked();
+      await release;
+    });
+    await locked;
+    return async () => {
+      releaseLock();
+      await transaction;
+    };
+  }
+
+  async function holdInstanceSettingsRowLock() {
+    let signalLocked!: () => void;
+    let releaseLock!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const transaction = db.transaction(async (tx) => {
+      await tx
+        .select({ id: instanceSettings.id })
+        .from(instanceSettings)
+        .where(eq(instanceSettings.singletonKey, "default"))
+        .for("update");
+      signalLocked();
+      await release;
+    });
+    await locked;
+    return async () => {
+      releaseLock();
+      await transaction;
+    };
+  }
+
+  async function waitForBlockedQuery(fragment: string, minimumCount = 1) {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const [waiting] = await db.execute<{ waiting: boolean }>(sql`
+        SELECT COUNT(*) >= ${minimumCount} AS waiting
+          FROM pg_stat_activity
+          WHERE pid <> pg_backend_pid()
+            AND state = 'active'
+            AND wait_event_type = 'Lock'
+            AND query ILIKE ${`%${fragment}%`}
+      `);
+      if (waiting?.waiting) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return false;
+  }
+
   function createAgentApp(
     fixture: Awaited<ReturnType<typeof seedRun>>,
     source: "agent_jwt" | "agent_key" = "agent_jwt",
@@ -198,6 +362,10 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     fixture: Awaited<ReturnType<typeof seedRun>>,
     options?: {
       admin?: boolean;
+      cachedAdmin?: boolean;
+      membershipRole?: "owner" | "admin" | "member";
+      source?: "session" | "cloud_tenant";
+      userId?: string;
       heartbeat?: IssueAssignmentWakeupDeps;
       issues?: Pick<ReturnType<typeof issueService>, "getById" | "addComment">;
     },
@@ -207,16 +375,43 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     app.use((req, _res, next) => {
       req.actor = {
         type: "board",
-        userId: "board-user",
+        userId: options?.userId ?? "board-user",
         companyIds: [fixture.companyId],
-        source: options?.admin === false ? "session" : "local_implicit",
+        source: options?.source ?? (options?.admin === false ? "session" : "local_implicit"),
+        isInstanceAdmin: options?.cachedAdmin === true,
         memberships: options?.admin === false
-          ? [{ companyId: fixture.companyId, status: "active", membershipRole: "member" }]
+          ? [{
+              companyId: fixture.companyId,
+              status: "active",
+              membershipRole: options.membershipRole ?? "member",
+            }]
           : undefined,
       };
       next();
     });
     app.use("/api", secretRoutes(db, { heartbeat: options?.heartbeat, issues: options?.issues }));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function createBoardIssueApp(
+    fixture: Awaited<ReturnType<typeof seedRun>>,
+    options: { cachedAdmin?: boolean } = {},
+  ) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "board-user",
+        companyIds: [fixture.companyId],
+        source: "session",
+        isInstanceAdmin: options.cachedAdmin === true,
+        memberships: [{ companyId: fixture.companyId, status: "active", membershipRole: "member" }],
+      };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as never, {}));
     app.use(errorHandler);
     return app;
   }
@@ -897,6 +1092,824 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect((await db.select().from(companySecretProposals)).filter((proposal) => proposal.status === "pending"))
       .toHaveLength(2);
     await expect(proposals.sweepExpired(new Date(), 2)).resolves.toBe(2);
+  });
+
+  it("idempotently recovers one governed confirmation for an existing unlinked binding proposal", async () => {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "prod/recovery/source",
+      key: "RECOVERY_SOURCE",
+      provider: "local_encrypted",
+      value: "recovery-secret",
+    });
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: liveSecret.id,
+        configPath: "access.RECOVERED_ALIAS",
+        justification: "Restore the missing governed confirmation",
+      });
+    expect(proposed.status).toBe(201);
+
+    await db.delete(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, proposed.body.interactionId));
+    expect(await db.select({ interactionId: companySecretProposals.interactionId })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposed.body.id)))
+      .toEqual([{ interactionId: null }]);
+
+    const unauthorized = await request(createBoardApp(fixture, { admin: false }))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/recover-interaction`)
+      .send({});
+    expect(unauthorized.status).toBe(403);
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+
+    const boardApp = createBoardApp(fixture);
+    const [first, second] = await Promise.all([
+      request(boardApp)
+        .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/recover-interaction`)
+        .send({}),
+      request(boardApp)
+        .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/recover-interaction`)
+        .send({}),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect([first.body.created, second.body.created].sort()).toEqual([false, true]);
+    expect(first.body.interactionId).toBe(second.body.interactionId);
+    expect(first.body).toMatchObject({
+      proposalId: proposed.body.id,
+      proposalStatus: "pending",
+      proposalInteractionId: first.body.interactionId,
+      interactionProposalId: proposed.body.id,
+      issueId: fixture.issueId,
+      interactionStatus: "pending",
+      idempotencyKey: `secret-proposal:${proposed.body.id}`,
+      continuationPolicy: "wake_assignee",
+      resolverPolicy: "human_only",
+    });
+    expect(first.body).not.toHaveProperty("valueFingerprintSha256");
+    expect(first.body).not.toHaveProperty("valueLength");
+
+    const retry = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/recover-interaction`)
+      .send({});
+    expect(retry.status).toBe(200);
+    expect(retry.body).toMatchObject({ interactionId: first.body.interactionId, created: false });
+
+    const cards = await db.select().from(issueThreadInteractions);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      id: first.body.interactionId,
+      issueId: fixture.issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "governed_action",
+      payload: expect.objectContaining({
+        secretProposal: expect.objectContaining({
+          proposalId: proposed.body.id,
+          configPath: "access.RECOVERED_ALIAS",
+          targetAgentId: fixture.agentId,
+        }),
+      }),
+    });
+    expect(JSON.stringify(cards[0]?.payload)).not.toContain("recovery-secret");
+    expect(JSON.stringify(cards[0]?.payload)).not.toContain("fingerprint");
+
+    const approved = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/approve`)
+      .send({});
+    expect(approved.status).toBe(200);
+    expect(await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, first.body.interactionId)))
+      .toEqual([expect.objectContaining({
+        status: "accepted",
+        result: expect.objectContaining({
+          secretProposal: expect.objectContaining({ status: "executed" }),
+        }),
+      })]);
+  });
+
+  it("fails closed without relinking when server-owned confirmation metadata conflicts", async () => {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "prod/recovery/conflict-source",
+      key: "RECOVERY_CONFLICT_SOURCE",
+      provider: "local_encrypted",
+      value: "recovery-conflict-secret",
+    });
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: liveSecret.id,
+        configPath: "access.RECOVERY_CONFLICT_ALIAS",
+        justification: "Preserve the canonical confirmation metadata",
+      });
+    expect(proposed.status).toBe(201);
+
+    const interaction = await db.select().from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, proposed.body.interactionId))
+      .then((rows) => rows[0]);
+    const payload = interaction.payload as {
+      prompt: string;
+      acceptLabel: string;
+      rejectLabel: string;
+      rejectRequiresReason: boolean;
+      rejectReasonLabel: string;
+      allowDeclineReason: boolean;
+      supersedeOnUserComment: boolean;
+      secretProposal: {
+        sourceSecretLabel: string;
+        targetAgentName: string;
+        justification: string;
+        expiresAt: string;
+      };
+    };
+    await db.update(companySecretProposals)
+      .set({ interactionId: null })
+      .where(eq(companySecretProposals.id, proposed.body.id));
+    await db.update(issueThreadInteractions)
+      .set({
+        title: "Confirm a different binding",
+        summary: "Conflicting server-owned summary",
+        addresseeAgentId: fixture.agentId,
+        addresseeUserId: "unexpected-board-user",
+        payload: {
+          ...payload,
+          prompt: "Approve a different action?",
+          acceptLabel: "Apply different action",
+          rejectLabel: "Allow",
+          rejectRequiresReason: false,
+          rejectReasonLabel: "Optional reason",
+          allowDeclineReason: false,
+          supersedeOnUserComment: true,
+          secretProposal: {
+            ...payload.secretProposal,
+            sourceSecretLabel: "prod/recovery/different-source",
+            targetAgentName: "Different target",
+            justification: "Different justification",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        },
+      })
+      .where(eq(issueThreadInteractions.id, interaction.id));
+
+    const recovered = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/recover-interaction`)
+      .send({});
+    expect(recovered.status).toBe(409);
+    const serializedError = JSON.stringify(recovered.body).toLowerCase();
+    expect(serializedError).not.toContain("recovery-conflict-secret");
+    expect(serializedError).not.toContain("ciphertext");
+    expect(serializedError).not.toContain("fingerprint");
+    expect(serializedError).not.toContain("length");
+    expect(await db.select({ interactionId: companySecretProposals.interactionId })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposed.body.id)))
+      .toEqual([{ interactionId: null }]);
+    expect(await db.select({
+      title: issueThreadInteractions.title,
+      addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+      addresseeUserId: issueThreadInteractions.addresseeUserId,
+    }).from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction.id)))
+      .toEqual([{
+        title: "Confirm a different binding",
+        addresseeAgentId: fixture.agentId,
+        addresseeUserId: "unexpected-board-user",
+      }]);
+  });
+
+  it("rechecks resolver authorization inside recovery before relinking", async () => {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "prod/recovery/revoked-source",
+      key: "RECOVERY_REVOKED_SOURCE",
+      provider: "local_encrypted",
+      value: "recovery-revoked-secret",
+    });
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: liveSecret.id,
+        configPath: "access.RECOVERY_REVOKED_ALIAS",
+        justification: "Recheck authorization while recovery is locked",
+      });
+    expect(proposed.status).toBe(201);
+
+    await db.delete(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, proposed.body.interactionId));
+
+    let rechecked = false;
+    await expect(createSecretProposalsService(db).recoverBindingInteraction(
+      fixture.companyId,
+      proposed.body.id,
+      {
+        recoveredByUserId: "board-user",
+        assertCanResolve: async (lockedProposal, txDb) => {
+          rechecked = true;
+          expect(lockedProposal.id).toBe(proposed.body.id);
+          expect(await txDb.select({ status: companySecretProposals.status })
+            .from(companySecretProposals)
+            .where(eq(companySecretProposals.id, lockedProposal.id)))
+            .toEqual([{ status: "pending" }]);
+          throw forbidden("Resolver authorization was revoked");
+        },
+      },
+    )).rejects.toMatchObject({ status: 403 });
+    expect(rechecked).toBe(true);
+    expect(await db.select({ interactionId: companySecretProposals.interactionId })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposed.body.id)))
+      .toEqual([{ interactionId: null }]);
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+  });
+
+  async function runConcurrentRevocationTest(
+    revocationKind:
+      | "target grant"
+      | "membership"
+      | "instance admin"
+      | "cloud tenant elevation"
+      | "cloud tenant purge"
+      | "company archive",
+  ) {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "prod/recovery/concurrent-revocation-source",
+      key: "RECOVERY_CONCURRENT_REVOCATION_SOURCE",
+      provider: "local_encrypted",
+      value: "recovery-concurrent-revocation-secret",
+    });
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: liveSecret.id,
+        configPath: "access.RECOVERY_CONCURRENT_REVOCATION_ALIAS",
+        justification: "Prove recovery and authorization revocation serialize",
+      });
+    expect(proposed.status).toBe(201);
+
+    await db.delete(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, proposed.body.interactionId));
+    if (revocationKind === "company archive") {
+      // Keep archive-side heartbeat cancellation from mutating the issue so
+      // this race isolates mutations attributable to the denied recovery.
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded" })
+        .where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
+    }
+    const revokesCloudElevation = revocationKind === "cloud tenant elevation";
+    const revokesInstanceAdmin = revocationKind === "instance admin" || revocationKind === "cloud tenant purge";
+    if (revokesCloudElevation) {
+      await instanceSettingsService(db).updateExperimental({ enableOwnerInstanceAdmin: true });
+    }
+    if (revokesInstanceAdmin) {
+      await db.insert(instanceUserRoles).values({ userId: "board-user", role: "instance_admin" });
+    } else if (!revokesCloudElevation) {
+      await accessService(db).setPrincipalPermission(
+        fixture.companyId,
+        "user",
+        "board-user",
+        "agents:configure",
+        true,
+        null,
+      );
+    }
+    const [grant] = await db.select().from(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, fixture.companyId),
+      eq(principalPermissionGrants.principalType, "user"),
+      eq(principalPermissionGrants.principalId, "board-user"),
+      eq(principalPermissionGrants.permissionKey, "agents:configure"),
+    ));
+    if (!revokesInstanceAdmin && !revokesCloudElevation) expect(grant).toBeDefined();
+    const [instanceAdminRole] = await db.select().from(instanceUserRoles).where(and(
+      eq(instanceUserRoles.userId, "board-user"),
+      eq(instanceUserRoles.role, "instance_admin"),
+    ));
+    const [issueBefore] = await db.select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId));
+
+    const [membership] = await db.select().from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, fixture.companyId),
+      eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, "board-user"),
+    ));
+    if (revocationKind === "membership") expect(membership).toBeDefined();
+    const releaseRevocationRow = revocationKind === "target grant"
+      ? await holdPermissionGrantRowLock(grant!.id)
+      : revocationKind === "membership"
+        ? await holdMembershipRowLock(membership!.id)
+        : revocationKind === "company archive"
+          ? await holdCompanyRowLock(fixture.companyId)
+          : revokesCloudElevation
+            ? await holdInstanceSettingsRowLock()
+            : await holdInstanceUserRoleRowLock(instanceAdminRole!.id);
+    const revocation = revocationKind === "target grant"
+      ? accessService(db).setPrincipalPermission(
+          fixture.companyId,
+          "user",
+          "board-user",
+          "agents:configure",
+          false,
+          null,
+        )
+      : revocationKind === "membership"
+        ? accessService(db).updateMember(
+            fixture.companyId,
+            membership!.id,
+            { status: "suspended" },
+          ).then(() => undefined)
+        : revocationKind === "company archive"
+          ? companyService(db).archive(fixture.companyId).then(() => undefined)
+          : revokesCloudElevation
+            ? instanceSettingsService(db)
+                .updateExperimental({ enableOwnerInstanceAdmin: false })
+                .then(() => undefined)
+            : revocationKind === "cloud tenant purge"
+              ? purgeStaleCloudTenantInstanceAdminRole(db, "board-user")
+              : accessService(db).demoteInstanceAdmin("board-user").then(() => undefined);
+
+    try {
+      expect(await waitForBlockedQuery(
+        revocationKind === "target grant"
+          ? "principal_permission_grants"
+          : revocationKind === "membership"
+            ? "company_memberships"
+            : revocationKind === "company archive"
+              ? "companies"
+              : revokesCloudElevation
+                ? "instance_settings"
+                : "instance_user_roles",
+      )).toBe(true);
+      const recovery = request(createBoardApp(fixture, {
+        admin: false,
+        cachedAdmin: revokesInstanceAdmin || revokesCloudElevation,
+        source: revokesCloudElevation ? "cloud_tenant" : "session",
+      }))
+        .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/recover-interaction`)
+        .send({})
+        .then((response) => response);
+      expect(await waitForBlockedQuery(
+        revokesCloudElevation ? "instance_settings" : "pg_advisory_xact_lock",
+        revokesCloudElevation ? 2 : 1,
+      )).toBe(true);
+
+      await releaseRevocationRow();
+      await expect(revocation).resolves.toBeUndefined();
+      const denied = await recovery;
+      expect(denied.status).toBe(403);
+      expect(denied.body.error).toMatch(/Missing permission: agents:configure|not an active member|Company is not active/);
+    } catch (error) {
+      await releaseRevocationRow();
+      await revocation;
+      throw error;
+    }
+
+    if (revocationKind === "target grant") {
+      expect(await db.select().from(principalPermissionGrants).where(eq(
+        principalPermissionGrants.id,
+        grant!.id,
+      ))).toHaveLength(0);
+    } else if (revocationKind === "membership") {
+      expect(await db.select({ status: companyMemberships.status })
+        .from(companyMemberships)
+        .where(eq(companyMemberships.id, membership!.id)))
+        .toEqual([{ status: "suspended" }]);
+    } else if (revokesCloudElevation) {
+      expect((await instanceSettingsService(db).getExperimental()).enableOwnerInstanceAdmin).toBe(false);
+    } else if (revokesInstanceAdmin) {
+      expect(await db.select().from(instanceUserRoles).where(eq(
+        instanceUserRoles.id,
+        instanceAdminRole!.id,
+      ))).toHaveLength(0);
+    } else {
+      expect(await db.select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, fixture.companyId)))
+        .toEqual([{ status: "archived" }]);
+    }
+    expect(await db.select({ interactionId: companySecretProposals.interactionId })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposed.body.id)))
+      .toEqual([{ interactionId: null }]);
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    expect(await db.select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId)))
+      .toEqual([{ updatedAt: issueBefore!.updatedAt }]);
+    expect(await db.select().from(activityLog).where(eq(
+      activityLog.action,
+      "secret.proposal.interaction_recovered",
+    ))).toHaveLength(0);
+  }
+
+  it.each(["target grant", "membership", "instance admin", "cloud tenant elevation", "cloud tenant purge", "company archive"] as const)(
+    "serializes %s revocation ahead of recovery and rolls back every denied mutation",
+    runConcurrentRevocationTest,
+  );
+
+  it("serializes board ownership transfer ahead of recovery and rolls back every denied mutation", async () => {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "prod/recovery/board-transfer-source",
+      key: "RECOVERY_BOARD_TRANSFER_SOURCE",
+      provider: "local_encrypted",
+      value: "recovery-board-transfer-secret",
+    });
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: liveSecret.id,
+        configPath: "access.RECOVERY_BOARD_TRANSFER_ALIAS",
+        justification: "Prove board ownership transfer serializes with recovery",
+      });
+    expect(proposed.status).toBe(201);
+
+    await db.delete(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, proposed.body.interactionId));
+    const [role] = await db.insert(instanceUserRoles)
+      .values({ userId: "local-board", role: "instance_admin" })
+      .returning();
+    const claimantUserId = `claimant-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: claimantUserId,
+      name: "Claimant",
+      email: `${claimantUserId}@example.test`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await initializeBoardClaimChallenge(db, { deploymentMode: "authenticated" });
+    const warningUrl = getBoardClaimWarningUrl("127.0.0.1", 3100);
+    expect(warningUrl).toBeTruthy();
+    const parsed = new URL(warningUrl!);
+    const token = parsed.pathname.split("/").pop()!;
+    const code = parsed.searchParams.get("code")!;
+    const [issueBefore] = await db.select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId));
+
+    const releaseRoleRow = await holdInstanceUserRoleRowLock(role!.id);
+    const transfer = claimBoardOwnership(db, { token, code, userId: claimantUserId });
+
+    try {
+      expect(await waitForBlockedQuery("instance_user_roles")).toBe(true);
+      const recovery = request(createBoardApp(fixture, {
+        admin: false,
+        cachedAdmin: true,
+        userId: "local-board",
+      }))
+        .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/recover-interaction`)
+        .send({})
+        .then((response) => response);
+      expect(await waitForBlockedQuery("pg_advisory_xact_lock")).toBe(true);
+
+      await releaseRoleRow();
+      await expect(transfer).resolves.toEqual({ status: "claimed", claimedByUserId: claimantUserId });
+      const denied = await recovery;
+      expect(denied.status).toBe(403);
+      expect(denied.body.error).toMatch(/not an active member/);
+    } catch (error) {
+      await releaseRoleRow();
+      await transfer;
+      throw error;
+    }
+
+    expect(await db.select().from(instanceUserRoles).where(eq(instanceUserRoles.id, role!.id)))
+      .toHaveLength(0);
+    expect(await db.select({ interactionId: companySecretProposals.interactionId })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposed.body.id)))
+      .toEqual([{ interactionId: null }]);
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    expect(await db.select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId)))
+      .toEqual([{ updatedAt: issueBefore!.updatedAt }]);
+    expect(await db.select().from(activityLog).where(eq(
+      activityLog.action,
+      "secret.proposal.interaction_recovered",
+    ))).toHaveLength(0);
+  });
+
+  async function runConcurrentSecretDecisionRevocationTest(
+    decision: "approve" | "reject",
+    revocationKind:
+      | "membership"
+      | "cloud tenant membership"
+      | "cloud tenant elevation"
+      | "instance admin",
+  ) {
+    const fixture = await seedRun();
+    const revocationSlug = revocationKind.replaceAll(" ", "-");
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: `prod/secret-decision/${decision}-${revocationSlug}`,
+        value: `secret-decision-${decision}-${revocationKind}`,
+        justification: `Prove ${decision} serializes with ${revocationKind} revocation`,
+      });
+    expect(proposed.status).toBe(201);
+
+    if (revocationKind === "cloud tenant elevation") {
+      await instanceSettingsService(db).updateExperimental({ enableOwnerInstanceAdmin: true });
+    } else if (revocationKind === "membership" || revocationKind === "cloud tenant membership") {
+      await db.insert(companyMemberships).values({
+        companyId: fixture.companyId,
+        principalType: "user",
+        principalId: "board-user",
+        status: "active",
+        membershipRole: "admin",
+      });
+    } else {
+      await db.insert(instanceUserRoles).values({ userId: "board-user", role: "instance_admin" });
+    }
+    const [membership] = await db.select().from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, fixture.companyId),
+      eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, "board-user"),
+    ));
+    const [instanceAdminRole] = await db.select().from(instanceUserRoles).where(and(
+      eq(instanceUserRoles.userId, "board-user"),
+      eq(instanceUserRoles.role, "instance_admin"),
+    ));
+    const releaseRevocationRow = revocationKind === "cloud tenant elevation"
+      ? await holdInstanceSettingsRowLock()
+      : revocationKind === "membership" || revocationKind === "cloud tenant membership"
+        ? await holdMembershipRowLock(membership!.id)
+        : await holdInstanceUserRoleRowLock(instanceAdminRole!.id);
+    const revocation = revocationKind === "cloud tenant elevation"
+      ? instanceSettingsService(db)
+          .updateExperimental({ enableOwnerInstanceAdmin: false })
+          .then(() => undefined)
+      : revocationKind === "membership" || revocationKind === "cloud tenant membership"
+        ? accessService(db).updateMember(
+            fixture.companyId,
+            membership!.id,
+            { status: "suspended" },
+          ).then(() => undefined)
+        : accessService(db).demoteInstanceAdmin("board-user").then(() => undefined);
+
+    try {
+      expect(await waitForBlockedQuery(
+        revocationKind === "cloud tenant elevation"
+          ? "instance_settings"
+          : revocationKind === "membership" || revocationKind === "cloud tenant membership"
+            ? "company_memberships"
+            : "instance_user_roles",
+      )).toBe(true);
+      const resolution = request(createBoardApp(fixture, {
+        admin: false,
+        cachedAdmin: revocationKind === "instance admin" || revocationKind === "cloud tenant elevation",
+        membershipRole: revocationKind === "membership" || revocationKind === "cloud tenant membership"
+          ? "admin"
+          : "member",
+        source: revocationKind === "cloud tenant membership" || revocationKind === "cloud tenant elevation"
+          ? "cloud_tenant"
+          : "session",
+      }))
+        .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/${decision}`)
+        .send(decision === "reject" ? { reason: "Reject after authority is revoked" } : {})
+        .then((response) => response);
+      expect(await waitForBlockedQuery(
+        revocationKind === "cloud tenant elevation" ? "instance_settings" : "pg_advisory_xact_lock",
+        revocationKind === "cloud tenant elevation" ? 2 : 1,
+      )).toBe(true);
+
+      await releaseRevocationRow();
+      await expect(revocation).resolves.toBeUndefined();
+      const denied = await resolution;
+      expect(denied.status).toBe(403);
+      expect(denied.body.error).toContain("Company admin access required");
+    } catch (error) {
+      await releaseRevocationRow();
+      await revocation;
+      throw error;
+    }
+
+    expect(await db.select({
+      status: companySecretProposals.status,
+      valueCiphertext: companySecretProposals.valueCiphertext,
+      resolvedAt: companySecretProposals.resolvedAt,
+    }).from(companySecretProposals).where(eq(companySecretProposals.id, proposed.body.id)))
+      .toEqual([{ status: "pending", valueCiphertext: expect.any(Object), resolvedAt: null }]);
+    expect(await db.select().from(companySecrets)).toHaveLength(0);
+    expect(await db.select().from(activityLog).where(sql`
+      ${activityLog.action} in ('secret.proposal.approved', 'secret.proposal.rejected')
+    `)).toHaveLength(0);
+  }
+
+  it.each([
+    ["approve", "membership"],
+    ["reject", "membership"],
+    ["approve", "cloud tenant membership"],
+    ["reject", "cloud tenant membership"],
+    ["approve", "cloud tenant elevation"],
+    ["reject", "cloud tenant elevation"],
+    ["approve", "instance admin"],
+    ["reject", "instance admin"],
+  ] as const)(
+    "serializes secret %s behind %s revocation with zero governed mutations",
+    runConcurrentSecretDecisionRevocationTest,
+  );
+
+  async function runConcurrentInteractionDecisionRevocationTest(
+    decision: "accept" | "reject" | "withdraw" | "skip",
+    revocationKind: "target grant" | "membership" | "instance admin",
+  ) {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: `prod/decision/${decision}-${revocationKind.replace(" ", "-")}-source`,
+      key: `DECISION_${decision}_${revocationKind.replace(" ", "_")}_SOURCE`.toUpperCase(),
+      provider: "local_encrypted",
+      value: `decision-${decision}-${revocationKind}-secret`,
+    });
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: liveSecret.id,
+        configPath: `access.DECISION_${decision.toUpperCase()}_${revocationKind.replace(" ", "_").toUpperCase()}`,
+        justification: `Prove ${decision} serializes with ${revocationKind} revocation`,
+      });
+    expect(proposed.status).toBe(201);
+
+    if (revocationKind === "instance admin") {
+      await db.insert(instanceUserRoles).values({ userId: "board-user", role: "instance_admin" });
+    } else {
+      await accessService(db).setPrincipalPermission(
+        fixture.companyId,
+        "user",
+        "board-user",
+        "agents:configure",
+        true,
+        null,
+      );
+    }
+    const [grant] = await db.select().from(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, fixture.companyId),
+      eq(principalPermissionGrants.principalType, "user"),
+      eq(principalPermissionGrants.principalId, "board-user"),
+      eq(principalPermissionGrants.permissionKey, "agents:configure"),
+    ));
+    const [membership] = await db.select().from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, fixture.companyId),
+      eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, "board-user"),
+    ));
+    if (revocationKind !== "instance admin") expect(grant).toBeDefined();
+    if (revocationKind === "membership") expect(membership).toBeDefined();
+    const [instanceAdminRole] = await db.select().from(instanceUserRoles).where(and(
+      eq(instanceUserRoles.userId, "board-user"),
+      eq(instanceUserRoles.role, "instance_admin"),
+    ));
+    const [issueBefore] = await db.select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId));
+
+    const releaseRevocationRow = revocationKind === "target grant"
+      ? await holdPermissionGrantRowLock(grant!.id)
+      : revocationKind === "membership"
+        ? await holdMembershipRowLock(membership!.id)
+        : await holdInstanceUserRoleRowLock(instanceAdminRole!.id);
+    const revocation = revocationKind === "target grant"
+      ? accessService(db).setPrincipalPermission(
+          fixture.companyId,
+          "user",
+          "board-user",
+          "agents:configure",
+          false,
+          null,
+        )
+      : revocationKind === "membership"
+        ? accessService(db).updateMember(
+            fixture.companyId,
+            membership!.id,
+            { status: "suspended" },
+          ).then(() => undefined)
+        : accessService(db).demoteInstanceAdmin("board-user").then(() => undefined);
+
+    try {
+      expect(await waitForBlockedQuery(
+        revocationKind === "target grant"
+          ? "principal_permission_grants"
+          : revocationKind === "membership" ? "company_memberships" : "instance_user_roles",
+      )).toBe(true);
+      const resolution = request(createBoardIssueApp(fixture, {
+        cachedAdmin: revocationKind === "instance admin",
+      }))
+        .post(`/api/issues/${fixture.issueId}/interactions/${proposed.body.interactionId}/${decision}`)
+        .send(decision === "reject" ? { reason: "Do not create this binding" } : {})
+        .then((response) => response);
+      expect(await waitForBlockedQuery("pg_advisory_xact_lock")).toBe(true);
+
+      await releaseRevocationRow();
+      await expect(revocation).resolves.toBeUndefined();
+      const denied = await resolution;
+      expect(denied.status).toBe(403);
+      expect(denied.body.error).toMatch(/Missing permission: agents:configure|not an active member/);
+    } catch (error) {
+      await releaseRevocationRow();
+      await revocation;
+      throw error;
+    }
+
+    expect(await db.select({ status: companySecretProposals.status })
+      .from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposed.body.id)))
+      .toEqual([{ status: "pending" }]);
+    expect(await db.select({
+      status: issueThreadInteractions.status,
+      result: issueThreadInteractions.result,
+      resolvedAt: issueThreadInteractions.resolvedAt,
+    }).from(issueThreadInteractions).where(eq(issueThreadInteractions.id, proposed.body.interactionId)))
+      .toEqual([{ status: "pending", result: null, resolvedAt: null }]);
+    expect(await db.select({ updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId)))
+      .toEqual([{ updatedAt: issueBefore!.updatedAt }]);
+    expect(await db.select().from(activityLog).where(sql`
+      ${activityLog.action} in (
+        'issue.thread_interaction_accepted',
+        'issue.thread_interaction_rejected',
+        'issue.thread_interaction_skipped',
+        'issue.thread_interaction_withdrawn',
+        'secret.proposal.approved',
+        'secret.proposal.rejected',
+        'secret.proposal.withdrawn'
+      )
+    `)).toHaveLength(0);
+  }
+
+  it.each([
+    ["accept", "target grant"],
+    ["accept", "membership"],
+    ["reject", "target grant"],
+    ["reject", "membership"],
+    ["withdraw", "target grant"],
+    ["withdraw", "membership"],
+    ["skip", "target grant"],
+    ["skip", "membership"],
+    ["accept", "instance admin"],
+    ["reject", "instance admin"],
+    ["withdraw", "instance admin"],
+    ["skip", "instance admin"],
+  ] as const)(
+    "serializes generic %s behind %s revocation with zero governed mutations",
+    runConcurrentInteractionDecisionRevocationTest,
+  );
+
+  it("preserves rejection lifecycle for a recovered binding confirmation", async () => {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "prod/recovery/reject-source",
+      key: "RECOVERY_REJECT_SOURCE",
+      provider: "local_encrypted",
+      value: "recovery-reject-secret",
+    });
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: liveSecret.id,
+        configPath: "access.RECOVERED_REJECT_ALIAS",
+        justification: "Restore the governed rejection path",
+      });
+    await db.delete(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, proposed.body.interactionId));
+
+    const recovered = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/recover-interaction`)
+      .send({});
+    expect(recovered.status).toBe(200);
+    await issueThreadInteractionService(db).rejectInteraction(
+      { id: fixture.issueId, companyId: fixture.companyId, status: "in_progress" },
+      recovered.body.interactionId,
+      { reason: "Keep the current binding policy" },
+      { userId: "board-user" },
+    );
+
+    expect(await db.select().from(companySecretProposals)
+      .where(eq(companySecretProposals.id, proposed.body.id)))
+      .toEqual([expect.objectContaining({
+        interactionId: recovered.body.interactionId,
+        status: "rejected",
+        resolutionReason: "Keep the current binding policy",
+      })]);
   });
 
   it("mirrors binding proposal rejection, withdrawal, and expiry onto linked cards", async () => {
