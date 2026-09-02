@@ -823,4 +823,34 @@ describe("agent instructions bundle routes", () => {
       expect.any(Object),
     );
   });
+
+  it("persists a literal marker at a new path during placeholder-preserving UI updates", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: { model: "old-model" },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        preserveRedactedConfigValues: true,
+        replaceAdapterConfig: true,
+        adapterConfig: {
+          model: "***REDACTED***",
+          newSetting: "***REDACTED***",
+        },
+      }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          model: "old-model",
+          newSetting: "***REDACTED***",
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
 });

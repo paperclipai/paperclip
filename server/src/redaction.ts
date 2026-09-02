@@ -1077,7 +1077,11 @@ export function redactConfigurationPayload(
 }
 
 function restoreRedactedConfigurationValue(value: unknown, existing: unknown): unknown {
-  if (value === REDACTED_EVENT_VALUE) return existing;
+  // A marker can only stand in for a value that actually existed in the
+  // response source. At a new path it is ordinary caller-supplied data.
+  if (value === REDACTED_EVENT_VALUE) {
+    return existing === undefined ? value : existing;
+  }
   if (Array.isArray(value)) {
     const existingArray = Array.isArray(existing) ? existing : [];
     return value.map((entry, index) => restoreRedactedConfigurationValue(entry, existingArray[index]));
