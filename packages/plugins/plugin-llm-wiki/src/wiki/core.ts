@@ -1675,7 +1675,7 @@ function extractWikiLinks(contents: string): string[] {
     if (!target) continue;
     if (target.startsWith("wiki/")) {
       links.add(target.endsWith(".md") ? target : `${target}.md`);
-    } else if (["index.md", "log.md", "AGENTS.md", "IDEA.md"].includes(target)) {
+    } else if (["index.md", "log.md", "WIKI.md", "AGENTS.md", "IDEA.md"].includes(target)) {
       links.add(target);
     }
   }

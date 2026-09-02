@@ -3517,6 +3517,7 @@ Duplicate headings receive stable suffixes.
         "See [[wiki/entities/paperclip]] and [[wiki/concepts/dependency-gated-delivery|dependency gates]].",
         "",
         "- Current standup: [[wiki/projects/bounceless-v2/standup#next-actions]]",
+        "- Wiki root: [[WIKI.md]]",
       ].join("\n"),
     });
     await harness.executeTool("wiki_write_page", {
@@ -3532,6 +3533,7 @@ Duplicate headings receive stable suffixes.
       && !execute.sql.includes("wiki_page_revisions"),
     );
     expect(pageWrites.at(-2)?.params).toContain(JSON.stringify([
+      "WIKI.md",
       "wiki/concepts/dependency-gated-delivery.md",
       "wiki/entities/paperclip.md",
       "wiki/projects/bounceless-v2/standup.md",
