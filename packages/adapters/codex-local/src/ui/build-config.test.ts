@@ -136,6 +136,7 @@ describe("buildPaperclipRunnerConfig", () => {
     }));
     expect(config).toMatchObject({
       provider: "codex",
+      model: "gpt-5.4",
       codexPermissionMode: "untrusted",
       lifecycleMode: "per_turn",
     });
@@ -272,6 +273,13 @@ describe("buildPaperclipRunnerConfig", () => {
         [field]: value,
       },
     }))).toThrow("must be an integer between");
+  });
+
+  it("uses the Codex default when no model was selected", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({ model: "" }))).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+    });
   });
 
   it("bounds warm lifecycle values to the shared safe default", () => {

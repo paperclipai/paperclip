@@ -10,6 +10,8 @@ import { HarnessDriverBackend } from "./harness-driver-backend.js";
 import { nativeSystemInstructions, nativeTaskConstraints } from "./runtime-context.js";
 
 export interface CodexNativeSessionBackendOptions {
+  /** Effective provider environment, including the assigned workspace boundary. */
+  environment?: NodeJS.ProcessEnv;
   runnerInstanceId?: string;
   onSpawn?: (meta: {
     pid: number;
@@ -127,6 +129,7 @@ function createTransportBackedNativeSessionBackend(
     transportFactory: options.transportFactory,
     dynamicTools: options.dynamicTools,
     dynamicToolHandler: options.dynamicToolHandler,
+    environment: options.environment,
     driverIdentity,
     capabilities: isCodex
       ? {}

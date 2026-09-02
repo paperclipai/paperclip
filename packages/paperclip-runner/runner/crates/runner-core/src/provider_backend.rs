@@ -2351,6 +2351,7 @@ impl CodexCommandExecutor {
             "driver": state.config.driver,
             "providerSessionId": state.thread_id,
             "activeProviderTurnId": state.active_provider_turn_id,
+            "cwd": state.config.cwd,
         })))
     }
 

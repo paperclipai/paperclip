@@ -10,7 +10,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
-import { nativeSystemInstructions } from "./runtime-context.js";
+import {
+  nativeSystemInstructions,
+  nativeTaskConstraints,
+} from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
 
@@ -39,6 +42,20 @@ describe("native runtime context files", () => {
 
     expect(nativeSystemInstructions(runtimeInput(bundleRoot, "AGENTS.md")))
       .toContain("Stay inside the bundle.");
+  });
+
+  it("requires semantic completion before the final assistant response", () => {
+    const constraints = nativeTaskConstraints(
+      {} as unknown as NativeExecutionInput,
+    ).join("\n");
+
+    expect(constraints).toContain(
+      "Invoke paperclip_finish or paperclip_block exactly once before writing",
+    );
+    expect(constraints).toContain("do not call another tool");
+    expect(constraints).not.toContain(
+      "final response exactly once before invoking",
+    );
   });
 
   it("rejects traversal and symlink escapes from the bundle root", () => {

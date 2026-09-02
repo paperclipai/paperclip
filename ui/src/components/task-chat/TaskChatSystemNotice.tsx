@@ -37,7 +37,7 @@ const TONE_ICON_CLASS: Record<SystemNoticeTone, string> = {
 
 /**
  * System comment row in the chat shell (PAP-443 / PAP-442 Phase 1): collapsed,
- * it reads as a quiet centered one-liner in TaskChatMarker's register — tone
+ * it reads as a quiet left-aligned one-liner in TaskChatMarker's register — tone
  * icon + humanized plain-English title + relative time + chevron — instead of
  * a large gray paragraph of raw text. Expanding reveals the full
  * markdown-rendered body plus any structured metadata sections; nothing is
@@ -75,7 +75,7 @@ export function TaskChatSystemNotice({
   };
 
   return (
-    <div className="tc-enter-bubble flex flex-col items-center py-1" data-testid="task-chat-system-notice">
+    <div className="tc-enter-bubble flex flex-col items-start py-1" data-testid="task-chat-system-notice">
       <div className="flex max-w-(--pct-85) items-center gap-1.5">
         <button
           type="button"

@@ -1,6 +1,7 @@
 import {
   buildAdapterEnvConfig,
   isPaperclipRunnerProvider,
+  resolvePaperclipRunnerModel,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
   type CreateConfigValues,
@@ -200,6 +201,9 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     ...config,
     ...schemaValues,
     provider,
+    ...(provider === "codex"
+      ? { model: resolvePaperclipRunnerModel("codex", config.model) }
+      : {}),
     codexPermissionMode: resolvePaperclipRunnerPermissionMode(
       "codex",
       v.adapterSchemaValues?.codexPermissionMode ?? v.codexPermissionMode,

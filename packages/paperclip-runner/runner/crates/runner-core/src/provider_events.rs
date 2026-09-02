@@ -371,6 +371,32 @@ fn bounded_text(value: &str, max_chars: usize) -> String {
     redact_text(value).chars().take(max_chars).collect()
 }
 
+fn codex_terminal_error(params: &Value, event_type: &str) -> Value {
+    if event_type != "turn.failed" {
+        return Value::Null;
+    }
+    let error = [
+        "/turn/error",
+        "/turn/failure",
+        "/turn/reason",
+        "/turn/message",
+        "/error",
+        "/failure",
+        "/reason",
+        "/message",
+    ]
+    .into_iter()
+    .find_map(|pointer| params.pointer(pointer).filter(|value| !value.is_null()));
+    match error {
+        Some(Value::String(message)) => Value::String(bounded_text(message, MAX_TEXT_CHARS)),
+        Some(value) => sanitize_value(value),
+        None => json!({
+            "code": "provider_terminal_error_missing",
+            "message": "Codex reported a failed turn without error details",
+        }),
+    }
+}
+
 fn string(value: Option<&Value>) -> &str {
     value.and_then(Value::as_str).unwrap_or("")
 }
@@ -494,6 +520,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     "provider": "codex",
                     "providerTurnId": params.pointer("/turn/id").or_else(|| params.get("turnId")).and_then(Value::as_str),
                     "status": provider_status(status, true),
+                    "error": codex_terminal_error(params, event_type),
                 }),
             );
         }
@@ -606,6 +633,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
             let provider_item = item(params);
             let item_id = stable_id(string(provider_item.get("id")), "codex-item");
             let item_type = string(provider_item.get("type"));
+            let provider_phase = string(provider_item.get("phase"));
             let completed = method == "item/completed";
             if matches!(item_type, "commandExecution" | "mcpToolCall") {
                 let mut payload = json!({
@@ -647,6 +675,29 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     payload,
                 );
             } else {
+                let mut payload = json!({
+                    "provider": "codex",
+                    "itemId": item_id,
+                    "kind": bounded_text(item_type, 160),
+                    "status": provider_status(string(provider_item.get("status")), completed),
+                    "channel": if item_type == "agentMessage" && provider_phase == "final_answer" {
+                        "final"
+                    } else if item_type == "agentMessage" {
+                        "progress"
+                    } else {
+                        "detail"
+                    },
+                    "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
+                });
+                if !provider_phase.is_empty() {
+                    payload
+                        .as_object_mut()
+                        .expect("item payload is an object")
+                        .insert(
+                            "providerPhase".to_owned(),
+                            Value::String(bounded_text(provider_phase, 160)),
+                        );
+                }
                 push(
                     &mut events,
                     if completed {
@@ -659,14 +710,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     } else {
                         EventPriority::P2
                     },
-                    json!({
-                        "provider": "codex",
-                        "itemId": item_id,
-                        "kind": bounded_text(item_type, 160),
-                        "status": provider_status(string(provider_item.get("status")), completed),
-                        "channel": if item_type == "agentMessage" { "progress" } else { "detail" },
-                        "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
-                    }),
+                    payload,
                 );
             }
         }
@@ -1189,13 +1233,68 @@ mod tests {
     }
 
     #[test]
+    fn maps_codex_final_answer_as_final_agent_message() {
+        let final_answer = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "msg-final",
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "status": "completed",
+                "text": "2 + 2 is 4.",
+            }}),
+        );
+        assert_eq!(final_answer[0].event_type, "item.completed");
+        assert_eq!(final_answer[0].payload["channel"], "final");
+        assert_eq!(final_answer[0].payload["providerPhase"], "final_answer");
+        assert_eq!(final_answer[0].payload["text"], "2 + 2 is 4.");
+
+        let commentary = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "msg-progress",
+                "type": "agentMessage",
+                "phase": "commentary",
+                "status": "completed",
+                "text": "I am checking the result.",
+            }}),
+        );
+        assert_eq!(commentary[0].payload["channel"], "progress");
+        assert_eq!(commentary[0].payload["providerPhase"], "commentary");
+
+        let legacy = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "msg-legacy",
+                "type": "agentMessage",
+                "status": "completed",
+                "text": "Legacy response.",
+            }}),
+        );
+        assert!(legacy[0].payload.get("providerPhase").is_none());
+    }
+
+    #[test]
     fn maps_terminal_and_usage_events_at_priority_zero() {
         let terminal = normalize_codex_notification(
             "turn/completed",
-            &json!({"turn": {"id": "provider-turn", "status": "failed"}}),
+            &json!({"turn": {
+                "id": "provider-turn",
+                "status": "failed",
+                "error": {
+                    "message": "provider rejected the turn",
+                    "accessToken": "secret-value",
+                },
+            }}),
         );
         assert_eq!(terminal[0].event_type, "turn.failed");
         assert_eq!(terminal[0].priority, EventPriority::P0);
+        assert_eq!(
+            terminal[0].payload["error"]["message"],
+            "provider rejected the turn"
+        );
+        assert_eq!(terminal[0].payload["error"]["accessToken"], "[REDACTED]");
+        assert!(!terminal[0].payload.to_string().contains("secret-value"));
         for (method, expected) in [
             ("turn/failed", "turn.failed"),
             ("turn/cancelled", "turn.cancelled"),
@@ -1205,6 +1304,12 @@ mod tests {
                 normalize_codex_notification(method, &json!({"turnId": "provider-turn"}));
             assert_eq!(terminal[0].event_type, expected);
             assert_eq!(terminal[0].priority, EventPriority::P0);
+            if method == "turn/failed" {
+                assert_eq!(
+                    terminal[0].payload["error"]["code"],
+                    "provider_terminal_error_missing"
+                );
+            }
         }
 
         let usage = normalize_codex_notification(

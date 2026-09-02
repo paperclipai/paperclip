@@ -75,6 +75,52 @@ describe("redaction", () => {
     });
   });
 
+  it("preserves native run span identities without weakening hostname redaction", () => {
+    const spanNames = [
+      "environment.workspace.realize",
+      "native.coordinator.claim",
+      "runner.transport.selected",
+      "runner.prp.route.register",
+      "runner.transport.connect",
+      "runner.session.bootstrap",
+      "runner.turn.submit",
+      "runner.session.startup",
+      "provider.turn.queue",
+      "native.session.execute",
+      "native.result.finalize",
+      "task.run.measured",
+    ];
+
+    for (const span of spanNames) {
+      const input = {
+        schema: "paperclip.run-performance-span.v1",
+        span,
+        parentSpan: "native.session.execute",
+        providerHostname: "api.openai.com",
+      };
+      const sanitized = redactEventPayload(input);
+
+      expect(sanitized).toMatchObject({
+        schema: input.schema,
+        span,
+        parentSpan: "native.session.execute",
+        providerHostname: REDACTED_EVENT_VALUE,
+      });
+      expect(redactEventPayload(sanitized)).toEqual(sanitized);
+    }
+
+    expect(redactEventPayload({
+      schema: "paperclip.run-performance-span.v1",
+      span: "api.openai.com",
+    })?.span).toBe(REDACTED_EVENT_VALUE);
+    expect(
+      redactEventPayload({
+        schema: "paperclip.run-performance-span.v1",
+        span: "runner.example.com",
+      })?.span,
+    ).toBe(REDACTED_EVENT_VALUE);
+  });
+
   it("redacts payload objects while preserving null", () => {
     expect(redactEventPayload(null)).toBeNull();
     expect(redactEventPayload({ password: "hunter2", safe: "value" })).toEqual({

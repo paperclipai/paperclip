@@ -270,9 +270,9 @@ function escapeMarkdownLabel(name: string): string {
  * (rich lists, @-mentions, /-commands, inline pasted images) over a 32px
  * comp-bar of [attach] [mode chip] … [assignee] [send]. The mode chip is a
  * status-chip rectangle carrying the pending mode's hue; the composer chrome
- * itself stays neutral. Shift+Tab cycles modes (captured before Lexical);
- * Cmd/Ctrl+Enter posts via the editor's native onSubmit; plain Enter stays a
- * newline / next list item. Pasted or dropped images upload through
+ * itself stays neutral. Cmd/Ctrl+. and Shift+Tab cycle modes (captured before
+ * Lexical); Cmd/Ctrl+Enter posts via the editor's native onSubmit; plain Enter
+ * stays a newline / next list item. Pasted or dropped images upload through
  * `onAttachImage` (or the `onImageUpload` fallback) and land inline at the
  * caret via the editor's image plugin; non-image files render as shadcn
  * base/attachment chips (kind icon · name · size, remove ×, uploading/error
@@ -680,10 +680,16 @@ export function TaskChatComposer({
         "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
       )}
       onKeyDownCapture={(e) => {
-        // Shift+Tab cycles the pending mode; captured on the wrapper so it
-        // wins over Lexical's list-outdent binding inside the editor.
+        // Capture mode shortcuts on the wrapper so they work while the rich
+        // editor is focused and win over Lexical/browser bindings. Match the
+        // period by key and code because hardware keyboards on iOS can omit
+        // `code` for Cmd+Period.
         if (disabled || queuedEdit || takeoverVisible) return;
-        if (e.key === "Tab" && e.shiftKey) {
+        const isPeriod = e.key === "." || e.code === "Period";
+        const isModeShortcut =
+          (isPeriod && (e.metaKey || e.ctrlKey)) ||
+          (e.key === "Tab" && e.shiftKey);
+        if (isModeShortcut) {
           e.preventDefault();
           e.stopPropagation();
           setPendingMode((mode) => nextWorkMode(mode));
@@ -911,6 +917,7 @@ export function TaskChatComposer({
                   <button
                     type="button"
                     disabled={disabled || !onWorkModeChange}
+                    aria-keyshortcuts="Meta+Period Control+Period Shift+Tab"
                     className="status-chip flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition hover:brightness-110 focus-visible:brightness-110 focus-visible:outline-none disabled:opacity-50"
                     style={{ "--sc": modeHue(pendingMode) } as CSSProperties}
                     data-testid="task-chat-composer-mode"

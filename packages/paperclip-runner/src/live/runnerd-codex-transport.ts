@@ -68,7 +68,7 @@ const CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS = `## Codex-style collaboration
 - Before the first tool call in a turn, send a brief commentary update describing the immediate work you are starting.
 - During tool-driven work, send concise commentary updates at meaningful transitions so the user can follow progress without opening raw logs.
 - Reserve \`report_progress\` for meaningful durable milestones on longer work. Do not call it merely to create a completion comment on a short run; Paperclip materializes the final assistant response as the durable completion comment.
-- After semantic finalization, send one self-contained final assistant response with the outcome and verification.`;
+- Invoke the semantic completion tool exactly once before the final assistant response. After it succeeds, send one self-contained final response with the outcome and verification, then do not call another tool.`;
 
 export function withCodexCollaborationRuntimeInstructions(
   instructions: string,
@@ -733,6 +733,9 @@ export function rehydrateRunnerdTurnNotification(
       ...(rawTurn.status === undefined && rawParams.status !== undefined
         ? { status: rawParams.status }
         : {}),
+      ...(rawTurn.error === undefined && rawParams.error !== undefined
+        ? { error: rawParams.error }
+        : {}),
     },
   };
 }
@@ -1162,6 +1165,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
   #turnId = "";
+  #turnStartResponsePending = false;
+  #turnStartNotificationQueued = false;
   #durableTurnId = "";
   #authorizedTools: Record<string, unknown> | null = null;
   #closed = false;
@@ -1370,7 +1375,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...(this.#providerIdentity === null
             ? {}
             : { providerIdentity: structuredClone(this.#providerIdentity) }),
-          cwd: this.options.runnerFilesystemRoot ?? tmpdir(),
+          cwd:
+            typeof snapshot.cwd === "string" && snapshot.cwd.length > 0
+              ? snapshot.cwd
+              : this.options.environment?.PAPERCLIP_WORKSPACE_CWD ??
+                this.options.runnerFilesystemRoot ??
+                tmpdir(),
           turns: recoveredTurns,
         },
       };
@@ -2163,22 +2173,29 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       .join("\n");
     const pendingTurnId = `turn_lab_${randomUUID().replaceAll("-", "")}`;
     this.#turnId = pendingTurnId;
-    await this.#command("turn.start", { text: message });
-    // Command completion only means runnerd accepted the command. Codex assigns
-    // the authoritative turn identity in the subsequent turn/started event, so
-    // do not expose the temporary transport identity to the strict driver.
-    const deadline = Date.now() + 30_000;
-    while (this.#turnId === pendingTurnId && Date.now() < deadline) {
-      this.#throwIfFailed();
-      this.#pumpEvents();
-      if (this.#turnId !== pendingTurnId) break;
-      if (this.#handle?.child.exitCode !== null)
-        throw new Error("runnerd exited before provider turn startup");
-      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    this.#turnStartNotificationQueued = false;
+    this.#turnStartResponsePending = true;
+    try {
+      await this.#command("turn.start", { text: message });
+      // Command completion only means runnerd accepted the command. Codex assigns
+      // the authoritative turn identity in the subsequent turn/started event, so
+      // do not expose the temporary transport identity to the strict driver.
+      const deadline = Date.now() + 30_000;
+      while (this.#turnId === pendingTurnId && Date.now() < deadline) {
+        this.#throwIfFailed();
+        this.#pumpEvents();
+        if (this.#turnId !== pendingTurnId) break;
+        if (this.#handle?.child.exitCode !== null)
+          throw new Error("runnerd exited before provider turn startup");
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      if (this.#turnId === pendingTurnId)
+        throw new Error("runnerd did not report the provider turn identity");
+      return { turn: { id: this.#turnId, status: "inProgress" } };
+    } finally {
+      this.#turnStartResponsePending = false;
+      this.#turnStartNotificationQueued = false;
     }
-    if (this.#turnId === pendingTurnId)
-      throw new Error("runnerd did not report the provider turn identity");
-    return { turn: { id: this.#turnId, status: "inProgress" } };
   }
 
   async #command(
@@ -2275,6 +2292,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   #pumpEvents(): void {
     this.#flushPendingTraceRehydrations();
+    // An interval pump can run again while turn/start is still awaiting its
+    // command response. Once turn/started is queued, hold the durable suffix
+    // until the strict driver has bound the returned provider turn.
+    if (this.#turnStartResponsePending && this.#turnStartNotificationQueued) {
+      return;
+    }
     const events = this.#core?.store.state.committedEvents ?? [];
     while (this.#eventIndex < events.length) {
       const event = events[this.#eventIndex++];
@@ -2521,6 +2544,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         } else if (traceResult === "retry") {
           this.#traceRehydrationSpoolOverflow = true;
         }
+      }
+      // The strict Codex driver must bind the provider turn from the response
+      // before it observes terminal notifications. A fast provider can commit
+      // start and terminal events in one durable batch, so stop after exposing
+      // turn/started while the request is pending. The regular pump drains the
+      // remaining events after the promise resolves.
+      if (
+        this.#turnStartResponsePending &&
+        notifications.some((notification) => notification.method === "turn/started")
+      ) {
+        this.#turnStartNotificationQueued = true;
+        return;
       }
     }
   }

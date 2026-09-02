@@ -13,6 +13,8 @@ import {
   nativeRuntimePromptDigest,
   type NativeRuntimeContextSnapshot,
 } from "../contracts/runtime-context.js";
+import { createCodexTaskEnvelope } from "../contracts/codex.js";
+import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
 
 import {
@@ -90,6 +92,9 @@ it("adds Codex-style turn updates only when collaboration instructions are enabl
   expect(enabled).toContain(base);
   expect(enabled).toContain("Before the first tool call in a turn");
   expect(enabled).toContain("Do not call it merely to create a completion comment");
+  expect(enabled).toContain("semantic completion tool exactly once before");
+  expect(enabled).toContain("After it succeeds");
+  expect(enabled).not.toContain("Before semantic finalization");
   expect(withCodexCollaborationRuntimeInstructions(base, false)).toBe(base);
 });
 
@@ -520,6 +525,29 @@ it("binds a canonical runnerd terminal to the active provider turn", () => {
   });
 });
 
+it("rehydrates a canonical runnerd terminal error into the Codex turn", () => {
+  expect(
+    rehydrateRunnerdTurnNotification(
+      {
+        providerTurnId: "provider-turn-1",
+        status: "failed",
+        error: { code: "provider_failed", message: "provider rejected the turn" },
+      },
+      "opened-thread-1",
+      "provider-turn-1",
+      "turn/completed",
+    ),
+  ).toMatchObject({
+    threadId: "opened-thread-1",
+    turnId: "provider-turn-1",
+    turn: {
+      id: "provider-turn-1",
+      status: "failed",
+      error: { code: "provider_failed", message: "provider rejected the turn" },
+    },
+  });
+});
+
 it("preserves the provider identity on a late canonical terminal", () => {
   expect(
     rehydrateRunnerdTurnNotification(
@@ -808,6 +836,71 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
     runnerExited: true,
     runnerExitCode: 0,
   });
+}, 30_000);
+
+it("binds an immediately failed durable turn before exposing its terminal", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-fast-terminal-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--fail-turn-immediately"),
+    stateDirectory,
+  });
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: createCodexTaskEnvelope({
+      objective: "Exercise an immediate provider failure.",
+    }),
+    environment: {
+      PATH: process.env.PATH,
+      HOME: join(tmpdir(), "runnerd-fast-terminal-host-home"),
+      PAPERCLIP_WORKSPACE_CWD: stateDirectory,
+    },
+    approvalPolicy: "never",
+    transportFactory: () => bundle.transport,
+  });
+  const session = await driver.openSession({
+    runId: "run-fast-terminal",
+    normalizedSessionId: "session-fast-terminal",
+    workingDirectory: stateDirectory,
+  });
+  try {
+    const accepted = await session.startTurn({
+      message: { role: "user", text: "Fail this test turn." },
+    });
+    expect(accepted.turnId).toBe("provider-turn-1");
+    const events = [];
+    for await (const event of session.events()) {
+      events.push(event);
+      if (event.eventType === "turn.failed") break;
+    }
+    const eventTypes = events.map((event) => event.eventType);
+    expect(eventTypes).toEqual(
+      expect.arrayContaining(["turn.started", "turn.accepted", "turn.failed"]),
+    );
+    expect(eventTypes.indexOf("turn.started")).toBeLessThan(
+      eventTypes.indexOf("turn.accepted"),
+    );
+    expect(eventTypes.indexOf("turn.accepted")).toBeLessThan(
+      eventTypes.indexOf("turn.failed"),
+    );
+    expect(
+      events.find((event) => event.eventType === "session.failed"),
+    ).toBeUndefined();
+    expect(await session.snapshot()).toMatchObject({
+      activeTurnId: null,
+      terminalTurns: [
+        { turnId: "provider-turn-1", fingerprint: expect.any(String) },
+      ],
+    });
+  } finally {
+    await session.close();
+    await rm(stateDirectory, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 50,
+    });
+  }
 }, 30_000);
 
 it("bridges a runnerd-native question into the server request handler and resolves it canonically", async () => {
@@ -1318,7 +1411,10 @@ it("cold-restores a suspended provider session under its durable run binding", a
   }));
   try {
     const read = await restored.transport.request("thread/read", {});
-    expect(read.thread).toMatchObject({ id: "codex-thread-1" });
+    expect(read.thread).toMatchObject({
+      id: "codex-thread-1",
+      cwd: tmpdir(),
+    });
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned"))).mode & 0o222).toBe(0);
     expect((await stat(join(stateDirectory, "codex-home", "skills", "assigned", "SKILL.md"))).mode & 0o222).toBe(0);
     const providerState = JSON.parse(

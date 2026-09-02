@@ -16,6 +16,9 @@ export type PaperclipRunnerPermissionMode =
 
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
+export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
+  codex: "gpt-5.6-sol",
+} as const;
 
 export interface PaperclipRunnerPermissionOption<TMode extends string = string> {
   value: TMode;
@@ -108,6 +111,15 @@ export function resolvePaperclipRunnerPermissionMode(
   return capability.options.some((option) => option.value === value)
     ? value as PaperclipRunnerPermissionMode
     : capability.defaultMode;
+}
+
+export function resolvePaperclipRunnerModel(
+  provider: keyof typeof PAPERCLIP_RUNNER_DEFAULT_MODELS,
+  value: unknown,
+): string {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : PAPERCLIP_RUNNER_DEFAULT_MODELS[provider];
 }
 
 export function resolvePaperclipRunnerIdleTimeoutMs(value: unknown): number {

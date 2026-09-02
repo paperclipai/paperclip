@@ -37,6 +37,35 @@ const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-
 // public discriminators, not credentials. Exempt only the closed Paperclip
 // schema namespace while retaining the existing fail-closed JWT value guard.
 const PAPERCLIP_SCHEMA_ID_RE = /^paperclip\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.v\d+$/;
+const NATIVE_RUN_SPAN_SCHEMA = "paperclip.run-performance-span.v1";
+const NATIVE_RUN_SPAN_FIELDS = ["span", "parentSpan"] as const;
+const NATIVE_RUN_SPAN_NAMES = new Set([
+  "agent.turn",
+  "environment.acquire",
+  "environment.startup",
+  "environment.workspace.realize",
+  "native.coordinator.claim",
+  "native.result.finalize",
+  "native.session.execute",
+  "provider.session.continuity_break",
+  "provider.session.resume",
+  "provider.time_to_first_agent_event",
+  "provider.turn.queue",
+  "runner.artifact.discover",
+  "runner.artifact.prepare",
+  "runner.prp.route.register",
+  "runner.runtime.stage",
+  "runner.session.bootstrap",
+  "runner.session.resume",
+  "runner.session.startup",
+  "runner.transport.connect",
+  "runner.transport.selected",
+  "runner.turn.submit",
+  "task.prepare",
+  "task.run",
+  "task.run.measured",
+  "task.settle",
+]);
 const CLI_SECRET_FLAG_RE = new RegExp(String.raw`^-{1,2}${SECRET_FIELD_NAME_PATTERN}$`, "i");
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
   String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` + "`" + String.raw`\r\n]+((?:"|'))`,
@@ -168,7 +197,21 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
 export function redactEventPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!payload) return null;
   if (!isPlainObject(payload)) return payload;
-  return sanitizeRecord(payload);
+  const sanitized = sanitizeRecord(payload);
+  if (payload.schema !== NATIVE_RUN_SPAN_SCHEMA) return sanitized;
+
+  // Native run span identities are controlled diagnostics emitted by
+  // createNativeRunTrace, not provider data. Their dotted names overlap the
+  // broad JWT-value heuristic, so restore only these two fields on the exact
+  // run-performance schema. Hostnames and JWT-shaped values on every other
+  // field and schema still fail closed through sanitizeRecord above.
+  for (const field of NATIVE_RUN_SPAN_FIELDS) {
+    const value = payload[field];
+    if (typeof value === "string" && NATIVE_RUN_SPAN_NAMES.has(value)) {
+      sanitized[field] = value;
+    }
+  }
+  return sanitized;
 }
 
 export function redactSensitiveText(input: string): string {

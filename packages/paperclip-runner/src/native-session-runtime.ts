@@ -17,14 +17,16 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import type {
-  PrpEvent,
-  PrpStructuredRunResult,
-  PrpTerminalState,
+import {
+  validatePrpStructuredRunResult,
+  type PrpEvent,
+  type PrpStructuredRunResult,
+  type PrpTerminalState,
 } from "./protocol/replay-contract.js";
 import { parsePaperclipQuestionSet } from "./contracts/question-set.js";
 
 export const DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS = 120_000;
+export const DEFAULT_NATIVE_SEMANTIC_RESULT_TERMINAL_GRACE_MS = 5_000;
 const OPTIONAL_SESSION_CANCELLATION_GRACE_MS = 100;
 const FAILED_OPERATION_SETTLEMENT_GRACE_MS = 100;
 const DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS = 30_000;
@@ -78,6 +80,8 @@ export interface ExecuteNativeSessionOptions {
   checkpointTimeoutMs?: number;
   /** Internal test seam; production uses the fixed 120-second platform policy. */
   runtimeInputLiveWindowMs?: number;
+  /** Internal test seam; production gives the provider five seconds to end after a result. */
+  semanticResultTerminalGraceMs?: number;
   onSession?: (session: NativeSession | null) => void;
   existingSession?: NativeSession;
   persistedSession?: PersistedNativeSession | null;
@@ -675,12 +679,15 @@ async function consumeTurn(
   controlPlane: ControlPlanePort,
   timeoutMs: number,
   runtimeInputLiveWindowMs: number,
+  semanticResultTerminalGraceMs: number,
   closeFailedSession: () => Promise<void>,
   quarantineSession: () => void,
   resolveGovernedWait?: ExecuteNativeSessionOptions["resolveGovernedWait"],
   externalSignal?: AbortSignal,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let semanticResultTimer: ReturnType<typeof setTimeout> | undefined;
+  const semanticResultGraceExpired = Symbol("semantic_result_grace_expired");
   const appendAbort = new AbortController();
   const governedCleanupOperations = new Set<Promise<unknown>>();
   let governedCancellationCommitted = false;
@@ -723,13 +730,72 @@ async function consumeTurn(
     let eventCount = 0;
     let highestContiguousSourceSeq = 0;
     let governedResult: PrpStructuredRunResult | null = null;
+    let resultSource: "semantic_result" | "governed_wait" | null = null;
+    let semanticResultEvent: PrpEvent | null = null;
+    let semanticResultDeadline: Promise<
+      typeof semanticResultGraceExpired
+    > | null = null;
+    let pendingNext: ReturnType<typeof eventIterator.next> | null = null;
+    const settleDurableResult = (
+      event: PrpEvent,
+      result: PrpStructuredRunResult,
+      reason: string,
+    ) => {
+      if (session.cancel === undefined) {
+        throw new Error("native_governed_wait_cancellation_unavailable");
+      }
+      const cancellation = session.cancel({
+        reason,
+        signal: appendAbort.signal,
+      });
+      governedCancellationCommitted = true;
+      const cleanup = cancellation.cleanup;
+      governedCleanupOperations.add(cleanup);
+      void cleanup
+        .catch(() => quarantineSession())
+        .finally(() => governedCleanupOperations.delete(cleanup));
+      return {
+        event,
+        eventCount,
+        highestContiguousSourceSeq,
+        governedResult: result,
+      };
+    };
     while (true) {
-      const next = await eventIterator.next();
+      pendingNext ??= eventIterator.next();
+      const next = semanticResultDeadline === null
+        ? await pendingNext
+        : await Promise.race([pendingNext, semanticResultDeadline]);
+      if (next === semanticResultGraceExpired) {
+        void pendingNext.catch(() => undefined);
+        if (semanticResultEvent === null || governedResult === null) {
+          throw new Error("native_semantic_result_grace_lost_result");
+        }
+        return settleDurableResult(
+          semanticResultEvent,
+          governedResult,
+          "Paperclip accepted the durable semantic result.",
+        );
+      }
+      pendingNext = null;
       if (stopConsumer) throw new Error("native event consumer stopped");
-      if (next.done)
+      if (next.done) {
+        if (
+          resultSource === "semantic_result" &&
+          semanticResultEvent !== null &&
+          governedResult !== null
+        ) {
+          return {
+            event: semanticResultEvent,
+            eventCount,
+            highestContiguousSourceSeq,
+            governedResult,
+          };
+        }
         throw new Error(
           "native event stream closed before a turn terminal fact",
         );
+      }
       const event = next.value;
       const payload = event.payload as Record<string, unknown>;
       const settlingRequestId =
@@ -820,6 +886,24 @@ async function consumeTurn(
           // Invalid structured inputs remain rejected by the driver and never become durable questions.
         }
       }
+      if (governedResult === null && event.eventType === "run.result.proposed") {
+        const validation = validatePrpStructuredRunResult(event.payload);
+        if (!validation.ok) {
+          throw new Error("native_semantic_result_invalid");
+        }
+        governedResult = validation.result;
+        resultSource = "semantic_result";
+        semanticResultEvent = event;
+        if (session.cancel !== undefined) {
+          semanticResultDeadline = new Promise((resolve) => {
+            semanticResultTimer = setTimeout(
+              () => resolve(semanticResultGraceExpired),
+              semanticResultTerminalGraceMs,
+            );
+            semanticResultTimer.unref?.();
+          });
+        }
+      }
       if (governedResult === null && resolveGovernedWait) {
         if (appendAbort.signal.aborted) {
           throw (
@@ -831,33 +915,20 @@ async function consumeTurn(
           turnId: event.turnId ?? null,
           event,
         });
-        if (governedResult !== null && !isTurnTerminal(event)) {
-          if (session.cancel === undefined) {
-            throw new Error("native_governed_wait_cancellation_unavailable");
-          }
-          // A governed result is already durable. Commit cancellation
-          // synchronously, then stop consuming provider output now rather
-          // than waiting for an abort-insensitive cleanup or terminal event.
-          // The returned promise owns cleanup only and remains observed in
-          // finally, where its wait is bounded and the session quarantined.
-          const cancellation = session.cancel({
-            reason:
-              "Paperclip parked this turn on a durable governed interaction.",
-            signal: appendAbort.signal,
-          });
-          governedCancellationCommitted = true;
-          const cleanup = cancellation.cleanup;
-          governedCleanupOperations.add(cleanup);
-          void cleanup
-            .catch(() => quarantineSession())
-            .finally(() => governedCleanupOperations.delete(cleanup));
-          return {
-            event,
-            eventCount,
-            highestContiguousSourceSeq,
-            governedResult,
-          };
+        if (governedResult !== null) resultSource = "governed_wait";
+      }
+      if (governedResult !== null && !isTurnTerminal(event)) {
+        if (resultSource === "semantic_result") {
+          // Give the provider a short grace to publish its final assistant
+          // message and terminal after the semantic tool returns. If no
+          // terminal arrives, the deadline above finalizes the durable result.
+          continue;
         }
+        return settleDurableResult(
+          event,
+          governedResult,
+          "Paperclip parked this turn on a durable governed interaction.",
+        );
       }
       if (isTurnTerminal(event)) {
         return {
@@ -988,6 +1059,7 @@ async function consumeTurn(
       if (!teardownSettled) quarantineSession();
     }
     if (timer !== undefined) clearTimeout(timer);
+    if (semanticResultTimer !== undefined) clearTimeout(semanticResultTimer);
     removeExternalAbort();
   }
 }
@@ -1286,28 +1358,36 @@ export async function executeNativeSession(
     const replacementAllowed =
       providerRecoveryCheckpoint.providerRecoveryPolicy ===
       "allow_replacement_after_resume_failure";
-    const recovery = options.backend.recoverSession
-      ? await runAbortableOperationWithin({
-          timeoutMs: recoveryTimeoutMs,
-          timeoutMessage: `native session provider recovery timed out after ${recoveryTimeoutMs}ms`,
-          operation: (signal) =>
-            options.backend.recoverSession!(providerRecoveryCheckpoint, {
-              signal,
-            }),
-          onLateResolution: async (lateRecovery) => {
-            if (lateRecovery.session) {
-              await disposeUnadmittedSession(
-                lateRecovery.session,
-                "native session provider recovery timed out",
-                cleanupDomain,
-              );
-            }
-          },
-        })
-      : {
+    const failedProviderSession =
+      providerRecoveryCheckpoint.terminal?.runTerminalState === "failed" &&
+      providerRecoveryCheckpoint.semanticResult === null;
+    const recovery = failedProviderSession
+      ? {
           recovered: false as const,
-          reason: "driver does not support recovery",
-        };
+          reason: "provider session ended with a failed terminal",
+        }
+      : options.backend.recoverSession
+        ? await runAbortableOperationWithin({
+            timeoutMs: recoveryTimeoutMs,
+            timeoutMessage: `native session provider recovery timed out after ${recoveryTimeoutMs}ms`,
+            operation: (signal) =>
+              options.backend.recoverSession!(providerRecoveryCheckpoint, {
+                signal,
+              }),
+            onLateResolution: async (lateRecovery) => {
+              if (lateRecovery.session) {
+                await disposeUnadmittedSession(
+                  lateRecovery.session,
+                  "native session provider recovery timed out",
+                  cleanupDomain,
+                );
+              }
+            },
+          })
+        : {
+            recovered: false as const,
+            reason: "driver does not support recovery",
+          };
     if (!recovery.recovered || !recovery.session) {
       if (!replacementAllowed) {
         throw new Error(
@@ -1614,6 +1694,8 @@ export async function executeNativeSession(
               options.timeoutMs ?? 900_000,
               options.runtimeInputLiveWindowMs ??
                 DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS,
+              options.semanticResultTerminalGraceMs ??
+                DEFAULT_NATIVE_SEMANTIC_RESULT_TERMINAL_GRACE_MS,
               closeSession,
               quarantineSession,
               options.resolveGovernedWait,

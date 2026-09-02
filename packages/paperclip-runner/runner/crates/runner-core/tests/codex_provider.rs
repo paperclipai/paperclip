@@ -57,6 +57,42 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
     }
 }
 
+#[test]
+fn provider_receives_the_isolated_codex_auth_home() {
+    let directory = temporary_directory("isolated-auth-home");
+    fs::write(directory.join("auth.json"), r#"{"auth_mode":"apikey"}"#)
+        .expect("write isolated Codex auth fixture");
+
+    // Run this assertion in a dedicated subprocess because environment
+    // mutation is process-global and Rust executes tests concurrently.
+    let test_binary = std::env::current_exe().expect("resolve current test binary");
+    let status = std::process::Command::new(test_binary)
+        .arg("provider_receives_isolated_codex_auth_home_subprocess")
+        .arg("--exact")
+        .arg("--ignored")
+        .arg("--nocapture")
+        .env("PAPERCLIP_CODEX_AUTH_TEST_HOME", &directory)
+        .env("HOME", &directory)
+        .env("CODEX_HOME", &directory)
+        .status()
+        .expect("run isolated auth-home assertion");
+    assert!(status.success());
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+#[ignore = "subprocess helper for provider_receives_the_isolated_codex_auth_home"]
+fn provider_receives_isolated_codex_auth_home_subprocess() {
+    let Some(directory) = std::env::var_os("PAPERCLIP_CODEX_AUTH_TEST_HOME").map(PathBuf::from)
+    else {
+        return;
+    };
+    let config = provider_config(&directory, &["--require-codex-home-auth"]);
+    let mut provider = CodexProvider::start(&config, None)
+        .expect("Codex provider should read auth from the isolated CODEX_HOME");
+    provider.shutdown().expect("stop fake Codex provider");
+}
+
 fn task_context_tool() -> AuthorizedTool {
     AuthorizedTool {
         operation_id: "get_task_context".to_owned(),
@@ -1734,6 +1770,7 @@ fn durable_ambiguous_start_recovers_a_distinct_active_replacement_after_process_
         .expect("reconcile active replacement turn");
     assert_eq!(snapshot.result["status"], "turn_active");
     assert_eq!(snapshot.result["activeProviderTurnId"], "provider-turn-2");
+    assert_eq!(snapshot.result["cwd"], config.cwd);
     let persisted_recovered: Value = serde_json::from_slice(
         &fs::read(directory.join("codex-provider-state.json"))
             .expect("read recovered provider state"),

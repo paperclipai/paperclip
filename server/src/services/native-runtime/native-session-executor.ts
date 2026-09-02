@@ -247,11 +247,13 @@ async function measureNativeRunnerSpan<T>(
  * Provider bootstrap needs a small amount of host process context even when
  * the agent has no configured env. In particular, an empty environment makes
  * a bare `codex` command unresolvable. Agent-configured values remain
- * authoritative and may intentionally override the host defaults.
+ * authoritative and may intentionally override the host defaults, while the
+ * server-selected workspace remains an immutable containment boundary.
  */
 export function buildNativeProviderEnvironment(
   configured: NodeJS.ProcessEnv,
   host: NodeJS.ProcessEnv = process.env,
+  assignedWorkspaceCwd?: string,
 ): NodeJS.ProcessEnv {
   const inherited = Object.fromEntries(
     NATIVE_PROVIDER_HOST_ENV_KEYS.flatMap((key) => {
@@ -261,7 +263,11 @@ export function buildNativeProviderEnvironment(
         : [];
     }),
   );
-  return { ...inherited, ...configured };
+  const environment = { ...inherited, ...configured };
+  if (assignedWorkspaceCwd?.trim()) {
+    environment.PAPERCLIP_WORKSPACE_CWD = assignedWorkspaceCwd;
+  }
+  return environment;
 }
 
 type PlanSynchronization = {
@@ -5965,8 +5971,12 @@ export async function createRunnerdBackend(input: {
         ...(input.runnerEnvironment ?? process.env),
         HOME: remoteTarget!.remoteCwd,
         CODEX_HOME: posix.join(remoteTarget!.remoteCwd, ".codex"),
+        PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
       }
-    : (input.runnerEnvironment ?? process.env);
+    : {
+        ...(input.runnerEnvironment ?? process.env),
+        PAPERCLIP_WORKSPACE_CWD: input.execution.workspace.cwd,
+      };
   const archiveContinuityState = async () => {
     const archiveToken = `${Date.now()}-${randomUUID()}`;
     const archiveRoot = resolve(root, "continuity-breaks", archiveToken);
@@ -6002,6 +6012,7 @@ export async function createRunnerdBackend(input: {
   };
   const backend = createNativeSessionBackend(runnerExecution, {
     runnerInstanceId: input.runnerInstanceId,
+    environment: effectiveRunnerEnvironment,
     onSpawn: input.onSpawn,
     dynamicTools,
     dynamicToolHandler: (call) => authorityRouter.execute(call),
