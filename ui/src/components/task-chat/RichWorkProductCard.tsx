@@ -186,7 +186,7 @@ export function RichWorkProductCard({ workProduct, href }: RichWorkProductCardPr
     workProduct.healthStatus === "unhealthy"
       ? workProduct.type === "preview_url"
         ? { label: "Down", tone: "failure" as const }
-        : workProduct.type === "runtime_service"
+        : workProduct.type === "runtime_service" && workProduct.status === "active"
           ? { label: "Unhealthy", tone: "failure" as const }
           : null
       : null;

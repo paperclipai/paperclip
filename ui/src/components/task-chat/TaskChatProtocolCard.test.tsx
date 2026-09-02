@@ -230,6 +230,30 @@ describe("TaskChatProtocolCard", () => {
     expect(container.textContent).not.toContain("Unhealthy");
   });
 
+  it("shows a closed runtime as stopped even when its last health check failed", () => {
+    const product = workProduct({
+      type: "runtime_service",
+      provider: "paperclip",
+      status: "closed",
+      healthStatus: "unhealthy",
+      title: "Storybook",
+      metadata: { service: "storybook", port: 6006 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "runtime service · closed",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.textContent).toContain("Stopped");
+    expect(container.textContent).not.toContain("Unhealthy");
+  });
+
   it("renders provider plan steps and status", () => {
     renderCard(root, {
       id: "provider-plan",
