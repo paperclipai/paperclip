@@ -90,8 +90,8 @@ import {
   probeRuntimeApiUrl,
   resolveVerifiedRuntimeApiUrl,
   RUNTIME_API_PROBE_PATH,
+  runtimeSelfOriginApiUrl,
 } from "./runtime-api-probe.js";
-import { getServerInfoSnapshot } from "./server-info.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -1723,19 +1723,16 @@ export async function startServer(): Promise<StartedServer> {
   try {
     const runtimeApiResolution = await resolveVerifiedRuntimeApiUrl({
       configuredApiUrl,
-      // The candidate list already ends with every reachable interface address;
-      // append the loopback origin, which reaches a wildcard-bound listener even
-      // when nothing else does.
-      fallbackApiUrls: [...runtimeApiCandidates, `http://127.0.0.1:${listenPort}`],
-      // Every fallback is this process's own bound port on one of its own
-      // hostnames, so a fallback must prove it is this build before spawned runs
-      // send it their bearer token. `commit` rides every variant of the health
-      // route, including the redacted one this unauthenticated probe receives.
-      selfCommit: (() => {
-        const git = getServerInfoSnapshot().git;
-        return git.available ? git.fullSha : null;
-      })(),
-      probe: (apiUrl, identity) => probeRuntimeApiUrl(apiUrl, identity),
+      // Spawned runs send their bearer run token to whichever origin wins, and
+      // no response body can prove the responder is this server — the health
+      // route's self-identifying values are readable off that same route by
+      // anything that can reach it. So the only origin eligible to replace the
+      // configured one is the address this process actually bound, which no
+      // other process can be holding. Other derived candidates stay in
+      // PAPERCLIP_RUNTIME_API_CANDIDATES_JSON for runtime clients to walk; they
+      // just cannot be promoted to the credential-bearing default here.
+      selfOriginApiUrl: runtimeSelfOriginApiUrl(server.address() ?? { address: runtimeListenHost, port: listenPort }),
+      probe: (apiUrl) => probeRuntimeApiUrl(apiUrl),
     });
     if (runtimeApiResolution.unverified) {
       // Keep booting rather than exit: external clients may well reach an origin
@@ -1746,7 +1743,7 @@ export async function startServer(): Promise<StartedServer> {
           probePath: RUNTIME_API_PROBE_PATH,
           rejected: runtimeApiResolution.rejected,
         },
-        `No candidate origin served the Paperclip API; spawned agents keep PAPERCLIP_API_URL=${configuredApiUrl} and may be unable to reach their own board`,
+        `Neither PAPERCLIP_API_URL=${configuredApiUrl} nor this server's own bound origin served the Paperclip API; spawned agents keep PAPERCLIP_API_URL=${configuredApiUrl} and may be unable to reach their own board`,
       );
     } else if (runtimeApiResolution.changed) {
       resolvedApiUrl = runtimeApiResolution.apiUrl;
