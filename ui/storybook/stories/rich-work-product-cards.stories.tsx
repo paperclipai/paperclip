@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { IssueAttachment, IssueWorkProduct } from "@paperclipai/shared";
+import { expect } from "storybook/test";
 import { RichWorkProductCard } from "../../src/components/task-chat/RichWorkProductCard";
 import { TaskChatBubble } from "../../src/components/task-chat/TaskChatBubble";
 import type { TaskChatMessageItem } from "../../src/components/task-chat/task-chat-model";
@@ -28,6 +29,7 @@ type CardState = {
   label: string;
   status: string;
   reviewState?: IssueWorkProduct["reviewState"];
+  healthStatus?: IssueWorkProduct["healthStatus"];
 };
 
 const IMAGE_PREVIEW =
@@ -126,6 +128,12 @@ const PR_STATES: CardState[] = [
   { id: "closed", label: "Closed", status: "closed" },
 ];
 
+const RUNTIME_STATES: CardState[] = [
+  { id: "running", label: "Running", status: "active", healthStatus: "healthy" },
+  { id: "stopped", label: "Stopped", status: "closed", healthStatus: "healthy" },
+  { id: "unhealthy", label: "Unhealthy", status: "active", healthStatus: "unhealthy" },
+];
+
 function product(kind: CardKind, state: CardState, withStats = false): IssueWorkProduct {
   return {
     id: `${kind.id}-${state.id}-${withStats ? "stats" : "plain"}`,
@@ -142,7 +150,7 @@ function product(kind: CardKind, state: CardState, withStats = false): IssueWork
     status: state.status,
     reviewState: state.reviewState ?? "none",
     isPrimary: false,
-    healthStatus: state.id === "failed" ? "unhealthy" : "healthy",
+    healthStatus: state.healthStatus ?? (state.id === "failed" ? "unhealthy" : "healthy"),
     summary: null,
     metadata: {
       ...kind.metadata,
@@ -199,6 +207,15 @@ export const PreviousInventory: Story = {
 export const PullRequestLifecycle: Story = {
   args: { workProduct: product(KINDS[0], PR_STATES[0]), href: KINDS[0].url },
   render: () => <Matrix kinds={[KINDS[0]]} states={PR_STATES} />,
+};
+
+export const RuntimeServiceLifecycle: Story = {
+  args: { workProduct: product(KINDS[7], RUNTIME_STATES[0]), href: KINDS[7].url },
+  render: () => <Matrix kinds={[KINDS[7]]} states={RUNTIME_STATES} />,
+  play: async ({ canvasElement }) => {
+    const chipLabels = [...canvasElement.querySelectorAll(".status-chip")].map((chip) => chip.textContent);
+    expect(chipLabels).toEqual(["Running", "Running", "Stopped", "Stopped", "Unhealthy", "Unhealthy"]);
+  },
 };
 
 export const LongTitleTruncation: Story = {
