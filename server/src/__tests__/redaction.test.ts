@@ -43,6 +43,31 @@ describe("redaction", () => {
     }
   });
 
+  it("restores round-tripped redaction markers without discarding intentional edits", () => {
+    const existing = {
+      model: "old-model",
+      env: {
+        TOKEN: { type: "plain", value: "stored-secret" },
+        ITEMS: ["stored-first", "stored-second"],
+      },
+    };
+    const payload = {
+      model: "new-model",
+      env: {
+        TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+        ITEMS: [REDACTED_EVENT_VALUE, "new-second"],
+      },
+    };
+
+    expect(restoreRedactedConfigurationPayload(payload, existing)).toEqual({
+      model: "new-model",
+      env: {
+        TOKEN: { type: "plain", value: "stored-secret" },
+        ITEMS: ["stored-first", "new-second"],
+      },
+    });
+  });
+
   it.each([
     ["secret_ref", "secretId", "secret-id"],
     ["user_secret_ref", "key", "user-secret-key"],

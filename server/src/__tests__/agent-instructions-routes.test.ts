@@ -758,11 +758,52 @@ describe("agent instructions bundle routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({
-      command: "codex --profile engineer",
+      command: "***REDACTED***",
     });
     expect(res.body.adapterConfig.instructionsBundleMode).toBeUndefined();
     expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
     expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+  });
+
+  it("preserves stored values when a redacted configuration response is round-tripped", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterConfig: {
+        model: "old-model",
+        env: { TOKEN: { type: "plain", value: "stored-secret" } },
+      },
+      runtimeConfig: {
+        heartbeat: { enabled: true },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        replaceAdapterConfig: true,
+        adapterConfig: {
+          model: "new-model",
+          env: { TOKEN: { type: "plain", value: "***REDACTED***" } },
+        },
+        runtimeConfig: {
+          heartbeat: { enabled: "***REDACTED***" },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          model: "new-model",
+          env: { TOKEN: { type: "plain", value: "stored-secret" } },
+        }),
+        runtimeConfig: {
+          heartbeat: { enabled: true },
+        },
+      }),
+      expect.any(Object),
+    );
   });
 });

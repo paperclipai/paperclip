@@ -369,6 +369,8 @@ const SECRET_TEXT_HINTS = [
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
+const PUBLIC_CONFIGURATION_SCALAR_KEYS = new Set(["model", "provider"]);
+
 function maybeContainsSecretText(input: string) {
   const lower = input.toLowerCase();
   return (
@@ -996,14 +998,20 @@ export function redactAgentAdapterConfig(
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
-function redactConfigurationValue(value: unknown): unknown {
+function redactConfigurationValue(value: unknown, path: string[] = []): unknown {
   if (value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map(redactConfigurationValue);
+  if (Array.isArray(value)) return value.map((entry) => redactConfigurationValue(entry, path));
   if (isSecretRefBinding(value)) return redactSecretRefBinding(value);
   if (isUserSecretRefBinding(value)) return redactUserSecretRefBinding(value);
   if (isPlainBinding(value)) return { type: value.type, value: REDACTED_EVENT_VALUE };
-  if (!isPlainObject(value)) return REDACTED_EVENT_VALUE;
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, redactConfigurationValue(child)]));
+  if (!isPlainObject(value)) {
+    const topLevelKey = path.length === 1 ? path[0] : undefined;
+    return topLevelKey && PUBLIC_CONFIGURATION_SCALAR_KEYS.has(topLevelKey) ? value : REDACTED_EVENT_VALUE;
+  }
+  return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [
+    childKey,
+    redactConfigurationValue(child, [...path, childKey]),
+  ]));
 }
 
 /** Redact executable configuration deny-by-default while retaining its shape. */
@@ -1011,6 +1019,32 @@ export function redactConfigurationPayload(payload: Record<string, unknown> | nu
   if (!payload) return null;
   if (!isPlainObject(payload)) return {};
   return redactConfigurationValue(payload) as Record<string, unknown>;
+}
+
+function restoreRedactedConfigurationValue(value: unknown, existing: unknown): unknown {
+  if (value === REDACTED_EVENT_VALUE) return existing;
+  if (Array.isArray(value)) {
+    const existingArray = Array.isArray(existing) ? existing : [];
+    return value.map((entry, index) => restoreRedactedConfigurationValue(entry, existingArray[index]));
+  }
+  if (!isPlainObject(value)) return value;
+  const existingRecord = isPlainObject(existing) ? existing : {};
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key,
+    restoreRedactedConfigurationValue(child, existingRecord[key]),
+  ]));
+}
+
+/**
+ * Treat the response-only redaction marker as an unchanged value when a client
+ * round-trips configuration. The marker is reserved API syntax; any other
+ * value remains an intentional update.
+ */
+export function restoreRedactedConfigurationPayload(
+  payload: Record<string, unknown>,
+  existing: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  return restoreRedactedConfigurationValue(payload, existing ?? {}) as Record<string, unknown>;
 }
 
 export function redactSensitiveText(input: string): string {

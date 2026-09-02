@@ -4671,12 +4671,16 @@ export function agentRoutes(
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
-      assertNoAgentAdapterConfigMutation(req, adapterConfig);
-      const changingInstructionsConfig = adapterConfigTouchesInstructionsConfig(adapterConfig);
+      const restoredAdapterConfig = restoreRedactedConfigurationPayload(
+        adapterConfig,
+        asRecord(existing.adapterConfig),
+      );
+      assertNoAgentAdapterConfigMutation(req, restoredAdapterConfig);
+      const changingInstructionsConfig = adapterConfigTouchesInstructionsConfig(restoredAdapterConfig);
       if (changingInstructionsConfig) {
         await assertCanManageInstructionsPath(req, existing);
       }
-      patchData.adapterConfig = adapterConfig;
+      patchData.adapterConfig = restoredAdapterConfig;
     }
 
     // Switching an existing agent ONTO another adapter is a new selection, so
@@ -4696,12 +4700,18 @@ export function agentRoutes(
         res.status(422).json({ error: "runtimeConfig must be an object" });
         return;
       }
+      const restoredRuntimeConfig = restoreRedactedConfigurationPayload(
+        runtimeConfig,
+        asRecord(existing.runtimeConfig),
+      );
+      assertNoAgentRuntimeConfigAdapterConfigMutation(req, restoredRuntimeConfig);
       assertProviderTraceSettingTransition(
         req,
-        runtimeConfig,
+        restoredRuntimeConfig,
         existing.runtimeConfig,
       );
-      requestedRuntimeConfig = runtimeConfig;
+      patchData.runtimeConfig = restoredRuntimeConfig;
+      requestedRuntimeConfig = restoredRuntimeConfig;
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
