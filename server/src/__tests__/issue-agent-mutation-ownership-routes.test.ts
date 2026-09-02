@@ -67,6 +67,7 @@ const mockWorkProductService = vi.hoisted(() => ({
   createForIssue: vi.fn(),
   getById: vi.fn(),
   latestRunDiffSummary: vi.fn(),
+  resolveCommitDiffSummary: vi.fn(),
   remove: vi.fn(),
   update: vi.fn(),
 }));
@@ -566,6 +567,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.latestRunDiffSummary.mockReset();
     mockWorkProductService.latestRunDiffSummary.mockResolvedValue(null);
+    mockWorkProductService.resolveCommitDiffSummary.mockReset();
+    mockWorkProductService.resolveCommitDiffSummary.mockResolvedValue(null);
     mockExternalObjectService.getIssueSummaries.mockClear();
     mockExternalObjectService.getIssueSummary.mockClear();
     mockExternalObjectService.getProjectSummary.mockClear();
@@ -1119,6 +1122,35 @@ describe("agent issue mutation checkout ownership", () => {
           deletions: 5,
           changedFiles: 3,
         }),
+      }),
+    );
+  });
+
+  it("falls back to GitHub commit stats when the authenticated run has no diff event", async () => {
+    mockWorkProductService.resolveCommitDiffSummary.mockResolvedValue({
+      additions: 11,
+      deletions: 3,
+      changedFiles: 2,
+    });
+    const app = await createApp(ownerActor());
+
+    await request(app).post(`/api/issues/${issueId}/work-products`).send({
+      type: "commit",
+      provider: "github",
+      title: "Commit 9c12ae7",
+      url: "https://github.com/paperclipai/paperclip/commit/9c12ae7b41e5",
+      metadata: { repo: "paperclipai/paperclip", sha: "9c12ae7b41e5" },
+    }).expect(201);
+
+    expect(mockWorkProductService.resolveCommitDiffSummary).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ type: "commit", provider: "github" }),
+    );
+    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
+      issueId,
+      companyId,
+      expect.objectContaining({
+        metadata: expect.objectContaining({ additions: 11, deletions: 3, changedFiles: 2 }),
       }),
     );
   });

@@ -8,6 +8,11 @@ import {
   extractGitHubPullRequestReferences,
   type PullRequestMergeDetailsResolver,
 } from "./github-pull-request-merge.js";
+import {
+  createGitHubCommitDiffDetailsResolver,
+  extractGitHubCommitReference,
+  type GitHubCommitDiffDetailsResolver,
+} from "./github-commit-details.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
@@ -24,7 +29,13 @@ function nonNegativeInteger(value: unknown): number | null {
 
 export function workProductDiffSummaryFromEventPayload(payload: unknown): WorkProductDiffSummary | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const totals = (payload as Record<string, unknown>).totals;
+  const outer = payload as Record<string, unknown>;
+  const wrappedEvent = outer.prpEvent && typeof outer.prpEvent === "object" && !Array.isArray(outer.prpEvent)
+    ? outer.prpEvent as Record<string, unknown>
+    : null;
+  const eventPayload = wrappedEvent?.payload ?? (outer.schema === "paperclip.prp.event.v1" ? outer.payload : outer);
+  if (!eventPayload || typeof eventPayload !== "object" || Array.isArray(eventPayload)) return null;
+  const totals = (eventPayload as Record<string, unknown>).totals;
   if (!totals || typeof totals !== "object" || Array.isArray(totals)) return null;
   const values = totals as Record<string, unknown>;
   const changedFiles = nonNegativeInteger(values.files);
@@ -75,6 +86,9 @@ export async function refreshPullRequestWorkProductMetadata(
           number: number ?? reference.number,
           ...(details.baseRef ? { baseRef: details.baseRef } : {}),
           ...(details.headRef ? { headRef: details.headRef } : {}),
+          ...(nonNegativeInteger(details.additions) === null ? {} : { additions: details.additions }),
+          ...(nonNegativeInteger(details.deletions) === null ? {} : { deletions: details.deletions }),
+          ...(nonNegativeInteger(details.changedFiles) === null ? {} : { changedFiles: details.changedFiles }),
           state: details.workProductState,
           draft: details.workProductState === "draft" || details.draft === true,
         },
@@ -151,9 +165,13 @@ export function reconcileRuntimeServiceWorkProducts(
 
 export function workProductService(
   db: Db,
-  opts: { resolvePullRequestDetails?: PullRequestMergeDetailsResolver } = {},
+  opts: {
+    resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
+    resolveCommitDetails?: GitHubCommitDiffDetailsResolver;
+  } = {},
 ) {
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
+  const resolveCommitDetails = opts.resolveCommitDetails ?? createGitHubCommitDiffDetailsResolver(db);
   return {
     listForIssue: async (issueId: string, options: { refreshPullRequests?: boolean } = {}) => {
       const rows = await db
@@ -196,6 +214,21 @@ export function workProductService(
         if (summary) return summary;
       }
       return null;
+    },
+
+    resolveCommitDiffSummary: async (
+      companyId: string,
+      input: { provider: string; url?: string | null; metadata?: Record<string, unknown> | null },
+    ): Promise<WorkProductDiffSummary | null> => {
+      if (input.provider.toLowerCase() !== "github") return null;
+      const metadata = input.metadata ?? {};
+      const repo = typeof metadata.repo === "string" ? metadata.repo : null;
+      const sha = typeof metadata.sha === "string" ? metadata.sha : null;
+      const reference = extractGitHubCommitReference([
+        input.url,
+        repo && sha ? `${repo}@${sha}` : null,
+      ]);
+      return reference ? await resolveCommitDetails(companyId, reference) : null;
     },
 
     getById: async (id: string) => {

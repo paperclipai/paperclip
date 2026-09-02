@@ -8392,9 +8392,12 @@ export function issueRoutes(
     if (createdByRunId === undefined) return;
     createInput.createdByRunId = createdByRunId;
     if (createdByRunId && (createInput.type === "pull_request" || createInput.type === "commit")) {
+      const runDiffSummary = await workProductsSvc.latestRunDiffSummary(createdByRunId);
       createInput.metadata = enrichWorkProductMetadataWithDiff(
         createInput.metadata,
-        await workProductsSvc.latestRunDiffSummary(createdByRunId),
+        runDiffSummary ?? (createInput.type === "commit"
+          ? await workProductsSvc.resolveCommitDiffSummary(issue.companyId, createInput)
+          : null),
       );
     }
     if (requiresPaperclipAttachmentMetadata(createInput)) {

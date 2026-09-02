@@ -47,6 +47,21 @@ describe("workProductService", () => {
       additions: 17,
       deletions: 5,
     });
+
+    const prpEvent = {
+      schema: "paperclip.prp.event.v1",
+      payload: { totals: { files: 2, additions: 9, deletions: 4 } },
+    };
+    expect(workProductDiffSummaryFromEventPayload({ prpEvent })).toEqual({
+      changedFiles: 2,
+      additions: 9,
+      deletions: 4,
+    });
+    expect(workProductDiffSummaryFromEventPayload(prpEvent)).toEqual({
+      changedFiles: 2,
+      additions: 9,
+      deletions: 4,
+    });
   });
 
   it("refreshes pull-request state without mutating the stored work product", async () => {
@@ -70,6 +85,9 @@ describe("workProductService", () => {
       headRef: "feature/rich-cards",
       headSha: "abc123",
       baseRef: "master",
+      additions: 20,
+      deletions: 7,
+      changedFiles: 4,
     }));
 
     const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
@@ -85,11 +103,28 @@ describe("workProductService", () => {
       draft: false,
       baseRef: "master",
       headRef: "feature/rich-cards",
-      additions: 17,
-      deletions: 5,
-      changedFiles: 3,
+      additions: 20,
+      deletions: 7,
+      changedFiles: 4,
     });
     expect(product.metadata.state).toBe("open");
+  });
+
+  it("resolves GitHub commit stats when runner diff events are unavailable", async () => {
+    const resolveCommitDetails = vi.fn(async () => ({ additions: 13, deletions: 2, changedFiles: 3 }));
+    const svc = workProductService({} as any, { resolveCommitDetails });
+
+    await expect(svc.resolveCommitDiffSummary("company-1", {
+      provider: "github",
+      url: "https://github.com/paperclipai/paperclip/commit/9c12ae7b41e5",
+      metadata: null,
+    })).resolves.toEqual({ additions: 13, deletions: 2, changedFiles: 3 });
+    expect(resolveCommitDetails).toHaveBeenCalledWith("company-1", {
+      host: "github.com",
+      owner: "paperclipai",
+      repo: "paperclip",
+      sha: "9c12ae7b41e5",
+    });
   });
 
   it("uses a transaction when creating a new primary work product", async () => {
