@@ -406,6 +406,50 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("do the plan", undefined, undefined);
   });
 
+  it("cycles Auto, Plan, and Ask modes with Cmd+Period while focused", () => {
+    const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TaskChatComposer
+        onAdd={vi.fn()}
+        workMode="standard"
+        onWorkModeChange={onWorkModeChange}
+      />,
+    );
+
+    const chip = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-composer-mode"]',
+    )!;
+    editable().focus();
+
+    expect(chip.getAttribute("aria-keyshortcuts")).toContain("Meta+Period");
+    expect(chip.getAttribute("data-pending-work-mode")).toBe("standard");
+
+    const cycleMode = () => {
+      const event = new KeyboardEvent("keydown", {
+        key: ".",
+        code: "Period",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      flushSync(() => editable().dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(true);
+    };
+
+    cycleMode();
+    expect(chip.getAttribute("data-pending-work-mode")).toBe("planning");
+    expect(chip.textContent).toContain("Plan");
+
+    cycleMode();
+    expect(chip.getAttribute("data-pending-work-mode")).toBe("ask");
+    expect(chip.textContent).toContain("Ask");
+
+    cycleMode();
+    expect(chip.getAttribute("data-pending-work-mode")).toBe("standard");
+    expect(chip.textContent).toContain("Auto");
+    expect(onWorkModeChange).not.toHaveBeenCalled();
+  });
+
   it("passes reopen=true when the issue resumes-to-todo and the assignee is an agent", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(

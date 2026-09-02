@@ -575,8 +575,10 @@ export function transcriptToTaskChatItems(
   let lastToolIndex = -1;
   let thinkingIndex = -1;
   let thinkingChannel: "summary" | "detail" | "unknown" | undefined;
+  let thinkingItemId: string | undefined;
   let messageIndex = -1;
   let messageChannel: "progress" | "final" | "unknown" | undefined;
+  let messageItemId: string | undefined;
 
   const finishThinking = () => {
     if (thinkingIndex >= 0) {
@@ -585,19 +587,37 @@ export function transcriptToTaskChatItems(
     }
     thinkingIndex = -1;
     thinkingChannel = undefined;
+    thinkingItemId = undefined;
   };
 
   const resetInline = () => {
     finishThinking();
     messageIndex = -1;
     messageChannel = undefined;
+    messageItemId = undefined;
   };
 
   for (const [i, entry] of entries.entries()) {
     switch (entry.kind) {
       case "thinking": {
         const lifecycleOnly = !entry.text;
-        if (thinkingIndex >= 0 && thinkingChannel === entry.channel) {
+        const openThinking = thinkingIndex >= 0 ? items[thinkingIndex] : undefined;
+        const continuesAnonymousLifecycle =
+          entry.itemId === undefined
+          && thinkingItemId === undefined
+          && lifecycleOnly
+          && entry.lifecycle === "completed"
+          && openThinking?.kind === "thinking"
+          && openThinking.lifecycleOnly === true;
+        const sameThinkingItem =
+          thinkingIndex >= 0
+          && thinkingChannel === entry.channel
+          && (
+            (entry.itemId !== undefined && entry.itemId === thinkingItemId)
+            || (entry.itemId === undefined && thinkingItemId === undefined && entry.delta === true)
+            || continuesAnonymousLifecycle
+          );
+        if (sameThinkingItem) {
           const it = items[thinkingIndex];
           if (it.kind === "thinking") {
             if (entry.text) {
@@ -630,9 +650,11 @@ export function transcriptToTaskChatItems(
           });
           thinkingIndex = items.length - 1;
           thinkingChannel = entry.channel;
+          thinkingItemId = entry.itemId;
           thinkingStartTs.set(thinkingIndex, entry.ts);
           messageIndex = -1;
           messageChannel = undefined;
+          messageItemId = undefined;
         }
         if (entry.lifecycle === "completed") {
           finishThinking();
@@ -643,7 +665,14 @@ export function transcriptToTaskChatItems(
         if (!entry.text) break;
         finishThinking();
         const channel = entry.channel;
-        if (messageIndex >= 0 && messageChannel === channel) {
+        const sameMessage =
+          messageIndex >= 0
+          && messageChannel === channel
+          && (
+            (entry.itemId !== undefined && entry.itemId === messageItemId)
+            || (entry.itemId === undefined && messageItemId === undefined && entry.delta === true)
+          );
+        if (sameMessage) {
           const it = items[messageIndex];
           if (it.kind === "message") {
             it.text += entry.text;
@@ -669,6 +698,7 @@ export function transcriptToTaskChatItems(
           });
           messageIndex = items.length - 1;
           messageChannel = channel;
+          messageItemId = entry.itemId;
         }
         break;
       }

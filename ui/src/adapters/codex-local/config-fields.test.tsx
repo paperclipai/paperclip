@@ -69,7 +69,7 @@ describe("Paperclip Runner Codex configuration", () => {
   it("falls back to the fail-closed Codex permission mode", () => {
     const html = renderRunner({ codexPermissionMode: "unrestricted" });
 
-    expect(html).toContain('value="__unsupported__" selected=""');
+    expect(html).toContain('value="__unsupported__" disabled="" selected=""');
     expect(html).toContain("cannot start or recover a Paperclip Runner run");
     expect(html).toContain("Full auto (never ask)");
   });

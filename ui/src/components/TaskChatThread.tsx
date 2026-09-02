@@ -435,6 +435,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     interruptingQueuedRunId,
     onTryAgainNoLiveExecutionPath,
     tryAgainNoLiveExecutionPathPending = false,
+    onRetryFailedRun,
+    retryFailedRunId = null,
     queuedCommentQueue,
     onEditQueuedComment,
     onReorderQueuedComments,
@@ -1240,6 +1242,63 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
+      const sourceIsPaperclipRunner = isNativePaperclipRunnerRun(source);
+      const sourceHasNativeStop =
+        sourceIsPaperclipRunner &&
+        (source.status === "failed" ||
+          source.status === "timed_out" ||
+          source.status === "cancelled" ||
+          source.status === "interrupted");
+      if (sourceHasNativeStop) {
+        settledRunIds.add(source.id);
+        const code =
+          meta?.errorCode ??
+          (source.status === "timed_out"
+            ? "native_runner_timed_out"
+            : "native_runner_process_exited");
+        const label =
+          source.status === "cancelled"
+            ? "Run cancelled"
+            : source.status === "interrupted"
+              ? "Run interrupted"
+              : "Run failed";
+        const detail =
+          source.status === "cancelled"
+            ? "The run was cancelled before returning an answer."
+            : source.status === "interrupted"
+              ? "The run was interrupted before returning an answer."
+              : code === "provider_frame_too_large"
+                ? "Provider output exceeded the safe limit."
+                : source.status === "timed_out"
+                  ? `The runner timed out before returning an answer (${code}).`
+                  : `The runner stopped before returning an answer (${code}).`;
+        const id = `${source.id}:failure`;
+        const runAgent = meta?.agentId
+          ? agentMap?.get(meta.agentId)
+          : undefined;
+        const finishedAt =
+          meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt;
+        entriesWithFailures.push({
+          ms: toMs(finishedAt),
+          order: 3,
+          id,
+          item: {
+            id,
+            kind: "marker",
+            variant: "interrupted",
+            label,
+            detail,
+            collapsible: true,
+            runId: source.id,
+            createdAtIso: finishedAt
+              ? new Date(finishedAt).toISOString()
+              : undefined,
+            runHref: runAgent
+              ? `/agents/${encodeURIComponent(runAgent.urlKey)}/runs/${encodeURIComponent(source.id)}`
+              : undefined,
+          },
+        });
+      }
       if (entries.length === 0) {
         if (
           isNativePaperclipRunnerRun(source) &&
@@ -1285,8 +1344,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           });
           settledRunIds.add(source.id);
         } else if (
-          source.status === "failed" ||
-          source.status === "timed_out"
+          !sourceIsPaperclipRunner &&
+          (source.status === "failed" || source.status === "timed_out")
         ) {
           settledRunIds.add(source.id);
           const code = meta?.errorCode ?? "native_runner_process_exited";
@@ -1310,7 +1369,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               detail,
             },
           });
-        } else if (!lastCommentIdByRun.has(source.id)) {
+        } else if (
+          !sourceHasNativeStop &&
+          !lastCommentIdByRun.has(source.id)
+        ) {
           settledRunIds.add(source.id);
           const id = `${source.id}:terminal-notice`;
           entriesWithFailures.push({
@@ -1338,7 +1400,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         Number.isFinite(started) && Number.isFinite(finished)
           ? Math.max(0, finished - started)
           : undefined;
-      const sourceIsPaperclipRunner = isNativePaperclipRunnerRun(source);
       const hasPaperclipRunnerResponse =
         sourceIsPaperclipRunner &&
         Boolean(
@@ -2216,6 +2277,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             tryAgainNoLiveExecutionPathPending={
               tryAgainNoLiveExecutionPathPending
             }
+            onRetryFailedRun={onRetryFailedRun}
+            retryFailedRunId={retryFailedRunId}
             tail={
               tailRunId || optimisticRunnerStartup || bottomBlockerLinks ? (
                 <>

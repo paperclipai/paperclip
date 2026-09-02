@@ -1062,6 +1062,55 @@ describe("transcriptToTaskChatItems native usage", () => {
     ]);
   });
 
+  it("keeps separate completed commentary items as separate chronological paragraphs", () => {
+    const items = transcriptToTaskChatItems([
+      {
+        kind: "assistant",
+        ts: TS,
+        text: "I am checking the existing behavior.",
+        channel: "progress",
+        itemId: "message-1",
+      },
+      {
+        kind: "assistant",
+        ts: "2026-07-31T12:00:01.000Z",
+        text: "The implementation is ready.",
+        channel: "progress",
+        itemId: "message-2",
+      },
+    ], { runId: "native-run", running: false });
+
+    expect(items).toEqual([
+      expect.objectContaining({ kind: "message", text: "I am checking the existing behavior." }),
+      expect.objectContaining({ kind: "message", text: "The implementation is ready." }),
+    ]);
+  });
+
+  it("coalesces only streaming chunks that share an item identity", () => {
+    const items = transcriptToTaskChatItems([
+      { kind: "assistant", ts: TS, text: "Still ", channel: "progress", delta: true, itemId: "message-1" },
+      { kind: "assistant", ts: TS, text: "working", channel: "progress", delta: true, itemId: "message-1" },
+      { kind: "assistant", ts: TS, text: "Next message", channel: "progress", delta: true, itemId: "message-2" },
+    ], { runId: "native-run", running: true });
+
+    expect(items).toEqual([
+      expect.objectContaining({ kind: "message", text: "Still working" }),
+      expect.objectContaining({ kind: "message", text: "Next message" }),
+    ]);
+  });
+
+  it("keeps distinct completed reasoning items separate even on the same channel", () => {
+    const items = transcriptToTaskChatItems([
+      { kind: "thinking", ts: TS, text: "Inspecting transport.", lifecycle: "completed", channel: "summary", itemId: "reason-1" },
+      { kind: "thinking", ts: "2026-07-31T12:00:01.000Z", text: "Checking persistence.", lifecycle: "completed", channel: "summary", itemId: "reason-2" },
+    ], { runId: "native-run", running: false });
+
+    expect(items).toEqual([
+      expect.objectContaining({ kind: "thinking", lines: ["Inspecting transport."] }),
+      expect.objectContaining({ kind: "thinking", lines: ["Checking persistence."] }),
+    ]);
+  });
+
   it("renders runner usage without inventing a context-window size", () => {
     const items = transcriptToTaskChatItems([{
       kind: "result",

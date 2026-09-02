@@ -56,6 +56,8 @@ interface TaskChatThreadViewProps {
   /** Requeues a blocked task from its no-live-execution-path failure surfaces. */
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
+  onRetryFailedRun?: (runId: string) => Promise<void> | void;
+  retryFailedRunId?: string | null;
   /** Content appended inside the transcript scroller after the settled thread. */
   tail?: ReactNode;
   /** Optional streaming-aware key when `tail` changes without changing `items`. */
@@ -80,6 +82,8 @@ function renderItem(
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void,
   tryAgainNoLiveExecutionPathPending = false,
   retryableMarkerId?: string,
+  onRetryFailedRun?: (runId: string) => Promise<void> | void,
+  retryFailedRunId?: string | null,
 ) {
   switch (item.kind) {
     case "message": {
@@ -149,10 +153,16 @@ function renderItem(
           item={item}
           onTryAgain={
             item.id === retryableMarkerId
-              ? onTryAgainNoLiveExecutionPath
+              ? item.runId && onRetryFailedRun
+                ? () => onRetryFailedRun(item.runId!)
+                : onTryAgainNoLiveExecutionPath
               : undefined
           }
-          tryAgainPending={tryAgainNoLiveExecutionPathPending}
+          tryAgainPending={
+            item.runId
+              ? retryFailedRunId === item.runId
+              : tryAgainNoLiveExecutionPathPending
+          }
         />
       );
     case "thinking":
@@ -252,12 +262,14 @@ export function TaskChatThreadView({
   renderQueuedAction,
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending = false,
+  onRetryFailedRun,
+  retryFailedRunId = null,
   tail,
   contentKey,
   className,
   scroll = true,
 }: TaskChatThreadViewProps) {
-  const retryableMarkerId = onTryAgainNoLiveExecutionPath
+  const retryableMarkerId = onRetryFailedRun || onTryAgainNoLiveExecutionPath
     ? [...items]
         .reverse()
         .find(
@@ -304,6 +316,8 @@ export function TaskChatThreadView({
             onTryAgainNoLiveExecutionPath,
             tryAgainNoLiveExecutionPathPending,
             retryableMarkerId,
+            onRetryFailedRun,
+            retryFailedRunId,
           )}
         </div>
       ))}

@@ -151,6 +151,11 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
 
     expect(onTryAgain).toHaveBeenCalledTimes(1);
     expect(toggleButton().getAttribute("aria-expanded")).toBe("false");
+    expect(
+      container
+        .querySelector('[data-testid="task-chat-system-notice"]')
+        ?.classList.contains("items-start"),
+    ).toBe(true);
   });
 
   it("moves Try again into the expanded notice footer", () => {

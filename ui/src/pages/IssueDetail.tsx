@@ -1499,6 +1499,44 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   });
   const resolvedActivity = activity ?? [];
   const resolvedLinkedRuns = linkedRuns ?? [];
+  const retryFailedRun = useMutation({
+    mutationFn: async (runId: string) => {
+      const failedRun = resolvedLinkedRuns.find((run) => run.runId === runId);
+      if (!failedRun) throw new Error("Failed run is no longer available.");
+      const result = await agentsApi.wakeup(
+        failedRun.agentId,
+        {
+          source: "on_demand",
+          triggerDetail: "manual",
+          reason: "retry_failed_run",
+          payload: { issueId },
+        },
+        companyId,
+      );
+      if (!("id" in result)) {
+        throw new Error(result.message ?? "Retry was skipped.");
+      }
+      return result;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.runs(issueId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.liveRuns(issueId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.activeRun(issueId),
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Run retry failed",
+        body: error instanceof Error ? error.message : "Unable to retry run",
+        tone: "error",
+      });
+    },
+  });
 
   const interruptibleIssueRun = useMemo(
     () => resolveInterruptibleIssueRun(resolvedActiveRun, resolvedLiveRuns),
@@ -2122,6 +2160,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           feedbackDataSharingPreference={feedbackDataSharingPreference}
           feedbackTermsUrl={feedbackTermsUrl}
           linkedRuns={timelineRuns}
+          onRetryFailedRun={(runId) =>
+            retryFailedRun.mutateAsync(runId).then(() => undefined)
+          }
+          retryFailedRunId={
+            retryFailedRun.isPending ? retryFailedRun.variables : null
+          }
           timelineEvents={timelineEvents}
           workModeChanges={workModeChanges}
           liveRuns={resolvedLiveRuns}
