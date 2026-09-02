@@ -2286,6 +2286,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-13: calc(0.75rem + 0.5rem); /* Extracted from ui/src/components/IssueRow.tsx (ml-[calc(theme(spacing.3)+theme(spacing.2))]). */
   --sz-140px: 140px; /* Extracted from ui/src/components/JsonSchemaForm.tsx (min-h-[140px]). */
   --sz-52px: 52px; /* Extracted from ui/src/components/KanbanBoard.tsx (w-[52px]). */
+  --sz-68px: 68px; /* The onboarding arc's side inset — 560px frame, 424px column. */
   --sz-48px: 48px; /* Extracted from ui/src/components/KanbanBoard.tsx (min-w-[48px]). */
   --sz-260px: 260px; /* Extracted from ui/src/components/KanbanBoard.tsx (min-w-[260px]). */
   --sz-120px: 120px; /* Extracted from ui/src/components/KanbanBoard.tsx (min-h-[120px]). */

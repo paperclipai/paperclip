@@ -2111,8 +2111,13 @@ function OnboardingWizardInner({
                 // narrower than the next screen's makes the whole frame jump on
                 // Continue — which is the thing that read as "off" to begin
                 // with, and is more obvious once the buttons match.
+                // 68px sides, so the column inside the 560px frame is 424px —
+                // the measure the design draws every arc step to. It was 40px
+                // (a 480px column), which is wide enough that the two model
+                // tiles stretch and the name field sits under a question far
+                // narrower than itself.
                 isAgentArcStep || step === 1
-                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
+                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-(--sz-68px) sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
             >
@@ -2566,11 +2571,21 @@ function OnboardingWizardInner({
                   `general` role; a specific one can be set later, where there
                   is context to choose it in. */}
               {step === 3 && (
-                <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-9">
+                <div className="mx-auto flex w-full flex-col gap-9">
                   <div className="flex flex-col gap-2">
                     <Label htmlFor="onboarding-agent-name">Agent name</Label>
+                    {/*
+                      Filled, not outlined, and the column's full width — the
+                      same field the naming step before the hand-off draws.
+                      `bg-muted` is the design's field surface; the default
+                      Input is a hairline border over `bg-input/30`, which on
+                      this ground reads as an empty outline rather than a place
+                      to type. The border is kept but made transparent so the
+                      focus ring, which colours the border, still has one.
+                    */}
                     <Input
                       id="onboarding-agent-name"
+                      className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
                       placeholder="e.g. Chief of staff, Designer, Ron..."
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
