@@ -41,6 +41,10 @@ import {
   type QualifiedAcpxAgent,
 } from "../drivers/acpx/qualified-profiles.js";
 import { createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
+import {
+  createSanitizedAwsAgentCoreEnvironment,
+  createSanitizedClaudeManagedEnvironment,
+} from "../drivers/claude-managed/environment.js";
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type {
   NativeAcpxPermissionMode,
@@ -237,22 +241,64 @@ export interface CapabilityRunnerdProcessEvidence {
 }
 
 export interface CapabilityRunnerdCodexTransportOptions {
-  provider?: "codex" | "opencode" | "acpx";
+  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxPermissionModePinned?: boolean;
   acpxSidecarPath?: string;
+  /** SHA-256 verified by the provider-pack authority before runner startup. */
+  acpxSidecarSha256?: string;
   /** Node executable in the runner filesystem; required for remote JS providers. */
   providerNodeCommand?: string;
+  /** SHA-256 verified by the provider-pack authority before runner startup. */
+  providerNodeCommandSha256?: string;
+  /** Digest of the build-owned provider-pack manifest that authorized remote artifacts. */
+  providerPackAuthorityDigest?: string;
   acpxRuntimeDirectory?: string;
+  managedProfile?: {
+    profileId: string;
+    anthropicAgentId: string;
+    agentVersion: string;
+    environmentId: string;
+    betaVersion: "managed-agents-2026-04-01";
+    maxSessionListCostUsd: number;
+    model: string;
+  };
+  agentCoreProfile?: {
+    profileId: string;
+    region: string;
+    accountId: string;
+    harnessArn: string;
+    harnessVersion: string;
+    endpointArn: string;
+    endpointQualifier: string;
+    agentRuntimeArn: string;
+    memoryArn: string;
+    memoryId: string;
+    invocationRoleArn: string;
+    contextBucket: string;
+    contextPrefix: string;
+    contextKmsKeyArn: string;
+    qualificationRevision: string;
+    eventExpiryDays: 90;
+    maxEstimatedSessionCostUsd: number;
+    maxIterations: number;
+    maxOutputTokens: number;
+    timeoutSeconds: number;
+    model: string;
+  };
   runnerBinary?: string;
   codexCommand?: string;
   codexArgs?: string[];
   /** Controller-visible Codex home used only to seed the isolated runner home. */
   sourceCodexHome?: string | null;
   opencodeCommand?: string;
+  /** SHA-256 verified by the provider-pack authority before runner startup. */
+  opencodeCommandSha256?: string;
   opencodeProxyPath?: string;
+  /** SHA-256 verified by the provider-pack authority before runner startup. */
+  opencodeProxySha256?: string;
   opencodeRuntimeDirectory?: string;
   environment?: NodeJS.ProcessEnv;
   closeGraceMs?: number;
@@ -768,6 +814,112 @@ function approvedRunnerArtifact(
   };
 }
 
+function acpxRunnerLaunchProfile(
+  options: CapabilityRunnerdCodexTransportOptions,
+  command: string,
+  sidecarScript: string,
+): {
+  authorityDigest: string;
+  command: string;
+  commandSha256: string;
+  sidecarScript: string;
+  sidecarScriptSha256: string;
+} {
+  const localDigest = (path: string) =>
+    `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  if (!options.runnerFilesystemRoot) {
+    const buildCommand = process.execPath;
+    const buildSidecar = fileURLToPath(
+      new URL("../cli/acpx-runtime-sidecar.js", import.meta.url),
+    );
+    if (
+      options.providerNodeCommand !== undefined ||
+      options.providerNodeCommandSha256 !== undefined ||
+      options.acpxSidecarPath !== undefined ||
+      options.acpxSidecarSha256 !== undefined ||
+      options.providerPackAuthorityDigest !== undefined ||
+      command !== buildCommand ||
+      sidecarScript !== buildSidecar
+    ) {
+      throw new Error(
+        "runner_local_provider_artifact_incompatible: ACPX local launch must use build-owned artifacts",
+      );
+    }
+    const commandSha256 = localDigest(buildCommand);
+    const sidecarScriptSha256 = localDigest(buildSidecar);
+    return {
+      authorityDigest: commandDigest({
+        schema: "paperclip.runner.local-acpx-authority.v1",
+        commandSha256,
+        sidecarScriptSha256,
+      }),
+      command: buildCommand,
+      commandSha256,
+      sidecarScript: buildSidecar,
+      sidecarScriptSha256,
+    };
+  }
+  const commandSha256 = options.providerNodeCommandSha256;
+  const sidecarScriptSha256 = options.acpxSidecarSha256;
+  const authorityDigest = options.providerPackAuthorityDigest;
+  if (!commandSha256 || !sidecarScriptSha256 || !authorityDigest) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: ACPX launch profile omitted its provider-pack authority or verified artifact digests",
+    );
+  }
+  return {
+    authorityDigest,
+    command,
+    commandSha256,
+    sidecarScript,
+    sidecarScriptSha256,
+  };
+}
+
+function opencodeRunnerLaunchProfile(
+  options: CapabilityRunnerdCodexTransportOptions,
+  command: string,
+  proxyScript: string,
+  executable: string,
+): {
+  command: string;
+  commandSha256: string;
+  proxyScript: string;
+  proxyScriptSha256: string;
+  executable: string;
+  executableSha256: string;
+} {
+  const localDigest = (path: string) =>
+    `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  const usesLocalBuildOwnedDefaults =
+    !options.runnerFilesystemRoot &&
+    options.providerNodeCommand === undefined &&
+    options.opencodeProxyPath === undefined &&
+    options.opencodeCommand === undefined;
+  const commandSha256 =
+    options.providerNodeCommandSha256 ??
+    (usesLocalBuildOwnedDefaults ? localDigest(command) : null);
+  const proxyScriptSha256 =
+    options.opencodeProxySha256 ??
+    (usesLocalBuildOwnedDefaults ? localDigest(proxyScript) : null);
+  const executableSha256 =
+    options.opencodeCommandSha256 ??
+    (usesLocalBuildOwnedDefaults ? localDigest(executable) : null);
+  if (!commandSha256 || !proxyScriptSha256 || !executableSha256) {
+    throw new Error(
+      "runner_remote_provider_artifact_incompatible: OpenCode launch profile omitted verified artifact digests",
+    );
+  }
+  return {
+    command,
+    commandSha256,
+    proxyScript,
+    proxyScriptSha256,
+    executable,
+    executableSha256,
+  };
+}
+
 function authorizedToolSet(
   tools: readonly Readonly<Record<string, unknown>>[],
 ): Record<string, unknown> {
@@ -833,7 +985,6 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
   if (input.provider === "opencode") {
     return {
       ...createSanitizedOpenCodeRunnerEnvironment(input.options.environment),
-      PAPERCLIP_OPENCODE_COMMAND: input.options.opencodeCommand ?? "opencode",
       PAPERCLIP_OPENCODE_PERMISSION_MODE:
         input.options.opencodePermissionMode ?? "ask",
       PAPERCLIP_OPENCODE_RUNTIME_DIR:
@@ -858,6 +1009,21 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
         : {}),
     };
   }
+  if (input.provider === "claude_managed") {
+    return {
+      ...createSanitizedClaudeManagedEnvironment(input.options.environment),
+      ...commonIdentity,
+    };
+  }
+  if (input.provider === "aws_agentcore") {
+    return {
+      ...createSanitizedAwsAgentCoreEnvironment(
+        input.options.environment,
+        input.codexHome,
+      ),
+      ...commonIdentity,
+    };
+  }
   const environment = createSanitizedCodexEnvironment({
     ...input.options.environment,
     HOME: input.codexHome,
@@ -868,6 +1034,12 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
     if (apiKey?.trim()) environment[key] = apiKey;
   }
   return environment;
+}
+
+export function resolveRunnerdAcpxPermissionMode(
+  configured: CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"],
+): NonNullable<CapabilityRunnerdCodexTransportOptions["acpxPermissionMode"]> {
+  return configured ?? "approve-reads";
 }
 
 const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
@@ -1055,7 +1227,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             ).env
           : options.provider === "opencode"
             ? createSanitizedOpenCodeRunnerEnvironment(options.environment)
-            : createSanitizedCodexEnvironment(options.environment),
+            : options.provider === "claude_managed"
+              ? createSanitizedClaudeManagedEnvironment(options.environment)
+              : options.provider === "aws_agentcore"
+                ? createSanitizedAwsAgentCoreEnvironment(
+                    options.environment,
+                    resolve(this.#root, "codex-home"),
+                  )
+                : createSanitizedCodexEnvironment(options.environment),
       ).sort(),
       diagnostics: ["lab transport selected authenticated durable PRP"],
     };
@@ -1437,6 +1616,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const codexHome = this.options.runnerFilesystemRoot
       ? resolve(this.options.runnerFilesystemRoot, "codex-home")
       : localCodexHome;
+    if (provider === "aws_agentcore") {
+      mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    }
     if (provider === "codex") {
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
@@ -1460,6 +1642,28 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       fileURLToPath(new URL("../cli/acpx-runtime-sidecar.js", import.meta.url));
     const providerNodeCommand =
       this.options.providerNodeCommand ?? process.execPath;
+    const opencodeExecutable =
+      provider === "opencode"
+        ? (this.options.opencodeCommand ??
+          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+        : null;
+    const runnerAcpxLaunchProfile =
+      provider === "acpx"
+        ? acpxRunnerLaunchProfile(
+            this.options,
+            providerNodeCommand,
+            acpxSidecarPath,
+          )
+        : undefined;
+    const runnerOpenCodeLaunchProfile =
+      provider === "opencode"
+        ? opencodeRunnerLaunchProfile(
+            this.options,
+            providerNodeCommand,
+            opencodeProxyPath,
+            opencodeExecutable!,
+          )
+        : undefined;
     if (
       this.options.runnerFilesystemRoot
       && (provider === "opencode" || provider === "acpx")
@@ -1468,7 +1672,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ["provider Node", providerNodeCommand],
         ["OpenCode proxy", opencodeProxyPath],
         ["ACPX sidecar", acpxSidecarPath],
-        ["OpenCode executable", this.options.opencodeCommand ?? "opencode"],
+        ["OpenCode executable", opencodeExecutable ?? "opencode"],
       ] as const;
       for (const [label, candidate] of providerPaths) {
         if (
@@ -1517,6 +1721,24 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       provider === "acpx"
         ? resolveQualifiedAcpxProfile(acpxAgent!, requestedModel)
         : null;
+    const managedProfile = this.options.managedProfile;
+    const agentCoreProfile = this.options.agentCoreProfile;
+    if (provider === "claude_managed") {
+      if (!managedProfile) {
+        throw new Error("Claude Managed runner transport requires a qualified managed profile");
+      }
+      if (requestedModel !== managedProfile.model) {
+        throw new Error("Claude Managed requested model does not match its qualified profile");
+      }
+    }
+    if (provider === "aws_agentcore") {
+      if (!agentCoreProfile) {
+        throw new Error("AWS AgentCore runner transport requires a qualified AgentCore profile");
+      }
+      if (requestedModel !== agentCoreProfile.model) {
+        throw new Error("AWS AgentCore requested model does not match its qualified profile");
+      }
+    }
     const completionContract = record(params.completionContract);
     core.queueCommand("run.prepare", {
       authorizedTools: this.#authorizedTools,
@@ -1548,10 +1770,55 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   runId: identity.runId,
                   cwd: String(params.cwd ?? tmpdir()),
                   instructions: baseInstructions,
-                  permissionMode: this.options.acpxPermissionMode ?? "approve-all",
+                  permissionMode: resolveRunnerdAcpxPermissionMode(
+                    this.options.acpxPermissionMode,
+                  ),
                   permissionModePinned: this.options.acpxPermissionModePinned ?? true,
                   runtimeContext,
                 }
+              : provider === "claude_managed"
+                ? {
+                    kind: "claude_managed",
+                    model: managedProfile!.model,
+                    profileId: managedProfile!.profileId,
+                    anthropicAgentId: managedProfile!.anthropicAgentId,
+                    agentVersion: managedProfile!.agentVersion,
+                    environmentId: managedProfile!.environmentId,
+                    betaVersion: managedProfile!.betaVersion,
+                    maxSessionListCostUsd:
+                      managedProfile!.maxSessionListCostUsd,
+                    instructions: baseInstructions,
+                    runtimeContext,
+                  }
+                : provider === "aws_agentcore"
+                  ? {
+                      kind: "aws_agentcore",
+                      model: agentCoreProfile!.model,
+                      profileId: agentCoreProfile!.profileId,
+                      region: agentCoreProfile!.region,
+                      accountId: agentCoreProfile!.accountId,
+                      harnessArn: agentCoreProfile!.harnessArn,
+                      harnessVersion: agentCoreProfile!.harnessVersion,
+                      endpointArn: agentCoreProfile!.endpointArn,
+                      endpointQualifier: agentCoreProfile!.endpointQualifier,
+                      agentRuntimeArn: agentCoreProfile!.agentRuntimeArn,
+                      memoryArn: agentCoreProfile!.memoryArn,
+                      memoryId: agentCoreProfile!.memoryId,
+                      invocationRoleArn: agentCoreProfile!.invocationRoleArn,
+                      contextBucket: agentCoreProfile!.contextBucket,
+                      contextPrefix: agentCoreProfile!.contextPrefix,
+                      contextKmsKeyArn: agentCoreProfile!.contextKmsKeyArn,
+                      qualificationRevision:
+                        agentCoreProfile!.qualificationRevision,
+                      eventExpiryDays: agentCoreProfile!.eventExpiryDays,
+                      maxEstimatedSessionCostUsd:
+                        agentCoreProfile!.maxEstimatedSessionCostUsd,
+                      maxIterations: agentCoreProfile!.maxIterations,
+                      maxOutputTokens: agentCoreProfile!.maxOutputTokens,
+                      timeoutSeconds: agentCoreProfile!.timeoutSeconds,
+                      instructions: baseInstructions,
+                      runtimeContext,
+                    }
               : {
                   kind: provider,
                   provider,
@@ -1627,6 +1894,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       runnerBinaryPath,
       runnerVersion: runnerArtifact.version,
       runnerDigest: runnerArtifact.digest,
+      acpxLaunchProfile: runnerAcpxLaunchProfile,
+      opencodeLaunchProfile: runnerOpenCodeLaunchProfile,
       environment: withRunnerdProviderTrace(
         createCapabilityRunnerdProviderEnvironment({
           provider,
@@ -1675,6 +1944,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         modelProvider:
           provider === "opencode" && typeof params.model === "string"
             ? params.model.split("/", 1)[0]
+            : provider === "claude_managed"
+              ? "anthropic"
+              : provider === "aws_agentcore"
+                ? "aws"
             : provider === "acpx"
               ? acpxAgent === "pi"
                 ? "openrouter"
@@ -1732,6 +2005,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const codexHome = this.options.runnerFilesystemRoot
       ? resolve(this.options.runnerFilesystemRoot, "codex-home")
       : localCodexHome;
+    if (provider === "aws_agentcore") {
+      mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    }
     if (provider === "codex") {
       // The prior process consumed a sealed, immutable copy. Rebuild that
       // copy from the authoritative runtime snapshot before a new provider is
@@ -1751,6 +2027,38 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         nativeMcp: nativeMcpLaunchBinding(this.options.environment),
       });
     }
+    const opencodeProxyPath =
+      this.options.opencodeProxyPath ??
+      fileURLToPath(
+        new URL("../cli/opencode-app-server-proxy.js", import.meta.url),
+      );
+    const acpxSidecarPath =
+      this.options.acpxSidecarPath ??
+      fileURLToPath(new URL("../cli/acpx-runtime-sidecar.js", import.meta.url));
+    const providerNodeCommand =
+      this.options.providerNodeCommand ?? process.execPath;
+    const opencodeExecutable =
+      provider === "opencode"
+        ? (this.options.opencodeCommand ??
+          resolve(packageRoot, "node_modules/opencode-ai/bin/opencode.exe"))
+        : null;
+    const runnerAcpxLaunchProfile =
+      provider === "acpx"
+        ? acpxRunnerLaunchProfile(
+            this.options,
+            providerNodeCommand,
+            acpxSidecarPath,
+          )
+        : undefined;
+    const runnerOpenCodeLaunchProfile =
+      provider === "opencode"
+        ? opencodeRunnerLaunchProfile(
+            this.options,
+            providerNodeCommand,
+            opencodeProxyPath,
+            opencodeExecutable!,
+          )
+        : undefined;
     const core = new DurablePrpControlPlane({
       stateDirectory: controlPlaneDirectory,
       identity,
@@ -1806,6 +2114,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       runnerBinaryPath,
       runnerVersion: runnerArtifact.version,
       runnerDigest: runnerArtifact.digest,
+      acpxLaunchProfile: runnerAcpxLaunchProfile,
+      opencodeLaunchProfile: runnerOpenCodeLaunchProfile,
       environment: withRunnerdProviderTrace(
         createCapabilityRunnerdProviderEnvironment({
           provider,
@@ -2482,3 +2792,7 @@ export function createCapabilityRunnerdCodexTransport(
 
 export const createRunnerdCodexTransport =
   createCapabilityRunnerdCodexTransport;
+
+export const runnerdLaunchProfileInternals = Object.freeze({
+  acpxRunnerLaunchProfile,
+});

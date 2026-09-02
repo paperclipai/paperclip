@@ -278,7 +278,6 @@ export type {
   AgentChainOfCommandEntry,
   AgentDetail,
   ClearAgentErrorResponse,
-  AgentModelProfileConfig,
   AgentPermissions,
   AgentRuntimeConfig,
   AgentInstructionsBundleMode,

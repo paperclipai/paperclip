@@ -616,6 +616,8 @@ mod tests {
             item_id: "item_1".to_owned(),
             runner_version: "0.0.0".to_owned(),
             runner_digest: "sha256:test".to_owned(),
+            acpx_launch_profile: None,
+            opencode_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,

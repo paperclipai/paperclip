@@ -38,6 +38,7 @@ fn config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), "suspend".to_owned()],
+            verified_launch: None,
             request_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
         },

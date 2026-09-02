@@ -14,7 +14,6 @@ import { NewAgent } from "./NewAgent";
 // `env` map, which is the contract this page test verifies.
 
 const mockAgentsApi = vi.hoisted(() => ({
-  adapterModelProfiles: vi.fn(),
   adapterModels: vi.fn(),
   detectModel: vi.fn(),
   list: vi.fn(),
@@ -102,7 +101,6 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
       supportsSkills: true,
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
-      supportsModelProfiles: true,
       supportsAcp: true,
       ...(login ? { login } : {}),
     };
@@ -244,7 +242,6 @@ describe("NewAgent Claude subscription login", () => {
     mockAdapterAvailability.disabled = new Set<string>();
     mockAdapterAvailability.loaded = true;
     mockSearchParams.value = new URLSearchParams();
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     // No existing agents: the page treats the new agent as the first (CEO) and

@@ -10,16 +10,33 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::durable::redact_text;
+use crate::durable::{redact_text, OpenCodeLaunchProfile};
 use crate::local_runner::LocalRunnerError;
-use crate::process_supervisor::SupervisedProcess;
+use crate::process_supervisor::{
+    SupervisedProcess, VerifiedProcessArgument, VerifiedProcessLaunch,
+};
 use crate::provider_bridge::{AuthorizedTool, DurableReplayFilter, ToolResult};
 use crate::provider_events::normalized_codex_terminal_event_type;
+use crate::qualified_launch::verify_launch_artifact;
 
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+const QUALIFIED_OPENCODE_VERSION: &str = "1.18.17";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "OPENROUTER_API_KEY",
+    "PAPERCLIP_NATIVE_MCP_NAME",
+    "PAPERCLIP_NATIVE_MCP_URL",
+    "PAPERCLIP_NATIVE_MCP_TOKEN",
+    "PAPERCLIP_OPENCODE_PERMISSION_MODE",
+    "PAPERCLIP_OPENCODE_RUNTIME_DIR",
+    "PAPERCLIP_RUNNER_INSTANCE_ID",
+    "PAPERCLIP_RUN_ID",
+    "PAPERCLIP_NORMALIZED_SESSION_ID",
+    "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+];
+const TRUSTED_OPENCODE_EXECUTABLE_ARG: &str = "--paperclip-trusted-opencode-executable";
 const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_PENDING_TOOL_REQUESTS: usize = 4_096;
 const MAX_PENDING_TOOL_REQUEST_BYTES: usize = 16 * 1024 * 1024;
@@ -256,15 +273,23 @@ pub struct CodexProviderConfig {
 
 impl CodexProviderConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
-        if self.provider != "codex" || self.driver != "codex_app_server" {
+        if !matches!(
+            (self.provider.as_str(), self.driver.as_str()),
+            ("codex", "codex_app_server") | ("opencode", "opencode_server")
+        ) {
             return Err(LocalRunnerError::invalid(
-                "the initial runner provider must be codex through codex_app_server",
+                "local runner provider must be codex through codex_app_server or opencode through opencode_server",
             ));
         }
         if self.provider_version.trim().is_empty() || self.provider_version.len() > 120 {
             return Err(LocalRunnerError::invalid(
                 "Codex providerVersion is empty or oversized",
             ));
+        }
+        if self.provider == "opencode" && self.provider_version != QUALIFIED_OPENCODE_VERSION {
+            return Err(LocalRunnerError::invalid(format!(
+                "OpenCode providerVersion must equal the qualified {QUALIFIED_OPENCODE_VERSION} release",
+            )));
         }
         if self.command.as_os_str().is_empty() {
             return Err(LocalRunnerError::invalid("Codex command is required"));
@@ -290,6 +315,16 @@ impl CodexProviderConfig {
             .is_some_and(|model| model.is_empty() || model.len() > 240)
         {
             return Err(LocalRunnerError::invalid("Codex model is invalid"));
+        }
+        if self.provider == "opencode"
+            && self
+                .model
+                .as_ref()
+                .is_none_or(|model| !model.contains('/') || model.chars().any(char::is_control))
+        {
+            return Err(LocalRunnerError::invalid(
+                "OpenCode model must be a qualified provider/model identifier",
+            ));
         }
         if self.provider_session_id.as_ref().is_some_and(|session_id| {
             session_id.is_empty()
@@ -480,6 +515,7 @@ pub struct CodexProvider {
     quarantined: bool,
     trace: Option<ProviderTraceSink>,
     last_trace_frame_id: Option<u64>,
+    opencode_launch_profile: Option<OpenCodeLaunchProfile>,
 }
 
 impl CodexProvider {
@@ -487,7 +523,7 @@ impl CodexProvider {
         config: &CodexProviderConfig,
         resume_thread_id: Option<&str>,
     ) -> Result<Self, LocalRunnerError> {
-        Self::start_with_tools_for_generation(config, std::iter::empty(), resume_thread_id, 1)
+        Self::start_with_tools_for_generation(config, std::iter::empty(), resume_thread_id, 1, None)
     }
 
     pub fn start_with_tools(
@@ -495,7 +531,7 @@ impl CodexProvider {
         authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
         resume_thread_id: Option<&str>,
     ) -> Result<Self, LocalRunnerError> {
-        Self::start_with_tools_for_generation(config, authorized_tools, resume_thread_id, 1)
+        Self::start_with_tools_for_generation(config, authorized_tools, resume_thread_id, 1, None)
     }
 
     pub(crate) fn start_with_tools_for_generation(
@@ -503,6 +539,7 @@ impl CodexProvider {
         authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
         resume_thread_id: Option<&str>,
         process_generation: u64,
+        opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
     ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
         if process_generation == 0 {
@@ -513,13 +550,77 @@ impl CodexProvider {
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
-        let mut provider = Self {
-            process: SupervisedProcess::spawn(
+        let common_environment_keys = [
+            "LANGUAGE",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "NODE_EXTRA_CA_CERTS",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "all_proxy",
+            "RUST_BACKTRACE",
+        ];
+        let provider_environment_keys = if config.provider == "opencode" {
+            OPENCODE_PROVIDER_ENVIRONMENT_KEYS
+        } else {
+            &["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"][..]
+        };
+        let environment_keys = common_environment_keys
+            .iter()
+            .copied()
+            .chain(provider_environment_keys.iter().copied())
+            .collect::<Vec<_>>();
+        let process = if config.provider == "opencode" {
+            let profile = opencode_launch_profile.ok_or_else(|| {
+                LocalRunnerError::invalid(
+                    "OpenCode runner startup omitted its qualified launch profile",
+                )
+            })?;
+            let proxy_script = profile.proxy_script.path.to_string_lossy();
+            if config.command != profile.command.path
+                || config.args.as_slice() != [proxy_script.as_ref()]
+            {
+                return Err(LocalRunnerError::invalid(
+                    "OpenCode launch does not match the runner-owned qualified profile",
+                ));
+            }
+            let command = verify_launch_artifact(&profile.command, "OpenCode proxy command")
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+            let proxy = verify_launch_artifact(&profile.proxy_script, "OpenCode proxy script")
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+            let executable =
+                verify_launch_artifact(&profile.executable, "OpenCode provider executable")
+                    .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+            let launch = VerifiedProcessLaunch::new(
+                command,
+                vec![
+                    VerifiedProcessArgument::Artifact(proxy),
+                    VerifiedProcessArgument::Literal(TRUSTED_OPENCODE_EXECUTABLE_ARG.to_owned()),
+                    VerifiedProcessArgument::ExecutableArtifact(executable),
+                ],
+            );
+            SupervisedProcess::spawn_verified_with_environment_keys(
+                &launch,
+                Duration::from_secs(2),
+                CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                &environment_keys,
+            )?
+        } else {
+            SupervisedProcess::spawn_with_environment_keys(
                 &config.command,
                 &config.args,
                 Duration::from_secs(2),
                 CODEX_APP_SERVER_MAX_FRAME_BYTES,
-            )?,
+                &environment_keys,
+            )?
+        };
+        let mut provider = Self {
+            process,
             config: config.clone(),
             authorized_tools,
             next_request_id: 1,
@@ -548,6 +649,7 @@ impl CodexProvider {
             quarantined: false,
             trace: ProviderTraceSink::from_environment(),
             last_trace_frame_id: None,
+            opencode_launch_profile: opencode_launch_profile.cloned(),
         };
         let initialized = provider.request(
             "initialize",
@@ -747,6 +849,7 @@ impl CodexProvider {
             authorized_tools,
             Some(&thread_id),
             next_generation,
+            self.opencode_launch_profile.as_ref(),
         )?;
         replacement.durable_tool_call_replays = durable_tool_call_replays;
         if replacement.active_provider_turn_id.is_some() {
@@ -2277,6 +2380,40 @@ fn codex_question_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admits_only_exact_local_facade_provider_driver_pairs() {
+        let mut config = CodexProviderConfig {
+            provider: "opencode".to_owned(),
+            driver: "opencode_server".to_owned(),
+            provider_version: QUALIFIED_OPENCODE_VERSION.to_owned(),
+            command: PathBuf::from("node"),
+            args: Vec::new(),
+            cwd: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            model: Some("openrouter/model".to_owned()),
+            provider_session_id: None,
+            instructions: String::new(),
+            approval_policy: "never".to_owned(),
+        };
+        config.validate().unwrap();
+        config.provider_version = "1.18.18".to_owned();
+        let error = config.validate().unwrap_err();
+        assert!(error.to_string().contains(QUALIFIED_OPENCODE_VERSION));
+        config.provider_version = QUALIFIED_OPENCODE_VERSION.to_owned();
+        config.driver = "codex_app_server".to_owned();
+        assert!(config.validate().is_err());
+        config.driver = "opencode_server".to_owned();
+        config.model = Some("unqualified".to_owned());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn does_not_forward_an_ambient_opencode_command_override() {
+        assert!(!OPENCODE_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_OPENCODE_COMMAND"));
+    }
 
     #[test]
     fn converts_codex_questions_and_responses_without_provider_leakage() {

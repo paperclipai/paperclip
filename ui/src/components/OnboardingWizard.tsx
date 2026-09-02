@@ -890,10 +890,13 @@ function OnboardingWizardInner({
     queryFn: () => instanceSettingsApi.get(),
     enabled: effectiveOnboardingOpen && step === 4,
   });
+  // Wanted across the whole arc, not just the connect step. The progress strip
+  // reads it too — see `enteredFromCloud` — and a value fetched only on step 4
+  // would let the strip change length as the customer walked through it.
   const { data: experimentalSettingsForLogin } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    enabled: effectiveOnboardingOpen && step === 4,
+    enabled: effectiveOnboardingOpen && step >= 3 && step <= 5,
   });
   const resolvedLoginEnvironmentId = useMemo(() => {
     try {
@@ -2004,7 +2007,21 @@ function OnboardingWizardInner({
   }
 
   const isAgentArcStep = agentArcStepFor(step) !== null;
-  const showsAgentArcStepper = isAgentArcStep && entryStep >= 3;
+  /**
+   * True when the organization was named in Cloud rather than here.
+   *
+   * `enableManagedSandboxOnly` is the cloud-tenant shape — the connect step
+   * already resolves its login environment through it. A tenant wearing it did
+   * not ask for the organization's name, because Cloud did, so the walk the
+   * customer is on is four steps and this is the second.
+   *
+   * A self-hosted run that enters at the agent step is a different case with
+   * the same `entryStep`: an existing company that has no agents yet. There was
+   * no naming screen before it, so its walk really is three, and it keeps the
+   * shorter strip.
+   */
+  const enteredFromCloud = experimentalSettingsForLogin?.enableManagedSandboxOnly === true;
+  const showsAgentArcStepper = isAgentArcStep && entryStep >= 3 && !enteredFromCloud;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
   const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);

@@ -19,6 +19,7 @@ import {
   type CapabilityLiveSessionSnapshot,
   type CapabilityLiveSessionStore,
   type CapabilityLiveTransportFactory,
+  type CapabilityLiveTurnEvent,
 } from "./live-session.js";
 import { DurableCapabilityLiveSessionStore } from "./durable-live-session-store.js";
 import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
@@ -62,7 +63,9 @@ interface FakeProviderState {
   attachments: Array<{ runId: string; turnId: string; itemId: string }>;
   holdAfterTool: boolean;
   closeError: Error | null;
+  usageRunDelta: Record<string, unknown> | null;
   onTurnStart?: () => Promise<void>;
+  onUsage?: (queue: AsyncNotifications, turnId: string) => void | Promise<void>;
 }
 
 class FakeCapabilityCodexTransport implements CodexAppServerTransport {
@@ -241,25 +244,35 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
       },
     });
     this.state.turns.set(turnId, "completed");
-    this.notificationsQueue.push({
-      method: "thread/tokenUsage/updated",
-      params: {
-        threadId: this.state.threadId,
-        turnId,
-        tokenUsage: {
-          total: {
-            inputTokens: this.state.nextTurn * 100,
-            cachedInputTokens: this.state.nextTurn * 20,
-            outputTokens: this.state.nextTurn * 10,
-            reasoningOutputTokens: this.state.nextTurn * 2,
+    if (this.state.onUsage) {
+      await this.state.onUsage(this.notificationsQueue, turnId);
+    } else {
+      this.notificationsQueue.push({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: this.state.threadId,
+          turnId,
+          tokenUsage: {
+            total: {
+              inputTokens: this.state.nextTurn * 100,
+              cachedInputTokens: this.state.nextTurn * 20,
+              outputTokens: this.state.nextTurn * 10,
+              reasoningOutputTokens: this.state.nextTurn * 2,
+            },
+            ...(this.state.usageRunDelta === null
+              ? {}
+              : {
+                  runDeltaAvailable: true,
+                  runDelta: this.state.usageRunDelta,
+                }),
           },
         },
-      },
-    });
-    this.notificationsQueue.push({
-      method: "turn/completed",
-      params: { threadId: this.state.threadId, turn: { id: turnId, status: "completed" } },
-    });
+      });
+      this.notificationsQueue.push({
+        method: "turn/completed",
+        params: { threadId: this.state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    }
     this.#activeTurnId = null;
   }
 
@@ -300,6 +313,7 @@ function providerState(): FakeProviderState {
     attachments: [],
     holdAfterTool: false,
     closeError: null,
+    usageRunDelta: null,
   };
 }
 
@@ -649,6 +663,256 @@ describe("Capability live runnerd and Codex session", () => {
     });
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+    await service.shutdown(session.id);
+  });
+
+  it("streams normalized usage before terminal with cumulative fallback and explicit run deltas", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({
+      runId: "run-live-usage-stream",
+      sessionId: "session-live-usage-stream",
+    });
+    const events: CapabilityLiveTurnEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+
+    await session.sendMessage("report cumulative usage");
+    state.usageRunDelta = {
+      requests: 2,
+      inputTokens: 7,
+      outputTokens: 3,
+      cachedInputTokens: 1,
+      reasoningTokens: 2,
+      providerCostUsd: 0.004,
+    };
+    await session.sendMessage("report explicit run delta");
+    unsubscribe();
+
+    const usageEvents = events.filter(
+      (event): event is Extract<CapabilityLiveTurnEvent, { kind: "usage" }> =>
+        event.kind === "usage",
+    );
+    expect(usageEvents).toHaveLength(2);
+    expect(usageEvents[0]).toMatchObject({
+      turnId: "turn-1",
+      usage: {
+        providerRequests: 1,
+        inputTokens: 100,
+        outputTokens: 10,
+        cachedInputTokens: 20,
+        reasoningTokens: 2,
+        costNanodollars: 0,
+      },
+    });
+    expect(usageEvents[1]).toMatchObject({
+      turnId: "turn-2",
+      usage: {
+        providerRequests: 2,
+        inputTokens: 7,
+        outputTokens: 3,
+        cachedInputTokens: 1,
+        reasoningTokens: 2,
+        costNanodollars: 4_000_000,
+      },
+    });
+    for (const usageEvent of usageEvents) {
+      const usageIndex = events.indexOf(usageEvent);
+      const terminalIndex = events.findIndex(
+        (event) => event.kind === "terminal" && event.turnId === usageEvent.turnId,
+      );
+      expect(terminalIndex).toBeGreaterThan(usageIndex);
+    }
+    await service.shutdown(session.id);
+  });
+
+  it("does not add an overlapping token snapshot to raw response usage", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      queue.push({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } },
+        },
+      });
+      queue.push({
+        method: "rawResponse/completed",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          usage: { inputTokens: 100, outputTokens: 10 },
+        },
+      });
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-overlap-usage", sessionId: "session-overlap-usage" });
+
+    const result = await session.sendMessage("report overlapping usage");
+
+    expect(result.snapshot.usageLedger).toHaveLength(1);
+    expect(result.snapshot.usageLedger[0]).toMatchObject({
+      providerRequests: 1,
+      inputTokens: 100,
+      outputTokens: 10,
+    });
+    await service.shutdown(session.id);
+  });
+
+  it("prefers a fresh thread read when a later turn omits usage notifications", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      if (state.nextTurn === 1) {
+        queue.push({
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId: state.threadId,
+            turnId,
+            tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } },
+          },
+        });
+      }
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-read-fallback", sessionId: "session-read-fallback" });
+
+    await session.sendMessage("report initial usage");
+    const second = await session.sendMessage("omit usage notification");
+
+    expect(second.snapshot.usageLedger).toMatchObject([
+      { inputTokens: 100, outputTokens: 10 },
+      { inputTokens: 100, outputTokens: 10 },
+    ]);
+    await service.shutdown(session.id);
+  });
+
+  it("uses a fresh thread read for a cost-only usage report", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      queue.push({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          tokenUsage: { total: { requests: 1, providerCostUsd: 0.25 } },
+        },
+      });
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-cost-only", sessionId: "session-cost-only" });
+
+    const result = await session.sendMessage("report cost-only usage");
+
+    expect(result.snapshot.usageLedger).toMatchObject([{
+      providerRequests: 1,
+      inputTokens: 100,
+      outputTokens: 10,
+      costNanodollars: 250_000_000,
+    }]);
+    await service.shutdown(session.id);
+  });
+
+  it("waits for all bounded late raw response receipts before committing usage", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      queue.push({
+        method: "rawResponse/completed",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          usage: { inputTokens: 40, outputTokens: 4 },
+        },
+      });
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+      setTimeout(() => queue.push({
+        method: "rawResponse/completed",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          usage: { inputTokens: 60, outputTokens: 6 },
+        },
+      }), 25);
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-late-usage", sessionId: "session-late-usage" });
+
+    const result = await session.sendMessage("report late usage");
+
+    expect(result.snapshot.usageLedger).toHaveLength(1);
+    expect(result.snapshot.usageLedger[0]).toMatchObject({
+      providerRequests: 2,
+      inputTokens: 100,
+      outputTokens: 10,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(session.snapshot().usageLedger).toEqual(result.snapshot.usageLedger);
+    await service.shutdown(session.id);
+  });
+
+  it("combines explicit per-turn tokens with cumulative cost", async () => {
+    const state = providerState();
+    state.onUsage = (queue, turnId) => {
+      const firstTurn = state.nextTurn === 1;
+      queue.push({
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          tokenUsage: {
+            total: {
+              requests: state.nextTurn,
+              providerCostUsd: firstTurn ? 0.25 : 0.4,
+            },
+            runDeltaAvailable: true,
+            runDelta: {
+              requests: 1,
+              inputTokens: firstTurn ? 12 : 7,
+              outputTokens: firstTurn ? 4 : 3,
+              providerCostUsd: 0,
+            },
+          },
+        },
+      });
+      queue.push({
+        method: "turn/completed",
+        params: { threadId: state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+    };
+    const service = new CapabilityLiveSessionService({ transportFactory: fakeTransportFactory(state) });
+    const session = await service.create({ runId: "run-mixed-usage", sessionId: "session-mixed-usage" });
+
+    await session.sendMessage("report first mixed usage");
+    const second = await session.sendMessage("report second mixed usage");
+
+    expect(second.snapshot.usageLedger).toMatchObject([
+      {
+        providerRequests: 1,
+        inputTokens: 12,
+        outputTokens: 4,
+        costNanodollars: 250_000_000,
+      },
+      {
+        providerRequests: 1,
+        inputTokens: 7,
+        outputTokens: 3,
+        costNanodollars: 150_000_000,
+      },
+    ]);
     await service.shutdown(session.id);
   });
 

@@ -28,18 +28,6 @@ describe("buildAssigneeAdapterOverrides", () => {
     ).toBeNull();
   });
 
-  it("cheap lane sends modelProfile=cheap and no adapterConfig", () => {
-    expect(
-      buildAssigneeAdapterOverrides({
-        adapterType: "codex_local",
-        lane: "cheap",
-        modelOverride: "ignored",
-        thinkingEffortOverride: "high",
-        chrome: false,
-      }),
-    ).toEqual({ modelProfile: "cheap" });
-  });
-
   it("custom lane preserves explicit model + thinking effort + chrome overrides", () => {
     expect(
       buildAssigneeAdapterOverrides({

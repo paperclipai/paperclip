@@ -90,6 +90,8 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
         item_id: "item-1".to_owned(),
         runner_version: "test-1".to_owned(),
         runner_digest: format!("sha256:{}", "a".repeat(64)),
+        acpx_launch_profile: None,
+        opencode_launch_profile: None,
         max_outbox_bytes: 16 * 1024 * 1024,
         p0_reserve_bytes: 1024 * 1024,
         max_frame_bytes: 1024 * 1024,

@@ -216,8 +216,6 @@ export const queryKeys = {
         adapterType,
         environmentId ?? null,
       ] as const,
-    adapterModelProfiles: (companyId: string, adapterType: string) =>
-      ["agents", companyId, "adapter-model-profiles", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
     authSignal: (companyId: string, adapterType: string, environmentId?: string | null) =>

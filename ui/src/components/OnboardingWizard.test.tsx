@@ -173,7 +173,6 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
     supportsSkills: false,
     supportsLocalAgentJwt: false,
     requiresMaterializedRuntimeSkills: false,
-    supportsModelProfiles: false,
     login: ADAPTERS_WITH_LOGIN.has(type)
       ? { panelMode: "displayed_code" as const, timeoutPolicy: "fixed" as const }
       : undefined,

@@ -23,7 +23,6 @@ import type {
   IssueRecoveryActionOwnerType,
   IssueRecoveryActionStatus,
   IssueWorkMode,
-  ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionCanonicalResolverPolicy,
   IssueThreadInteractionEffectiveResolverPolicySource,
@@ -89,7 +88,6 @@ export interface IssueLabel {
 }
 
 export interface IssueAssigneeAdapterOverrides {
-  modelProfile?: ModelProfileKey;
   adapterConfig?: Record<string, unknown>;
   useProjectWorkspace?: boolean;
 }

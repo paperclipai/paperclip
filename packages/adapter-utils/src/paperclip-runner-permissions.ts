@@ -1,6 +1,8 @@
 export type PaperclipRunnerProvider =
   | "codex"
   | "opencode"
+  | "claude_managed"
+  | "aws_agentcore"
   | "acpx";
 
 export type CodexPermissionMode = "never" | "on-request" | "untrusted";
@@ -21,13 +23,20 @@ export interface PaperclipRunnerPermissionOption<TMode extends string = string> 
   description: string;
 }
 
-export interface PaperclipRunnerPermissionCapability {
-  configurable: true;
-  configKey: "codexPermissionMode" | "opencodePermissionMode" | "acpxPermissionMode";
-  defaultMode: PaperclipRunnerPermissionMode;
-  options: readonly PaperclipRunnerPermissionOption<PaperclipRunnerPermissionMode>[];
-  description: string;
-}
+export type PaperclipRunnerPermissionCapability =
+  | {
+      configurable: true;
+      configKey: "codexPermissionMode" | "opencodePermissionMode" | "acpxPermissionMode";
+      defaultMode: PaperclipRunnerPermissionMode;
+      options: readonly PaperclipRunnerPermissionOption<PaperclipRunnerPermissionMode>[];
+      description: string;
+    }
+  | {
+      configurable: false;
+      defaultMode: "provider-managed";
+      options: readonly [];
+      description: string;
+    };
 
 /**
  * Control-plane catalog for Paperclip Runner permission UX and validation.
@@ -57,6 +66,18 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
       { value: "deny", label: "Deny operations", description: "Reject protected OpenCode operations." },
     ],
   },
+  claude_managed: {
+    configurable: false,
+    defaultMode: "provider-managed",
+    options: [],
+    description: "Claude Managed runs non-interactively under its qualified provider profile and Paperclip policy.",
+  },
+  aws_agentcore: {
+    configurable: false,
+    defaultMode: "provider-managed",
+    options: [],
+    description: "AWS AgentCore runs non-interactively under its qualified harness profile and Paperclip policy.",
+  },
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
@@ -71,14 +92,19 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
 } as const satisfies Record<PaperclipRunnerProvider, PaperclipRunnerPermissionCapability>;
 
 export function isPaperclipRunnerProvider(value: unknown): value is PaperclipRunnerProvider {
-  return value === "codex" || value === "opencode" || value === "acpx";
+  return value === "codex"
+    || value === "opencode"
+    || value === "claude_managed"
+    || value === "aws_agentcore"
+    || value === "acpx";
 }
 
 export function resolvePaperclipRunnerPermissionMode(
   provider: PaperclipRunnerProvider,
   value: unknown,
-): PaperclipRunnerPermissionMode {
+): PaperclipRunnerPermissionMode | "provider-managed" {
   const capability = PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider];
+  if (!capability.configurable) return capability.defaultMode;
   return capability.options.some((option) => option.value === value)
     ? value as PaperclipRunnerPermissionMode
     : capability.defaultMode;

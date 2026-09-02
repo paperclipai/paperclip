@@ -229,6 +229,53 @@ describe("OnboardingWizard — which step it lands on", () => {
     vi.clearAllMocks();
   });
 
+  /**
+   * The progress strip counts the walk the customer is actually on, and the two
+   * runs that enter on the agent step are on different walks.
+   *
+   * Both have a company already, so `entryStep` cannot tell them apart. What
+   * does is `enableManagedSandboxOnly` — the cloud-tenant shape. A cloud tenant
+   * was asked for its organization's name by Cloud, one screen earlier, so its
+   * walk is four and this is the second. A self-hosted company that simply has
+   * no agents yet was asked nothing before this, so its walk is three.
+   */
+  describe("progress strip length", () => {
+    function announcedCount(): string | null {
+      return (
+        [...document.querySelectorAll(".sr-only")]
+          .map((element) => element.textContent?.trim() ?? "")
+          .find((text) => /^Step \d+ of \d+$/.test(text)) ?? null
+      );
+    }
+
+    it("counts four on a cloud tenant, continuing the count Cloud started", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: true,
+      });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      expect(currentStep()).toBe("agent");
+      expect(announcedCount()).toBe("Step 2 of 4");
+    });
+
+    it("counts three on a self-hosted company that has no agents yet", async () => {
+      // Nothing was asked before this step here, so a fourth segment would be
+      // one the run can never fill — and it would credit the customer with a
+      // step they never walked.
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: false,
+      });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      expect(currentStep()).toBe("agent");
+      expect(announcedCount()).toBe("Step 1 of 3");
+    });
+  });
+
   it("opens a company that already has its mission on the agent step", async () => {
     // The point of the change: Cloud collected the mission at signup and the
     // seed wrote it as a company-level goal, so asking for it again asks a

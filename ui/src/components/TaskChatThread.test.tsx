@@ -14,8 +14,14 @@ import type {
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 
-const transcriptState = vi.hoisted(() => ({ transcriptByRun: new Map() }));
-const nativeTranscriptState = vi.hoisted(() => ({ transcriptByRun: new Map() }));
+const transcriptState = vi.hoisted(() => ({
+  transcriptByRun: new Map(),
+  isInitialHydrating: false,
+}));
+const nativeTranscriptState = vi.hoisted(() => ({
+  transcriptByRun: new Map(),
+  errorsByRun: new Map(),
+}));
 const transcriptHookRuns = vi.hoisted(() => ({ legacy: [] as unknown[][], native: [] as unknown[][] }));
 const sidebarState = vi.hoisted(() => ({ isMobile: false }));
 const planState = vi.hoisted(() => ({ data: null as IssueDocument | null }));
@@ -31,13 +37,19 @@ const DIRECT_ADAPTER_TYPES = [
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   useLiveRunTranscripts: ({ runs }: { runs: unknown[] }) => {
     transcriptHookRuns.legacy.push(runs);
-    return { transcriptByRun: new Map(transcriptState.transcriptByRun) };
+    return {
+      transcriptByRun: new Map(transcriptState.transcriptByRun),
+      isInitialHydrating: transcriptState.isInitialHydrating,
+    };
   },
 }));
 vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
   useNativeRunTranscripts: (runs: unknown[]) => {
     transcriptHookRuns.native.push(runs);
-    return { transcriptByRun: new Map(nativeTranscriptState.transcriptByRun) };
+    return {
+      transcriptByRun: new Map(nativeTranscriptState.transcriptByRun),
+      errorsByRun: new Map(nativeTranscriptState.errorsByRun),
+    };
   },
 }));
 vi.mock("@/context/SidebarContext", () => ({
@@ -79,7 +91,9 @@ let root: Root | null = null;
 beforeEach(() => {
   localStorage.clear();
   transcriptState.transcriptByRun.clear();
+  transcriptState.isInitialHydrating = false;
   nativeTranscriptState.transcriptByRun.clear();
+  nativeTranscriptState.errorsByRun.clear();
   transcriptHookRuns.legacy.length = 0;
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
@@ -349,7 +363,7 @@ describe("TaskChatThread draft pass-through", () => {
 });
 
 describe("TaskChatThread runtime transcript selection", () => {
-  it("selects persisted runtime facts while leaving direct adapters on the legacy parser", () => {
+  it("selects persisted runtime facts while retaining the log parser as native fallback", () => {
     render(
       <TaskChatThread
         comments={[]}
@@ -379,9 +393,10 @@ describe("TaskChatThread runtime transcript selection", () => {
 
     const legacyRuns = transcriptHookRuns.legacy.at(-1) as Array<{ id: string }>;
     const nativeRuns = transcriptHookRuns.native.at(-1) as Array<{ id: string }>;
-    expect(legacyRuns.map((run) => run.id)).toEqual(
-      DIRECT_ADAPTER_TYPES.map((_, index) => `legacy-run-${index}`),
-    );
+    expect(legacyRuns.map((run) => run.id)).toEqual([
+      "native-run",
+      ...DIRECT_ADAPTER_TYPES.map((_, index) => `legacy-run-${index}`),
+    ]);
     expect(nativeRuns.map((run) => run.id)).toEqual(["native-run"]);
   });
 
@@ -449,6 +464,88 @@ describe("TaskChatThread runtime transcript selection", () => {
     );
 
     expect(container.querySelector('[data-testid="task-chat-runner-turn"]')).toBeNull();
+  });
+
+  it("uses the live log when a native run has no persisted event transcript", () => {
+    transcriptState.transcriptByRun.set("native-run", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: "Visible from the runner log fallback.",
+        channel: "progress",
+      },
+    ]);
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{
+          id: "native-run",
+          runtimeMode: "native",
+          status: "running",
+          invocationSource: "issue",
+          triggerDetail: null,
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-08-25T18:00:00.000Z",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+        }}
+      />,
+    );
+
+    expect(container.textContent).toContain("Visible from the runner log fallback.");
+  });
+
+  it("uses a fresher live log when native event polling fails after earlier events", () => {
+    nativeTranscriptState.transcriptByRun.set("native-run", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: "Stale native activity.",
+        channel: "progress",
+      },
+    ]);
+    nativeTranscriptState.errorsByRun.set("native-run", {
+      message: "event endpoint unavailable",
+      failedAt: "2026-08-25T18:00:02.000Z",
+    });
+    transcriptState.transcriptByRun.set("native-run", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:03.000Z",
+        text: "Fresh activity from the runner log.",
+        channel: "progress",
+      },
+    ]);
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{
+          id: "native-run",
+          runtimeMode: "native",
+          status: "running",
+          invocationSource: "issue",
+          triggerDetail: null,
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-08-25T18:00:00.000Z",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+        }}
+      />,
+    );
+
+    expect(container.textContent).toContain("Fresh activity from the runner log.");
+    expect(container.textContent).not.toContain("Stale native activity.");
+    expect(container.textContent).not.toContain("temporarily unavailable");
   });
 
   it("keeps legacy channel-less native messages readable across settlement", () => {

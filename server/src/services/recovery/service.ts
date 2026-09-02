@@ -68,10 +68,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
   isStrandedIssueRecoveryOriginKind,
 } from "./origins.js";
-import {
-  recoveryAssigneeAdapterOverrides,
-  withRecoveryModelProfileHint,
-} from "./model-profile-hint.js";
+import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
   collectDispositionRepairSourceState,
@@ -1034,14 +1031,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
-      payload: withRecoveryModelProfileHint({
+      payload: withRecoveryContext({
         issueId: input.issueId,
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
         ...(input.extraContext ?? {}),
       }, "normal_model"),
       requestedByActorType: "system",
       requestedByActorId: null,
-      contextSnapshot: withRecoveryModelProfileHint({
+      contextSnapshot: withRecoveryContext({
         issueId: input.issueId,
         taskId: input.issueId,
         wakeReason: input.reason,
@@ -1072,13 +1069,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
-      payload: withRecoveryModelProfileHint({
+      payload: withRecoveryContext({
         issueId: issue.id,
         mutation: "assigned_todo_liveness_dispatch",
       }, "normal_model"),
       requestedByActorType: "system",
       requestedByActorId: null,
-      contextSnapshot: withRecoveryModelProfileHint({
+      contextSnapshot: withRecoveryContext({
         issueId: issue.id,
         taskId: issue.id,
         wakeReason: "issue_assigned",
@@ -1187,13 +1184,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         source: "automation",
         triggerDetail: "system",
         reason: "issue_assigned",
-        payload: withRecoveryModelProfileHint({
+        payload: withRecoveryContext({
           issueId: candidate.id,
           mutation: "unassigned_blocker_recovery",
         }, "normal_model"),
         requestedByActorType: "system",
         requestedByActorId: null,
-        contextSnapshot: withRecoveryModelProfileHint({
+        contextSnapshot: withRecoveryContext({
           issueId: candidate.id,
           taskId: candidate.id,
           wakeReason: "issue_assigned",
@@ -2150,7 +2147,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           source: "automation",
           triggerDetail: "system",
           reason: "provider_quota_recovery",
-          payload: withRecoveryModelProfileHint({
+          payload: withRecoveryContext({
             issueId: input.issue.id,
             retryOfRunId: input.latestRun?.id ?? null,
             retryReason: "provider_quota_recovery",
@@ -2177,7 +2174,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           scheduledRetryAt: retryAt,
           scheduledRetryAttempt: 1,
           scheduledRetryReason: "provider_quota_recovery",
-          contextSnapshot: withRecoveryModelProfileHint({
+          contextSnapshot: withRecoveryContext({
             issueId: input.issue.id,
             taskId: input.issue.id,
             wakeReason: "provider_quota_recovery",
@@ -2565,7 +2562,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const now = new Date();
     const retryAt = new Date(now.getTime() + timing.delayMs);
     const idempotencyKey = `issue_disposition_repair:${input.issue.id}:${input.fingerprint}:${input.attempt}`;
-    const context = withRecoveryModelProfileHint({
+    const context = withRecoveryContext({
       issueId: input.issue.id,
       taskId: input.issue.id,
       wakeReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
@@ -2603,7 +2600,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             triggerDetail: "system",
             reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
             idempotencyKey,
-            payload: withRecoveryModelProfileHint({
+            payload: withRecoveryContext({
               issueId: input.issue.id,
               retryOfRunId: input.latestRun?.id ?? null,
               recoveryActionId: input.action.id,
@@ -2627,7 +2624,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
                 source: "automation",
                 triggerDetail: "system",
                 reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-                payload: withRecoveryModelProfileHint({
+                payload: withRecoveryContext({
                   issueId: input.issue.id,
                   retryOfRunId: input.latestRun?.id ?? null,
                   recoveryActionId: input.action.id,

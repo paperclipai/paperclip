@@ -706,23 +706,44 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return [...map.values()];
   }, [linkedRuns, liveRuns, activeRun]);
 
-  const legacyRuns = useMemo(
-    () => runs.filter((run) => run.runtimeMode !== "native"),
-    [runs],
-  );
   const nativeRuns = useMemo(
     () => runs.filter((run) => run.runtimeMode === "native"),
     [runs],
   );
-  const { transcriptByRun: legacyTranscriptByRun } = useLiveRunTranscripts({
-    runs: legacyRuns,
+  const {
+    transcriptByRun: logTranscriptByRun,
+    isInitialHydrating: logsAreInitiallyHydrating,
+  } = useLiveRunTranscripts({
+    // Native events are authoritative, but the persisted/live log remains a
+    // compatibility source when an upgraded server has no event history or
+    // the native event endpoint is temporarily unavailable.
+    runs,
     companyId,
   });
-  const { transcriptByRun: nativeTranscriptByRun } = useNativeRunTranscripts(nativeRuns);
-  const transcriptByRun = useMemo(
-    () => new Map([...legacyTranscriptByRun, ...nativeTranscriptByRun]),
-    [legacyTranscriptByRun, nativeTranscriptByRun],
-  );
+  const {
+    transcriptByRun: nativeTranscriptByRun,
+    errorsByRun: nativeTranscriptErrorsByRun,
+  } = useNativeRunTranscripts(nativeRuns);
+  const transcriptByRun = useMemo(() => {
+    const next = new Map(logTranscriptByRun);
+    for (const run of nativeRuns) {
+      const logTranscript = logTranscriptByRun.get(run.id) ?? [];
+      const nativeTranscript = nativeTranscriptByRun.get(run.id) ?? [];
+      const nativeEventsUnavailable = nativeTranscriptErrorsByRun.has(run.id);
+      if (
+        nativeTranscript.length > 0
+        && (!nativeEventsUnavailable || logTranscript.length === 0)
+      ) {
+        next.set(run.id, nativeTranscript);
+      }
+    }
+    return next;
+  }, [
+    logTranscriptByRun,
+    nativeRuns,
+    nativeTranscriptByRun,
+    nativeTranscriptErrorsByRun,
+  ]);
 
   // The single in-flight run whose turn we stream live (non-terminal).
   const liveRun = useMemo(() => {
@@ -1652,6 +1673,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const tailAllEntries = tailRunId
     ? (transcriptByRun.get(tailRunId) ?? [])
     : [];
+  const tailActivityUnavailable = Boolean(
+    tailRunId
+      && nativeTranscriptErrorsByRun.has(tailRunId)
+      && (logTranscriptByRun.get(tailRunId)?.length ?? 0) === 0
+      && !logsAreInitiallyHydrating,
+  );
   const tailTimelineAnchors = tailRunId
     ? paperclipRunnerTail
       ? (steeringAnchorsByRun.get(tailRunId) ?? [])
@@ -2205,6 +2232,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                           }
                           startedAtMs={tailStartedAtMs}
                           finishedAtMs={tailFinishedAtMs}
+                          activityUnavailable={tailActivityUnavailable}
                           onRuntimeRequestDecision={
                             handleRuntimeRequestDecision
                           }

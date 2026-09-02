@@ -1904,4 +1904,100 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     30_000,
   );
+
+  it(
+    "removes retired model profiles from live records and configuration revisions",
+    async () => {
+      const connectionString = await createTempDatabase();
+      await applyPendingMigrations(connectionString);
+      const hash = await migrationHash("0236_remove_cheap_model_profiles.sql");
+      const companyId = "10000000-0000-4000-8000-000000000236";
+      const agentId = "20000000-0000-4000-8000-000000000236";
+      const issueId = "30000000-0000-4000-8000-000000000236";
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sql`
+          INSERT INTO companies (id, name, issue_prefix)
+          VALUES (${companyId}, 'Model profile migration fixture', 'MPF')
+        `;
+        await sql`
+          INSERT INTO agents (id, company_id, name, runtime_config)
+          VALUES (
+            ${agentId},
+            ${companyId},
+            'Legacy model profile agent',
+            '{"heartbeat":{"enabled":true},"modelProfiles":{"cheap":{"model":"legacy"}}}'::jsonb
+          )
+        `;
+        await sql`
+          INSERT INTO issues (id, company_id, title, assignee_adapter_overrides)
+          VALUES (
+            ${issueId},
+            ${companyId},
+            'Legacy model profile issue',
+            '{"modelProfile":"cheap","workingDirectory":"/workspace"}'::jsonb
+          )
+        `;
+        await sql`
+          INSERT INTO agent_config_revisions (
+            company_id,
+            agent_id,
+            changed_keys,
+            before_config,
+            after_config
+          )
+          VALUES (
+            ${companyId},
+            ${agentId},
+            '["runtimeConfig"]'::jsonb,
+            '{"name":"Legacy model profile agent","runtimeConfig":{"modelProfiles":{"cheap":{"model":"legacy-before"}},"heartbeat":{"enabled":true}}}'::jsonb,
+            '{"name":"Legacy model profile agent","runtimeConfig":{"modelProfiles":{"cheap":{"model":"legacy-after"}},"heartbeat":{"enabled":false}}}'::jsonb
+          )
+        `;
+        await sql`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE "hash" = ${hash}
+        `;
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const [result] = await verifySql.unsafe<{
+          runtime_config: Record<string, unknown>;
+          assignee_adapter_overrides: Record<string, unknown> | null;
+          before_config: Record<string, unknown>;
+          after_config: Record<string, unknown>;
+        }[]>(`
+          SELECT
+            agent.runtime_config,
+            issue.assignee_adapter_overrides,
+            revision.before_config,
+            revision.after_config
+          FROM agents agent
+          JOIN issues issue ON issue.company_id = agent.company_id
+          JOIN agent_config_revisions revision ON revision.agent_id = agent.id
+          WHERE agent.id = '${agentId}' AND issue.id = '${issueId}'
+        `);
+
+        expect(result.runtime_config).toEqual({ heartbeat: { enabled: true } });
+        expect(result.assignee_adapter_overrides).toEqual({ workingDirectory: "/workspace" });
+        expect(result.before_config).toEqual({
+          name: "Legacy model profile agent",
+          runtimeConfig: { heartbeat: { enabled: true } },
+        });
+        expect(result.after_config).toEqual({
+          name: "Legacy model profile agent",
+          runtimeConfig: { heartbeat: { enabled: false } },
+        });
+      } finally {
+        await verifySql.end();
+      }
+    },
+    30_000,
+  );
 });

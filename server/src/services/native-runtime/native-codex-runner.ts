@@ -37,6 +37,7 @@ export function buildNativeRunnerPreparePayload(
 ): Record<string, unknown> {
   return {
     provider: {
+      kind: "codex",
       provider: "codex",
       driver: "codex_app_server",
       providerVersion: input.providerLaunch?.providerVersion ?? "codex-app-server-v1",
