@@ -708,6 +708,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: attempt.proc.stderr,
         },
         summary: attempt.parsed.summary,
+        // Structured per-run telemetry derived from OpenCode JSONL events. Always
+        // present when the adapter emits parseable events; mapped to the
+        // adapter-facing AdapterRunTelemetry shape (engine capability
+        // `supportedObservability` must be non-null for the acceptance contract).
+        runTelemetry: attempt.parsed.telemetry
+          ? {
+              toolCalls: attempt.parsed.telemetry.toolCalls,
+              failedToolCalls: attempt.parsed.telemetry.failedToolCalls,
+              retryCount: attempt.parsed.telemetry.retryCount,
+              searchCalls: attempt.parsed.telemetry.searchCalls,
+              fileReads: attempt.parsed.telemetry.fileReads,
+              fileWrites: attempt.parsed.telemetry.fileWrites,
+              testCalls: attempt.parsed.telemetry.testCalls,
+              timeToFirstWriteMs: attempt.parsed.telemetry.timeToFirstWriteMs,
+              timeToFirstTestMs: attempt.parsed.telemetry.timeToFirstTestMs,
+            }
+          : null,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
       };
     };

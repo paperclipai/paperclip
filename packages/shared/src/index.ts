@@ -2723,3 +2723,4 @@ export {
   isPaperclipDevRunnerCommand,
   rewriteUrlHostToLoopback,
 } from "./runtime-exposure/loopback-bind.js";
+export * from "./context-economy/index.js";

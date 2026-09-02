@@ -10,6 +10,7 @@ import type {
   AdapterBillingType,
   AdapterExecutionContext,
   AdapterExecutionResult,
+  RunContextDiagnostics,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
 import {
@@ -72,6 +73,13 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import {
+  narrowRuntimeMcpServers,
+  deriveRuntimeToolTelemetry,
+  captureRuntimeFirstModelTokenTelemetry,
+  selectRuntimePromptSections,
+  evaluateRuntimeContextBudget,
+} from "../context-economy-wiring.js";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -451,6 +459,14 @@ interface AcpxPreparedRuntime {
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
   mcpIdentity: Array<{ name: string; url: string; connectionId: string }>;
+  /**
+   * Context-economy diagnostics computed at run-start (after app permission /
+   * install resolution and before OpenCode config generation): the narrowed
+   * managed-MCP set, derived tool-schema telemetry, and the Paperclip-controlled
+   * prompt-section selection. First-model token telemetry and the compaction
+   * decision are merged in when the run completes.
+   */
+  contextEconomy: RunContextDiagnostics;
   // Per-step round-trip / provider-duration readers sourced from the sandbox
   // runner's counters (Open Q1). Empty for local runs and the runner-less
   // fallback, where no host→sandbox exec seam exists. Threaded into the
@@ -1818,7 +1834,12 @@ async function buildRuntime(input: {
   const requestedModel = asString(config.model, "").trim();
   const requestedThinkingEffort = normalizeRequestedThinkingEffort(config);
   const fastMode = acpxAgent === "codex" && config.fastMode === true;
-  const runtimeMcpServers = input.ctx.runtimeMcp?.getServers() ?? [];
+  const role = asString(context.role, "");
+  const taskCategory = asString(context.taskCategory, "");
+  const recovery = context.recovery === true || asString(context.recovery, "") === "true";
+  const rawRuntimeMcpServers = input.ctx.runtimeMcp?.getServers() ?? [];
+  const narrowedMcp = narrowRuntimeMcpServers(rawRuntimeMcpServers, { role, taskCategory });
+  const runtimeMcpServers = narrowedMcp.servers;
   const mcpIdentity = runtimeMcpServers.map(({ name, url, connectionId }) => ({
     name,
     url,
@@ -1830,6 +1851,19 @@ async function buildRuntime(input: {
     url: server.url,
     headers: [{ name: "Authorization", value: `Bearer ${server.token}` }],
   }));
+  // Context-economy instrumentation computed at run-start, after app permission /
+  // install resolution and before the agent config is generated.
+  const contextEconomy: RunContextDiagnostics = {
+    mcpNarrowing:
+      narrowedMcp.droppedUnauthorized.length > 0 || narrowedMcp.droppedInactive.length > 0
+        ? {
+            droppedUnauthorized: narrowedMcp.droppedUnauthorized,
+            droppedInactive: narrowedMcp.droppedInactive,
+          }
+        : null,
+    tools: deriveRuntimeToolTelemetry(runtimeMcpServers),
+    promptSections: selectRuntimePromptSections({ role, taskCategory, recovery }),
+  };
   // Resolve the wall-clock timeout through the shared execution-target
   // resolver so sandbox-backed runs pick up the 4h backstop default while
   // local/SSH runs keep the historical "0 = no adapter timeout" behavior.
@@ -2429,6 +2463,7 @@ async function buildRuntime(input: {
     paperclipClaudeSettings,
     mcpServers,
     mcpIdentity,
+    contextEconomy,
     stepMetrics,
   };
 }
@@ -4038,10 +4073,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // and custom agents already emit their own per-tool output and don't
           // benefit from doubling the log volume.
           verbose: prepared.acpxAgent === "claude",
-          // The engine passes a complete, sanitized launch environment. ACPX
-          // must not merge the Paperclip server's ambient environment back in
-          // when it spawns the provider child.
-          inheritProcessEnv: false,
           onAgentStderr: prepared.childStderrLogPath
             ? (chunk) => routeChildStderr(childStderrState, chunk)
             : undefined,
@@ -4706,6 +4737,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             outputSegments,
             fallback: terminalStopReason || terminal.status,
           }),
+          runContextDiagnostics: {
+            ...prepared.contextEconomy,
+            firstModelTokens: captureRuntimeFirstModelTokenTelemetry({
+              usage: turnUsage.usage ?? null,
+              measurementSource: turnUsage.usage ? "provider" : "unsupported",
+              reason: turnUsage.usage
+                ? undefined
+                : "ACP runtime did not report first-request usage",
+            }),
+            compaction: evaluateRuntimeContextBudget({
+              turns:
+                typeof ctx.context.turnsThisRun === "number" ? ctx.context.turnsThisRun : 0,
+              promptChars: runPrompt.length,
+              firstModelInputTokens: turnUsage.usage?.inputTokens ?? null,
+            }),
+          },
           clearSession,
         };
         // The turn phase finished. A completed, non-timed-out turn with a live
@@ -4815,6 +4862,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           clearSession: clearSession || timedOut,
           resultJson: { phase },
           summary: message,
+          runContextDiagnostics: {
+            ...prepared.contextEconomy,
+            firstModelTokens: captureRuntimeFirstModelTokenTelemetry({
+              usage: null,
+              reason: "run failed before first-model usage was reported",
+            }),
+            compaction: evaluateRuntimeContextBudget({
+              turns:
+                typeof ctx.context.turnsThisRun === "number" ? ctx.context.turnsThisRun : 0,
+              promptChars: 0,
+              firstModelInputTokens: null,
+            }),
+          },
         };
         // Return a typed failed completion so the coordinator settles for a cause
         // that forbids the save. The reported phase lives on the recorded result.

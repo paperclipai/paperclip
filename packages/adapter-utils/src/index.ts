@@ -43,7 +43,22 @@ export type {
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
+  RunContextDiagnostics,
 } from "./types.js";
+export {
+  narrowRuntimeMcpServers,
+  deriveRuntimeToolTelemetry,
+  captureRuntimeFirstModelTokenTelemetry,
+  selectRuntimePromptSections,
+  evaluateRuntimeContextBudget,
+} from "./context-economy-wiring.js";
+export type {
+  NarrowRuntimeMcpResult,
+  RuntimeToolTelemetryOptions,
+  RuntimeFirstModelTokenOptions,
+  RuntimePromptSectionSelection,
+  RuntimeContextBudgetOptions,
+} from "./context-economy-wiring.js";
 export type {
   SessionCompactionPolicy,
   NativeContextManagement,
