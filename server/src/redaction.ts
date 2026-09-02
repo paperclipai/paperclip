@@ -369,7 +369,56 @@ const SECRET_TEXT_HINTS = [
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
-const PUBLIC_CONFIGURATION_SCALAR_KEYS = new Set(["model", "provider"]);
+export type ConfigurationRedactionSurface = "adapter" | "runtime" | "generic";
+
+const PUBLIC_ADAPTER_CONFIGURATION_SCALAR_KEYS = new Set([
+  "effort",
+  "graceSec",
+  "mode",
+  "model",
+  "modelReasoningEffort",
+  "provider",
+  "reasoningEffort",
+  "search",
+  "timeoutSec",
+  "variant",
+]);
+
+// These are closed, presentation-safe fields consumed by AgentConfigForm.
+// Path checks are exact: a same-named scalar below an unknown object remains
+// redacted, and bindings always take the binding-specific redaction path.
+const PUBLIC_RUNTIME_HEARTBEAT_SCALAR_PATHS = new Set([
+  "heartbeat.cooldownSec",
+  "heartbeat.enabled",
+  "heartbeat.intervalSec",
+  "heartbeat.maxConcurrentRuns",
+  "heartbeat.maxTurnContinuation.delayMs",
+  "heartbeat.maxTurnContinuation.enabled",
+  "heartbeat.maxTurnContinuation.maxAttempts",
+  "heartbeat.wakeOnDemand",
+]);
+
+function isPublicConfigurationScalar(path: string[], surface: ConfigurationRedactionSurface) {
+  if (surface === "adapter") {
+    return path.length === 1 && PUBLIC_ADAPTER_CONFIGURATION_SCALAR_KEYS.has(path[0] ?? "");
+  }
+  if (surface === "runtime") {
+    const joinedPath = path.join(".");
+    if (PUBLIC_RUNTIME_HEARTBEAT_SCALAR_PATHS.has(joinedPath)) return true;
+    if (joinedPath === "debug.providerTrace") return true;
+    return (
+      path.length === 3
+      && path[0] === "modelProfiles"
+      && (path[2] === "enabled" || path[2] === "label")
+    ) || (
+      path.length === 4
+      && path[0] === "modelProfiles"
+      && path[2] === "adapterConfig"
+      && PUBLIC_ADAPTER_CONFIGURATION_SCALAR_KEYS.has(path[3] ?? "")
+    );
+  }
+  return path.length === 1 && (path[0] === "model" || path[0] === "provider");
+}
 
 function maybeContainsSecretText(input: string) {
   const lower = input.toLowerCase();
@@ -998,27 +1047,33 @@ export function redactAgentAdapterConfig(
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
-function redactConfigurationValue(value: unknown, path: string[] = []): unknown {
+function redactConfigurationValue(
+  value: unknown,
+  path: string[] = [],
+  surface: ConfigurationRedactionSurface = "generic",
+): unknown {
   if (value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map((entry) => redactConfigurationValue(entry, path));
+  if (Array.isArray(value)) return value.map((entry) => redactConfigurationValue(entry, path, surface));
   if (isSecretRefBinding(value)) return redactSecretRefBinding(value);
   if (isUserSecretRefBinding(value)) return redactUserSecretRefBinding(value);
   if (isPlainBinding(value)) return { type: value.type, value: REDACTED_EVENT_VALUE };
   if (!isPlainObject(value)) {
-    const topLevelKey = path.length === 1 ? path[0] : undefined;
-    return topLevelKey && PUBLIC_CONFIGURATION_SCALAR_KEYS.has(topLevelKey) ? value : REDACTED_EVENT_VALUE;
+    return isPublicConfigurationScalar(path, surface) ? value : REDACTED_EVENT_VALUE;
   }
   return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [
     childKey,
-    redactConfigurationValue(child, [...path, childKey]),
+    redactConfigurationValue(child, [...path, childKey], surface),
   ]));
 }
 
 /** Redact executable configuration deny-by-default while retaining its shape. */
-export function redactConfigurationPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
+export function redactConfigurationPayload(
+  payload: Record<string, unknown> | null,
+  surface: ConfigurationRedactionSurface = "generic",
+): Record<string, unknown> | null {
   if (!payload) return null;
   if (!isPlainObject(payload)) return {};
-  return redactConfigurationValue(payload) as Record<string, unknown>;
+  return redactConfigurationValue(payload, [], surface) as Record<string, unknown>;
 }
 
 function restoreRedactedConfigurationValue(value: unknown, existing: unknown): unknown {

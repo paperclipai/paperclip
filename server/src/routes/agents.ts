@@ -2889,11 +2889,13 @@ export function agentRoutes(
         typeof record.adapterConfig === "object" && record.adapterConfig !== null
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
+        "adapter",
       ),
       runtimeConfig: redactConfigurationPayload(
         typeof record.runtimeConfig === "object" && record.runtimeConfig !== null
           ? (record.runtimeConfig as Record<string, unknown>)
           : {},
+        "runtime",
       ),
       metadata:
         typeof record.metadata === "object" && record.metadata !== null
@@ -4704,7 +4706,6 @@ export function agentRoutes(
         runtimeConfig,
         asRecord(existing.runtimeConfig),
       );
-      assertNoAgentRuntimeConfigAdapterConfigMutation(req, restoredRuntimeConfig);
       assertProviderTraceSettingTransition(
         req,
         restoredRuntimeConfig,

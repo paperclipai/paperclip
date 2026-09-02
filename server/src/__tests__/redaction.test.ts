@@ -43,6 +43,64 @@ describe("redaction", () => {
     }
   });
 
+  it("preserves only path-allowlisted runtime editor metadata", () => {
+    expect(redactConfigurationPayload({
+      heartbeat: {
+        enabled: true,
+        intervalSec: 300,
+        maxTurnContinuation: { enabled: true, maxAttempts: 2, delayMs: 1_000 },
+        neutralCanary: "must-not-survive",
+      },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          label: "Cheap",
+          adapterConfig: {
+            model: "public-model-id",
+            provider: "public-provider-id",
+            neutralCanary: "must-not-survive",
+          },
+        },
+      },
+      shadow: { heartbeat: { enabled: "must-not-survive" } },
+    }, "runtime")).toEqual({
+      heartbeat: {
+        enabled: true,
+        intervalSec: 300,
+        maxTurnContinuation: { enabled: true, maxAttempts: 2, delayMs: 1_000 },
+        neutralCanary: REDACTED_EVENT_VALUE,
+      },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          label: "Cheap",
+          adapterConfig: {
+            model: "public-model-id",
+            provider: "public-provider-id",
+            neutralCanary: REDACTED_EVENT_VALUE,
+          },
+        },
+      },
+      shadow: { heartbeat: { enabled: REDACTED_EVENT_VALUE } },
+    });
+  });
+
+  it("preserves only top-level allowlisted adapter editor metadata", () => {
+    expect(redactConfigurationPayload({
+      model: "public-model-id",
+      search: true,
+      timeoutSec: 30,
+      command: "must-not-survive",
+      nested: { model: "must-not-survive" },
+    }, "adapter")).toEqual({
+      model: "public-model-id",
+      search: true,
+      timeoutSec: 30,
+      command: REDACTED_EVENT_VALUE,
+      nested: { model: REDACTED_EVENT_VALUE },
+    });
+  });
+
   it("restores round-tripped redaction markers without discarding intentional edits", () => {
     const existing = {
       model: "old-model",
