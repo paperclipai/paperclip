@@ -372,15 +372,6 @@ function normalizePlanMarkdown(body: string | null | undefined) {
   return (body ?? "").replaceAll("\\_", "_");
 }
 
-function renderedMarkerPattern(marker: string) {
-  return new RegExp(
-    marker
-      .split("_")
-      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-      .join("\\\\?_"),
-  );
-}
-
 function nativeRunEventIntegrityFailures(
   run: RunRecord,
   events: readonly RunEventRecord[],
@@ -490,22 +481,26 @@ function nativeRunEventIntegrityFailures(
   return failures;
 }
 
-async function expectPlanStageMarkerVisible(page: Page, marker: string) {
-  const pattern = renderedMarkerPattern(marker);
-  // Depending on the interaction presentation, the task thread either
-  // expands the canonical Plan body inline or renders a compact `plan · vN`
-  // confirmation card while the agent's adjacent visible message describes
-  // the published revision. Backend assertions separately verify the exact
-  // canonical document body, revision ID, step count, and pending interaction.
-  await expect(
-    page
-      .getByTestId("task-chat-plan-preview")
-      .filter({ hasText: pattern })
-      .or(
-        page.getByTestId("task-chat-agent-bubble").filter({ hasText: pattern }),
-      )
-      .last(),
-  ).toBeVisible({ timeout: 30_000 });
+async function expectPlanStageVisible(
+  page: Page,
+  options: { native: boolean; revision: number | null },
+) {
+  // A Plan flow is only qualified when the canonical saved document is
+  // projected as a card. Native profiles additionally require that card to be
+  // inside the runner turn, which proves write-boundary embedding rather than
+  // a standalone fallback. The API assertions own exact body-marker identity
+  // because the compact card intentionally shows only its first three lines.
+  const root = options.native
+    ? page.locator('[data-testid="task-chat-turn"][data-settled="true"]')
+    : page.locator("body");
+  const preview = root.getByTestId("task-chat-plan-preview").last();
+  await expect(preview).toBeVisible({ timeout: 30_000 });
+  if (options.revision !== null) {
+    await expect(preview).toHaveAttribute(
+      "aria-label",
+      `Open Plan revision ${options.revision}`,
+    );
+  }
 }
 
 for (const execution of executions) {
@@ -829,7 +824,10 @@ for (const execution of executions) {
           `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
           { waitUntil: "domcontentloaded" },
         );
-        await expectPlanStageMarkerVisible(page, planMarkers.draft);
+        await expectPlanStageVisible(page, {
+          native: execution.profile.expectedRuntimeMode === "native",
+          revision: draftPlan.latestRevisionNumber ?? null,
+        });
         await captureScreenshot(
           "plan-draft",
           "Initial plan awaiting revision",
@@ -907,7 +905,10 @@ for (const execution of executions) {
           `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
           { waitUntil: "domcontentloaded" },
         );
-        await expectPlanStageMarkerVisible(page, planMarkers.revised);
+        await expectPlanStageVisible(page, {
+          native: execution.profile.expectedRuntimeMode === "native",
+          revision: revisedPlan.latestRevisionNumber ?? null,
+        });
         await captureScreenshot(
           "plan-revised",
           "Revised plan awaiting acceptance",
@@ -999,7 +1000,7 @@ for (const execution of executions) {
         );
         await expect(
           page
-            .getByRole("button", {
+            .getByRole("radio", {
               name: expectedAnswer.optionLabel,
               exact: true,
             })
@@ -1023,7 +1024,7 @@ for (const execution of executions) {
           );
           await expect(
             page
-              .getByRole("button", {
+              .getByRole("radio", {
                 name: expectedAnswer.optionLabel,
                 exact: true,
               })
@@ -1051,12 +1052,12 @@ for (const execution of executions) {
           );
         }
         await page
-          .getByRole("button", {
+          .getByRole("radio", {
             name: expectedAnswer.optionLabel,
             exact: true,
           })
           .last()
-          .click();
+          .check();
         await page
           .getByRole("button", { name: "Submit answers", exact: true })
           .last()
@@ -1106,7 +1107,10 @@ for (const execution of executions) {
           `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
           { waitUntil: "domcontentloaded" },
         );
-        await expectPlanStageMarkerVisible(page, planMarkers.draft);
+        await expectPlanStageVisible(page, {
+          native: execution.profile.expectedRuntimeMode === "native",
+          revision: plan.latestRevisionNumber ?? null,
+        });
         await captureScreenshot(
           "plan-pending",
           "Plan awaiting approval",
@@ -1567,9 +1571,13 @@ for (const execution of executions) {
         .getByTestId("task-chat-agent-bubble");
       await expect(visibleAgentReplies).toHaveCount(1, { timeout: 30_000 });
       await expect(visibleAgentReplies.first()).toBeVisible();
-      await expect(visibleAgentReplies.first()).toContainText(
-        renderedMarkerPattern(marker),
-      );
+      // A string-valued toHaveText assertion compares the complete rendered
+      // text while normalizing ordinary DOM whitespace. This keeps Markdown
+      // layout differences harmless without allowing prefixed, suffixed, or
+      // substituted provider prose to masquerade as the requested response.
+      await expect(visibleAgentReplies.first()).toHaveText(marker, {
+        useInnerText: true,
+      });
       await expect(
         page.getByTestId("issue-detail-header").getByRole("button", {
           name: "Change status (current: Done)",

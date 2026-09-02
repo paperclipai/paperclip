@@ -389,6 +389,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   >();
   readonly #partText = new Map<string, string>();
   readonly #completedTextPartIds = new Set<string>();
+  readonly #completedReasoningPartIds = new Set<string>();
   readonly #completedTextParts: Array<{
     partId: string;
     messageId: string | null;
@@ -515,6 +516,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#semanticResultProviderMessageId = null;
     this.#lastNonTerminalToolSourceSeq = 0;
     this.#completedTextPartIds.clear();
+    this.#completedReasoningPartIds.clear();
     this.#completedTextParts.length = 0;
     this.#terminalTurns.clear();
     this.#sendFullContext = false;
@@ -1621,13 +1623,20 @@ class OpenCodeHarnessSession implements HarnessSession {
       // Until settlement selects one completed part as the final response,
       // every assistant text update is canonical progress/commentary.
       const assistantDelta = partType === "text";
+      const reasoningDelta = partType === "reasoning";
       this.#emit(
         "item.delta",
         {
-          kind: assistantDelta ? "agentMessage" : partType,
+          kind: assistantDelta
+            ? "agentMessage"
+            : reasoningDelta
+              ? "reasoning"
+              : partType,
           ...(assistantDelta
             ? { channel: "progress", providerPhase: "commentary" }
-            : {}),
+            : reasoningDelta
+              ? { channel: "detail", providerPhase: "reasoning" }
+              : {}),
           text: delta,
           item: bounded(
             assistantDelta
@@ -1638,13 +1647,46 @@ class OpenCodeHarnessSession implements HarnessSession {
                   phase: "commentary",
                   text: delta,
                 }
-              : part,
+              : reasoningDelta
+                ? {
+                    ...part,
+                    type: "reasoning",
+                    channel: "detail",
+                    phase: "reasoning",
+                    text: delta,
+                  }
+                : part,
           ),
         },
         { turnId, itemId: partId },
       );
     }
     const completedAt = record(part.time).end;
+    if (
+      partType === "reasoning" &&
+      content.trim().length > 0 &&
+      Number.isFinite(completedAt) &&
+      !this.#completedReasoningPartIds.has(partId)
+    ) {
+      this.#completedReasoningPartIds.add(partId);
+      this.#emit(
+        "item.completed",
+        {
+          kind: "reasoning",
+          channel: "detail",
+          providerPhase: "reasoning",
+          text: content,
+          item: bounded({
+            ...part,
+            type: "reasoning",
+            channel: "detail",
+            phase: "reasoning",
+            text: content,
+          }),
+        },
+        { turnId, itemId: partId },
+      );
+    }
     if (
       partType === "text" &&
       content.trim().length > 0 &&

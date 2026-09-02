@@ -49,9 +49,147 @@ const JWT_VALUE_RE =
 // public discriminators, not credentials. Exempt the Paperclip schema
 // namespace only in fields that actually declare a schema; the same value in
 // arbitrary provider data remains subject to the fail-closed JWT guard.
-const PAPERCLIP_SCHEMA_ID_RE =
-  /^paperclip\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.v\d+$/;
 const PAPERCLIP_SCHEMA_FIELDS = new Set(["schema", "runtimeSchema"]);
+export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
+  "paperclip.artifact.generated.v1",
+  "paperclip.artifact.viewed.v1",
+  "paperclip.capability-discovery.v1",
+  "paperclip.capability.authorization-record.v1",
+  "paperclip.capability.control-plane.v1",
+  "paperclip.capability.devtools.v1",
+  "paperclip.capability.eval-parity-report.v1",
+  "paperclip.capability.exposure.v1",
+  "paperclip.capability.issue-thread-view.v1",
+  "paperclip.capability.live-session-checkpoint.v1",
+  "paperclip.capability.live-session.v1",
+  "paperclip.capability.live-smoke.v1",
+  "paperclip.capability.mock-export.v1",
+  "paperclip.capability.mock-state.v1",
+  "paperclip.capability.model-tool-result.v1",
+  "paperclip.capability.run-artifact.v1",
+  "paperclip.capability.run-context.v1",
+  "paperclip.capability.scenario-index.v1",
+  "paperclip.capability.scenario-parity.v1",
+  "paperclip.capability.semantic-tool-runtime.v1",
+  "paperclip.capability.state-diff.v1",
+  "paperclip.capability.tool-result.v1",
+  "paperclip.capability.turn-stream.v1",
+  "paperclip.capability.visible-tools.v1",
+  "paperclip.completion-contract.v1",
+  "paperclip.context.compacted.v1",
+  "paperclip.delegation.v1",
+  "paperclip.fake_harness.script.v1",
+  "paperclip.hook.v1",
+  "paperclip.interaction_request.v1",
+  "paperclip.local-provider-boundary-golden.v1",
+  "paperclip.memory.citation.v1",
+  "paperclip.model.provider_message.v1",
+  "paperclip.model.route_changed.v1",
+  "paperclip.model.verification.v1",
+  "paperclip.native-cancellation.v1",
+  "paperclip.native-execution-input.v1",
+  "paperclip.native-execution-input.v2",
+  "paperclip.native-execution-input.v3",
+  "paperclip.native-execution-input.v4",
+  "paperclip.native-finalization.v1",
+  "paperclip.native-finalization.v2",
+  "paperclip.native-harness-backup-stamp.v1",
+  "paperclip.native-harness-backup.v1",
+  "paperclip.native-model-envelope.v1",
+  "paperclip.native-model-envelope.v2",
+  "paperclip.native-session-scope.v2",
+  "paperclip.native-session-supervisor.v1",
+  "paperclip.plan.updated.v1",
+  "paperclip.provider.native.v1",
+  "paperclip.provider.notice.v1",
+  "paperclip.provider_trace_frame.v1",
+  "paperclip.provider_trace_interpretation.v1",
+  "paperclip.provider_trace_metadata.v1",
+  "paperclip.prp.capabilities.v1",
+  "paperclip.prp.command.v1",
+  "paperclip.prp.contract_manifest.v1",
+  "paperclip.prp.event.v1",
+  "paperclip.prp.fixture.v1",
+  "paperclip.prp.identity.v1",
+  "paperclip.prp.semantic_tool.v1",
+  "paperclip.prp.semantic_tool.v2",
+  "paperclip.prp.semantic_tools.v1",
+  "paperclip.prp.session-snapshot.v1",
+  "paperclip.prp.stop_reason.v1",
+  "paperclip.prp.terminal.v1",
+  "paperclip.question_adapter_fixture.v1",
+  "paperclip.question_response.v1",
+  "paperclip.question_response_delivery.v1",
+  "paperclip.question_set.v1",
+  "paperclip.research.v1",
+  "paperclip.review.mode_changed.v1",
+  "paperclip.run-performance-span.v1",
+  "paperclip.run-result.v1",
+  "paperclip.run_presentation_decision.v1",
+  "paperclip.run_result.v1",
+  "paperclip.runner.acpx-identity.v1",
+  "paperclip.runner.acpx-identity.v2",
+  "paperclip.runner.authorized-tools.v1",
+  "paperclip.runner.codex.metadata.v1",
+  "paperclip.runner.codex.trace.v1",
+  "paperclip.runner.compatibility.v1",
+  "paperclip.runner.conformance.fixture.v1",
+  "paperclip.runner.conformance.output.v1",
+  "paperclip.runner.durable.control-plane-state.v1",
+  "paperclip.runner.durable.diagnostics.v1",
+  "paperclip.runner.durable.state.v1",
+  "paperclip.runner.durable.trace.v1",
+  "paperclip.runner.eval-bundle-evidence.v1",
+  "paperclip.runner.eval-bundle.v1",
+  "paperclip.runner.eval-scorecard.v1",
+  "paperclip.runner.eval-scorecard.v2",
+  "paperclip.runner.eval-slice-report.v1",
+  "paperclip.runner.live-console.conformance.v1",
+  "paperclip.runner.live-eval-candidate.v1",
+  "paperclip.runner.live-eval-schedule.v1",
+  "paperclip.runner.local-acpx-authority.v1",
+  "paperclip.runner.local-runner.metadata.v1",
+  "paperclip.runner.local-runner.summary.v1",
+  "paperclip.runner.local-runner.trace.v1",
+  "paperclip.runner.profile.v1",
+  "paperclip.runner.retained_cleanup_failure.v1",
+  "paperclip.runner.sanitized-provider-fixture.v1",
+  "paperclip.runner.secure-frame.v1",
+  "paperclip.runner.standalone.standalone-demo.v1",
+  "paperclip.runner.stream.v1",
+  "paperclip.runner.stress-eval-traceability.v1",
+  "paperclip.runner.workflow-eval-case.v1",
+  "paperclip.runner.workflow-eval-report.v1",
+  "paperclip.runner.workflow-observation.v1",
+  "paperclip.runtime-asset-manifest.v1",
+  "paperclip.runtime-asset.v1",
+  "paperclip.runtime_request.v1",
+  "paperclip.runtime_request.v2",
+  "paperclip.safety.review.v1",
+  "paperclip.semantic-action.v1",
+  "paperclip.semantic-authorization-record.v1",
+  "paperclip.semantic-binding.v1",
+  "paperclip.semantic-conformance-report.v1",
+  "paperclip.semantic-denial.v1",
+  "paperclip.semantic-discovery.v1",
+  "paperclip.semantic-interaction-result.v1",
+  "paperclip.semantic-tool.v1",
+  "paperclip.semantic_tool_result.v1",
+  "paperclip.semantic_tool_result_chunks.v1",
+  "paperclip.skillless_task.v1",
+  "paperclip.status-authority-conformance.v1",
+  "paperclip.stop_reason.v1",
+  "paperclip.tagged_graph.v1",
+  "paperclip.task_envelope.v1",
+  "paperclip.terminal.input_sent.v1",
+  "paperclip.tool.execution.v1",
+  "paperclip.wait.v1",
+  "paperclip.workspace.diff.v1",
+  "paperclip.workspace.file_reference.v1",
+  "paperclip.workspace_create_target.v1",
+  "paperclip.workspace_entry.v1",
+  "paperclip.workspace_relative_display.v2",
+]);
 // Keep this closed catalog aligned with PRP v1's event.schema.json. These
 // values are public protocol discriminators, but their dotted shape overlaps
 // the deliberately broad JWT heuristic. They are exempt only in the
@@ -237,6 +375,259 @@ function maybeContainsSecretText(input: string) {
   );
 }
 
+function inlineWhitespaceEnd(input: string, start: number): number {
+  let index = start;
+  while (
+    index < input.length &&
+    (input[index] === " " || input[index] === "\t")
+  ) {
+    index += 1;
+  }
+  return index;
+}
+
+function lineEnd(input: string, start: number): number {
+  const carriageReturn = input.indexOf("\r", start);
+  const newline = input.indexOf("\n", start);
+  if (carriageReturn < 0) return newline < 0 ? input.length : newline;
+  if (newline < 0) return carriageReturn;
+  return Math.min(carriageReturn, newline);
+}
+
+function rawQuotedValueEnd(
+  input: string,
+  start: number,
+  quote: '"' | "'",
+): number {
+  const end = lineEnd(input, start);
+  for (let index = start + 1; index < end; index += 1) {
+    if (input[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (input[index] === quote) return index + 1;
+  }
+  return end;
+}
+
+function escapedQuotedValueEnd(
+  input: string,
+  start: number,
+  quote: '"' | "'",
+): number {
+  const end = lineEnd(input, start);
+  for (let index = start + 2; index < end; index += 1) {
+    if (input[index] !== "\\") continue;
+    let afterSlashes = index + 1;
+    while (afterSlashes < end && input[afterSlashes] === "\\") {
+      afterSlashes += 1;
+    }
+    if (input[afterSlashes] !== quote) {
+      index = afterSlashes - 1;
+      continue;
+    }
+    // A serialized outer quote has one slash. Three or more slashes encode a
+    // quote nested inside that value, so keep scanning for the outer delimiter.
+    if (afterSlashes - index === 1) return afterSlashes + 1;
+    index = afterSlashes;
+  }
+  return end;
+}
+
+function escapedQuoteAt(input: string, index: number): '"' | "'" | null {
+  if (input[index] !== "\\") return null;
+  const quote = input[index + 1];
+  return quote === '"' || quote === "'" ? quote : null;
+}
+
+function credentialEndAfterQuotedDelimiter(input: string, quotedEnd: number) {
+  const boundary = input[quotedEnd];
+  if (boundary === undefined || /[\s,;}\]]/.test(boundary)) return quotedEnd;
+
+  // A closing delimiter followed immediately by more token bytes is not a
+  // trustworthy credential boundary (for example `"abc"defg`). Treat the
+  // malformed suffix as credential material through the next structural
+  // boundary instead of exposing it after an otherwise valid quoted value.
+  let end = quotedEnd;
+  while (end < input.length && !/[\s,;}\]]/.test(input[end]!)) end += 1;
+  return end;
+}
+
+interface AuthorizationCredentialRange {
+  start: number;
+  end: number;
+  replacement: string;
+}
+
+function authorizationCredentialRange(
+  input: string,
+  wordEnd: number,
+): AuthorizationCredentialRange | null {
+  let valueStart = wordEnd;
+
+  // JSON and serialized JSON close the quoted key before the colon. Treat a
+  // quote as part of the key only when a colon follows it; otherwise it is the
+  // opening delimiter of a header value such as Authorization "Bearer ...".
+  const rawKeyQuote = input[valueStart];
+  const escapedKeyQuote = escapedQuoteAt(input, valueStart);
+  const keyQuoteWidth =
+    rawKeyQuote === '"' || rawKeyQuote === "'" ? 1 : escapedKeyQuote ? 2 : 0;
+  if (keyQuoteWidth > 0) {
+    const possibleColon = inlineWhitespaceEnd(
+      input,
+      valueStart + keyQuoteWidth,
+    );
+    if (input[possibleColon] === ":") valueStart = possibleColon;
+  }
+
+  valueStart = inlineWhitespaceEnd(input, valueStart);
+  if (input[valueStart] === ":") {
+    valueStart = inlineWhitespaceEnd(input, valueStart + 1);
+  }
+
+  const rawValueQuote = input[valueStart];
+  if (rawValueQuote === '"' || rawValueQuote === "'") {
+    const quotedEnd = rawQuotedValueEnd(input, valueStart, rawValueQuote);
+    const content = input.slice(valueStart + 1, quotedEnd - 1).trimStart();
+    if (!/^(?:Bearer|Basic)\b/i.test(content)) return null;
+    return {
+      start: valueStart,
+      end: credentialEndAfterQuotedDelimiter(input, quotedEnd),
+      replacement: `${rawValueQuote}${REDACTED_EVENT_VALUE}${rawValueQuote}`,
+    };
+  }
+
+  const escapedValueQuote = escapedQuoteAt(input, valueStart);
+  if (escapedValueQuote) {
+    const quotedEnd = escapedQuotedValueEnd(
+      input,
+      valueStart,
+      escapedValueQuote,
+    );
+    const content = input.slice(valueStart + 2, quotedEnd - 2).trimStart();
+    if (!/^(?:Bearer|Basic)\b/i.test(content)) return null;
+    const delimiter = `\\${escapedValueQuote}`;
+    return {
+      start: valueStart,
+      end: credentialEndAfterQuotedDelimiter(input, quotedEnd),
+      replacement: `${delimiter}${REDACTED_EVENT_VALUE}${delimiter}`,
+    };
+  }
+
+  const scheme = /^(?:Bearer|Basic)\b/i.exec(input.slice(valueStart));
+  if (!scheme) return null;
+  let credentialStart = inlineWhitespaceEnd(
+    input,
+    valueStart + scheme[0].length,
+  );
+  if (credentialStart === valueStart + scheme[0].length) return null;
+  if (
+    credentialStart >= input.length ||
+    /[\r\n]/.test(input[credentialStart])
+  ) {
+    return null;
+  }
+
+  let end: number;
+  const rawCredentialQuote = input[credentialStart];
+  if (rawCredentialQuote === '"' || rawCredentialQuote === "'") {
+    end = credentialEndAfterQuotedDelimiter(
+      input,
+      rawQuotedValueEnd(input, credentialStart, rawCredentialQuote),
+    );
+  } else {
+    const escapedCredentialQuote = escapedQuoteAt(input, credentialStart);
+    if (escapedCredentialQuote) {
+      end = credentialEndAfterQuotedDelimiter(
+        input,
+        escapedQuotedValueEnd(input, credentialStart, escapedCredentialQuote),
+      );
+    } else {
+      end = credentialStart;
+      // Embedded quote/backtick bytes do not make an unquoted credential safe;
+      // consume them through the next structural or whitespace boundary.
+      while (end < input.length && !/[\s,;}\]]/.test(input[end])) end += 1;
+    }
+  }
+  return { start: valueStart, end, replacement: REDACTED_EVENT_VALUE };
+}
+
+function redactAuthorizationCredentials(input: string): string {
+  // Include compound diagnostic labels such as proxyAuthorization while the
+  // value parser still requires a Basic/Bearer scheme before redacting.
+  const authorizationWord = /\b[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b/gi;
+  const parts: string[] = [];
+  let copiedThrough = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = authorizationWord.exec(input)) !== null) {
+    const range = authorizationCredentialRange(
+      input,
+      match.index + match[0].length,
+    );
+    if (!range || range.start < copiedThrough) continue;
+    parts.push(input.slice(copiedThrough, range.start), range.replacement);
+    copiedThrough = range.end;
+    authorizationWord.lastIndex = range.end;
+  }
+
+  if (copiedThrough === 0) return input;
+  parts.push(input.slice(copiedThrough));
+  return parts.join("");
+}
+
+function redactStandaloneBearerCredentials(input: string): string {
+  const bearerWord = /\bBearer\b/gi;
+  const parts: string[] = [];
+  let copiedThrough = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = bearerWord.exec(input)) !== null) {
+    const wordEnd = match.index + match[0].length;
+    const credentialStart = inlineWhitespaceEnd(input, wordEnd);
+    if (
+      credentialStart === wordEnd ||
+      credentialStart >= input.length ||
+      /[\r\n]/.test(input[credentialStart])
+    ) {
+      continue;
+    }
+
+    let end: number;
+    let replacement = REDACTED_EVENT_VALUE;
+    const rawQuote = input[credentialStart];
+    if (rawQuote === '"' || rawQuote === "'") {
+      end = credentialEndAfterQuotedDelimiter(
+        input,
+        rawQuotedValueEnd(input, credentialStart, rawQuote),
+      );
+      replacement = `${rawQuote}${REDACTED_EVENT_VALUE}${rawQuote}`;
+    } else {
+      const escapedQuote = escapedQuoteAt(input, credentialStart);
+      if (escapedQuote) {
+        end = credentialEndAfterQuotedDelimiter(
+          input,
+          escapedQuotedValueEnd(input, credentialStart, escapedQuote),
+        );
+        const delimiter = `\\${escapedQuote}`;
+        replacement = `${delimiter}${REDACTED_EVENT_VALUE}${delimiter}`;
+      } else {
+        end = credentialStart;
+        while (end < input.length && !/[\s,;}\]]/.test(input[end])) end += 1;
+      }
+    }
+
+    if (credentialStart < copiedThrough) continue;
+    parts.push(input.slice(copiedThrough, credentialStart), replacement);
+    copiedThrough = end;
+    bearerWord.lastIndex = end;
+  }
+
+  if (copiedThrough === 0) return input;
+  parts.push(input.slice(copiedThrough));
+  return parts.join("");
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return false;
@@ -246,27 +637,99 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
+  // Adapter diagnostics are provider-controlled text. Secret-bearing header or
+  // command fragments can appear under otherwise innocuous keys such as
+  // `message`, `reason`, or inside arrays, so apply the text scanner at every
+  // string leaf after validated protocol discriminators have had a chance to
+  // opt in above in sanitizeRecord.
+  if (typeof value === "string") {
+    return JWT_VALUE_RE.test(value)
+      ? REDACTED_EVENT_VALUE
+      : redactSensitiveText(value);
+  }
   if (Array.isArray(value)) return value.map(sanitizeValue);
-  if (isSecretRefBinding(value)) return value;
-  if (isUserSecretRefBinding(value)) return value;
+  if (isSecretRefBinding(value)) {
+    const version = safeSecretVersion(value.version);
+    return {
+      type: "secret_ref",
+      secretId: value.secretId,
+      ...(version === undefined ? {} : { version }),
+      ...(value.projectionClass === "unclassified" ||
+      value.projectionClass === "class_3_static_lease"
+        ? { projectionClass: value.projectionClass }
+        : {}),
+      ...(value.projectionAllowlistKey === null
+        ? { projectionAllowlistKey: null }
+        : typeof value.projectionAllowlistKey === "string" &&
+            PROJECTION_ALLOWLIST_KEY_RE.test(value.projectionAllowlistKey) &&
+            redactSensitiveText(value.projectionAllowlistKey) ===
+              value.projectionAllowlistKey
+          ? { projectionAllowlistKey: value.projectionAllowlistKey }
+          : {}),
+    };
+  }
+  if (isUserSecretRefBinding(value)) {
+    const version = safeSecretVersion(value.version);
+    return {
+      type: "user_secret_ref",
+      key: value.key,
+      ...(version === undefined ? {} : { version }),
+      ...(typeof value.required === "boolean"
+        ? { required: value.required }
+        : {}),
+      ...(typeof value.allowMissingOverride === "boolean"
+        ? { allowMissingOverride: value.allowMissingOverride }
+        : {}),
+    };
+  }
   if (isPlainBinding(value))
     return { type: "plain", value: sanitizeValue(value.value) };
   if (!isPlainObject(value)) return value;
   return sanitizeRecord(value);
 }
 
-function isSecretRefBinding(
-  value: unknown,
-): value is { type: "secret_ref"; secretId: string; version?: unknown } {
-  if (!isPlainObject(value)) return false;
-  return value.type === "secret_ref" && typeof value.secretId === "string";
+const SECRET_REFERENCE_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const USER_SECRET_KEY_RE = /^[A-Za-z0-9_.-]{1,120}$/;
+const PROJECTION_ALLOWLIST_KEY_RE =
+  /^[A-Za-z0-9_-]{1,80}\.[A-Za-z0-9_-]{1,80}$/;
+
+function safeSecretVersion(value: unknown): number | "latest" | undefined {
+  if (value === "latest") return value;
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
-function isUserSecretRefBinding(
-  value: unknown,
-): value is { type: "user_secret_ref"; key: string; version?: unknown } {
+function isSecretRefBinding(value: unknown): value is {
+  type: "secret_ref";
+  secretId: string;
+  version?: unknown;
+  projectionClass?: unknown;
+  projectionAllowlistKey?: unknown;
+} {
   if (!isPlainObject(value)) return false;
-  return value.type === "user_secret_ref" && typeof value.key === "string";
+  return (
+    value.type === "secret_ref" &&
+    typeof value.secretId === "string" &&
+    SECRET_REFERENCE_ID_RE.test(value.secretId)
+  );
+}
+
+function isUserSecretRefBinding(value: unknown): value is {
+  type: "user_secret_ref";
+  key: string;
+  version?: unknown;
+  required?: unknown;
+  allowMissingOverride?: unknown;
+} {
+  if (!isPlainObject(value)) return false;
+  return (
+    value.type === "user_secret_ref" &&
+    typeof value.key === "string" &&
+    USER_SECRET_KEY_RE.test(value.key) &&
+    redactSensitiveText(value.key) === value.key
+  );
 }
 
 function isPlainBinding(
@@ -313,7 +776,7 @@ function isPaperclipSchemaDiscriminator(
   return (
     PAPERCLIP_SCHEMA_FIELDS.has(key) &&
     typeof value === "string" &&
-    PAPERCLIP_SCHEMA_ID_RE.test(value)
+    PAPERCLIP_PUBLIC_SCHEMA_IDS.has(value)
   );
 }
 
@@ -357,11 +820,18 @@ export function sanitizeRecord(
       redacted[key] = value;
       continue;
     }
+    if (isPaperclipSchemaDiscriminator(key, value)) {
+      redacted[key] = value;
+      continue;
+    }
+    if (AUDIT_SURFACE_PAYLOAD_KEY_RE.test(key) && typeof value === "string") {
+      redacted[key] = redactSensitiveText(value);
+      continue;
+    }
     if (
       typeof value === "string" &&
       JWT_VALUE_RE.test(value) &&
-      !isPaperclipSchemaDiscriminator(key, value) &&
-      !AUDIT_SURFACE_PAYLOAD_KEY_RE.test(key)
+      !isPaperclipSchemaDiscriminator(key, value)
     ) {
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
@@ -396,7 +866,7 @@ export function redactEventPayload(
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
   return redactCommandText(
-    input
+    redactStandaloneBearerCredentials(redactAuthorizationCredentials(input))
       .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
       .replace(
         ESCAPED_JSON_SECRET_FIELD_TEXT_RE,

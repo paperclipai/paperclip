@@ -21,6 +21,7 @@ import {
   nativeRuntimePromptDigest,
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
+import { localIntegrityBoundaryGolden } from "../../../test-support/local-integrity-boundary-golden.js";
 import {
   OpenCodeServerDriver,
   openCodeServerDriverInternals,
@@ -112,6 +113,476 @@ describe("OpenCodeServerDriver", () => {
         (family) => family.family === "plan",
       ),
     ).toMatchObject({ availability: "unsupported" });
+  });
+
+  it("normalizes raw OpenCode boundary events into the local-integrity golden identities", async () => {
+    await chmod(fixture, 0o755);
+    const profile = localIntegrityBoundaryGolden.profiles.find(
+      (candidate) => candidate.id === "runner-opencode",
+    );
+    if (!profile) throw new Error("missing runner-opencode golden profile");
+    const goldenEvent = (sourceEventId: string) => {
+      const event = localIntegrityBoundaryGolden.events.find(
+        (candidate) => candidate.sourceEventId === sourceEventId,
+      );
+      if (!event) throw new Error(`missing golden event ${sourceEventId}`);
+      return event;
+    };
+    const progress = localIntegrityBoundaryGolden.expected.assistantItems.find(
+      (item) => item.channel === "progress",
+    );
+    const final = localIntegrityBoundaryGolden.expected.assistantItems.find(
+      (item) => item.channel === "final",
+    );
+    if (!progress || !final)
+      throw new Error("missing golden assistant messages");
+
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-boundary-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-boundary-workspace-"),
+    );
+    roots.push(root, workspace);
+    const tracePath = join(root, "provider-trace.ndjson");
+    const providerSessionId = "provider-session-boundary";
+    const nativeEvents: Array<Record<string, unknown>> = [];
+    const queuedFrames: Uint8Array[] = [];
+    const encoder = new TextEncoder();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null =
+      null;
+    let streamClosed = false;
+    const emitNative = (event: Record<string, unknown>) => {
+      nativeEvents.push(structuredClone(event));
+      const frame = encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
+      if (streamController) streamController.enqueue(frame);
+      else queuedFrames.push(frame);
+    };
+    const closeNativeStream = () => {
+      streamClosed = true;
+      streamController?.close();
+    };
+    const nativeQuestion = {
+      type: "question.asked",
+      id: "native-question-created",
+      properties: {
+        id: localIntegrityBoundaryGolden.expected.questionRequestId,
+        sessionID: providerSessionId,
+        title: "Boundary mode",
+        questions: [
+          {
+            id: "boundary-mode",
+            question: "Which mode should continue?",
+            required: true,
+            options: [{ id: "lossless", label: "Lossless" }],
+          },
+        ],
+      },
+    } satisfies Record<string, unknown>;
+    const emitBeforeQuestion = () => {
+      emitNative({
+        type: "message.updated",
+        id: "native-progress-message-role",
+        properties: {
+          info: {
+            id: "provider-message-progress",
+            sessionID: providerSessionId,
+            role: "assistant",
+          },
+        },
+      });
+      emitNative({
+        type: "message.part.updated",
+        id: "native-progress-part",
+        properties: {
+          sessionID: providerSessionId,
+          part: {
+            id: progress.itemId,
+            messageID: "provider-message-progress",
+            type: "text",
+            text: progress.text,
+            time: { start: 1, end: 2 },
+          },
+        },
+      });
+      emitNative({
+        type: "message.part.updated",
+        id: "native-reasoning-part",
+        properties: {
+          sessionID: providerSessionId,
+          part: {
+            id: localIntegrityBoundaryGolden.expected.reasoningItemId,
+            messageID: "provider-message-progress",
+            type: "reasoning",
+            text: "Verified event identity.",
+            time: { start: 2, end: 3 },
+          },
+        },
+      });
+      for (const [id, status, state] of [
+        ["native-tool-started", "pending", { title: "Inspecting" }],
+        ["native-tool-progressed", "running", { title: "Inspecting" }],
+        [
+          "native-tool-completed",
+          "completed",
+          { output: "boundary-ok", time: 12, exit: 0 },
+        ],
+      ] as const) {
+        emitNative({
+          type: "message.part.updated",
+          id,
+          properties: {
+            sessionID: providerSessionId,
+            part: {
+              id: localIntegrityBoundaryGolden.expected.toolExecutionId,
+              messageID: "provider-message-progress",
+              type: "tool",
+              tool: "boundary-check",
+              state: { status, ...state },
+            },
+          },
+        });
+      }
+      emitNative(nativeQuestion);
+    };
+    const emitAfterQuestion = () => {
+      emitNative({
+        ...nativeQuestion,
+        id: "native-question-resolved",
+        type: "question.replied",
+      });
+      emitNative({
+        type: "message.updated",
+        id: "native-final-message-role",
+        properties: {
+          info: {
+            id: "provider-message-final",
+            sessionID: providerSessionId,
+            role: "assistant",
+          },
+        },
+      });
+      emitNative({
+        type: "message.part.updated",
+        id: "native-final-part",
+        properties: {
+          sessionID: providerSessionId,
+          part: {
+            id: final.itemId,
+            messageID: "provider-message-final",
+            type: "text",
+            text: final.text,
+            time: { start: 4, end: 5 },
+          },
+        },
+      });
+      emitNative({
+        type: "message.updated",
+        id: "native-usage",
+        properties: {
+          info: {
+            id: "provider-message-final",
+            sessionID: providerSessionId,
+            role: "assistant",
+            tokens: {
+              input: 40,
+              output: 12,
+              cache: { read: 3, write: 0 },
+            },
+            cost: 0.02,
+          },
+        },
+      });
+      emitNative({
+        type: "session.idle",
+        id: "native-turn-completed",
+        properties: { sessionID: providerSessionId },
+      });
+      closeNativeStream();
+    };
+    let submittedQuestionReply: unknown = null;
+    const fetcher: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const method = String(init?.method ?? "GET").toUpperCase();
+      const json = (value: unknown, status = 200) =>
+        new Response(JSON.stringify(value), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      if (url.pathname === "/global/health")
+        return json({ healthy: true, version: "1.18.17" });
+      if (url.pathname === "/event") {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamController = controller;
+              for (const frame of queuedFrames.splice(0))
+                controller.enqueue(frame);
+              if (streamClosed) controller.close();
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      if (method === "POST" && url.pathname === "/session")
+        return json({ id: providerSessionId });
+      if (method === "GET" && url.pathname === "/question") return json([]);
+      if (method === "GET" && url.pathname === "/permission") return json([]);
+      if (
+        method === "POST" &&
+        url.pathname === `/session/${providerSessionId}/prompt_async`
+      ) {
+        emitBeforeQuestion();
+        return new Response(null, { status: 204 });
+      }
+      if (
+        method === "POST" &&
+        url.pathname ===
+          `/question/${localIntegrityBoundaryGolden.expected.questionRequestId}/reply`
+      ) {
+        submittedQuestionReply = JSON.parse(String(init?.body));
+        emitAfterQuestion();
+        return json(true);
+      }
+      if (
+        method === "POST" &&
+        url.pathname === `/session/${providerSessionId}/abort`
+      )
+        return json(true);
+      throw new Error(`unexpected OpenCode boundary request ${method} ${url}`);
+    };
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      runnerInstanceId: profile.sourceInstanceId,
+      fetch: fetcher,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+        PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
+      },
+    });
+    const session = await driver.openSession({
+      runId: profile.runId,
+      normalizedSessionId: profile.normalizedSessionId,
+      workingDirectory: workspace,
+    });
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "exercise native golden boundary" },
+    });
+    const events = [];
+    const iterator = session.events()[Symbol.asyncIterator]();
+    let requestCreated = false;
+    while (!requestCreated) {
+      const next = await iterator.next();
+      if (next.done)
+        throw new Error("OpenCode ended before asking its question");
+      events.push(next.value);
+      requestCreated = next.value.eventType === "runtime_request.created";
+    }
+    await session.resolveRuntimeRequest?.({
+      requestId: localIntegrityBoundaryGolden.expected.questionRequestId,
+      turnId,
+      resolution: {
+        action: "submit",
+        response: {
+          schema: "paperclip.question_response.v1",
+          answers: {
+            "boundary-mode": { selectedOptionIds: ["lossless"] },
+          },
+        },
+      },
+    });
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      events.push(next.value);
+    }
+    await session.close({ reason: "boundary-golden-test" });
+
+    expect(submittedQuestionReply).toEqual({ answers: [["Lossless"]] });
+    expect(
+      events.every(
+        (event) =>
+          event.runId === profile.runId &&
+          event.normalizedSessionId === profile.normalizedSessionId,
+      ),
+    ).toBe(true);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        itemId: progress.itemId,
+        eventType: "item.delta",
+        payload: expect.objectContaining({
+          kind: "agentMessage",
+          channel: progress.channel,
+          providerPhase: "commentary",
+          text: progress.text,
+        }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        itemId: localIntegrityBoundaryGolden.expected.reasoningItemId,
+        eventType: "item.completed",
+        payload: expect.objectContaining({
+          kind: "reasoning",
+          channel: "detail",
+          providerPhase: "reasoning",
+          text: String(goldenEvent("reasoning-completed").payload.text),
+        }),
+      }),
+    );
+    expect(
+      events
+        .filter(
+          (event) =>
+            event.itemId ===
+              localIntegrityBoundaryGolden.expected.toolExecutionId &&
+            event.eventType.startsWith("tool.execution."),
+        )
+        .map((event) => [event.eventType, event.payload.status]),
+    ).toEqual([
+      ["tool.execution.started", "running"],
+      ["tool.execution.progressed", "running"],
+      ["tool.execution.completed", "completed"],
+    ]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        itemId: localIntegrityBoundaryGolden.expected.questionRequestId,
+        eventType: "runtime_request.created",
+        payload: {
+          request: expect.objectContaining({
+            requestId: localIntegrityBoundaryGolden.expected.questionRequestId,
+            origin: {
+              adapter: profile.adapter,
+              provider: profile.originProvider,
+              method: profile.originMethod,
+            },
+            input: expect.objectContaining({
+              schema: "paperclip.question_set.v1",
+              title: "Boundary mode",
+              questions: [
+                expect.objectContaining({
+                  id: "boundary-mode",
+                  answerMode: "single_select",
+                }),
+              ],
+            }),
+          }),
+        },
+      }),
+    );
+    expect(
+      events.filter(
+        (event) =>
+          event.itemId ===
+            localIntegrityBoundaryGolden.expected.questionRequestId &&
+          event.eventType === "runtime_request.resolved",
+      ),
+    ).toHaveLength(1);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        itemId: final.itemId,
+        eventType: "item.completed",
+        payload: expect.objectContaining({
+          kind: "agentMessage",
+          channel: final.channel,
+          providerPhase: "final_answer",
+          text: final.text,
+        }),
+      }),
+    );
+    expect(
+      events.find(
+        (event) =>
+          event.eventType === "item.completed" &&
+          event.payload.kind === "usage",
+      ),
+    ).toMatchObject({
+      itemId: `${turnId}:usage`,
+      payload: {
+        usageMessageId: "provider-message-final",
+        usage: {
+          input: 40,
+          output: 12,
+          cache: { read: 3, write: 0 },
+          costUsd: 0.02,
+        },
+      },
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        eventType: "turn.completed",
+        turnId,
+        payload: { status: "completed" },
+      }),
+    );
+
+    // OpenCode 1.18 does not expose a qualified structured Plan event, and
+    // run.terminal is owned by the native-session layer above this driver.
+    // Keep both absences explicit instead of synthesizing Codex-shaped input.
+    expect(
+      (await driver.descriptor()).capabilities.typedEventFamilies.find(
+        (family) => family.family === "plan",
+      ),
+    ).toMatchObject({ availability: "unsupported" });
+    expect(events.some((event) => event.eventType === "plan.updated")).toBe(
+      false,
+    );
+    expect(events.some((event) => event.eventType === "run.terminal")).toBe(
+      false,
+    );
+
+    const traceEntries = (await readFile(tracePath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const traceFrames = traceEntries.filter(
+      (entry) =>
+        entry.kind === "frame" && entry.direction === "provider_to_client",
+    );
+    const normalization = traceEntries.filter(
+      (entry) =>
+        entry.kind === "interpretation" &&
+        entry.stage === "typescript_opencode_driver_normalization",
+    );
+    expect(nativeEvents.map((event) => event.type)).toEqual([
+      "message.updated",
+      "message.part.updated",
+      "message.part.updated",
+      "message.part.updated",
+      "message.part.updated",
+      "message.part.updated",
+      "question.asked",
+      "question.replied",
+      "message.updated",
+      "message.part.updated",
+      "message.updated",
+      "session.idle",
+    ]);
+    for (const nativeEvent of nativeEvents) {
+      const frame = traceFrames.find((entry) => {
+        if (typeof entry.rawBase64 !== "string") return false;
+        const raw = Buffer.from(entry.rawBase64, "base64").toString("utf8");
+        return raw.includes(`\"id\":\"${String(nativeEvent.id)}\"`);
+      });
+      expect(frame, String(nativeEvent.id)).toBeDefined();
+      const interpretation = normalization.find(
+        (entry) => entry.frameId === frame?.frameId,
+      );
+      expect(interpretation, String(nativeEvent.id)).toMatchObject({
+        disposition: expect.stringMatching(/^(mapped|ignored)$/),
+      });
+      if (interpretation?.disposition === "ignored") {
+        expect(
+          [
+            "native-progress-message-role",
+            "native-final-message-role",
+            "native-question-resolved",
+          ],
+          `${String(nativeEvent.id)} must be a structural or duplicate echo`,
+        ).toContain(nativeEvent.id);
+      }
+    }
   });
 
   it("starts an authenticated isolated server, creates a session, streams usage, aborts, and cleans up", async () => {

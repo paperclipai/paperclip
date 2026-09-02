@@ -537,19 +537,26 @@ impl DurableState {
         command: &Command,
         result: Value,
     ) -> Result<StoredCommandResult, DurableRunnerError> {
-        let stored = self
-            .processed_commands
-            .get_mut(&command.command_id)
-            .ok_or_else(|| {
-                DurableRunnerError::invalid("command was not journaled before completion")
-            })?;
-        if stored.controller_seq != command.controller_seq || stored.status != "pending" {
+        {
+            let stored = self
+                .processed_commands
+                .get(&command.command_id)
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid("command was not journaled before completion")
+                })?;
+            if stored.controller_seq != command.controller_seq || stored.status != "pending" {
+                return Err(DurableRunnerError::invalid(
+                    "command completion does not match a pending journal entry",
+                ));
+            }
+        }
+        let sanitized_result = sanitize_value(&result);
+        if durable_semantics_changed_by_sanitization(&result, &sanitized_result) {
             return Err(DurableRunnerError::invalid(
-                "command completion does not match a pending journal entry",
+                "durable command result identity or validation semantics contain credential-shaped material",
             ));
         }
-        let result = sanitize_value(&result);
-        let result_bytes = serde_json::to_vec(&result)
+        let result_bytes = serde_json::to_vec(&sanitized_result)
             .map_err(|error| DurableRunnerError::invalid(error.to_string()))?
             .len();
         if result_bytes > MAX_COMMAND_RESULT_BYTES {
@@ -557,8 +564,12 @@ impl DurableState {
                 "command result exceeds the 64 KiB durable journal limit",
             ));
         }
+        let stored = self
+            .processed_commands
+            .get_mut(&command.command_id)
+            .expect("pending command was checked above");
         stored.status = "completed".to_owned();
-        stored.result = result;
+        stored.result = sanitized_result;
         Ok(stored.clone())
     }
 
@@ -1058,7 +1069,7 @@ pub(crate) fn create_private_temporary_file(
     ))
 }
 
-fn sensitive_key(key: &str) -> bool {
+fn sensitive_key(key: &str, value: &Value) -> bool {
     let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
     if matches!(
         normalized.as_str(),
@@ -1069,7 +1080,7 @@ fn sensitive_key(key: &str) -> bool {
             | "pretokens"
             | "posttokens"
     ) {
-        return false;
+        return !value.is_number();
     }
     [
         "authorization",
@@ -1111,7 +1122,7 @@ fn protocol_authorization_boundary(key: &str, value: &Value) -> bool {
 fn sanitized_object_field(key: &str, value: &Value) -> Value {
     if protocol_authorization_boundary(key, value) {
         value.clone()
-    } else if sensitive_key(key) {
+    } else if sensitive_key(key, value) {
         Value::String("[REDACTED]".to_owned())
     } else {
         sanitize_value(value)
@@ -1125,27 +1136,25 @@ fn durable_semantics_changed_by_sanitization(original: &Value, sanitized: &Value
                 let Some(sanitized_value) = sanitized.get(key) else {
                     return true;
                 };
-                let identity_or_validation_field = matches!(
-                    key.as_str(),
-                    "callId"
-                        | "correlationId"
-                        | "driverSessionId"
-                        | "executionId"
-                        | "idempotencyKey"
-                        | "itemId"
-                        | "normalizedSessionId"
-                        | "operationId"
-                        | "planId"
-                        | "providerRequestId"
-                        | "providerSessionId"
-                        | "providerTurnId"
-                        | "requestId"
-                        | "runId"
-                        | "sourceEventId"
-                        | "stepId"
-                        | "textValidation"
-                        | "turnId"
-                );
+                let identity_or_validation_field = key == "id"
+                    || key.ends_with("Id")
+                    || key.ends_with("Ids")
+                    || key.ends_with("Ref")
+                    || key.ends_with("Refs")
+                    || matches!(
+                        key.as_str(),
+                        "channel"
+                            | "eventType"
+                            | "idempotencyKey"
+                            | "kind"
+                            | "requestKind"
+                            | "revision"
+                            | "schema"
+                            | "schemaVersion"
+                            | "status"
+                            | "textValidation"
+                            | "type"
+                    );
                 if identity_or_validation_field && value != sanitized_value {
                     return true;
                 }
@@ -1372,7 +1381,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
 
     // Redact only assignment values. Words such as "authorization" in a
     // provider diagnostic are useful context and are not secrets by themselves.
-    for key in [
+    let sensitive_keys = [
         "authorization",
         "api key",
         "api-key",
@@ -1402,99 +1411,127 @@ fn redact_sensitive_text_values(input: &str) -> String {
         "secret",
         "ticket",
         "token",
-    ] {
+    ];
+    let mut sensitive_key_matches = Vec::new();
+    for key in sensitive_keys {
         for (start, _) in normalized.match_indices(key) {
-            if ranges
-                .iter()
-                .any(|(range_start, range_end)| start >= *range_start && start < *range_end)
+            sensitive_key_matches.push((start, key));
+        }
+    }
+    // Process candidates in diagnostic order rather than key-list order. Once
+    // an earlier field claims its value range, credential-shaped text inside
+    // that value cannot be reinterpreted as another field on this pass.
+    sensitive_key_matches.sort_unstable_by(|(left_start, left_key), (right_start, right_key)| {
+        left_start
+            .cmp(right_start)
+            .then_with(|| right_key.len().cmp(&left_key.len()))
+    });
+    for (start, key) in sensitive_key_matches {
+        if ranges
+            .iter()
+            .any(|(range_start, range_end)| start >= *range_start && start < *range_end)
+        {
+            continue;
+        }
+        let key_is_compound = start > 0 && is_name_byte(bytes[start - 1]);
+        let mut separator = start + key.len();
+        // Match the full sensitive name or a compound identifier that ends
+        // with it (for example OPENAI_API_KEY or proxyAuthorization).
+        if separator < bytes.len() && is_name_byte(bytes[separator]) {
+            continue;
+        }
+        // Serialized diagnostics commonly quote object keys before the
+        // assignment separator: {"access_token":"..."}.
+        while separator < bytes.len() && bytes[separator] == b'\\' {
+            separator += 1;
+        }
+        if separator < bytes.len() && matches!(bytes[separator], b'\'' | b'"') {
+            separator += 1;
+        }
+        let whitespace_start = separator;
+        while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
+            separator += 1;
+        }
+        let has_assignment_separator =
+            separator < bytes.len() && matches!(bytes[separator], b':' | b'=');
+        // Provider diagnostics also use shell-style `token value` pairs.
+        // Keep free-form authorization prose visible; only explicit Bearer
+        // and Basic scheme/value pairs use whitespace as their separator.
+        let authorization_scheme_start = quoted_value_start(separator).0;
+        let has_authorization_scheme = ["bearer", "basic"].iter().any(|scheme| {
+            normalized[authorization_scheme_start..].starts_with(scheme)
+                && authorization_scheme_start + scheme.len() < bytes.len()
+                && bytes[authorization_scheme_start + scheme.len()].is_ascii_whitespace()
+        });
+        let has_whitespace_separator = separator > whitespace_start
+            && (key != "authorization" || key_is_compound || has_authorization_scheme);
+        if !has_assignment_separator && !has_whitespace_separator {
+            continue;
+        }
+        let mut value_start = if has_assignment_separator {
+            separator + 1
+        } else {
+            separator
+        };
+        while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
+            value_start += 1;
+        }
+        let (next_value_start, mut quote) = quoted_value_start(value_start);
+        value_start = next_value_start;
+        let mut recognized_authorization_scheme = false;
+        if key == "authorization" {
+            for scheme in ["bearer", "basic"] {
+                if !normalized[value_start..].starts_with(scheme) {
+                    continue;
+                }
+                let after_scheme = value_start + scheme.len();
+                if after_scheme >= bytes.len() || !bytes[after_scheme].is_ascii_whitespace() {
+                    continue;
+                }
+                recognized_authorization_scheme = true;
+                value_start = after_scheme;
+                while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
+                    value_start += 1;
+                }
+                if quote.is_none() {
+                    (value_start, quote) = quoted_value_start(value_start);
+                }
+                break;
+            }
+        }
+        if is_redaction_marker(value_start) {
+            continue;
+        }
+        let end = if let Some(quote) = quote {
+            let quoted_end = quoted_value_end(value_start, quote);
+            let after_delimiter = quoted_end.saturating_add(quote.1).saturating_add(1);
+            // A delimiter followed immediately by more token bytes is not a
+            // trustworthy end boundary (for example `\"abc\"defg`). Treat
+            // the delimiter and tail as credential material through the next
+            // structural boundary so malformed provider diagnostics cannot
+            // expose a suffix outside the redaction range.
+            if quoted_end < bytes.len()
+                && after_delimiter < bytes.len()
+                && !is_value_end(bytes[after_delimiter])
             {
-                continue;
-            }
-            let key_is_compound = start > 0 && is_name_byte(bytes[start - 1]);
-            let mut separator = start + key.len();
-            // Match the full sensitive name or a compound identifier that ends
-            // with it (for example OPENAI_API_KEY or proxyAuthorization).
-            if separator < bytes.len() && is_name_byte(bytes[separator]) {
-                continue;
-            }
-            // Serialized diagnostics commonly quote object keys before the
-            // assignment separator: {"access_token":"..."}.
-            while separator < bytes.len() && bytes[separator] == b'\\' {
-                separator += 1;
-            }
-            if separator < bytes.len() && matches!(bytes[separator], b'\'' | b'"') {
-                separator += 1;
-            }
-            let whitespace_start = separator;
-            while separator < bytes.len() && bytes[separator].is_ascii_whitespace() {
-                separator += 1;
-            }
-            let has_assignment_separator =
-                separator < bytes.len() && matches!(bytes[separator], b':' | b'=');
-            // Provider diagnostics also use shell-style `token value` pairs.
-            // Keep free-form authorization prose visible; only explicit Bearer
-            // and Basic scheme/value pairs use whitespace as their separator.
-            let authorization_scheme_start = quoted_value_start(separator).0;
-            let has_authorization_scheme = ["bearer", "basic"].iter().any(|scheme| {
-                normalized[authorization_scheme_start..].starts_with(scheme)
-                    && authorization_scheme_start + scheme.len() < bytes.len()
-                    && bytes[authorization_scheme_start + scheme.len()].is_ascii_whitespace()
-            });
-            let has_whitespace_separator = !key_is_compound
-                && separator > whitespace_start
-                && (key != "authorization" || has_authorization_scheme);
-            if !has_assignment_separator && !has_whitespace_separator {
-                continue;
-            }
-            let mut value_start = if has_assignment_separator {
-                separator + 1
+                value_end(after_delimiter)
             } else {
-                separator
-            };
-            while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
-                value_start += 1;
+                quoted_end
             }
-            let (next_value_start, mut quote) = quoted_value_start(value_start);
-            value_start = next_value_start;
-            let mut recognized_authorization_scheme = false;
-            if key == "authorization" {
-                for scheme in ["bearer", "basic"] {
-                    if !normalized[value_start..].starts_with(scheme) {
-                        continue;
-                    }
-                    let after_scheme = value_start + scheme.len();
-                    if after_scheme >= bytes.len() || !bytes[after_scheme].is_ascii_whitespace() {
-                        continue;
-                    }
-                    recognized_authorization_scheme = true;
-                    value_start = after_scheme;
-                    while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
-                        value_start += 1;
-                    }
-                    if quote.is_none() {
-                        (value_start, quote) = quoted_value_start(value_start);
-                    }
-                    break;
-                }
+        } else if key == "authorization"
+            && has_assignment_separator
+            && !recognized_authorization_scheme
+        {
+            let mut end = value_start;
+            while end < bytes.len() && !matches!(bytes[end], b'\n' | b'\r' | b',' | b';' | b'&') {
+                end += 1;
             }
-            if is_redaction_marker(value_start) {
-                continue;
-            }
-            let end = if let Some(quote) = quote {
-                quoted_value_end(value_start, quote)
-            } else if key == "authorization" && !recognized_authorization_scheme {
-                let mut end = value_start;
-                while end < bytes.len() && !matches!(bytes[end], b'\n' | b'\r' | b',' | b';' | b'&')
-                {
-                    end += 1;
-                }
-                end
-            } else {
-                value_end(value_start)
-            };
-            if end > value_start {
-                ranges.push((value_start, end));
-            }
+            end
+        } else {
+            value_end(value_start)
+        };
+        if end > value_start {
+            ranges.push((value_start, end));
         }
     }
 
@@ -1643,6 +1680,51 @@ mod tests {
     }
 
     #[test]
+    fn command_results_redact_display_text_but_reject_mutated_identity() {
+        let config = config(PathBuf::from("unused"));
+        let mut safe_state = DurableState::new(&config);
+        let safe_command = command("command_safe", 1);
+        safe_state.begin_command(&safe_command).unwrap();
+        let completed = safe_state
+            .complete_command(
+                &safe_command,
+                json!({"message": "token=command-result-secret", "inputTokens": 12}),
+            )
+            .unwrap();
+        assert_eq!(completed.result["message"], "token=[REDACTED]");
+        assert_eq!(completed.result["inputTokens"], 12);
+
+        let mut unsafe_state = DurableState::new(&config);
+        let unsafe_command = command("command_unsafe", 1);
+        unsafe_state.begin_command(&unsafe_command).unwrap();
+        let error = unsafe_state
+            .complete_command(
+                &unsafe_command,
+                json!({"receiptId": "token=identity-secret"}),
+            )
+            .expect_err("replay-critical command identities must not be rewritten");
+        assert!(error.to_string().contains(
+            "command result identity or validation semantics contain credential-shaped material"
+        ));
+        assert_eq!(
+            unsafe_state.processed_commands["command_unsafe"].status,
+            "pending"
+        );
+    }
+
+    #[test]
+    fn usage_count_keys_only_bypass_redaction_for_numbers() {
+        assert_eq!(
+            sanitize_value(&json!({"inputTokens": 12, "outputTokens": 3})),
+            json!({"inputTokens": 12, "outputTokens": 3})
+        );
+        assert_eq!(
+            sanitize_value(&json!({"inputTokens": "plain-provider-secret"})),
+            json!({"inputTokens": "[REDACTED]"})
+        );
+    }
+
+    #[test]
     fn command_gaps_and_identifier_reuse_fail_closed() {
         let config = config(PathBuf::from("unused"));
         let mut state = DurableState::new(&config);
@@ -1710,6 +1792,7 @@ mod tests {
                     "nestedAuthorizationDiagnostic": r#"{\"authorization\":\"CustomScheme \\"credential-tail\\"\"}"#,
                     "embeddedQuoteDiagnostic": r#"password=abc"defg status=403"#,
                     "providerApiKeyDiagnostic": "Invalid API key: sk-proj-provider-secret; request rejected",
+                    "compoundWhitespaceDiagnostic": "OPENAI_API_KEY first-secret; proxyAuthorization Basic dXNlcjpwYXNz",
                 }}),
             )
             .unwrap();
@@ -1782,6 +1865,14 @@ mod tests {
                 .envelope
                 .pointer("/payload/payload/nested/providerApiKeyDiagnostic"),
             Some(&json!("[REDACTED]"))
+        );
+        assert_eq!(
+            state.outbox[0]
+                .envelope
+                .pointer("/payload/payload/nested/compoundWhitespaceDiagnostic"),
+            Some(&json!(
+                "OPENAI_API_KEY [REDACTED]; proxyAuthorization Basic [REDACTED]"
+            ))
         );
     }
 
@@ -2006,6 +2097,14 @@ mod tests {
                 r#"Authorization: Bearer abc"defg; retry"#,
                 "Authorization: Bearer [REDACTED]; retry",
             ),
+            (
+                r#"OPENAI_API_KEY \"abc\"defg retry"#,
+                r#"OPENAI_API_KEY \"[REDACTED] retry"#,
+            ),
+            (
+                r#"proxyAuthorization Basic \"abc\"defg retry"#,
+                r#"proxyAuthorization Basic \"[REDACTED] retry"#,
+            ),
         ] {
             assert_eq!(redact_text(input), expected);
             assert_eq!(redact_text(expected), expected);
@@ -2014,6 +2113,31 @@ mod tests {
             redact_text("OPENAI_API_KEY=secret-value access_token=other-secret"),
             "OPENAI_API_KEY=[REDACTED] access_token=[REDACTED]"
         );
+        for (input, expected) in [
+            (
+                "OPENAI_API_KEY secret-value retry",
+                "OPENAI_API_KEY [REDACTED] retry",
+            ),
+            (
+                "access_token other-secret retry",
+                "access_token [REDACTED] retry",
+            ),
+            (
+                "clientSecret third-secret retry",
+                "clientSecret [REDACTED] retry",
+            ),
+            (
+                "proxyAuthorization Basic dXNlcjpwYXNz retry",
+                "proxyAuthorization Basic [REDACTED] retry",
+            ),
+            (
+                "proxyAuthorization proxy-secret retry",
+                "proxyAuthorization [REDACTED] retry",
+            ),
+        ] {
+            assert_eq!(redact_text(input), expected);
+            assert_eq!(redact_text(expected), expected);
+        }
         assert_eq!(
             redact_text(
                 "openai_api_key=first-secret openaiApiKey=second-secret clientSecret=third-secret refreshToken=fourth-secret"

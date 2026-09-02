@@ -3041,9 +3041,9 @@ fn durable_backend_settles_pending_tools_when_recovery_finds_the_turn_ended() {
 }
 
 #[test]
-fn durable_backend_rejects_tool_catalog_drift_during_attach() {
-    let directory = temporary_directory("durable-tool-attach-drift");
-    let config = provider_config(&directory, &[]);
+fn durable_backend_rotates_tool_authority_for_fresh_run_attach() {
+    let directory = temporary_directory("durable-tool-attach-rotation");
+    let config = provider_config(&directory, &["--durable-turn-ids", "--emit-tool-call"]);
     let runner_config = durable_config(&directory);
     let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
     executor
@@ -3059,29 +3059,153 @@ fn durable_backend_rejects_tool_catalog_drift_during_attach() {
         .expect("prepare the durable tool catalog");
     executor
         .execute(&command("open", 2, "session.open", json!({})))
-        .expect("open a settled provider session before attachment");
+        .expect("open the first provider session");
+    executor
+        .execute(&command(
+            "first-turn",
+            3,
+            "turn.start",
+            json!({"text": "Use the first run's tool authority."}),
+        ))
+        .expect("start the first provider turn");
+
+    let mut input_seen = false;
+    for _ in 0..32 {
+        input_seen |= poll_and_ack(&mut executor)
+            .expect("poll the first semantic input")
+            .iter()
+            .any(|event| event.event_type == "semantic_tool.input");
+        if input_seen {
+            break;
+        }
+    }
+    assert!(
+        input_seen,
+        "the first run receives its authorized tool call"
+    );
+    executor
+        .execute(&command(
+            "first-result",
+            4,
+            "semantic_tool.result",
+            json!({
+                "callId": "semantic-call-1",
+                "operationId": "get_task_context",
+                "result": {"ok": true, "task": {"id": "task-1"}},
+                "isError": false,
+            }),
+        ))
+        .expect("settle the first run's semantic tool call");
+
+    let mut turn_completed = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let events = poll_and_ack(&mut executor).expect("drain the first run");
+        turn_completed |= events
+            .iter()
+            .any(|event| event.event_type == "turn.completed");
+        if turn_completed && events.is_empty() {
+            break;
+        }
+        if events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    assert!(turn_completed, "the first run settles before attachment");
 
     let mut changed = task_context_tool_set();
-    changed.operations[0].description = "Changed after recovery.".to_owned();
+    changed.operations[0].operation_id = "write_document".to_owned();
+    changed.operations[0].description = "Write a document during the new run.".to_owned();
     changed.catalog_digest = authorized_tool_catalog_digest(&changed.operations).unwrap();
-    let error = executor
+
+    let mut invalid_digest = changed.clone();
+    invalid_digest.catalog_digest = format!("sha256:{}", "0".repeat(64));
+    let digest_error = executor
+        .execute(&command(
+            "invalid-attach",
+            5,
+            "run.attach",
+            json!({"authorizedTools": invalid_digest}),
+        ))
+        .expect_err("attach must reject an invalid catalog digest");
+    assert!(
+        digest_error
+            .to_string()
+            .contains("catalog digest does not match its operations"),
+        "unexpected attach error: {digest_error}"
+    );
+
+    let attached = executor
         .execute(&command(
             "attach",
-            3,
+            6,
             "run.attach",
             json!({"authorizedTools": changed}),
         ))
-        .expect_err("attach must reject tool catalog drift");
+        .expect("a fresh run may bind a different valid catalog");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+
+    let stale_result_error = executor
+        .execute(&command(
+            "stale-result",
+            7,
+            "semantic_tool.result",
+            json!({
+                "callId": "semantic-call-1",
+                "operationId": "get_task_context",
+                "result": {"ok": true, "task": {"id": "task-1"}},
+                "isError": false,
+            }),
+        ))
+        .expect_err("a prior run's result authority must not cross attachment");
     assert!(
-        error
+        stale_result_error
             .to_string()
-            .contains("authorized tool set changed across a durable session"),
-        "unexpected attach error: {error}"
+            .contains("does not match a pending provider call"),
+        "unexpected stale result error: {stale_result_error}"
+    );
+
+    executor
+        .execute(&command(
+            "second-turn",
+            8,
+            "turn.start",
+            json!({"text": "Attempt to replay the old tool call."}),
+        ))
+        .expect("start the second provider turn");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let rejection = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the prior run's operation must be rejected before the deadline"
+        );
+        match executor.poll_events() {
+            Ok(events) => {
+                assert!(
+                    events
+                        .iter()
+                        .all(|event| event.event_type != "semantic_tool.input"),
+                    "the prior run's operation must not be dispatched under new authority"
+                );
+                executor
+                    .acknowledge_events(events.len())
+                    .expect("acknowledge events before the rejected replay");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) => break error,
+        }
+    };
+    assert!(
+        rejection.to_string().contains("unauthorized tool"),
+        "unexpected replay rejection: {rejection}"
     );
 
     executor
         .shutdown()
-        .expect("stop provider after rejected attach");
+        .expect("stop provider after tool authority rotation");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 

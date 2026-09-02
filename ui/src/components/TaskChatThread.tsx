@@ -688,13 +688,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // real upstream response without a data migration.
   const projectedComments = useMemo(
     () =>
-      comments.map((comment) => {
+      comments.flatMap((comment) => {
         if (comment.body !== LEGACY_WITHHELD_RUN_COMMENT || !comment.runId)
-          return comment;
-        const summary = acceptedSemanticResultSummary(
-          linkedRunMetaById.get(comment.runId)?.resultJson,
-        );
-        return summary ? { ...comment, body: summary } : comment;
+          return [comment];
+        const resultJson = linkedRunMetaById.get(comment.runId)?.resultJson;
+        // Historical native runs wrote a placeholder comment even when the
+        // accepted result only yielded for interaction. Do not turn that
+        // control-plane wait into an ordinary assistant bubble.
+        if (acceptedSemanticResultDisposition(resultJson) === "yielded") {
+          return [];
+        }
+        const summary = acceptedSemanticResultSummary(resultJson);
+        return [summary ? { ...comment, body: summary } : comment];
       }),
     [comments, linkedRunMetaById],
   );
@@ -1800,6 +1805,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ? runs.find((run) => run.id === tailRunId)
     : undefined;
   const paperclipRunnerTail = isNativePaperclipRunnerRun(tailRunSource);
+  const suppressPaperclipRunnerTailFinal = Boolean(
+    paperclipRunnerTail &&
+    (acceptedSemanticResultDisposition(
+      tailRunId ? linkedRunMetaById.get(tailRunId)?.resultJson : null,
+    ) === "yielded" ||
+      (interactions ?? []).some(
+        (interaction) =>
+          interaction.sourceRunId === tailRunId &&
+          interaction.status === "pending",
+      )),
+  );
   const tailAllEntries = tailRunId
     ? (transcriptByRun.get(tailRunId) ?? [])
     : [];
@@ -2366,6 +2382,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                           startedAtMs={tailStartedAtMs}
                           finishedAtMs={tailFinishedAtMs}
                           activityUnavailable={tailActivityUnavailable}
+                          suppressFinal={suppressPaperclipRunnerTailFinal}
                           onRuntimeRequestDecision={
                             handleRuntimeRequestDecision
                           }

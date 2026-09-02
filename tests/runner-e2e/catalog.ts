@@ -454,7 +454,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     buildMatchers(nonce, execution) {
       return [
         {
-          kind: "message_contains",
+          kind: "message_exact",
           expected: `PAPERCLIP_E2E_PLAN_DONE_${nonce}`,
         },
         {
@@ -535,7 +535,7 @@ function terminalMatchers(
   execution: MatrixExecution,
 ): readonly ReturnType<RunnerTaskFixture["buildMatchers"]>[number][] {
   return [
-    { kind: "message_contains", expected: nonceMarker },
+    { kind: "message_exact", expected: nonceMarker },
     { kind: "message_occurrences", expected: nonceMarker, count: 1 },
     {
       kind: "issue_status",

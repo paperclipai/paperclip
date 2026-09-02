@@ -1181,6 +1181,16 @@ export function paperclipRunnerFinalResponse(
     allowFallback?: boolean;
   },
 ): TaskChatMessageItem | undefined {
+  // A yielded result is a control-plane wait boundary, not an assistant reply.
+  // Some providers historically labeled their "waiting for input" prose as a
+  // final message, so disposition must take precedence over message channel.
+  const yielded = parsed.some(
+    (item) =>
+      item.kind === "protocol" &&
+      item.surface === "run_result" &&
+      item.disposition === "yielded",
+  );
+  if (yielded) return undefined;
   for (let index = parsed.length - 1; index >= 0; index -= 1) {
     const item = parsed[index];
     if (
@@ -1238,7 +1248,9 @@ export function paperclipRunnerFinalResponse(
  * Materialize a saved plan at the tool boundary that created its revision.
  * The document query and transcript stream update independently, so folding
  * the document into the parsed turn gives live, settling, and replay the same
- * stable owner and DOM position.
+ * stable owner and DOM position. If that boundary is temporarily unavailable,
+ * retain an explicitly marked end-of-turn fallback instead of dropping the
+ * canonical document.
  */
 export function embedPlanDocumentAtWriteBoundary(
   parsed: readonly TaskChatItem[],
@@ -1260,10 +1272,14 @@ export function embedPlanDocumentAtWriteBoundary(
     const normalizedName = name.replaceAll("-", "_").toLowerCase();
     if (normalizedName === "write_document") writeIndex = index;
   }
-  if (writeIndex < 0) return withoutPlan;
+  const placedPlan: TaskChatPlanDocumentItem = {
+    ...plan,
+    placement: writeIndex < 0 ? "fallback" : "write_boundary",
+  };
+  if (writeIndex < 0) return [...withoutPlan, placedPlan];
   return [
     ...withoutPlan.slice(0, writeIndex + 1),
-    plan,
+    placedPlan,
     ...withoutPlan.slice(writeIndex + 1),
   ];
 }

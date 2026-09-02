@@ -479,6 +479,163 @@ describe("TaskChatThread runtime transcript selection", () => {
     ).toBeNull();
   });
 
+  it("projects the saved Plan inline at its native write_document boundary", () => {
+    planState.data = planDocument({
+      updatedAt: new Date("2026-08-25T18:00:02.000Z"),
+    });
+    nativeTranscriptState.transcriptByRun.set("native-plan", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: "Preparing the Plan.",
+        channel: "progress",
+      },
+      {
+        kind: "tool_call",
+        ts: "2026-08-25T18:00:02.000Z",
+        name: "write_document",
+        toolUseId: "write-plan",
+        input: { key: "plan" },
+      },
+      {
+        kind: "tool_result",
+        ts: "2026-08-25T18:00:02.100Z",
+        toolUseId: "write-plan",
+        toolName: "write_document",
+        content: "revision-3",
+      },
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:03.000Z",
+        text: "Plan revision is ready for review.",
+        channel: "progress",
+      },
+    ]);
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{
+          id: "native-plan",
+          status: "running",
+          invocationSource: "issue",
+          triggerDetail: null,
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-08-25T18:00:00.000Z",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+          runtimeMode: "native",
+        }}
+      />,
+    );
+
+    const preview = container.querySelector(
+      '[data-testid="task-chat-plan-preview"]',
+    );
+    expect(preview).not.toBeNull();
+    expect(preview?.textContent).toContain("Preview the Plan");
+    expect(
+      preview?.closest('[data-testid="task-chat-runner-turn"]'),
+    ).not.toBeNull();
+    const rows = [
+      ...container.querySelectorAll(
+        '[data-testid="task-chat-turn-timeline-row"]',
+      ),
+    ];
+    expect(rows.findIndex((row) => row.contains(preview))).toBeGreaterThan(0);
+  });
+
+  it("retains a native Plan as a visible fallback while its write boundary is unavailable", () => {
+    planState.data = planDocument({
+      updatedAt: new Date("2026-08-25T18:00:02.000Z"),
+    });
+    nativeTranscriptState.transcriptByRun.set("native-plan-fallback", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: "Recovering the Plan transcript.",
+        channel: "progress",
+      },
+    ]);
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={{
+          id: "native-plan-fallback",
+          status: "running",
+          invocationSource: "issue",
+          triggerDetail: null,
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-08-25T18:00:00.000Z",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+          runtimeMode: "native",
+        }}
+      />,
+    );
+
+    const fallback = container.querySelector(
+      '[data-testid="task-chat-plan-preview-fallback"]',
+    );
+    expect(fallback?.textContent).toContain("Preview the Plan");
+    expect(
+      fallback?.closest('[data-testid="task-chat-runner-turn"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="task-chat-plan-preview"]'),
+    ).toBeNull();
+  });
+
+  it("suppresses early provider wait prose when its native interaction is pending", () => {
+    nativeTranscriptState.transcriptByRun.set("native-wait", [
+      {
+        kind: "assistant",
+        ts: "2026-08-25T18:00:01.000Z",
+        text: "Waiting for Plan approval.",
+        channel: "final",
+      },
+    ]);
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        interactions={[
+          planReviewInteraction("pending", "revision-3", "native-wait"),
+        ]}
+        activeRun={{
+          id: "native-wait",
+          status: "running",
+          invocationSource: "issue",
+          triggerDetail: null,
+          startedAt: "2026-08-25T18:00:00.000Z",
+          finishedAt: null,
+          createdAt: "2026-08-25T18:00:00.000Z",
+          agentId: "agent-1",
+          agentName: "Runner",
+          adapterType: "paperclip_runner",
+          runtimeMode: "native",
+        }}
+      />,
+    );
+
+    expect(container.textContent).toContain("Review the Plan");
+    expect(container.textContent).not.toContain("Waiting for Plan approval.");
+    expect(
+      container.querySelector('[data-testid="task-chat-final-response"]'),
+    ).toBeNull();
+  });
+
   it("uses the live log when a native run has no persisted event transcript", () => {
     transcriptState.transcriptByRun.set("native-run", [
       {
@@ -996,7 +1153,22 @@ describe("TaskChatThread runtime transcript selection", () => {
 
     render(
       <TaskChatThread
-        comments={[]}
+        comments={[
+          {
+            id: "native-question-placeholder",
+            companyId: "company-1",
+            issueId: "issue-1",
+            authorType: "agent",
+            authorAgentId: "agent-1",
+            authorUserId: null,
+            body: "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).",
+            presentation: null,
+            metadata: null,
+            runId: "native-question",
+            createdAt: new Date("2026-08-25T18:00:03.000Z"),
+            updatedAt: new Date("2026-08-25T18:00:03.000Z"),
+          },
+        ]}
         onAdd={async () => {}}
         linkedRuns={[
           {
@@ -1062,6 +1234,7 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).not.toContain(
       "Waiting for Choose the verification word.",
     );
+    expect(container.textContent).not.toContain("transcript withheld");
   });
 
   it("keeps an empty failed direct run on its legacy failure surface", () => {

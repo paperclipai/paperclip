@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix, resolve } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
 import type {
   AdapterExecutionResult,
   AdapterRuntimeEvent,
@@ -41,6 +41,7 @@ import {
   createRunnerdCodexTransport,
   defaultCapabilityRunnerdBinary,
   executeNativeSession,
+  parseNativeExecutionInput,
   parsePaperclipQuestionSet,
   resolveSourceCodexHome,
   type RunnerProcessHandle,
@@ -115,7 +116,28 @@ const MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
 const NATIVE_DURABLE_IDENTITY_MAX_BYTES = 2 * 1024 * 1024;
+const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
+const RUNNERD_CONTROL_PLANE_STATE_SCHEMA =
+  "paperclip.runner.durable.control-plane-state.v1";
+const RUNNERD_STATE_SCHEMA = "paperclip.runner.durable.state.v1";
+const RUNNERD_STATE_LIFECYCLES = new Set([
+  "connecting",
+  "ready",
+  "backpressure",
+  "recoverable_failure",
+  "unrecoverable",
+  "suspended",
+  "stopped",
+  "revoked",
+]);
+const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
+  "succeeded",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "timed_out",
+]);
 const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
 const NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
 const NATIVE_SESSION_CANCELLATION_CLEANUP_GRACE_MS = 2_000;
@@ -1006,27 +1028,40 @@ export async function synchronizeCompletedProviderPlan(input: {
   };
 }
 
-class SessionToolAuthorityRouter {
+class SessionToolAuthorityEpoch {
+  readonly runId: string;
   #authority: PaperclipRunnerToolAuthority;
+  #revoked = false;
 
-  constructor(authority: PaperclipRunnerToolAuthority) {
+  constructor(runId: string, authority: PaperclipRunnerToolAuthority) {
+    this.runId = runId;
     this.#authority = authority;
   }
 
-  bind(authority: PaperclipRunnerToolAuthority): void {
-    this.#authority = authority;
+  revoke(): void {
+    this.#revoked = true;
+  }
+
+  #assertCurrent(): void {
+    if (this.#revoked) {
+      throw new Error("native_tool_authority_epoch_revoked");
+    }
   }
 
   definitions() {
+    this.#assertCurrent();
     return this.#authority.definitions();
   }
 
-  execute(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
-    return this.#authority.execute(call);
+  async execute(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
+    this.#assertCurrent();
+    return await this.#authority.execute(call);
   }
 }
 
-const sessionToolRouters = new Map<string, SessionToolAuthorityRouter>();
+const sessionToolAuthorityEpochs = new Map<string, SessionToolAuthorityEpoch>();
+const initializingSessionToolAuthorities = new Set<string>();
+const executingRunnerdSessionScopes = new Map<string, string>();
 
 function nativeSessionKey(execution: NativeExecutionInput): string {
   return (
@@ -1126,6 +1161,36 @@ function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
   );
 }
 
+function quarantineRunnerdStateRoot(
+  root: string,
+  reason: "identity_indeterminate" | "identity_mismatch",
+): string {
+  const stateBase = resolve(runnerdStateBase());
+  const resolvedRoot = resolve(root);
+  const stateKey = basename(resolvedRoot);
+  // Callers pass only roots derived by this module. Keep that boundary explicit
+  // so a future call site cannot turn quarantine into an arbitrary filesystem
+  // move, and never follow or move a symlink in place of the state directory.
+  if (
+    dirname(resolvedRoot) !== stateBase ||
+    !/^[a-f0-9]{64}$/.test(stateKey) ||
+    !isSafeNativeStateDirectory(resolvedRoot)
+  ) {
+    throw new Error("runner_state_directory_unsafe");
+  }
+  const quarantineRoot = resolve(stateBase, "quarantine");
+  mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
+  if (!isSafeNativeStateDirectory(quarantineRoot)) {
+    throw new Error("runner_state_directory_unsafe");
+  }
+  const destination = resolve(
+    quarantineRoot,
+    `${stateKey}.${reason}.${Date.now()}.${process.pid}.${randomUUID()}`,
+  );
+  renameSync(resolvedRoot, destination);
+  return destination;
+}
+
 function legacyCompanyRunnerdStateRoot(
   execution: NativeExecutionInput,
 ): string {
@@ -1148,13 +1213,37 @@ function migrateLegacyRunnerdStateRoot(input: {
   legacy: string;
   scoped: string;
   execution: NativeExecutionInput;
+  verifiedPriorRunId?: string;
 }): string | null {
   if (!existsSync(input.legacy)) return null;
   if (!isSafeNativeStateDirectory(input.legacy)) {
     throw new Error("runner_state_directory_unsafe");
   }
   const legacyIdentity = readRunnerdDurableIdentity(input.legacy);
-  if (!durableIdentityMatchesExecution(legacyIdentity, input.execution)) {
+  const exactRun = durableIdentityMatchesExecution(
+    legacyIdentity,
+    input.execution,
+  );
+  const verifiedSettledPriorRun = Boolean(
+    input.verifiedPriorRunId &&
+    legacyIdentity?.runId === input.verifiedPriorRunId &&
+    durableIdentityMatchesSession(legacyIdentity, input.execution),
+  );
+  if (!exactRun && !verifiedSettledPriorRun) {
+    // A legacy path does not encode the full session scope. A mismatch may be
+    // valid live state owned by another agent/workspace, so refusing the claim
+    // is safe but moving that ambiguous directory is not.
+    throw new Error("runner_state_identity_mismatch");
+  }
+  if (
+    exactRun &&
+    legacyIdentity &&
+    runnerdAuthorityLifecycle(
+      input.legacy,
+      legacyIdentity as RunnerdDurableIdentity,
+    ) === "indeterminate"
+  ) {
+    quarantineRunnerdStateRoot(input.legacy, "identity_indeterminate");
     throw new Error("runner_state_identity_mismatch");
   }
   try {
@@ -1164,16 +1253,215 @@ function migrateLegacyRunnerdStateRoot(input: {
     // directory is authoritative once it exists; otherwise preserve the
     // original migration failure rather than silently starting empty state.
     if (!isSafeNativeStateDirectory(input.scoped)) throw error;
-    if (
-      !durableIdentityMatchesSession(
-        readRunnerdDurableIdentity(input.scoped),
-        input.execution,
-      )
-    ) {
+    const scopedIdentity = readRunnerdDurableIdentity(input.scoped);
+    const exactScopedRun = durableIdentityMatchesExecution(
+      scopedIdentity,
+      input.execution,
+    );
+    const sameVerifiedPriorRun = Boolean(
+      input.verifiedPriorRunId &&
+      scopedIdentity &&
+      scopedIdentity.runId === input.verifiedPriorRunId &&
+      scopedIdentity.runnerInstanceId === legacyIdentity?.runnerInstanceId &&
+      scopedIdentity.environmentLeaseId ===
+        legacyIdentity?.environmentLeaseId &&
+      durableIdentityMatchesSession(scopedIdentity, input.execution),
+    );
+    if (!exactScopedRun && !sameVerifiedPriorRun) {
       throw new Error("runner_state_identity_mismatch");
     }
   }
   return input.scoped;
+}
+
+function runnerdAuthorityLifecycle(
+  root: string,
+  identity: RunnerdDurableIdentity,
+): "suspended" | "not_suspended" | "indeterminate" {
+  const runnerRoot = resolve(root, "runner");
+  if (!isSafeNativeStateDirectory(runnerRoot)) return "indeterminate";
+  const statePath = resolve(runnerRoot, "runner-state.json");
+  if (!existsSync(statePath)) return "indeterminate";
+  try {
+    const state = record(
+      JSON.parse(
+        readBoundedNativeFile(
+          statePath,
+          NATIVE_RUNNER_STATE_MAX_BYTES,
+          "runner_state_too_large",
+        ).toString("utf8"),
+      ),
+    );
+    if (
+      state.schema !== RUNNERD_STATE_SCHEMA ||
+      typeof state.lifecycle !== "string" ||
+      !RUNNERD_STATE_LIFECYCLES.has(state.lifecycle)
+    ) {
+      return "indeterminate";
+    }
+    if (
+      state.runnerInstanceId === identity.runnerInstanceId &&
+      state.environmentLeaseId === identity.environmentLeaseId &&
+      state.runId === identity.runId &&
+      state.normalizedSessionId === identity.normalizedSessionId
+    ) {
+      if (state.lifecycle === "suspended") return "suspended";
+      return "not_suspended";
+    }
+    return "indeterminate";
+  } catch {
+    return "indeterminate";
+  }
+}
+
+type PriorRunnerdStateVerification =
+  | "verified"
+  | "active"
+  | "authority_indeterminate"
+  | "scope_mismatch"
+  | "terminal_state_indeterminate"
+  | "unavailable";
+
+async function verifyPriorRunnerdStateForSessionScope(input: {
+  db: Db;
+  root: string;
+  identity: RunnerdDurableIdentity;
+  execution: NativeExecutionInput;
+}): Promise<PriorRunnerdStateVerification> {
+  let priorRun: {
+    status: string;
+    runnerProfileJson: unknown;
+  } | null;
+  try {
+    priorRun = await input.db
+      .select({
+        status: heartbeatRuns.status,
+        runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.identity.runId),
+          eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+          eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  } catch {
+    return "unavailable";
+  }
+  if (!priorRun) return "authority_indeterminate";
+  if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(priorRun.status)) {
+    return "active";
+  }
+  const persistedInput = record(
+    priorRun.runnerProfileJson,
+  ).nativeExecutionInput;
+  if (persistedInput === undefined) return "authority_indeterminate";
+  try {
+    const priorExecution = parseNativeExecutionInput(persistedInput);
+    const sameScope =
+      priorExecution.binding.runId === input.identity.runId &&
+      nativeSessionScopeKey(priorExecution) ===
+        nativeSessionScopeKey(input.execution);
+    if (!sameScope) return "scope_mismatch";
+    const lifecycle = runnerdAuthorityLifecycle(input.root, input.identity);
+    return lifecycle === "suspended"
+      ? "verified"
+      : "terminal_state_indeterminate";
+  } catch {
+    return "authority_indeterminate";
+  }
+}
+
+async function migrateRunnerdStateRootForExecution(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+}): Promise<void> {
+  const scoped = scopedRunnerdStateRoot(input.execution);
+  if (existsSync(scoped)) {
+    if (!isSafeNativeStateDirectory(scoped)) {
+      throw new Error("runner_state_directory_unsafe");
+    }
+    const identity = readRunnerdDurableIdentity(scoped);
+    if (!identity) {
+      quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+      throw new Error("runner_state_identity_mismatch");
+    }
+    if (!durableIdentityMatchesSession(identity, input.execution)) {
+      quarantineRunnerdStateRoot(scoped, "identity_mismatch");
+      throw new Error("runner_state_identity_mismatch");
+    }
+    if (durableIdentityMatchesExecution(identity, input.execution)) {
+      if (runnerdAuthorityLifecycle(scoped, identity) === "indeterminate") {
+        quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+        throw new Error("runner_state_identity_mismatch");
+      }
+    } else {
+      const verification = await verifyPriorRunnerdStateForSessionScope({
+        db: input.db,
+        root: scoped,
+        identity,
+        execution: input.execution,
+      });
+      if (verification !== "verified") {
+        if (verification !== "active" && verification !== "unavailable") {
+          quarantineRunnerdStateRoot(
+            scoped,
+            verification === "scope_mismatch"
+              ? "identity_mismatch"
+              : "identity_indeterminate",
+          );
+        }
+        throw new Error("runner_state_identity_mismatch");
+      }
+    }
+    return;
+  }
+  for (const legacy of [
+    legacyCompanyRunnerdStateRoot(input.execution),
+    legacyRunnerdStateRoot(input.execution),
+  ]) {
+    if (!existsSync(legacy)) continue;
+    const identity = readRunnerdDurableIdentity(legacy);
+    if (
+      !identity ||
+      !durableIdentityMatchesSession(identity, input.execution)
+    ) {
+      // Unlike the full-scope target above, this legacy name can legitimately
+      // belong to another scope. Leave it in place for its owner and fail the
+      // attempted migration visibly.
+      throw new Error("runner_state_identity_mismatch");
+    }
+    let verifiedPriorRunId: string | undefined;
+    if (!durableIdentityMatchesExecution(identity, input.execution)) {
+      const verification = await verifyPriorRunnerdStateForSessionScope({
+        db: input.db,
+        root: legacy,
+        identity,
+        execution: input.execution,
+      });
+      if (verification !== "verified") {
+        if (verification === "terminal_state_indeterminate") {
+          // The database proves this ambiguous legacy path belongs to the same
+          // full session scope and its owner is terminal, so it is now safe to
+          // move aside. Scope mismatches and active/unavailable owners remain
+          // untouched because the legacy name may still belong to them.
+          quarantineRunnerdStateRoot(legacy, "identity_indeterminate");
+        }
+        throw new Error("runner_state_identity_mismatch");
+      }
+      verifiedPriorRunId = identity.runId;
+    }
+    migrateLegacyRunnerdStateRoot({
+      legacy,
+      scoped,
+      execution: input.execution,
+      ...(verifiedPriorRunId ? { verifiedPriorRunId } : {}),
+    });
+    return;
+  }
 }
 
 function isSafeNativeStateDirectory(path: string): boolean {
@@ -1193,20 +1481,22 @@ function readRunnerdDurableIdentity(
   root: string,
 ): Record<string, unknown> | null {
   if (!isSafeNativeStateDirectory(root)) return null;
-  const statePath = resolve(root, "control-plane", "control-plane-state.json");
+  const controlPlaneRoot = resolve(root, "control-plane");
+  if (!isSafeNativeStateDirectory(controlPlaneRoot)) return null;
+  const statePath = resolve(controlPlaneRoot, "control-plane-state.json");
   if (!existsSync(statePath)) return null;
   try {
-    return record(
-      record(
-        JSON.parse(
-          readBoundedNativeFile(
-            statePath,
-            NATIVE_DURABLE_IDENTITY_MAX_BYTES,
-            "runner_durable_identity_too_large",
-          ).toString("utf8"),
-        ),
-      ).identity,
+    const state = record(
+      JSON.parse(
+        readBoundedNativeFile(
+          statePath,
+          NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+          "runner_durable_identity_too_large",
+        ).toString("utf8"),
+      ),
     );
+    if (state.schema !== RUNNERD_CONTROL_PLANE_STATE_SCHEMA) return null;
+    return record(state.identity);
   } catch {
     return null;
   }
@@ -1215,7 +1505,7 @@ function readRunnerdDurableIdentity(
 function durableIdentityMatchesExecution(
   identity: Record<string, unknown> | null,
   execution: NativeExecutionInput,
-): identity is RunnerdDurableIdentity {
+): boolean {
   return Boolean(
     identity &&
     identity.runId === execution.binding.runId &&
@@ -1240,10 +1530,10 @@ function durableIdentityMatchesSession(
 }
 
 /**
- * Pre-v2 state is migrated only when its durable identity is bound to this
- * exact run and normalized session. That lets an active run survive an
- * upgrade, while ambiguous old company/session-only state can never be
- * claimed by another agent, workspace, or provider profile.
+ * Pre-v2 state is migrated for an exact active run, or for a suspended prior
+ * run whose persisted, validated execution input proves the same full native
+ * session scope. Ambiguous company/session-only state can never be claimed by
+ * another agent, workspace, or provider profile.
  */
 function runnerdStateRoot(execution: NativeExecutionInput): string {
   const scoped = scopedRunnerdStateRoot(execution);
@@ -2900,6 +3190,32 @@ export async function executePaperclipNativeSession(input: {
     },
   ) => Promise<unknown>;
 }): Promise<AdapterExecutionResult> {
+  if (!input.useRunnerd) {
+    return executePaperclipNativeSessionWithinScope(input);
+  }
+  const sessionScopeId = nativeSessionScopeKey(input.execution);
+  if (executingRunnerdSessionScopes.has(sessionScopeId)) {
+    throw new Error("native_session_supervisor_busy");
+  }
+  executingRunnerdSessionScopes.set(
+    sessionScopeId,
+    input.execution.binding.runId,
+  );
+  try {
+    return await executePaperclipNativeSessionWithinScope(input);
+  } finally {
+    if (
+      executingRunnerdSessionScopes.get(sessionScopeId) ===
+      input.execution.binding.runId
+    ) {
+      executingRunnerdSessionScopes.delete(sessionScopeId);
+    }
+  }
+}
+
+async function executePaperclipNativeSessionWithinScope(
+  input: Parameters<typeof executePaperclipNativeSession>[0],
+): Promise<AdapterExecutionResult> {
   if (
     input.execution.provider.kind !== "codex" &&
     input.execution.provider.kind !== "opencode" &&
@@ -2965,6 +3281,12 @@ export async function executePaperclipNativeSession(input: {
   }
   if (environmentScope) {
     await trace.end(environmentScope, { endedAtMs: environmentEndedAtMs });
+  }
+  if (input.useRunnerd) {
+    await migrateRunnerdStateRootForExecution({
+      db: input.db,
+      execution: input.execution,
+    });
   }
   const durableRunnerBinding = input.useRunnerd
     ? loadRunnerdDurableBinding(input.execution)
@@ -3452,7 +3774,23 @@ export async function executePaperclipNativeSession(input: {
         entry.busy = true;
         if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
         entry.idleTimer = null;
-        existingWarmSession = entry.session;
+        if (input.useRunnerd) {
+          // A retained driver closes over the tool authority from the run that
+          // created it. Preserve provider continuity through its durable
+          // checkpoint, but rebuild the runnerd backend so the next run gets a
+          // fresh, immutable authority epoch. Reusing the live driver would
+          // either retain stale authority or require rebinding old callbacks.
+          warmNativeSessions.delete(warmSessionId);
+          await entry.session.close({
+            reason: "warm native session authority epoch rotated",
+          });
+          persistedWarmSession = loadWarmNativeCheckpoint(
+            input.execution,
+            warmConfigDigest,
+          );
+        } else {
+          existingWarmSession = entry.session;
+        }
       }
     } else {
       persistedWarmSession = loadWarmNativeCheckpoint(
@@ -4875,6 +5213,26 @@ export async function createRunnerdBackend(input: {
     },
   ) => Promise<unknown>;
 }): Promise<NativeSessionBackend> {
+  const sessionScopeId = nativeSessionScopeKey(input.execution);
+  if (initializingSessionToolAuthorities.has(sessionScopeId)) {
+    throw new Error("native_session_supervisor_busy");
+  }
+  initializingSessionToolAuthorities.add(sessionScopeId);
+  try {
+    await migrateRunnerdStateRootForExecution({
+      db: input.db,
+      execution: input.execution,
+    });
+    return await createRunnerdBackendWithinSessionClaim(input, sessionScopeId);
+  } finally {
+    initializingSessionToolAuthorities.delete(sessionScopeId);
+  }
+}
+
+async function createRunnerdBackendWithinSessionClaim(
+  input: Parameters<typeof createRunnerdBackend>[0],
+  sessionScopeId: string,
+): Promise<NativeSessionBackend> {
   const target = input.runnerExecutionTarget ?? { kind: "local" as const };
   const authority = new PaperclipRunnerToolAuthority(input.db, {
     companyId: input.execution.binding.companyId,
@@ -4885,13 +5243,19 @@ export async function createRunnerdBackend(input: {
     workMode: input.execution.task.workMode,
     enqueueWakeup: input.enqueueWakeup,
   });
-  const sessionScopeId = nativeSessionScopeKey(input.execution);
-  const existingRouter = sessionToolRouters.get(sessionScopeId);
-  const authorityRouter =
-    existingRouter ?? new SessionToolAuthorityRouter(authority);
-  authorityRouter.bind(authority);
-  sessionToolRouters.set(sessionScopeId, authorityRouter);
-  const dynamicTools = await authorityRouter.definitions();
+  const authorityEpoch = new SessionToolAuthorityEpoch(
+    input.execution.binding.runId,
+    authority,
+  );
+  let dynamicTools: Awaited<
+    ReturnType<SessionToolAuthorityEpoch["definitions"]>
+  >;
+  try {
+    dynamicTools = await authorityEpoch.definitions();
+  } catch (error) {
+    authorityEpoch.revoke();
+    throw error;
+  }
   const root = runnerdStateRoot(input.execution);
   const durableIdentity = readRunnerdDurableIdentity(root);
   const durableBinding = durableIdentityMatchesSession(
@@ -6187,8 +6551,8 @@ export async function createRunnerdBackend(input: {
     environment: effectiveRunnerEnvironment,
     onSpawn: input.onSpawn,
     dynamicTools,
-    dynamicToolHandler: (call) => authorityRouter.execute(call),
-    acpxDynamicToolHandler: (call) => authorityRouter.execute(call),
+    dynamicToolHandler: (call) => authorityEpoch.execute(call),
+    acpxDynamicToolHandler: (call) => authorityEpoch.execute(call),
     opencodeRuntimeDirectory: resolve(
       resolvePaperclipInstanceRoot(),
       "runtime",
@@ -6571,6 +6935,11 @@ export async function createRunnerdBackend(input: {
           ),
       }).transport,
   });
+  const priorAuthorityEpoch = sessionToolAuthorityEpochs.get(sessionScopeId);
+  if (priorAuthorityEpoch && priorAuthorityEpoch !== authorityEpoch) {
+    priorAuthorityEpoch.revoke();
+  }
+  sessionToolAuthorityEpochs.set(sessionScopeId, authorityEpoch);
   return {
     descriptor: () => backend.descriptor(),
     openSession: (sessionInput) => backend.openSession(sessionInput),

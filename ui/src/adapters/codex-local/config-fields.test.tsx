@@ -79,7 +79,8 @@ describe("Paperclip Runner Codex configuration", () => {
 
     expect(html).toContain('value="__unsupported__" disabled="" selected=""');
     expect(html).toContain("cannot start or recover a Paperclip Runner run");
-    expect(html).toContain("Full auto (never ask)");
+    expect(html).toContain("Select Automatic (isolated) to remediate it");
+    expect(html).not.toContain("Full auto (never ask)");
   });
 
   it("shows a bounded idle timeout only for warm sessions", () => {

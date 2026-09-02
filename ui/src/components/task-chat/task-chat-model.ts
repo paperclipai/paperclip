@@ -304,6 +304,8 @@ export interface TaskChatPlanDocumentItem {
   id: string;
   kind: "plan_document";
   document: IssueDocument;
+  /** Distinguishes a proven semantic write boundary from lossless fallback. */
+  placement?: "write_boundary" | "fallback";
 }
 
 export interface TaskChatProtocolDetail {

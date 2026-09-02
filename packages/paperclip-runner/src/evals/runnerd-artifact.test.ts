@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -68,7 +68,6 @@ describe("runnerd artifact metadata", () => {
 
       try {
         await writeFile(executablePath, verifiedScript, { mode: 0o700 });
-        const canonicalExecutablePath = await realpath(executablePath);
         const input = {
           executablePath,
           expectedSha256,
@@ -79,7 +78,7 @@ describe("runnerd artifact metadata", () => {
         };
 
         await expect(resolvePaperclipRunnerdArtifact(input)).resolves.toMatchObject({
-          executablePath: canonicalExecutablePath,
+          executablePath,
           sha256: expectedSha256,
           byteSize: Buffer.byteLength(verifiedScript),
           buildMetadata: valid,

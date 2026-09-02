@@ -143,7 +143,9 @@ function renderItem(
           attachedTurn={item.attachedTurn?.standaloneHeader ? undefined : turn}
           hideAgentIdentity={Boolean(item.attachedTurn?.standaloneHeader)}
           onTryAgainNoLiveExecutionPath={onTryAgainNoLiveExecutionPath}
-          tryAgainNoLiveExecutionPathPending={tryAgainNoLiveExecutionPathPending}
+          tryAgainNoLiveExecutionPathPending={
+            tryAgainNoLiveExecutionPathPending
+          }
         />
       );
     }
@@ -208,6 +210,11 @@ function renderItem(
       return (
         <TaskChatPlanPreviewCard
           source={{ kind: "saved", document: item.document }}
+          testId={
+            item.placement === "fallback"
+              ? "task-chat-plan-preview-fallback"
+              : "task-chat-plan-preview"
+          }
         />
       );
     case "brief":
@@ -269,16 +276,17 @@ export function TaskChatThreadView({
   className,
   scroll = true,
 }: TaskChatThreadViewProps) {
-  const retryableMarkerId = onRetryFailedRun || onTryAgainNoLiveExecutionPath
-    ? [...items]
-        .reverse()
-        .find(
-          (item) =>
-            item.kind === "marker" &&
-            item.variant === "interrupted" &&
-            item.label === "Run failed",
-        )?.id
-    : undefined;
+  const retryableMarkerId =
+    onRetryFailedRun || onTryAgainNoLiveExecutionPath
+      ? [...items]
+          .reverse()
+          .find(
+            (item) =>
+              item.kind === "marker" &&
+              item.variant === "interrupted" &&
+              item.label === "Run failed",
+          )?.id
+      : undefined;
   const body = (
     <div
       className={cn(
