@@ -202,6 +202,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         GITHUB,
       ],
       capabilities: {
+        canCreateOrganizationGrant: true,
+        organizationGrantReason: null,
         canSetCompanyInstall: true,
         companyInstallReason: null,
       },
@@ -773,6 +775,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [GITHUB],
       capabilities: {
+        canCreateOrganizationGrant: false,
+        organizationGrantReason: "Only connection managers can share this credential.",
         canSetCompanyInstall: false,
         companyInstallReason: "Your company policy limits this choice to connection managers.",
       },
@@ -796,6 +800,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(anyAgent?.getAttribute("aria-label")).toContain(
       "Your company policy limits this choice to connection managers.",
     );
+    const organization = radioContaining("Any human in the company");
+    expect(organization?.disabled).toBe(true);
+    expect(organization?.getAttribute("title")).toBe(
+      "Only connection managers can share this credential.",
+    );
+    expect(radioContaining("Just me")?.disabled).toBe(false);
     // "Just agents I pick" is the live alternative, so the step is not a dead end.
     const pick = Array.from(
       document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]'),

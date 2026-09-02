@@ -161,6 +161,11 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await linkInput.fill(mock.url);
     await page.getByRole("button", { name: "Continue" }).click();
 
+    // Access is chosen before credentials so the user knows who and which
+    // agents will receive the connection before Paperclip contacts it.
+    await expect(page.getByText("Which humans can use this credential?")).toBeVisible();
+    await page.getByRole("button", { name: "Save and continue" }).click();
+
     // LinkKey step keeps the BYO connection heading. Mock doesn't
     // require a key — leave the default "No" answer.
     await expect(page.getByRole("heading", { name: "Connect your own MCP server" })).toBeVisible({ timeout: 15_000 });

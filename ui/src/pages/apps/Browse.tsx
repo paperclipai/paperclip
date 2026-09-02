@@ -209,9 +209,10 @@ export function Browse() {
   const [connectionToRemove, setConnectionToRemove] = useState<ConnectionRemovalTarget | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: "Connectors" },
-    ]);
+    // Apps is already its own navigation root and the page has its own title.
+    // Leave the global bar empty instead of duplicating "Connectors" or
+    // offering a path back out of Apps.
+    setBreadcrumbs([]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
 

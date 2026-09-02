@@ -3328,7 +3328,8 @@ export function AccessStep({
   setInstallAgentIds: (ids: Set<string>) => void;
   /** Task-hosted intents grant reach only to the agent that requested it. */
   lockedAgentId?: string;
-  capabilities?: Pick<ToolConnectionCreateCapabilities, "canSetCompanyInstall"> & {
+  capabilities?: Pick<ToolConnectionCreateCapabilities, "canCreateOrganizationGrant" | "canSetCompanyInstall"> & {
+    organizationGrantReason?: string | null;
     companyInstallReason?: string | null;
     editableAgentIds?: string[];
   } | null;
@@ -3357,15 +3358,19 @@ export function AccessStep({
   // available the option stays visible and disabled with the reason, so the
   // scope stays legible instead of quietly disappearing.
   const canSetCompanyInstall = capabilities?.canSetCompanyInstall ?? true;
+  const canCreateOrganizationGrant = capabilities?.canCreateOrganizationGrant ?? true;
   const needsIdentityChoice = authKind !== "none";
   const allowedGrantKinds = grantKinds ?? (["user", "organization"] satisfies ConnectionGrantKind[]);
-  const canContinue = preserveAgentAccess
+  const identityChoiceAllowed = !needsIdentityChoice
+    || grantKind === "user"
+    || canCreateOrganizationGrant;
+  const canContinue = identityChoiceAllowed && (preserveAgentAccess
     ? true
     : lockedAgentId
     ? installAgentIds.has(lockedAgentId)
     : installChoice === "all"
     ? canSetCompanyInstall
-    : installAgentIds.size > 0;
+    : installAgentIds.size > 0);
   const lockedAgentName = lockedAgentId
     ? allAgents.find((agent) => agent.id === lockedAgentId)?.name ?? "the requesting agent"
     : null;
@@ -3408,6 +3413,15 @@ export function AccessStep({
                     value: "organization",
                     title: "Any human in the company",
                     icon: <UsersRound className="h-4 w-4" aria-hidden="true" />,
+                    accessibleLabel: canCreateOrganizationGrant
+                      ? "Any human in the company"
+                      : `Any human in the company. Unavailable: ${capabilities?.organizationGrantReason ??
+                        "Only a connection manager can share this credential with the organization."}`,
+                    tooltip: canCreateOrganizationGrant
+                      ? undefined
+                      : capabilities?.organizationGrantReason ??
+                        "Only a connection manager can share this credential with the organization.",
+                    disabled: !canCreateOrganizationGrant,
                   },
                 ].filter((option) => allowedGrantKinds.includes(option.value as ConnectionGrantKind))}
               />

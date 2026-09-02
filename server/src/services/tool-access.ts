@@ -137,6 +137,7 @@ import {
   type OAuthEndpointUrlRejection,
 } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { isUniqueViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -8802,15 +8803,40 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           applicationRow = existingApplication;
         }
       } else {
-        [applicationRow] = await db.insert(toolApplications).values({
-          companyId,
-          applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
-          name: applicationName,
-          description: safeApplicationDescription,
-          type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
-          status: "draft",
-          metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.slug, galleryKey: galleryEntry.slug } : { source: "link" },
-        }).returning();
+        // Name selection is optimistic because multiple setup requests can
+        // legitimately begin at the same time. The company/name unique index
+        // is the authority: if another request wins after our read, refresh the
+        // names and retry with the next suffix instead of surfacing a conflict
+        // the user never asked to resolve.
+        for (let attempt = 0; attempt < 10 && !applicationRow; attempt += 1) {
+          try {
+            [applicationRow] = await db.insert(toolApplications).values({
+              companyId,
+              applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
+              name: applicationName,
+              description: safeApplicationDescription,
+              type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+              status: "draft",
+              metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.slug, galleryKey: galleryEntry.slug } : { source: "link" },
+            }).returning();
+          } catch (error) {
+            if (!isUniqueViolation(error, "tool_applications_company_name_uq")) throw error;
+            const applicationNames = await db
+              .select({ name: toolApplications.name })
+              .from(toolApplications)
+              .where(eq(toolApplications.companyId, companyId));
+            applicationName = nextAvailableConnectionName(
+              requestedName,
+              applicationNames.map((row) => row.name),
+            );
+            name = applicationName;
+          }
+        }
+        if (!applicationRow) {
+          throw conflict("Paperclip could not allocate a unique connection name", {
+            code: "tool_access_name_allocation_exhausted",
+          });
+        }
       }
 
       await assertSecretRefs(companyId, [...credentialRefs, ...credentialSecretRefs]);

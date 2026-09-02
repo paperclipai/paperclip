@@ -3670,6 +3670,8 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.capabilities).toEqual({
+      canCreateOrganizationGrant: true,
+      organizationGrantReason: null,
       canSetCompanyInstall: true,
       companyInstallReason: null,
     });
@@ -3903,9 +3905,30 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.capabilities).toEqual({
+      canCreateOrganizationGrant: false,
+      organizationGrantReason: "Only a company owner, administrator, or connection manager can share this credential with the organization.",
       canSetCompanyInstall: false,
       companyInstallReason: "Only someone who can configure this connection can choose this.",
     });
+  });
+
+  it("requires connection-manager authority to create an organization credential", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db, boardSessionActor(company.id, "member"));
+
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "notion", grantKind: "organization" })
+      .expect(403);
+    // Omitted grantKind retains the legacy organization default, so it must
+    // pass through the same authorization check.
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "notion" })
+      .expect(403);
+
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
   });
 
   it("previews remote mcp.json headers as secret replacement fields without echoing values", async () => {
@@ -8863,6 +8886,37 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(rows).toHaveLength(2);
     expect(rows.map((row) => row.name).sort()).toEqual(["Notion", "Notion (2)"]);
     expect(new Set(rows.map((row) => row.uid))).toHaveProperty("size", 2);
+  });
+
+  it("automatically resolves same-name application races", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([
+      {
+        name: "read_items",
+        description: "Read items.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+
+    const results = await Promise.all([
+      service.connectGalleryApp(company.id, {
+        link: "https://parallel-one.example.test/actions",
+        name: "Parallel app",
+      }, { actorType: "user", actorId: "board" }),
+      service.connectGalleryApp(company.id, {
+        link: "https://parallel-two.example.test/actions",
+        name: "Parallel app",
+      }, { actorType: "user", actorId: "board" }),
+    ]);
+
+    expect(new Set(results.map((result) => result.application.id))).toHaveProperty("size", 2);
+    const applications = await db
+      .select({ name: toolApplications.name })
+      .from(toolApplications)
+      .where(eq(toolApplications.companyId, company.id));
+    expect(applications.map((row) => row.name).sort()).toEqual(["Parallel app", "Parallel app (2)"]);
   });
 
   it("does not delete a reused application when the connect rolls back", async () => {

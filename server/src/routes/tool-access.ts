@@ -79,6 +79,8 @@ import type { heartbeatService } from "../services/heartbeat.js";
 
 const COMPANY_INSTALL_DENIAL_REASON =
   "Only someone who can configure this connection can choose this.";
+const ORGANIZATION_GRANT_DENIAL_REASON =
+  "Only a company owner, administrator, or connection manager can share this credential with the organization.";
 type Heartbeat = ReturnType<typeof heartbeatService>;
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
@@ -593,10 +595,12 @@ function connectorEnrollmentPrincipal(req: Request): string {
     req: Request,
     companyId: string,
   ): Promise<ToolConnectionCreateCapabilities> {
-    const canSetCompanyInstall = await isToolConnectionManagerQuiet(req, companyId);
+    const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
     return {
-      canSetCompanyInstall,
-      companyInstallReason: canSetCompanyInstall ? null : COMPANY_INSTALL_DENIAL_REASON,
+      canCreateOrganizationGrant: canManageConnections,
+      organizationGrantReason: canManageConnections ? null : ORGANIZATION_GRANT_DENIAL_REASON,
+      canSetCompanyInstall: canManageConnections,
+      companyInstallReason: canManageConnections ? null : COMPANY_INSTALL_DENIAL_REASON,
     };
   }
 
@@ -829,6 +833,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
   router.post("/companies/:companyId/tools/apps/connect", validate(connectToolAppSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertToolAppMutationAccess(req, companyId);
+    // An omitted grant kind is the backward-compatible organization default.
+    // Personal connection creation remains available to ordinary active
+    // members, but sharing a new credential with every human is a manager
+    // operation and must be enforced here, not inferred by the client.
+    const createsOrganizationGrant = req.body.grantKind !== "user" && !req.body.resumeConnectionId;
+    if (createsOrganizationGrant && !await isToolConnectionManagerQuiet(req, companyId)) {
+      throw forbidden(ORGANIZATION_GRANT_DENIAL_REASON);
+    }
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
       if (result.auth?.kind === "oauth") {

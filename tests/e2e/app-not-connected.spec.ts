@@ -121,6 +121,7 @@ test.describe.serial("not-connected app page", () => {
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
     await expect(page).toHaveURL(/\/apps\/connect\?/, { timeout: 20_000 });
     await expect(page.getByText("Connect your own MCP server")).toBeVisible({ timeout: 20_000 });
+    await page.getByRole("button", { name: "Save and continue" }).click();
     await expect(page.getByText(mock.url)).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-02-reconnect-prefilled.png`, fullPage: true });
 

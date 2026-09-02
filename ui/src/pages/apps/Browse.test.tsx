@@ -174,7 +174,7 @@ describe("Connectors landing page", () => {
   it("renders one connector list with the requested header and no gallery sections", async () => {
     await renderBrowse();
 
-    expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Connectors" }]);
+    expect(setBreadcrumbsMock).toHaveBeenCalledWith([]);
     expect(setBreadcrumbsMock).not.toHaveBeenCalledWith(expect.arrayContaining([
       expect.objectContaining({ href: "/dashboard" }),
     ]));
