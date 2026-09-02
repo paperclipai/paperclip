@@ -1,7 +1,7 @@
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -69,6 +69,10 @@ afterEach(async () => {
     await makeWritable(root);
     await rm(root, { recursive: true, force: true });
   }));
+});
+
+afterAll(async () => {
+  await chmod(fixture, 0o644);
 });
 
 describe("OpenCodeServerDriver", () => {
