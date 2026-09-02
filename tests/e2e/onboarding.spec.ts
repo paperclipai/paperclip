@@ -219,9 +219,17 @@ test.describe("Onboarding wizard", () => {
     await page.locator("#onboarding-agent-name").fill("Ada");
     await page.getByRole("button", { name: "Next" }).click();
 
-    // Step 4 (Connect a model): the default adapter is claude_local, and the
-    // signal above reports no ready credential, so the login panel must show
-    // with no button to reuse a saved login.
+    // Step 4 (Connect a model): pick a source. The step arrives with nothing
+    // selected — the tile row is a question, not a confirmation — and the login
+    // panel is what the answer opens, so there is nothing to assert until one
+    // is pressed. By role rather than by label, because which adapters the row
+    // offers depends on the registry this environment reports.
+    const source = page.getByRole("radio").first();
+    await source.waitFor({ timeout: 30_000 });
+    await source.click();
+
+    // The signal above reports no ready credential, so the login panel must now
+    // show, with no button to reuse a saved login.
     //
     // The panel names the provider rather than the plumbing it runs on, so this
     // title is per-adapter. "Sign in to the environment" is now only the fallback
@@ -231,11 +239,13 @@ test.describe("Onboarding wizard", () => {
     });
     await expect(page.getByRole("button", { name: "Use saved login" })).toHaveCount(0);
 
-    // Exact, because the progress strip's segments are buttons too and one of
-    // them is labelled "Connect a model" for assistive tech. An unanchored
-    // /^Connect/ matches both it and this CTA, which is a strict-mode violation
-    // rather than a wrong click — Playwright refuses instead of guessing.
-    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    // The CTA reads "Next" on this step as on the one before it. Waited on for
+    // *enabled* rather than for visible: it is already on screen and disabled
+    // until the environment probe settles, and clicking a disabled button
+    // raises nothing and does nothing.
+    const connectNext = page.getByRole("button", { name: "Next", exact: true });
+    await expect(connectNext).toBeEnabled({ timeout: 30_000 });
+    await connectNext.click();
 
     // The failed test blocks the hire and shows its own checks.
     await expect(page.getByText("The claude CLI was not found on this host.")).toBeVisible({
