@@ -800,26 +800,70 @@ fn normalize_acpx_status(
     let tag = string(payload.get("tag"));
     if tag == "usage_update" {
         let breakdown = payload.get("breakdown").unwrap_or(&Value::Null);
-        let usage = json!({
-            "inputTokens": nonnegative_u64(breakdown.get("inputTokens")),
-            "outputTokens": nonnegative_u64(breakdown.get("outputTokens")),
-            "cacheReadTokens": nonnegative_u64(
-                breakdown
-                    .get("cachedReadTokens")
-                    .or_else(|| breakdown.get("cacheReadTokens")),
-            ),
-            "cacheWriteTokens": nonnegative_u64(
-                breakdown
-                    .get("cachedWriteTokens")
-                    .or_else(|| breakdown.get("cacheWriteTokens")),
-            ),
+        let cache_read = breakdown
+            .get("cachedReadTokens")
+            .or_else(|| breakdown.get("cacheReadTokens"));
+        let cache_write = breakdown
+            .get("cachedWriteTokens")
+            .or_else(|| breakdown.get("cacheWriteTokens"));
+        // ACPX marks every breakdown field optional and defines omission as
+        // unknown. Only advertise a complete per-turn delta when every field
+        // that feeds a Paperclip token budget is explicitly present.
+        let run_delta_available = breakdown
+            .get("inputTokens")
+            .and_then(Value::as_u64)
+            .is_some()
+            && breakdown
+                .get("outputTokens")
+                .and_then(Value::as_u64)
+                .is_some()
+            && breakdown
+                .get("thoughtTokens")
+                .and_then(Value::as_u64)
+                .is_some()
+            && cache_read.and_then(Value::as_u64).is_some()
+            && cache_write.and_then(Value::as_u64).is_some();
+        let cost_is_usd = match payload.pointer("/cost/currency") {
+            None => true,
+            Some(Value::String(currency)) => currency.eq_ignore_ascii_case("USD"),
+            Some(_) => false,
+        };
+        // ACPX 0.13.1 documents breakdown as per-turn usage while cost is
+        // session-cumulative. Keep those authorities separate so consumers do
+        // not add the same tokens twice or treat cumulative cost as a delta.
+        let cumulative = json!({
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "activeSeconds": 0.0,
             "requests": provider_requests,
-            "providerCostUsd": payload
-                .pointer("/cost/amount")
-                .and_then(Value::as_f64)
-                .filter(|value| value.is_finite() && *value >= 0.0)
-                .unwrap_or(0.0),
+            "providerCostUsd": if cost_is_usd {
+                payload
+                    .pointer("/cost/amount")
+                    .and_then(Value::as_f64)
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            },
+        });
+        let run_delta = json!({
+            "inputTokens": nonnegative_u64(breakdown.get("inputTokens")),
+            // PRP v1 has no separate reasoning-token field. Fold ACPX thought
+            // tokens into output so spend and token ceilings cannot undercount
+            // reasoning work.
+            "outputTokens": nonnegative_u64(breakdown.get("outputTokens"))
+                .saturating_add(nonnegative_u64(breakdown.get("thoughtTokens"))),
+            "cacheReadTokens": nonnegative_u64(
+                cache_read,
+            ),
+            "cacheWriteTokens": nonnegative_u64(
+                cache_write,
+            ),
+            "activeSeconds": 0.0,
+            "requests": 1,
+            "providerCostUsd": 0.0,
         });
         return vec![NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
@@ -832,8 +876,9 @@ fn normalize_acpx_status(
                     .map(|value| bounded_text(value, 240)),
                 "providerSessionId": Value::Null,
                 "providerRequestId": Value::Null,
-                "cumulative": usage,
-                "runDelta": usage,
+                "cumulative": cumulative,
+                "runDeltaAvailable": run_delta_available,
+                "runDelta": run_delta,
             }),
         }];
     }

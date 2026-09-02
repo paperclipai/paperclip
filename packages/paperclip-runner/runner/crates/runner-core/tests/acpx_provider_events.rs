@@ -155,13 +155,26 @@ fn maps_usage_and_review_status_but_ignores_inventory_updates() {
         json!({
             "type":"status",
             "tag":"usage_update",
-            "breakdown":{"inputTokens":12,"outputTokens":4,"cachedReadTokens":2},
+            "breakdown":{
+                "inputTokens":12,
+                "outputTokens":4,
+                "thoughtTokens":3,
+                "cachedReadTokens":2,
+                "cachedWriteTokens":0
+            },
             "cost":{"amount":0.25}
         }),
     );
     assert_eq!(usage[0].event_type, "usage.reported");
-    assert_eq!(usage[0].payload["cumulative"]["inputTokens"], 12);
+    assert_eq!(usage[0].payload["cumulative"]["inputTokens"], 0);
     assert_eq!(usage[0].payload["cumulative"]["requests"], 3);
+    assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.25);
+    assert_eq!(usage[0].payload["runDeltaAvailable"], true);
+    assert_eq!(usage[0].payload["runDelta"]["inputTokens"], 12);
+    assert_eq!(usage[0].payload["runDelta"]["outputTokens"], 7);
+    assert_eq!(usage[0].payload["runDelta"]["cacheReadTokens"], 2);
+    assert_eq!(usage[0].payload["runDelta"]["requests"], 1);
+    assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.0);
     assert_eq!(usage[0].priority, EventPriority::P0);
 
     let review = normalize(
@@ -176,6 +189,55 @@ fn maps_usage_and_review_status_but_ignores_inventory_updates() {
         json!({"type":"status","tag":"available_commands_update"}),
     )
     .is_empty());
+}
+
+#[test]
+fn does_not_claim_missing_or_partial_usage_breakdowns_are_exact() {
+    for payload in [
+        json!({
+            "type":"status",
+            "tag":"usage_update",
+            "cost":{"amount":0.25,"currency":"USD"}
+        }),
+        json!({
+            "type":"status",
+            "tag":"usage_update",
+            "breakdown":null,
+            "cost":{"amount":0.25,"currency":"USD"}
+        }),
+        json!({
+            "type":"status",
+            "tag":"usage_update",
+            "breakdown":{"inputTokens":12},
+            "cost":{"amount":0.25,"currency":"USD"}
+        }),
+    ] {
+        let usage = normalize(AcpxRuntimeEventKind::Status, payload);
+        assert_eq!(usage[0].payload["runDeltaAvailable"], false);
+        assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.25);
+    }
+}
+
+#[test]
+fn does_not_label_non_usd_acpx_cost_as_usd() {
+    let usage = normalize(
+        AcpxRuntimeEventKind::Status,
+        json!({
+            "type":"status",
+            "tag":"usage_update",
+            "breakdown":{
+                "inputTokens":12,
+                "outputTokens":4,
+                "thoughtTokens":3,
+                "cachedReadTokens":2,
+                "cachedWriteTokens":0
+            },
+            "cost":{"amount":0.25,"currency":"EUR"}
+        }),
+    );
+
+    assert_eq!(usage[0].payload["runDeltaAvailable"], true);
+    assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.0);
 }
 
 #[test]
