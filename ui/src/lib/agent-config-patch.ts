@@ -77,5 +77,9 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     Object.assign(patch, overlay.runtime);
   }
 
+  if (patch.adapterConfig !== undefined || patch.runtimeConfig !== undefined) {
+    patch.preserveRedactedConfigValues = true;
+  }
+
   return patch;
 }

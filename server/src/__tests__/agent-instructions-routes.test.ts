@@ -781,6 +781,7 @@ describe("agent instructions bundle routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
       .send({
+        preserveRedactedConfigValues: true,
         replaceAdapterConfig: true,
         adapterConfig: {
           model: "new-model",
@@ -803,6 +804,22 @@ describe("agent instructions bundle routes", () => {
           heartbeat: { enabled: true },
         },
       }),
+      expect.any(Object),
+    );
+  });
+
+  it("persists a literal redaction marker unless placeholder preservation is requested", async () => {
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        replaceAdapterConfig: true,
+        adapterConfig: { model: "***REDACTED***" },
+      }));
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ adapterConfig: expect.objectContaining({ model: "***REDACTED***" }) }),
       expect.any(Object),
     );
   });

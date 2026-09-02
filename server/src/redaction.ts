@@ -1092,8 +1092,8 @@ function restoreRedactedConfigurationValue(value: unknown, existing: unknown): u
 
 /**
  * Treat the response-only redaction marker as an unchanged value when a client
- * round-trips configuration. The marker is reserved API syntax; any other
- * value remains an intentional update.
+ * explicitly opts into round-trip restoration. Callers that do not opt in can
+ * persist the marker string literally; every other value is intentional.
  */
 export function restoreRedactedConfigurationPayload(
   payload: Record<string, unknown>,

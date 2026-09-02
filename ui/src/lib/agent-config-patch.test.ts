@@ -66,6 +66,7 @@ describe("buildAgentUpdatePatch", () => {
     );
 
     expect(patch).toMatchObject({
+      preserveRedactedConfigValues: true,
       runtimeConfig: {
         heartbeat: { enabled: true, intervalSec: 300 },
         debug: { providerTrace: "raw" },
@@ -88,6 +89,7 @@ describe("buildAgentUpdatePatch", () => {
         model: "claude-sonnet-4-6",
         promptTemplate: "Work the issue.",
       },
+      preserveRedactedConfigValues: true,
       replaceAdapterConfig: true,
     });
   });
@@ -107,6 +109,7 @@ describe("buildAgentUpdatePatch", () => {
     );
 
     expect(patch).toEqual({
+      preserveRedactedConfigValues: true,
       runtimeConfig: {
         heartbeat: {
           enabled: true,
@@ -146,6 +149,7 @@ describe("buildAgentUpdatePatch", () => {
         model: "gpt-5.4",
         dangerouslyBypassApprovalsAndSandbox: true,
       },
+      preserveRedactedConfigValues: true,
       replaceAdapterConfig: true,
     });
   });

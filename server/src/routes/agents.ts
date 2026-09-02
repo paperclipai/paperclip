@@ -4662,6 +4662,11 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    // Profile responses use a visible marker for hidden configuration values.
+    // Restoration is opt-in so an API caller can still persist that same
+    // string literally without the server silently reinterpreting it.
+    const preserveRedactedConfigValues = patchData.preserveRedactedConfigValues === true;
+    delete patchData.preserveRedactedConfigValues;
     // The apply-existing flag is not an agent column. The server binds the fixed
     // reference to the owner stored value with no login round trip. Remove it
     // from the patch so it never reaches the update values.
@@ -4673,10 +4678,9 @@ export function agentRoutes(
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
-      const restoredAdapterConfig = restoreRedactedConfigurationPayload(
-        adapterConfig,
-        asRecord(existing.adapterConfig),
-      );
+      const restoredAdapterConfig = preserveRedactedConfigValues
+        ? restoreRedactedConfigurationPayload(adapterConfig, asRecord(existing.adapterConfig))
+        : adapterConfig;
       assertNoAgentAdapterConfigMutation(req, restoredAdapterConfig);
       const changingInstructionsConfig = adapterConfigTouchesInstructionsConfig(restoredAdapterConfig);
       if (changingInstructionsConfig) {
@@ -4702,10 +4706,9 @@ export function agentRoutes(
         res.status(422).json({ error: "runtimeConfig must be an object" });
         return;
       }
-      const restoredRuntimeConfig = restoreRedactedConfigurationPayload(
-        runtimeConfig,
-        asRecord(existing.runtimeConfig),
-      );
+      const restoredRuntimeConfig = preserveRedactedConfigValues
+        ? restoreRedactedConfigurationPayload(runtimeConfig, asRecord(existing.runtimeConfig))
+        : runtimeConfig;
       assertProviderTraceSettingTransition(
         req,
         restoredRuntimeConfig,
