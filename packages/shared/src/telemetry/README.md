@@ -1,9 +1,11 @@
-# Telemetry Data Contract
+# Telemetry Data Contract (Permanently Disabled)
 
-This document explains how contributors should use Paperclip's public telemetry
-contract. It does not duplicate the full list of individual events or
-dimensions. It documents extra semantic and privacy rules where the generated
-shape is not sufficient.
+Telemetry is permanently disabled. `resolveTelemetryConfig()` always returns
+`enabled: false`, `TelemetryClient` never queues or sends, and
+`initTelemetry()` always returns `null`. The `telemetry.enabled` config field
+remains for compatibility but always parses to `false` and has no effect.
+
+This document is kept for the historical contract only. Do not add new events.
 
 The canonical source for first-party event names, dimensions, optionality,
 allowed primitive value types, and enum descriptions is

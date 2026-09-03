@@ -282,8 +282,9 @@ export function buildWorktreeConfig(input: {
       ...(authPublicBaseUrl ? { publicBaseUrl: authPublicBaseUrl } : {}),
       disableSignUp: source?.auth.disableSignUp ?? false,
     },
+    // Telemetry is permanently disabled. Always write disabled.
     telemetry: {
-      enabled: source?.telemetry?.enabled ?? true,
+      enabled: false,
     },
     storage: {
       provider: source?.storage.provider ?? "local_disk",

@@ -1,27 +1,18 @@
-import path from "node:path";
+import type { TelemetryClient } from "../../packages/shared/src/telemetry/index.js";
 import {
-  TelemetryClient,
-  resolveTelemetryConfig,
-  loadOrCreateState,
   trackInstallStarted,
   trackInstallCompleted,
   trackCompanyImported,
 } from "../../packages/shared/src/telemetry/index.js";
-import { resolvePaperclipInstanceRoot } from "./config/home.js";
 import { readConfig } from "./config/store.js";
-import { cliVersion } from "./version.js";
 
 let client: TelemetryClient | null = null;
 
 export function initTelemetry(fileConfig?: { enabled?: boolean }): TelemetryClient | null {
-  if (client) return client;
-
-  const config = resolveTelemetryConfig(fileConfig);
-  if (!config.enabled) return null;
-
-  const stateDir = path.join(resolvePaperclipInstanceRoot(), "telemetry");
-  client = new TelemetryClient(config, () => loadOrCreateState(stateDir, cliVersion), cliVersion);
-  return client;
+  void fileConfig;
+  // Telemetry is permanently disabled. Never create a client.
+  void client;
+  return null;
 }
 
 export function initTelemetryFromConfigFile(configPath?: string): TelemetryClient | null {

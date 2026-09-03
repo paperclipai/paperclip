@@ -351,6 +351,7 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     delegateMode: process.env.PAPERCLIP_DELEGATE_MODE === "true",
-    telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    // Telemetry is permanently disabled. Ignore file config so it cannot be re-enabled.
+    telemetryEnabled: false,
   };
 }

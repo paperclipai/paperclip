@@ -399,16 +399,7 @@ Find Plugins and more at [awesome-paperclip](https://github.com/gsxdsm/awesome-p
 
 ## Telemetry
 
-Paperclip collects anonymous usage telemetry to help us understand how the product is used and improve it. No personal information, issue content, prompts, file paths, or secrets are ever collected. Private repository references are hashed with a per-install salt before being sent.
-
-Telemetry is **enabled by default** and can be disabled with any of the following:
-
-| Method               | How                                                     |
-| -------------------- | ------------------------------------------------------- |
-| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1`                        |
-| Standard convention  | `DO_NOT_TRACK=1`                                        |
-| CI environments      | Automatically disabled when `CI=true`                   |
-| Config file          | Set `telemetry.enabled: false` in your Paperclip config |
+Telemetry is permanently disabled. Paperclip does not collect usage telemetry, and the `telemetry.enabled` config field and `PAPERCLIP_TELEMETRY_DISABLED` / `DO_NOT_TRACK` environment variables have no effect.
 
 ## Contributing
 

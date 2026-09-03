@@ -473,19 +473,7 @@ Paperclip also ships with opt-in Sentry error monitoring for the server and the 
 
 ## Telemetry
 
-Paperclip collects anonymous usage telemetry to help us understand how the product is used and improve it. No personal information, issue content, prompts, file paths, or secrets are ever collected. Private repository references are hashed with a per-install salt before being sent.
-
-Contributors changing emitted telemetry events should follow the [Telemetry Data Contract](packages/shared/src/telemetry/README.md).
-For proposed first-party events that are not in the generated contract yet, follow [Telemetry Workflow](doc/TELEMETRY_WORKFLOW.md).
-
-Telemetry is **enabled by default** and can be disabled with any of the following:
-
-| Method               | How                                                     |
-| -------------------- | ------------------------------------------------------- |
-| Environment variable | `PAPERCLIP_TELEMETRY_DISABLED=1`                        |
-| Standard convention  | `DO_NOT_TRACK=1`                                        |
-| CI environments      | Automatically disabled when `CI=true`                   |
-| Config file          | Set `telemetry.enabled: false` in your Paperclip config |
+Telemetry is permanently disabled. Paperclip does not collect usage telemetry, and the `telemetry.enabled` config field and `PAPERCLIP_TELEMETRY_DISABLED` / `DO_NOT_TRACK` environment variables have no effect. The historical contract in [Telemetry Data Contract](packages/shared/src/telemetry/README.md) and [Telemetry Workflow](doc/TELEMETRY_WORKFLOW.md) is kept for reference only.
 
 ## Contributing
 

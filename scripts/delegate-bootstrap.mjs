@@ -116,7 +116,7 @@ export async function ensureInstanceFiles({ configPath, envPath, instanceDir, ap
         allowedHostnames: [],
         serveUi: true,
       },
-      telemetry: { enabled: true },
+      telemetry: { enabled: false },
       updates: { checkEnabled: true },
       auth: { baseUrlMode: "auto", disableSignUp: false },
       storage: {

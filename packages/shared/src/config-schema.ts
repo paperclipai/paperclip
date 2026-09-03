@@ -100,7 +100,9 @@ export const secretsConfigSchema = z.object({
 }).passthrough();
 
 export const telemetryConfigSchema = z.object({
-  enabled: z.boolean().default(true),
+  // Telemetry is permanently disabled. The field stays for config
+  // compatibility but always parses to false so it cannot be re-enabled.
+  enabled: z.boolean().default(false).transform(() => false),
 }).passthrough().prefault({});
 
 export const updatesConfigSchema = z.object({

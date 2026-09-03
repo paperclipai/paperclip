@@ -677,7 +677,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     server,
     auth,
     telemetry: {
-      enabled: true,
+      enabled: false,
     },
     storage,
     secrets,

@@ -1,6 +1,7 @@
 import type { TelemetryBackoffConfig, TelemetryConfig } from "./types.js";
 
-const CI_ENV_VARS = ["CI", "CONTINUOUS_INTEGRATION", "BUILD_NUMBER", "GITHUB_ACTIONS", "GITLAB_CI"];
+// Telemetry is permanently disabled. There is no supported way to enable it:
+// config values and environment variables are intentionally ignored here.
 
 /**
  * Single source of truth for telemetry soft caps + backoff. Kept as config
@@ -59,28 +60,13 @@ export function resolveCaps(overrides?: TelemetryConfigOverrides): ResolvedTelem
   };
 }
 
-function isCI(): boolean {
-  return CI_ENV_VARS.some((key) => process.env[key] === "true" || process.env[key] === "1");
-}
-
 export function resolveTelemetryConfig(
   fileConfig?: { enabled?: boolean } & TelemetryConfigOverrides,
 ): TelemetryConfig {
   const caps = resolveCaps(fileConfig);
 
-  if (process.env.PAPERCLIP_TELEMETRY_DISABLED === "1") {
-    return { enabled: false, ...caps };
-  }
-  if (process.env.DO_NOT_TRACK === "1") {
-    return { enabled: false, ...caps };
-  }
-  if (isCI()) {
-    return { enabled: false, ...caps };
-  }
-  if (fileConfig?.enabled === false) {
-    return { enabled: false, ...caps };
-  }
-
-  const endpoint = process.env.PAPERCLIP_TELEMETRY_ENDPOINT || undefined;
-  return { enabled: true, endpoint, ...caps };
+  // Permanently disabled. Ignore every enable path: file config, endpoint
+  // overrides, and environment variables.
+  void fileConfig;
+  return { enabled: false, ...caps };
 }
