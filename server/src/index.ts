@@ -647,7 +647,17 @@ export async function startServer(): Promise<StartedServer> {
   });
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  // When authPublicBaseUrl is explicitly configured (e.g. Tailscale, cloud deployment),
+  // the operator intends that URL for all agent access — preserve it as-is.
+  // When it is NOT set, PAPERCLIP_ALLOWED_HOSTNAMES may include Cloudflare tunnel hostnames
+  // (e.g. company.whitestag.ai) that choosePrimaryRuntimeApiUrl would pick as the "primary"
+  // URL. Those hostnames route through the CDN and are NOT reachable from local processes on
+  // the same machine, causing timeouts in local adapters (claude_local, lmstudio_local, etc.)
+  // and the sandbox callback bridge. Use the loopback address instead; the Cloudflare URL
+  // remains available in PAPERCLIP_API_URL and PAPERCLIP_RUNTIME_API_CANDIDATES_JSON.
+  process.env.PAPERCLIP_RUNTIME_API_URL = config.authPublicBaseUrl?.trim()
+    ? runtimeApiUrl
+    : `http://127.0.0.1:${listenPort}`;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
