@@ -133,6 +133,10 @@ export function Layout() {
   const isSkillsRoute = isSkillsStoreRoute(location.pathname, companyPrefix);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
+  const mobileNavScrollAnchor = useRef(0);
+  const mobileNavScrollDirection = useRef<-1 | 0 | 1>(0);
+  const mobileNavVisibleRef = useRef(true);
+  const mobileNavTransitioning = useRef(false);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
   const scrollMemory = useRef(new NavigationScrollMemory());
@@ -472,24 +476,64 @@ export function Layout() {
     };
   }, [isMobile, sidebarOpen, setSidebarOpen]);
 
-  const updateMobileNavVisibility = useCallback((currentTop: number) => {
-    const delta = currentTop - lastMainScrollTop.current;
+  const syncMobileNavScroll = useCallback((currentTop: number) => {
+    lastMainScrollTop.current = currentTop;
+    mobileNavScrollAnchor.current = currentTop;
+    mobileNavScrollDirection.current = 0;
+  }, []);
 
+  const finishMobileNavTransition = useCallback(() => {
+    if (!mobileNavTransitioning.current) return;
+    mobileNavTransitioning.current = false;
+    syncMobileNavScroll(window.scrollY || document.documentElement.scrollTop || 0);
+  }, [syncMobileNavScroll]);
+
+  const setMobileNavVisibility = useCallback((visible: boolean, currentTop: number) => {
+    if (mobileNavVisibleRef.current === visible) return;
+    mobileNavVisibleRef.current = visible;
+    mobileNavTransitioning.current = true;
+    syncMobileNavScroll(currentTop);
+    setMobileNavVisible(visible);
+  }, [syncMobileNavScroll]);
+
+  const updateMobileNavVisibility = useCallback((currentTop: number) => {
+    // Collapsing max-height changes the document geometry and can move scrollY.
+    // Do not interpret those transition-generated events as user direction.
+    // The top boundary remains authoritative so navigation is never hidden there.
     if (currentTop <= 24) {
-      setMobileNavVisible(true);
-    } else if (delta > 8) {
-      setMobileNavVisible(false);
-    } else if (delta < -8) {
-      setMobileNavVisible(true);
+      setMobileNavVisibility(true, currentTop);
+      syncMobileNavScroll(currentTop);
+      return;
+    }
+
+    if (mobileNavTransitioning.current) {
+      syncMobileNavScroll(currentTop);
+      return;
+    }
+
+    const previousTop = lastMainScrollTop.current;
+    const direction = currentTop > previousTop ? 1 : currentTop < previousTop ? -1 : 0;
+
+    if (direction !== 0 && direction !== mobileNavScrollDirection.current) {
+      mobileNavScrollDirection.current = direction;
+      mobileNavScrollAnchor.current = previousTop;
+    }
+
+    if (direction > 0 && currentTop - mobileNavScrollAnchor.current > 8) {
+      setMobileNavVisibility(false, currentTop);
+    } else if (direction < 0 && mobileNavScrollAnchor.current - currentTop > 8) {
+      setMobileNavVisibility(true, currentTop);
     }
 
     lastMainScrollTop.current = currentTop;
-  }, []);
+  }, [setMobileNavVisibility, syncMobileNavScroll]);
 
   useEffect(() => {
     if (!isMobile) {
       setMobileNavVisible(true);
-      lastMainScrollTop.current = 0;
+      mobileNavVisibleRef.current = true;
+      mobileNavTransitioning.current = false;
+      syncMobileNavScroll(0);
       return;
     }
 
@@ -503,7 +547,13 @@ export function Layout() {
     return () => {
       window.removeEventListener("scroll", onScroll);
     };
-  }, [isMobile, updateMobileNavVisibility]);
+  }, [isMobile, syncMobileNavScroll, updateMobileNavVisibility]);
+
+  useEffect(() => {
+    if (!isMobile || !mobileNavTransitioning.current) return;
+    const timeout = window.setTimeout(finishMobileNavTransition, 250);
+    return () => window.clearTimeout(timeout);
+  }, [finishMobileNavTransition, isMobile, mobileNavVisible]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -648,8 +698,15 @@ export function Layout() {
 
         <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
           <div
+            data-mobile-header={isMobile ? "true" : undefined}
+            onTransitionEnd={finishMobileNavTransition}
+            aria-hidden={isMobile && !mobileNavVisible ? true : undefined}
+            inert={isMobile && !mobileNavVisible ? true : undefined}
             className={cn(
-              isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
+              isMobile && "sticky top-0 z-20 overflow-hidden bg-background/95 backdrop-blur transition-[max-height,opacity,transform] duration-200 ease-out motion-reduce:transition-none supports-[backdrop-filter]:bg-background/85",
+              isMobile && (mobileNavVisible
+                ? "max-h-(--sz-240px) translate-y-0 opacity-100"
+                : "pointer-events-none max-h-0 -translate-y-full opacity-0"),
             )}
           >
             <StandaloneBrowserControls mobile={isMobile} />

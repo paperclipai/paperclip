@@ -173,6 +173,7 @@ export function SwipeToArchive({
   return (
     <div
       ref={containerRef}
+      data-row-swipe-action
       className={cn("relative overflow-hidden touch-pan-y", className)}
       style={{
         height: lockedHeight === null ? undefined : isCollapsing ? 0 : lockedHeight,

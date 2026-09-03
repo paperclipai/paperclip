@@ -82,6 +82,7 @@ import { IssueFiltersPopover } from "../components/IssueFiltersPopover";
 import { InboxArchiveButton, IssueRow } from "../components/IssueRow";
 import { BlockedInboxView } from "../components/BlockedInboxView";
 import { SwipeToArchive } from "../components/SwipeToArchive";
+import { SwipeBetweenTabs } from "../components/SwipeBetweenTabs";
 
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
@@ -729,6 +730,7 @@ export function Inbox() {
       ? pathSegment
       : "mine";
   const canArchiveFromTab = isMineInboxTab(tab);
+  const inboxTabs = ["mine", "recent", "unread", "blocked", "all"] as const;
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
@@ -2261,7 +2263,12 @@ export function Inbox() {
   const activeIssueFilterCount = countActiveIssueFilters(issueFilters, true);
   const showGeneralIssueToolbarControls = tab !== "blocked";
   return (
-    <div className="space-y-6">
+    <SwipeBetweenTabs
+      className="space-y-6"
+      items={inboxTabs}
+      value={tab}
+      onValueChange={(value) => navigate(`/inbox/${value}`)}
+    >
       <div className="space-y-2">
         {/* Search — full-width row on mobile, inline on desktop */}
         <div className="relative sm:hidden">
@@ -3152,6 +3159,6 @@ export function Inbox() {
         </>
       )}
 
-    </div>
+    </SwipeBetweenTabs>
   );
 }

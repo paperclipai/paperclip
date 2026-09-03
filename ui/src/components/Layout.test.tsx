@@ -310,6 +310,51 @@ describe("Layout", () => {
     });
   });
 
+  it("hides the mobile header on downward scroll and restores it on upward scroll and at the top", async () => {
+    mockSidebarState.isMobile = true;
+    mockSidebarState.sidebarOpen = false;
+    let scrollTop = 0;
+    Object.defineProperty(window, "scrollY", { configurable: true, get: () => scrollTop });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    const header = () => container.querySelector<HTMLElement>("[data-mobile-header='true']");
+    expect(header()?.className).toContain("max-h-(--sz-240px)");
+    expect(header()?.getAttribute("aria-hidden")).toBeNull();
+
+    for (const nextTop of [28, 33, 39]) {
+      scrollTop = nextTop;
+      await act(async () => { window.dispatchEvent(new Event("scroll")); });
+    }
+    expect(header()?.className).toContain("max-h-0");
+    expect(header()?.getAttribute("aria-hidden")).toBe("true");
+    expect(header()?.hasAttribute("inert")).toBe(true);
+
+    await act(async () => { header()?.dispatchEvent(new Event("transitionend", { bubbles: true })); });
+
+    for (const nextTop of [35, 30]) {
+      scrollTop = nextTop;
+      await act(async () => { window.dispatchEvent(new Event("scroll")); });
+    }
+    expect(header()?.className).toContain("max-h-(--sz-240px)");
+    expect(header()?.hasAttribute("inert")).toBe(false);
+
+    await act(async () => { header()?.dispatchEvent(new Event("transitionend", { bubbles: true })); });
+
+    scrollTop = 0;
+    await act(async () => { window.dispatchEvent(new Event("scroll")); });
+    expect(header()?.getAttribute("aria-hidden")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
   it("collapses atomically when the pointer is still over the sidebar (no re-peek) — PAP-10676", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
