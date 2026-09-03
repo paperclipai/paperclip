@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash, type Hash } from "node:crypto";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import {
-  ensurePaperclipSkillSymlink,
+  materializePaperclipSkillCopy,
   resolvePaperclipInstanceRootForAdapter,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -149,7 +149,13 @@ export async function prepareClaudePromptBundle(input: {
   for (const entry of skills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      await ensurePaperclipSkillSymlink(entry.source, target);
+      const result = await materializePaperclipSkillCopy(entry.source, target);
+      if (result.skippedSymlinks.length > 0) {
+        await onLog(
+          "stdout",
+          `[paperclip] Materialized Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
+        );
+      }
     } catch (err) {
       await onLog(
         "stderr",
