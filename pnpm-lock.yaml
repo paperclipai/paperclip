@@ -1028,7 +1028,7 @@ importers:
         version: 0.48.0(typescript@7.0.2)
       '@mdxeditor/editor':
         specifier: ^4.2.3
-        version: 4.2.3(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.29)
+        version: 4.2.3(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.32)
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -1135,8 +1135,8 @@ importers:
         specifier: ^3.6.0
         version: 3.6.0
       yjs:
-        specifier: 13.6.29
-        version: 13.6.29
+        specifier: 13.6.32
+        version: 13.6.32
     devDependencies:
       '@sentry/browser':
         specifier: 10.71.0
@@ -8469,8 +8469,8 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
-  yjs@13.6.29:
-    resolution: {integrity: sha512-kHqDPdltoXH+X4w1lVmMtddE3Oeqq48nM40FD5ojTd8xYhQpzIDcfE2keMSU5bAgRPJBe225WTUdyUgj1DtbiQ==}
+  yjs@13.6.32:
+    resolution: {integrity: sha512-lfiJIIC4Xayt5ItynE407ehlE03pCjeOc4hkR4yxxvvNJ4kuiN25B0g+Qp8XagYz361LLL7DCzR5bvFJ81QKtQ==}
     engines: {node: '>=16.0.0', npm: '>=8.0.0'}
 
   zod-to-json-schema@3.25.2:
@@ -10099,7 +10099,7 @@ snapshots:
     optionalDependencies:
       typescript: 7.0.2
 
-  '@lexical/react@0.48.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.29)':
+  '@lexical/react@0.48.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.32)':
     dependencies:
       '@floating-ui/react': 0.27.20(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@lexical/a11y': 0.48.0(typescript@7.0.2)
@@ -10119,13 +10119,13 @@ snapshots:
       '@lexical/table': 0.48.0(typescript@7.0.2)
       '@lexical/text': 0.48.0(typescript@7.0.2)
       '@lexical/utils': 0.48.0(typescript@7.0.2)
-      '@lexical/yjs': 0.48.0(typescript@7.0.2)(yjs@13.6.29)
+      '@lexical/yjs': 0.48.0(typescript@7.0.2)(yjs@13.6.32)
       lexical: 0.48.0(typescript@7.0.2)
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
     optionalDependencies:
       typescript: 7.0.2
-      yjs: 13.6.29
+      yjs: 13.6.32
 
   '@lexical/rich-text@0.48.0(typescript@7.0.2)':
     dependencies:
@@ -10172,12 +10172,12 @@ snapshots:
     optionalDependencies:
       typescript: 7.0.2
 
-  '@lexical/yjs@0.48.0(typescript@7.0.2)(yjs@13.6.29)':
+  '@lexical/yjs@0.48.0(typescript@7.0.2)(yjs@13.6.32)':
     dependencies:
       '@lexical/internal': 0.48.0(typescript@7.0.2)
       '@lexical/selection': 0.48.0(typescript@7.0.2)
       lexical: 0.48.0(typescript@7.0.2)
-      yjs: 13.6.29
+      yjs: 13.6.32
     optionalDependencies:
       typescript: 7.0.2
 
@@ -10286,7 +10286,7 @@ snapshots:
       '@types/react': 19.2.18
       react: 19.2.8
 
-  '@mdxeditor/editor@4.2.3(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.29)':
+  '@mdxeditor/editor@4.2.3(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.32)':
     dependencies:
       '@codemirror/commands': 6.11.0
       '@codemirror/lang-markdown': 6.5.2
@@ -10301,7 +10301,7 @@ snapshots:
       '@lexical/list': 0.48.0(typescript@7.0.2)
       '@lexical/markdown': 0.48.0(typescript@7.0.2)
       '@lexical/plain-text': 0.48.0(typescript@7.0.2)
-      '@lexical/react': 0.48.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.29)
+      '@lexical/react': 0.48.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.32)
       '@lexical/rich-text': 0.48.0(typescript@7.0.2)
       '@lexical/selection': 0.48.0(typescript@7.0.2)
       '@lexical/utils': 0.48.0(typescript@7.0.2)
@@ -16190,7 +16190,7 @@ snapshots:
 
   yallist@3.1.1: {}
 
-  yjs@13.6.29:
+  yjs@13.6.32:
     dependencies:
       lib0: 0.2.117
 
