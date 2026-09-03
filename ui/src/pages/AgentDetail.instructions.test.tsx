@@ -348,6 +348,7 @@ describe("PromptsTab instruction editor", () => {
       { "AGENTS.md": makeDetail(summary, "# Current") },
       { onDirtyChange },
     );
+    await selectInstructionMode("Edit");
 
     const editorProps = await waitFor(() => {
       const latest = markdownEditorRenderMock.mock.calls.at(-1)?.[0] as
@@ -382,6 +383,7 @@ describe("PromptsTab instruction editor", () => {
         onCancelActionChange: (next) => { cancelAction = next; },
       },
     );
+    await selectInstructionMode("Edit");
 
     const editor = await waitFor(() => {
       const candidate = container.querySelector<HTMLTextAreaElement>('[data-testid="markdown-editor"]');
