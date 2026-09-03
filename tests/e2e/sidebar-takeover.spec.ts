@@ -1,12 +1,11 @@
 import { test, expect, request as pwRequest, type APIRequestContext } from "@playwright/test";
 
 /**
- * E2E: contextual sidebar replacement model.
+ * E2E: contextual sidebar companion model.
  *
- * Contextual routes render their navigation inside the one stable sidebar
- * shell. The global company navigation is absent while the contextual surface
- * is active, the account menu remains available, and leaving the surface
- * restores the user's global sidebar preference.
+ * Contextual routes render their navigation beside the stable global sidebar.
+ * The global company navigation and account menu remain available, and leaving
+ * the surface restores the user's global sidebar preference.
  *
  * Plugin route sidebars share the same Layout path. A live plugin-route test
  * requires a plugin fixture, so that branch remains covered by Layout tests.
@@ -37,7 +36,7 @@ async function createCompany(board: APIRequestContext): Promise<{ id: string; pr
   };
 }
 
-test.describe("Contextual sidebar replacement", () => {
+test.describe("Contextual sidebar companion", () => {
   let board: APIRequestContext;
   let companyId: string;
   let prefix: string;
@@ -61,7 +60,7 @@ test.describe("Contextual sidebar replacement", () => {
     }, COLLAPSED_STORAGE_KEY);
   });
 
-  test("replaces global navigation with Settings in the one sidebar shell", async ({ page }) => {
+  test("shows Settings beside the global navigation", async ({ page }) => {
     await page.goto(`/${prefix}/company/settings`);
 
     const contextual = page.locator('[data-contextual-sidebar="settings"]');
@@ -74,7 +73,7 @@ test.describe("Contextual sidebar replacement", () => {
     await expect(page.getByRole("button", { name: "Back from Settings" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Open account menu" })).toBeVisible();
 
-    await expect(page.getByRole("link", { name: "Dashboard" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
     await expect(page.getByLabel(APP_SIDEBAR_EXPANDED_MARKER)).toHaveCount(0);
   });
 
@@ -97,7 +96,7 @@ test.describe("Contextual sidebar replacement", () => {
 
     await page.goto(`/${prefix}/company/settings`);
     await expect(page.locator('[data-contextual-sidebar="settings"]')).toBeVisible();
-    await expect(page.getByRole("link", { name: "Dashboard" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
 
     await page.goto(`/${prefix}/dashboard`);
 
