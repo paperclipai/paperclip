@@ -149,7 +149,9 @@ import {
   pendingConnectionIntentInteraction,
   retryConnectionIntentInteraction,
 } from "@/fixtures/issueThreadInteractionFixtures";
-import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
+import type { CompanySecret, EnvBinding, Issue } from "@paperclipai/shared";
+import { CollectionToolbar } from "@/components/CollectionToolbar";
+import { IssueRow } from "@/components/IssueRow";
 import {
   EnvInputsList,
   ExternalSourcesList,
@@ -238,6 +240,15 @@ const DESIGN_GUIDE_DEGRADED_OUTPUTS: IssueWorkProduct[] = [
     metadata: { attachmentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", contentType: "video/mp4" },
   } as IssueWorkProduct,
 ];
+
+const DESIGN_GUIDE_TASK = {
+  id: "design-guide-task",
+  identifier: "PAP-427",
+  title: "Reconcile the navigation model across operator surfaces",
+  status: "in_progress",
+  priority: "medium",
+  blockerAttention: false,
+} as unknown as Issue;
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -494,7 +505,8 @@ export function DesignGuide() {
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
-                "InlineBanner", "BuiltInAgentGate", "BuiltInLifecycleChip",
+                "InlineBanner", "BuiltInAgentGate", "BuiltInLifecycleChip", "CollectionToolbar",
+                "IssueRow", "ContextualSidebarFrame",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-(length:--text-nano)">
                   {name}
@@ -502,6 +514,30 @@ export function DesignGuide() {
               ))}
             </div>
           </SubSection>
+        </div>
+      </Section>
+
+      <Section title="Task Collection">
+        <p className="max-w-prose text-sm text-muted-foreground">
+          CollectionToolbar owns shared geometry while each page owns its state and behavior.
+          The canonical task row is opt-in during migration: status leads, unread work uses
+          title emphasis, metadata remains stable, and the task identifier trails.
+        </p>
+        <CollectionToolbar
+          context={<span className="text-sm font-medium">Recent tasks</span>}
+          search={<Input aria-label="Search task collection example" placeholder="Search tasks..." />}
+          controls={<Button variant="outline" size="sm">Filter</Button>}
+          actions={<Button size="sm">New task</Button>}
+          feedback={<span className="text-xs text-muted-foreground">1 task · Updated newest first</span>}
+        />
+        <div className="overflow-hidden rounded-lg border border-border">
+          <IssueRow
+            issue={DESIGN_GUIDE_TASK}
+            presentation="task"
+            unreadState="visible"
+            metadata={<span className="text-xs text-muted-foreground">Updated 12m ago</span>}
+            actions={<Button variant="ghost" size="xs">More</Button>}
+          />
         </div>
       </Section>
 

@@ -24,7 +24,6 @@ const GAP_Y = 80;
 const PADDING = 60;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
-const FIT_PADDING = 40;
 const TOUCH_MOVE_THRESHOLD = 6;
 
 // ── Tree layout types ───────────────────────────────────────────────────
@@ -140,28 +139,6 @@ function clampZoom(value: number): number {
   return Math.min(Math.max(value, MIN_ZOOM), MAX_ZOOM);
 }
 
-function fitChartToViewport(
-  containerWidth: number,
-  containerHeight: number,
-  bounds: { width: number; height: number },
-): { zoom: number; pan: Point } | null {
-  if (containerWidth <= FIT_PADDING || containerHeight <= FIT_PADDING) return null;
-
-  const scaleX = (containerWidth - FIT_PADDING) / bounds.width;
-  const scaleY = (containerHeight - FIT_PADDING) / bounds.height;
-  const zoom = clampZoom(Math.min(scaleX, scaleY, 1));
-  const chartWidth = bounds.width * zoom;
-  const chartHeight = bounds.height * zoom;
-
-  return {
-    zoom,
-    pan: {
-      x: (containerWidth - chartWidth) / 2,
-      y: (containerHeight - chartHeight) / 2,
-    },
-  };
-}
-
 function touchPoint(touch: React.Touch): Point {
   return { x: touch.clientX, y: touch.clientY };
 }
@@ -196,16 +173,7 @@ const defaultDotColor = "var(--hex-a3a3a3)";
 
 // ── Main component ──────────────────────────────────────────────────────
 
-export interface OrgChartProps {
-  /** Pre-filtered tree for embedding the chart in another collection page. */
-  orgTree?: OrgNode[];
-  /** Agent records paired with a pre-filtered embedded tree. */
-  agents?: Agent[];
-  /** Hides page-level actions and breadcrumb ownership. */
-  embedded?: boolean;
-}
-
-export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, embedded = false }: OrgChartProps = {}) {
+export function OrgChart() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -217,19 +185,17 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   const showImport = !isCloud && !hiddenSettings.has("company.import");
   const showExport = !hiddenSettings.has("company.export");
 
-  const { data: queriedOrgTree, isLoading } = useQuery({
+  const { data: orgTree, isLoading } = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
     queryFn: () => agentsApi.org(selectedCompanyId!),
-    enabled: !!selectedCompanyId && providedOrgTree === undefined,
+    enabled: !!selectedCompanyId,
   });
 
-  const { data: queriedAgents } = useQuery({
+  const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && providedAgents === undefined,
+    enabled: !!selectedCompanyId,
   });
-  const orgTree = providedOrgTree ?? queriedOrgTree;
-  const agents = providedAgents ?? queriedAgents;
 
   const agentMap = useMemo(() => {
     const m = new Map<string, Agent>();
@@ -238,8 +204,8 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   }, [agents]);
 
   useEffect(() => {
-    if (!embedded) setBreadcrumbs([{ label: "Org Chart" }]);
-  }, [embedded, setBreadcrumbs]);
+    setBreadcrumbs([{ label: "Org Chart" }]);
+  }, [setBreadcrumbs]);
 
   // Layout computation
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
@@ -286,18 +252,26 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   // Center the chart on first load
   const hasInitialized = useRef(false);
   useEffect(() => {
-    hasInitialized.current = false;
-  }, [orgTree]);
-
-  useEffect(() => {
     if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
-    const container = containerRef.current;
-    const fitted = fitChartToViewport(container.clientWidth, container.clientHeight, bounds);
-    if (!fitted) return;
-
     hasInitialized.current = true;
-    setZoom(fitted.zoom);
-    setPan(fitted.pan);
+
+    const container = containerRef.current;
+    const containerW = container.clientWidth;
+    const containerH = container.clientHeight;
+
+    // Fit chart to container
+    const scaleX = (containerW - 40) / bounds.width;
+    const scaleY = (containerH - 40) / bounds.height;
+    const fitZoom = Math.min(scaleX, scaleY, 1);
+
+    const chartW = bounds.width * fitZoom;
+    const chartH = bounds.height * fitZoom;
+
+    setZoom(fitZoom);
+    setPan({
+      x: (containerW - chartW) / 2,
+      y: (containerH - chartH) / 2,
+    });
   }, [allNodes, bounds]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -353,15 +327,15 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
 
   const fitToScreen = useCallback(() => {
     if (!containerRef.current) return;
-    const fitted = fitChartToViewport(
-      containerRef.current.clientWidth,
-      containerRef.current.clientHeight,
-      bounds,
-    );
-    if (!fitted) return;
-
-    setZoom(fitted.zoom);
-    setPan(fitted.pan);
+    const cW = containerRef.current.clientWidth;
+    const cH = containerRef.current.clientHeight;
+    const scaleX = (cW - 40) / bounds.width;
+    const scaleY = (cH - 40) / bounds.height;
+    const fitZoom = Math.min(scaleX, scaleY, 1);
+    const chartW = bounds.width * fitZoom;
+    const chartH = bounds.height * fitZoom;
+    setZoom(fitZoom);
+    setPan({ x: (cW - chartW) / 2, y: (cH - chartH) / 2 });
   }, [bounds]);
 
   const handleTouchStart = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
@@ -465,10 +439,10 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   }, [pan, zoom]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Network} message="Select an organization to view the org chart." />;
+    return <EmptyState icon={Network} message="Select a company to view the org chart." />;
   }
 
-  if (providedOrgTree === undefined && isLoading) {
+  if (isLoading) {
     return <PageSkeleton variant="org-chart" />;
   }
 
@@ -477,31 +451,25 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   }
 
   return (
-    <div
-      className={embedded
-        ? "flex min-h-(--sz-420px) flex-1 flex-col md:min-h-0"
-        : "flex h-(--sz-calc-38) min-h-(--sz-420px) flex-col md:h-full md:min-h-0"}
-    >
-      {!embedded && (showImport || showExport) ? (
-        <div className="mb-2 flex shrink-0 flex-wrap items-center justify-start gap-2">
-        {showImport ? (
+    <div className="flex h-(--sz-calc-38) min-h-(--sz-420px) flex-col md:h-full md:min-h-0">
+      <div className="mb-2 flex shrink-0 flex-wrap items-center justify-start gap-2">
+        {showImport && (
           <Link to="/company/import">
             <Button variant="outline" size="sm">
               <Upload className="mr-1.5 h-3.5 w-3.5" />
-              Import organization
+              Import company
             </Button>
           </Link>
-        ) : null}
-        {showExport ? (
+        )}
+        {showExport && (
           <Link to="/company/export">
             <Button variant="outline" size="sm">
               <Download className="mr-1.5 h-3.5 w-3.5" />
-              Export organization
+              Export company
             </Button>
           </Link>
-        ) : null}
-        </div>
-      ) : null}
+        )}
+      </div>
       <div
         ref={containerRef}
         data-testid="org-chart-viewport"
