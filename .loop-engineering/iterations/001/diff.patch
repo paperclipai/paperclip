@@ -1,203 +1,244 @@
 diff --git a/.loop-engineering/iterations/001/context.md b/.loop-engineering/iterations/001/context.md
-index 7d535b4a2..3e9932a0d 100644
+index 3e9932a0d..f57ff5b9b 100644
 --- a/.loop-engineering/iterations/001/context.md
 +++ b/.loop-engineering/iterations/001/context.md
-@@ -1,12 +1,7 @@
+@@ -1,7 +1,7 @@
  # Context
  
  - objective: Fix exact scoped npm plugin installs and pass the real Paperclip version into plugin compatibility checks.
--- git_head: 39b8ee296
-+- git_head: 8480f8eb4
+-- git_head: 8480f8eb4
++- git_head: cab91fad0
  - changed_files:
--  - cli/src/__tests__/plugin-init.test.ts
--  - cli/src/commands/client/plugin.ts
--  - packages/shared/src/index.ts
--  - server/src/__tests__/plugin-routes-authz.test.ts
--  - server/src/app.ts
--  - server/src/routes/plugins.ts
-+  - none
+-  - none
++  - .loop-engineering/loop.yml
  - checklist_classification: checklist.tsv
 diff --git a/.loop-engineering/iterations/001/diff.patch b/.loop-engineering/iterations/001/diff.patch
-index 341697bc1..e69de29bb 100644
+index 41b56e80d..e69de29bb 100644
 --- a/.loop-engineering/iterations/001/diff.patch
 +++ b/.loop-engineering/iterations/001/diff.patch
-@@ -1,179 +0,0 @@
--diff --git a/cli/src/__tests__/plugin-init.test.ts b/cli/src/__tests__/plugin-init.test.ts
--index 2bc0bbd72..0a8f81f34 100644
----- a/cli/src/__tests__/plugin-init.test.ts
--+++ b/cli/src/__tests__/plugin-init.test.ts
--@@ -163,6 +163,24 @@ describe("plugin install", () => {
--       isLocalPath: false,
--     });
--   });
--+
--+  it("splits a scoped package with an inline exact version", () => {
--+    expect(
--+      buildPluginInstallRequest("@kujolang/paperclip@0.1.5", {}, {
--+        cwd: makeTempDir(),
--+      }),
--+    ).toEqual({
--+      packageName: "@kujolang/paperclip",
--+      version: "0.1.5",
--+      isLocalPath: false,
--+    });
--+  });
--+
--+  it("rejects conflicting inline and option versions", () => {
--+    expect(() =>
--+      buildPluginInstallRequest("@kujolang/paperclip@0.1.5", { version: "0.1.4" }),
--+    ).toThrow("conflicts with --version 0.1.4");
--+  });
-- });
+@@ -1,203 +0,0 @@
+-diff --git a/.loop-engineering/iterations/001/context.md b/.loop-engineering/iterations/001/context.md
+-index 7d535b4a2..3e9932a0d 100644
+---- a/.loop-engineering/iterations/001/context.md
+-+++ b/.loop-engineering/iterations/001/context.md
+-@@ -1,12 +1,7 @@
+- # Context
 - 
-- describe("plugin target diagnostics", () => {
--diff --git a/cli/src/commands/client/plugin.ts b/cli/src/commands/client/plugin.ts
--index 46b5da24c..8d7fc5755 100644
----- a/cli/src/commands/client/plugin.ts
--+++ b/cli/src/commands/client/plugin.ts
--@@ -7,6 +7,7 @@ import {
--   type ScaffoldPluginOptions,
-- } from "../../../../packages/plugins/create-paperclip-plugin/src/index.js";
-- import pc from "picocolors";
--+import { parseNpmPackageSpec } from "@paperclipai/shared";
-- import {
--   addCommonClientOptions,
--   handleCommandError,
--@@ -167,9 +168,13 @@ export function buildPluginInstallRequest(
--     throw new Error("--version is only supported for npm package installs, not local plugin paths.");
--   }
-- 
--+  const npmSpec = isLocal
--+    ? { packageName: packageArg, version: undefined }
--+    : parseNpmPackageSpec(packageArg, opts.version);
--+
--   return {
---    packageName: resolvePackageArg(packageArg, Boolean(isLocal), cwd),
---    version: opts.version,
--+    packageName: resolvePackageArg(npmSpec.packageName, Boolean(isLocal), cwd),
--+    version: npmSpec.version,
--     isLocalPath: Boolean(isLocal),
--   };
-- }
--@@ -434,7 +439,7 @@ export function registerPluginCommands(program: Command): void {
--               pc.dim(
--                 installRequest.isLocalPath
--                   ? `Installing plugin from local path: ${installRequest.packageName}`
---                  : `Installing plugin: ${installRequest.packageName}${opts.version ? `@${opts.version}` : ""}`,
--+                  : `Installing plugin: ${installRequest.packageName}${installRequest.version ? `@${installRequest.version}` : ""}`,
--               ),
--             );
--           }
--diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
--index e10d52e8a..685977ee4 100644
----- a/packages/shared/src/index.ts
--+++ b/packages/shared/src/index.ts
--@@ -1,4 +1,5 @@
-- export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
--+export { parseNpmPackageSpec, type ParsedNpmPackageSpec } from "./npm-package-spec.js";
-- export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
-- export {
--   nativeFinalizationResultSchema,
--diff --git a/server/src/__tests__/plugin-routes-authz.test.ts b/server/src/__tests__/plugin-routes-authz.test.ts
--index 3bded76b2..a723803c0 100644
----- a/server/src/__tests__/plugin-routes-authz.test.ts
--+++ b/server/src/__tests__/plugin-routes-authz.test.ts
--@@ -234,6 +234,51 @@ describe.sequential("plugin install and upgrade authz", () => {
--     expect(mockLifecycle.load).toHaveBeenCalledWith(pluginId);
--   }, 20_000);
-- 
--+  it("splits a scoped package with an inline exact version", async () => {
--+    const pluginKey = "kujolang.paperclip";
--+    const discovered = { manifest: { id: pluginKey } };
--+    mockRegistry.getByKey.mockResolvedValue({
--+      id: pluginId,
--+      pluginKey,
--+      packageName: "@kujolang/paperclip",
--+      version: "0.1.5",
--+    });
--+    mockRegistry.getById.mockResolvedValue({
--+      id: pluginId,
--+      pluginKey,
--+      packageName: "@kujolang/paperclip",
--+      version: "0.1.5",
--+    });
--+    mockLifecycle.load.mockResolvedValue(undefined);
--+
--+    const { app, loader } = await createApp(
--+      boardActor({ isInstanceAdmin: true }),
--+      { installPlugin: vi.fn().mockResolvedValue(discovered) },
--+    );
--+
--+    const res = await request(app)
--+      .post("/api/plugins/install")
--+      .send({ packageName: "@kujolang/paperclip@0.1.5" });
--+
--+    expect(res.status).toBe(200);
--+    expect(loader.installPlugin).toHaveBeenCalledWith({
--+      packageName: "@kujolang/paperclip",
--+      version: "0.1.5",
--+    });
--+  }, 20_000);
--+
--+  it("rejects conflicting inline and body versions", async () => {
--+    const { app, loader } = await createApp(boardActor({ isInstanceAdmin: true }));
--+
--+    const res = await request(app)
--+      .post("/api/plugins/install")
--+      .send({ packageName: "@kujolang/paperclip@0.1.5", version: "0.1.4" });
--+
--+    expect(res.status).toBe(400);
--+    expect(res.body.error).toContain("conflicts with --version 0.1.4");
--+    expect(loader.installPlugin).not.toHaveBeenCalled();
--+  }, 20_000);
--+
--   it("rejects plugin upgrades for non-admin board users", async () => {
--     const pluginId = "11111111-1111-4111-8111-111111111111";
--     const { app } = await createApp({
--diff --git a/server/src/app.ts b/server/src/app.ts
--index e7d4230ca..4c903d6a0 100644
----- a/server/src/app.ts
--+++ b/server/src/app.ts
--@@ -5,6 +5,7 @@ import fs from "node:fs";
-- import { fileURLToPath } from "node:url";
-- import type { Db } from "@paperclipai/db";
-- import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
--+import { resolvePluginHostVersion } from "./plugin-host-version.js";
-- import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
-- import type { StorageService } from "./storage/types.js";
-- import { httpLogger, errorHandler } from "./middleware/index.js";
--@@ -609,7 +610,7 @@ export async function createApp(
--       lifecycleManager: lifecycle,
--       instanceInfo: {
--         instanceId: opts.instanceId ?? "default",
---        hostVersion: opts.hostVersion ?? "0.0.0",
--+        hostVersion: resolvePluginHostVersion(opts.hostVersion),
--         deploymentMode: opts.deploymentMode,
--         deploymentExposure: opts.deploymentExposure,
--       },
--diff --git a/server/src/routes/plugins.ts b/server/src/routes/plugins.ts
--index 971283dd0..ea9daa799 100644
----- a/server/src/routes/plugins.ts
--+++ b/server/src/routes/plugins.ts
--@@ -44,6 +44,7 @@ import type {
-- } from "@paperclipai/shared";
-- import {
--   PLUGIN_STATUSES,
--+  parseNpmPackageSpec,
-- } from "@paperclipai/shared";
-- import { pluginRegistryService } from "../services/plugin-registry.js";
-- import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
--@@ -1203,9 +1204,12 @@ export function pluginRoutes(
--     }
-- 
--     try {
--+      const npmSpec = canonicalLocalPath === undefined
--+        ? parseNpmPackageSpec(trimmedPackage, version)
--+        : undefined;
--       const installOptions = canonicalLocalPath !== undefined
--         ? { localPath: canonicalLocalPath }
---        : { packageName: trimmedPackage, version: version?.trim() };
--+        : { packageName: npmSpec!.packageName, version: npmSpec!.version };
-- 
--       const discovered = await loader.installPlugin(installOptions);
-- 
+- - objective: Fix exact scoped npm plugin installs and pass the real Paperclip version into plugin compatibility checks.
+--- git_head: 39b8ee296
+-+- git_head: 8480f8eb4
+- - changed_files:
+--  - cli/src/__tests__/plugin-init.test.ts
+--  - cli/src/commands/client/plugin.ts
+--  - packages/shared/src/index.ts
+--  - server/src/__tests__/plugin-routes-authz.test.ts
+--  - server/src/app.ts
+--  - server/src/routes/plugins.ts
+-+  - none
+- - checklist_classification: checklist.tsv
+-diff --git a/.loop-engineering/iterations/001/diff.patch b/.loop-engineering/iterations/001/diff.patch
+-index 341697bc1..e69de29bb 100644
+---- a/.loop-engineering/iterations/001/diff.patch
+-+++ b/.loop-engineering/iterations/001/diff.patch
+-@@ -1,179 +0,0 @@
+--diff --git a/cli/src/__tests__/plugin-init.test.ts b/cli/src/__tests__/plugin-init.test.ts
+--index 2bc0bbd72..0a8f81f34 100644
+----- a/cli/src/__tests__/plugin-init.test.ts
+--+++ b/cli/src/__tests__/plugin-init.test.ts
+--@@ -163,6 +163,24 @@ describe("plugin install", () => {
+--       isLocalPath: false,
+--     });
+--   });
+--+
+--+  it("splits a scoped package with an inline exact version", () => {
+--+    expect(
+--+      buildPluginInstallRequest("@kujolang/paperclip@0.1.5", {}, {
+--+        cwd: makeTempDir(),
+--+      }),
+--+    ).toEqual({
+--+      packageName: "@kujolang/paperclip",
+--+      version: "0.1.5",
+--+      isLocalPath: false,
+--+    });
+--+  });
+--+
+--+  it("rejects conflicting inline and option versions", () => {
+--+    expect(() =>
+--+      buildPluginInstallRequest("@kujolang/paperclip@0.1.5", { version: "0.1.4" }),
+--+    ).toThrow("conflicts with --version 0.1.4");
+--+  });
+-- });
+-- 
+-- describe("plugin target diagnostics", () => {
+--diff --git a/cli/src/commands/client/plugin.ts b/cli/src/commands/client/plugin.ts
+--index 46b5da24c..8d7fc5755 100644
+----- a/cli/src/commands/client/plugin.ts
+--+++ b/cli/src/commands/client/plugin.ts
+--@@ -7,6 +7,7 @@ import {
+--   type ScaffoldPluginOptions,
+-- } from "../../../../packages/plugins/create-paperclip-plugin/src/index.js";
+-- import pc from "picocolors";
+--+import { parseNpmPackageSpec } from "@paperclipai/shared";
+-- import {
+--   addCommonClientOptions,
+--   handleCommandError,
+--@@ -167,9 +168,13 @@ export function buildPluginInstallRequest(
+--     throw new Error("--version is only supported for npm package installs, not local plugin paths.");
+--   }
+-- 
+--+  const npmSpec = isLocal
+--+    ? { packageName: packageArg, version: undefined }
+--+    : parseNpmPackageSpec(packageArg, opts.version);
+--+
+--   return {
+---    packageName: resolvePackageArg(packageArg, Boolean(isLocal), cwd),
+---    version: opts.version,
+--+    packageName: resolvePackageArg(npmSpec.packageName, Boolean(isLocal), cwd),
+--+    version: npmSpec.version,
+--     isLocalPath: Boolean(isLocal),
+--   };
+-- }
+--@@ -434,7 +439,7 @@ export function registerPluginCommands(program: Command): void {
+--               pc.dim(
+--                 installRequest.isLocalPath
+--                   ? `Installing plugin from local path: ${installRequest.packageName}`
+---                  : `Installing plugin: ${installRequest.packageName}${opts.version ? `@${opts.version}` : ""}`,
+--+                  : `Installing plugin: ${installRequest.packageName}${installRequest.version ? `@${installRequest.version}` : ""}`,
+--               ),
+--             );
+--           }
+--diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
+--index e10d52e8a..685977ee4 100644
+----- a/packages/shared/src/index.ts
+--+++ b/packages/shared/src/index.ts
+--@@ -1,4 +1,5 @@
+-- export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+--+export { parseNpmPackageSpec, type ParsedNpmPackageSpec } from "./npm-package-spec.js";
+-- export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
+-- export {
+--   nativeFinalizationResultSchema,
+--diff --git a/server/src/__tests__/plugin-routes-authz.test.ts b/server/src/__tests__/plugin-routes-authz.test.ts
+--index 3bded76b2..a723803c0 100644
+----- a/server/src/__tests__/plugin-routes-authz.test.ts
+--+++ b/server/src/__tests__/plugin-routes-authz.test.ts
+--@@ -234,6 +234,51 @@ describe.sequential("plugin install and upgrade authz", () => {
+--     expect(mockLifecycle.load).toHaveBeenCalledWith(pluginId);
+--   }, 20_000);
+-- 
+--+  it("splits a scoped package with an inline exact version", async () => {
+--+    const pluginKey = "kujolang.paperclip";
+--+    const discovered = { manifest: { id: pluginKey } };
+--+    mockRegistry.getByKey.mockResolvedValue({
+--+      id: pluginId,
+--+      pluginKey,
+--+      packageName: "@kujolang/paperclip",
+--+      version: "0.1.5",
+--+    });
+--+    mockRegistry.getById.mockResolvedValue({
+--+      id: pluginId,
+--+      pluginKey,
+--+      packageName: "@kujolang/paperclip",
+--+      version: "0.1.5",
+--+    });
+--+    mockLifecycle.load.mockResolvedValue(undefined);
+--+
+--+    const { app, loader } = await createApp(
+--+      boardActor({ isInstanceAdmin: true }),
+--+      { installPlugin: vi.fn().mockResolvedValue(discovered) },
+--+    );
+--+
+--+    const res = await request(app)
+--+      .post("/api/plugins/install")
+--+      .send({ packageName: "@kujolang/paperclip@0.1.5" });
+--+
+--+    expect(res.status).toBe(200);
+--+    expect(loader.installPlugin).toHaveBeenCalledWith({
+--+      packageName: "@kujolang/paperclip",
+--+      version: "0.1.5",
+--+    });
+--+  }, 20_000);
+--+
+--+  it("rejects conflicting inline and body versions", async () => {
+--+    const { app, loader } = await createApp(boardActor({ isInstanceAdmin: true }));
+--+
+--+    const res = await request(app)
+--+      .post("/api/plugins/install")
+--+      .send({ packageName: "@kujolang/paperclip@0.1.5", version: "0.1.4" });
+--+
+--+    expect(res.status).toBe(400);
+--+    expect(res.body.error).toContain("conflicts with --version 0.1.4");
+--+    expect(loader.installPlugin).not.toHaveBeenCalled();
+--+  }, 20_000);
+--+
+--   it("rejects plugin upgrades for non-admin board users", async () => {
+--     const pluginId = "11111111-1111-4111-8111-111111111111";
+--     const { app } = await createApp({
+--diff --git a/server/src/app.ts b/server/src/app.ts
+--index e7d4230ca..4c903d6a0 100644
+----- a/server/src/app.ts
+--+++ b/server/src/app.ts
+--@@ -5,6 +5,7 @@ import fs from "node:fs";
+-- import { fileURLToPath } from "node:url";
+-- import type { Db } from "@paperclipai/db";
+-- import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
+--+import { resolvePluginHostVersion } from "./plugin-host-version.js";
+-- import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
+-- import type { StorageService } from "./storage/types.js";
+-- import { httpLogger, errorHandler } from "./middleware/index.js";
+--@@ -609,7 +610,7 @@ export async function createApp(
+--       lifecycleManager: lifecycle,
+--       instanceInfo: {
+--         instanceId: opts.instanceId ?? "default",
+---        hostVersion: opts.hostVersion ?? "0.0.0",
+--+        hostVersion: resolvePluginHostVersion(opts.hostVersion),
+--         deploymentMode: opts.deploymentMode,
+--         deploymentExposure: opts.deploymentExposure,
+--       },
+--diff --git a/server/src/routes/plugins.ts b/server/src/routes/plugins.ts
+--index 971283dd0..ea9daa799 100644
+----- a/server/src/routes/plugins.ts
+--+++ b/server/src/routes/plugins.ts
+--@@ -44,6 +44,7 @@ import type {
+-- } from "@paperclipai/shared";
+-- import {
+--   PLUGIN_STATUSES,
+--+  parseNpmPackageSpec,
+-- } from "@paperclipai/shared";
+-- import { pluginRegistryService } from "../services/plugin-registry.js";
+-- import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
+--@@ -1203,9 +1204,12 @@ export function pluginRoutes(
+--     }
+-- 
+--     try {
+--+      const npmSpec = canonicalLocalPath === undefined
+--+        ? parseNpmPackageSpec(trimmedPackage, version)
+--+        : undefined;
+--       const installOptions = canonicalLocalPath !== undefined
+--         ? { localPath: canonicalLocalPath }
+---        : { packageName: trimmedPackage, version: version?.trim() };
+--+        : { packageName: npmSpec!.packageName, version: npmSpec!.version };
+-- 
+--       const discovered = await loader.installPlugin(installOptions);
+-- 
+diff --git a/.loop-engineering/loop.yml b/.loop-engineering/loop.yml
+index ca7f0c176..a2d02a545 100644
+--- a/.loop-engineering/loop.yml
++++ b/.loop-engineering/loop.yml
+@@ -2,7 +2,7 @@ objective: "Fix exact scoped npm plugin installs and pass the real Paperclip ver
+ checklist_file: ".loop-engineering/CHECKLIST.md"
+ max_iterations: 8
+ max_no_progress: 2
+-max_consecutive_failures: 3
++max_consecutive_failures: 4
+ 
+ allowed_actions:
+   - read_files
+@@ -22,7 +22,7 @@ eval_gates:
+     required: true
+ 
+   - id: diff_check
+-    command: "git diff --check"
++    command: "git diff --check -- . ':(exclude).loop-engineering/**'"
+     required: true
+ 
+ commit:

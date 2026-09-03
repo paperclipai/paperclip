@@ -3,3 +3,6 @@ iteration	action	verdict	progress	evidence	justification
 001	configured-gates	failed	0	iterations/001/eval.log	required gate failed
 002	configured-gates	failed	0	iterations/002/eval.log	required gate failed
 003	configured-gates	failed	0	iterations/003/eval.log	required gate failed
+001	configured-gates	failed	0	iterations/001/eval.log	required gate failed
+002	configured-gates	failed	0	iterations/002/eval.log	required gate failed
+003	configured-gates	failed	0	iterations/003/eval.log	required gate failed

@@ -33,4 +33,4 @@ blocked
 
 ## Next Start
 
-- repeated-failure: required gate failed 3 times
+- stall: no measurable progress for 2 iterations

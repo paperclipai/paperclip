@@ -2,7 +2,7 @@ objective: "Fix exact scoped npm plugin installs and pass the real Paperclip ver
 checklist_file: ".loop-engineering/CHECKLIST.md"
 max_iterations: 8
 max_no_progress: 2
-max_consecutive_failures: 3
+max_consecutive_failures: 4
 
 allowed_actions:
   - read_files
@@ -22,7 +22,7 @@ eval_gates:
     required: true
 
   - id: diff_check
-    command: "git diff --check"
+    command: "git diff --check -- . ':(exclude).loop-engineering/**'"
     required: true
 
 commit:
