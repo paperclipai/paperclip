@@ -610,18 +610,65 @@ jobs:
   # Candidate-branch heads are new commits that never went through a canary
   # or nightly, so they must pass full verification before publishing.
   # Promoted nightlies were already verified by their canary run and skip it.
-  verify_beta_candidate:
+  prepare_beta_candidate_lockfile:
     needs: select_beta
+    if: needs.select_beta.outputs.mode == 'candidate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout beta candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.select_beta.outputs.sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Prepare beta candidate lockfile
+        run: |
+          pnpm install --ignore-scripts --no-frozen-lockfile
+
+          changed="$(git status --porcelain)"
+          if [ -n "$changed" ] && printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during beta candidate lockfile preparation:"
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Upload prepared beta candidate lockfile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: beta-candidate-lockfile
+          path: pnpm-lock.yaml
+          retention-days: 1
+          if-no-files-found: error
+
+  verify_beta_candidate:
+    needs: [select_beta, prepare_beta_candidate_lockfile]
     if: needs.select_beta.outputs.mode == 'candidate'
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ needs.select_beta.outputs.sha }}
+      lockfile_artifact: beta-candidate-lockfile
 
   publish_beta:
-    needs: [select_beta, verify_beta_candidate]
+    needs: [select_beta, prepare_beta_candidate_lockfile, verify_beta_candidate]
     if: >-
       !cancelled() &&
       needs.select_beta.result == 'success' &&
+      (needs.prepare_beta_candidate_lockfile.result == 'success' ||
+       (needs.prepare_beta_candidate_lockfile.result == 'skipped' && needs.select_beta.outputs.mode == 'promote')) &&
       (needs.verify_beta_candidate.result == 'success' ||
        (needs.verify_beta_candidate.result == 'skipped' && needs.select_beta.outputs.mode == 'promote'))
     runs-on: ubuntu-latest
@@ -647,6 +694,13 @@ jobs:
           ref: ${{ needs.select_beta.outputs.sha }}
           fetch-depth: 0
 
+      - name: Restore prepared beta candidate lockfile
+        if: needs.select_beta.outputs.mode == 'candidate'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: beta-candidate-lockfile
+          path: .
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
@@ -662,9 +716,15 @@ jobs:
         run: node ./scripts/release-package-map.mjs check
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: |
+          if [ "${{ needs.select_beta.outputs.mode }}" = "candidate" ]; then
+            pnpm install --frozen-lockfile
+          else
+            pnpm install --no-frozen-lockfile
+          fi
 
       - name: Restore tracked install-time changes
+        if: needs.select_beta.outputs.mode == 'promote'
         run: git checkout -- pnpm-lock.yaml
 
       - name: Configure git author

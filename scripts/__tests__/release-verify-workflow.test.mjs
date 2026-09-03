@@ -80,15 +80,24 @@ test("candidate-branch betas are validated and fully verified before publish", (
   const releaseWorkflow = readWorkflow("release.yml");
 
   // Candidate heads are new commits: selection must pin the naming
-  // convention and publication must be gated on full verification.
+  // convention, resolve one lockfile artifact, and gate publication on the
+  // verification that consumed that exact artifact.
   assert.match(releaseWorkflow, /candidate\/beta-\*\)/);
   assert.match(
     releaseWorkflow,
-    /verify_beta_candidate:\n\s+needs: select_beta\n\s+if: needs\.select_beta\.outputs\.mode == 'candidate'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml/,
+    /prepare_beta_candidate_lockfile:\n\s+needs: select_beta\n\s+if: needs\.select_beta\.outputs\.mode == 'candidate'[\s\S]*?Prepare beta candidate lockfile[\s\S]*?pnpm install --ignore-scripts --no-frozen-lockfile[\s\S]*?Upload prepared beta candidate lockfile[\s\S]*?name: beta-candidate-lockfile/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /verify_beta_candidate:\n\s+needs: \[select_beta, prepare_beta_candidate_lockfile\]\n\s+if: needs\.select_beta\.outputs\.mode == 'candidate'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ needs\.select_beta\.outputs\.sha \}\}\n\s+lockfile_artifact: beta-candidate-lockfile/,
   );
   assert.match(
     releaseWorkflow,
     /needs\.verify_beta_candidate\.result == 'success'/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /publish_beta:[\s\S]*?Restore prepared beta candidate lockfile[\s\S]*?name: beta-candidate-lockfile[\s\S]*?pnpm install --frozen-lockfile/,
   );
 });
 
