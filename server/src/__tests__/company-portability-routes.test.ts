@@ -563,6 +563,55 @@ describe.sequential("company portability routes", () => {
     );
   });
 
+  it.sequential("allows a non-admin to export a selected managed agent when another agent uses external instructions", async () => {
+    mockAgentService.list.mockResolvedValue([
+      {
+        id: "managed-agent",
+        name: "Managed Agent",
+        companyId,
+        status: "active",
+        metadata: null,
+        adapterConfig: { instructionsBundleMode: "managed" },
+      },
+      {
+        id: "external-agent",
+        name: "External Agent",
+        companyId,
+        status: "active",
+        metadata: null,
+        adapterConfig: {
+          instructionsBundleMode: "external",
+          instructionsRootPath: "/srv/paperclip/external-agent",
+        },
+      },
+    ]);
+    mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
+    const app = await createApp({
+      type: "board",
+      userId: "company-admin",
+      companyIds: [companyId],
+      memberships: [{ companyId, status: "active", membershipRole: "admin" }],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const selectedAgentRequest = {
+      ...exportRequest,
+      agents: ["managed-agent"],
+    };
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/exports`)
+      .send(selectedAgentRequest);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.list).toHaveBeenCalledWith(companyId, { includeTerminated: true });
+    expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledWith(
+      companyId,
+      selectedAgentRequest,
+      { allowExternalInstructions: false },
+    );
+  });
+
   it.sequential("keeps non-agent exports open when external instructions are excluded", async () => {
     mockAgentService.list.mockResolvedValue([{
       id: "external-agent",
