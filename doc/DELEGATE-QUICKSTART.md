@@ -27,13 +27,39 @@ After onboarding, open Claude Code or Codex and say:
 
 ## Run again
 
+Setup installs Paperclip as a background service, so it survives terminal close and starts on login. The checkout must live outside macOS privacy-protected folders (`Desktop`, `Documents`, `Downloads`): background services cannot read files there, and setup falls back to a foreground server with a warning. Check it with:
+
 ```sh
-./run-delegate
+paperclipai service status
 ```
 
-## Stop
+On Linux, the service also needs lingering to start without an active login session:
 
-Press `Ctrl+C` in the terminal running Paperclip.
+```sh
+paperclipai service install --enable-linger
+```
+
+Use `./run-delegate` only for a foreground copy. It refuses to start while the service owns the instance.
+
+## Stop and service management
+
+```sh
+paperclipai service status
+paperclipai service logs
+paperclipai service stop
+```
+
+`Ctrl+C` stops a foreground `./run-delegate` copy only. It does not stop the background service.
+
+After pulling updates, rebuild and restart the service without losing the delegate shim:
+
+```sh
+pnpm build && PAPERCLIP_SHIM_PATH="$PWD/scripts/delegate-service-shim.sh" paperclipai service restart
+```
+
+A plain `service start` or `service restart` rewrites the service definition from the current environment and repoints it at the default shim. Re-run `./setup-delegate` to repair that.
+
+Set `PAPERCLIP_DELEGATE_NO_SERVICE=true` to force foreground-only setup (containers and other hosts without a user supervisor). Set `PAPERCLIP_DELEGATE_FORCE_FOREGROUND=true` to run setup or `./run-delegate` next to an active service.
 
 ## Product flow
 
