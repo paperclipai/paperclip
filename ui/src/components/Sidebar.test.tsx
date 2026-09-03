@@ -479,24 +479,22 @@ describe("Sidebar", () => {
     });
   });
 
-  it("hides the Apps nav item unless experimental apps are enabled", async () => {
+  it("always shows Apps at the bottom of the Work section", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
-    const disabledRoot = await renderSidebar();
+    const root = await renderSidebar();
 
-    expect([...container.querySelectorAll("a")].some((anchor) => anchor.textContent === "Apps")).toBe(false);
-
-    flushSync(() => {
-      disabledRoot.unmount();
-    });
-
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
-    const enabledRoot = await renderSidebar();
-
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Apps");
+    const links = [...container.querySelectorAll("a")];
+    const link = links.find((anchor) => anchor.textContent === "Apps");
     expect(link?.getAttribute("href")).toBe("/apps");
+    expect(links.findIndex((anchor) => anchor.textContent === "Apps")).toBeGreaterThan(
+      links.findIndex((anchor) => anchor.textContent === "Projects"),
+    );
+    expect(links.findIndex((anchor) => anchor.textContent === "Apps")).toBeLessThan(
+      links.findIndex((anchor) => anchor.textContent === "Org"),
+    );
 
     flushSync(() => {
-      enabledRoot.unmount();
+      root.unmount();
     });
   });
 

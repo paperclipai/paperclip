@@ -27,6 +27,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
+  list: vi.fn(),
   controlRuntimeCommands: vi.fn(),
 }));
 
@@ -462,6 +463,7 @@ describe("IssueProperties", () => {
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.getDocument.mockResolvedValue(null);
@@ -3019,6 +3021,141 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(findApprovalsRow()?.textContent).toContain("Anyone else");
+
+    act(() => root.unmount());
+  });
+
+  it("hides the execution workspace picker without an enabled project policy", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({ executionWorkspacePolicy: null })]);
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await flush();
+
+    expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
+    expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("shows the workspace picker with no bound workspace", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({
+      executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
+    })]);
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Execution")?.textContent).toBe("Default");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("saves the exact isolated-workspace payload", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({
+      executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
+    })]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+
+    await waitForAssertion(() => expect(findRowTrigger(container, "Execution")).toBeDefined());
+    act(() => findRowTrigger(container, "Execution")!.click());
+    const isolatedOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("New isolated workspace"));
+    act(() => isolatedOption!.click());
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionWorkspacePreference: "isolated_workspace",
+      executionWorkspaceId: null,
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId: null,
+      },
+    });
+    act(() => root.unmount());
+  });
+
+  it("searches reusable workspaces and saves the selected workspace", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({
+      executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
+    })]);
+    const alphaWorkspace = createExecutionWorkspace({
+      id: "workspace-alpha",
+      name: "Alpha workspace",
+      cwd: "/tmp/paperclip/alpha",
+      branchName: "alpha-branch",
+      lastUsedAt: new Date(),
+    });
+    const betaWorkspace = createExecutionWorkspace({
+      id: "workspace-beta",
+      name: "Beta workspace",
+      cwd: "/tmp/paperclip/beta",
+      branchName: "beta-branch",
+      lastUsedAt: new Date(),
+    });
+    mockExecutionWorkspacesApi.list.mockResolvedValue([alphaWorkspace, betaWorkspace]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1", projectWorkspaceId: "workspace-main" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+
+    await waitForAssertion(() => expect(findRowTrigger(container, "Execution")).toBeDefined());
+    act(() => findRowTrigger(container, "Execution")!.click());
+    const reuseOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Reuse existing workspace"));
+    act(() => reuseOption!.click());
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Recent");
+      expect(container.textContent).toContain("Alpha workspace");
+      expect(container.textContent).toContain("Beta workspace");
+    });
+    expect(mockExecutionWorkspacesApi.list).toHaveBeenCalledWith("company-1", {
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-main",
+      reuseEligible: true,
+    });
+
+    const search = container.querySelector('input[aria-label="Search reusable workspaces"]') as HTMLInputElement;
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(search, "Beta");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).not.toContain("Alpha workspace");
+    expect(container.textContent).toContain("Beta workspace");
+
+    const betaOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Beta workspace"));
+    act(() => betaOption!.click());
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceId: "workspace-beta",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId: null,
+      },
+    });
 
     act(() => root.unmount());
   });

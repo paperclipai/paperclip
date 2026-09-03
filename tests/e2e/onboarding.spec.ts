@@ -29,6 +29,26 @@ test.describe("Onboarding wizard", () => {
     const pageErrors: string[] = [];
     page.on("pageerror", (err) => pageErrors.push(err.message));
 
+    // `--data-dir` starts a new server, not a new browser profile. Keep a
+    // resumable draft here so this ordinary browser condition is covered when
+    // the company-list invalidation runs after the create request.
+    await page.addInitScript(() => {
+      localStorage.setItem("paperclip-onboarding-state", JSON.stringify({
+        step: 1,
+        companyName: "",
+        createdCompanyId: null,
+      }));
+    });
+    let delayCompanyListRefetch = false;
+    await page.route("**/api/companies", async (route) => {
+      if (delayCompanyListRefetch && route.request().method() === "GET") {
+        // Keep the invalidation observable: a background fetch must not reset
+        // the in-progress wizard.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      await route.continue();
+    });
+
     // New-NUX surfaces are flag-gated default-OFF (PAP-136/137/138): turn the
     // experimental flag on for this throwaway instance before driving them.
     const flagRes = await page.request.patch("/api/instance/settings/experimental", {
@@ -56,6 +76,7 @@ test.describe("Onboarding wizard", () => {
       page.getByRole("heading", { name: "What is the name of your organization?" }),
     ).toBeVisible({ timeout: 15_000 });
     await page.getByPlaceholder("e.g. Northwind Labs").fill(COMPANY_NAME);
+    delayCompanyListRefetch = true;
     await page.getByRole("button", { name: /^Continue/ }).click();
 
     // Step 1's "Next" now creates the company and goes straight to the agent.
@@ -219,9 +240,17 @@ test.describe("Onboarding wizard", () => {
     await page.locator("#onboarding-agent-name").fill("Ada");
     await page.getByRole("button", { name: "Next" }).click();
 
-    // Step 4 (Connect a model): the default adapter is claude_local, and the
-    // signal above reports no ready credential, so the login panel must show
-    // with no button to reuse a saved login.
+    // Step 4 (Connect a model): pick a source. The step arrives with nothing
+    // selected — the tile row is a question, not a confirmation — and the login
+    // panel is what the answer opens, so there is nothing to assert until one
+    // is pressed. By role rather than by label, because which adapters the row
+    // offers depends on the registry this environment reports.
+    const source = page.getByRole("radio").first();
+    await source.waitFor({ timeout: 30_000 });
+    await source.click();
+
+    // The signal above reports no ready credential, so the login panel must now
+    // show, with no button to reuse a saved login.
     //
     // The panel names the provider rather than the plumbing it runs on, so this
     // title is per-adapter. "Sign in to the environment" is now only the fallback
@@ -231,11 +260,13 @@ test.describe("Onboarding wizard", () => {
     });
     await expect(page.getByRole("button", { name: "Use saved login" })).toHaveCount(0);
 
-    // Exact, because the progress strip's segments are buttons too and one of
-    // them is labelled "Connect a model" for assistive tech. An unanchored
-    // /^Connect/ matches both it and this CTA, which is a strict-mode violation
-    // rather than a wrong click — Playwright refuses instead of guessing.
-    await page.getByRole("button", { name: "Connect", exact: true }).click();
+    // The CTA reads "Next" on this step as on the one before it. Waited on for
+    // *enabled* rather than for visible: it is already on screen and disabled
+    // until the environment probe settles, and clicking a disabled button
+    // raises nothing and does nothing.
+    const connectNext = page.getByRole("button", { name: "Next", exact: true });
+    await expect(connectNext).toBeEnabled({ timeout: 30_000 });
+    await connectNext.click();
 
     // The failed test blocks the hire and shows its own checks.
     await expect(page.getByText("The claude CLI was not found on this host.")).toBeVisible({

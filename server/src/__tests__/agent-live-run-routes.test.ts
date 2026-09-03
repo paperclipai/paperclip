@@ -142,14 +142,15 @@ async function createApp(
     isInstanceAdmin: false,
   },
 ) {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>(
-      "../routes/agents.js",
-    ),
-    vi.importActual<typeof import("../middleware/index.js")>(
-      "../middleware/index.js",
-    ),
-  ]);
+  // Vitest tracks factory-mock resolution in one shared call stack. Importing
+  // these graphs concurrently can drop the services/index factory mock and
+  // accidentally run real DB-backed activity logging against this test stub.
+  const { agentRoutes } = await vi.importActual<
+    typeof import("../routes/agents.js")
+  >("../routes/agents.js");
+  const { errorHandler } = await vi.importActual<
+    typeof import("../middleware/index.js")
+  >("../middleware/index.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {

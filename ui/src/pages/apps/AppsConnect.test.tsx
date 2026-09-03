@@ -17,6 +17,8 @@ const connectAppMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
+const getCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
+const startCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
@@ -31,6 +33,7 @@ const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog"
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
+const GOOGLE_CALENDAR = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-calendar")!;
 const GOOGLE_DRIVE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
 const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
 const PAGERDUTY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "pagerduty")!;
@@ -46,6 +49,9 @@ vi.mock("@/api/tools", () => ({
       finishAppMock(companyId, connectionId, input),
     putConnectionInstalls: (connectionId: string, installs: unknown) =>
       putConnectionInstallsMock(connectionId, installs),
+    getCloudConnectorEnrollment: () => getCloudConnectorEnrollmentMock(),
+    startCloudConnectorEnrollment: (companyId: string, label?: string, returnTo?: string) =>
+      startCloudConnectorEnrollmentMock(companyId, label, returnTo),
   },
 }));
 
@@ -176,6 +182,7 @@ async function gotoLinkFrame(container: HTMLDivElement, url: string) {
     buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
   await flushReact();
+  await passAccessStep();
 }
 
 describe("AppsConnect — Connect with a link (M4 frame)", () => {
@@ -195,6 +202,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         GITHUB,
       ],
       capabilities: {
+        canCreateOrganizationGrant: true,
+        organizationGrantReason: null,
         canSetCompanyInstall: true,
         companyInstallReason: null,
       },
@@ -209,6 +218,23 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     finishAppMock.mockResolvedValue({});
     putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: true,
+      status: "active",
+      brokerBaseUrl: "https://my-staging.paperclip.app",
+      instanceId: "inst-test",
+      environment: "staging",
+      origins: ["https://paperclip.example.test"],
+    });
+    startCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: false,
+      status: "pending",
+      brokerBaseUrl: "https://my-staging.paperclip.app",
+      instanceId: "inst-test",
+      environment: "staging",
+      origins: [],
+      verificationUrl: "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
+    });
     connectAppMock.mockResolvedValue({
       connectionId: "conn-1",
       application: { id: "app-1", name: "example.com" },
@@ -264,7 +290,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(document.activeElement).toBe(urlInput);
   });
 
-  it("an unrecognized URL routes to a frame with the URL, defaulted Name, and a Yes/No toggle", async () => {
+  it("an unrecognized URL routes to a minimal frame with the URL and key choice", async () => {
     await render();
     await gotoLinkFrame(container, "https://www.example.com/actions");
 
@@ -277,11 +303,29 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(buttonByText("No")).toBeTruthy();
     expect(buttonByText("Yes")).toBeTruthy();
 
-    // Name is auto-filled from the host with www. stripped.
-    const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input")).find(
-      (i) => i.getAttribute("placeholder") === "My app",
-    );
-    expect(nameInput?.value).toBe("example.com/actions");
+    expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
+  });
+
+  it("opens the shared Access step before configuring a pasted MCP server", async () => {
+    await render();
+
+    const linkInput = Array.from(
+      container.querySelectorAll<HTMLInputElement>("input"),
+    ).find((input) => input.getAttribute("placeholder")?.startsWith("https://"));
+    await act(async () => setInputValue(linkInput!, "https://mcp.example.com/actions"));
+    await flushReact();
+    await act(async () => {
+      buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(radioContaining("Just me")).toBeTruthy();
+    expect(radioContaining("Any human in the company")?.getAttribute("aria-checked")).toBe("true");
+    expect(radioContaining("Just agents I pick")).toBeTruthy();
+    expect(radioContaining("Any agent")?.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).not.toContain("Does it need a key?");
   });
 
   // -------------------------------------------------------------------------
@@ -511,7 +555,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Your OAuth app");
     expect(container.textContent).toContain("Open Asana app settings");
-    expect(container.textContent).toContain("Create an Asana MCP OAuth app");
+    expect(container.textContent).not.toContain("Create an Asana MCP OAuth app");
     expect(container.textContent).toContain("Paperclip callback URL");
     expect(container.textContent).toContain(
       "http://localhost:3000/api/tools/oauth/callback",
@@ -614,6 +658,46 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
   });
 
+  it("prompts for one-time Cloud registration inside Gmail when managed methods are not yet advertised", async () => {
+    mockParams.appKey = "gmail";
+    listGalleryMock.mockResolvedValue({
+      apps: [{
+        ...GMAIL,
+        methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+    getCloudConnectorEnrollmentMock.mockResolvedValueOnce({
+      configured: false,
+      status: "not_configured",
+      brokerBaseUrl: "https://my-staging.paperclip.app",
+      instanceId: null,
+      environment: "staging",
+      origins: [],
+    });
+
+    await render();
+    await passAccessStep();
+
+    expect(container.textContent).toContain("Connect with Paperclip");
+    expect(container.textContent).not.toContain("Required once for managed Google sign-in.");
+    expect(container.textContent).not.toContain("Your OAuth app");
+
+    await act(async () => {
+      buttonByText("Connect with Paperclip")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(startCloudConnectorEnrollmentMock).toHaveBeenCalledWith(
+      "company-1",
+      "Paperclip",
+      "/apps/connect?source=gmail&stage=setup",
+    );
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
+    );
+  });
+
   it("keeps Google Drive prerequisites off access and defaults to its write-capable method", async () => {
     mockParams.appKey = "google-drive";
     listGalleryMock.mockResolvedValue({ apps: [GOOGLE_DRIVE] });
@@ -624,12 +708,42 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("does not enable unrelated Paperclip customers");
     expect(container.textContent).not.toContain("final project-registration email");
     expect(container.textContent).not.toContain("Apply or verify Developer Preview enrollment");
+    expect(radioContaining("Just me")).toBeTruthy();
+    expect(radioContaining("Any human in the company")?.getAttribute("aria-checked")).toBe("true");
     await passAccessStep();
 
     expect(radioContaining("Read & create")?.getAttribute("aria-checked")).toBe("true");
     expect(radioContaining("Read only")?.getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).toContain("Before connecting, enroll the signed-in Workspace account");
+    expect(container.textContent).not.toContain("Before connecting, enroll the signed-in Workspace account");
+    expect(container.textContent).toContain("Review requirements");
     expect(container.textContent).toContain("Your OAuth app");
+  });
+
+  it("renders Google Calendar as one minimal, unboxed setup screen", async () => {
+    mockParams.appKey = "google-calendar";
+    listGalleryMock.mockResolvedValue({ apps: [GOOGLE_CALENDAR] });
+
+    await render();
+    await passAccessStep();
+
+    const duplicateHeadings = Array.from(container.querySelectorAll("h1, h2")).filter(
+      (heading) => heading.textContent?.trim() === "Connect Google Calendar",
+    );
+    expect(duplicateHeadings).toHaveLength(1);
+    expect(container.textContent).toContain("What should Paperclip be able to do?");
+    expect(container.textContent).toContain("Review requirements");
+    expect(container.textContent).not.toContain("Connect Google Calendar to read and manage events.");
+    expect(container.textContent).not.toContain("All event mutations require approval.");
+    expect(container.textContent).not.toContain("Google Workspace MCP servers are in Developer Preview.");
+    expect(container.textContent).not.toContain("We filled this in from the app.");
+    expect(container.textContent).not.toContain("You’ll continue to Google Calendar");
+    expect(container.textContent).not.toContain("You’ll sign in before anything turns on.");
+    expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
+
+    const capabilityQuestion = Array.from(container.querySelectorAll("label")).find(
+      (label) => label.textContent === "What should Paperclip be able to do?",
+    );
+    expect(capabilityQuestion?.closest(".max-w-xl")?.classList.contains("bg-card")).toBe(false);
   });
 
   it("keeps Shopify prerequisite copy off access before collecting the store domain", async () => {
@@ -661,6 +775,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [GITHUB],
       capabilities: {
+        canCreateOrganizationGrant: false,
+        organizationGrantReason: "Only connection managers can share this credential.",
         canSetCompanyInstall: false,
         companyInstallReason: "Your company policy limits this choice to connection managers.",
       },
@@ -684,6 +800,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(anyAgent?.getAttribute("aria-label")).toContain(
       "Your company policy limits this choice to connection managers.",
     );
+    const organization = radioContaining("Any human in the company");
+    expect(organization?.disabled).toBe(true);
+    expect(organization?.getAttribute("title")).toBe(
+      "Only connection managers can share this credential.",
+    );
+    expect(radioContaining("Just me")?.disabled).toBe(false);
     // "Just agents I pick" is the live alternative, so the step is not a dead end.
     const pick = Array.from(
       document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
@@ -1735,7 +1857,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(input.credentialValues).toBeUndefined();
   });
 
-  it("choosing Yes reveals one masked key field plus the lock reassurance", async () => {
+  it("choosing Yes reveals one masked key field without extra reassurance copy", async () => {
     await render();
     await gotoLinkFrame(container, "https://www.example.com/actions");
 
@@ -1755,7 +1877,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       container.querySelectorAll<HTMLInputElement>("input"),
     ).filter((i) => i.type === "password");
     expect(passwordInputs).toHaveLength(1);
-    expect(container.textContent).toContain("Stored securely.");
+    expect(container.textContent).not.toContain("Stored securely.");
 
     await act(async () => setInputValue(passwordInputs[0], "secret-key"));
     await flushReact();
@@ -1789,10 +1911,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
+    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    await passAccessStep();
+
     expect(container.textContent).toContain("Connect your own MCP server");
     expect(container.textContent).not.toContain(zapierUrl);
     expect(container.textContent).toContain("token=REDACTED");
-    expect(nameInputFrom(container)?.value).toBe("Zapier");
+    expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
     expect(container.querySelector('input[type="password"]')).toBeNull();
 
     await act(async () => {
@@ -1810,7 +1936,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock.mock.calls[0]?.[1].credentialValues).toBeUndefined();
   });
 
-  it("keeps Zapier visible and finishes without a separate access or install step", async () => {
+  it("gives Zapier the shared credential and agent access opener", async () => {
     mockSearch.value = "source=zapier";
     listGalleryMock.mockResolvedValueOnce({
       apps: [
@@ -1845,14 +1971,22 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await render();
 
-    // The pasted-URL path enters its server address in this step, so an identity
-    // question cannot precede it; it keeps today's every-agent default rather
-    // than asking (PAP-17835 leaves the Access step to the curated app path).
-    expect(container.textContent).toContain("Step 1 of 1");
+    expect(container.textContent).toContain("Step 1 of 2");
     expect(container.textContent).toContain("Connect Zapier");
-    expect(container.textContent).toContain("Add MCP URL");
+    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Which agents can use this connection?");
     expect(container.querySelector('img[src="https://example.com/zapier.png"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+    expect(container.querySelector('input[placeholder^="https://mcp.zapier.com"]')).toBeNull();
+
+    await act(async () => {
+      radioContaining("Just me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await passAccessStep();
+
+    expect(container.textContent).toContain("Step 2 of 2");
+    expect(container.textContent).toContain("Add MCP URL");
 
     const linkInput = container.querySelector<HTMLInputElement>(
       'input[placeholder^="https://mcp.zapier.com"]',
@@ -1871,13 +2005,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
       link: zapierUrl,
-      name: "Zapier for the company",
+      name: "Zapier",
       galleryKey: "zapier",
       connectionMethodKey: "generated-url",
+      grantKind: "user",
     });
-    // No grantKind is sent: the pasted-URL path never offered the choice, and
-    // sending "user" without asking would mis-scope the credential.
-    expect(connectAppMock.mock.calls[0]?.[1]).not.toHaveProperty("grantKind");
 
     expect(finishAppMock).toHaveBeenCalledWith("company-1", "conn-1", {
       enabledCatalogEntryIds: ["action-1", "action-2"],
@@ -1922,12 +2054,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       "link=https%3A%2F%2Fwww.example.com%2Factions&name=Bla&applicationId=app-77";
     await render();
 
+    expect(container.textContent).toContain("Which humans can use this credential?");
+    await passAccessStep();
+
     expect(container.textContent).toContain("Connect your own MCP server");
     expect(container.textContent).toContain("https://www.example.com/actions");
-    const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input")).find(
-      (i) => i.getAttribute("placeholder") === "My app",
-    );
-    expect(nameInput?.value).toBe("Bla");
+    expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
 
     await act(async () => {
       buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1998,15 +2130,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).not.toHaveBeenCalled();
   });
 
-  // PAP-11283: the gallery step exposes a Name field (default = app name) so a
-  // connection can be named at create time, matching the link flow.
-  function nameInputFrom(root: HTMLDivElement): HTMLInputElement | undefined {
-    return Array.from(root.querySelectorAll<HTMLInputElement>("input")).find(
-      (i) => i.getAttribute("placeholder") === "My app",
-    );
-  }
-
-  it("gallery key step defaults the Name field to the app name", async () => {
+  it("gallery setup names the connection automatically", async () => {
     await render();
 
     await act(async () => {
@@ -2016,7 +2140,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await passAccessStep();
 
     expect(container.textContent).toContain("Connect GitHub");
-    expect(nameInputFrom(container)?.value).toBe("GitHub");
+    expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
     expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=github&stage=setup");
   });
 
@@ -2108,7 +2232,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
     await passAccessStep();
-    expect(nameInputFrom(container)?.value).toBe("Engineering GitHub for the company");
+    expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
     await act(async () => setInputValue(keyField!, "replacement-key"));
     await flushReact();
@@ -2127,7 +2251,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
   });
 
-  it("a custom name in the gallery step is sent to the connect mutation", async () => {
+  it("uses the gallery app name automatically", async () => {
     await render();
 
     await act(async () => {
@@ -2136,7 +2260,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await passAccessStep();
 
-    await act(async () => setInputValue(nameInputFrom(container)!, "GitHub (stdio smoke)"));
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
     await act(async () => setInputValue(keyField!, "secret-key"));
     await flushReact();
@@ -2149,11 +2272,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const [, input] = connectAppMock.mock.calls[0];
     expect(input).toMatchObject({
       galleryKey: "github",
-      name: "GitHub (stdio smoke) for the company",
+      name: "GitHub for the company",
     });
   });
 
-  it("a custom name on the Google Sheets step is sent to the connect mutation", async () => {
+  it("uses the Google Sheets app name automatically", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
         { ...GOOGLE_SHEETS, availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" } },
@@ -2171,9 +2294,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    // Default is the app name.
-    expect(nameInputFrom(container)?.value).toBe("Google Sheets");
-    await act(async () => setInputValue(nameInputFrom(container)!, "Google Sheets (stdio smoke)"));
+    expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
     await act(async () =>
       setTextareaValue(textarea!, "https://docs.google.com/spreadsheets/d/sheet_123/edit"),
@@ -2188,7 +2309,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const [, input] = connectAppMock.mock.calls[0];
     expect(input).toMatchObject({
       galleryKey: "google-sheets",
-      name: "Google Sheets (stdio smoke) for the company",
+      name: "Google Sheets for the company",
       configValues: { allowedSpreadsheetIds: ["sheet_123"] },
     });
   });
@@ -2308,12 +2429,18 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     return new ApiError(message, status, { error: message, details: { code } });
   }
 
-  it("defaults the connection name from host, port, and path", async () => {
+  it("defaults the hidden connection name from host, port, and path", async () => {
     await render();
     await gotoLinkFrame(container, "http://127.0.0.1:47399/mcp");
 
-    expect(container.querySelector<HTMLInputElement>("#generic-mcp-name")?.value)
-      .toBe("127.0.0.1:47399/mcp");
+    expect(container.querySelector("#generic-mcp-name")).toBeNull();
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
+      name: "127.0.0.1:47399/mcp for the company",
+    });
   });
 
   it("keeps the endpoint host visible while skipping action review", async () => {
@@ -2436,7 +2563,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     expect(container.textContent).not.toContain("PAPERCLIP_PUBLIC_URL");
   });
 
-  it("renders a name conflict as name guidance and focuses the Name field", async () => {
+  it("does not ask the operator to resolve an internal name conflict", async () => {
     connectAppMock.mockRejectedValue(apiError(
       409,
       "tool_access_name_conflict",
@@ -2450,9 +2577,9 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     await flushReact();
     await flushReact();
 
-    const nameInput = container.querySelector<HTMLInputElement>("#generic-mcp-name");
-    expect(container.textContent).toContain("That name is taken");
-    expect(document.activeElement).toBe(nameInput);
+    expect(container.textContent).toContain("Paperclip couldn’t name this connection");
+    expect(container.textContent).not.toContain("Choose a different name");
+    expect(container.querySelector("#generic-mcp-name")).toBeNull();
   });
 
   it("opens advanced authentication when the server wants a credential we can't discover", async () => {

@@ -239,6 +239,11 @@ export interface TaskChatMarkerItem {
   variant: "session_start" | "interrupted" | "turn_boundary";
   label: string;
   detail?: string;
+  /** Renders the marker as a quiet disclosure row with detail beneath it. */
+  collapsible?: boolean;
+  runId?: string;
+  createdAtIso?: string;
+  runHref?: string;
 }
 
 /** A second-tier live token/cost readout (ACP UsageUpdate). */
@@ -299,6 +304,8 @@ export interface TaskChatPlanDocumentItem {
   id: string;
   kind: "plan_document";
   document: IssueDocument;
+  /** Distinguishes a proven semantic write boundary from lossless fallback. */
+  placement?: "write_boundary" | "fallback";
 }
 
 export interface TaskChatProtocolDetail {

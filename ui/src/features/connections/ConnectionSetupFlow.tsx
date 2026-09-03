@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Cloud,
   Copy,
   Link2,
   Loader2,
@@ -209,10 +210,10 @@ const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
   key: 2,
 };
 const ZAPIER_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, number> = {
-  key: 0,
-  access: 1,
+  access: 0,
+  key: 1,
 };
-const ZAPIER_STEP_LABELS = ["Add MCP URL"];
+const ZAPIER_STEP_LABELS = ["Access", "Add MCP URL"];
 
 /**
  * Which identity a fresh connection should default to (PAP-17835).
@@ -437,7 +438,9 @@ export function ConnectionSetupFlow({
     };
   });
 
-  const [step, setStep] = useState<Step>(requestedAppKey || prefill.link || zapierSource ? "key" : "gallery");
+  const [step, setStep] = useState<Step>(
+    requestedAppKey ? "key" : prefill.link || zapierSource ? "access" : "gallery",
+  );
   const [entry, setEntry] = useState<AppDefinition | null>(null);
   const [galleryName, setGalleryName] = useState("");
   const [linkUrl, setLinkUrl] = useState(prefill.link);
@@ -577,7 +580,7 @@ export function ConnectionSetupFlow({
       resetGenericAuthState();
       setCredentials({});
       setConnectResult(null);
-      setStep("key");
+      setStep("access");
       navigate(withConnectionIntent("/apps/connect?source=zapier", connectionIntentId));
       return;
     }
@@ -629,17 +632,74 @@ export function ConnectionSetupFlow({
   useEffect(() => {
     if (host !== "page") return;
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: "Connectors", href: "/apps" },
       { label: vercelConnectMode ? "Vercel Connect" : byoOnly ? "Connect your own tool" : "Connect an app" },
     ]);
     return () => setBreadcrumbs([]);
-  }, [byoOnly, host, setBreadcrumbs, selectedCompany?.name, vercelConnectMode]);
+  }, [byoOnly, host, setBreadcrumbs, vercelConnectMode]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listGallery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+  const fullRequestedDefinition = requestedAppKey
+    ? getConnectableAppDefinition(requestedAppKey)
+    : null;
+  const requestedDefinitionUsesManagedConnector = Boolean(
+    fullRequestedDefinition?.methods.some((candidate) =>
+      candidate.oauthStrategy === "paperclip_cloud_connector"
+      || candidate.oauthStrategy === "paperclip_id_connector"
+    ),
+  );
+  const entryAdvertisesManagedConnector = Boolean(
+    entry?.methods.some((candidate) =>
+      candidate.oauthStrategy === "paperclip_cloud_connector"
+      || candidate.oauthStrategy === "paperclip_id_connector"
+    ),
+  );
+  const connectorEnrollmentQuery = useQuery({
+    queryKey: ["cloud-connector", "enrollment"],
+    queryFn: () => toolsApi.getCloudConnectorEnrollment(),
+    enabled: Boolean(
+      selectedCompanyId
+      && requestedDefinitionUsesManagedConnector
+      && !entryAdvertisesManagedConnector
+    ),
+  });
+  const [connectorEnrollmentError, setConnectorEnrollmentError] = useState<string | null>(null);
+  const openConnectorEnrollment = useCallback((verificationUrl: string) => {
+    const target = resolveAuthorizationTarget(verificationUrl);
+    if (!target.ok) {
+      setConnectorEnrollmentError(target.message);
+      return;
+    }
+    navigateTopLevel(target.url);
+  }, []);
+  const startConnectorEnrollment = useMutation({
+    mutationFn: () => toolsApi.startCloudConnectorEnrollment(
+      selectedCompanyId!,
+      selectedCompany?.name,
+      requestedAppKey
+        ? appConnectHref(requestedAppKey, "key", credentialSource, {
+            resumeConnectionId,
+            reconnectConnectionId,
+            interactionId: connectionIntentId,
+          })
+        : undefined,
+    ),
+    onSuccess: (status) => {
+      if (!status.verificationUrl) {
+        setConnectorEnrollmentError("Paperclip Cloud did not return an enrollment link. Try again.");
+        return;
+      }
+      openConnectorEnrollment(status.verificationUrl);
+    },
+    onError: (error) => {
+      setConnectorEnrollmentError(
+        error instanceof Error ? error.message : "Paperclip couldn’t reach Paperclip Cloud. Try again.",
+      );
+    },
   });
   const applicationsQuery = useQuery({
     queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__"),
@@ -1414,6 +1474,18 @@ export function ConnectionSetupFlow({
     && (directOAuthEntry || oauthPhase !== "entry"),
   );
 
+  const showConnectorEnrollmentStep = Boolean(
+    step === "key"
+    && entry
+    && requestedDefinitionUsesManagedConnector
+    && !entryAdvertisesManagedConnector
+    && (
+      connectorEnrollmentQuery.isLoading
+      || connectorEnrollmentQuery.isError
+      || connectorEnrollmentQuery.data?.configured !== true
+    )
+  );
+
   if (showCuratedOAuthState && automaticOAuthEntry) {
     return (
       <OAuthConnectStateScreen
@@ -1625,16 +1697,54 @@ export function ConnectionSetupFlow({
             setInstallAgentIds(new Set());
             setInstallChoice("all");
             setGrantKind(reconnectGrantKind ?? "organization");
-            setStep("key");
+            setStep("access");
           }}
         />
       )}
 
-      {step === "key" && entry && (
+      {step === "key" && entry && showConnectorEnrollmentStep ? (
+        <div className="mx-auto max-w-xl">
+          <div className="flex items-start gap-3">
+            <div className="rounded-lg bg-muted p-2 text-muted-foreground">
+              <Cloud className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold text-foreground">
+                Connect with Paperclip
+              </h2>
+            </div>
+          </div>
+
+          {connectorEnrollmentQuery.isError || connectorEnrollmentError ? (
+            <InlineBanner tone="danger" className="mt-4">
+              {connectorEnrollmentError ?? "Paperclip couldn’t check Cloud registration. Try again."}
+            </InlineBanner>
+          ) : null}
+
+          <div className="mt-6 flex items-center justify-between gap-3">
+            <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>
+              Back
+            </Button>
+            <Button
+              type="button"
+              disabled={connectorEnrollmentQuery.isLoading || startConnectorEnrollment.isPending}
+              onClick={() => {
+                setConnectorEnrollmentError(null);
+                const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;
+                if (verificationUrl) openConnectorEnrollment(verificationUrl);
+                else startConnectorEnrollment.mutate();
+              }}
+            >
+              {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {connectorEnrollmentQuery.data?.status === "pending"
+                ? "Continue"
+                : "Connect with Paperclip"}
+            </Button>
+          </div>
+        </div>
+      ) : step === "key" && entry ? (
         <KeyStep
           entry={entry}
-          name={galleryName}
-          onNameChange={setGalleryName}
           values={credentials}
           onChange={setCredentials}
           oauthClientId={curatedOAuthClientId}
@@ -1708,13 +1818,12 @@ export function ConnectionSetupFlow({
             connectApp();
           }}
         />
-      )}
+      ) : null}
 
       {step === "key" && !entry && linkUrl && !zapierSource && (
         <LinkConnectStep
           link={linkUrl}
           name={linkName}
-          onNameChange={setLinkName}
           needsKey={linkNeedsKey}
           onNeedsKeyChange={(next) => {
             setLinkNeedsKey(next);
@@ -1746,7 +1855,7 @@ export function ConnectionSetupFlow({
           matchedEntry={linkMatchedEntry}
           onUseMatchedEntry={linkMatchedEntry ? () => useMatchedGalleryEntry(linkMatchedEntry) : undefined}
           submitting={connectMutation.isPending || genericOAuthPending}
-          onBack={backToGallery}
+          onBack={() => setStep("access")}
           onConnect={() => {
             setLinkGuidance(null);
             connectMutation.mutate(undefined);
@@ -1759,7 +1868,7 @@ export function ConnectionSetupFlow({
           link={linkUrl}
           onLinkChange={setLinkUrl}
           submitting={connectMutation.isPending}
-          onBack={backToGallery}
+          onBack={() => setStep("access")}
           onConnect={() => connectMutation.mutate(undefined)}
         />
       )}
@@ -1848,7 +1957,7 @@ function StepHeader({
           ) : null}
           <div>
             <h1 className="text-2xl font-bold tracking-tight">
-              {appIdentity ? `Connect ${appIdentity.name}` : "Connect an app"}
+              {appIdentity ? `Connect ${appIdentity.name}` : "Connect your own MCP server"}
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
             {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-2" /> : null}
@@ -1943,7 +2052,7 @@ export function OAuthConnectStateScreen({
         unverifiedHost={unverifiedHost}
         onCancel={onCancel}
       />
-      <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
+      <div className="mx-auto max-w-xl">
         <div className="flex items-start gap-3">
           <span className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
             {phase === "error" ? (
@@ -1975,10 +2084,6 @@ export function OAuthConnectStateScreen({
           )}
           <Button type="button" variant="ghost" onClick={onBack}>Back</Button>
         </div>
-        <p className="mt-5 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Lock className="h-3.5 w-3.5" />
-          Your authorization stays in Paperclip’s encrypted secret store.
-        </p>
       </div>
     </div>
   );
@@ -2002,20 +2107,8 @@ function ZapierConnectStep({
   const isZapierLink = zapierHostname === "zapier.com" || zapierHostname.endsWith(".zapier.com");
 
   return (
-    <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
-      <div className="flex items-start gap-3">
-        <span className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
-          <Link2 className="h-5 w-5 text-muted-foreground" />
-        </span>
-        <div className="min-w-0">
-          <h2 className="text-xl font-bold tracking-tight">Connect Zapier</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Paste the complete MCP URL Zapier gives you, including its token.
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-8">
+    <div className="mx-auto max-w-xl">
+      <div>
         <label className="text-sm font-medium text-foreground">Zapier MCP URL</label>
         <Input
           type="password"
@@ -2030,15 +2123,12 @@ function ZapierConnectStep({
           className="mt-2 h-11"
           autoFocus
         />
-        <p className="mt-2 text-xs text-muted-foreground">
-          The token is part of the URL. Paperclip stores it securely and checks the connection before enabling actions.
-        </p>
         {link.trim() && !isZapierLink && (
           <p className="mt-2 text-xs text-destructive">Paste a valid Zapier URL to continue.</p>
         )}
       </div>
 
-      <div className="mt-8 flex items-center justify-between">
+      <div className="mt-6 flex items-center justify-between">
         <Button variant="ghost" onClick={onBack} disabled={submitting}>
           Back
         </Button>
@@ -2327,7 +2417,6 @@ function normalizeAppLink(value: string): string | null {
 function LinkConnectStep({
   link,
   name,
-  onNameChange,
   needsKey,
   onNeedsKeyChange,
   keyValue,
@@ -2351,7 +2440,6 @@ function LinkConnectStep({
 }: {
   link: string;
   name: string;
-  onNameChange: (next: string) => void;
   needsKey: boolean;
   onNeedsKeyChange: (next: boolean) => void;
   keyValue: string;
@@ -2388,28 +2476,17 @@ function LinkConnectStep({
   };
   const canSubmit = canSubmitGenericConnect(draft);
   const showSimpleKeyQuestion = authMode === "auto";
-  const nameInputRef = useRef<HTMLInputElement>(null);
   const displayedLink = matchedEntry?.slug === "zapier" ? redactUrlSecrets(link) : link;
-
-  useEffect(() => {
-    if (guidance?.focus === "name") nameInputRef.current?.focus();
-  }, [guidance]);
 
   const updateHeader = (id: string, patch: Partial<CustomHeaderRow>) => {
     onHeadersChange(headers.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   };
 
   return (
-    <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
-      <div className="flex items-start gap-3">
-        <span className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
-          <Link2 className="h-5 w-5 text-muted-foreground" />
-        </span>
-        <div className="min-w-0">
-          <h2 className="text-xl font-bold tracking-tight">Connect your own MCP server</h2>
-          <p className="mt-1 truncate font-mono text-sm text-muted-foreground" title={displayedLink}>{displayedLink}</p>
-          <UnverifiedServerBadge host={host} className="mt-2" />
-        </div>
+    <div className="mx-auto max-w-xl">
+      <div className="flex items-center justify-between gap-3">
+        <p className="min-w-0 truncate font-mono text-sm text-muted-foreground" title={displayedLink}>{displayedLink}</p>
+        <UnverifiedServerBadge host={host} />
       </div>
 
       {matchedEntry && onUseMatchedEntry ? (
@@ -2432,22 +2509,7 @@ function LinkConnectStep({
         </div>
       ) : null}
 
-      <div className="mt-8 space-y-6">
-        <div>
-          <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-name">Name</label>
-          <Input
-            ref={nameInputRef}
-            id="generic-mcp-name"
-            value={name}
-            onChange={(e) => onNameChange(e.target.value)}
-            placeholder="My app"
-            className="mt-2 h-11"
-          />
-          <p className="mt-2 text-xs text-muted-foreground">
-            We filled this in from the address. Change it if you'd like.
-          </p>
-        </div>
-
+      <div className="mt-6 space-y-6">
         {showSimpleKeyQuestion && (
           <div>
             <label className="mr-2 text-sm font-medium text-foreground">Does it need a key?</label>
@@ -2485,7 +2547,6 @@ function LinkConnectStep({
                 className="mt-2 h-11 font-mono"
               />
             </div>
-            <StoredSecurelyNote />
           </div>
         ) : null}
 
@@ -2553,7 +2614,6 @@ function LinkConnectStep({
                   Add another header
                 </Button>
                 {headerError ? <p className="text-xs text-destructive">{headerError}</p> : null}
-                <StoredSecurelyNote />
               </div>
             ) : null}
 
@@ -2590,7 +2650,6 @@ function LinkConnectStep({
                     className="mt-2 h-11 font-mono"
                   />
                 </div>
-                <StoredSecurelyNote />
               </div>
             ) : null}
           </CollapsibleContent>
@@ -2601,15 +2660,10 @@ function LinkConnectStep({
         <Button variant="ghost" onClick={onBack} disabled={submitting}>
           Back
         </Button>
-        <div className="flex items-center gap-3">
-          <span className="hidden text-xs text-muted-foreground sm:inline">
-            We'll check the server before turning anything on.
-          </span>
-          <Button onClick={onConnect} disabled={submitting || !canSubmit || Boolean(headerError)}>
-            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {submitting ? "Checking…" : "Check link"}
-          </Button>
-        </div>
+        <Button onClick={onConnect} disabled={submitting || !canSubmit || Boolean(headerError)}>
+          {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          {submitting ? "Checking…" : "Check link"}
+        </Button>
       </div>
     </div>
   );
@@ -2649,21 +2703,6 @@ const GENERIC_AUTH_MODE_OPTIONS: Array<{ mode: GenericMcpAuthMode; label: string
   },
 ];
 
-function StoredSecurelyNote() {
-  return (
-    <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
-      <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-      <div>
-        <div className="text-sm font-medium text-foreground">Stored securely.</div>
-        <div className="text-xs text-muted-foreground">
-          Paperclip keeps this in its encrypted secret store. You can replace it anytime from this app's page,
-          but it can't be read back.
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function SegmentedOption({
   label,
   selected,
@@ -2690,44 +2729,8 @@ function SegmentedOption({
   );
 }
 
-function ConnectionNameField({
-  name,
-  onNameChange,
-}: {
-  name: string;
-  onNameChange: (next: string) => void;
-}) {
-  return (
-    <div>
-      <label className="text-sm font-medium text-foreground">Name</label>
-      <Input
-        value={name}
-        onChange={(e) => onNameChange(e.target.value)}
-        placeholder="My app"
-        className="mt-2 h-11"
-      />
-      <p className="mt-2 text-xs text-muted-foreground">
-        We filled this in from the app. Change it to tell connections apart.
-      </p>
-    </div>
-  );
-}
-
-function connectionMethodAuthenticationLabel(method: ConnectionMethodDef): string {
-  if (method.auth === "api_key") return "Authentication: API key";
-  if (method.auth === "none") return "Authentication: no credentials";
-  if (connectionMethodSupportsAutomaticOAuth(method)) {
-    return connectionMethodAcceptsCustomerOAuthClient(method)
-      ? "Authentication: browser sign-in or your OAuth app"
-      : "Authentication: browser sign-in";
-  }
-  return "Authentication: your OAuth app";
-}
-
 function KeyStep({
   entry,
-  name,
-  onNameChange,
   values,
   onChange,
   oauthClientId,
@@ -2750,8 +2753,6 @@ function KeyStep({
   onConnect,
 }: {
   entry: AppDefinition;
-  name: string;
-  onNameChange: (next: string) => void;
   values: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
   oauthClientId: string;
@@ -2777,7 +2778,6 @@ function KeyStep({
   onBack: () => void;
   onConnect: () => void;
 }) {
-  const copy = appCopyFor(entry.slug, entry.description);
   const methods = useMemo(
     () => connectionMethodsForCredentialSource(entry, credentialSource),
     [credentialSource, entry],
@@ -2908,7 +2908,6 @@ function KeyStep({
         options={capabilityMethods.map((candidate) => ({
           value: candidate.key,
           title: candidate.label ?? (candidate.auth === "oauth" ? `Sign in with ${entry.name}` : "Use an API key"),
-          description: `${connectionMethodAuthenticationLabel(candidate)}. ${candidate.whenToUse}`,
         }))}
       />
       {!method && <p className="mt-2 text-xs text-muted-foreground">Choose a connection method to continue.</p>}
@@ -2919,18 +2918,9 @@ function KeyStep({
     const parsed = parseGoogleSheetIds(googleSheetsLinks);
     const canConnect = !unavailable && Boolean(robotEmail) && googleSheetsLinks.trim().length > 0;
     return (
-      <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
-        <div className="flex items-center gap-3">
-          <AppLogo name={entry.name} logoUrl={entry.branding.logoUrl} darkLogoUrl={entry.branding.darkLogoUrl} size={48} />
-          <div>
-            <h2 className="text-lg font-bold tracking-tight sm:text-xl">Connect Google Sheets</h2>
-            <p className="text-sm text-muted-foreground">{copy.short}</p>
-          </div>
-        </div>
-
-        <div className="mt-8 space-y-6">
+      <div className="mx-auto max-w-xl">
+        <div className="space-y-6">
           {capabilitySelection}
-          <ConnectionNameField name={name} onNameChange={onNameChange} />
 
           {robotEmail ? (
             <div>
@@ -2992,42 +2982,27 @@ function KeyStep({
     );
   }
 
-  return (
-    <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
-      <div className="flex items-center gap-3">
-        <AppLogo name={entry.name} logoUrl={entry.branding.logoUrl} darkLogoUrl={entry.branding.darkLogoUrl} size={48} />
-        <div>
-          <h2 className="text-xl font-bold tracking-tight">Connect {entry.name}</h2>
-          <p className="text-sm text-muted-foreground">{copy.short}</p>
-        </div>
-      </div>
+  const requirementsUrl = method?.consoleLinks?.docs ?? entry.docsUrl;
 
-      <div className="mt-8 space-y-6">
+  return (
+    <div className="mx-auto max-w-xl">
+      {requirementsUrl ? (
+        <div className="mb-4 flex justify-end">
+          <a
+            href={requirementsUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          >
+            Review requirements
+            <ArrowUpRight className="h-3 w-3" />
+          </a>
+        </div>
+      ) : null}
+
+      <div className="space-y-6">
         {capabilitySelection}
         {authenticationSelection}
-
-        {method?.warnings?.map((warning) => (
-          <InlineBanner key={warning} tone="warning" compact>
-            {warning}
-          </InlineBanner>
-        ))}
-
-        {method ? (
-          <div className="rounded-lg border border-border bg-muted/30 p-4">
-            <p className="text-sm text-foreground">{method.guidanceMd}</p>
-            {entry.docsUrl || method.consoleLinks?.docs ? (
-              <a
-                href={method.consoleLinks?.docs ?? entry.docsUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-foreground underline underline-offset-2"
-              >
-                Review {entry.name} setup requirements
-                <ArrowUpRight className="h-3 w-3" />
-              </a>
-            ) : null}
-          </div>
-        ) : null}
 
         {usingVercel && vercelReview && vercelConnectAvailability ? (
           <div className="space-y-4 rounded-lg border border-border p-4">
@@ -3064,8 +3039,6 @@ function KeyStep({
             </div>
           </div>
         ) : null}
-
-        <ConnectionNameField name={name} onNameChange={onNameChange} />
 
         {standardConfigFields.map((field) => (
           <MethodConfigField
@@ -3122,13 +3095,7 @@ function KeyStep({
           />
         ) : null}
 
-        {usingVercel ? null : method && fields.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            {method.auth === "oauth"
-              ? `You’ll continue to ${entry.name} to sign in securely.`
-              : "This app doesn’t need a key. Just connect to continue."}
-          </p>
-        ) : (
+        {usingVercel || !method || fields.length === 0 ? null : (
           fields.map((field) => (
             <div key={field.configPath}>
               <label className="text-sm font-medium text-foreground">
@@ -3157,38 +3124,20 @@ function KeyStep({
           ))
         )}
 
-        {!usingVercel && method?.auth === "api_key" && (
-          <div className="flex items-start gap-3 rounded-lg bg-muted/50 p-4">
-            <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-            <div>
-              <div className="text-sm font-medium text-foreground">Your key is stored securely.</div>
-              <div className="text-xs text-muted-foreground">
-                You can replace it anytime from this app’s page.
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="mt-8 flex items-center justify-between">
         <Button variant="ghost" onClick={onBack} disabled={submitting}>
           Back
         </Button>
-        <div className="flex items-center gap-3">
-          <span className="hidden text-xs text-muted-foreground sm:inline">
-            {method?.auth === "oauth"
-              ? "You’ll sign in before anything turns on."
-              : "We’ll check the key before turning anything on."}
-          </span>
-          <Button onClick={onConnect} disabled={submitting || !hasMethodSelection || !allFilled || !oauthClientFilled || !vercelConnectorFilled || !configFilled || !configRequirementMet}>
-            {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {submitting
-              ? "Checking…"
-              : usingVercel
-                ? method?.auth === "oauth" ? "Validate and continue" : "Validate and connect"
-                : method?.auth === "oauth" ? "Continue to sign in" : "Connect"}
-          </Button>
-        </div>
+        <Button onClick={onConnect} disabled={submitting || !hasMethodSelection || !allFilled || !oauthClientFilled || !vercelConnectorFilled || !configFilled || !configRequirementMet}>
+          {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          {submitting
+            ? "Checking…"
+            : usingVercel
+              ? method?.auth === "oauth" ? "Validate and continue" : "Validate and connect"
+              : method?.auth === "oauth" ? "Continue to sign in" : "Connect"}
+        </Button>
       </div>
     </div>
   );
@@ -3286,7 +3235,6 @@ function OAuthClientFields({
           className="mt-2 h-11 font-mono"
         />
       </div>
-      <StoredSecurelyNote />
     </div>
   );
 }
@@ -3380,7 +3328,8 @@ export function AccessStep({
   setInstallAgentIds: (ids: Set<string>) => void;
   /** Task-hosted intents grant reach only to the agent that requested it. */
   lockedAgentId?: string;
-  capabilities?: Pick<ToolConnectionCreateCapabilities, "canSetCompanyInstall"> & {
+  capabilities?: Pick<ToolConnectionCreateCapabilities, "canCreateOrganizationGrant" | "canSetCompanyInstall"> & {
+    organizationGrantReason?: string | null;
     companyInstallReason?: string | null;
     editableAgentIds?: string[];
   } | null;
@@ -3409,15 +3358,19 @@ export function AccessStep({
   // available the option stays visible and disabled with the reason, so the
   // scope stays legible instead of quietly disappearing.
   const canSetCompanyInstall = capabilities?.canSetCompanyInstall ?? true;
+  const canCreateOrganizationGrant = capabilities?.canCreateOrganizationGrant ?? true;
   const needsIdentityChoice = authKind !== "none";
   const allowedGrantKinds = grantKinds ?? (["user", "organization"] satisfies ConnectionGrantKind[]);
-  const canContinue = preserveAgentAccess
+  const identityChoiceAllowed = !needsIdentityChoice
+    || grantKind === "user"
+    || canCreateOrganizationGrant;
+  const canContinue = identityChoiceAllowed && (preserveAgentAccess
     ? true
     : lockedAgentId
     ? installAgentIds.has(lockedAgentId)
     : installChoice === "all"
     ? canSetCompanyInstall
-    : installAgentIds.size > 0;
+    : installAgentIds.size > 0);
   const lockedAgentName = lockedAgentId
     ? allAgents.find((agent) => agent.id === lockedAgentId)?.name ?? "the requesting agent"
     : null;
@@ -3460,6 +3413,15 @@ export function AccessStep({
                     value: "organization",
                     title: "Any human in the company",
                     icon: <UsersRound className="h-4 w-4" aria-hidden="true" />,
+                    accessibleLabel: canCreateOrganizationGrant
+                      ? "Any human in the company"
+                      : `Any human in the company. Unavailable: ${capabilities?.organizationGrantReason ??
+                        "Only a connection manager can share this credential with the organization."}`,
+                    tooltip: canCreateOrganizationGrant
+                      ? undefined
+                      : capabilities?.organizationGrantReason ??
+                        "Only a connection manager can share this credential with the organization.",
+                    disabled: !canCreateOrganizationGrant,
                   },
                 ].filter((option) => allowedGrantKinds.includes(option.value as ConnectionGrantKind))}
               />

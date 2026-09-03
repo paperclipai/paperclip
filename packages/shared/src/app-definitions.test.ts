@@ -203,7 +203,7 @@ describe("AppDefinition catalog",()=>{
     oauthStrategy:"paperclip_cloud_connector",
     connectorProfile:expected.profile,
     capabilityProfile:{key:expected.capability},
-    grantKinds:["user"],
+    grantKinds:["user","organization"],
     ownershipModes:["platform_shared"],
     defaults:{serverUrl:expected.serverUrl,scopesHint:expected.scopes},
     riskTier:expected.riskTier,
@@ -215,7 +215,7 @@ describe("AppDefinition catalog",()=>{
     &&method.capabilityProfile?.key===expected.capability
    );
    expect(customer,`${expected.profile}:customer-fallback`).toMatchObject({
-    grantKinds:["user"],
+    grantKinds:["user","organization"],
     ownershipModes:["customer"],
     defaults:{serverUrl:expected.serverUrl,scopesHint:expected.scopes},
     riskTier:expected.riskTier,

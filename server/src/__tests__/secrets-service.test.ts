@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
+import { resolveCodexAuthCacheDir, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import {
   activityLog,
   agents,
@@ -86,6 +88,16 @@ describeEmbeddedPostgres("secretService", () => {
       updatedAt: new Date(),
     });
     return companyId;
+  }
+
+  // Creates a real directory under this company's Codex account-home cache
+  // root, so a test can prove the write-time directory-validity check reads
+  // an actual filesystem entry, the same way the production cleanup and the
+  // production secret write do.
+  async function makeAccountHomeDir(companyId: string, accountHandle: string): Promise<string> {
+    const accountHomeDir = path.join(resolveCodexAuthCacheDir(undefined, companyId), accountHandle);
+    await mkdir(accountHomeDir, { recursive: true });
+    return accountHomeDir;
   }
 
   async function seedCompanyMember(
@@ -358,6 +370,446 @@ describeEmbeddedPostgres("secretService", () => {
         configPath: "env.API_KEY",
       }),
     ).rejects.toThrow(/already exists/i);
+  });
+
+  it("serializes two local_encrypted secret creates in the same company so their writes never overlap", async () => {
+    // An account-home cleanup's claimant scan and a `local_encrypted` secret
+    // write share one lock (`withAccountHomeSecretMutationLock`), so a write
+    // can never commit inside the exact window the scan already used to
+    // decide no secret claims a directory it is about to delete. This proves
+    // the lock itself enforces that: two `local_encrypted` creates in the
+    // SAME company never run their provider write at the same time,
+    // whichever caller goes first.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const events: string[] = [];
+    let releaseFirstWrite!: () => void;
+    const firstWriteGate = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    vi.spyOn(localEncryptedProvider, "createSecret")
+      .mockImplementationOnce(async (input) => {
+        events.push("first-provider-enter");
+        await firstWriteGate;
+        events.push("first-provider-exit");
+        return originalCreateSecret(input);
+      })
+      .mockImplementationOnce(async (input) => {
+        events.push("second-provider-enter");
+        return originalCreateSecret(input);
+      });
+
+    const firstCreate = svc.create(companyId, {
+      name: `account-home-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-a",
+    });
+    // Give the first call a chance to acquire the lock and enter its provider
+    // write before the second call starts racing for the same lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const secondCreate = svc.create(companyId, {
+      name: `hand-named-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-a",
+    });
+    // The second call must stay blocked on the lock while the first call
+    // still holds it: it must never enter its own provider write before the
+    // first call's provider write exits.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["first-provider-enter"]);
+
+    releaseFirstWrite();
+    await Promise.all([firstCreate, secondCreate]);
+    expect(events).toEqual(["first-provider-enter", "first-provider-exit", "second-provider-enter"]);
+  });
+
+  it("serializes a local_encrypted secret rotate against a concurrent create of a different secret in the same company", async () => {
+    // Same lock, the other write path: a rotate that writes a new
+    // `local_encrypted` value must serialize against a concurrent create the
+    // same way a create serializes against another create.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const existing = await svc.create(companyId, {
+      name: `existing-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-b",
+    });
+    const events: string[] = [];
+    let releaseRotateWrite!: () => void;
+    const rotateWriteGate = new Promise<void>((resolve) => {
+      releaseRotateWrite = resolve;
+    });
+    const originalCreateVersion = localEncryptedProvider.createVersion.bind(localEncryptedProvider);
+    vi.spyOn(localEncryptedProvider, "createVersion").mockImplementationOnce(async (input) => {
+      events.push("rotate-provider-enter");
+      await rotateWriteGate;
+      events.push("rotate-provider-exit");
+      return originalCreateVersion(input);
+    });
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    vi.spyOn(localEncryptedProvider, "createSecret").mockImplementationOnce(async (input) => {
+      events.push("create-provider-enter");
+      return originalCreateSecret(input);
+    });
+
+    const rotateCall = svc.rotate(existing.id, { value: "/company/codex-home/acct-b-rotated" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const createCall = svc.create(companyId, {
+      name: `hand-named-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-b",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["rotate-provider-enter"]);
+
+    releaseRotateWrite();
+    await Promise.all([rotateCall, createCall]);
+    expect(events).toEqual(["rotate-provider-enter", "rotate-provider-exit", "create-provider-enter"]);
+  });
+
+  it("fails a queued local_encrypted create when an account-home cleanup removes its directory first", async () => {
+    // The mutation lock alone stops a write and an account-home cleanup's
+    // check-and-delete from interleaving; it does not stop them from running
+    // in either order. When the cleanup wins the lock first, deletes the
+    // directory, and releases the lock, a create that was only queued behind
+    // it must not go on to commit that now-deleted directory as a secret
+    // value. It must fail instead.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-create");
+
+    const events: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      await cleanupGate;
+      await rm(accountHomeDir, { recursive: true, force: true });
+      events.push("cleanup-exit");
+    });
+    // Give the cleanup a chance to acquire the lock before the create starts
+    // racing for the same lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const createCall = svc.create(companyId, {
+      name: `account-home-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: accountHomeDir,
+    });
+    // The create must stay queued behind the held lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["cleanup-enter"]);
+
+    releaseCleanup();
+    await cleanupCall;
+    await expect(createCall).rejects.toThrow(/no longer exists/);
+  });
+
+  it("fails a queued local_encrypted rotate when an account-home cleanup removes its directory first", async () => {
+    // Same race, the other write path: a rotate that would commit a
+    // now-deleted account-home directory must fail the same way a create
+    // does.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const existing = await svc.create(companyId, {
+      name: `hand-named-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/some/unrelated/placeholder/value",
+    });
+    const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-rotate");
+
+    const events: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      await cleanupGate;
+      await rm(accountHomeDir, { recursive: true, force: true });
+      events.push("cleanup-exit");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const rotateCall = svc.rotate(existing.id, { value: accountHomeDir });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["cleanup-enter"]);
+
+    releaseCleanup();
+    await cleanupCall;
+    await expect(rotateCall).rejects.toThrow(/no longer exists/);
+  });
+
+  it("serializes an aws_secrets_manager secret create against a concurrent account-home mutation lock holder", async () => {
+    // A plain string value can equal a Codex account-home path regardless of
+    // which provider stores it. Prove a non-local (`aws_secrets_manager`)
+    // create now takes the SAME `withAccountHomeSecretMutationLock` a
+    // `local_encrypted` create takes, not only when the create's own
+    // provider is `local_encrypted`.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret",
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret",
+      providerVersionRef: "aws-version-1",
+    });
+
+    const events: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      await cleanupGate;
+      events.push("cleanup-exit");
+    });
+    // Give the cleanup a chance to acquire the lock before the AWS create
+    // starts racing for the same lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const createCall = svc.create(companyId, {
+      name: `aws-secret-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      value: "runtime-secret",
+    });
+    // The AWS create must stay queued behind the held lock, the same way a
+    // `local_encrypted` create does.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["cleanup-enter"]);
+
+    releaseCleanup();
+    await cleanupCall;
+    const created = await createCall;
+    expect(events).toEqual(["cleanup-enter", "cleanup-exit"]);
+    expect(created.status).toBe("active");
+  });
+
+  it("serializes an aws_secrets_manager secret rotate against a concurrent account-home mutation lock holder", async () => {
+    // Same reasoning as the create test above, the other write path: a
+    // non-local rotate must also take the lock, not only a
+    // `local_encrypted` rotate.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
+      providerVersionRef: "aws-version-1",
+    });
+    vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
+        versionId: "aws-version-2",
+        source: "managed",
+      },
+      valueSha256: "value-sha-2",
+      fingerprintSha256: "fingerprint-sha-2",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
+      providerVersionRef: "aws-version-2",
+    });
+    const existing = await svc.create(companyId, {
+      name: `aws-secret-rotate-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      value: "runtime-secret",
+    });
+
+    const events: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      await cleanupGate;
+      events.push("cleanup-exit");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const rotateCall = svc.rotate(existing.id, { value: "rotated-runtime-secret" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["cleanup-enter"]);
+
+    releaseCleanup();
+    await cleanupCall;
+    const rotated = await rotateCall;
+    expect(events).toEqual(["cleanup-enter", "cleanup-exit"]);
+    expect(rotated.latestVersion).toBe(2);
+  });
+
+  it("serializes a rename, archive, or disable update against a concurrent account-home mutation lock holder", async () => {
+    // A rename or a status change to `archived` or `disabled` can stop the
+    // generated account-home secret from resolving to the value a
+    // device-login promotion already validated. Prove `update` now holds
+    // the SAME lock a cleanup (or a promotion's terminal-commit re-check)
+    // holds for its whole critical section, so an update can never land
+    // inside that section.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `CODEX_HOME_update-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-update",
+    });
+
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      await cleanupGate;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    let updateResolved = false;
+    const updateCall = svc.update(secret.id, { status: "archived" }).then((result) => {
+      updateResolved = true;
+      return result;
+    });
+    // The update must stay queued behind the held lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(updateResolved).toBe(false);
+
+    releaseCleanup();
+    await cleanupCall;
+    const updated = await updateCall;
+    expect(updateResolved).toBe(true);
+    expect(updated?.status).toBe("archived");
+  });
+
+  it("serializes a secret delete against a concurrent account-home mutation lock holder", async () => {
+    // Same reasoning as the update test above: a delete must also take the
+    // lock, so it can never land inside a cleanup's, or a promotion's
+    // terminal-commit re-check's, critical section.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `CODEX_HOME_delete-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-delete",
+    });
+
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      await cleanupGate;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    let removeResolved = false;
+    const removeCall = svc.remove(secret.id).then((result) => {
+      removeResolved = true;
+      return result;
+    });
+    // The delete must stay queued behind the held lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(removeResolved).toBe(false);
+
+    releaseCleanup();
+    await cleanupCall;
+    await removeCall;
+    expect(removeResolved).toBe(true);
+    const remaining = await svc.getById(secret.id);
+    expect(remaining).toBeNull();
+  });
+
+  it("commits a local_encrypted secret naming an account-home directory that still exists", async () => {
+    // A regression guard for the check above: a create whose value names a
+    // directory that is still present must keep succeeding, unblocked.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const accountHomeDir = await makeAccountHomeDir(companyId, "acct-still-present");
+
+    const created = await svc.create(companyId, {
+      name: `account-home-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: accountHomeDir,
+    });
+    expect(created.status).toBe("active");
+  });
+
+  it("fails a queued adapter-schema-secret create when an account-home cleanup removes its directory first", async () => {
+    // `normalizeAdapterConfigForPersistence` creates an adapter config secret
+    // through a separate managed-create path (`createManagedLocalSecret`),
+    // not `svc.create`. It must run the same queued-behind-the-lock
+    // directory check as `svc.create` and `svc.rotate`, so an adapter
+    // schema secret can never commit an account-home directory a cleanup
+    // already removed while this call waited for the lock.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-adapter-secret");
+
+    const events: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      await cleanupGate;
+      await rm(accountHomeDir, { recursive: true, force: true });
+      events.push("cleanup-exit");
+    });
+    // Give the cleanup a chance to acquire the lock before the adapter
+    // config normalization starts racing for the same lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const normalizeCall = svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      { apiKey: accountHomeDir },
+      { adapterType: "hermes_gateway" },
+    );
+    // The queued create must stay blocked behind the held lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["cleanup-enter"]);
+
+    releaseCleanup();
+    await cleanupCall;
+    await expect(normalizeCall).rejects.toThrow(/no longer exists/);
+  });
+
+  it("keeps an adapter-schema-secret create working for a value outside the account-home cache root", async () => {
+    // A regression guard for the check above: an adapter schema secret whose
+    // value is not an account-home directory (an ordinary API key, for
+    // example) must keep succeeding, unblocked.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    const normalized = await svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      { apiKey: `plain-api-key-${randomUUID()}` },
+      { adapterType: "hermes_gateway" },
+    );
+    const apiKeyBinding = (normalized as Record<string, unknown>).apiKey as { type: string; secretId: string };
+    expect(apiKeyBinding.type).toBe("secret_ref");
+    const secret = await svc.getById(apiKeyBinding.secretId);
+    expect(secret?.status).toBe("active");
   });
 
   it("validates the access namespace as agent-only with env-style aliases", async () => {

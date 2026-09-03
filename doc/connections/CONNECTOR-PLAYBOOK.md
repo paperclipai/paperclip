@@ -746,9 +746,12 @@ Walk the user path:
 
 For OAuth, the instance callback must be browser-reachable and must match the
 provider registration. Loopback HTTP is acceptable only when provider and
-Paperclip redirect policies permit it. A worktree exposed through HTTPS needs a
-unique, correct `PAPERCLIP_PUBLIC_URL`; internal service hostnames are not valid
-browser callback origins.
+Paperclip redirect policies permit it. Browser-started setup on an authenticated
+private instance automatically uses the same-origin HTTPS address that served
+the setup page, including a Tailscale Serve address; the request must pass the
+hostname and board-mutation guards. An explicit `PAPERCLIP_PUBLIC_URL` remains
+available for non-browser starts and unusual proxy topologies. Internal service
+hostnames are not valid browser callback origins.
 
 Use the browser signed-in session only for an explicitly authorized live proof.
 Do not inspect cookies, storage, saved passwords, or unrelated account data.
@@ -1782,8 +1785,8 @@ plain-HTTP non-loopback origins.
   loopback HTTP (Notion's redirect-URI rule). A plain-HTTP non-loopback origin
   gets "This provider requires an HTTPS or loopback origin. Configure TLS
   before connecting." — add TLS first (e.g. a tailscale cert, as
-  paperclip-dev did). The `enableApps` experimental setting must be on for
-  `/apps/*` routes. The connecting user must be allowed to install
+  paperclip-dev did). Apps is a standard product surface and `/apps/*` routes
+  are always available. The connecting user must be allowed to install
   integrations in their Notion workspace.
 - How to verify: visit `/PAP/apps/connect?source=notion`, complete the Notion
   consent flow, and land on the wizard's actions step listing `notion-*`

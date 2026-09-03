@@ -109,7 +109,7 @@ fn preserves_tool_operation_authority_across_payload_sanitization() {
 }
 
 #[test]
-fn maps_text_and_thinking_without_exposing_reasoning() {
+fn maps_text_and_visible_reasoning_summaries_on_stable_stream_identities() {
     let text = normalize(
         AcpxRuntimeEventKind::TextDelta,
         json!({"type":"text_delta","messageId":"message-1","text":"Working"}),
@@ -121,12 +121,65 @@ fn maps_text_and_thinking_without_exposing_reasoning() {
 
     let thinking = normalize(
         AcpxRuntimeEventKind::Thinking,
-        json!({"type":"thinking","text":"private chain of thought"}),
+        json!({"type":"thinking","messageId":"reasoning-1","text":"Inspecting the implementation."}),
     );
-    assert_eq!(thinking[0].event_type, "item.started");
+    assert_eq!(thinking[0].event_type, "item.delta");
+    assert_eq!(thinking[0].payload["itemId"], "reasoning-1");
     assert_eq!(thinking[0].payload["kind"], "reasoning");
-    assert_eq!(thinking[0].payload["text"], serde_json::Value::Null);
-    assert!(!thinking[0].payload.to_string().contains("private chain"));
+    assert_eq!(thinking[0].payload["channel"], "summary");
+    assert_eq!(
+        thinking[0].payload["text"],
+        "Inspecting the implementation."
+    );
+
+    let output_without_provider_id = normalize(
+        AcpxRuntimeEventKind::TextDelta,
+        json!({"type":"text_delta","text":"first"}),
+    );
+    let next_output_without_provider_id = normalize(
+        AcpxRuntimeEventKind::TextDelta,
+        json!({"type":"text_delta","text":"second"}),
+    );
+    assert_eq!(
+        output_without_provider_id[0].payload["itemId"],
+        next_output_without_provider_id[0].payload["itemId"]
+    );
+    assert_ne!(
+        output_without_provider_id[0].payload["itemId"],
+        normalize(
+            AcpxRuntimeEventKind::Thinking,
+            json!({"type":"thinking","text":"summary"}),
+        )[0]
+        .payload["itemId"]
+    );
+}
+
+#[test]
+fn hashes_opaque_acpx_tool_identities_without_losing_lifecycle_correlation() {
+    let opaque_id = format!("tool / {}", "é".repeat(100));
+    let started = normalize(
+        AcpxRuntimeEventKind::ToolCall,
+        json!({
+            "type":"tool_call",
+            "tag":"tool_call",
+            "toolCallId":opaque_id.clone(),
+            "kind":"read",
+            "status":"pending"
+        }),
+    );
+    let completed = normalize(
+        AcpxRuntimeEventKind::ToolCall,
+        json!({
+            "type":"tool_call",
+            "tag":"tool_call_update",
+            "toolCallId":opaque_id,
+            "kind":"read",
+            "status":"completed"
+        }),
+    );
+    let execution_id = started[0].payload["executionId"].as_str().unwrap();
+    assert!(execution_id.starts_with("acpx-tool-"));
+    assert_eq!(completed[0].payload["executionId"], execution_id);
 }
 
 #[test]
@@ -155,13 +208,26 @@ fn maps_usage_and_review_status_but_ignores_inventory_updates() {
         json!({
             "type":"status",
             "tag":"usage_update",
-            "breakdown":{"inputTokens":12,"outputTokens":4,"cachedReadTokens":2},
+            "breakdown":{
+                "inputTokens":12,
+                "outputTokens":4,
+                "thoughtTokens":3,
+                "cachedReadTokens":2,
+                "cachedWriteTokens":0
+            },
             "cost":{"amount":0.25}
         }),
     );
     assert_eq!(usage[0].event_type, "usage.reported");
-    assert_eq!(usage[0].payload["cumulative"]["inputTokens"], 12);
+    assert_eq!(usage[0].payload["cumulative"]["inputTokens"], 0);
     assert_eq!(usage[0].payload["cumulative"]["requests"], 3);
+    assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.25);
+    assert_eq!(usage[0].payload["runDeltaAvailable"], true);
+    assert_eq!(usage[0].payload["runDelta"]["inputTokens"], 12);
+    assert_eq!(usage[0].payload["runDelta"]["outputTokens"], 7);
+    assert_eq!(usage[0].payload["runDelta"]["cacheReadTokens"], 2);
+    assert_eq!(usage[0].payload["runDelta"]["requests"], 1);
+    assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.0);
     assert_eq!(usage[0].priority, EventPriority::P0);
 
     let review = normalize(
@@ -176,6 +242,55 @@ fn maps_usage_and_review_status_but_ignores_inventory_updates() {
         json!({"type":"status","tag":"available_commands_update"}),
     )
     .is_empty());
+}
+
+#[test]
+fn does_not_claim_missing_or_partial_usage_breakdowns_are_exact() {
+    for payload in [
+        json!({
+            "type":"status",
+            "tag":"usage_update",
+            "cost":{"amount":0.25,"currency":"USD"}
+        }),
+        json!({
+            "type":"status",
+            "tag":"usage_update",
+            "breakdown":null,
+            "cost":{"amount":0.25,"currency":"USD"}
+        }),
+        json!({
+            "type":"status",
+            "tag":"usage_update",
+            "breakdown":{"inputTokens":12},
+            "cost":{"amount":0.25,"currency":"USD"}
+        }),
+    ] {
+        let usage = normalize(AcpxRuntimeEventKind::Status, payload);
+        assert_eq!(usage[0].payload["runDeltaAvailable"], false);
+        assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.25);
+    }
+}
+
+#[test]
+fn does_not_label_non_usd_acpx_cost_as_usd() {
+    let usage = normalize(
+        AcpxRuntimeEventKind::Status,
+        json!({
+            "type":"status",
+            "tag":"usage_update",
+            "breakdown":{
+                "inputTokens":12,
+                "outputTokens":4,
+                "thoughtTokens":3,
+                "cachedReadTokens":2,
+                "cachedWriteTokens":0
+            },
+            "cost":{"amount":0.25,"currency":"EUR"}
+        }),
+    );
+
+    assert_eq!(usage[0].payload["runDeltaAvailable"], true);
+    assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.0);
 }
 
 #[test]

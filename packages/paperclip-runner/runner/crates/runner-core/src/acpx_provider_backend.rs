@@ -643,6 +643,60 @@ impl AcpxCommandExecutor {
         })))
     }
 
+    fn attach_run(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
+        let descriptor: AcpxProviderDescriptor = serde_json::from_value(
+            payload
+                .get("provider")
+                .cloned()
+                .ok_or_else(|| DurableRunnerError::invalid("run.attach requires provider"))?,
+        )
+        .map_err(|error| {
+            DurableRunnerError::invalid(format!("run.attach ACPX provider is invalid: {error}"))
+        })?;
+        descriptor.validate(&self.context)?;
+        let tool_set = authorized_tool_set(payload)?;
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+        let mut durable_descriptor = descriptor.clone();
+        durable_descriptor.run_id = state.descriptor.run_id.clone();
+        let only_recovery_notice_pending = state
+            .pending_events
+            .iter()
+            .all(|event| event.event_type == "session.resumed");
+        if state.lifecycle == "closed"
+            || state.identity.is_none()
+            || state.active_turn_id.is_some()
+            || !only_recovery_notice_pending
+            || durable_descriptor != state.descriptor
+        {
+            return Err(DurableRunnerError::invalid(
+                "run.attach requires the same settled ACPX provider profile and session",
+            ));
+        }
+        if let Some(session) = self.session.as_mut() {
+            session
+                .shutdown("run authority rotation")
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "failed to checkpoint ACPX before attaching a new run: {error}"
+                    ))
+                })?;
+        }
+        self.session = None;
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX state remains available while attaching a run");
+        state.descriptor = descriptor;
+        state.tool_set = tool_set;
+        state.semantic_result = None;
+        state.pending_events.clear();
+        state.lifecycle = "suspended".to_owned();
+        self.save_state()
+    }
+
     fn open_session(&mut self) -> Result<CommandExecution, DurableRunnerError> {
         if self.session.is_none() {
             let recovering = self
@@ -703,6 +757,11 @@ impl AcpxCommandExecutor {
         if self.session.is_none() {
             return Err(DurableRunnerError::invalid("ACPX session is not open"));
         }
+        let (provider_process_will_be_replaced, previous_process_id) = self
+            .session
+            .as_ref()
+            .map(|session| (session.state().has_settled_turns(), session.process_id()))
+            .expect("ACPX session exists after availability check");
         {
             let state = self
                 .state
@@ -747,18 +806,40 @@ impl AcpxCommandExecutor {
             .expect("ACPX state exists after turn start");
         state.lifecycle = "turn_active".to_owned();
         self.save_state()?;
+        let mut events = Vec::with_capacity(if provider_process_will_be_replaced {
+            2
+        } else {
+            1
+        });
+        if provider_process_will_be_replaced {
+            let session = self
+                .session
+                .as_ref()
+                .expect("ACPX replacement session exists after turn start");
+            events.push((
+                "session.reconciled".to_owned(),
+                EventPriority::P0,
+                replacement_continuity_payload(
+                    session.identity(),
+                    previous_process_id,
+                    session.process_id(),
+                    &self.context.turn_id,
+                ),
+            ));
+        }
+        events.push((
+            "turn.started".to_owned(),
+            EventPriority::P0,
+            json!({
+                "provider": "acpx",
+                "providerTurnId": self.context.turn_id,
+                "status": "inProgress",
+                "turn": {"id": self.context.turn_id, "status": "inProgress"},
+            }),
+        ));
         Ok(CommandExecution {
             result: json!({"status": "accepted", "providerTurnId": self.context.turn_id}),
-            events: vec![(
-                "turn.started".to_owned(),
-                EventPriority::P0,
-                json!({
-                    "provider": "acpx",
-                    "providerTurnId": self.context.turn_id,
-                    "status": "inProgress",
-                    "turn": {"id": self.context.turn_id, "status": "inProgress"},
-                }),
-            )],
+            events,
         })
     }
 
@@ -988,6 +1069,8 @@ impl CommandExecutor for AcpxCommandExecutor {
             "run.attach" => {
                 if self.state.is_none() && command.payload.get("provider").is_some() {
                     self.prepare(&command.payload)?;
+                } else {
+                    self.attach_run(&command.payload)?;
                 }
                 let mut execution = self.open_session()?;
                 execution.events.push((
@@ -1106,6 +1189,27 @@ fn session_event_payload(
         "sessionId": identity.agent_session_id,
         "providerAccountSessionId": identity.agent_session_id,
         "processId": process_id,
+    })
+}
+
+fn replacement_continuity_payload(
+    identity: &AcpxProviderSessionIdentity,
+    previous_process_id: u32,
+    process_id: u32,
+    active_turn_id: &str,
+) -> Value {
+    json!({
+        "provider": "acpx",
+        "driver": "acpx_runtime",
+        "providerSessionId": identity.acpx_record_id,
+        "sessionId": identity.agent_session_id,
+        "previousProcessId": previous_process_id,
+        "processId": process_id,
+        "previousProviderTurnId": Value::Null,
+        "activeProviderTurnId": active_turn_id,
+        "sameProviderSession": true,
+        "continuityDisposition": "qualified_provider_process_replacement",
+        "reason": "turn_authority_rotation",
     })
 }
 
@@ -1253,6 +1357,34 @@ mod tests {
         drifted["commandDigest"] = json!(format!("sha256:{}", "a".repeat(64)));
         let drifted: AcpxProviderDescriptor = serde_json::from_value(drifted).unwrap();
         assert!(drifted.validate(&context()).is_err());
+    }
+
+    #[test]
+    fn describes_process_replacement_as_same_session_continuity() {
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: format!("sha256:{}", "1".repeat(64)),
+            workspace_digest: format!("sha256:{}", "2".repeat(64)),
+            requested_model: "gpt-5.6-sol".to_owned(),
+            effective_model: "gpt-5.6-sol".to_owned(),
+            permission_mode: Some(AcpxPermissionMode::ApproveReads),
+        };
+
+        let payload = replacement_continuity_payload(&identity, 41, 42, "turn-2");
+        assert_eq!(payload["providerSessionId"], "record-1");
+        assert_eq!(payload["sessionId"], "agent-1");
+        assert_eq!(payload["previousProcessId"], 41);
+        assert_eq!(payload["processId"], 42);
+        assert_eq!(payload["activeProviderTurnId"], "turn-2");
+        assert_eq!(payload["sameProviderSession"], true);
+        assert_eq!(
+            payload["continuityDisposition"],
+            "qualified_provider_process_replacement"
+        );
     }
 
     #[test]

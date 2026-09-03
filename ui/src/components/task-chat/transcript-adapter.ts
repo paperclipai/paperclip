@@ -575,8 +575,10 @@ export function transcriptToTaskChatItems(
   let lastToolIndex = -1;
   let thinkingIndex = -1;
   let thinkingChannel: "summary" | "detail" | "unknown" | undefined;
+  let thinkingItemId: string | undefined;
   let messageIndex = -1;
   let messageChannel: "progress" | "final" | "unknown" | undefined;
+  let messageItemId: string | undefined;
 
   const finishThinking = () => {
     if (thinkingIndex >= 0) {
@@ -585,19 +587,38 @@ export function transcriptToTaskChatItems(
     }
     thinkingIndex = -1;
     thinkingChannel = undefined;
+    thinkingItemId = undefined;
   };
 
   const resetInline = () => {
     finishThinking();
     messageIndex = -1;
     messageChannel = undefined;
+    messageItemId = undefined;
   };
 
   for (const [i, entry] of entries.entries()) {
     switch (entry.kind) {
       case "thinking": {
         const lifecycleOnly = !entry.text;
-        if (thinkingIndex >= 0 && thinkingChannel === entry.channel) {
+        const openThinking =
+          thinkingIndex >= 0 ? items[thinkingIndex] : undefined;
+        const continuesAnonymousLifecycle =
+          entry.itemId === undefined &&
+          thinkingItemId === undefined &&
+          lifecycleOnly &&
+          entry.lifecycle === "completed" &&
+          openThinking?.kind === "thinking" &&
+          openThinking.lifecycleOnly === true;
+        const sameThinkingItem =
+          thinkingIndex >= 0 &&
+          thinkingChannel === entry.channel &&
+          ((entry.itemId !== undefined && entry.itemId === thinkingItemId) ||
+            (entry.itemId === undefined &&
+              thinkingItemId === undefined &&
+              entry.delta === true) ||
+            continuesAnonymousLifecycle);
+        if (sameThinkingItem) {
           const it = items[thinkingIndex];
           if (it.kind === "thinking") {
             if (entry.text) {
@@ -630,9 +651,11 @@ export function transcriptToTaskChatItems(
           });
           thinkingIndex = items.length - 1;
           thinkingChannel = entry.channel;
+          thinkingItemId = entry.itemId;
           thinkingStartTs.set(thinkingIndex, entry.ts);
           messageIndex = -1;
           messageChannel = undefined;
+          messageItemId = undefined;
         }
         if (entry.lifecycle === "completed") {
           finishThinking();
@@ -643,7 +666,14 @@ export function transcriptToTaskChatItems(
         if (!entry.text) break;
         finishThinking();
         const channel = entry.channel;
-        if (messageIndex >= 0 && messageChannel === channel) {
+        const sameMessage =
+          messageIndex >= 0 &&
+          messageChannel === channel &&
+          ((entry.itemId !== undefined && entry.itemId === messageItemId) ||
+            (entry.itemId === undefined &&
+              messageItemId === undefined &&
+              entry.delta === true));
+        if (sameMessage) {
           const it = items[messageIndex];
           if (it.kind === "message") {
             it.text += entry.text;
@@ -669,6 +699,7 @@ export function transcriptToTaskChatItems(
           });
           messageIndex = items.length - 1;
           messageChannel = channel;
+          messageItemId = entry.itemId;
         }
         break;
       }
@@ -936,7 +967,8 @@ export function transcriptToTaskChatItems(
         if (
           entry.subtype !== "paperclip_runner_usage" &&
           entry.subtype !== "paperclip_runner_session_usage"
-        ) break;
+        )
+          break;
         const inputTokens = entry.inputTokens || 0;
         const outputTokens = entry.outputTokens || 0;
         items.push({
@@ -1072,7 +1104,8 @@ export function paperclipRunnerActivityItems(
         if (
           hasAggregateWorkspaceChange &&
           (normalizedName === "file_change" || normalizedName === "filechange")
-        ) return false;
+        )
+          return false;
         return normalizedName !== "paperclip_finish";
       }
       case "marker":
@@ -1134,8 +1167,9 @@ export function paperclipRunnerTimelineItems(
 
 /**
  * Resolve the durable response owned by a Paperclip Runner turn. Provider final
- * text wins when present; yielded control-plane runs fall back to the accepted
- * run-result summary because those runs intentionally do not post a comment.
+ * text wins when present, followed by a compatible terminal assistant message
+ * and then the accepted run-result summary. The caller keeps yielded
+ * control-plane waits out of the final-response slot.
  */
 export function paperclipRunnerFinalResponse(
   parsed: readonly TaskChatItem[],
@@ -1147,6 +1181,16 @@ export function paperclipRunnerFinalResponse(
     allowFallback?: boolean;
   },
 ): TaskChatMessageItem | undefined {
+  // A yielded result is a control-plane wait boundary, not an assistant reply.
+  // Some providers historically labeled their "waiting for input" prose as a
+  // final message, so disposition must take precedence over message channel.
+  const yielded = parsed.some(
+    (item) =>
+      item.kind === "protocol" &&
+      item.surface === "run_result" &&
+      item.disposition === "yielded",
+  );
+  if (yielded) return undefined;
   for (let index = parsed.length - 1; index >= 0; index -= 1) {
     const item = parsed[index];
     if (
@@ -1169,7 +1213,12 @@ export function paperclipRunnerFinalResponse(
       item.channel !== "progress" &&
       item.text.trim()
     ) {
-      return { ...item, channel: "final", interstitial: false, streaming: false };
+      return {
+        ...item,
+        channel: "final",
+        interstitial: false,
+        streaming: false,
+      };
     }
   }
   const runResult = [...parsed]
@@ -1199,7 +1248,9 @@ export function paperclipRunnerFinalResponse(
  * Materialize a saved plan at the tool boundary that created its revision.
  * The document query and transcript stream update independently, so folding
  * the document into the parsed turn gives live, settling, and replay the same
- * stable owner and DOM position.
+ * stable owner and DOM position. If that boundary is temporarily unavailable,
+ * retain an explicitly marked end-of-turn fallback instead of dropping the
+ * canonical document.
  */
 export function embedPlanDocumentAtWriteBoundary(
   parsed: readonly TaskChatItem[],
@@ -1221,10 +1272,14 @@ export function embedPlanDocumentAtWriteBoundary(
     const normalizedName = name.replaceAll("-", "_").toLowerCase();
     if (normalizedName === "write_document") writeIndex = index;
   }
-  if (writeIndex < 0) return withoutPlan;
+  const placedPlan: TaskChatPlanDocumentItem = {
+    ...plan,
+    placement: writeIndex < 0 ? "fallback" : "write_boundary",
+  };
+  if (writeIndex < 0) return [...withoutPlan, placedPlan];
   return [
     ...withoutPlan.slice(0, writeIndex + 1),
-    plan,
+    placedPlan,
     ...withoutPlan.slice(writeIndex + 1),
   ];
 }
@@ -1498,27 +1553,26 @@ export function buildTurnTimelineRows(
     }
     return current;
   };
-  const legacyReplyBoundary = [...parsed]
-    .reverse()
-    .find((item) => {
-      if (item.kind === "usage" || item.kind === "status") return false;
-      if (item.kind === "marker") {
-        return item.variant === "interrupted";
-      }
-      if (item.kind === "protocol") {
-        return (
-          item.surface === "provider_activity" ||
-          item.surface === "runtime_request"
-        );
-      }
-      return true;
-    });
+  const legacyReplyBoundary = [...parsed].reverse().find((item) => {
+    if (item.kind === "usage" || item.kind === "status") return false;
+    if (item.kind === "marker") {
+      return item.variant === "interrupted";
+    }
+    if (item.kind === "protocol") {
+      return (
+        item.surface === "provider_activity" ||
+        item.surface === "runtime_request"
+      );
+    }
+    return true;
+  });
   for (const item of parsed) {
     if (item.kind === "message") {
       // Explicit final-channel replies remain canonical even when a later
       // usage row makes them non-tail. Channel-less legacy transcripts retain
       // the last-visible fallback until the posted reply lands.
-      const explicitFinal = item.channel === "final" || item.interstitial === false;
+      const explicitFinal =
+        item.channel === "final" || item.interstitial === false;
       const legacyTrailingReply =
         (item.channel == null || item.channel === "unknown") &&
         item === legacyReplyBoundary;
@@ -1544,7 +1598,10 @@ export function buildTurnTimelineRows(
       ) {
         rows.push(latest.id === item.id ? latest : { ...latest, id: item.id });
       }
-    } else if (item.kind === "protocol" && item.surface === "workspace_change") {
+    } else if (
+      item.kind === "protocol" &&
+      item.surface === "workspace_change"
+    ) {
       current = null;
       rows.push(item);
     } else if (item.kind === "plan_document") {

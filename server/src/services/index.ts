@@ -183,7 +183,10 @@ export {
   workspaceGitOperationScheduler,
   type WorkspaceGitSchedulerSnapshot,
 } from "./workspace-git-operation-scheduler.js";
-export { workProductService } from "./work-products.js";
+export {
+  enrichWorkProductMetadataWithDiff,
+  workProductService,
+} from "./work-products.js";
 export {
   logActivity,
   persistActivity,

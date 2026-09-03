@@ -11,8 +11,8 @@ const MANAGED_RAW = JSON.stringify({
   v: 1,
   mode: "cloud",
   catalogVersion: "2026.720.0",
-  // enableApps stored true in the DB gets forced off; enablePipelines has no
-  // stored value, so the overlay wins over the schema default (false).
+  // enableApps is retained only for compatibility and must be ignored;
+  // enablePipelines remains a live managed feature.
   features: { enableApps: false, enablePipelines: true },
   plugins: { autoInstall: [] },
 });
@@ -63,19 +63,17 @@ describe("applyManagedExperimentalOverlay", () => {
     expect(result.managedKeys).toEqual({});
   });
 
-  it("overlays managed values over stored values and records metadata", () => {
+  it("ignores the retired Apps flag while overlaying live managed values", () => {
     const config = parseManagedConfigEnv(managedEnv())!;
     const stored = normalizeExperimentalSettings({ enableApps: true });
     const { experimental, managedKeys } = applyManagedExperimentalOverlay(stored, config);
 
-    // managed overlay > tenant DB value
-    expect(experimental.enableApps).toBe(false);
+    expect(experimental.enableApps).toBe(true);
     // managed overlay > schema default
     expect(experimental.enablePipelines).toBe(true);
     // unmanaged keys keep their stored/default values
     expect(experimental.enableCases).toBe(false);
     expect(managedKeys).toEqual({
-      enableApps: { managed: true, managedBy: "paperclip-cloud" },
       enablePipelines: { managed: true, managedBy: "paperclip-cloud" },
     });
     // input is not mutated
@@ -96,10 +94,9 @@ describe("instanceSettingsService managed overlay", () => {
     const svc = instanceSettingsService(db, { runtimeEnv: managedEnv() });
 
     const experimental = await svc.getExperimental();
-    expect(experimental.enableApps).toBe(false);
+    expect(experimental.enableApps).toBe(true);
     expect(experimental.enablePipelines).toBe(true);
     expect(experimental.managedKeys).toEqual({
-      enableApps: { managed: true, managedBy: "paperclip-cloud" },
       enablePipelines: { managed: true, managedBy: "paperclip-cloud" },
     });
   });
@@ -109,11 +106,8 @@ describe("instanceSettingsService managed overlay", () => {
     const svc = instanceSettingsService(db, { runtimeEnv: managedEnv() });
 
     const settings = await svc.get();
-    expect(settings.experimental.enableApps).toBe(false);
-    expect(settings.experimental.managedKeys?.enableApps).toEqual({
-      managed: true,
-      managedBy: "paperclip-cloud",
-    });
+    expect(settings.experimental.enableApps).toBe(true);
+    expect(settings.experimental.managedKeys?.enableApps).toBeUndefined();
   });
 
   it("leaves the self-hosted read path unchanged (no managedKeys field)", async () => {
@@ -137,8 +131,8 @@ describe("instanceSettingsService managed overlay", () => {
 
     expect(persistedSets).toHaveLength(1);
     const persisted = persistedSets[0]!.experimental as Record<string, unknown>;
-    // The tenant's stored value survives in the DB even though the overlay
-    // masks it at read time — a later un-managing restores tenant intent.
+    // The retired compatibility key normalizes on, independent of the
+    // managed document's historical value.
     expect(persisted.enableApps).toBe(true);
     // The overlay-added value is not written.
     expect(persisted.enablePipelines).toBe(false);
@@ -146,12 +140,9 @@ describe("instanceSettingsService managed overlay", () => {
     expect(persisted).not.toHaveProperty("managedKeys");
 
     // The response still reflects the overlay.
-    expect(updated.experimental.enableApps).toBe(false);
+    expect(updated.experimental.enableApps).toBe(true);
     expect(updated.experimental.enablePipelines).toBe(true);
-    expect(updated.experimental.managedKeys?.enableApps).toEqual({
-      managed: true,
-      managedBy: "paperclip-cloud",
-    });
+    expect(updated.experimental.managedKeys?.enableApps).toBeUndefined();
   });
 
   it("does not let managed metadata leak into self-hosted writes", async () => {

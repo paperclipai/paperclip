@@ -40,7 +40,14 @@ export {
   type CredentialReadinessResult,
   type PromoteDeviceLoginCredentialInput,
   type PromoteDeviceLoginCredentialOutcome,
+  type PromoteDeviceLoginCredentialResult,
 } from "./adapter-auth-promotion.js";
+export {
+  withCodexAccountHomePromotionLock,
+  withAccountHomeSecretMutationLock,
+  assertAccountHomeCacheDirStillValid,
+  resolveCodexAuthCacheDir,
+} from "./codex-auth-cache.js";
 export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,

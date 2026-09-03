@@ -22,11 +22,6 @@ async function newCompany(request: APIRequestContext): Promise<Seed> {
       data: { name: `Connection intent E2E ${Date.now()}` },
     }),
   );
-  await json(
-    await request.patch("/api/instance/settings/experimental", {
-      data: { enableApps: true },
-    }),
-  );
   return { companyId: company.id, prefix: company.issuePrefix };
 }
 
@@ -221,6 +216,7 @@ test("store setup and task connection intent share one fake provider through con
       .getByPlaceholder("https://example.com/actions")
       .fill(provider.url);
     await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByRole("button", { name: "Save and continue" }).click();
     await page.getByRole("button", { name: /Check link/i }).click();
     // A no-auth read-only provider can complete the access/install defaults in
     // one commit. Other methods exercise the same intermediate steps in the

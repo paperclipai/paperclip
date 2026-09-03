@@ -82,10 +82,22 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   // name and hires under the neutral `general` role.
   await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
   await page.locator("#onboarding-agent-name").fill("Ada");
-  await page.getByRole("button", { name: /^Next/ }).click();
+  await page.getByRole("button", { name: /^Next$/ }).click();
 
-  // Step 4: adapter (claude_local default); heartbeat is intercepted.
-  await page.getByRole("button", { name: /^Connect$/ }).click();
+  // Step 4: pick a model source, then advance. Nothing is selected on arrival
+  // — the row is a question, not a confirmation — so the CTA is disabled until
+  // a tile is pressed. By role rather than by label: which adapters the tiles
+  // offer depends on the registry this environment reports.
+  const source = page.getByRole("radio").first();
+  await source.waitFor({ timeout: 30_000 });
+  await source.click();
+
+  // The forward button reads "Next" here too, so wait for it to enable rather
+  // than for it to appear — it is already on screen, disabled, and clicking a
+  // disabled button raises nothing and does nothing.
+  const connectNext = page.getByRole("button", { name: /^Next$/ });
+  await expect(connectNext).toBeEnabled({ timeout: 30_000 });
+  await connectNext.click();
 
   // Step 5: review → Get started creates the first task and opens its
   // detail page.

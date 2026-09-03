@@ -15,8 +15,6 @@ async function newCompany(request: APIRequestContext, label: string): Promise<Se
   const res = await request.post("/api/companies", { data: { name: `Apps navigation ${label} ${Date.now()}` } });
   expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
   const company = await res.json();
-  const flags = await request.patch("/api/instance/settings/experimental", { data: { enableApps: true } });
-  expect(flags.ok(), `enable apps failed ${flags.status()}: ${await flags.text()}`).toBe(true);
   return {
     companyId: company.id,
     prefix: company.issuePrefix ?? company.prefix ?? company.urlKey ?? "E2E",
@@ -123,6 +121,7 @@ test.describe.serial("not-connected app page", () => {
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
     await expect(page).toHaveURL(/\/apps\/connect\?/, { timeout: 20_000 });
     await expect(page.getByText("Connect your own MCP server")).toBeVisible({ timeout: 20_000 });
+    await page.getByRole("button", { name: "Save and continue" }).click();
     await expect(page.getByText(mock.url)).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-02-reconnect-prefilled.png`, fullPage: true });
 

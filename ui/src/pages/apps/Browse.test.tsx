@@ -13,6 +13,7 @@ const listUserDirectoryMock = vi.hoisted(() => vi.fn());
 const archiveConnectionMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
+const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -45,7 +46,7 @@ vi.mock("@/context/CompanyContext", () => ({
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
-  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+  useBreadcrumbs: () => ({ setBreadcrumbs: setBreadcrumbsMock }),
 }));
 
 vi.mock("@/context/ToastContext", () => ({
@@ -173,6 +174,10 @@ describe("Connectors landing page", () => {
   it("renders one connector list with the requested header and no gallery sections", async () => {
     await renderBrowse();
 
+    expect(setBreadcrumbsMock).toHaveBeenCalledWith([]);
+    expect(setBreadcrumbsMock).not.toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ href: "/dashboard" }),
+    ]));
     expect(container.querySelector("header")?.textContent).toBe("Connectors");
     expect(
       container.querySelector('header input[aria-label="Search connectors"]'),

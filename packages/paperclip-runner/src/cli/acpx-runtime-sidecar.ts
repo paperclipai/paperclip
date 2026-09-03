@@ -9,6 +9,7 @@ import type {
   AcpRuntimeEvent,
 } from "acpx/runtime";
 
+import { createAcpxToolEventNormalizer } from "../provider-events.js";
 import {
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_TOOL_NAME,
@@ -228,7 +229,10 @@ async function dispatch(
     }
     if (!initializedModel) throw new Error("initialize the ACPX sidecar first");
     const params = parseOpenParams(request.params);
-    if (params.agent !== initializedAgent || params.model !== initializedModel) {
+    if (
+      params.agent !== initializedAgent ||
+      params.model !== initializedModel
+    ) {
       throw new Error("ACPX session profile differs from its initialization");
     }
     const openedHost = await AcpxRuntimeHost.open(
@@ -458,8 +462,18 @@ async function pumpTurn(
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
+    // ACP tool updates are deltas. Preserve the opening event's identity and
+    // display metadata for later progress/completion frames before they cross
+    // the sidecar boundary, matching the in-process ACPX driver path.
+    const normalizeToolEvent = createAcpxToolEventNormalizer<AcpRuntimeEvent>();
     for await (const event of runtimeTurn.events) {
-      emit("runtime.event", sanitizeRuntimeEvent(event), currentTurnId);
+      emit(
+        "runtime.event",
+        sanitizeRuntimeEvent(
+          normalizeToolEvent(boundRuntimeEventForNormalization(event)),
+        ),
+        currentTurnId,
+      );
     }
     const result = await runtimeTurn.result;
     terminal = boundedSidecarValue(result);
@@ -663,6 +677,39 @@ function rejectTurnWaiters(terminalTurnId: string, message: string): void {
   }
 }
 
+type BoundedRuntimeToolEvent = AcpRuntimeEvent & {
+  paperclipBoundedTool: true;
+  paperclipOutput: Record<string, unknown>;
+};
+
+function boundRuntimeEventForNormalization(
+  event: AcpRuntimeEvent,
+): AcpRuntimeEvent {
+  if (event.type !== "tool_call") return event;
+  const title = boundedOptionalText(event.title, "", 4_000) || undefined;
+  const kind = boundedOptionalText(event.kind, "", 4_000) || undefined;
+  return {
+    type: "tool_call",
+    toolCallId:
+      typeof event.toolCallId === "string" && event.toolCallId.trim()
+        ? stableProviderIdentity(event.toolCallId, "tool")
+        : undefined,
+    title,
+    kind,
+    locations: safeAcpxLocations(
+      event.locations,
+      openParams?.workingDirectory,
+      kind,
+      title,
+    ),
+    text: boundedOptionalText(event.text, "", 4_000),
+    status: boundedOptionalText(event.status, "", 100),
+    tag: boundedOptionalText(event.tag, "", 160),
+    paperclipBoundedTool: true,
+    paperclipOutput: safeOutput(event.rawOutput),
+  } as BoundedRuntimeToolEvent;
+}
+
 function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
   const runtimeType = text(record(event).type);
   if (runtimeType === "plan") {
@@ -677,7 +724,10 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
       text: boundedOptionalText(event.text, "", 64 * 1024),
       stream: event.stream,
       tag: event.tag ?? null,
-      messageId: event.messageId?.slice(0, 240) ?? null,
+      messageId:
+        typeof event.messageId === "string" && event.messageId.length > 0
+          ? stableProviderIdentity(event.messageId, "message")
+          : null,
     };
   }
   if (event.type === "status") {
@@ -691,6 +741,20 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
     });
   }
   if (event.type === "tool_call") {
+    const boundedTool = event as BoundedRuntimeToolEvent;
+    const toolCallId =
+      typeof event.toolCallId === "string" && event.toolCallId.trim()
+        ? stableProviderIdentity(event.toolCallId, "tool")
+        : null;
+    if (toolCallId === null) {
+      return {
+        type: "provider_notice",
+        severity: "warning",
+        category: "acpx_tool_identity_missing",
+        summary:
+          "The qualified ACP agent emitted a tool update without a stable tool-call identity.",
+      };
+    }
     // Classification and the consumer must see the same title bytes. In
     // particular, a mutation token beyond the transport bound must not grant a
     // create-target attestation that runner-core cannot independently verify.
@@ -708,27 +772,34 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
     );
     const toolCallIdentity = {
       type: "tool_call",
-      toolCallId:
-        typeof event.toolCallId === "string"
-          ? boundedSidecarText(event.toolCallId, 240)
+      toolCallId,
+      tag:
+        typeof event.tag === "string"
+          ? boundedSidecarText(event.tag, 160)
           : null,
       status:
         typeof event.status === "string"
           ? boundedSidecarText(event.status, 100)
           : null,
       title: toolTitle,
+      text: boundedOptionalText(event.text, "", 4_000) || null,
       ...toolClassification,
     };
     return boundedSidecarValue(
       {
         ...toolCallIdentity,
-        locations: safeAcpxLocations(
-          event.locations,
-          openParams?.workingDirectory,
-          event.kind,
-          toolTitle,
-        ),
-        ...safeOutput(event.rawOutput),
+        locations:
+          boundedTool.paperclipBoundedTool === true
+            ? (event.locations ?? [])
+            : safeAcpxLocations(
+                event.locations,
+                openParams?.workingDirectory,
+                event.kind,
+                toolTitle,
+              ),
+        ...(boundedTool.paperclipBoundedTool === true
+          ? boundedTool.paperclipOutput
+          : safeOutput(event.rawOutput)),
       },
       128 * 1024,
       toolCallIdentity,
@@ -857,9 +928,7 @@ function parseOpenParams(
   const model = requiredText(value.model, "model");
   resolveQualifiedAcpxProfile(agent, model);
   if (value.runtimeContext !== undefined && value.runtimeContext !== null) {
-    throw new Error(
-      "ACPX sidecar runtime context must be pre-materialized",
-    );
+    throw new Error("ACPX sidecar runtime context must be pre-materialized");
   }
   if (
     value.providerSessionKey !== undefined &&
@@ -1069,6 +1138,19 @@ function stableRequestId(
     .digest("hex")
     .slice(0, 24);
   return `acpx-input-${digest}`;
+}
+
+function stableProviderIdentity(value: string, kind: string): string {
+  if (Buffer.byteLength(value) <= 240 && !/[\u0000-\u001f\u007f]/.test(value)) {
+    return value;
+  }
+  const digest = createHash("sha256")
+    .update("paperclip.acpx.provider-identity.v1\0")
+    .update(kind)
+    .update("\0")
+    .update(value)
+    .digest("hex");
+  return `acpx-${kind}-${digest}`;
 }
 
 function canonicalJson(value: unknown): string {

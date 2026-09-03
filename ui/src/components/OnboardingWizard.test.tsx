@@ -227,6 +227,24 @@ function render() {
   return { container, root, queryClient };
 }
 
+/**
+ * Press the first model-source tile.
+ *
+ * By `aria-checked` rather than by label: the display registry is mocked in this
+ * suite, so a tile reads "claude_localSubscription" rather than "Claude Code",
+ * and a test that selected on the visible name would be asserting the mock.
+ *
+ * The connect step arrives with nothing chosen, so this is what opens the input
+ * surface and lets the step advance.
+ */
+async function pickFirstSource(
+  click: (match: (text: string) => boolean) => Promise<void>,
+): Promise<void> {
+  const tile = [...document.body.querySelectorAll("button[aria-checked]")][0];
+  const label = tile?.textContent?.trim() ?? "";
+  await click((text) => text === label);
+}
+
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
   beforeEach(() => {
     mockAuthApi.getSession.mockResolvedValue({
@@ -301,6 +319,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockCompany.loading = false;
       mockCompaniesApi.list.mockResolvedValue([]);
 
+      // The model step needs tiles to pick from, and this suite's default
+      // registry is empty.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
       const { root, queryClient } = render();
       const renderTree = () =>
         act(async () => {
@@ -370,13 +391,14 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await clickByText((t) => t.startsWith("Next"));
 
       expect(document.body.textContent).toContain("Connect a model");
+      await pickFirstSource(clickByText);
       expect(document.body.textContent).not.toContain("Adapter environment check");
       expect(document.body.textContent).not.toContain("Test now");
 
       // Through Connect to Review, so the Mission-row assertion runs against
       // the checklist that actually renders it — stopping at the model step
       // would let a Mission regression pass unseen.
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
       // The review step is the heading and the woken agent, nothing else: the
       // checklist that restated the walk in three rows is gone, and with it
       // the Mission row that could only render unchecked.
@@ -405,6 +427,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockCompaniesApi.list.mockResolvedValue([]);
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
 
+      // The model step needs tiles to pick from, and this suite's default
+      // registry is empty.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
       const { root, queryClient } = render();
       const renderTree = () =>
         act(async () => {
@@ -436,7 +461,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       await flushReact();
       await clickText((t) => t.startsWith("Next"));
-      await clickText((t) => t.startsWith("Connect"));
+      await pickFirstSource(clickText);
+      await clickText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       // The mock is declared with no parameters, so index the call rather than
@@ -471,9 +497,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await flushReact();
       await clickByText((t) => t.startsWith("Next"));
       expect(document.body.textContent).toContain("Connect a model");
+      await pickFirstSource(clickByText);
 
       const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.trim().startsWith("Connect"),
+        b.textContent?.trim().startsWith("Next"),
       )!;
       await act(async () => {
         connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -569,6 +596,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
   describe("hire gate: adapter authentication (claude_local, the default onboarding adapter)", () => {
     /** Drives the wizard to the Connect step, agent name already filled in. */
     async function openConnectStep() {
+      // The tile row is built from this registry, and the suite's default is
+      // empty. That was survivable while the step preselected a source; now that
+      // nothing is chosen until a tile is pressed, a step with no tiles is a step
+      // that can never advance.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
       window.localStorage.setItem(
         ONBOARDING_STORAGE_KEY,
@@ -610,6 +642,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await clickByText((t) => t.startsWith("Next"));
       expect(document.body.textContent).toContain("Connect a model");
 
+      // Pick a source. The step arrives with nothing chosen — `adapterType`
+      // carries a value for the hire, but that is not the same as the customer
+      // having answered — so the input surface stays closed and the step will
+      // not advance until a tile is pressed. Every case below is about what
+      // happens *after* that choice, so the helper makes it.
+      await pickFirstSource(clickByText);
+
       return { root, clickByText };
     }
 
@@ -628,7 +667,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       expect(document.body.textContent).toContain(
@@ -653,7 +692,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
 
@@ -691,7 +730,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       async function connectWithApiKey() {
         const handles = await openConnectStep();
-        await handles.clickByText((t) => t.startsWith("Use API keys"));
+        await handles.clickByText((t) => t.startsWith("Use API key"));
         const field = document.body.querySelector(
           'input[type="password"]',
         ) as HTMLInputElement;
@@ -699,7 +738,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           setControlledValue(field, KEY);
         });
         await flushReact();
-        await handles.clickByText((t) => t.startsWith("Connect"));
+        await handles.clickByText((t) => t.startsWith("Next"));
         return handles;
       }
 
@@ -782,7 +821,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         mockAgentsApi.hire.mockRejectedValueOnce(new Error("network went away"));
         const { root, clickByText } = await connectWithApiKey();
 
-        await clickByText((t) => t.startsWith("Connect"));
+        await clickByText((t) => t.startsWith("Next"));
 
         expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
 
@@ -802,12 +841,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
 
       // Switch to API keys, which changes the configuration the hire will send.
-      await clickByText((t) => t.startsWith("Use API keys"));
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Use API key"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
 
@@ -829,13 +868,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
 
       // A second Connect must not treat the first (cached) blocking result as
       // reusable — it re-probes, and the create path stays closed.
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
 
@@ -850,7 +889,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -875,7 +914,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // scenario this test is named for.
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -900,7 +939,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       // The status route must not even be asked — the conflict is decided
@@ -925,7 +964,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -950,7 +989,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
       const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
@@ -969,7 +1008,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // The default `beforeEach` mock already rejects with a 404 `ApiError`.
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
       const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
@@ -1023,7 +1062,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       );
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
 
@@ -1046,7 +1085,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
 
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       expect(document.body.textContent).toContain(
@@ -1067,10 +1106,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockAgentsApi.hire.mockRejectedValue(new Error("hire failed"));
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
       expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(1);
 
-      await clickByText((t) => t.startsWith("Connect"));
+      await clickByText((t) => t.startsWith("Next"));
       expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(2);
 
       await act(async () => root.unmount());
@@ -1157,6 +1196,132 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
   });
 
+  it("keeps the live wizard mounted while a post-create company-list refetch runs", async () => {
+    // The authorization fetch needs to delay the first mount when a draft
+    // exists. Once the customer has typed, though, invalidating that query is
+    // normal background work. Unmounting for the refetch remounted the wizard
+    // from this page-load draft and made a successful create look like a reset.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({ step: 1, companyName: "", createdCompanyId: null }),
+    );
+    let resolveRefetch: (companies: Array<{ id: string; name: string; issuePrefix: string }>) => void =
+      () => {};
+    mockCompaniesApi.list
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(
+        () =>
+          new Promise<Array<{ id: string; name: string; issuePrefix: string }>>((resolve) => {
+            resolveRefetch = resolve;
+          }),
+      );
+    mockCompaniesApi.create.mockResolvedValue({
+      id: "created",
+      name: "Created Co",
+      issuePrefix: "CRE",
+    });
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const companyNameInput = document.querySelector("input") as HTMLInputElement;
+    setControlledValue(companyNameInput, "Created Co");
+    await act(async () => {
+      [...document.body.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Continue")!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Created Co" });
+    expect(mockCompaniesApi.list).toHaveBeenCalledTimes(2);
+    expect(document.querySelector("#onboarding-agent-name")).not.toBeNull();
+
+    await act(async () => {
+      resolveRefetch([{ id: "created", name: "Created Co", issuePrefix: "CRE" }]);
+    });
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("restores a draft after its initial ownership check fails and a retry succeeds", async () => {
+    // A failed first request cannot authorize the draft, so the wizard opens
+    // with safe defaults. The original gate remounted on a later successful
+    // retry so the now-verified draft could be restored; keep that recovery
+    // while preserving the post-create refetch fix above.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 3,
+        companyName: "Saved Co",
+        agentName: "Ops Lead",
+        createdCompanyId: "c1",
+      }),
+    );
+    const company = { id: "c1", name: "Saved Co", issuePrefix: "SC" };
+    let resolveRetry: (companies: Array<{ id: string; name: string; issuePrefix: string }>) => void =
+      () => {};
+    mockCompaniesApi.list
+      .mockRejectedValueOnce(new Error("company list unavailable"))
+      .mockImplementationOnce(
+        () =>
+          new Promise<Array<{ id: string; name: string; issuePrefix: string }>>((resolve) => {
+            resolveRetry = resolve;
+          }),
+      );
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.querySelector("#onboarding-agent-name")).toBeNull();
+
+    mockCompany.companies = [company];
+    await act(async () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.companies.list(SESSION_USER_ID),
+      });
+    });
+    await flushReact();
+
+    // The retry is intentionally still in flight. The wrapper removes the
+    // safe-default wizard so a completed validation can mount the saved draft.
+    expect(document.body.textContent).toBe("");
+
+    await act(async () => {
+      resolveRetry([company]);
+    });
+    await flushReact();
+
+    expect(mockCompaniesApi.list).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData(queryKeys.companies.list(SESSION_USER_ID))).toEqual({
+      companies: [company],
+      unauthorized: false,
+    });
+    const agentNameInput = document.querySelector(
+      "#onboarding-agent-name",
+    ) as HTMLInputElement | null;
+    expect(agentNameInput?.value).toBe("Ops Lead");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("discards a saved draft for a company the signed-in account does not own, and wipes the stale blob", async () => {
     // The actual vulnerability this fix closes: localStorage is per-origin,
     // not per-account, so a browser that already onboarded "company-old" for
@@ -1228,7 +1393,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // It mounts: the companies query sets `retry: false`, and with no
     // companies the dashboard's "Get Started" button opens onboarding — a gate
     // that rendered nothing here would make that button dead.
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
     // The draft is not restored, because ownership cannot be verified...
     const nameInput = document.body.querySelector(
       "#onboarding-agent-name",
@@ -1273,7 +1438,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(localStorage).toHaveBeenCalled();
     // It mounted: the wizard is open with no draft, rather than the render
     // throwing on the way in.
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
 
     localStorage.mockRestore();
     await act(async () => {
@@ -1314,7 +1479,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     await flushReact();
 
     // Mounted rather than blank...
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
     // ...but the draft was not restored, because the list cannot be trusted.
     const nameInput = document.body.querySelector(
       "#onboarding-agent-name",
@@ -1325,44 +1490,14 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       root.unmount();
     });
   });
-  it("closes without throwing when the browser denies storage access", async () => {
-    // `reset()` clears the draft and `handleClose` calls it, so the close
-    // button is a fourth storage call site. Guarding the read, the cleanup and
-    // the persist effect one at a time is how this one stayed unguarded while
-    // the others looked fixed.
-    const deny = () => {
-      throw new DOMException("The operation is insecure.", "SecurityError");
-    };
-    const localStorage = vi.spyOn(window, "localStorage", "get").mockImplementation(deny);
-    mockCompany.companies = [{ id: "c1", name: "My Co", issuePrefix: "MC" }];
-    mockCompany.loading = false;
-
-    const { root, queryClient } = render();
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <OnboardingWizard />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    const close = [...document.body.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Close"),
-    );
-    expect(close).toBeDefined();
-    await act(async () => {
-      close!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(mockDialog.closeOnboarding).toHaveBeenCalled();
-
-    localStorage.mockRestore();
-    await act(async () => {
-      root.unmount();
-    });
-  });
+  // The close-on-storage-denial case is gone with the control that reached it.
+  // Onboarding is a gate now, not a dialog: there is no X, Escape does not
+  // dismiss it, and nothing in the wizard calls `handleClose`. A test that
+  // clicked Close was asserting a path a customer no longer has.
+  //
+  // The open side of the same hazard is still covered by "renders instead of
+  // throwing when the browser denies storage access" directly above, which is
+  // the half that can still happen.
   it("leaves the draft untouched when the company query fails and onboarding is closed", async () => {
     // Mounting is safe for the draft precisely because the persist effect is
     // gated on the wizard being open. A closed wizard writes nothing, so the
@@ -1490,7 +1625,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     await flushReact();
 
     // Mounted — so this is a real observation, not an unmounted false pass.
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
       "#onboarding-agent-name",
@@ -1564,7 +1699,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     await flushReact();
 
     // Mounted, so this observes the real thing rather than an empty document.
-    expect(document.body.textContent).not.toBe("");
+    expect(document.querySelector('[data-testid="onboarding-wizard"]')).not.toBeNull();
     expect(document.body.textContent).not.toContain("A's Lead");
     const nameInput = document.body.querySelector(
       "#onboarding-agent-name",
@@ -1668,6 +1803,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
       mockAgentsApi.getAdapterAuthSignal.mockReset();
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+      // The row has to actually offer the adapter these drafts name. The login
+      // panel lives inside the input canvas, and the canvas opens for a chosen
+      // source — a saved adapter the row cannot show is not a chosen one, so
+      // without this the panel is absent for a reason that has nothing to do
+      // with the auth signal these tests are about.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
     });
 
     /** Drives the wizard to the Connect step with a company already created. */
@@ -1703,8 +1844,136 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // enough to reach the end of that chain.
       for (let i = 0; i < 5; i++) await flushReact();
       expect(document.body.textContent).toContain("Connect a model");
+      // No pick needed here: the draft this helper restores already names an
+      // adapter, which is what a run returning to this step actually carries.
       return { root, queryClient };
     }
+
+    it("will not advance on a saved adapter the step no longer offers", async () => {
+      // A draft can name an adapter this registry does not carry — a cloud
+      // sandbox without claude_local, an adapter since disabled. The row hides
+      // it, so the step shows an unanswered question: no tile filled, no input
+      // canvas. The CTA has to agree with that.
+      //
+      // It did not. The gate asked `sourcePicked`, which only means "a draft
+      // named something", so Next stayed live on a step that had visibly asked
+      // nothing and would hire against the hidden name. Reported by Greptile on
+      // #12726.
+      mockAdapterRegistry.list = [{ type: "codex_local" }];
+      const { root } = await openStep4({ adapterType: "some_retired_adapter" });
+
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(tiles.length, "the row should still offer what it has").toBeGreaterThan(0);
+      expect(
+        tiles.some((t) => t.getAttribute("aria-checked") === "true"),
+        "no tile should read as chosen",
+      ).toBe(false);
+
+      const cta = [...document.body.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Next",
+      );
+      expect(cta, "the step should render its Next button").toBeTruthy();
+      expect(
+        cta!.hasAttribute("disabled"),
+        "Next must not advance a question the step has not visibly asked",
+      ).toBe(true);
+
+      // And it opens again the moment the customer answers it themselves.
+      await act(async () => {
+        tiles[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 5; i++) await flushReact();
+      const ctaAfter = [...document.body.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Next",
+      );
+      expect(ctaAfter!.hasAttribute("disabled")).toBe(false);
+
+      await act(async () => root.unmount());
+    });
+
+    it("will not advance on a saved adapter the row does not show", async () => {
+      // The other shape of the same defect, and the one the snap cannot cover.
+      //
+      // The tile row is `recommendedAdapters`; the snap's idea of "visible" is
+      // recommended *plus* the advanced list. An adapter in the second but not
+      // the first — a saved `opencode_local`, say — therefore satisfies the
+      // snap, which leaves it alone, while the row it is supposed to be chosen
+      // in never shows it. Nothing is highlighted, the canvas is shut, and with
+      // the gate on `sourcePicked` the CTA was live: one press hires against an
+      // adapter the customer has not seen on this screen.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "opencode_local" }];
+      const { root } = await openStep4({ adapterType: "opencode_local" });
+
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(
+        tiles.some((t) => t.getAttribute("aria-checked") === "true"),
+        "the saved adapter is not in this row, so nothing should read as chosen",
+      ).toBe(false);
+
+      const cta = [...document.body.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "Next",
+      );
+      expect(
+        cta!.hasAttribute("disabled"),
+        "Next must not hire an adapter the row never offered",
+      ).toBe(true);
+
+      await act(async () => root.unmount());
+    });
+
+    it("will not hire from the keyboard on a source nobody selected", async () => {
+      // The step has two ways forward, and gating only the visible one leaves
+      // the defect intact behind a keystroke. Cmd+Enter called
+      // `handleGiveHeartbeat` directly with its own, older list of conditions,
+      // so with the button correctly disabled the same screen still hired on
+      // Cmd+Enter. Reported by Greptile on #12726 after the button was fixed.
+      //
+      // The saved adapter is one the registry no longer carries, so the snap
+      // replaces it with `claude_local` and clears the pick: the row shows two
+      // tiles, neither chosen. A keystroke that gets through hires claude_local
+      // — a real, offerable adapter that nobody on this screen selected, which
+      // is what makes the bypass worth a test rather than a comment.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      const { root } = await openStep4({ adapterType: "some_retired_adapter" });
+
+      const tiles = [...document.body.querySelectorAll("button[aria-checked]")];
+      expect(
+        tiles.some((t) => t.getAttribute("aria-checked") === "true"),
+        "the snap must not leave a tile reading as chosen",
+      ).toBe(false);
+
+      const wizard = document.querySelector('[data-testid="onboarding-wizard"]');
+      expect(wizard, "the wizard should be mounted").not.toBeNull();
+      for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
+        await act(async () => {
+          wizard!.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...modifier }),
+          );
+        });
+        for (let i = 0; i < 6; i++) await flushReact();
+      }
+
+      expect(
+        mockAgentsApi.hire,
+        "no keystroke may hire a source nobody selected",
+      ).not.toHaveBeenCalled();
+
+      // And it works once the question is answered, so this is a gate rather
+      // than a dead shortcut.
+      await act(async () => {
+        tiles[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+      await act(async () => {
+        wizard!.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, metaKey: true }),
+        );
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+
+      await act(async () => root.unmount());
+    });
 
     it("starts no call to the test-environment route on adapter selection", async () => {
       const { root } = await openStep4();

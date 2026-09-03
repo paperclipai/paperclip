@@ -13,6 +13,7 @@ use crate::provider_bridge::semantic_value_digest;
 
 const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 const MAX_ID_CHARS: usize = 160;
+const MAX_RUNTIME_ITEM_ID_CHARS: usize = 240;
 const MAX_INPUT_REQUEST_ID_CHARS: usize = 240;
 const MAX_RUNTIME_TEXT_CHARS: usize = 64 * 1024;
 
@@ -231,10 +232,22 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
     let kind = match runtime_type {
         "text_delta" => {
             bounded_required_text(payload, "text", MAX_RUNTIME_TEXT_CHARS, "runtime text")?;
+            bounded_optional_text(
+                payload,
+                "messageId",
+                MAX_RUNTIME_ITEM_ID_CHARS,
+                "runtime message id",
+            )?;
             AcpxRuntimeEventKind::TextDelta
         }
         "thinking" => {
             bounded_required_text(payload, "text", MAX_RUNTIME_TEXT_CHARS, "runtime thought")?;
+            bounded_optional_text(
+                payload,
+                "messageId",
+                MAX_RUNTIME_ITEM_ID_CHARS,
+                "runtime thought message id",
+            )?;
             AcpxRuntimeEventKind::Thinking
         }
         "plan" => {
@@ -247,7 +260,16 @@ fn decode_runtime_event(payload: &Value) -> Result<AcpxEventPayload, LocalRunner
             AcpxRuntimeEventKind::Status
         }
         "tool_call" => {
-            bounded_optional_text(payload, "toolCallId", 240, "runtime tool call id")?;
+            // Tool lifecycle updates cannot be coalesced safely without the
+            // provider's opaque identity. The qualified sidecar turns an
+            // identity-less ACP update into an explicit unsupported notice,
+            // and runner-core rejects any malformed frame that bypasses it.
+            required_id_with_limit(
+                payload,
+                "toolCallId",
+                "runtime tool call",
+                MAX_RUNTIME_ITEM_ID_CHARS,
+            )?;
             let title = bounded_optional_text(payload, "title", 4_000, "runtime tool title")?;
             bounded_optional_text(payload, "status", 100, "runtime tool status")?;
             if let Some(locations) = optional_array(payload, "locations", "runtime tool locations")?

@@ -95,8 +95,9 @@ struct PendingInput {
 pub struct AcpxProviderState {
     scope: AcpxEventScope,
     provider_requests: u64,
-    thinking_active: bool,
+    plan_revision: u64,
     assistant_text: String,
+    assistant_message_id: Option<String>,
     pending_tools: BTreeMap<String, AcpxPendingTool>,
     pending_tool_input_bytes: usize,
     pending_permissions: BTreeMap<String, usize>,
@@ -110,8 +111,9 @@ impl AcpxProviderState {
         Ok(Self {
             scope: AcpxEventScope::new(run_id)?,
             provider_requests: 0,
-            thinking_active: false,
+            plan_revision: 0,
             assistant_text: String::new(),
+            assistant_message_id: None,
             pending_tools: BTreeMap::new(),
             pending_tool_input_bytes: 0,
             pending_permissions: BTreeMap::new(),
@@ -178,8 +180,9 @@ impl AcpxProviderState {
             .ok_or_else(|| LocalRunnerError::invalid("ACPX provider request count is exhausted"))?;
         self.scope.bind_turn(turn_id)?;
         self.provider_requests = next_provider_requests;
-        self.thinking_active = false;
+        self.plan_revision = 0;
         self.assistant_text.clear();
+        self.assistant_message_id = None;
         self.semantic_result = None;
         Ok(())
     }
@@ -317,14 +320,16 @@ impl AcpxProviderState {
                     .to_owned();
                 self.scope.clear_turn(&turn_id)?;
                 self.clear_pending_requests();
-                self.thinking_active = false;
                 let mut events = Vec::new();
-                if !self.assistant_text.is_empty() {
+                if status == AcpxTurnStatus::Completed && !self.assistant_text.is_empty() {
                     events.push(AcpxProviderStateEvent::AssistantMessage {
                         turn_id: turn_id.clone(),
                         text: std::mem::take(&mut self.assistant_text),
                     });
+                } else {
+                    self.assistant_text.clear();
                 }
+                self.assistant_message_id = None;
                 events.push(AcpxProviderStateEvent::TurnTerminal {
                     turn_id,
                     status,
@@ -422,31 +427,59 @@ impl AcpxProviderState {
         event: &AcpxSidecarEvent,
         kind: AcpxRuntimeEventKind,
         tool_operation: Option<&'static str>,
-        payload: Value,
+        mut payload: Value,
         semantic_result_digest: Option<String>,
     ) -> Result<Vec<AcpxProviderStateEvent>, LocalRunnerError> {
-        if kind == AcpxRuntimeEventKind::Thinking {
-            if self.thinking_active {
-                return Ok(Vec::new());
-            }
-            self.thinking_active = true;
-        }
+        let next_plan_revision = if kind == AcpxRuntimeEventKind::Plan {
+            let revision = self
+                .plan_revision
+                .checked_add(1)
+                .ok_or_else(|| LocalRunnerError::invalid("ACPX plan revision is exhausted"))?;
+            payload
+                .as_object_mut()
+                .expect("a decoded ACPX runtime plan is an object")
+                .insert("revision".to_owned(), Value::from(revision));
+            Some(revision)
+        } else {
+            None
+        };
         if kind == AcpxRuntimeEventKind::TextDelta {
-            let text = payload
+            let provider_message_id = payload
+                .get("messageId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            let starts_new_message = provider_message_id.as_ref().is_some_and(|message_id| {
+                self.assistant_message_id
+                    .as_ref()
+                    .is_some_and(|current| current != message_id)
+            });
+            let raw_text = payload
                 .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            // ACP can produce more than one assistant message in a turn. All
+            // deltas remain durable progress, but only the latest compatible
+            // provider message is eligible to become the terminal reply.
+            // Folding earlier messages into it duplicates the transcript in
+            // the task UI and can promote intermediate prose as final output.
+            if starts_new_message {
+                self.assistant_text.clear();
+            }
             if self
                 .assistant_text
                 .len()
-                .checked_add(text.len())
+                .checked_add(raw_text.len())
                 .is_none_or(|bytes| bytes > MAX_ASSISTANT_TEXT_BYTES)
             {
                 return Err(LocalRunnerError::invalid(
                     "ACPX assistant text exceeds its retained limit",
                 ));
             }
-            self.assistant_text.push_str(text);
+            self.assistant_text.push_str(raw_text);
+            if provider_message_id.is_some() {
+                self.assistant_message_id = provider_message_id;
+            }
         }
         if kind == AcpxRuntimeEventKind::SemanticResult {
             let result = AcpxSemanticResult {
@@ -493,17 +526,21 @@ impl AcpxProviderState {
             .as_deref()
             .expect("a decoded runtime event has a turn binding");
         let fallback_item_id = format!("acpx-event-{}", event.sequence);
-        Ok(normalize_acpx_runtime_event(
+        let events = normalize_acpx_runtime_event(
             kind,
             &payload,
             tool_operation,
             &fallback_item_id,
             turn_id,
             self.provider_requests,
-        )
-        .into_iter()
-        .map(AcpxProviderStateEvent::Activity)
-        .collect())
+        );
+        if let Some(revision) = next_plan_revision {
+            self.plan_revision = revision;
+        }
+        Ok(events
+            .into_iter()
+            .map(AcpxProviderStateEvent::Activity)
+            .collect())
     }
 
     fn admit_runtime_request(

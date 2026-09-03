@@ -72,6 +72,42 @@ describe("Codex app-server Codex driver", () => {
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });
 
+  it("rejects a recovered provider thread outside the assigned workspace", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: {
+        id: "thread-1",
+        sessionId: "provider-session-1",
+        cwd: "/tmp",
+        turns: [{ id: "turn-1", status: "inProgress", items: [] }],
+      },
+    };
+    const driver = makeDriver([first, second], {
+      environment: {
+        PATH: "/bin",
+        HOME: "/isolated/home",
+        CODEX_HOME: "/isolated/codex",
+        PAPERCLIP_WORKSPACE_CWD: WORKSPACE,
+      },
+    });
+    const original = await driver.openSession({
+      runId: "run-recover-outside-workspace",
+      normalizedSessionId: "normalized-recover-outside-workspace",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Work." } });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "transport lost" });
+
+    await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason: expect.stringContaining(
+        "Codex working directory is outside the assigned workspace",
+      ),
+    });
+  });
+
   it("ignores an old terminal turn when the persisted active turn is still running", async () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();

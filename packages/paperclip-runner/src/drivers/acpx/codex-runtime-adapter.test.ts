@@ -592,9 +592,7 @@ describe("Codex ACPX runtime adapter", () => {
       await finalObserver;
       expect(runtime.close).toHaveBeenCalledTimes(4);
 
-      rejectFinalReconciliation(
-        new Error("final reconciliation failed late"),
-      );
+      rejectFinalReconciliation(new Error("final reconciliation failed late"));
       await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(5));
       expect(runtime.close).toHaveBeenLastCalledWith({
         handle: HANDLE,
@@ -1050,9 +1048,7 @@ describe("Codex ACPX runtime adapter", () => {
         settled = true;
       },
     );
-    await vi.waitFor(() =>
-      expect(child.kill).toHaveBeenCalledWith("SIGTERM"),
-    );
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGTERM"));
     await Promise.resolve();
 
     expect(child.signalCode).toBe("SIGTERM");
@@ -1379,6 +1375,45 @@ describe("Codex ACPX runtime adapter", () => {
     ).resolves.toBeUndefined();
     await port.close({ reason: "complete" });
   });
+
+  it.each([
+    ["codex", "gpt-5.6-sol", "approve-all", { outcome: "allow_once" }],
+    ["codex", "gpt-5.6-sol", "approve-reads", undefined],
+    ["codex", "gpt-5.6-sol", "deny-all", { outcome: "reject_once" }],
+    ["claude", "claude-sonnet-5", "approve-all", { outcome: "allow_once" }],
+    ["claude", "claude-sonnet-5", "approve-reads", undefined],
+    ["claude", "claude-sonnet-5", "deny-all", { outcome: "reject_once" }],
+  ] as const)(
+    "applies the %s/%s ACPX profile's %s mode without an implicit prompt bridge",
+    async (agent, model, permissionMode, expected) => {
+      const runtime = fakeRuntime();
+      let runtimeOptions: AcpRuntimeOptions | undefined;
+      const options = openOptions(fakeCommand());
+      options.profile = resolveQualifiedAcpxProfile(agent, model);
+      options.permissionMode = permissionMode;
+      const port = await openCodexAcpxRuntime(options, {
+        createRegistry: () => registry(),
+        createStore: () => store(),
+        createRuntime: (createdOptions) => {
+          runtimeOptions = createdOptions;
+          return runtime;
+        },
+      });
+
+      expect(runtimeOptions?.nonInteractivePermissions).toBe("fail");
+      await expect(
+        runtimeOptions?.onPermissionRequest?.(
+          {
+            sessionId: "session-1",
+            inferredKind: "write",
+            raw: {},
+          },
+          { signal: new AbortController().signal },
+        ),
+      ).resolves.toEqual(expected);
+      await port.close({ reason: "permission policy verified" });
+    },
+  );
 
   it("fails closed and closes the session when ACPX omits recovery identity", async () => {
     const runtime = fakeRuntime({ ...HANDLE, agentSessionId: undefined });
@@ -2434,7 +2469,6 @@ describe("Codex ACPX runtime adapter", () => {
     expect(retainCleanup).toHaveBeenCalledTimes(4);
     await retainCleanup.mock.calls[3]?.[0];
   });
-
 });
 
 function openOptions(

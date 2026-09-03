@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import type {
   TaskChatInteractionItem,
@@ -56,6 +57,8 @@ interface TaskChatThreadViewProps {
   /** Requeues a blocked task from its no-live-execution-path failure surfaces. */
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
+  onRetryFailedRun?: (runId: string) => Promise<void> | void;
+  retryFailedRunId?: string | null;
   /** Content appended inside the transcript scroller after the settled thread. */
   tail?: ReactNode;
   /** Optional streaming-aware key when `tail` changes without changing `items`. */
@@ -63,6 +66,7 @@ interface TaskChatThreadViewProps {
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
+  attachments?: IssueAttachment[];
 }
 
 function renderItem(
@@ -80,6 +84,9 @@ function renderItem(
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void,
   tryAgainNoLiveExecutionPathPending = false,
   retryableMarkerId?: string,
+  onRetryFailedRun?: (runId: string) => Promise<void> | void,
+  retryFailedRunId?: string | null,
+  attachments: IssueAttachment[] = [],
 ) {
   switch (item.kind) {
     case "message": {
@@ -113,6 +120,12 @@ function renderItem(
               undefined,
               onRuntimeRequestDecision,
               item.attachedTurn?.standaloneHeader ? "runner" : "classic",
+              undefined,
+              false,
+              undefined,
+              undefined,
+              undefined,
+              attachments,
             )
           }
         />
@@ -139,7 +152,10 @@ function renderItem(
           attachedTurn={item.attachedTurn?.standaloneHeader ? undefined : turn}
           hideAgentIdentity={Boolean(item.attachedTurn?.standaloneHeader)}
           onTryAgainNoLiveExecutionPath={onTryAgainNoLiveExecutionPath}
-          tryAgainNoLiveExecutionPathPending={tryAgainNoLiveExecutionPathPending}
+          tryAgainNoLiveExecutionPathPending={
+            tryAgainNoLiveExecutionPathPending
+          }
+          attachments={attachments}
         />
       );
     }
@@ -149,10 +165,16 @@ function renderItem(
           item={item}
           onTryAgain={
             item.id === retryableMarkerId
-              ? onTryAgainNoLiveExecutionPath
+              ? item.runId && onRetryFailedRun
+                ? () => onRetryFailedRun(item.runId!)
+                : onTryAgainNoLiveExecutionPath
               : undefined
           }
-          tryAgainPending={tryAgainNoLiveExecutionPathPending}
+          tryAgainPending={
+            item.runId
+              ? retryFailedRunId === item.runId
+              : tryAgainNoLiveExecutionPathPending
+          }
         />
       );
     case "thinking":
@@ -187,6 +209,13 @@ function renderItem(
                 undefined,
                 undefined,
                 onRuntimeRequestDecision,
+                activityAppearance,
+                undefined,
+                false,
+                undefined,
+                undefined,
+                undefined,
+                attachments,
               )
             )
           }
@@ -198,6 +227,11 @@ function renderItem(
       return (
         <TaskChatPlanPreviewCard
           source={{ kind: "saved", document: item.document }}
+          testId={
+            item.placement === "fallback"
+              ? "task-chat-plan-preview-fallback"
+              : "task-chat-plan-preview"
+          }
         />
       );
     case "brief":
@@ -216,6 +250,12 @@ function renderItem(
               undefined,
               onRuntimeRequestDecision,
               item.standaloneHeader ? "runner" : "classic",
+              undefined,
+              false,
+              undefined,
+              undefined,
+              undefined,
+              attachments,
             )
           }
         />
@@ -252,21 +292,25 @@ export function TaskChatThreadView({
   renderQueuedAction,
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending = false,
+  onRetryFailedRun,
+  retryFailedRunId = null,
   tail,
   contentKey,
   className,
   scroll = true,
+  attachments = [],
 }: TaskChatThreadViewProps) {
-  const retryableMarkerId = onTryAgainNoLiveExecutionPath
-    ? [...items]
-        .reverse()
-        .find(
-          (item) =>
-            item.kind === "marker" &&
-            item.variant === "interrupted" &&
-            item.label === "Run failed",
-        )?.id
-    : undefined;
+  const retryableMarkerId =
+    onRetryFailedRun || onTryAgainNoLiveExecutionPath
+      ? [...items]
+          .reverse()
+          .find(
+            (item) =>
+              item.kind === "marker" &&
+              item.variant === "interrupted" &&
+              item.label === "Run failed",
+          )?.id
+      : undefined;
   const body = (
     <div
       className={cn(
@@ -304,6 +348,9 @@ export function TaskChatThreadView({
             onTryAgainNoLiveExecutionPath,
             tryAgainNoLiveExecutionPathPending,
             retryableMarkerId,
+            onRetryFailedRun,
+            retryFailedRunId,
+            attachments,
           )}
         </div>
       ))}

@@ -24,6 +24,11 @@ import { heartbeatService } from "../services/heartbeat.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const DIRECT_ADAPTERS = [
+  ["codex_local", "codex"],
+  ["claude_local", "claude"],
+  ["opencode_local", "opencode"],
+] as const;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -53,18 +58,19 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-direct-adapter-isolation-");
     db = createDb(tempDb.connectionString);
-    const directCodexAdapter: ServerAdapterModule = {
-      type: "codex_local",
-      supportsLocalAgentJwt: false,
-      execute,
-      testEnvironment: async () => ({
-        adapterType: "codex_local",
-        status: "pass",
-        checks: [],
-        testedAt: new Date(0).toISOString(),
-      }),
-    };
-    registerServerAdapter(directCodexAdapter);
+    for (const [adapterType] of DIRECT_ADAPTERS) {
+      registerServerAdapter({
+        type: adapterType,
+        supportsLocalAgentJwt: false,
+        execute,
+        testEnvironment: async () => ({
+          adapterType,
+          status: "pass",
+          checks: [],
+          testedAt: new Date(0).toISOString(),
+        }),
+      });
+    }
   }, 20_000);
 
   afterEach(async () => {
@@ -91,66 +97,71 @@ describeEmbeddedPostgres("direct adapter native-runner isolation", () => {
   });
 
   afterAll(async () => {
-    unregisterServerAdapter("codex_local");
+    for (const [adapterType] of DIRECT_ADAPTERS) {
+      unregisterServerAdapter(adapterType);
+    }
     await tempDb?.cleanup();
   });
 
-  it("executes flag-off codex_local once without creating native records", async () => {
-    const companyId = randomUUID();
-    const agentId = randomUUID();
-    const directProofJson = '{"schema":"direct-proof.v1","value":"byte-stable"}';
-    execute.mockResolvedValue({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      provider: "codex",
-      model: "test-codex",
-      summary: "Direct adapter summary.",
-      resultJson: { directProofJson },
-    });
+  it.each(DIRECT_ADAPTERS)(
+    "executes flag-off %s once without creating native records",
+    async (adapterType, provider) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const directProofJson = '{"schema":"direct-proof.v1","value":"byte-stable"}';
+      execute.mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        provider,
+        model: `test-${provider}`,
+        summary: "Direct adapter summary.",
+        resultJson: { directProofJson },
+      });
 
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Direct compatibility",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
-      requireBoardApprovalForNewAgents: false,
-      defaultResponsibleUserId: "responsible-user",
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Direct Codex",
-      role: "engineer",
-      status: "idle",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Direct compatibility",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: `Direct ${provider}`,
+        role: "engineer",
+        status: "idle",
+        adapterType,
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
 
-    const heartbeat = heartbeatService(db);
-    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
-    expect(queued).not.toBeNull();
-    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+      const heartbeat = heartbeatService(db);
+      const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+      expect(queued).not.toBeNull();
+      const finished = await waitForRunToFinish(heartbeat, queued!.id);
 
-    expect(execute).toHaveBeenCalledOnce();
-    expect(finished).toMatchObject({
-      status: "succeeded",
-      exitCode: 0,
-      signal: null,
-      runtimeMode: "legacy",
-      nativePhase: null,
-    });
-    const persistedResult = finished?.resultJson as Record<string, unknown> | null;
-    expect(persistedResult?.directProofJson).toBe(directProofJson);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(finished).toMatchObject({
+        status: "succeeded",
+        exitCode: 0,
+        signal: null,
+        runtimeMode: "legacy",
+        nativePhase: null,
+      });
+      const persistedResult = finished?.resultJson as Record<string, unknown> | null;
+      expect(persistedResult?.directProofJson).toBe(directProofJson);
 
-    const nativeRows = await Promise.all([
-      db.select().from(completionContracts),
-      db.select().from(nativeRunResults),
-      db.select().from(workAssessments),
-      db.select().from(statusDecisions),
-      db.select().from(nativeRunFinalizations),
-    ]);
-    expect(nativeRows.every((rows) => rows.length === 0)).toBe(true);
-  });
+      const nativeRows = await Promise.all([
+        db.select().from(completionContracts),
+        db.select().from(nativeRunResults),
+        db.select().from(workAssessments),
+        db.select().from(statusDecisions),
+        db.select().from(nativeRunFinalizations),
+      ]);
+      expect(nativeRows.every((rows) => rows.length === 0)).toBe(true);
+    },
+  );
 });

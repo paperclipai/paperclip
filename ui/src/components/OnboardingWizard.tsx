@@ -112,7 +112,6 @@ import {
   Check,
   Loader2,
   ChevronDown,
-  X
 } from "lucide-react";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -333,6 +332,19 @@ export function OnboardingWizard() {
       return null; // malformed: treated as stale below
     }
   }, []);
+  // The ownership gate is closed after the initial validation succeeds, or
+  // when no validation is needed. A later company-list invalidation is
+  // ordinary background work. If it unmounted the inner wizard then, all of
+  // its live useState values would be reconstructed from `rawBlob` above —
+  // the value from page load, not the draft the customer just typed — and a
+  // successful organization submission would appear to do nothing.
+  //
+  // A failed validation must remain retryable. A later successful fetch needs
+  // to remount the wizard with the now-authorized draft, rather than keeping
+  // the defaults it showed while ownership was unknown.
+  const [initialDraftValidationComplete, setInitialDraftValidationComplete] = useState(
+    rawBlob === undefined || rawBlob === null,
+  );
 
   // Whether this account owns the company the draft names is an authorization
   // question, and the answer has to be about the account asking now.
@@ -405,10 +417,11 @@ export function OnboardingWizard() {
     onboardingDraftStorage.clear();
   }, [staleStateDetected]);
 
-  // A saved blob exists and the verification fetch is still in flight: wait,
-  // rather than mount the inner wizard with a premature and unrecoverable
-  // guess at the draft. Its ~20 `useState(saved?.x ?? default)` initializers
-  // only read `saved` once.
+  // A saved blob exists and its *initial* verification fetch is still in
+  // flight: wait, rather than mount the inner wizard with a premature and
+  // unrecoverable guess at the draft. Its ~20 `useState(saved?.x ?? default)`
+  // initializers only read `saved` once. After that first mount this is a
+  // background refetch, which must not tear down the customer's live state.
   //
   // `isFetching`, not `isLoading`. `isLoading` is false whenever the cache
   // holds retained data, so a refetch over a warm cache would mount the wizard
@@ -425,7 +438,20 @@ export function OnboardingWizard() {
   // it is itself gated on `effectiveOnboardingOpen`, so a mounted-but-closed
   // wizard writes nothing. If the wizard is open the customer is onboarding
   // right now, which supersedes the draft anyway.
-  if (rawBlob !== undefined && companiesQuery.isFetching) {
+  const waitForInitialDraftValidation =
+    !initialDraftValidationComplete && rawBlob !== undefined && companiesQuery.isFetching;
+
+  useEffect(() => {
+    if (
+      !initialDraftValidationComplete &&
+      ownershipDecidable &&
+      !companiesQuery.isFetching
+    ) {
+      setInitialDraftValidationComplete(true);
+    }
+  }, [initialDraftValidationComplete, ownershipDecidable, companiesQuery.isFetching]);
+
+  if (waitForInitialDraftValidation) {
     return null;
   }
 
@@ -548,6 +574,22 @@ function OnboardingWizardInner({
   );
   const [adapterType, setAdapterType] = useState<AdapterType>(() =>
     restoreOnboardingAdapterType(saved?.adapterType),
+  );
+  /**
+   * Whether a model source has been chosen, as opposed to which one
+   * `adapterType` happens to hold.
+   *
+   * The two are not the same, and reading the second as the first is what made
+   * this step arrive with a tile already lit and its input already open: the
+   * hire needs an adapter, so `adapterType` always carries one, restored or
+   * defaulted. A customer who never touched the row could reach the end of the
+   * step having chosen nothing.
+   *
+   * Restored true when the draft names a source. Someone returning here has
+   * already answered, and asking again would throw that answer away.
+   */
+  const [sourcePicked, setSourcePicked] = useState<boolean>(
+    () => typeof saved?.adapterType === "string" && saved.adapterType.length > 0,
   );
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
@@ -1027,19 +1069,46 @@ function OnboardingWizardInner({
    * `adapterType` alone, because a restored draft can name an adapter this step
    * no longer offers — a selection the customer cannot see.
    */
-  const sourceSelected = recommendedAdapters.some((opt) => opt.type === adapterType);
+  const sourceSelected =
+    sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
 
   /**
-   * When the input canvas is open.
+   * Whether the connect step may advance.
    *
-   * A selected source is the ordinary reason — the card is the answer to the
-   * tile that was just pressed, so an untouched row leaves nothing under it. But
-   * it opens for a pending sign-in regardless of the row, because the adapter
-   * needing credentials does not depend on it having a tile: a restored draft
-   * naming an adapter this step no longer offers still cannot hire without one,
-   * and hiding the panel would leave that dead end with nothing to press.
+   * One predicate, because there are two ways to advance and they drifted. The
+   * button's condition and Cmd+Enter's were written out separately, so when the
+   * button gained `sourceSelected` and `adapterEnvLoading` the keyboard kept the
+   * older, shorter list — and hired against a source the row had never shown.
+   * The same defect the button was just fixed for, one path over.
+   *
+   * `loading` is deliberately not here. The keyboard handler returns on it
+   * before reaching any step, for a reason particular to keystrokes: a second
+   * Enter re-enters a handler whose guard is state the first has not written
+   * yet. That check belongs at the top of the handler, not per-step.
+   *
+   * Anything that gates this step belongs in here, so the next one is added
+   * once rather than twice.
    */
-  const canvasOpen = sourceSelected || showAdapterLoginPanel;
+  const connectStepReady =
+    sourceSelected && !adapterEnvLoading && !missionUnresolvedForHire;
+
+  /**
+   * When the input canvas is open: exactly when a source has been chosen.
+   *
+   * The card is the answer to the tile that was just pressed, so an untouched
+   * row leaves nothing under it — a sign-in bar offered before the question was
+   * answered says the step already knows which provider is meant, which it does
+   * not.
+   *
+   * This used to open for a pending sign-in as well, `|| showAdapterLoginPanel`,
+   * so that a restored draft naming an adapter this step no longer offers still
+   * had something to press. That reasoning came from when the row arrived with a
+   * selection already made and an invisible one was a dead end. It is not one
+   * now: the row is a question, an unofferable saved adapter simply leaves it
+   * unanswered, and the visible tiles are the thing to press. `showAdapterLoginPanel`
+   * still decides what goes *inside* the canvas — only not whether it exists.
+   */
+  const canvasOpen = sourceSelected;
 
   // The default (or a saved) adapterType can name an adapter the server has
   // since disabled — e.g. a cloud sandbox registry without claude_local. The
@@ -1058,6 +1127,13 @@ function OnboardingWizardInner({
     if (visible.some((a) => a.type === adapterType)) return;
     const next = visible[0].type as AdapterType;
     setAdapterType(next);
+    // The snap is not a choice. It replaces a name the customer can no longer
+    // see with the first one they can, which is the right thing to hold — but
+    // holding it *as chosen* would put a filled tile and an open sign-in panel
+    // on a step nobody has answered, and re-create by the back door exactly the
+    // preselection this step was changed to stop doing. The saved answer was
+    // unofferable, so the question is open again.
+    setSourcePicked(false);
     if (next === "codex_local") return;
     if (next === "opencode_local") {
       setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
@@ -1977,7 +2053,11 @@ function OnboardingWizardInner({
       }
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
+      // `connectStepReady`, the same predicate the step's button uses. Spelling
+      // the condition out here again is what let this path hire against a
+      // source the tile row had never shown, after the button was gated and
+      // this was not.
+      else if (step === 4 && agentName.trim() && connectStepReady)
         handleGiveHeartbeat();
       else if (step === 5) handleLaunchToDashboard();
     }
@@ -2040,16 +2120,19 @@ function OnboardingWizardInner({
             RemoveScroll which blocks wheel events on our custom (non-DialogContent)
             scroll container. A plain div preserves the background without scroll-locking. */}
         <div className="fixed inset-0 z-50 bg-background" />
-        <div className="fixed inset-0 z-50 flex" onKeyDown={handleKeyDown}>
-          {/* Close button */}
-          <button
-            onClick={handleClose}
-            className="absolute top-4 left-4 z-10 rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
-          >
-            <X className="h-5 w-5" />
-            <span className="sr-only">Close</span>
-          </button>
+        {/* A deliberate hook for "the wizard mounted".
 
+            The tests that assert it opens used to prove it by finding any text
+            in the document — which, with the front door mocked to null in that
+            suite, was only ever the close button's screen-reader label. Removing
+            the button took the proof with it, and those tests would have gone on
+            passing indefinitely if it had stayed. A named anchor says what they
+            mean rather than depending on whatever happens to render. */}
+        <div
+          data-testid="onboarding-wizard"
+          className="fixed inset-0 z-50 flex"
+          onKeyDown={handleKeyDown}
+        >
           {/* Step 0: Front Door — full-screen choice */}
           {step === 0 && (
             <div className="w-full flex flex-col overflow-y-auto">
@@ -2086,8 +2169,13 @@ function OnboardingWizardInner({
                 // narrower than the next screen's makes the whole frame jump on
                 // Continue — which is the thing that read as "off" to begin
                 // with, and is more obvious once the buttons match.
+                // 68px sides, so the column inside the 560px frame is 424px —
+                // the measure the design draws every arc step to. It was 40px
+                // (a 480px column), which is wide enough that the two model
+                // tiles stretch and the name field sits under a question far
+                // narrower than itself.
                 isAgentArcStep || step === 1
-                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
+                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-(--sz-68px) sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
             >
@@ -2195,7 +2283,7 @@ function OnboardingWizardInner({
                       // sentence restating it only pushes the fields down.
                       lede={
                         step === 3 ? undefined : step === 4 ? (
-                          <>Paperclip works with your existing subscription or API keys.</>
+                          <>Paperclip works with your subscription or API keys.</>
                         ) : (
                           <>{agentName.trim() || "Your first agent"} is ready to work!</>
                         )
@@ -2541,11 +2629,21 @@ function OnboardingWizardInner({
                   `general` role; a specific one can be set later, where there
                   is context to choose it in. */}
               {step === 3 && (
-                <div className="mx-auto flex w-full max-w-(--sz-320px) flex-col gap-9">
+                <div className="mx-auto flex w-full flex-col gap-9">
                   <div className="flex flex-col gap-2">
-                    <Label htmlFor="onboarding-agent-name">Name</Label>
+                    <Label htmlFor="onboarding-agent-name">Agent name</Label>
+                    {/*
+                      Filled, not outlined, and the column's full width — the
+                      same field the naming step before the hand-off draws.
+                      `bg-muted` is the design's field surface; the default
+                      Input is a hairline border over `bg-input/30`, which on
+                      this ground reads as an empty outline rather than a place
+                      to type. The border is kept but made transparent so the
+                      focus ring, which colours the border, still has one.
+                    */}
                     <Input
                       id="onboarding-agent-name"
+                      className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
                       placeholder="e.g. Chief of staff, Designer, Ron..."
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
@@ -2582,11 +2680,13 @@ function OnboardingWizardInner({
                       }))}
                       mode={credentialMode}
                       selectedId={
+                        sourcePicked &&
                         recommendedAdapters.some((opt) => opt.type === adapterType)
                           ? adapterType
                           : null
                       }
                       onSelect={(id) => {
+                        setSourcePicked(true);
                         setAdapterType(id);
                         if (id === "codex_local") return;
                         if (id === "opencode_local") {
@@ -2873,11 +2973,9 @@ function OnboardingWizardInner({
                   primaryLabel={
                     step === 1
                       ? "Continue"
-                      : step === 3
-                        ? "Next"
-                        : step === 4
-                          ? "Connect"
-                          : "Get started"
+                      : step === 5
+                        ? "Get started"
+                        : "Next"
                   }
                   loadingLabel={
                     step === 1
@@ -2893,7 +2991,13 @@ function OnboardingWizardInner({
                       : step === 3
                         ? !agentName.trim()
                         : step === 4
-                          ? loading || adapterEnvLoading || missionUnresolvedForHire
+                          ? // Nothing is chosen on arrival, so the step cannot
+                            // advance until something is. Without this a customer
+                            // could pass the model step having touched none of
+                            // it, and be hired against whatever the draft
+                            // happened to carry. See `connectStepReady`, which
+                            // Cmd+Enter asks as well.
+                            !connectStepReady || loading
                           : loading || launchStateIncomplete
                   }
                   onPrimary={() => {

@@ -10,6 +10,8 @@ import { HarnessDriverBackend } from "./harness-driver-backend.js";
 import { nativeSystemInstructions, nativeTaskConstraints } from "./runtime-context.js";
 
 export interface CodexNativeSessionBackendOptions {
+  /** Effective provider environment, including the assigned workspace boundary. */
+  environment?: NodeJS.ProcessEnv;
   runnerInstanceId?: string;
   onSpawn?: (meta: {
     pid: number;
@@ -90,6 +92,15 @@ function createTransportBackedNativeSessionBackend(
 ): NativeSessionBackend {
   const driverIdentity = transportDriverIdentity(input);
   const isCodex = input.provider.kind === "codex";
+  if (
+    input.provider.kind === "codex"
+    && input.provider.approvalPolicy !== undefined
+    && input.provider.approvalPolicy !== "never"
+  ) {
+    throw new Error(
+      "paperclip_runner_codex_permission_mode_unqualified: set codexPermissionMode to never before starting or recovering this native run",
+    );
+  }
 
   return new HarnessDriverBackend(new CodexAppServerDriver({
     ...(input.provider.model ? { model: input.provider.model } : {}),
@@ -97,7 +108,7 @@ function createTransportBackedNativeSessionBackend(
     // Codex-compatible surface must never open a second approval channel.
     approvalPolicy:
       input.provider.kind === "codex"
-        ? input.provider.approvalPolicy ?? "untrusted"
+        ? input.provider.approvalPolicy ?? "never"
         : "never",
     baseInstructions: nativeSystemInstructions(input),
     includeSkillInstructions: isCodex && "runtimeContext" in input,
@@ -127,6 +138,7 @@ function createTransportBackedNativeSessionBackend(
     transportFactory: options.transportFactory,
     dynamicTools: options.dynamicTools,
     dynamicToolHandler: options.dynamicToolHandler,
+    environment: options.environment,
     driverIdentity,
     capabilities: isCodex
       ? {}

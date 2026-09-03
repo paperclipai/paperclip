@@ -1439,19 +1439,82 @@ impl CodexCommandExecutor {
             .ok_or_else(|| DurableRunnerError::invalid("Codex provider is unavailable"))
     }
 
-    fn verify_attached_tools(&self, payload: &Value) -> Result<(), DurableRunnerError> {
-        if payload.get("authorizedTools").is_none() {
-            return Ok(());
+    fn attach_run(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
+        let mut next_state = self
+            .state
+            .clone()
+            .ok_or_else(|| DurableRunnerError::invalid("Codex provider has not been prepared"))?;
+        // execute() restores the durable provider before dispatching run.attach.
+        // An exact, settled restore can emit one session.resumed notice about
+        // the prior provider session before the new run authority is attached.
+        // That lifecycle-only notice is safe to discard during rotation; every
+        // other pending provider event still blocks attachment so terminal,
+        // tool, and reconciliation data cannot be lost.
+        let only_recovery_notice_pending = next_state
+            .pending_events
+            .iter()
+            .all(|event| event.event_type == "session.resumed");
+        if next_state.thread_id.is_none()
+            || next_state.lifecycle == "closed"
+            || next_state.active_provider_turn_id.is_some()
+            || next_state.ambiguous_turn_start_pending
+            || !only_recovery_notice_pending
+            || !next_state.queued_events.is_empty()
+        {
+            return Err(DurableRunnerError::invalid(
+                "run.attach requires a settled Codex provider session with no pending events",
+            ));
         }
+        if let Some(provider) = payload.get("provider") {
+            let config: CodexProviderConfig =
+                serde_json::from_value(provider.clone()).map_err(|error| {
+                    DurableRunnerError::invalid(format!("run.attach provider is invalid: {error}"))
+                })?;
+            config
+                .validate()
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            if config != next_state.config {
+                return Err(DurableRunnerError::invalid(
+                    "run.attach cannot change the durable Codex provider profile",
+                ));
+            }
+        }
+        let completion_contract = completion_contract(payload)?;
         let tool_set = authorized_tool_set(payload)?;
-        self.state
-            .as_ref()
-            .ok_or_else(|| DurableRunnerError::invalid("Codex provider has not been prepared"))?
+        next_state
             .tool_bridge
-            .verify_tool_set(&tool_set)
+            .attach_run(tool_set)
             .map_err(|error| {
-                DurableRunnerError::invalid(format!("run.attach tool contract changed: {error}"))
-            })
+                DurableRunnerError::invalid(format!(
+                    "run.attach tool contract could not be rebound: {error}"
+                ))
+            })?;
+        next_state.completion_contract = completion_contract;
+        next_state.completed_turn_authoritative = false;
+        next_state.completed_turn_process_generation = None;
+        next_state.completed_provider_turn_id = None;
+        next_state.receipt_limit_diagnostic_emitted = false;
+        next_state.receipt_limit_interrupt_pending = false;
+        next_state.receipt_limit_interrupt_accepted = false;
+        next_state.receipt_limit_interrupt_attempts = 0;
+        next_state.receipt_limit_interrupt_deadline_unix_ms = None;
+        next_state.last_agent_message = None;
+        if let Some(provider) = self.provider.as_mut() {
+            provider.shutdown().map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to checkpoint Codex before attaching a new run: {error}"
+                ))
+            })?;
+        }
+        self.provider = None;
+        next_state.pending_events.clear();
+        // Persist the checkpoint as not-open before open_session resumes it for
+        // the new authority. Otherwise recovery emits a second session.resumed
+        // notice into the provider queue in addition to the command event.
+        next_state.lifecycle = "prepared".to_owned();
+        self.persist_state(&next_state)?;
+        self.state = Some(next_state);
+        Ok(())
     }
 
     fn open_session(&mut self) -> Result<CommandExecution, DurableRunnerError> {
@@ -2351,6 +2414,7 @@ impl CodexCommandExecutor {
             "driver": state.config.driver,
             "providerSessionId": state.thread_id,
             "activeProviderTurnId": state.active_provider_turn_id,
+            "cwd": state.config.cwd,
         })))
     }
 
@@ -2665,8 +2729,9 @@ impl CommandExecutor for CodexCommandExecutor {
             "run.attach" => {
                 if self.state.is_none() && command.payload.get("provider").is_some() {
                     self.prepare(&command.payload)?;
+                } else {
+                    self.attach_run(&command.payload)?;
                 }
-                self.verify_attached_tools(&command.payload)?;
                 let mut execution = self.open_session()?;
                 let provider = self
                     .state

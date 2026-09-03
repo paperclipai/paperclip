@@ -1,6 +1,10 @@
 import express from "express";
 import request from "supertest";
+import { lstat, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { AdapterAuthSessionConflictError } from "../services/device-login-service.js";
 import type {
   AdapterAuthSessionRow,
@@ -68,6 +72,26 @@ const mockSecretService = vi.hoisted(() => ({
     secretKeys: new Set<string>(),
     manifest: [],
   })),
+  // The account-home secret lookup and creation. Absent by default, so a
+  // successful promotion creates it; a test overrides either to drive the
+  // idempotent-repeat-login and secret-creation-failure paths.
+  getByName: vi.fn(async (_companyId: string, _name: string) => null as Record<string, unknown> | null),
+  create: vi.fn(async (_companyId: string, _input: Record<string, unknown>) => ({ id: "secret-1" })),
+  // The company-wide secret listing the cleanup-safety scan reads. Empty by
+  // default, so a cleanup that finds no other claimant removes the
+  // directory; a test overrides it with a differently named secret to prove
+  // the scan finds a claimant a name-only check would miss.
+  list: vi.fn(
+    async (_companyId: string) => [] as Array<{ id: string; name: string; provider: string }>,
+  ),
+  // The pre-existing-secret value check. Defaults to a value that never
+  // matches an account home, so a test that leaves this unset and still
+  // reaches an existing-secret branch fails loud instead of passing by
+  // accident; a test overrides it to the account home under test.
+  resolveSecretValueForDeviceLoginCheck: vi.fn(
+    async (_companyId: string, _secretId: string, _context: { configPath: string }) =>
+      "/unset-mock-value" as string,
+  ),
 }));
 
 const mockEnvironmentService = vi.hoisted(() => ({
@@ -341,10 +365,20 @@ const loginPath = (companyId: string, type = "codex_local") =>
   `/api/companies/${companyId}/adapters/${type}/login-sessions`;
 
 describe("adapter device-login routes", () => {
+  // Real temp directories a test plants as an account home, cleaned up in
+  // `afterEach` whether or not the route removed them itself.
+  const accountHomeTestDirs: string[] = [];
+
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
-    mockDeviceLoginPromotion.mockResolvedValue("promoted");
+    mockDeviceLoginPromotion.mockResolvedValue({
+      outcome: "promoted",
+      accountId: "acct-default",
+      accountHomeDir: "/tmp/paperclip-codex-account-home/acct-default",
+    });
+    mockSecretService.getByName.mockResolvedValue(null);
+    mockSecretService.create.mockResolvedValue({ id: "secret-1" });
     harness.store = createMemoryStore();
     harness.runtime = createFakeRuntime();
     harness.acquisitions = [];
@@ -376,9 +410,14 @@ describe("adapter device-login routes", () => {
     );
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     // Release the gate, so every in-flight login run ends and clears its timer.
     harness.releaseGate();
+    while (accountHomeTestDirs.length > 0) {
+      const dir = accountHomeTestDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 
   it("requires a board actor and rejects an agent-token start", async () => {
@@ -726,6 +765,12 @@ describe("adapter device-login routes", () => {
   });
 
   it("lets a second owner start an active login in the same company", async () => {
+    // Both logins bind the default account home, and the login service
+    // reconfirms the bound secret's value a second time right before it
+    // commits the terminal `authenticated` state.
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(
+      "/tmp/paperclip-codex-account-home/acct-default",
+    );
     const app = await createApp();
 
     const first = await request(app)
@@ -744,9 +789,31 @@ describe("adapter device-login routes", () => {
     expect(second.body.sessionId).not.toBe(first.body.sessionId);
     // Each owner's start acquires its own lease.
     expect(harness.acquisitions).toHaveLength(2);
+    // Drain both sessions to a terminal status before the test ends. Neither
+    // session's promotion has run yet (both still wait on the gate), so an
+    // undrained session keeps running after this test returns and can consume
+    // a later test's own mocked promotion result. A status read is owner
+    // scoped, so read each session back as the owner that started it.
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      currentActor = boardActor(OWNER_A);
+      const firstStatus = await request(app).get(`${loginPath(COMPANY_1)}/${first.body.sessionId}`);
+      expect(firstStatus.body.status).toBe("authenticated");
+    });
+    await vi.waitFor(async () => {
+      currentActor = boardActor(OWNER_B);
+      const secondStatus = await request(app).get(`${loginPath(COMPANY_1)}/${second.body.sessionId}`);
+      expect(secondStatus.body.status).toBe("authenticated");
+    });
   });
 
   it("returns 409 for a second active start in a different environment", async () => {
+    // The login binds the default account home, and the login service
+    // reconfirms the bound secret's value a second time right before it
+    // commits the terminal `authenticated` state.
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(
+      "/tmp/paperclip-codex-account-home/acct-default",
+    );
     const app = await createApp();
 
     const first = await request(app)
@@ -761,12 +828,24 @@ describe("adapter device-login routes", () => {
       .send({ environmentId: SANDBOX_ENV_2 });
     expect(second.status, JSON.stringify(second.body)).toBe(409);
     expect(harness.acquisitions).toHaveLength(1);
+    // Drain the first session to a terminal status before the test ends. An
+    // undrained session keeps running after this test returns and can consume
+    // a later test's own mocked promotion result.
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${first.body.sessionId}`);
+      expect(status.body.status).toBe("authenticated");
+    });
   });
 
   it("fails closed when promotion loses the sole-owner claim", async () => {
     // This is the expiry/reaper-race result from Decision H. It is a normal
     // resolved adapter outcome, but it must never be accepted as authentication.
-    mockDeviceLoginPromotion.mockResolvedValueOnce("not_sole_owner");
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "not_sole_owner",
+      accountId: null,
+      accountHomeDir: null,
+    });
     const app = await createApp();
 
     const start = await request(app)
@@ -790,12 +869,176 @@ describe("adapter device-login routes", () => {
     expect(mockDeviceLoginPromotion).toHaveBeenCalledTimes(1);
   });
 
-  it("fails closed when the login is a different account than the company home", async () => {
-    // The promotion keeps the occupied company home and installs nothing durable
-    // for a different-identity login. The identity-anchored vend can never select
-    // this login, so a later run keeps the existing account. The route must fail
-    // the session instead of a report of `authenticated`.
-    mockDeviceLoginPromotion.mockResolvedValueOnce("kept_foreign_identity");
+  it("a successful Codex login creates the company secret naming the account home", async () => {
+    // A second, different account no longer fails behind an occupied company
+    // home: each account gets its own home, named by a company secret.
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(
+      "/tmp/paperclip-codex-account-home/acct-second",
+    );
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-second",
+      accountHomeDir: "/tmp/paperclip-codex-account-home/acct-second",
+    });
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("authenticated");
+    });
+
+    expect(mockSecretService.getByName).toHaveBeenCalledWith(COMPANY_1, "CODEX_HOME_acct-second");
+    expect(mockSecretService.create).toHaveBeenCalledWith(
+      COMPANY_1,
+      expect.objectContaining({
+        name: "CODEX_HOME_acct-second",
+        value: "/tmp/paperclip-codex-account-home/acct-second",
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("a repeat login for the same account creates no second secret", async () => {
+    // The secret already names this account's home, so the route reads it,
+    // confirms the value still matches, and creates nothing new: a repeat
+    // login is idempotent.
+    const accountHomeDir = "/tmp/paperclip-codex-account-home/acct-default";
+    mockSecretService.getByName.mockResolvedValue({ id: "existing-secret" });
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "kept",
+      accountId: "acct-default",
+      accountHomeDir,
+    });
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("authenticated");
+    });
+
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockSecretService.resolveSecretValueForDeviceLoginCheck).toHaveBeenCalledWith(
+      COMPANY_1,
+      "existing-secret",
+      expect.objectContaining({ configPath: "secrets.CODEX_HOME_acct-default" }),
+    );
+  });
+
+  it("holds the account-home secret mutation lock while checking a pre-existing secret's value", async () => {
+    // A `local_encrypted` secret rotate takes `withAccountHomeSecretMutationLock`
+    // for the whole of its write. The pre-existing-secret check must run
+    // inside the same lock and return right after: otherwise a rotate could
+    // commit a new value in the gap between the check and the login
+    // reporting success, and the login would report success for a value
+    // that no longer names the account's own home. This proves the check
+    // waits for a lock held elsewhere, and only reads the secret's value
+    // once that lock frees.
+    const accountHomeDir = "/tmp/paperclip-codex-account-home/acct-default";
+    mockSecretService.getByName.mockResolvedValue({ id: "existing-secret" });
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "kept",
+      accountId: "acct-default",
+      accountHomeDir,
+    });
+
+    let releaseHeldLock!: () => void;
+    const heldLockGate = new Promise<void>((resolve) => {
+      releaseHeldLock = resolve;
+    });
+    const lockHolder = withAccountHomeSecretMutationLock(undefined, COMPANY_1, () => heldLockGate);
+    // Give the held lock a chance to actually acquire before the login
+    // starts racing for the same lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const app = await createApp();
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+    harness.releaseGate();
+
+    // The login's check must stay blocked behind the held lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockSecretService.resolveSecretValueForDeviceLoginCheck).not.toHaveBeenCalled();
+
+    releaseHeldLock();
+    await lockHolder;
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("authenticated");
+    });
+    expect(mockSecretService.resolveSecretValueForDeviceLoginCheck).toHaveBeenCalled();
+  });
+
+  it("reconfirms the account-home secret a second time immediately before the terminal authenticated commit", async () => {
+    // The early check inside `promote` releases its lock well before the
+    // login service records the terminal `authenticated` state, so it alone
+    // cannot prove the value still matches at that later point. The service
+    // must run the same check again, right before that commit, under a
+    // fresh lock acquisition: this test proves the second check runs, not
+    // only the first.
+    const accountHomeDir = "/tmp/paperclip-codex-account-home/acct-default";
+    mockSecretService.getByName.mockResolvedValue({ id: "existing-secret" });
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "kept",
+      accountId: "acct-default",
+      accountHomeDir,
+    });
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("authenticated");
+    });
+
+    expect(mockSecretService.resolveSecretValueForDeviceLoginCheck).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when the account-home secret is rotated after validation but before the login service commits its terminal state", async () => {
+    // A board user can rotate the matching `CODEX_HOME` secret after
+    // `promote`'s own check passes and before the login service commits its
+    // terminal state, because `promote`'s lock is fully released by then.
+    // The service must catch this with a second check it runs right before
+    // that commit, or it would report `authenticated` for a value that no
+    // longer names the account's own home.
+    const accountHomeDir = "/tmp/paperclip-codex-account-home/acct-default";
+    mockSecretService.getByName.mockResolvedValue({ id: "existing-secret" });
+    mockSecretService.resolveSecretValueForDeviceLoginCheck
+      // `promote`'s own early check: still matches.
+      .mockResolvedValueOnce(accountHomeDir)
+      // The rotation lands in the gap. The final check, immediately before
+      // the terminal commit, now reads the rotated value.
+      .mockResolvedValueOnce("/rotated/away/from/the/account/home");
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "kept",
+      accountId: "acct-default",
+      accountHomeDir,
+    });
     const app = await createApp();
 
     const start = await request(app)
@@ -811,12 +1054,471 @@ describe("adapter device-login routes", () => {
       expect(status.body.failure?.reason).toBe("promotion_failed");
     });
 
-    const row = await (harness.store as ReturnType<typeof createMemoryStore>).getByPublicId(
-      sessionId,
-      COMPANY_1,
+    expect(mockSecretService.resolveSecretValueForDeviceLoginCheck).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when a pre-existing secret names a different account home", async () => {
+    // A stale or hand-entered secret at this name must not let the login
+    // report success while a bound agent reads the wrong credential home.
+    mockSecretService.getByName.mockResolvedValue({ id: "stale-secret" });
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(
+      "/some/other/path/left-over-from-before",
     );
-    expect(row?.status).toBe("failed");
-    expect(mockDeviceLoginPromotion).toHaveBeenCalledTimes(1);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "kept",
+      accountId: "acct-stale",
+      accountHomeDir: "/tmp/paperclip-codex-account-home/acct-stale",
+    });
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and removes the account home when secret creation fails", async () => {
+    // This login created the account home, so a secret-creation failure must
+    // fail the login and remove the directory it just created, so the
+    // operation stays atomic.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-broken-secret",
+      accountHomeDir,
+      accountHomeCreated: true,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    await expect(lstat(accountHomeDir)).rejects.toThrow();
+  });
+
+  it("a secret creation failure keeps an account home that already existed", async () => {
+    // The account home directory pre-dates this login (a user deleted the
+    // secret but kept the directory, or an earlier login already wrote it).
+    // A secret-creation failure must still fail the login, but it must never
+    // remove a directory this login did not create.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-existing-home",
+      accountHomeDir,
+      accountHomeCreated: false,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
+  it("a secret name conflict succeeds and keeps the account home", async () => {
+    // Two logins for one account can both read no secret and then race the
+    // create call. The loser gets a 409 conflict, which proves the secret
+    // already exists. A repeat login for the same account must be idempotent,
+    // so the loser must confirm the winning secret's value, report a
+    // successful login, and must never remove the account home the winner
+    // just wrote.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-conflict",
+      accountHomeDir,
+      accountHomeCreated: true,
+    });
+    // `vi.resetModules()` in `beforeEach` gives the route module a fresh copy
+    // of `../errors.js`. Import the conflict helper from that same fresh copy,
+    // so the route's `err instanceof HttpError` check sees a matching class.
+    const { conflict: freshConflict } =
+      await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockSecretService.create.mockRejectedValueOnce(
+      freshConflict("a secret with this name already exists"),
+    );
+    // The first read (before `create`) finds no secret; the second read
+    // (after the conflict) finds the winner's secret.
+    mockSecretService.getByName
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "winning-secret" });
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(accountHomeDir);
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("authenticated");
+    });
+
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
+  it("fails closed when the secret that won the create race names a different account home", async () => {
+    // The 409 conflict proves some secret now holds this name, but that
+    // secret could belong to unrelated stale state, not the winner of a
+    // genuine same-account race. The login must not report success without
+    // checking the winning secret's value.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-conflict-mismatch",
+      accountHomeDir,
+      accountHomeCreated: true,
+    });
+    const { conflict: freshConflict } =
+      await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockSecretService.create.mockRejectedValueOnce(
+      freshConflict("a secret with this name already exists"),
+    );
+    mockSecretService.getByName
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "winning-secret" });
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(
+      "/some/other/path/left-over-from-before",
+    );
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    // The mismatch is a validation failure on the winner's secret, not this
+    // call's own directory, so this call must still never delete it.
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
+  it("does not remove an account home a concurrent login already claimed", async () => {
+    // This call created the account home directory (`accountHomeCreated:
+    // true`), but a concurrent login for the same account can still create
+    // the company secret before this call's own, unrelated secret-creation
+    // attempt fails. The directory now belongs to that other login's secret,
+    // so the cleanup scan must find it by value and keep the directory.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-concurrent-claim",
+      accountHomeDir,
+      accountHomeCreated: true,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    // The first read (before `create`) finds no secret.
+    mockSecretService.getByName.mockResolvedValueOnce(null);
+    // The cleanup scan lists every company secret and resolves each one's
+    // value. The concurrent login's secret carries this call's own generated
+    // name, so this proves the scan still catches a same-name claimant.
+    mockSecretService.list.mockResolvedValueOnce([
+      { id: "concurrent-secret", name: "CODEX_HOME_acct-concurrent-claim", provider: "local_encrypted" },
+    ]);
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValueOnce(accountHomeDir);
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
+  it("does not remove an account home a differently named secret still references", async () => {
+    // A user can bind a hand-named secret to an account home directly, with
+    // no relation to the generated `CODEX_HOME_<handle>` name. A cleanup that
+    // checks only the generated name would miss this secret and delete a
+    // directory it still needs; the scan must catch it by value instead.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-aliased",
+      accountHomeDir,
+      accountHomeCreated: true,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    mockSecretService.getByName.mockResolvedValueOnce(null);
+    mockSecretService.list.mockResolvedValueOnce([
+      // An unrelated secret that resolves to a different value. The scan
+      // must not stop at the first entry and must not treat every secret as
+      // a match.
+      { id: "unrelated-secret", name: "SOME_OTHER_SECRET", provider: "local_encrypted" },
+      { id: "hand-named-secret", name: "MY_CODEX_HOME", provider: "local_encrypted" },
+    ]);
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockImplementation(
+      async (_companyId: string, secretId: string, _context: { configPath: string }) =>
+        secretId === "hand-named-secret" ? accountHomeDir : "/some/unrelated/path",
+    );
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
+  it("does not remove an account home an AWS Secrets Manager-backed secret still references", async () => {
+    // A secret's value is a plain string regardless of its provider, so a
+    // hand-named secret bound to this account home through AWS Secrets
+    // Manager is just as real a claimant as a `local_encrypted` one. The
+    // scan must resolve it too, not skip it for its provider.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-aws-claim",
+      accountHomeDir,
+      accountHomeCreated: true,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    mockSecretService.getByName.mockResolvedValueOnce(null);
+    mockSecretService.list.mockResolvedValueOnce([
+      { id: "aws-secret", name: "MY_CODEX_HOME", provider: "aws_secrets_manager" },
+    ]);
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValueOnce(accountHomeDir);
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    expect(mockSecretService.resolveSecretValueForDeviceLoginCheck).toHaveBeenCalledWith(
+      COMPANY_1,
+      "aws-secret",
+      expect.objectContaining({ configPath: "secrets.MY_CODEX_HOME" }),
+    );
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
+  it("removes the account home when the cleanup scan finds no claimant", async () => {
+    // No secret, under any name, resolves to this directory, so the cleanup
+    // must still remove it — the broader scan must not make cleanup any less
+    // eager than the old name-only check when nothing claims the directory.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-unclaimed",
+      accountHomeDir,
+      accountHomeCreated: true,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    mockSecretService.getByName.mockResolvedValueOnce(null);
+    mockSecretService.list.mockResolvedValueOnce([
+      { id: "unrelated-secret", name: "SOME_OTHER_SECRET", provider: "local_encrypted" },
+    ]);
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValueOnce("/some/unrelated/path");
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    await expect(lstat(accountHomeDir)).rejects.toThrow();
+  });
+
+  it("preserves the account home when the cleanup scan cannot resolve a secret's value", async () => {
+    // A resolve failure on one secret is not proof that secret names a
+    // different directory: the failure can hit the exact secret that would
+    // have matched. The cleanup must keep the directory rather than treat an
+    // unresolved secret as a non-match, even when every secret that DID
+    // resolve named a different directory.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-unresolvable",
+      accountHomeDir,
+      accountHomeCreated: true,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    mockSecretService.getByName.mockResolvedValueOnce(null);
+    mockSecretService.list.mockResolvedValueOnce([
+      { id: "unrelated-secret", name: "SOME_OTHER_SECRET", provider: "local_encrypted" },
+      { id: "unresolvable-secret", name: "MAYBE_CODEX_HOME", provider: "local_encrypted" },
+    ]);
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockImplementation(
+      async (_companyId: string, secretId: string, _context: { configPath: string }) => {
+        if (secretId === "unresolvable-secret") throw new Error("decryption key unavailable");
+        return "/some/unrelated/path";
+      },
+    );
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
+  it("preserves the account home when a secret appears after the scan starts", async () => {
+    // The scan lists secrets once, then resolves each one in turn. A new
+    // secret can appear after that first list call, while the scan is still
+    // resolving an earlier secret. The scan must re-list and check that new
+    // secret too, instead of trusting its first, now-stale list.
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct-late-claim",
+      accountHomeDir,
+      accountHomeCreated: true,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    mockSecretService.getByName.mockResolvedValueOnce(null);
+    // The first pass sees only the unrelated secret. By the time the scan
+    // re-lists, a second, differently named secret now names this account
+    // home; the scan must catch it on that later pass.
+    mockSecretService.list
+      .mockResolvedValueOnce([{ id: "unrelated-secret", name: "SOME_OTHER_SECRET", provider: "local_encrypted" }])
+      .mockResolvedValueOnce([
+        { id: "unrelated-secret", name: "SOME_OTHER_SECRET", provider: "local_encrypted" },
+        { id: "late-secret", name: "LATE_CODEX_HOME", provider: "local_encrypted" },
+      ]);
+    mockSecretService.resolveSecretValueForDeviceLoginCheck.mockImplementation(
+      async (_companyId: string, secretId: string, _context: { configPath: string }) =>
+        secretId === "late-secret" ? accountHomeDir : "/some/unrelated/path",
+    );
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
+  it("fails closed when the account identifier cannot form a valid account home name", async () => {
+    // The promotion helper itself already rejects an identifier that cannot
+    // become an account handle; a defensive re-check in the route covers a
+    // promotion result the route did not fully trust.
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted",
+      accountId: "acct with space",
+      accountHomeDir: "/tmp/paperclip-codex-account-home/unused",
+    });
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 
   it("omits the URL, code, credential bytes, and lease id from logs and activity", async () => {

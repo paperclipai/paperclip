@@ -263,6 +263,8 @@ export interface ToolConnectionCapabilities {
  * authorization from membership roles or wait for a connection id.
  */
 export interface ToolConnectionCreateCapabilities {
+  canCreateOrganizationGrant: boolean;
+  organizationGrantReason: string | null;
   canSetCompanyInstall: boolean;
   companyInstallReason: string | null;
 }

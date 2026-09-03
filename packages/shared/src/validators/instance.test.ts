@@ -96,10 +96,10 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableBetaSkills).toBe(false);
   });
 
-  it("defaults apps off", () => {
+  it("defaults the retired Apps compatibility key on", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
-    expect(settings.enableApps).toBe(false);
+    expect(settings.enableApps).toBe(true);
   });
 
   it("accepts worktree run execution patches", () => {

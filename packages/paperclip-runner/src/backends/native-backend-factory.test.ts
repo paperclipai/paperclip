@@ -204,6 +204,22 @@ describe("native backend factory", () => {
     });
   });
 
+  it.each(["on-request", "untrusted"] as const)(
+    "rejects the unqualified native Codex %s approval mode",
+    (approvalPolicy) => {
+      expect(() =>
+        createNativeSessionBackend(
+          execution({ kind: "codex", model: null, approvalPolicy }),
+          {
+            codexTransportFactory: () => {
+              throw new Error("transport must not launch");
+            },
+          },
+        ),
+      ).toThrow("set codexPermissionMode to never");
+    },
+  );
+
   it("requires an explicit runtime root for OpenCode", () => {
     expect(() =>
       createNativeSessionBackend(opencodeExecution()),

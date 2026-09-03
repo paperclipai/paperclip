@@ -254,6 +254,21 @@ describe("Codex ACPX harness driver", () => {
     ).toBeLessThan(
       events.findIndex((event) => event.eventType === "turn.completed"),
     );
+    const assistantEvents = events.filter(
+      (event) =>
+        (event.eventType === "item.delta" ||
+          event.eventType === "item.completed") &&
+        event.payload.kind === "agentMessage",
+    );
+    expect(assistantEvents).toHaveLength(2);
+    expect(assistantEvents.map((event) => event.itemId)).toEqual([
+      `${turnId}:assistant-message`,
+      `${turnId}:assistant-message`,
+    ]);
+    expect(assistantEvents.map((event) => event.payload.channel)).toEqual([
+      "unknown",
+      "final",
+    ]);
     await expect(session.snapshot()).resolves.toMatchObject({
       driverKind: "acpx_runtime",
       activeTurnId: null,
@@ -270,6 +285,67 @@ describe("Codex ACPX harness driver", () => {
     await session.close({ reason: "complete" });
     await session.close({ reason: "idempotent close" });
     expect(fixture.host.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps ACPX reasoning and assistant identities stable through settlement", async () => {
+    const fixture = driverFixture(
+      { dynamicToolHandler: vi.fn(async () => ({ ok: true })) },
+      {
+        runtimeEvents: [
+          {
+            type: "text_delta" as const,
+            text: "Inspecting the task.",
+            stream: "thought" as const,
+          },
+          {
+            type: "text_delta" as const,
+            text: "Completed exactly once.",
+            stream: "output" as const,
+          },
+        ],
+      },
+    );
+    const session = await fixture.driver.openSession({
+      runId: "run-channel-identity",
+      normalizedSessionId: "session-1",
+      workingDirectory: "/workspace",
+    });
+    const terminalEvents = collectUntil(session.events(), "turn.completed");
+    const { turnId } = await session.startTurn({
+      message: { role: "user", text: "Keep the channels distinct." },
+    });
+    await fixture.hostOptions!.semanticTools!.handler({
+      tool: PRP_COMPLETION_TOOL_NAME,
+      callId: "finish-channel-identity",
+      arguments: completedResult(),
+      signal: new AbortController().signal,
+    });
+    fixture.finishTurn({ status: "completed", stopReason: "end_turn" });
+
+    const events = await terminalEvents;
+    const reasoning = events.find(
+      (event) =>
+        event.eventType === "item.delta" && event.payload.kind === "reasoning",
+    );
+    expect(reasoning).toMatchObject({
+      itemId: `${turnId}:reasoning`,
+      payload: {
+        channel: "summary",
+        text: "Inspecting the task.",
+      },
+    });
+    const assistant = events.filter(
+      (event) => event.payload.kind === "agentMessage",
+    );
+    expect(assistant.map((event) => event.itemId)).toEqual([
+      `${turnId}:assistant-message`,
+      `${turnId}:assistant-message`,
+    ]);
+    expect(assistant.map((event) => event.payload.channel)).toEqual([
+      "unknown",
+      "final",
+    ]);
+    await session.close({ reason: "channel identity verified" });
   });
 
   it("rejects terminal disposition drift and bounds interruption", async () => {
@@ -1704,8 +1780,8 @@ describe("Codex ACPX harness driver", () => {
     expect(fixture.hostOptions?.expectedIdentity).toEqual(
       snapshot.providerIdentity,
     );
-    const workspaceLease = (await fixture.readRecoveryWorkspace.mock
-      .results[0]!.value) as AcpxRecoveryWorkspaceLease;
+    const workspaceLease = (await fixture.readRecoveryWorkspace.mock.results[0]!
+      .value) as AcpxRecoveryWorkspaceLease;
     expect(fixture.hostOptions?.assertWorkspaceHeld).toBe(
       workspaceLease.assertHeld,
     );
@@ -1750,9 +1826,12 @@ describe("Codex ACPX harness driver", () => {
   it("aborts a blocked recovery workspace read without opening a host", async () => {
     const workspaceRead = deferred<AcpxRecoveryWorkspaceLease>();
     const lateWorkspaceLease = recoveryWorkspaceLease();
-    const fixture = driverFixture({}, {
-      readRecoveryWorkspace: () => workspaceRead.promise,
-    });
+    const fixture = driverFixture(
+      {},
+      {
+        readRecoveryWorkspace: () => workspaceRead.promise,
+      },
+    );
     const session = await fixture.driver.openSession({
       runId: "run-recovery-read-abort",
       normalizedSessionId: "session-1",

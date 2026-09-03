@@ -203,7 +203,6 @@ export function InstanceExperimentalSettings() {
   const enableNativeRunner = experimentalQuery.data?.enableNativeRunner === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
-  const enableApps = experimentalQuery.data?.enableApps === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
@@ -274,17 +273,6 @@ export function InstanceExperimentalSettings() {
             Optional product features that are still being evaluated.
           </p>
         </div>
-
-        <ExperimentalToggleCard
-          title="Apps"
-          description="Show the Apps navigation and allow access to app connections, gateways, and advanced app tooling."
-          checked={enableApps}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableApps: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableApps"
-          managed={managedKeys.enableApps}
-          ariaLabel="Toggle apps experimental setting"
-        />
 
         <ExperimentalToggleCard
           title="Beta skills"

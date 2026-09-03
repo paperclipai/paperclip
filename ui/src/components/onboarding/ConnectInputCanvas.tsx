@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { cn } from "../../lib/utils";
 import {
   CANVAS_CONTENT_ENTER,
+  CANVAS_ENTER_TRAVEL,
   CANVAS_CONTENT_EXIT,
   CANVAS_CONTENT_TRAVEL,
 } from "./onboarding-motion";
@@ -53,17 +54,24 @@ export function ConnectInputCanvas({
     Which leaves the padding to the contents as well: theirs is already sized
     for what they hold, and a second inset would push it off the step's measure.
 
-    Nothing animates on this wrapper, deliberately. It carried an enter/exit
-    three times — height, then opacity — and stalled every time, once leaving the
-    login card rendered inside a two-pixel box and once at four percent opacity
-    while `open` was true the whole while. The casualty each time was the OAuth
-    URL a customer has to click. The swap inside still animates; the container
-    holding it does not need to, and cannot be trusted to.
+    The wrapper animates its arrival and nothing else. Picking a source is what
+    brings this into being, so it descends into place rather than appearing
+    already there — the movement is what ties it to the tile just pressed.
+
+    Opacity and transform only. An earlier version animated *height* here with
+    `overflow: hidden`, and stalled three separate times — once leaving the login
+    card rendered inside a two-pixel box, once at four percent opacity while
+    `open` was true throughout. The casualty each time was the OAuth URL a
+    customer has to click. A height that is measured once cannot hold a panel
+    that grows when a login starts; these two properties can, because neither
+    clips and neither is measured.
   */
   return (
-    <div
+    <motion.div
       className="mt-5 flex items-center"
       style={{ minHeight: MIN_CONTENT_HEIGHT }}
+      initial={{ opacity: 0, y: -CANVAS_ENTER_TRAVEL }}
+      animate={{ opacity: 1, y: 0, transition: CANVAS_CONTENT_ENTER }}
     >
       {/*
         `popLayout`, so the leaving input is taken out of flow while it animates
@@ -89,7 +97,7 @@ export function ConnectInputCanvas({
           {children}
         </motion.div>
       </AnimatePresence>
-    </div>
+    </motion.div>
   );
 }
 

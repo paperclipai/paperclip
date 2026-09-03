@@ -7,6 +7,28 @@ import {
 } from "./native-runtime/provider-profile.js";
 
 describe("Paperclip Runner native provider configuration", () => {
+  it("qualifies native Codex only in never-ask mode", () => {
+    expect(
+      resolvePaperclipRunnerNativeProviderInput({
+        backend: "codex_app_server",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-sol" },
+      }),
+    ).toEqual({
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      codexApprovalPolicy: "never",
+    });
+    expect(() =>
+      resolvePaperclipRunnerNativeProviderInput({
+        backend: "codex_app_server",
+        adapterConfig: {
+          provider: "codex",
+          codexPermissionMode: "on-request",
+        },
+      }),
+    ).toThrow("codexPermissionMode set to never");
+  });
+
   it("requires persisted Claude recovery to use the qualified identity and current profile secret", () => {
     const stored = {
       id: "00000000-0000-4000-8000-000000000001",

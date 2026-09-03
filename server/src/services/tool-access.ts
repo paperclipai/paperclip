@@ -13,6 +13,7 @@ import {
   companyMemberships,
   companySecretBindings,
   companySecrets,
+  principalPermissionGrants,
   userSecretDefinitions,
   heartbeatRuns,
   issues,
@@ -137,6 +138,7 @@ import {
   type OAuthEndpointUrlRejection,
 } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { isUniqueViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import {
@@ -189,6 +191,7 @@ type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
   sessionId?: string | null;
+  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
 };
 
 const ACTIVE_BROKER_RUN_STATUSES = new Set(["running"]);
@@ -8299,6 +8302,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return base.length <= 160 ? base : base.slice(0, 160);
   }
 
+  function nextAvailableConnectionName(requestedName: string, existingNames: readonly string[]): string {
+    const base = requestedName.trim() || "Custom app";
+    const used = new Set(existingNames.map((candidate) => candidate.trim().toLocaleLowerCase()));
+    const unsuffixed = base.slice(0, 160);
+    if (!used.has(unsuffixed.toLocaleLowerCase())) return unsuffixed;
+    for (let index = 2; index < 10_000; index += 1) {
+      const suffix = ` (${index})`;
+      const candidate = `${base.slice(0, 160 - suffix.length).trimEnd()}${suffix}`;
+      if (!used.has(candidate.toLocaleLowerCase())) return candidate;
+    }
+    return `${base.slice(0, 151).trimEnd()} (${randomUUID().slice(0, 6)})`;
+  }
+
   async function connectGalleryApp(
     companyId: string,
     input: ConnectToolApp,
@@ -8369,7 +8385,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
     }
 
-    const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
+    const requestedName = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
     // Compatibility for the original Sheets robot flow, whose clients predate
     // method selection and identify the method by its spreadsheet allowlist.
     const inferredMethodKey = !input.connectionMethodKey
@@ -8429,11 +8445,64 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           .limit(1)
       : [undefined];
     const retainedConnection = requestedResumeConnection ?? recoveredConnection;
+    let applicationName = existingApplication?.name ?? requestedName;
+    let name = retainedConnection?.name ?? requestedName;
+    if (!existingApplication) {
+      const applicationNames = await db
+        .select({ name: toolApplications.name })
+        .from(toolApplications)
+        .where(eq(toolApplications.companyId, companyId));
+      applicationName = nextAvailableConnectionName(requestedName, applicationNames.map((row) => row.name));
+      name = applicationName;
+    } else if (!retainedConnection) {
+      const connectionNames = await db
+        .select({ name: toolConnections.name })
+        .from(toolConnections)
+        .where(and(
+          eq(toolConnections.companyId, companyId),
+          eq(toolConnections.applicationId, existingApplication.id),
+        ));
+      name = nextAvailableConnectionName(requestedName, connectionNames.map((row) => row.name));
+    }
     const retainedGrantKind: ConnectionGrantKind | null = retainedConnection
       ? retainedConnection.credentialPolicy === "per_user"
         ? "user"
         : "organization"
       : null;
+    // The route can authorize an explicit resume before entering the service,
+    // but name/source recovery happens here. Do not let a caller submit a
+    // personal grant choice to pass the route and then inherit an implicitly
+    // recovered organization identity. Local implicit mode is already the
+    // unrestricted instance operator; every authenticated user must still hold
+    // current connection-manager authority before this retained row is touched.
+    if (
+      retainedGrantKind === "organization"
+      && input.grantKind === "user"
+      && actor?.actorType === "user"
+      && actor.actorSource !== "local_implicit"
+    ) {
+      const actorUserId = actor.actorId;
+      const [membership] = actorUserId ? await db.select({
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, actorUserId),
+        eq(companyMemberships.status, "active"),
+      )).limit(1) : [];
+      const roleCanManage = membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
+      const [explicitManagerGrant] = roleCanManage || !actorUserId ? [] : await db.select({
+        id: principalPermissionGrants.id,
+      }).from(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, companyId),
+        eq(principalPermissionGrants.principalType, "user"),
+        eq(principalPermissionGrants.principalId, actorUserId),
+        eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
+      )).limit(1);
+      if (!roleCanManage && !explicitManagerGrant) {
+        throw forbidden("Only a company owner, admin, or member with connection-manager permission can share credentials with the organization.");
+      }
+    }
     const requestedGrantKind = retainedGrantKind ?? input.grantKind ?? "organization";
     if (method?.grantKinds && !method.grantKinds.includes(requestedGrantKind)) {
       throw badRequest(`${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`);
@@ -8770,15 +8839,40 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           applicationRow = existingApplication;
         }
       } else {
-        [applicationRow] = await db.insert(toolApplications).values({
-          companyId,
-          applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
-          name,
-          description: safeApplicationDescription,
-          type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
-          status: "draft",
-          metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.slug, galleryKey: galleryEntry.slug } : { source: "link" },
-        }).returning();
+        // Name selection is optimistic because multiple setup requests can
+        // legitimately begin at the same time. The company/name unique index
+        // is the authority: if another request wins after our read, refresh the
+        // names and retry with the next suffix instead of surfacing a conflict
+        // the user never asked to resolve.
+        for (let attempt = 0; attempt < 10 && !applicationRow; attempt += 1) {
+          try {
+            [applicationRow] = await db.insert(toolApplications).values({
+              companyId,
+              applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
+              name: applicationName,
+              description: safeApplicationDescription,
+              type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+              status: "draft",
+              metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.slug, galleryKey: galleryEntry.slug } : { source: "link" },
+            }).returning();
+          } catch (error) {
+            if (!isUniqueViolation(error, "tool_applications_company_name_uq")) throw error;
+            const applicationNames = await db
+              .select({ name: toolApplications.name })
+              .from(toolApplications)
+              .where(eq(toolApplications.companyId, companyId));
+            applicationName = nextAvailableConnectionName(
+              requestedName,
+              applicationNames.map((row) => row.name),
+            );
+            name = applicationName;
+          }
+        }
+        if (!applicationRow) {
+          throw conflict("Paperclip could not allocate a unique connection name", {
+            code: "tool_access_name_allocation_exhausted",
+          });
+        }
       }
 
       await assertSecretRefs(companyId, [...credentialRefs, ...credentialSecretRefs]);
@@ -10181,13 +10275,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       if (!consumedState) throw badRequest("OAuth state was not found, expired, or has already been used");
       const txSecrets = secretService(tx);
       const txSecretContext = { dbClient: tx, secretClient: txSecrets };
-      const [existingUserGrant] = await tx.select().from(connectionGrants).where(and(
+      const personalCredential = connection.credentialPolicy === "per_user";
+      const [existingCredentialGrant] = await tx.select().from(connectionGrants).where(and(
         eq(connectionGrants.companyId, connection.companyId),
         eq(connectionGrants.connectionId, connection.id),
-        eq(connectionGrants.kind, "user"),
-        eq(connectionGrants.subjectUserId, subjectUserId),
+        eq(connectionGrants.kind, personalCredential ? "user" : "organization"),
+        personalCredential
+          ? eq(connectionGrants.subjectUserId, subjectUserId)
+          : eq(connectionGrants.isDefault, true),
       )).limit(1);
-      const existingRefs = existingUserGrant?.credentialSecretRefs ?? [];
+      const existingRefs = existingCredentialGrant?.credentialSecretRefs
+        ?? (personalCredential ? [] : connection.credentialSecretRefs);
       const accessRef = await createOrRotateOAuthSecret({
         companyId: connection.companyId,
         connection,
@@ -10196,7 +10294,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         value: credentials.accessToken,
         actor: input.actor,
         existingRefs,
-        ownerUserId: subjectUserId,
+        ownerUserId: personalCredential ? subjectUserId : undefined,
       }, txSecretContext);
       const refreshRef = await createOrRotateOAuthSecret({
         companyId: connection.companyId,
@@ -10206,7 +10304,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         value: refreshToken,
         actor: input.actor,
         existingRefs,
-        ownerUserId: subjectUserId,
+        ownerUserId: personalCredential ? subjectUserId : undefined,
       }, txSecretContext);
       const credentialSecretRefs = [
         ...existingRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
@@ -10231,16 +10329,16 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         revokedByUserId: null,
         updatedAt: now(),
       };
-      if (existingUserGrant) {
-        await tx.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingUserGrant.id));
+      if (existingCredentialGrant) {
+        await tx.update(connectionGrants).set(grantValues).where(eq(connectionGrants.id, existingCredentialGrant.id));
       } else {
         await tx.insert(connectionGrants).values({
           companyId: connection.companyId,
           connectionId: connection.id,
-          kind: "user",
-          subjectUserId,
+          kind: personalCredential ? "user" : "organization",
+          subjectUserId: personalCredential ? subjectUserId : null,
           ...grantValues,
-          isDefault: false,
+          isDefault: !personalCredential,
           createdByUserId: subjectUserId,
         });
       }
@@ -10262,13 +10360,31 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         authKind: "oauth",
         config: nextConfig,
         transportConfig: nextConfig,
+        credentialRefs: personalCredential
+          ? connection.credentialRefs.filter((ref) => ref.name !== "oauth.access_token")
+          : [
+              ...connection.credentialRefs.filter((ref) => ref.name !== "oauth.access_token"),
+              {
+                name: "oauth.access_token",
+                secretId: accessRef.secretId,
+                version: "latest" as const,
+                placement: "header" as const,
+                key: "Authorization",
+                prefix: "Bearer ",
+              },
+            ],
+        credentialSecretRefs: personalCredential
+          ? connection.credentialSecretRefs.filter(
+              (ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token",
+            )
+          : credentialSecretRefs,
         updatedAt: now(),
       }).where(eq(toolConnections.id, connection.id)).returning();
       await tx.update(toolApplications).set({
         status: shouldFinalizeManagedDefaults ? "draft" : "active",
         updatedAt: now(),
       }).where(eq(toolApplications.id, connection.applicationId));
-      await syncCredentialBindings(connection, credentialSecretRefs, tx);
+      await syncCredentialBindings(connection, personalCredential ? credentialSecretRefs : [], tx);
       const linkedInteractionKind = stateRow.interactionId
         ? await tx
             .select({ kind: issueThreadInteractions.kind })
@@ -10737,7 +10853,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       // Keep callback persistence serialized with membership suspension, role
       // downgrade, and removal. Once this row is locked, authority cannot be
       // revoked between the live check and the shared credential/grant writes.
-      const [membership] = await tx.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+      const [membership] = await tx.select({
+        id: companyMemberships.id,
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
         eq(companyMemberships.companyId, connection.companyId),
         eq(companyMemberships.principalType, "user"),
         eq(companyMemberships.principalId, organizationActorUserId),
@@ -10746,6 +10865,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       )).limit(1).for("update");
       if (!membership) {
         throw forbidden("Your company membership no longer permits connection changes. Ask a company owner to restore non-viewer access before you authorize this connection again.");
+      }
+      const roleCanManage = membership.membershipRole === "owner" || membership.membershipRole === "admin";
+      const [explicitManagerGrant] = roleCanManage ? [] : await tx.select({
+        id: principalPermissionGrants.id,
+      }).from(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, connection.companyId),
+        eq(principalPermissionGrants.principalType, "user"),
+        eq(principalPermissionGrants.principalId, organizationActorUserId),
+        eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
+      )).limit(1).for("update");
+      if (!roleCanManage && !explicitManagerGrant) {
+        throw forbidden("Only a company owner, admin, or member with connection-manager permission can share credentials with the organization.");
       }
       const txSecrets = secretService(tx);
       const txSecretContext = { dbClient: tx, secretClient: txSecrets };
