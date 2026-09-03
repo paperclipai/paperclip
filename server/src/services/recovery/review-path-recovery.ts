@@ -21,7 +21,13 @@ export function reviewPathConsumedRefFromRun(input: {
     ?? readNonEmptyString(context.interactionId)
     ?? readNonEmptyString(context.approvalId)
     ?? (readNonEmptyString(context.wakeReason)?.startsWith("issue_monitor")
-      ? `monitor:${input.issueId}:${readNonEmptyString(context.clearReason) ?? "cleared"}:${String(context.monitorAttemptCount ?? "unknown")}`
+      // Prefer the monitor's scheduled instant. The attempt count restarts at
+      // zero for each new monitor, so counting alone would let two monitors on
+      // the same issue share a fingerprint and silently suppress the second
+      // one's recovery wake.
+      ? `monitor:${input.issueId}:${readNonEmptyString(context.clearReason) ?? "cleared"}:${
+        readNonEmptyString(context.nextCheckAt) ?? String(context.monitorAttemptCount ?? "unknown")
+      }`
       : null)
     ?? input.runId;
 }
