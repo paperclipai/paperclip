@@ -16,10 +16,33 @@ function parseOrigin(value: string | undefined) {
   }
 }
 
+/**
+ * Resolve the host used for same-origin checks without letting a direct client
+ * promote its own X-Forwarded-Host value into the trusted-origin set. Express
+ * compiles the operator's TRUST_PROXY setting into `trust proxy fn`; only a
+ * trusted immediate peer may supply the forwarded host.
+ */
+function requestHost(req: Request): string | undefined {
+  const host = req.header("host")?.trim();
+  const remoteAddress = req.socket?.remoteAddress;
+  const trustProxy = req.app?.get("trust proxy fn") as
+    | ((address: string, hop: number) => boolean)
+    | undefined;
+
+  if (
+    remoteAddress
+    && typeof trustProxy === "function"
+    && trustProxy(remoteAddress, 0)
+  ) {
+    return req.header("x-forwarded-host")?.split(",")[0]?.trim() || host;
+  }
+
+  return host;
+}
+
 function trustedOriginsForRequest(req: Request) {
   const origins = new Set(DEFAULT_DEV_ORIGINS.map((value) => value.toLowerCase()));
-  const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
-  const host = forwardedHost || req.header("host")?.trim();
+  const host = requestHost(req);
   if (host) {
     origins.add(`http://${host}`.toLowerCase());
     origins.add(`https://${host}`.toLowerCase());
