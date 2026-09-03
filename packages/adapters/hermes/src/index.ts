@@ -40,11 +40,14 @@ export {
 /**
  * Models available through Hermes Agent.
  *
- * Hermes supports any model via any provider. The Paperclip UI should
- * prefer detectModel() plus manual entry over curated placeholder models,
- * since Hermes availability depends on the user's local configuration.
+ * Hermes supports any model via any provider. Keep this list intentionally
+ * small: these are high-signal OpenRouter options that the UI can offer while
+ * still preserving manual entry for every other Hermes-compatible model.
  */
-export const models: { id: string; label: string }[] = [];
+export const models: { id: string; label: string }[] = [
+  { id: "openrouter/fusion", label: "OpenRouter: Fusion" },
+  { id: "z-ai/glm-5.2", label: "Z.ai: GLM 5.2" },
+];
 
 const sessionManagement: AdapterSessionManagement = {
   supportsSessionResume: true,
