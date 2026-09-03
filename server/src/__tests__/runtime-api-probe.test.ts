@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  loggableApiUrl,
   probeRuntimeApiUrl,
   resolveVerifiedRuntimeApiUrl,
   runtimeApiProbeUrl,
@@ -321,5 +322,25 @@ describe("runtimeSelfOriginApiUrl", () => {
     expect(runtimeSelfOriginApiUrl(undefined)).toBeNull();
     expect(runtimeSelfOriginApiUrl({ address: "0.0.0.0", port: 0 })).toBeNull();
     expect(runtimeSelfOriginApiUrl({ address: "", port: 3100 })).toBeNull();
+  });
+});
+
+describe("loggableApiUrl", () => {
+  it("names the offending URL without carrying its credentials into the log", () => {
+    // The whole point of the startup log line is to name the bad URL, but a
+    // configured API URL is operator env: it can carry userinfo or a token
+    // query value, and a startup log is durable.
+    expect(loggableApiUrl("https://user:s3cret@board.example.test/api?token=abc&region=us")).toBe(
+      "https://REDACTED@board.example.test/api?token=REDACTED&region=us",
+    );
+  });
+
+  it("leaves a credential-free URL readable", () => {
+    expect(loggableApiUrl("https://board.example.test/api")).toBe("https://board.example.test/api");
+    expect(loggableApiUrl("http://127.0.0.1:3100")).toBe("http://127.0.0.1:3100/");
+  });
+
+  it("describes an unparseable URL instead of echoing it", () => {
+    expect(loggableApiUrl("not a url")).toBe("the configured API URL");
   });
 });

@@ -87,6 +87,7 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import {
+  loggableApiUrl,
   probeRuntimeApiUrl,
   resolveVerifiedRuntimeApiUrl,
   RUNTIME_API_PROBE_PATH,
@@ -1734,27 +1735,35 @@ export async function startServer(): Promise<StartedServer> {
       selfOriginApiUrl: runtimeSelfOriginApiUrl(server.address() ?? { address: runtimeListenHost, port: listenPort }),
       probe: (apiUrl) => probeRuntimeApiUrl(apiUrl),
     });
+    // The configured URL is operator env and can carry userinfo or a token
+    // query value; these log lines are durable, so name the origin, not the
+    // credential. `rejected` echoes the same candidate URLs back.
+    const loggableConfiguredApiUrl = loggableApiUrl(configuredApiUrl);
+    const loggableRejected = runtimeApiResolution.rejected.map((entry) => ({
+      apiUrl: loggableApiUrl(entry.apiUrl),
+      reason: entry.reason,
+    }));
     if (runtimeApiResolution.unverified) {
       // Keep booting rather than exit: external clients may well reach an origin
       // this process cannot, and taking the API away is the worse failure.
       logger.error(
         {
-          configuredApiUrl,
+          configuredApiUrl: loggableConfiguredApiUrl,
           probePath: RUNTIME_API_PROBE_PATH,
-          rejected: runtimeApiResolution.rejected,
+          rejected: loggableRejected,
         },
-        `Neither PAPERCLIP_API_URL=${configuredApiUrl} nor this server's own bound origin served the Paperclip API; spawned agents keep PAPERCLIP_API_URL=${configuredApiUrl} and may be unable to reach their own board`,
+        `Neither PAPERCLIP_API_URL=${loggableConfiguredApiUrl} nor this server's own bound origin served the Paperclip API; spawned agents keep that PAPERCLIP_API_URL and may be unable to reach their own board`,
       );
     } else if (runtimeApiResolution.changed) {
       resolvedApiUrl = runtimeApiResolution.apiUrl;
       logger.error(
         {
-          configuredApiUrl,
+          configuredApiUrl: loggableConfiguredApiUrl,
           fallbackApiUrl: resolvedApiUrl,
           probePath: RUNTIME_API_PROBE_PATH,
-          rejected: runtimeApiResolution.rejected,
+          rejected: loggableRejected,
         },
-        `PAPERCLIP_API_URL=${configuredApiUrl} does not serve the Paperclip API; spawned agents will use ${resolvedApiUrl} instead`,
+        `PAPERCLIP_API_URL=${loggableConfiguredApiUrl} does not serve the Paperclip API; spawned agents will use ${resolvedApiUrl} instead`,
       );
       process.env.PAPERCLIP_API_URL = resolvedApiUrl;
       // Runtime clients walk the candidate list in order, so put the origin that
@@ -1768,7 +1777,10 @@ export async function startServer(): Promise<StartedServer> {
       updateRunnerPrpApiUrl(resolvedApiUrl);
     }
   } catch (err) {
-    logger.error({ err, configuredApiUrl }, "runtime API URL startup validation failed; keeping the configured URL");
+    logger.error(
+      { err, configuredApiUrl: loggableApiUrl(configuredApiUrl) },
+      "runtime API URL startup validation failed; keeping the configured URL",
+    );
   }
 
   {
