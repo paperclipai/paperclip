@@ -19,14 +19,20 @@
  * The broker is a fake, so no Tailscale Serve state is ever read or mutated.
  * Allocation is driven by an injected `isPortAvailable` that models a synthetic
  * host, and the only ports it will ever return are two app/HMR pairs the suite
- * selects at run time: `beforeEach` scans the dedicated runtime exposure range
- * and keeps the two lowest pairs that read free on the real loopback host at
- * that moment. The suite never pins a fixed host port as a constant, so a
- * short-lived socket that another process holds on the runner cannot make this
- * suite fail. Guests do bind those two pairs on loopback, so the readiness and
- * exposure lifecycle is exercised for real; they are reaped in `afterEach`.
- * `PAPERCLIP_HOME` is redirected to a temp dir so the local-service registry
- * never touches the real instance on this host.
+ * selects at run time: `beforeEach` scans upward from
+ * `RUNTIME_EXPOSURE_SUITE_APP_PORT_START` and keeps the two lowest pairs that
+ * read free on the real loopback host at that moment. The suite never pins a
+ * fixed host port as a constant, so a short-lived socket that another process
+ * holds on the runner cannot make this suite fail. The scan never takes the
+ * low lane at the bottom of the dedicated range: a real instance can hold a
+ * pair there under an open lease with no listener bound, which is the exact
+ * incident this file reproduces, so a scan that starts there could seize a
+ * pair a live instance still owns. Guests do bind the two selected pairs on
+ * loopback, so the readiness and exposure lifecycle is exercised for real;
+ * they are reaped in `afterEach`. A pair that reads free at discovery can
+ * still be taken by another process before the guest binds it; this suite
+ * does not close that window. `PAPERCLIP_HOME` is redirected to a temp dir so
+ * the local-service registry never touches the real instance on this host.
  */
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -63,6 +69,15 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+/**
+ * The first app port this suite may select. A real instance can hold a pair
+ * in the low lane, at `RUNTIME_EXPOSURE_APP_PORT_MIN`, under an open lease
+ * with no listener bound — the exact incident this file reproduces. The scan
+ * must start clear of that lane, so this suite never seizes a pair a live
+ * instance still owns.
+ */
+const RUNTIME_EXPOSURE_SUITE_APP_PORT_START = RUNTIME_EXPOSURE_APP_PORT_MIN + 500;
 
 /**
  * The pair lane B holds under an open lease, and the next pair a correct
@@ -223,7 +238,7 @@ const GUEST_COMMAND =
       // Discover two verified-free pairs on the real host right before each
       // case runs, so the window between the probe and the guest bind stays
       // as short as possible.
-      LEASED_APP_PORT = await findFreeExposureAppPort(RUNTIME_EXPOSURE_APP_PORT_MIN);
+      LEASED_APP_PORT = await findFreeExposureAppPort(RUNTIME_EXPOSURE_SUITE_APP_PORT_START);
       LEASED_HMR_PORT = deriveViteHmrPort(LEASED_APP_PORT);
       NEXT_APP_PORT = await findFreeExposureAppPort(LEASED_APP_PORT + 1);
       NEXT_HMR_PORT = deriveViteHmrPort(NEXT_APP_PORT);
