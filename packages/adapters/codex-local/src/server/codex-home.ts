@@ -37,14 +37,7 @@ export function mergeManagedCodexMcpGateways(
   primary: ManagedCodexMcpGateway[],
   secondary: ManagedCodexMcpGateway[],
 ): ManagedCodexMcpGateway[] {
-  const merged = [...primary];
-  const names = new Set(primary.map((gateway) => gateway.name));
-  for (const gateway of secondary) {
-    if (names.has(gateway.name)) continue;
-    merged.push(gateway);
-    names.add(gateway.name);
-  }
-  return merged;
+  return primary.length > 0 ? primary : secondary;
 }
 
 function nonEmpty(value: string | undefined): string | null {
