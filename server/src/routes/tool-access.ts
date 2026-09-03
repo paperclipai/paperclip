@@ -60,7 +60,7 @@ import {
   type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
-import { runtimePublicOrigin } from "../services/cloud-runtime-identity.js";
+import { runtimeAuthOrigin } from "../services/cloud-runtime-identity.js";
 import {
   completePaperclipCloudConnectorEnrollment,
   loadPaperclipCloudConnectorIdentity,
@@ -299,7 +299,7 @@ export function toolAccessRoutes(
   }
 
   function configuredPublicBaseUrl() {
-    const runtimeOrigin = runtimePublicOrigin();
+    const runtimeOrigin = runtimeAuthOrigin();
     if (runtimeOrigin) return runtimeOrigin;
     const raw = (
       process.env.PAPERCLIP_PUBLIC_URL?.trim()

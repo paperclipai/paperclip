@@ -212,6 +212,20 @@ export function runtimePublicOrigin(env: NodeJS.ProcessEnv = process.env): strin
   }
 }
 
+/** The live auth-facing origin, preserving self-hosted auth URL precedence. */
+export function runtimeAuthOrigin(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (env === process.env && currentIdentity) return currentIdentity.canonicalOrigin;
+  const candidate = nonEmpty(env.PAPERCLIP_AUTH_PUBLIC_BASE_URL)
+    ?? nonEmpty(env.PAPERCLIP_PUBLIC_URL)
+    ?? nonEmpty(env.PAPERCLIP_API_URL);
+  if (!candidate) return null;
+  try {
+    return new URL(candidate).origin;
+  } catch {
+    return null;
+  }
+}
+
 function decodeJsonPart(part: string, label: string): Record<string, unknown> {
   if (!/^[A-Za-z0-9_-]+$/.test(part)) throw new Error(`Cloud runtime identity has an invalid ${label}`);
   let parsed: unknown;

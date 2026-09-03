@@ -4,6 +4,8 @@ import {
   CLOUD_RUNTIME_IDENTITY_AUDIENCE,
   CLOUD_RUNTIME_IDENTITY_ISSUER,
   CLOUD_RUNTIME_IDENTITY_JWS_TYPE,
+  runtimeAuthOrigin,
+  runtimePublicOrigin,
   verifyCloudRuntimeIdentityAssertion,
 } from "./cloud-runtime-identity.js";
 
@@ -70,6 +72,17 @@ function verifyAssertion(compactJws: string, overrides: Partial<NodeJS.ProcessEn
 }
 
 describe("verifyCloudRuntimeIdentityAssertion", () => {
+  it("preserves distinct self-hosted public and authentication origins", () => {
+    const selfHostedEnv = {
+      PAPERCLIP_PUBLIC_URL: "https://app.example.test",
+      PAPERCLIP_AUTH_PUBLIC_BASE_URL: "https://auth.example.test",
+      PAPERCLIP_API_URL: "https://api.example.test",
+    } as NodeJS.ProcessEnv;
+
+    expect(runtimePublicOrigin(selfHostedEnv)).toBe("https://app.example.test");
+    expect(runtimeAuthOrigin(selfHostedEnv)).toBe("https://auth.example.test");
+  });
+
   it("accepts a Cloud-signed claim for this exact stack and pool origin", () => {
     expect(verifyAssertion(assertion())).toMatchObject({
       sub: STACK_ID,
