@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
+import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetMetric, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -630,18 +630,20 @@ export function ProjectDetail() {
     }
   }, [invalidateProject, lookupCompanyId, projectLookupRef, resolvedCompanyId, scheduleFieldReset, setFieldState]);
 
+  const [projectBudgetMetric, setProjectBudgetMetric] = useState<BudgetMetric>("billed_cents");
   const projectBudgetSummary = useMemo(() => {
+    const scopeId = project?.id ?? routeProjectRef;
     const matched = budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "project" && policy.scopeId === (project?.id ?? routeProjectRef),
+      (policy) => policy.scopeType === "project" && policy.scopeId === scopeId && policy.metric === projectBudgetMetric,
     );
     if (matched) return matched;
     return {
       policyId: "",
       companyId: resolvedCompanyId ?? "",
       scopeType: "project",
-      scopeId: project?.id ?? routeProjectRef,
+      scopeId,
       scopeName: project?.name ?? "Project",
-      metric: "billed_cents",
+      metric: projectBudgetMetric,
       windowKind: "lifetime",
       amount: 0,
       observedAmount: 0,
@@ -657,13 +659,14 @@ export function ProjectDetail() {
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;
-  }, [budgetOverview?.policies, project, resolvedCompanyId, routeProjectRef]);
+  }, [budgetOverview?.policies, project, projectBudgetMetric, resolvedCompanyId, routeProjectRef]);
 
   const budgetMutation = useMutation({
     mutationFn: (amount: number) =>
       budgetsApi.upsertPolicy(resolvedCompanyId!, {
         scopeType: "project",
         scopeId: project?.id ?? routeProjectRef,
+        metric: projectBudgetMetric,
         amount,
         windowKind: "lifetime",
       }),
@@ -955,6 +958,7 @@ export function ProjectDetail() {
             variant="plain"
             isSaving={budgetMutation.isPending}
             onSave={(amount) => budgetMutation.mutate(amount)}
+            onMetricChange={setProjectBudgetMetric}
           />
         </div>
       ) : null}
