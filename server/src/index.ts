@@ -280,6 +280,11 @@ export async function startServer(): Promise<StartedServer> {
     if (config.deploymentMode !== "authenticated" || config.deploymentExposure !== "public") {
       return;
     }
+    // Embedded postgres is a managed local database — allow it even in authenticated/public mode.
+    // This handles local dev instances where the server owns the postgres lifecycle.
+    if (config.databaseMode === "embedded-postgres") {
+      return;
+    }
     if (!config.databaseUrl) {
       // Under a managed-cloud supervisor a missing DATABASE_URL on boot
       // is the config-application race (the container can start before
