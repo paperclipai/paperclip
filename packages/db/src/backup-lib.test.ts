@@ -196,6 +196,67 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   );
 
   it(
+    "promotes same-second concurrent backups without clobbering completed files",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-collision-");
+      const sql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const RealDate = Date;
+      const fixedDate = new RealDate(2026, 4, 4, 12, 34, 56);
+
+      class FixedDate extends RealDate {
+        constructor(...args: any[]) {
+          if (args.length === 0) {
+            super(fixedDate.getTime());
+          } else {
+            super(...(args as [number, number, number?, number?, number?, number?, number?]));
+          }
+        }
+
+        static now() {
+          return fixedDate.getTime();
+        }
+      }
+
+      try {
+        await sql`CREATE TABLE backup_collision_test (id int PRIMARY KEY, value text NOT NULL)`;
+        await sql`INSERT INTO backup_collision_test (id, value) VALUES (1, 'preserved')`;
+        globalThis.Date = FixedDate as DateConstructor;
+
+        const [first, second] = await Promise.all([
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-test",
+            backupEngine: "javascript",
+          }),
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-test",
+            backupEngine: "javascript",
+          }),
+        ]);
+
+        expect(first.backupFile).not.toBe(second.backupFile);
+        expect(new Set([path.basename(first.backupFile), path.basename(second.backupFile)])).toEqual(new Set([
+          "paperclip-test-20260504-123456.sql.gz",
+          "paperclip-test-20260504-123456-1.sql.gz",
+        ]));
+        expect(gunzipSync(await fs.promises.readFile(first.backupFile)).toString("utf8")).toContain("backup_collision_test");
+        expect(gunzipSync(await fs.promises.readFile(second.backupFile)).toString("utf8")).toContain("backup_collision_test");
+        expect(fs.readdirSync(backupDir).some((name) => name.includes(".tmp-") || name.endsWith(".sql"))).toBe(false);
+      } finally {
+        globalThis.Date = RealDate;
+        await sql.end();
+      }
+    },
+    30_000,
+  );
+
+  it(
     "fails before raw JavaScript backup work when the free-space guard trips",
     async () => {
       const sourceConnectionString = await createTempDatabase();

@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, renameSync, statSync, statfsSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -28,7 +28,6 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
-  abortSignal?: AbortSignal;
 };
 
 export type RunDatabaseBackupResult = {
@@ -410,12 +409,6 @@ function temporaryBackupSuffix(): string {
   return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function throwIfBackupAborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) return;
-  const reason = signal.reason;
-  throw reason instanceof Error ? reason : new Error("Database backup aborted.");
-}
-
 function configuredRawBackupMinimumFreeBytes(): number | null {
   const raw = process.env.PAPERCLIP_DB_BACKUP_RAW_MIN_FREE_BYTES?.trim();
   if (!raw) return null;
@@ -455,6 +448,25 @@ function wrapPgDumpBackupError(error: unknown): Error {
     `Install a pg_dump binary compatible with the PostgreSQL server or set PAPERCLIP_PG_DUMP_PATH. ${detail}`,
     { cause: error },
   );
+}
+
+function promoteBackupNoClobber(temporaryBackupFile: string, backupBase: string): string {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const backupFile = attempt === 0
+      ? `${backupBase}.sql.gz`
+      : `${backupBase}-${attempt}.sql.gz`;
+    try {
+      linkSync(temporaryBackupFile, backupFile);
+      unlinkSync(temporaryBackupFile);
+      return backupFile;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error(`Could not promote database backup without clobbering an existing file for ${backupBase}.`);
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -648,28 +660,22 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   mkdirSync(opts.backupDir, { recursive: true });
   cleanupStaleDatabaseBackupArtifacts(opts.backupDir, filenamePrefix);
   const backupBase = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}`);
-  const backupFile = `${backupBase}.sql.gz`;
   const temporarySuffix = temporaryBackupSuffix();
   const sqlFile = `${backupBase}.sql.tmp-${temporarySuffix}`;
-  const temporaryBackupFile = `${backupFile}.tmp-${temporarySuffix}`;
+  const temporaryBackupFile = `${backupBase}.sql.gz.tmp-${temporarySuffix}`;
   let writer: ReturnType<typeof createBufferedTextFileWriter> | null = null;
-  let promotedBackup = false;
 
   try {
-    throwIfBackupAborted(opts.abortSignal);
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
       try {
-        throwIfBackupAborted(opts.abortSignal);
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
           backupFile: temporaryBackupFile,
           connectTimeout,
         });
-        throwIfBackupAborted(opts.abortSignal);
-        renameSync(temporaryBackupFile, backupFile);
-        promotedBackup = true;
+        const backupFile = promoteBackupNoClobber(temporaryBackupFile, backupBase);
         const sizeBytes = statSync(backupFile).size;
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
@@ -686,9 +692,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }
 
     await sql`SELECT 1`;
-    throwIfBackupAborted(opts.abortSignal);
     await assertRawBackupFreeSpace(sql, opts.backupDir);
-    throwIfBackupAborted(opts.abortSignal);
     writer = createBufferedTextFileWriter(sqlFile);
     const activeWriter = writer;
 
@@ -1057,7 +1061,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
             .readable();
           for await (const chunk of copyStream) {
-            throwIfBackupAborted(opts.abortSignal);
             await activeWriter.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
           }
         } finally {
@@ -1074,7 +1077,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         .values()
         .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
       for await (const rows of rowCursor) {
-        throwIfBackupAborted(opts.abortSignal);
         for (const row of rows) {
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
@@ -1136,16 +1138,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     await activeWriter.close();
     writer = null;
-    throwIfBackupAborted(opts.abortSignal);
 
     // Compress the SQL file with gzip
     const sqlReadStream = createReadStream(sqlFile);
     const gzWriteStream = createWriteStream(temporaryBackupFile);
     await pipeline(sqlReadStream, createGzip(), gzWriteStream);
     unlinkSync(sqlFile);
-    throwIfBackupAborted(opts.abortSignal);
-    renameSync(temporaryBackupFile, backupFile);
-    promotedBackup = true;
+    const backupFile = promoteBackupNoClobber(temporaryBackupFile, backupBase);
 
     const sizeBytes = statSync(backupFile).size;
     const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
@@ -1162,9 +1161,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }
     if (existsSync(sqlFile)) {
       try { unlinkSync(sqlFile); } catch { /* ignore */ }
-    }
-    if (!promotedBackup && existsSync(backupFile)) {
-      try { unlinkSync(backupFile); } catch { /* ignore */ }
     }
     throw error;
   } finally {
