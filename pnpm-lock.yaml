@@ -11584,7 +11584,7 @@ snapshots:
       is-module: 1.0.0
       resolve: 1.22.11
     optionalDependencies:
-      rollup: 4.62.4
+      rollup: 4.63.1
 
   '@rollup/plugin-typescript@12.3.0(rollup@4.63.1)(tslib@2.8.1)(typescript@7.0.2)':
     dependencies:
@@ -16004,7 +16004,7 @@ snapshots:
       fdir: 6.5.0(picomatch@4.0.7)
       picomatch: 4.0.7
       postcss: 8.5.26
-      rollup: 4.63.1
+      rollup: 4.62.4
       tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 24.13.3
