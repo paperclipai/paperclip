@@ -358,6 +358,38 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     );
   }, 15_000);
 
+  it("returns 404 for routine and trigger endpoints with non-UUID ids instead of crashing the uuid query", async () => {
+    const { companyId, userId } = await seedFixture();
+    const app = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const malformedId = "1188e836";
+
+    const patchRes = await request(app)
+      .patch(`/api/routines/${malformedId}`)
+      .send({ title: "SCR-131 finalize clone (delta pass + bootloader + verify)" });
+    expect(patchRes.status, JSON.stringify(patchRes.body)).toBe(404);
+    expect(patchRes.body.error).toBe("Routine not found");
+
+    const getRes = await request(app).get(`/api/routines/${malformedId}`);
+    expect(getRes.status).toBe(404);
+    expect(getRes.body.error).toBe("Routine not found");
+
+    const revisionsRes = await request(app).get(`/api/routines/${malformedId}/revisions`);
+    expect(revisionsRes.status).toBe(404);
+
+    const triggerPatchRes = await request(app)
+      .patch(`/api/routine-triggers/${malformedId}`)
+      .send({ enabled: true });
+    expect(triggerPatchRes.status, JSON.stringify(triggerPatchRes.body)).toBe(404);
+    expect(triggerPatchRes.body.error).toBe("Routine trigger not found");
+  }, 15_000);
+
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();
     const app = await createApp({
