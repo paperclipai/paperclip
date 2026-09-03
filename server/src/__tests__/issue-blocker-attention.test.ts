@@ -306,6 +306,50 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe("PBD-4");
   });
 
+  it("flags a blocked issue that has no blocker edges at all", async () => {
+    const { companyId, agentId } = await createCompany("PBE");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "PBE-1",
+      title: "Blocked in prose only",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      description: "Waiting on the vendor, no first-class blocker recorded.",
+    });
+
+    const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+    expect(issue?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 0,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+    });
+  });
+
+  it("keeps a blocked parent attention-needed when its only child was cancelled", async () => {
+    const { companyId, agentId } = await createCompany("PBF");
+    const parentId = await insertIssue({ companyId, identifier: "PBF-1", title: "Parent", status: "blocked" });
+    await insertIssue({
+      companyId,
+      identifier: "PBF-2",
+      title: "Cancelled child",
+      status: "cancelled",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 0,
+    });
+  });
+
   it("covers recursive blocker chains when the downstream leaf has active work", async () => {
     const { companyId, agentId } = await createCompany("PBR");
     const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });
