@@ -95,10 +95,104 @@ function parseCsv(text: string): Array<Record<string, string>> {
 }
 
 // ---------------------------------------------------------------------------
+// Plaid client interface + default HTTP implementation
+// ---------------------------------------------------------------------------
+
+export interface PlaidAccountBalance {
+  accountId: string;
+  name: string;
+  balanceCents: number;
+  accountType: string;
+  institutionName: string;
+}
+
+export interface PlaidClient {
+  createLinkToken(userId: string): Promise<{ linkToken: string; expiration: string }>;
+  exchangePublicToken(publicToken: string): Promise<{ accessToken: string; itemId: string }>;
+  getAccountBalances(accessToken: string, institutionName?: string): Promise<PlaidAccountBalance[]>;
+}
+
+function mapPlaidSubtype(subtype: string | undefined): string {
+  const map: Record<string, string> = {
+    checking: "checking",
+    savings: "savings",
+    "401k": "retirement",
+    ira: "retirement",
+    roth: "retirement",
+    investment: "investment",
+    credit: "credit",
+    loan: "loan",
+    mortgage: "mortgage",
+  };
+  return map[subtype?.toLowerCase() ?? ""] ?? "other";
+}
+
+export function createDefaultPlaidClient(): PlaidClient | null {
+  const clientId = process.env.PLAID_CLIENT_ID;
+  const secret = process.env.PLAID_SECRET;
+  const env = process.env.PLAID_ENV ?? "sandbox";
+  if (!clientId || !secret) return null;
+  const baseUrl = `https://${env}.plaid.com`;
+
+  async function plaidPost(path: string, body: Record<string, unknown>) {
+    const resp = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: clientId, secret, ...body }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Plaid API error ${resp.status}: ${text}`);
+    }
+    return resp.json() as Promise<Record<string, unknown>>;
+  }
+
+  return {
+    async createLinkToken(userId) {
+      const data = await plaidPost("/link/token/create", {
+        user: { client_user_id: userId },
+        client_name: "IUnify",
+        products: ["transactions"],
+        country_codes: ["US"],
+        language: "en",
+      });
+      return {
+        linkToken: data["link_token"] as string,
+        expiration: data["expiration"] as string,
+      };
+    },
+    async exchangePublicToken(publicToken) {
+      const data = await plaidPost("/item/public_token/exchange", {
+        public_token: publicToken,
+      });
+      return {
+        accessToken: data["access_token"] as string,
+        itemId: data["item_id"] as string,
+      };
+    },
+    async getAccountBalances(accessToken, institutionName) {
+      const data = await plaidPost("/accounts/balance/get", { access_token: accessToken });
+      const accounts = (data["accounts"] as Array<Record<string, unknown>>) ?? [];
+      return accounts.map((acct) => {
+        const balances = acct["balances"] as Record<string, unknown>;
+        const rawBalance = (balances?.["current"] as number | null) ?? 0;
+        return {
+          accountId: acct["account_id"] as string,
+          name: (acct["name"] as string) ?? "Account",
+          balanceCents: Math.round(rawBalance * 100),
+          accountType: mapPlaidSubtype(acct["subtype"] as string | undefined),
+          institutionName: institutionName ?? "Unknown",
+        };
+      });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
-export function estateRoutes(db: Db) {
+export function estateRoutes(db: Db, plaidClient?: PlaidClient | null) {
   const router = Router();
 
   // ---- Asset Registry -------------------------------------------------------
@@ -2621,6 +2715,110 @@ export function estateRoutes(db: Db) {
       exemptionLaw: "OBBBA 2026",
       asOfDate: new Date().toISOString(),
     });
+  });
+
+  // ---- Plaid Link integration -----------------------------------------------
+
+  /**
+   * POST /estate/integrations/plaid/link-token
+   *
+   * Creates a Plaid Link token for the authenticated user.
+   * The client uses this token to open the Plaid Link SDK.
+   * Returns 503 when Plaid is not configured via env vars.
+   */
+  router.post("/estate/integrations/plaid/link-token", async (req, res) => {
+    assertBoard(req);
+    const client = plaidClient ?? createDefaultPlaidClient();
+    if (!client) {
+      res.status(503).json({ error: "Plaid integration not configured" });
+      return;
+    }
+    const { userId } = req.actor as { userId: string };
+    const result = await client.createLinkToken(userId);
+    res.json({ linkToken: result.linkToken, expiration: result.expiration });
+  });
+
+  /**
+   * POST /estate/integrations/plaid/exchange
+   *
+   * Exchanges a Plaid public_token (from Link SDK) for a permanent access
+   * token, fetches account balances, and creates or updates financial account
+   * records for each returned account.
+   *
+   * Body: { publicToken: string, institutionName?: string, companyId: string }
+   */
+  router.post("/estate/integrations/plaid/exchange", async (req, res) => {
+    assertBoard(req);
+    const client = plaidClient ?? createDefaultPlaidClient();
+    if (!client) {
+      res.status(503).json({ error: "Plaid integration not configured" });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const publicToken = typeof body["publicToken"] === "string" ? body["publicToken"].trim() : null;
+    const institutionName = typeof body["institutionName"] === "string" ? body["institutionName"].trim() : undefined;
+    const companyId = typeof body["companyId"] === "string" ? body["companyId"].trim() : null;
+
+    if (!publicToken) throw badRequest("publicToken is required");
+    if (!companyId) throw badRequest("companyId is required");
+
+    const { userId } = req.actor as { userId: string };
+
+    const { accessToken, itemId } = await client.exchangePublicToken(publicToken);
+    const plaidAccounts = await client.getAccountBalances(accessToken, institutionName);
+
+    const created: unknown[] = [];
+    for (const acct of plaidAccounts) {
+      const [existing] = await db
+        .select()
+        .from(estateFinancialAccounts)
+        .where(eq(estateFinancialAccounts.plaidAccountId, acct.accountId));
+
+      if (existing) {
+        const [updated] = await db
+          .update(estateFinancialAccounts)
+          .set({
+            balanceCents: String(acct.balanceCents),
+            balanceUpdatedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(estateFinancialAccounts.id, existing.id))
+          .returning();
+        await db.insert(estateBalanceHistory).values({
+          accountId: existing.id,
+          balanceCents: String(acct.balanceCents),
+        });
+        created.push({ ...updated, plaidAccessToken: undefined });
+      } else {
+        const accountType = acct.accountType as typeof estateFinancialAccounts.$inferInsert["accountType"];
+        const [inserted] = await db
+          .insert(estateFinancialAccounts)
+          .values({
+            companyId,
+            userId,
+            name: acct.name,
+            institutionName: acct.institutionName,
+            accountType,
+            plaidAccessToken: accessToken,
+            plaidItemId: itemId,
+            plaidAccountId: acct.accountId,
+            balanceCents: String(acct.balanceCents),
+            balanceUpdatedAt: new Date(),
+            isManual: false,
+          })
+          .returning();
+        if (acct.balanceCents > 0) {
+          await db.insert(estateBalanceHistory).values({
+            accountId: inserted.id,
+            balanceCents: String(acct.balanceCents),
+          });
+        }
+        created.push({ ...inserted, plaidAccessToken: undefined });
+      }
+    }
+
+    res.status(201).json({ accounts: created });
   });
 
   return router;
