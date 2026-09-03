@@ -27,9 +27,11 @@ then uploads the file under a run-attempt-scoped artifact ID. Catalog, image,
 and paid test jobs download that exact artifact by ID, verify its recorded
 SHA-256, and restore it before setup or a frozen dependency install. The lock
 resolver receives no provider credentials and must never run repository
-lifecycle scripts. Report sanitization and AWS history publication explicitly
-use the trusted workflow commit and do not consume the target lockfile. Never
-run the workflow definition from the target branch.
+lifecycle scripts. The paid test job also installs with lifecycle scripts
+disabled, and provider secrets are scoped only to its final test step rather
+than dependency setup. Report sanitization and AWS history publication
+explicitly use the trusted workflow commit and do not consume the target
+lockfile. Never run the workflow definition from the target branch.
 
 The workflows verify both the original actor and triggering actor for every
 scheduled or manual attempt, including human reruns. Every

@@ -274,14 +274,16 @@ job checks out the resolved commit and regenerates `pnpm-lock.yaml` once with
 `--ignore-scripts --no-frozen-lockfile --lockfile-only`. It uploads that exact
 lockfile under a run-attempt-scoped artifact ID and records its SHA-256. Catalog,
 image, and paid test jobs download the artifact by ID, verify its digest, and
-restore it before setup or a frozen install. This permits an authorized target
-branch to exercise an intentionally uncommitted workspace patch while keeping
-every target job on one identical dependency resolution. Report sanitization
-and AWS history publication do not consume the target lockfile; they explicitly
-check out and install from the trusted workflow commit. The workflow definition,
-runner-group permission, and protected-environment deployment still come from
-the default branch. Do not select the target branch in GitHub's **Use workflow
-from** control.
+restore it before setup or a frozen install. The paid test job disables
+dependency lifecycle scripts, and provider secrets are introduced only in the
+final test step. This permits an authorized target branch to exercise an
+intentionally uncommitted workspace patch while keeping every target job on one
+identical dependency resolution. Report sanitization and AWS history
+publication do not consume the target lockfile; they explicitly check out and
+install from the trusted workflow commit. The workflow definition, runner-group
+permission, and protected-environment deployment still come from the default
+branch. Do not select the target branch in GitHub's **Use workflow from**
+control.
 
 Because this repository is public, manual campaigns fail before checkout unless
 the trusted workflow runs from the default branch and both the original actor

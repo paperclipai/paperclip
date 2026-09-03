@@ -118,6 +118,15 @@ describe("public repository paid workflow security", () => {
     expect(paidJob).toMatch(
       /Reauthorize paid execution before provider access[\s\S]*actions\/checkout@[0-9a-f]{40}[\s\S]*persist-credentials: false[\s\S]*Download resolved target lockfile/,
     );
+    const paidInstall = paidJob.indexOf(
+      "pnpm install --frozen-lockfile --ignore-scripts",
+    );
+    const paidExecution = paidJob.indexOf("- name: Run paid cell");
+    expect(paidInstall).toBeGreaterThan(0);
+    expect(paidExecution).toBeGreaterThan(paidInstall);
+    expect(paidJob.slice(0, paidExecution)).not.toMatch(
+      /secrets\.(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)_API_KEY/,
+    );
     expect(authorizeJob).toContain('echo "max_parallel_limit=100"');
     expect(fullStack).toContain('[ "$MAX_PARALLEL_LIMIT" -gt 100 ]');
     expect(fullStack).toContain(

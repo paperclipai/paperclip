@@ -505,7 +505,10 @@ jobs:
         with:
           node-version: 24
 
-      - run: pnpm install --frozen-lockfile
+      # This job receives provider credentials only in the final paid-test
+      # step. Keep target-selected dependency lifecycle code from running in
+      # the protected environment during setup.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build runner TypeScript prerequisites
         run: pnpm --filter @paperclipai/paperclip-eval-kernel build
