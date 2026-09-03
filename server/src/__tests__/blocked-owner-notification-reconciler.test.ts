@@ -8,6 +8,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   blockedOwnerNotificationReconcilerService,
+  DELIVERY_FAILURE_BASE_COOLDOWN_MS,
   MAX_BLOCKED_OWNER_NOTIFICATION_CANDIDATES,
 } from "../services/blocked-owner-notification-reconciler.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
@@ -315,5 +316,82 @@ describeEmbeddedPostgres("blocked-owner notification reconciler", () => {
     expect(wakeup).toHaveBeenCalledTimes(1);
     const row = await readIssue(deliverableId);
     expect(row?.blockedOwnerNotifiedAt).not.toBeNull();
+  });
+  // Greptile finding 1 on a6562cd: the fence matched the owner agent id but
+  // not the action, so an action change during delivery was marked notified
+  // against a wake that carried the old action.
+  it("does not mark a row notified when only its unblock action changed during delivery", async () => {
+    const { companyId, agentId } = await createCompany("BOJ");
+    const stamp = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1000);
+    const issueId = await insertBlockedIssue({
+      companyId,
+      title: "Action rewritten while the wake is in flight",
+      unblockDescriptor: { owner: { agentId }, action: "Rule on the four options" },
+      blockedTransitionAt: stamp,
+    });
+
+    // Same owner, same stamp — only the action changes.
+    const wakeup = vi.fn(async () => {
+      await db
+        .update(issues)
+        .set({ unblockDescriptor: { owner: { agentId }, action: "Rule on the six options instead" } })
+        .where(eq(issues.id, issueId));
+    });
+    const reconciler = blockedOwnerNotificationReconcilerService(db, { wakeup });
+    const result = await reconciler.reconcileBlockedOwnerNotifications({ companyId });
+
+    expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      payload: expect.objectContaining({ action: "Rule on the four options" }),
+    }));
+    expect(result).toMatchObject({ notified: 0, skipped: 1 });
+
+    // The rewritten action must stay eligible: nobody has been told about it.
+    const row = await readIssue(issueId);
+    expect(row?.blockedOwnerNotifiedAt).toBeNull();
+  });
+
+  // Greptile finding 2 on a6562cd: ordering oldest-first made a permanently
+  // failing row hold the head of the batch on every tick, which starved the
+  // rows behind it deterministically.
+  it("advances past a candidate whose delivery keeps failing", async () => {
+    const { companyId, agentId } = await createCompany("BOK");
+    const oldest = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1000);
+    const brokenId = await insertBlockedIssue({
+      companyId,
+      title: "Owner agent is uninvokable",
+      unblockDescriptor: { owner: { agentId }, action: "Never deliverable" },
+      blockedTransitionAt: oldest,
+    });
+    const healthyId = await insertBlockedIssue({
+      companyId,
+      title: "Perfectly deliverable, but younger",
+      unblockDescriptor: { owner: { agentId }, action: "Rule on the four options" },
+      blockedTransitionAt: new Date(oldest.getTime() + 60_000),
+    });
+
+    let clock = Date.now();
+    const wakeup = vi.fn(async (_agentId: string, opts: { payload?: { issueId?: string } }) => {
+      if (opts.payload?.issueId === brokenId) throw new Error("agent is not invokable");
+      return undefined;
+    });
+    const reconciler = blockedOwnerNotificationReconcilerService(db, {
+      wakeup: wakeup as never,
+      now: () => new Date(clock),
+    });
+
+    const first = await reconciler.reconcileBlockedOwnerNotifications({ companyId });
+    expect(first).toMatchObject({ failed: 1, notified: 1 });
+    expect(first.notifiedIssueIds).toEqual([healthyId]);
+
+    // Immediately after, the broken row is in cooldown and is not re-attempted.
+    const second = await reconciler.reconcileBlockedOwnerNotifications({ companyId });
+    expect(second).toMatchObject({ scanned: 0, failed: 0 });
+
+    // Once the cooldown expires it is retried — the backoff defers it, it does
+    // not drop it.
+    clock += DELIVERY_FAILURE_BASE_COOLDOWN_MS + 1000;
+    const third = await reconciler.reconcileBlockedOwnerNotifications({ companyId });
+    expect(third).toMatchObject({ scanned: 1, failed: 1 });
+    expect(third.failedIssueIds).toEqual([brokenId]);
   });
 });

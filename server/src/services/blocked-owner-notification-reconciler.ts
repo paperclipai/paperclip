@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issues } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -33,6 +33,25 @@ import { deliverAgentUnblockNotification, ROUTABLE_BLOCKED_ROLLOUT_AT } from "./
 //   routes/issues.ts ever race on the same transition.
 export const MAX_BLOCKED_OWNER_NOTIFICATION_CANDIDATES = 250;
 
+// A delivery that throws — an agent that was deleted, disabled, is over
+// budget, or is otherwise uninvokable — leaves its row eligible, because
+// nothing was delivered and so nothing may be marked notified. Ordering the
+// batch by oldest transition then puts that row at the head of every
+// subsequent batch: it fails again, stays eligible, and holds its slot
+// forever. Enough of them fill the limit and the rows behind them are never
+// reached — the same starvation the ordering was added to fix, arrived at
+// from the other direction.
+//
+// So a row that fails delivery goes into a cooldown and is excluded from the
+// candidate query until it expires. The backoff doubles per consecutive
+// failure up to a cap, so a permanently broken row costs one attempt per cap
+// window instead of one per tick, and a transiently broken one recovers
+// quickly. The map is per process and is not persisted: losing it on restart
+// only means one extra attempt per row, which is the safe direction to fail.
+export const DELIVERY_FAILURE_BASE_COOLDOWN_MS = 60_000;
+export const DELIVERY_FAILURE_MAX_COOLDOWN_MS = 60 * 60_000;
+export const MAX_TRACKED_DELIVERY_FAILURES = 5_000;
+
 export function blockedOwnerNotificationReconcilerService(
   db: Db,
   deps: {
@@ -47,9 +66,42 @@ export function blockedOwnerNotificationReconcilerService(
         contextSnapshot?: Record<string, unknown>;
       },
     ) => Promise<unknown>;
+    /** Injectable clock, for exercising the delivery-failure backoff in tests. */
+    now?: () => Date;
   },
 ) {
+  const deliveryFailures = new Map<string, { consecutive: number; retryAfter: number }>();
+
+  function recordDeliveryFailure(issueId: string, now: number) {
+    const previous = deliveryFailures.get(issueId);
+    const consecutive = (previous?.consecutive ?? 0) + 1;
+    const backoff = Math.min(
+      DELIVERY_FAILURE_BASE_COOLDOWN_MS * 2 ** (consecutive - 1),
+      DELIVERY_FAILURE_MAX_COOLDOWN_MS,
+    );
+    deliveryFailures.set(issueId, { consecutive, retryAfter: now + backoff });
+    // Bounded: drop the entries closest to being retried first, so the
+    // longest-backed-off (most broken) rows keep their cooldown.
+    if (deliveryFailures.size > MAX_TRACKED_DELIVERY_FAILURES) {
+      const byRetrySoonest = [...deliveryFailures.entries()].sort((a, b) => a[1].retryAfter - b[1].retryAfter);
+      for (const [id] of byRetrySoonest.slice(0, deliveryFailures.size - MAX_TRACKED_DELIVERY_FAILURES)) {
+        deliveryFailures.delete(id);
+      }
+    }
+  }
+
+  function cooldownIssueIds(now: number): string[] {
+    const cooling: string[] = [];
+    for (const [issueId, state] of deliveryFailures) {
+      if (state.retryAfter > now) cooling.push(issueId);
+      else deliveryFailures.delete(issueId);
+    }
+    return cooling;
+  }
+
   async function reconcileBlockedOwnerNotifications(opts?: { companyId?: string }) {
+    const tickStartedAt = (deps.now ?? (() => new Date()))().getTime();
+    const coolingDown = cooldownIssueIds(tickStartedAt);
     // The batch must contain only rows this sweep can actually deliver.
     // `deliverAgentUnblockNotification` no-ops on a board-owned descriptor and
     // on a stamp older than the rollout cutover, and those two classes are
@@ -71,6 +123,7 @@ export function blockedOwnerNotificationReconcilerService(
           isNull(issues.blockedOwnerNotifiedAt),
           gte(issues.blockedTransitionAt, ROUTABLE_BLOCKED_ROLLOUT_AT),
           sql`${issues.unblockDescriptor} -> 'owner' ->> 'agentId' is not null`,
+          coolingDown.length > 0 ? notInArray(issues.id, coolingDown) : undefined,
         ),
       )
       .orderBy(asc(issues.blockedTransitionAt))
@@ -118,14 +171,20 @@ export function blockedOwnerNotificationReconcilerService(
         }
         // Compare-and-set against the snapshot this wake was built from. The
         // row can move between the select and this write: it can exit and
-        // re-enter `blocked` (new stamp, new cycle), have its owner changed,
-        // or be notified by the edge-triggered path in routes/issues.ts.
-        // Without the fence, this write stamps whatever cycle is current now
-        // as notified, using a wake that went to the previous cycle or the
-        // previous owner — and the current cycle is then excluded from every
-        // later sweep, so its owner is never woken. Matching the stamp, the
-        // owner and the still-null notified-at makes the write apply only to
-        // the exact row state that was delivered for.
+        // re-enter `blocked` (new stamp, new cycle), have its descriptor
+        // changed, or be notified by the edge-triggered path in
+        // routes/issues.ts. Without the fence, this write stamps whatever
+        // state is current now as notified, using a wake built for the
+        // previous one — and the current state is then excluded from every
+        // later sweep, so its owner is never woken.
+        //
+        // The descriptor is matched whole, not just its owner. `action` is
+        // delivered in the wake payload, so a descriptor whose action changed
+        // during delivery is a different request even when the owner and the
+        // stamp are unchanged: the wake carried the old action, and marking
+        // the new one notified would retire a request nobody was told about.
+        // jsonb equality is key-order insensitive, and matching the whole
+        // value also covers fields added to the descriptor later.
         const applied = await db
           .update(issues)
           .set({ blockedOwnerNotifiedAt: notifiedAt })
@@ -134,7 +193,7 @@ export function blockedOwnerNotificationReconcilerService(
             eq(issues.companyId, candidate.companyId),
             eq(issues.blockedTransitionAt, candidateStamp),
             isNull(issues.blockedOwnerNotifiedAt),
-            sql`${issues.unblockDescriptor} -> 'owner' ->> 'agentId' = ${candidateOwnerAgentId}`,
+            sql`${issues.unblockDescriptor} = ${JSON.stringify(candidate.unblockDescriptor)}::jsonb`,
           ))
           .returning({ id: issues.id });
         if (applied.length === 0) {
@@ -147,6 +206,7 @@ export function blockedOwnerNotificationReconcilerService(
         result.notified += 1;
         result.notifiedIssueIds.push(candidate.id);
       } catch (err) {
+        recordDeliveryFailure(candidate.id, tickStartedAt);
         result.failed += 1;
         result.failedIssueIds.push(candidate.id);
         logger.warn(
