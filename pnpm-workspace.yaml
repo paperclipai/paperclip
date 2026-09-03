@@ -22,3 +22,11 @@ patchedDependencies:
   '@agentclientprotocol/claude-agent-acp@0.70.0': patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch
   '@agentclientprotocol/claude-agent-acp@0.73.0': patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
   '@agentclientprotocol/codex-acp@1.6.2': patches/@agentclientprotocol__codex-acp@1.6.2.patch
+
+# Keep in sync with package.json#pnpm.overrides. pnpm 9 reads overrides from
+# the workspace manifest, while the package.json copy preserves compatibility.
+overrides:
+  fast-uri: 3.1.6
+  rollup: '>=4.59.0'
+  react: ^19.2.8
+  react-dom: ^19.2.8
