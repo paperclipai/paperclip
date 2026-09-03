@@ -39,8 +39,13 @@ services:
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
       PAPERCLIP_GITLAB_HOSTS: "${PAPERCLIP_GITLAB_HOSTS}"
+      # Points at a PEM CA bundle for a self-hosted GitLab instance on a private/internal CA.
+      # Drop the bundle file into ./certs (mounted read-only below) and set this to its
+      # in-container path, e.g. PAPERCLIP_GITLAB_CA_CERT_PATH=/paperclip/ca/lab-ca.pem.
+      PAPERCLIP_GITLAB_CA_CERT_PATH: "${PAPERCLIP_GITLAB_CA_CERT_PATH}"
     volumes:
       - paperclip-data:/paperclip
+      - ./certs:/paperclip/ca:ro
     depends_on:
       db:
         condition: service_healthy
