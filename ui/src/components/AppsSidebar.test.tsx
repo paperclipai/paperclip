@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppsSidebar } from "./AppsSidebar";
+import { contextualSidebarStyles } from "./contextual-sidebar-styles";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockToolsApi = vi.hoisted(() => ({
@@ -97,7 +98,7 @@ describe("AppsSidebar", () => {
     vi.clearAllMocks();
   });
 
-  it("renders the consolidated connector and review doors without retired developer links", async () => {
+  it("renders the consolidated connector and review doors without a redundant contextual heading", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -112,7 +113,7 @@ describe("AppsSidebar", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Apps");
+    expect(container.textContent).not.toContain("Apps");
     expect(container.textContent).not.toContain("Developer");
     expect(container.textContent).not.toContain("Advanced setup for developers");
     expect(container.textContent).not.toContain("Most teams");
@@ -152,6 +153,14 @@ describe("AppsSidebar", () => {
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/advanced/audit" }),
     );
+    expect(container.querySelector('[data-slot="contextual-sidebar-nav"]')?.className).toBe(
+      contextualSidebarStyles.nav,
+    );
+    expect(
+      Array.from(container.querySelectorAll('[data-slot="contextual-sidebar-group"]')).every(
+        (group) => group.className === contextualSidebarStyles.group,
+      ),
+    ).toBe(true);
 
     await act(async () => {
       root.unmount();

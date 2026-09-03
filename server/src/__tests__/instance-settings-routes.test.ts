@@ -270,6 +270,24 @@ describe("instance settings routes", () => {
       .expect(404);
   });
 
+  it("accepts the instance-wide Streamlined UI preference", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableStreamlinedUi: false })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableStreamlinedUi: false,
+    });
+  });
+
   it("strips server-managed worktree run execution fields before updating experimental settings", async () => {
     const app = await createApp({
       type: "board",

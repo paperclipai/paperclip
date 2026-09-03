@@ -154,6 +154,16 @@
   --agent-10a: #f2d95f;
   --agent-10b: #4fbcba;
 
+  /* Onboarding mascot artwork (brand-fixed, theme-independent). Keeping the
+     SVG palette in the token layer preserves the source asset while allowing
+     components to remain token-only. */
+  --pill-guy-eye: #060606;
+  --pill-guy-dormant-top: #626262;
+  --pill-guy-dormant-bottom: #101010;
+  --pill-guy-tuft: #2d200d;
+  --pill-guy-alive-top: #3028aa;
+  --pill-guy-alive-bottom: #ff0000;
+
   /* Status colors — one base hue per status, consumed by the agent / task
      status chips and the task status icons. Mode-independent: the `.status-chip`,
      `.status-fill` and inline icon helpers derive the light vs dark
@@ -266,18 +276,25 @@
 
   /* Portable side-panel geometry and hierarchy. These stay centralized so
      task, project, agent, and future hosts render the same Codex-like chrome. */
-  --side-panel-header-height: var(--sz-48px);
+  --side-panel-header-height: var(--sz-60px);
   --side-panel-tab-height: var(--sz-30px);
+  --side-panel-streamlined-tab-min-width: var(--sz-72px);
+  --side-panel-streamlined-tab-max-width: var(--sz-160px);
+  --side-panel-tab-edge-fade-width: var(--sz-32px);
   --side-panel-tab-label-max-width: var(--sz-100px);
   --side-panel-tab-label-expanded-max-width: calc(var(--side-panel-tab-label-max-width) + var(--sz-18px));
-  --side-panel-tab-label-fade-width: var(--sz-18px);
+  --side-panel-tab-label-fade-width: var(--sz-32px);
   --side-panel-tab-radius: var(--radius-xl);
   --side-panel-control-radius: var(--radius-xl);
   --side-panel-launcher-width: var(--sz-320px);
   --side-panel-bg: var(--background);
   --side-panel-fg: var(--foreground);
+  --streamlined-task-detail-bg: var(--background);
   --side-panel-tab-active-bg: color-mix(in oklab, var(--accent) 88%, var(--background));
   --side-panel-tab-hover-bg: color-mix(in oklab, var(--accent) 58%, transparent);
+  --radius-task-composer: 16px;
+  --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
+    0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
 
   /* Composer mode-chip hues (v5–v7 decisions): agent + plan reuse the task
      status hues; ask is the v5 blue. Consumed as `--sc` seeds through the
@@ -302,6 +319,7 @@
   /* Redesigned chat-shell column cap (phase 2c): one token caps the page
      wrapper, thread body, and pinned composer so they widen in lockstep. */
   --tc-shell-max-w: 60rem;
+  --sz-66px: 66px;
 
   /* Active-turn status island and its checklist overlay. */
   --sz-turn-status-island: min(100%, 42rem);
@@ -316,10 +334,11 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
+  --background: oklch(0.205 0 0);
   --foreground: oklch(0.985 0 0);
-  --side-panel-bg: rgb(10 10 10);
+  --side-panel-bg: var(--background);
   --side-panel-fg: oklch(0.985 0 0);
+  --streamlined-task-detail-bg: var(--background);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
@@ -373,6 +392,11 @@
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
   --status-task-icon-done: #34d06f;
   --status-task-icon-cancelled: #9a958a;
+}
+
+.streamlined-task-detail-surface {
+  --side-panel-bg: var(--streamlined-task-detail-bg);
+  background-color: var(--streamlined-task-detail-bg);
 }
 
 ::highlight(paperclip-doc-annotation-open) {
@@ -562,6 +586,61 @@
 #main-content:has([data-task-chat-shell]) {
   scrollbar-gutter: auto;
 }
+
+/* Paper task-detail properties rhythm: values share the 12px label scale and
+   each section gets a full 24px breathing interval before the next heading. */
+.task-detail-properties [data-property-section="true"] {
+  padding-bottom: calc(var(--spacing) * 6);
+}
+
+.task-detail-properties [data-property-value="true"],
+.task-detail-properties [data-property-value="true"] .text-sm {
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+}
+
+/* The generic line-tab variant deliberately keeps active tabs transparent.
+   The task-detail sidebar uses a filled active tab instead; the pane slot ID
+   gives this contextual treatment enough specificity without affecting other
+   line-tab surfaces. */
+#properties-pane-header-slot .task-detail-pane-tab[data-state="active"] {
+  background-color: var(--muted);
+}
+
+/* Codex-style pane tabs soften clipped labels into the tab surface. The mask
+   stays on the label itself so short names remain visually untouched. */
+.task-detail-pane-tab-label {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    var(--foreground) 0,
+    var(--foreground) calc(100% - calc(var(--spacing) * 4)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    var(--foreground) 0,
+    var(--foreground) calc(100% - calc(var(--spacing) * 4)),
+    transparent 100%
+  );
+}
+
+/* Keep continuation tabs readable as they pass beneath the fixed add control.
+   The mask is enabled only while content remains beyond the right edge. */
+.side-panel-tabs-scroll[data-scroll-end-fade="true"] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    var(--foreground) 0,
+    var(--foreground) calc(100% - var(--side-panel-tab-edge-fade-width)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    var(--foreground) 0,
+    var(--foreground) calc(100% - var(--side-panel-tab-edge-fade-width)),
+    transparent 100%
+  );
+}
+
 /* Light mode scrollbar on hover */
 .scrollbar-auto-hide:hover {
   scrollbar-color: oklch(0.7 0 0) transparent;
@@ -795,7 +874,14 @@
   transition-duration: var(--motion-side-panel-tab);
   transition-timing-function: var(--motion-ease-standard);
 }
-.side-panel-tab-label-fade {
+.side-panel-tab-close-motion {
+  transition-property: color, background-color, border-color, box-shadow, transform;
+  transition-duration: var(--motion-side-panel-tab);
+  transition-timing-function: var(--motion-ease-standard);
+}
+.side-panel-tab-label-fade,
+.side-panel-tab-label-close-fade[data-truncated="true"],
+[data-appearance="streamlined-task"]:is(:hover, :focus-within) .side-panel-tab-label-close-fade {
   -webkit-mask-image: linear-gradient(to right, black calc(100% - var(--side-panel-tab-label-fade-width)), transparent);
   mask-image: linear-gradient(to right, black calc(100% - var(--side-panel-tab-label-fade-width)), transparent);
   -webkit-mask-repeat: no-repeat;
@@ -816,7 +902,8 @@
   .tc-turn-metrics,
   .tc-line-scroll-inner,
   .tc-pane-glide,
-  .side-panel-tab-motion { transition: none; }
+  .side-panel-tab-motion,
+  .side-panel-tab-close-motion { transition: none; }
   /* The pill keyframes carry the X-centering; with animation:none restore it. */
   .tc-scroll-pill-in,
   .tc-scroll-pill-out { transform: translate(-50%, 0); }
@@ -2396,7 +2483,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --shadow-extract-9: 0 18px 42px rgba(15,23,42,0.06); /* Extracted from ui/src/components/IssueThreadInteractionCard.tsx (shadow-[0_18px_42px_rgba(15,23,42,0.06)]). */
   --shadow-extract-10: 0 1px 0 1px var(--border); /* Extracted from ui/src/components/KeyboardShortcutsCheatsheet.tsx; corrected for full-color semantic tokens. */
   --shadow-extract-11: 0 18px 50px rgba(37,99,235,0.08); /* LiveRunWidget.tsx glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
-  --shadow-extract-12: 0 0 0 2px var(--background); /* Extracted from ui/src/components/SidebarNavItem.tsx; corrected for full-color semantic tokens. */
+  --shadow-extract-12: 0 0 0 2px var(--background); /* Production sidebar icon-badge outline. */
+  --shadow-sidebar-icon-badge: 0 0 0 2px var(--muted); /* Streamlined sidebar icon-badge outline; matches the sidebar surface. */
   --shadow-extract-13: 0 0 0 3px rgba(245,158,11,0.18); /* Extracted from ui/src/components/environment-variables-editor/index.tsx (shadow-[0_0_0_3px_rgba(245,158,11,0.18)]). */
   --shadow-extract-14: 0 0 12px rgba(37,99,235,0.08); /* AgentDetail.tsx live-card glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
   --shadow-extract-18: 0 18px 44px -28px rgba(0,0,0,0.45); /* Extracted from ui/src/pages/ProfileSettings.tsx (shadow-[0_18px_44px_-28px_rgba(0,0,0,0.45)]). */

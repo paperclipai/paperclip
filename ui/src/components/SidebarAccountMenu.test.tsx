@@ -100,6 +100,29 @@ describe("SidebarAccountMenu", () => {
     vi.clearAllMocks();
   });
 
+  it("shares the nav background without separator borders", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu deploymentMode="local_trusted" />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const accountSurface = container.firstElementChild;
+    expect(accountSurface?.className).toContain("bg-border/50");
+    expect(accountSurface?.className).toContain("dark:bg-muted");
+    expect(accountSurface?.className).not.toContain("border-t");
+    expect(accountSurface?.className).not.toContain("border-r");
+    expect(accountSurface?.className).not.toContain("border-border");
+
+    await act(async () => root.unmount());
+  });
+
   it("keeps authenticated self-hosted sign-out on the local auth flow", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -135,6 +158,7 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Edit profile");
+    expect(document.body.textContent).toContain("Settings");
     expect(document.body.textContent).not.toContain("Instance settings");
     expect(document.body.textContent).toContain("Documentation");
     expect(document.body.textContent).toContain("Feedback");
@@ -157,6 +181,7 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("w-(--sz-277px)");
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
+    expect(document.body.querySelector('a[href="/company/settings"]')).not.toBeNull();
 
     const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Sign out"),

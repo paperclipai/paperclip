@@ -5,6 +5,13 @@ import {
 } from "./instance.js";
 
 describe("instance experimental settings validators", () => {
+  it("defaults the streamlined UI on and accepts an explicit patch", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableStreamlinedUi).toBe(true);
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({ enableStreamlinedUi: false }),
+    ).toEqual({ enableStreamlinedUi: false });
+  });
+
   it("defaults the server info debug view off", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 

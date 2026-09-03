@@ -81,6 +81,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: true,
   },
+  enableStreamlinedUi: {
+    title: "Streamlined UI",
+    description:
+      "Use the streamlined application shell, shared task collections, focused task detail layout, contextual navigation, and simplified main sidebar.",
+    tier: "preference",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
   enableApps: {
     title: "Apps (compatibility)",
     description:

@@ -4,6 +4,7 @@ import {
   BookOpen,
   LogOut,
   Megaphone,
+  Settings,
   type LucideIcon,
   UserRound,
   UserRoundPen,
@@ -33,6 +34,8 @@ interface SidebarAccountMenuProps {
   onOpenChange?: (open: boolean) => void;
   serverGit?: ServerGitInfo;
   version?: string | null;
+  /** Contextual navigation occupies a full sidebar even if the saved global nav mode is collapsed. */
+  forceExpanded?: boolean;
 }
 
 interface MenuActionProps {
@@ -116,10 +119,11 @@ export function SidebarAccountMenu({
   onOpenChange,
   serverGit,
   version,
+  forceExpanded = false,
 }: SidebarAccountMenuProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
-  const rail = collapsed && !peeking;
+  const rail = collapsed && !peeking && !forceExpanded;
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
@@ -153,7 +157,7 @@ export function SidebarAccountMenu({
   }
 
   return (
-    <div className="border-t border-r border-border bg-background px-3 py-2">
+    <div className="bg-border/50 px-3 py-2 dark:bg-muted">
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
@@ -222,6 +226,13 @@ export function SidebarAccountMenu({
             </div>
 
             <div className="mt-4 space-y-1">
+              <MenuAction
+                label="Settings"
+                description="Manage company and instance settings."
+                icon={Settings}
+                href="/company/settings"
+                onClick={closeNavigationChrome}
+              />
               <MenuAction
                 label="View profile"
                 description="Open your activity, task, and usage ledger."
