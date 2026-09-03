@@ -12292,6 +12292,14 @@ export function heartbeatService(
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
+      await tx
+        .update(heartbeatRuns)
+        .set({
+          processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          updatedAt: now,
+        })
+        .where(eq(heartbeatRuns.id, run.id));
+
       if (issueId) {
         await tx
           .update(issues)
