@@ -229,6 +229,7 @@ function ProjectTilePicker({
 
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -272,6 +273,9 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
+    onError: (err) => {
+      pushToast({ title: "Failed to update issue", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
     },
   });
 
@@ -485,6 +489,9 @@ export function ProjectDetail() {
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId),
     onSuccess: invalidateProject,
+    onError: (err) => {
+      pushToast({ title: "Failed to update project", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
+    },
   });
 
   const archiveProject = useMutation({
@@ -674,6 +681,9 @@ export function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
+    },
+    onError: (err) => {
+      pushToast({ title: "Failed to update budget", body: err instanceof Error ? err.message : "Something went wrong.", tone: "error" });
     },
   });
 
