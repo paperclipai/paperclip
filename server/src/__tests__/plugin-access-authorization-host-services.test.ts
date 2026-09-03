@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -319,6 +320,54 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
     });
     expect(JSON.stringify(rows[0]!.details)).not.toContain("sk-test-secret");
     expect(JSON.stringify(rows[0]!.details)).not.toContain("should-not-persist");
+    services.dispose();
+  });
+
+  it("records an attributable activity entry when a plugin pauses or resumes an agent", async () => {
+    // agents.pause/resume previously mutated the agent row with no
+    // logPluginActivity call, so a plugin-triggered pause left zero audit trail.
+    const company = await createCompany(db, "PBQ");
+    const targetAgent = await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: "Pause target",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        permissions: {},
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+
+    const paused = await services.agents.pause({ companyId: company.id, agentId: targetAgent.id });
+    expect(paused.status).toBe("paused");
+
+    const resumed = await services.agents.resume({ companyId: company.id, agentId: targetAgent.id });
+    expect(resumed.status).toBe("idle");
+
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, targetAgent.id));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      companyId: company.id,
+      actorType: "plugin",
+      actorId: pluginId,
+      action: "agent.paused",
+      entityType: "agent",
+      entityId: targetAgent.id,
+    });
+    expect(rows[1]).toMatchObject({
+      companyId: company.id,
+      actorType: "plugin",
+      actorId: pluginId,
+      action: "agent.resumed",
+      entityType: "agent",
+      entityId: targetAgent.id,
+    });
     services.dispose();
   });
 });
