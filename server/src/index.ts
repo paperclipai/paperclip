@@ -247,13 +247,15 @@ export async function startServer(): Promise<StartedServer> {
   
     const apply = autoApply ? true : await promptApplyMigrations(state.pendingMigrations);
     if (!apply) {
-      // A database with zero applied migrations has never been migrated:
-      // under a managed-cloud supervisor that is the expected first-boot
-      // race (the harness migrates and restarts), so the refusal carries
-      // the supervised-transient class. Any applied history means drift
-      // and keeps the plain, always-reported Error.
+      // A database with zero applied migrations and zero tables has
+      // never been migrated: under a managed-cloud supervisor that is
+      // the expected first-boot race (the harness migrates and
+      // restarts), so the refusal carries the supervised-transient
+      // class. Applied history — or pre-existing tables beside an empty
+      // journal — means drift and keeps the plain, always-reported
+      // Error.
       throw migrationRefusalError(
-        state.appliedMigrations.length,
+        state,
         `${label} has pending migrations (${formatPendingMigrationSummary(state.pendingMigrations)}). ` +
           "Refusing to start against a stale schema. Run pnpm db:migrate or set PAPERCLIP_MIGRATION_AUTO_APPLY=true.",
       );

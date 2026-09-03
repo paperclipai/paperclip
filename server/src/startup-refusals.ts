@@ -42,13 +42,18 @@ export class StartupRefusalError extends Error {
 
 /**
  * Chooses the error class for a pending-migrations refusal. A database
- * with zero applied migrations is not stale — it has never been
- * migrated at all, which under a supervisor means "not yet" rather
- * than "drifted". Any applied history makes pending migrations a drift
- * signal that must keep reporting.
+ * with zero applied migrations AND zero tables is not stale — it has
+ * never been migrated at all, which under a supervisor means "not yet"
+ * rather than "drifted". Any applied history, or any pre-existing
+ * tables beside an empty or wiped migration journal, makes pending
+ * migrations a drift signal that must keep reporting.
  */
-export function migrationRefusalError(appliedMigrationCount: number, message: string): Error {
-  return appliedMigrationCount === 0
+export function migrationRefusalError(
+  state: { appliedMigrations: string[]; tableCount: number },
+  message: string,
+): Error {
+  const neverMigrated = state.appliedMigrations.length === 0 && state.tableCount === 0;
+  return neverMigrated
     ? new StartupRefusalError("schema-not-yet-migrated", message)
     : new Error(message);
 }
