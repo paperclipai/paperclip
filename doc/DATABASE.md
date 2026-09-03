@@ -175,6 +175,16 @@ When authoring migrations or one-time backfills:
 - Do not hand-edit a snapshot to resolve a merge conflict. Renumber your migration and run `generate` again, as `packages/db/.gitattributes` describes.
 - `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
 
+## Cloud runtime identity singleton
+
+`cloud_runtime_identity` contains at most one row for the whole Paperclip
+instance. It records the immutable Cloud stack id, warm-pool claim id, previous
+pool origin, canonical origin, and stack slug accepted from Cloud's signed
+pre-activation assertion. This is intentionally instance-scoped rather than
+company-scoped: an instance has one public identity, and the singleton primary
+key makes concurrent or later attempts to replace it fail closed. The server
+loads the row before constructing URL-dependent runtime services on every boot.
+
 ## Resource membership tables
 
 Paperclip stores current-user sidebar membership state in:
