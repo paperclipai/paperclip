@@ -198,6 +198,15 @@ export function costRoutes(
     res.json(rows);
   });
 
+  router.get("/companies/:companyId/costs/time-allocation", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const range = parseCostDateRange(req.query);
+    const summary = await costs.timeAllocation(companyId, range);
+    res.json(summary);
+  });
+
   router.get("/companies/:companyId/costs/by-agent-model", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
