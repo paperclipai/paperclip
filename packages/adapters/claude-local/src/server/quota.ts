@@ -198,10 +198,18 @@ export function toPercent(utilization: number | null | undefined): number | null
   return Math.min(100, Math.round(utilization < 1 ? utilization * 100 : utilization));
 }
 
+function defaultFetchTimeoutMs(): number {
+  const raw = process.env.PAPERCLIP_CLAUDE_LOCAL_FETCH_TIMEOUT_MS;
+  if (!raw) return 8000;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 8000;
+}
+
 /** fetch with an abort-based timeout so a hanging provider api doesn't block the response indefinitely */
-export async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000): Promise<Response> {
+export async function fetchWithTimeout(url: string, init: RequestInit, ms?: number): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
+  const effectiveMs = ms ?? defaultFetchTimeoutMs();
+  const timer = setTimeout(() => controller.abort(), effectiveMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
