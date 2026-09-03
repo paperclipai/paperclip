@@ -3,6 +3,22 @@ import os from "node:os";
 import path from "node:path";
 import type { QuotaWindow } from "@paperclipai/adapter-utils";
 
+// child_process.execFile has a built-in util.promisify.custom implementation
+// that resolves to { stdout, stderr }; the mock exposes the same symbol so
+// `promisify(execFile)` inside the adapter behaves identically under test.
+const execFileCustom = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", async () => {
+  const { promisify: nodePromisify } = await import("node:util");
+  return { execFile: Object.assign(vi.fn(), { [nodePromisify.custom]: execFileCustom }) };
+});
+
+// Default to "no Keychain entry" so pre-existing file-based tests are unaffected
+// regardless of which platform they run on; individual tests override as needed.
+beforeEach(() => {
+  execFileCustom.mockReset();
+  execFileCustom.mockRejectedValue(new Error("SecKeychainSearchCopyNext: The specified item could not be found in the keychain."));
+});
+
 // Pure utility functions — import directly from adapter source
 import {
   toPercent,
@@ -297,6 +313,73 @@ describe("readClaudeToken", () => {
     const token = await readClaudeToken();
     expect(token).toBe("dotfile-token");
     await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+  });
+
+  describe("macOS Keychain fallback", () => {
+    const savedPlatform = process.platform;
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: savedPlatform });
+    });
+
+    it("falls back to the macOS Keychain when no credentials file exists", async () => {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+      process.env.CLAUDE_CONFIG_DIR = "/tmp/__no_such_paperclip_dir__";
+      execFileCustom.mockResolvedValue({
+        stdout: JSON.stringify({ claudeAiOauth: { accessToken: "keychain-token" } }),
+        stderr: "",
+      });
+
+      const token = await readClaudeToken();
+
+      expect(token).toBe("keychain-token");
+      expect(execFileCustom).toHaveBeenCalledWith(
+        "security",
+        ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+      );
+    });
+
+    it("returns null when the Keychain lookup fails", async () => {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+      process.env.CLAUDE_CONFIG_DIR = "/tmp/__no_such_paperclip_dir__";
+      execFileCustom.mockRejectedValue(new Error("not found"));
+
+      const token = await readClaudeToken();
+
+      expect(token).toBe(null);
+    });
+
+    it("never shells out to the Keychain on non-macOS platforms", async () => {
+      Object.defineProperty(process, "platform", { value: "linux" });
+      process.env.CLAUDE_CONFIG_DIR = "/tmp/__no_such_paperclip_dir__";
+
+      const token = await readClaudeToken();
+
+      expect(token).toBe(null);
+      expect(execFileCustom).not.toHaveBeenCalled();
+    });
+
+    it("prefers the credentials file over the Keychain when both are present", async () => {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+      const tmpDir = path.join(os.tmpdir(), `paperclip-test-claude-${Date.now()}`);
+      const creds = { claudeAiOauth: { accessToken: "file-token" } };
+      await import("node:fs/promises").then((fs) =>
+        fs.mkdir(tmpDir, { recursive: true }).then(() =>
+          fs.writeFile(path.join(tmpDir, "credentials.json"), JSON.stringify(creds)),
+        ),
+      );
+      process.env.CLAUDE_CONFIG_DIR = tmpDir;
+      execFileCustom.mockResolvedValue({
+        stdout: JSON.stringify({ claudeAiOauth: { accessToken: "keychain-token" } }),
+        stderr: "",
+      });
+
+      const token = await readClaudeToken();
+
+      expect(token).toBe("file-token");
+      expect(execFileCustom).not.toHaveBeenCalled();
+      await import("node:fs/promises").then((fs) => fs.rm(tmpDir, { recursive: true }));
+    });
   });
 });
 
