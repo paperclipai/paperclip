@@ -4,6 +4,7 @@ import { mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { resolveCodexAuthCacheDir, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import {
@@ -49,6 +50,42 @@ function deferred<T>() {
     reject = promiseReject;
   });
   return { promise, resolve, reject };
+}
+
+// A wait built from a measured "uncontended entry" duration needs margin
+// over that duration to absorb normal timing jitter, while it must still
+// finish long before an unexcluded second operation could reach its own
+// provider write. This multiple gives that margin.
+const ENTRY_DETECTION_SAFETY_MULTIPLIER = 10;
+
+// Measures how long an uncontended call takes to reach a mocked provider
+// method, by recording the time the mock is entered relative to the time
+// the caller started. The measured duration is a real, per-run number, not
+// a guessed constant, so a later wait built from it stays valid at any
+// machine speed.
+async function measureUncontendedEntryDurationMs<TArgs extends unknown[], TReturn>(
+  spy: MockInstance<(...args: TArgs) => Promise<TReturn>>,
+  original: (...args: TArgs) => Promise<TReturn>,
+  triggerUncontendedCall: () => Promise<unknown>,
+): Promise<number> {
+  const startedAt = performance.now();
+  let enteredAt = startedAt;
+  spy.mockImplementationOnce(async (...args: TArgs) => {
+    enteredAt = performance.now();
+    return original(...args);
+  });
+  await triggerUncontendedCall();
+  return enteredAt - startedAt;
+}
+
+// Waits long enough that a second operation, still queued behind a
+// correctly excluding lock, cannot yet have reached its provider write. An
+// unexcluded second operation would already have crossed the same
+// asynchronous steps an uncontended call took to get there, so it would
+// clear this window instead of staying blocked by it.
+function waitEntryDetectionWindow(uncontendedEntryDurationMs: number): Promise<void> {
+  const waitMs = Math.max(uncontendedEntryDurationMs, 1) * ENTRY_DETECTION_SAFETY_MULTIPLIER;
+  return new Promise((resolve) => setTimeout(resolve, waitMs));
 }
 
 describeEmbeddedPostgres("secretService", () => {
@@ -396,14 +433,31 @@ describeEmbeddedPostgres("secretService", () => {
     // whichever caller goes first.
     const companyId = await seedCompany();
     const svc = secretService(db);
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    const createSecretSpy = vi.spyOn(localEncryptedProvider, "createSecret");
+
+    // An uncontended create still crosses several asynchronous steps
+    // (directory checks, lock-root setup, database round trips) before it
+    // reaches its provider write. Measure that duration here, so the wait
+    // below can use a real measured value instead of a guessed sleep.
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createSecretSpy,
+      originalCreateSecret,
+      () =>
+        svc.create(companyId, {
+          name: `baseline-${randomUUID()}`,
+          provider: "local_encrypted",
+          value: "/company/codex-home/acct-baseline",
+        }),
+    );
+
     const events: string[] = [];
     const firstEntered = deferred<void>();
     let releaseFirstWrite!: () => void;
     const firstWriteGate = new Promise<void>((resolve) => {
       releaseFirstWrite = resolve;
     });
-    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
-    vi.spyOn(localEncryptedProvider, "createSecret")
+    createSecretSpy
       .mockImplementationOnce(async (input) => {
         events.push("first-provider-enter");
         firstEntered.resolve();
@@ -434,8 +488,15 @@ describeEmbeddedPostgres("secretService", () => {
         provider: "local_encrypted",
         value: "/company/codex-home/acct-a",
       });
+      // Wait a safety multiple of the measured uncontended entry duration.
+      // A correctly excluding lock keeps the second call queued for the
+      // whole test, so this wait cannot produce a false failure. A broken
+      // lock would let the second call clear its own asynchronous steps and
+      // reach its provider write well inside this window.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs);
       // The lock is still held (we have not released it yet), so the second
-      // call must still be queued behind it.
+      // call must still be queued behind it and must not have entered its
+      // provider write.
       expect(events).toEqual(["first-provider-enter"]);
     } finally {
       // Release and settle both calls even when the check above fails, so
@@ -465,6 +526,23 @@ describeEmbeddedPostgres("secretService", () => {
       provider: "local_encrypted",
       value: "/company/codex-home/acct-b",
     });
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    const createSecretSpy = vi.spyOn(localEncryptedProvider, "createSecret");
+
+    // The contended call below is a create, so measure how long an
+    // uncontended create takes to reach its own provider write. The wait
+    // later in this test uses that measured duration, not a guessed sleep.
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createSecretSpy,
+      originalCreateSecret,
+      () =>
+        svc.create(companyId, {
+          name: `baseline-${randomUUID()}`,
+          provider: "local_encrypted",
+          value: "/company/codex-home/acct-baseline",
+        }),
+    );
+
     const events: string[] = [];
     const rotateEntered = deferred<void>();
     let releaseRotateWrite!: () => void;
@@ -479,8 +557,7 @@ describeEmbeddedPostgres("secretService", () => {
       events.push("rotate-provider-exit");
       return originalCreateVersion(input);
     });
-    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
-    vi.spyOn(localEncryptedProvider, "createSecret").mockImplementationOnce(async (input) => {
+    createSecretSpy.mockImplementationOnce(async (input) => {
       events.push("create-provider-enter");
       return originalCreateSecret(input);
     });
@@ -499,8 +576,15 @@ describeEmbeddedPostgres("secretService", () => {
         provider: "local_encrypted",
         value: "/company/codex-home/acct-b",
       });
+      // Wait a safety multiple of the measured uncontended entry duration.
+      // A correctly excluding lock keeps the create call queued for the
+      // whole test, so this wait cannot produce a false failure. A broken
+      // lock would let the create call clear its own asynchronous steps
+      // and reach its provider write well inside this window.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs);
       // The lock is still held (we have not released it yet), so the create
-      // call must still be queued behind it.
+      // call must still be queued behind it and must not have entered its
+      // provider write.
       expect(events).toEqual(["rotate-provider-enter"]);
     } finally {
       // Release and settle both calls even when the check above fails, so
