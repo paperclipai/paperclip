@@ -34,6 +34,21 @@ export function isServiceActiveStatus(status) {
   return status.installed === true && status.active === true;
 }
 
+// macOS privacy controls deny background jobs file access under these
+// folders. A checkout there can never run as a launchd service, so setup
+// must stay in the foreground instead of installing a dead definition.
+export const MACOS_PROTECTED_HOME_FOLDERS = ["Desktop", "Documents", "Downloads"];
+
+export function isProtectedCheckoutPath(repoRoot, homeDir, platform = process.platform) {
+  if (platform !== "darwin") return false;
+  const home = (homeDir ?? "").replace(/\/+$/, "");
+  const root = (repoRoot ?? "").replace(/\/+$/, "");
+  if (!home || !root) return false;
+  return MACOS_PROTECTED_HOME_FOLDERS.some((folder) => (
+    root === `${home}/${folder}` || root.startsWith(`${home}/${folder}/`)
+  ));
+}
+
 export function shouldStartTempServer({ healthOk, serviceActive, serviceInstalledUnhealthy = false }) {
   // Start a foreground temp server for provisioning only when nothing is
   // already serving. An active service always wins over a temp process, and
@@ -56,7 +71,11 @@ function main() {
     process.stdout.write(`${resolveDelegateShimPath()}\n`);
     return;
   }
-  throw new Error("Usage: delegate-service.mjs <shim-path>");
+  if (command === "protected-check") {
+    const [repoRoot, homeDir, platform] = process.argv.slice(3);
+    process.exit(isProtectedCheckoutPath(repoRoot, homeDir, platform || process.platform) ? 0 : 1);
+  }
+  throw new Error("Usage: delegate-service.mjs <shim-path|protected-check repoRoot homeDir [platform]>");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

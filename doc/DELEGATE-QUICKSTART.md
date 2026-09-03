@@ -22,7 +22,7 @@ After onboarding, open Claude Code or Codex and say:
 
 ## Run again
 
-Setup installs Paperclip as a background service, so it survives terminal close and starts on login. Check it with:
+Setup installs Paperclip as a background service, so it survives terminal close and starts on login. The checkout must live outside macOS privacy-protected folders (`Desktop`, `Documents`, `Downloads`): background services cannot read files there, and setup falls back to a foreground server with a warning. Check it with:
 
 ```sh
 paperclipai service status

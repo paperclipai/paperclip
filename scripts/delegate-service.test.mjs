@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   isForceForeground,
   isNoServiceRequested,
+  isProtectedCheckoutPath,
   isServiceActiveStatus,
   resolveDelegateShimPath,
   shouldStartTempServer,
@@ -51,6 +52,18 @@ test("foreground wait is skipped when the service owns the process", () => {
     shouldWaitOnTempServer({ serviceActive: false, tempServerStarted: true, exitAfterSetup: true }),
     false,
   );
+});
+
+test("protected checkout detection covers macOS privacy folders", () => {
+  const home = "/Users/alice";
+  assert.equal(isProtectedCheckoutPath("/Users/alice/Desktop/paperclip", home, "darwin"), true);
+  assert.equal(isProtectedCheckoutPath("/Users/alice/Desktop", home, "darwin"), true);
+  assert.equal(isProtectedCheckoutPath("/Users/alice/Documents/work", home, "darwin"), true);
+  assert.equal(isProtectedCheckoutPath("/Users/alice/Downloads/repo", home, "darwin"), true);
+  assert.equal(isProtectedCheckoutPath("/Users/alice/code/paperclip", home, "darwin"), false);
+  assert.equal(isProtectedCheckoutPath("/Users/alice/DesktopOther/paperclip", home, "darwin"), false);
+  assert.equal(isProtectedCheckoutPath("/Users/alice/Desktop/paperclip", home, "linux"), false);
+  assert.equal(isProtectedCheckoutPath("", home, "darwin"), false);
 });
 
 test("env opt-outs parse truthy values", () => {

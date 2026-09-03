@@ -169,8 +169,19 @@ delegate_wait_for_health() {
   return 1
 }
 
+delegate_checkout_protected() {
+  [[ "$(uname -s)" == "Darwin" ]] || return 1
+  "$delegate_node" "$delegate_repo_root/scripts/delegate-service.mjs" protected-check \
+    "$delegate_repo_root" "$HOME" darwin 2>/dev/null
+}
+
 if delegate_truthy "${PAPERCLIP_DELEGATE_FORCE_FOREGROUND:-false}"; then
   echo "Foreground setup requested; skipping background service management." >&2
+  delegate_service_active="false"
+elif delegate_checkout_protected; then
+  echo "This checkout is under a macOS privacy-protected folder (Desktop, Documents, or Downloads)." >&2
+  echo "Background services cannot read files there; using a foreground server (it stops with this terminal)." >&2
+  echo "Move the checkout outside those folders and re-run ./setup-delegate for persistence." >&2
   delegate_service_active="false"
 elif delegate_service_is_active; then
   delegate_service_active="true"
