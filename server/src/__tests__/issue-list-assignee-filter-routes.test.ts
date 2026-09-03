@@ -3,7 +3,22 @@ import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
+import {
+  activityLog,
+  agents,
+  companies,
+  companyMemberships,
+  createDb,
+  executionWorkspaces,
+  goals,
+  heartbeatRuns,
+  issueLabels,
+  issues,
+  labels,
+  principalPermissionGrants,
+  projects,
+  projectWorkspaces,
+} from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -39,10 +54,16 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
 
   afterEach(async () => {
     __clearIssueListResponseCacheForTests();
+    await db.delete(issueLabels);
     await db.delete(issues);
+    await db.delete(labels);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
+    await db.delete(goals);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(companies);
@@ -763,7 +784,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([assignedIssueId]);
   });
 
-  it("returns 422 for malformed assigneeAgentId filters", async () => {
+  it("returns 400 for malformed UUID issue list filters", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -774,14 +795,269 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     await seedCloudTenantMember(companyId);
 
     const app = createApp(companyId);
+    const params = [
+      "assigneeAgentId",
+      "participantAgentId",
+      "projectId",
+      "workspaceId",
+      "executionWorkspaceId",
+      "parentId",
+      "descendantOf",
+      "labelId",
+    ] as const;
+
+    for (const param of params) {
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ status: "todo", [param]: "bad", limit: "20" });
+
+      expect(res.status, `${param}: ${JSON.stringify(res.body)}`).toBe(400);
+      expect(res.body).toMatchObject({
+        error: param === "assigneeAgentId"
+          ? "assigneeAgentId must be a UUID or 'null'"
+          : `${param} must be a UUID`,
+      });
+      expect(res.body).not.toHaveProperty("issues");
+    }
+  });
+
+  it("keeps valid UUID filters working with status, limit, and search", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const parentId = randomUUID();
+    const rootId = randomUUID();
+    const labelId = randomUUID();
+    const matchingIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Filtered project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: "/tmp/paperclip-issue-list-project",
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Execution workspace",
+      status: "active",
+      providerType: "local_fs",
+      cwd: "/tmp/paperclip-issue-list-execution",
+    });
+    await db.insert(issues).values([
+      {
+        id: rootId,
+        companyId,
+        title: "Root",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: parentId,
+        companyId,
+        title: "Parent",
+        status: "todo",
+        priority: "medium",
+        parentId: rootId,
+      },
+      {
+        id: matchingIssueId,
+        companyId,
+        title: "Needle issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        createdByAgentId: agentId,
+        projectId,
+        projectWorkspaceId: workspaceId,
+        executionWorkspaceId,
+        parentId,
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        title: "Needle issue other",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        createdByAgentId: agentId,
+        projectId,
+        projectWorkspaceId: workspaceId,
+        executionWorkspaceId,
+        parentId,
+      },
+    ]);
+    await db.insert(labels).values({
+      id: labelId,
+      companyId,
+      name: "Needle",
+      color: "#2563eb",
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: matchingIssueId,
+      agentId,
+    });
+    await db.insert(issueLabels).values({ companyId, issueId: matchingIssueId, labelId });
+
+    const app = createApp(companyId);
     const res = await request(app)
       .get(`/api/companies/${companyId}/issues`)
-      .query({ status: "todo", assigneeAgentId: "bad", limit: "20" });
+      .query({
+        status: "todo",
+        assigneeAgentId: agentId,
+        participantAgentId: agentId,
+        projectId,
+        workspaceId,
+        executionWorkspaceId,
+        parentId,
+        descendantOf: rootId,
+        labelId,
+        q: "Needle",
+        limit: "20",
+      });
 
-    expect(res.status).toBe(422);
-    expect(res.body).toMatchObject({
-      error: "assigneeAgentId must be a UUID or 'null'",
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([matchingIssueId]);
+  });
+
+  it("filters issue lists by goalId and createdByAgentId", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const otherGoalId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const matchingIssueId = randomUUID();
+    const wrongGoalIssueId = randomUUID();
+    const wrongCreatorIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
     });
+    await seedCloudTenantMember(companyId);
+    await db.insert(goals).values([
+      {
+        id: goalId,
+        companyId,
+        title: "Goal",
+        status: "active",
+        level: "company",
+      },
+      {
+        id: otherGoalId,
+        companyId,
+        title: "Other goal",
+        status: "active",
+        level: "company",
+      },
+    ]);
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: matchingIssueId,
+        companyId,
+        title: "Matching issue",
+        status: "todo",
+        priority: "medium",
+        goalId,
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: wrongGoalIssueId,
+        companyId,
+        title: "Wrong goal issue",
+        status: "todo",
+        priority: "medium",
+        goalId: otherGoalId,
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: wrongCreatorIssueId,
+        companyId,
+        title: "Wrong creator issue",
+        status: "todo",
+        priority: "medium",
+        goalId,
+        createdByAgentId: otherAgentId,
+      },
+    ]);
+
+    const app = createApp(companyId);
+    const filtered = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", goalId, createdByAgentId: creatorAgentId, limit: "20" });
+    const nonexistent = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", goalId: randomUUID(), limit: "20" });
+
+    expect(filtered.status, JSON.stringify(filtered.body)).toBe(200);
+    expect(filtered.body.map((issue: { id: string }) => issue.id)).toEqual([matchingIssueId]);
+    expect(nonexistent.status, JSON.stringify(nonexistent.body)).toBe(200);
+    expect(nonexistent.body).toEqual([]);
   });
 
   it("returns opt-in live descendant counts for offscreen live descendants only", async () => {

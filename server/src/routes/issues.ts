@@ -6491,6 +6491,36 @@ export function issueRoutes(
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
     const rawUpdatedSince = req.query.updatedSince as string | undefined;
+    const uuidFilterNames = [
+      "participantAgentId",
+      "goalId",
+      "createdByAgentId",
+      "projectId",
+      "workspaceId",
+      "executionWorkspaceId",
+      "parentId",
+      "descendantOf",
+      "labelId",
+    ] as const;
+    const uuidFilters: Partial<Record<typeof uuidFilterNames[number], string>> = {};
+
+    for (const name of uuidFilterNames) {
+      const rawValue = req.query[name];
+      if (rawValue === undefined) continue;
+      if (typeof rawValue !== "string" || !isUuidLike(rawValue.trim())) {
+        res.status(400).json({ error: `${name} must be a UUID` });
+        return;
+      }
+      uuidFilters[name] = rawValue.trim();
+    }
+    const rawParentIssueId = req.query.parentIssueId;
+    if (rawParentIssueId !== undefined) {
+      if (typeof rawParentIssueId !== "string" || !isUuidLike(rawParentIssueId.trim())) {
+        res.status(400).json({ error: "parentIssueId must be a UUID" });
+        return;
+      }
+      uuidFilters.parentId = rawParentIssueId.trim();
+    }
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -6542,18 +6572,19 @@ export function issueRoutes(
     }
     if (assigneeAgentFilterRaw !== undefined) {
       if (typeof assigneeAgentFilterRaw !== "string") {
-        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
+        res.status(400).json({ error: "assigneeAgentId must be a UUID or 'null'" });
         return;
       }
       const normalizedAssigneeAgentFilter = assigneeAgentFilterRaw.trim();
       if (normalizedAssigneeAgentFilter.length === 0) {
-        assigneeAgentId = undefined;
+        res.status(400).json({ error: "assigneeAgentId must be a UUID or 'null'" });
+        return;
       } else if (normalizedAssigneeAgentFilter.toLowerCase() === "null") {
         assigneeAgentId = null;
       } else if (isUuidLike(normalizedAssigneeAgentFilter)) {
         assigneeAgentId = normalizedAssigneeAgentFilter;
       } else {
-        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
+        res.status(400).json({ error: "assigneeAgentId must be a UUID or 'null'" });
         return;
       }
     }
@@ -6567,17 +6598,19 @@ export function issueRoutes(
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId: uuidFilters.participantAgentId,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      goalId: uuidFilters.goalId,
+      createdByAgentId: uuidFilters.createdByAgentId,
+      projectId: uuidFilters.projectId,
+      workspaceId: uuidFilters.workspaceId,
+      executionWorkspaceId: uuidFilters.executionWorkspaceId,
+      parentId: uuidFilters.parentId,
+      descendantOf: uuidFilters.descendantOf,
+      labelId: uuidFilters.labelId,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
