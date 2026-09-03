@@ -985,6 +985,40 @@ describe("issue execution policy transitions", () => {
       expect(result.patch).toEqual({});
     });
 
+    it("rewrites a requested blocked transition while a review stage is pending", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          responsibleUserId: boardUserId,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "The review found a blocker.",
+      });
+
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.executionState).toMatchObject({
+        status: "changes_requested",
+        currentStageId: reviewStageId,
+      });
+    });
+
     it("coerces a malformed executor in_review patch into the first policy stage", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
