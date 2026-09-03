@@ -243,4 +243,50 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
 
     expect(row?.responsibleUserId).toBe("key-user");
   });
+
+  it("stores runId as null when the heartbeat_run row is missing (FK guard)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const unregisteredRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // No heartbeat_runs row is inserted; the runId is unregistered.
+    // The guard must silently fall back to run_id = null instead of throwing
+    // a FK violation that would surface as a 500 to the API caller.
+    const activity = await logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      runId: unregisteredRunId,
+    }));
+
+    expect(activity).toBeTruthy();
+
+    const row = await db
+      .select({ runId: activityLog.runId, responsibleUserId: activityLog.responsibleUserId })
+      .from(activityLog)
+      .where(eq(activityLog.id, activity.id))
+      .then((rows) => rows[0]);
+
+    expect(row?.runId).toBeNull();
+    expect(row?.responsibleUserId).toBe("default-user");
+  });
 });
