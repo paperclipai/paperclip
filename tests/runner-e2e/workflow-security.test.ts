@@ -25,9 +25,10 @@ describe("public repository paid workflow security", () => {
       const providerAccess = contents.search(
         /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)_API_KEY:\s*\$\{\{\s*[^}]*secrets\./,
       );
-      expect(authorize, `${name} must have an authorization job`).toBeGreaterThan(
-        0,
-      );
+      expect(
+        authorize,
+        `${name} must have an authorization job`,
+      ).toBeGreaterThan(0);
       expect(
         reauthorize,
         `${name} must reauthorize partial job reruns`,
@@ -43,7 +44,7 @@ describe("public repository paid workflow security", () => {
       expect(contents).toContain("RUNNER_E2E_ALLOWED_ACTOR_IDS");
       expect(contents).toContain("github.actor_id");
       expect(contents).toContain("github.triggering_actor");
-      expect(contents).toContain('refs/heads/$DEFAULT_BRANCH');
+      expect(contents).toContain("refs/heads/$DEFAULT_BRANCH");
       expect(contents).toContain("needs: authorize");
       expect(contents).toContain("name: runner-e2e-paid");
       expect(contents).not.toMatch(
@@ -59,6 +60,37 @@ describe("public repository paid workflow security", () => {
     }
 
     const fullStack = workflows[0]!.contents;
+    const paidJob = fullStack.slice(
+      fullStack.indexOf("  test:"),
+      fullStack.indexOf("  report:"),
+    );
+    const authorizeJob = fullStack.slice(
+      fullStack.indexOf("  authorize:"),
+      fullStack.indexOf("  catalog:"),
+    );
+    expect(authorizeJob).toContain(
+      "aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'",
+    );
+    expect(authorizeJob).toContain("github_runner='ubuntu-latest-m'");
+    expect(authorizeJob).toContain(
+      "AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}",
+    );
+    expect(paidJob).toContain(
+      "runs-on: ${{ needs.authorize.outputs.test_runner }}",
+    );
+    expect(paidJob).toContain("needs: [authorize, catalog, daytona_image]");
+    expect(paidJob).toContain("name: runner-e2e-paid");
+    expect(paidJob).toMatch(
+      /Reauthorize paid execution before provider access[\s\S]*actions\/checkout@[0-9a-f]{40}[\s\S]*persist-credentials: false/,
+    );
+    expect(authorizeJob).toContain('echo "max_parallel_limit=100"');
+    expect(fullStack).toContain('[ "$MAX_PARALLEL_LIMIT" -gt 100 ]');
+    expect(fullStack).toContain(
+      '[ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]',
+    );
+    expect(fullStack).toContain(
+      "cancel-in-progress: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}",
+    );
     for (const [secret, condition] of Object.entries({
       OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",
       ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",
@@ -83,7 +115,10 @@ describe("public repository paid workflow security", () => {
     );
 
     for (const name of names) {
-      const contents = await readFile(path.join(workflowDirectory, name), "utf8");
+      const contents = await readFile(
+        path.join(workflowDirectory, name),
+        "utf8",
+      );
       const providerSecretReferences = [
         ...contents.matchAll(
           /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|DAYTONA_API_KEY)['"]\])/g,
@@ -101,10 +136,7 @@ describe("public repository paid workflow security", () => {
   it("runs paid scheduled campaigns only on Sundays", async () => {
     const workflows = await Promise.all(
       ["runner-full-stack-e2e.yml", "runner-live-evals.yml"].map((name) =>
-        readFile(
-          path.join(repositoryRoot, ".github/workflows", name),
-          "utf8",
-        ),
+        readFile(path.join(repositoryRoot, ".github/workflows", name), "utf8"),
       ),
     );
     for (const workflow of workflows) {

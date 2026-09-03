@@ -286,17 +286,27 @@ accept comma-separated values for repeatable dimensions.
 The nightly cron is `08:47 UTC`, but scheduled execution is intentionally gated
 by the repository variable `RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED=true`. Set it
 only after the live acceptance ladder in the architecture plan is green.
-Set `RUNNER_E2E_MAX_PARALLEL` to an integer from 1–57 (default 32). Paid cells
-run on `ubuntu-latest-m`; multi-turn steps are sequential inside their cell
-while independent cells overlap. Artifacts and merged HTML/JUnit/normalized
-reports are retained for 30 days.
+Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
+ephemeral AWS RunsOn fleet selected by
+`runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value retains
+the existing `ubuntu-latest-m` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
+integer from 1–100 on AWS (default 100); use at least 71 to run the current
+complete catalog in one wave. The fallback runner retains its 1–57 limit and
+default of 32. Multi-turn steps are sequential inside their cell while
+independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
+are retained for 30 days.
 
-Restrict the `ubuntu-latest-m` runner group to this workflow and the selected
-repository. Do not let pull-request or fork-triggered workflows target that
-group, do not mix it with untrusted workloads, and use ephemeral/reimaged
-runners so one paid cell cannot leave state for the next. These runner-group
-controls are external GitHub settings and are as important as the workflow
-checks in a public repository.
+Restrict the RunsOn fleet to this repository and independently trusted
+workflows. Do not let untrusted pull-request or fork-triggered workflows target
+it, and require a fresh ephemeral instance for each job so one paid cell cannot
+leave state for the next. Provider secrets remain protected by the stable-ID
+authorization checks and the default-branch-only `runner-e2e-paid` environment;
+the fleet itself is not an authorization boundary. These external fleet controls
+are as important as the workflow checks in a public repository.
+
+Non-default validation runs share a concurrency key per ref and cancel an older
+run when a replacement is dispatched. Protected default-branch paid campaigns
+are retained and are never auto-cancelled, preserving their audit trail.
 
 GitHub Actions artifacts are access-controlled 30-day operational copies, not
 the permanent public history. They retain packaged PNG/WebM and generated

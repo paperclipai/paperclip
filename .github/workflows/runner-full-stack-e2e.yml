@@ -39,7 +39,9 @@ permissions:
 
 concurrency:
   group: runner-full-stack-e2e-${{ github.ref }}
-  cancel-in-progress: false
+  # Development-only validation refs supersede older runs on the same ref.
+  # Preserve every protected default-branch campaign for its paid audit trail.
+  cancel-in-progress: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
 
 jobs:
   authorize:
@@ -49,6 +51,10 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      test_runner: ${{ steps.runner.outputs.runner }}
+      max_parallel_default: ${{ steps.runner.outputs.max_parallel_default }}
+      max_parallel_limit: ${{ steps.runner.outputs.max_parallel_limit }}
     steps:
       - name: Require default branch and allowlisted numeric actor IDs
         env:
@@ -82,6 +88,31 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Select paid test runner
+        id: runner
+        env:
+          AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}
+        run: |
+          set -euo pipefail
+          github_runner='ubuntu-latest-m'
+          aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
+
+          if [ "$AWS_PAID_RUNNER_ENABLED" = true ]; then
+            {
+              echo "runner=$aws_runner"
+              echo "max_parallel_default=100"
+              echo "max_parallel_limit=100"
+            } >> "$GITHUB_OUTPUT"
+            echo '::notice title=Paid runner routing::Using an ephemeral RunsOn Fleet runner'
+          else
+            {
+              echo "runner=$github_runner"
+              echo "max_parallel_default=32"
+              echo "max_parallel_limit=57"
+            } >> "$GITHUB_OUTPUT"
+            echo '::notice title=Paid runner routing::RUNNER_E2E_AWS_ENABLED is not true; using the existing paid runner'
+          fi
 
   catalog:
     name: Validate catalog and select cells
@@ -128,7 +159,8 @@ jobs:
           SELECT_ENVIRONMENT: ${{ inputs.environment }}
           SELECT_CASE: ${{ inputs.case }}
           SELECT_ID: ${{ inputs.id }}
-          MAX_PARALLEL: ${{ vars.RUNNER_E2E_MAX_PARALLEL || '32' }}
+          MAX_PARALLEL: ${{ vars.RUNNER_E2E_MAX_PARALLEL || needs.authorize.outputs.max_parallel_default }}
+          MAX_PARALLEL_LIMIT: ${{ needs.authorize.outputs.max_parallel_limit }}
         run: |
           set -euo pipefail
           args=(--matrix-json)
@@ -176,8 +208,12 @@ jobs:
           echo "matrix=$(jq -c '{include: .include}' <<< "$catalog_json")" >> "$GITHUB_OUTPUT"
           echo "needs_daytona=$(jq -r '.needsDaytona' <<< "$catalog_json")" >> "$GITHUB_OUTPUT"
           echo "execution_ids=$(jq -c '.executionIds' <<< "$catalog_json")" >> "$GITHUB_OUTPUT"
-          if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -gt 57 ]; then
-            echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 1 through 57." >&2
+          if ! [[ "$MAX_PARALLEL_LIMIT" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL_LIMIT" -gt 100 ]; then
+            echo "Runner selection emitted an invalid max-parallel limit." >&2
+            exit 1
+          fi
+          if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
+            echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 1 through $MAX_PARALLEL_LIMIT for the selected runner." >&2
             exit 1
           fi
           echo "max_parallel=$MAX_PARALLEL" >> "$GITHUB_OUTPUT"
@@ -286,8 +322,10 @@ jobs:
 
   test:
     name: ${{ matrix.executionId }}
-    needs: [catalog, daytona_image]
-    runs-on: ubuntu-latest-m
+    needs: [authorize, catalog, daytona_image]
+    # The authorize job selects only one of two literal, reviewed runner labels;
+    # no dispatch input or repository variable can inject an arbitrary label.
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     permissions:
       contents: read
@@ -315,6 +353,8 @@ jobs:
           jq -e --argjson candidate "$ACTOR_ID" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
