@@ -29,6 +29,7 @@ const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
 const TASK_WATCHDOG_LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const TASK_WATCHDOG_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution"] as const;
 const TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
+const TASK_WATCHDOG_REOPEN_ISSUE_STATUSES = ["todo", "in_progress", "in_review"] as const;
 const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 // Grace window after an issue is created/assigned during which its first
 // assignment run/wake may have been enqueued but is not yet visible to a
@@ -749,6 +750,20 @@ function isWatchdogReviewDisposition(issue: Pick<
   return Boolean(issue.assigneeUserId || issue.executionState || issue.monitorNextCheckAt || hasPendingReviewPath);
 }
 
+function watchdogIssueReopenedFromTerminalReview(issue: Pick<
+  IssueRow,
+  "status" | "assigneeUserId" | "executionState" | "monitorNextCheckAt"
+>, hasPendingReviewPath: boolean) {
+  if (
+    !TASK_WATCHDOG_REOPEN_ISSUE_STATUSES.includes(
+      issue.status as (typeof TASK_WATCHDOG_REOPEN_ISSUE_STATUSES)[number],
+    )
+  ) {
+    return false;
+  }
+  return !isWatchdogReviewDisposition(issue, hasPendingReviewPath);
+}
+
 function isUniqueConstraintConflict(error: unknown, constraintName: string) {
   const queue: unknown[] = [error];
   const messages: string[] = [];
@@ -1233,6 +1248,119 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return true;
   }
 
+  async function sameFingerprintWatchdogAllowsSourceMutation(
+    watchdogIssue: IssueRow | null,
+    stopFingerprint: string,
+  ) {
+    if (!watchdogIssue) return false;
+    if (watchdogIssue.originFingerprint !== stopFingerprint) return false;
+    if (isTerminalIssueStatus(watchdogIssue.status) || watchdogIssue.status === "backlog") return false;
+    if (watchdogIssue.status === "in_review") {
+      const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
+      return !isWatchdogReviewDisposition(watchdogIssue, hasPendingReviewPath);
+    }
+    return true;
+  }
+
+  /**
+   * Premature `done`/`blocked` on a reusable watchdog issue stamps
+   * lastReviewedFingerprint. Explicit reopen to todo/in_progress/in_review
+   * (without a completed review path) must clear that stamp so the same stop
+   * fingerprint is no longer already_reviewed. cancelled/backlog keep
+   * completed-review suppression. The UPDATE re-checks reopen status and
+   * in_review disposition so a concurrent terminal or review-path stamp is
+   * not wiped.
+   *
+   * todo/in_progress is status-only in the UPDATE: isWatchdogReviewDisposition
+   * is false unless status is done/blocked/in_review, so assignee, execution,
+   * monitor, or a pending path on todo/in_progress is the explicit reopen
+   * (assigned in_progress) and must still clear.
+   * in_review counts board review only (assigneeUserId, executionState, monitor,
+   * pending interaction/approval). assigneeAgentId is watchdog ownership, not a
+   * completed review path, so in_review assigned to the watchdog agent without
+   * those signals still clears.
+   */
+  async function clearReviewedFingerprintWhenWatchdogIssueLeavesTerminal(
+    watchdog: IssueWatchdogRow,
+    opts: { runId?: string | null } = {},
+  ) {
+    if (!watchdog.watchdogIssueId || !watchdog.lastReviewedFingerprint) return watchdog;
+    const watchdogIssue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId)))
+      .then((rows) => rows[0] ?? null);
+    if (!watchdogIssue) return watchdog;
+    if (watchdogIssue.originFingerprint !== watchdog.lastReviewedFingerprint) return watchdog;
+    const hasPendingReviewPath = watchdogIssue.status === "in_review"
+      ? await watchdogIssueHasPendingReviewPath(watchdog.companyId, watchdogIssue.id)
+      : false;
+    if (!watchdogIssueReopenedFromTerminalReview(watchdogIssue, hasPendingReviewPath)) return watchdog;
+
+    const clearedFingerprint = watchdog.lastReviewedFingerprint;
+    const [updated] = await db
+      .update(issueWatchdogs)
+      .set({
+        lastReviewedFingerprint: null,
+        lastReviewedStopSnapshot: null,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(issueWatchdogs.id, watchdog.id),
+        eq(issueWatchdogs.lastReviewedFingerprint, clearedFingerprint),
+        sql`exists (
+          select 1
+          from issues
+          where issues.id = ${watchdog.watchdogIssueId}
+            and issues.company_id = ${watchdog.companyId}
+            and (
+              issues.status in ('todo', 'in_progress')
+              or (
+                issues.status = 'in_review'
+                and issues.assignee_user_id is null
+                and issues.execution_state is null
+                and issues.monitor_next_check_at is null
+                and not exists (
+                  select 1
+                  from issue_thread_interactions
+                  where issue_thread_interactions.company_id = issues.company_id
+                    and issue_thread_interactions.issue_id = issues.id
+                    and issue_thread_interactions.status = 'pending'
+                )
+                and not exists (
+                  select 1
+                  from issue_approvals
+                  inner join approvals on approvals.id = issue_approvals.approval_id
+                  where issue_approvals.company_id = issues.company_id
+                    and issue_approvals.issue_id = issues.id
+                    and approvals.status in ('pending', 'revision_requested')
+                )
+              )
+            )
+        )`,
+      ))
+      .returning();
+    if (!updated) return watchdog;
+    await logActivity(db, {
+      companyId: watchdog.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: watchdog.watchdogAgentId,
+      runId: opts.runId ?? null,
+      action: "issue.task_watchdog_fingerprint_review_cleared",
+      entityType: "issue",
+      entityId: watchdog.issueId,
+      details: {
+        source: "task_watchdogs.watchdog_issue_reopened",
+        watchdogId: watchdog.id,
+        watchdogIssueId: watchdogIssue.id,
+        clearedFingerprint,
+        watchdogIssueStatus: watchdogIssue.status,
+      },
+    });
+    return updated;
+  }
+
   async function watchdogIssueNeedsFreshWake(watchdogIssue: IssueRow) {
     if (watchdogIssue.status !== "in_review") return false;
     const hasPendingReviewPath = await watchdogIssueHasPendingReviewPath(watchdogIssue.companyId, watchdogIssue.id);
@@ -1436,7 +1564,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   }
 
   async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
-    const watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
+    const stamped = await markTerminalWatchdogIssueReviewed(row, opts);
+    const watchdog = await clearReviewedFingerprintWhenWatchdogIssueLeavesTerminal(stamped, opts);
     const sourceIssue = await db
       .select()
       .from(issues)
@@ -1625,7 +1754,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       };
     }
 
-    const watchdog = await db
+    const existingWatchdog = await db
       .select()
       .from(issueWatchdogs)
       .where(and(
@@ -1635,17 +1764,43 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         eq(issueWatchdogs.status, "active"),
       ))
       .then((rows) => rows[0] ?? null);
-    if (!watchdog) {
+    if (!existingWatchdog) {
       return {
         allowed: false as const,
         reason: "Task-watchdog run context is not backed by an active persisted watchdog.",
       };
     }
 
+    // Reopened reusable watchdog issues must not keep a premature reviewed stamp
+    // that turns the same stop fingerprint into already_reviewed (409 on source PATCH).
+    const watchdog = await clearReviewedFingerprintWhenWatchdogIssueLeavesTerminal(existingWatchdog);
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
       return { allowed: true as const, classification };
+    }
+
+    if (
+      classification.state === "already_reviewed" &&
+      classification.stopFingerprint === scope.stopFingerprint
+    ) {
+      const watchdogIssue = watchdog.watchdogIssueId
+        ? await db
+          .select()
+          .from(issues)
+          .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.watchdogIssueId)))
+          .then((rows) => rows[0] ?? null)
+        : null;
+      if (await sameFingerprintWatchdogAllowsSourceMutation(watchdogIssue, classification.stopFingerprint)) {
+        return {
+          allowed: true as const,
+          classification: {
+            ...classification,
+            state: "stopped" as const,
+            reason: "Reusable watchdog issue is open again for this stop fingerprint; source mutations remain in scope.",
+          },
+        };
+      }
     }
 
     return {
