@@ -12,7 +12,7 @@ set -euo pipefail
 # Delegate server defaults come from run-delegate plus the instance .env file.
 # Background services must never attempt to open a browser on boot.
 
-delegate_repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+delegate_repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 export PAPERCLIP_OPEN_ON_LISTEN="${PAPERCLIP_OPEN_ON_LISTEN:-false}"
 
 exec "$delegate_repo_root/run-delegate"

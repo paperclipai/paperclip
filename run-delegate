@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-delegate_repo_root="$(cd "$(dirname "$0")" && pwd)"
+delegate_repo_root="$(cd "$(dirname "$0")" && pwd -P)"
 cd "$delegate_repo_root"
 
 delegate_home="${PAPERCLIP_HOME:-$HOME/.paperclip}"
@@ -26,7 +26,9 @@ delegate_truthy() {
 if [[ "${PAPERCLIP_SERVICE_MANAGED:-}" != "1" ]] && ! delegate_truthy "${PAPERCLIP_DELEGATE_FORCE_FOREGROUND:-false}"; then
   delegate_tsx="$delegate_repo_root/cli/node_modules/tsx/dist/cli.mjs"
   delegate_cli="$delegate_repo_root/cli/src/index.ts"
-  if [[ -f "$delegate_tsx" && -f "$delegate_cli" ]]; then
+  if [[ ! -f "$delegate_tsx" || ! -f "$delegate_cli" ]]; then
+    echo "Warning: checkout CLI is not built; skipping background-service check." >&2
+  else
     delegate_status_json="$(PAPERCLIP_HOME="$delegate_home" PAPERCLIP_INSTANCE_ID="$delegate_instance" \
       "$(command -v node)" "$delegate_tsx" "$delegate_cli" service status \
         --instance "$delegate_instance" --json 2>/dev/null)" || delegate_status_json=""

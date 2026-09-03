@@ -27,6 +27,13 @@ test("temp server starts only when nothing serves", () => {
   assert.equal(shouldStartTempServer({ healthOk: true, serviceActive: true }), false);
 });
 
+test("installed-but-unhealthy service never gains a second server", () => {
+  assert.equal(
+    shouldStartTempServer({ healthOk: false, serviceActive: false, serviceInstalledUnhealthy: true }),
+    false,
+  );
+});
+
 test("foreground wait is skipped when the service owns the process", () => {
   assert.equal(
     shouldWaitOnTempServer({ serviceActive: true, tempServerStarted: true, exitAfterSetup: false }),

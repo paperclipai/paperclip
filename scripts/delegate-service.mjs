@@ -19,10 +19,6 @@ export function resolveDelegateShimPath(repoRoot = repoRootFromHere()) {
   return join(resolve(repoRoot), "scripts", "delegate-service-shim.sh");
 }
 
-export function resolveDelegateCliArgs({ tsxPath, cliEntry }) {
-  return [tsxPath, cliEntry];
-}
-
 export function isNoServiceRequested(env = process.env) {
   const raw = env[DELEGATE_NO_SERVICE_ENV]?.trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes";
@@ -38,10 +34,13 @@ export function isServiceActiveStatus(status) {
   return status.installed === true && status.active === true;
 }
 
-export function shouldStartTempServer({ healthOk, serviceActive }) {
+export function shouldStartTempServer({ healthOk, serviceActive, serviceInstalledUnhealthy = false }) {
   // Start a foreground temp server for provisioning only when nothing is
-  // already serving. An active service always wins over a temp process.
+  // already serving. An active service always wins over a temp process, and
+  // an installed-but-unhealthy service must never gain a second server on
+  // the same port: setup aborts there instead of starting a temp copy.
   if (serviceActive) return false;
+  if (serviceInstalledUnhealthy) return false;
   return !healthOk;
 }
 
