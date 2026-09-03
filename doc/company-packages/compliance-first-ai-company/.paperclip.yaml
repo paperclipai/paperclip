@@ -1,0 +1,621 @@
+schema: "paperclip/v1"
+agents:
+  ceo:
+    role: "ceo"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 25000
+  cto:
+    role: "cto"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 25000
+  audit-lead:
+    role: "manager"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 18000
+  delivery-lead:
+    role: "manager"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 18000
+  workspace-director:
+    role: "manager"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 15000
+  validation-director:
+    role: "manager"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 15000
+  merge-director:
+    role: "manager"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 15000
+  architecture-lead:
+    role: "researcher"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 12000
+  gitnexus-lead:
+    role: "researcher"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 10000
+  desktop-compliance-lead:
+    role: "researcher"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 10000
+  audio-rt-lead:
+    role: "researcher"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 10000
+  dependency-security-lead:
+    role: "researcher"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 10000
+  docs-blind-spots-lead:
+    role: "researcher"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 8000
+  core-lead:
+    role: "manager"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 12000
+  desktop-lead:
+    role: "manager"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 12000
+  dj-lead:
+    role: "manager"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 12000
+  integration-lead:
+    role: "manager"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 12000
+  core-engineer-1:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 15000
+  core-engineer-2:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 15000
+  desktop-engineer-1:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 15000
+  desktop-engineer-2:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 15000
+  dj-engineer-1:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 15000
+  dj-engineer-2:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 15000
+  integration-engineer-1:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 12000
+  integration-engineer-2:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 12000
+  workspace-operator:
+    role: "general"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 8000
+  runner-coordinator:
+    role: "general"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 8000
+  test-engineer:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 10000
+  build-verifier:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 10000
+  performance-baseline-engineer:
+    role: "engineer"
+    adapter:
+      type: "codex_local"
+      config:
+        cwd: "D:\\code\\djcowork2.0"
+        model: "gpt-5.5"
+        modelReasoningEffort: "xhigh"
+        dangerouslyBypassApprovalsAndSandbox: true
+    runtimeConfig:
+      heartbeat:
+        enabled: false
+        wakeOnDemand: true
+      modelProfiles:
+        cheap:
+          enabled: true
+          adapterConfig:
+            model: "gpt-5.5"
+            modelReasoningEffort: "xhigh"
+    budgetMonthlyCents: 10000
+routines:
+  weekly-board-review:
+    status: "paused"
+    priority: "high"
+    concurrencyPolicy: "coalesce_if_active"
+    catchUpPolicy: "skip_missed"
+    triggers:
+      - kind: schedule
+        cronExpression: "0 9 * * 1"
+        timezone: "Asia/Shanghai"
+  daily-blocked-sweep:
+    status: "paused"
+    priority: "high"
+    concurrencyPolicy: "coalesce_if_active"
+    catchUpPolicy: "skip_missed"
+    triggers:
+      - kind: schedule
+        cronExpression: "0 10 * * 1-5"
+        timezone: "Asia/Shanghai"
