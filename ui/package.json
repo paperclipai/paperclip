@@ -65,7 +65,7 @@
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-i18next": "^17.0.11",
+    "react-i18next": "^17.0.12",
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.12.3",
     "react-router-dom": "^7.18.2",
