@@ -68,16 +68,16 @@ describe("runner E2E campaign history", () => {
       expected: breadth.map((execution) => execution.id),
       results: breadth.map((execution) => result(execution, "passed")),
     });
-    expect(campaign).toMatchObject({ complete: false, passed: 12, failed: 0 });
+    expect(campaign).toMatchObject({ complete: false, passed: 11, failed: 0 });
     expect(campaign.suites[0]).toMatchObject({
       suiteId: "openrouter-model-breadth",
       complete: true,
-      selected: 12,
+      selected: 11,
     });
     expect(campaign.billing).toMatchObject({
-      reportedLlmCostUsd: 0.12,
-      llm: { inputTokens: 1_200, outputTokens: 300 },
+      llm: { inputTokens: 1_100, outputTokens: 275 },
     });
+    expect(campaign.billing.reportedLlmCostUsd).toBeCloseTo(0.11, 10);
     const history = mergeRunnerHistory(
       emptyRunnerHistory(),
       campaignHistoryRecord(campaign, "https://history.example/runner-e2e"),
