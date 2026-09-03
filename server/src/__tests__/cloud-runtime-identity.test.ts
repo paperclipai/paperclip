@@ -156,6 +156,7 @@ describeEmbeddedPostgres("Cloud runtime identity", () => {
   });
 
   it("applies the assertion on the existing health request and acknowledges the exact origin", async () => {
+    const requestTime = Math.floor(Date.now() / 1000);
     const app = express();
     app.use(cloudRuntimeIdentityMiddleware(db));
     app.use("/api/health", healthRoutes(db, {
@@ -167,7 +168,9 @@ describeEmbeddedPostgres("Cloud runtime identity", () => {
 
     const response = await request(app)
       .get("/api/health")
-      .set("x-paperclip-cloud-runtime-identity", assertion());
+      .set("x-paperclip-cloud-runtime-identity", assertion({
+        claims: { iat: requestTime, exp: requestTime + 300 },
+      }));
 
     expect(response.status).toBe(200);
     expect(response.body.cloud.runtimeIdentity).toEqual({
