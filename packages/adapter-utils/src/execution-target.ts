@@ -709,7 +709,7 @@ function formatSandboxProbeMetadata(metadata: Record<string, unknown> | undefine
   const entries = SANDBOX_PROBE_METADATA_KEYS.flatMap((key) => {
     const value = metadata[key];
     return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-      ? [`${key}=${String(value).slice(0, 120)}`]
+      ? [`${key}=${redactDiagnosticText(String(value)).slice(0, 120)}`]
       : [];
   });
   return entries.length > 0 ? ` runner metadata: ${entries.join(", ")}` : "";

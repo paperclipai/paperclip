@@ -1907,7 +1907,7 @@ describe("sandbox adapter execution targets", () => {
         pid: null,
         startedAt: new Date().toISOString(),
         metadata: {
-          provider: "kubernetes",
+          provider: "kubernetes Authorization: Bearer secret-value",
           backend: "sandbox-cr",
           execFailure: "setup_or_transport",
           statusCode: 403,
@@ -1926,7 +1926,7 @@ describe("sandbox adapter execution targets", () => {
     await expect(
       ensureAdapterExecutionTargetCommandResolvable("agent-cli", target, "/local/workspace", {}),
     ).rejects.toThrow(
-      'Command "agent-cli" is not installed or not on PATH in the sandbox environment. probe stderr: Kubernetes exec failed during setup with HTTP 403. Authorization: Bearer ***REDACTED*** runner metadata: provider=kubernetes, backend=sandbox-cr, execFailure=setup_or_transport, statusCode=403',
+      'Command "agent-cli" is not installed or not on PATH in the sandbox environment. probe stderr: Kubernetes exec failed during setup with HTTP 403. Authorization: Bearer ***REDACTED*** runner metadata: provider=kubernetes Authorization: Bearer ***REDACTED***, backend=sandbox-cr, execFailure=setup_or_transport, statusCode=403',
     );
   });
 
