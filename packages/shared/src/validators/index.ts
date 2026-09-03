@@ -427,6 +427,8 @@ export {
   issueBlockedInboxReasonSchema,
   issueBlockedInboxSeveritySchema,
   issueBlockedInboxStateSchema,
+  issueUnblockDescriptorSchema,
+  isValidIssueUnblockDescriptor,
   updateIssueSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,

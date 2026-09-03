@@ -68,6 +68,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  isValidIssueUnblockDescriptor,
   isClosedIsolatedExecutionWorkspace,
   isMarkdownArtifactWorkProduct,
   isMarkdownAttachmentContent,
@@ -10245,6 +10246,15 @@ export function issueRoutes(
       throw unprocessable("unblockDescriptor requires blocked status");
     }
     const descriptor = updateFields.unblockDescriptor ?? null;
+    // A descriptor persisted by an earlier blocked transition still names the
+    // unblock owner, so re-entering blocked (e.g. repairing an issue whose
+    // status enum drifted from its stored descriptor) must not be rejected
+    // just because this request omits the descriptor payload. An explicit
+    // null payload clears the descriptor, so it must NOT borrow the stored
+    // one here or the update would persist blocked with no unblock path.
+    const storedDescriptorNamesOwner =
+      updateFields.unblockDescriptor === undefined &&
+      isValidIssueUnblockDescriptor(existing.unblockDescriptor);
     if (descriptor && typeof descriptor === "object") {
       const owner = descriptor.owner;
       if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
@@ -10293,7 +10303,7 @@ export function issueRoutes(
           eq(approvals.status, "pending"),
         )).limit(1).then((rows) => rows[0] ?? null),
       ]);
-      if (!hasUnresolvedBlocker && !pendingInteraction && !pendingApproval && !descriptor) {
+      if (!hasUnresolvedBlocker && !pendingInteraction && !pendingApproval && !descriptor && !storedDescriptorNamesOwner) {
         res.status(422).json({ error: "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor" });
         return;
       }
