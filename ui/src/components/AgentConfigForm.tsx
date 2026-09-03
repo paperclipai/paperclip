@@ -1379,9 +1379,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 disabledTypes={adapterPickerDisabledTypes}
                 onChange={(t) => {
                   if (isCreate) {
-                    // Reset all adapter-specific fields to defaults when switching adapter type
+                    // Reset adapter-specific fields to defaults when switching adapter type,
+                    // but preserve shared fields (cwd, promptTemplate) that are not adapter-specific.
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
-                    const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
+                    const nextValues: CreateConfigValues = {
+                      ...defaults,
+                      adapterType: t,
+                      cwd: val!.cwd,
+                      promptTemplate: val!.promptTemplate,
+                    };
                     if (t === "codex_local") {
                       nextValues.dangerouslyBypassSandbox =
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
@@ -1398,8 +1404,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     }
                     set!(nextValues);
                   } else {
-                    // Clear all adapter config and explicitly blank out model + effort/mode keys
-                    // so the old adapter's values don't bleed through via eff()
+                    // Clear adapter-specific config and explicitly blank out model + effort/mode keys
+                    // so the old adapter's values don't bleed through via eff().
+                    // Preserve shared fields (cwd, promptTemplate) that are not adapter-specific.
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
@@ -1433,6 +1440,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                                 lifecycleMode: "per_turn",
                               }
                           : {}),
+                        cwd: eff("adapterConfig", "cwd", String(config.cwd ?? "")),
+                        promptTemplate: eff("adapterConfig", "promptTemplate", String(config.promptTemplate ?? "")),
                       },
                     }));
                   }
