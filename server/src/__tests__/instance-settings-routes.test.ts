@@ -41,14 +41,19 @@ function registerModuleMocks() {
 // Identity object the mocked db.transaction hands to writers; tests assert
 // both the marker clear and the settings update receive THIS same tx.
 const TX_SENTINEL = { __tx: true };
+// Runs the callback with a sentinel tx and propagates throws, so a failing
+// write inside rejects the whole request exactly like a real transaction
+// rollback. This is the default mockDb.transaction implementation; a test
+// that installs its own mockImplementation loses this default, so
+// beforeEach below reinstalls it before every test.
+function defaultTransactionImplementation(fn: (tx: unknown) => Promise<unknown>) {
+  return fn(TX_SENTINEL);
+}
 // Module-scoped (not rebuilt per createApp call) so a test can assert how
 // many times a request opened a transaction — the task-drain audit writes
 // for every company must share ONE transaction, not one each.
 const mockDb = {
-  // Runs the callback with a sentinel tx and propagates throws, so a
-  // failing write inside rejects the whole request exactly like a real
-  // transaction rollback.
-  transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(TX_SENTINEL)),
+  transaction: vi.fn(defaultTransactionImplementation),
 };
 
 describe("instance settings routes", () => {
@@ -75,6 +80,12 @@ describe("instance settings routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // vi.clearAllMocks() clears recorded calls only; it does not remove a
+    // mockImplementation a prior test installed. Reinstall the default here
+    // so a stateful implementation from one test can never leak into the
+    // next one.
+    mockDb.transaction.mockReset();
+    mockDb.transaction.mockImplementation(defaultTransactionImplementation);
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getExperimental.mockReset();
@@ -1175,6 +1186,21 @@ describe("instance settings routes", () => {
         return fn(TX_SENTINEL);
       });
 
+      // Each route handler awaits listCompanyIds as its last step before it
+      // enters the task-drain transition queue, so a second call proves the
+      // DELETE passed authorization and reached the queue — not merely that
+      // it has not arrived yet.
+      let listCompanyIdsCallCount = 0;
+      let notifySecondListCompanyIdsCall: (() => void) | undefined;
+      const secondListCompanyIdsCall = new Promise<void>((resolve) => {
+        notifySecondListCompanyIdsCall = resolve;
+      });
+      mockInstanceSettingsService.listCompanyIds.mockImplementation(async () => {
+        listCompanyIdsCallCount += 1;
+        if (listCompanyIdsCallCount === 2) notifySecondListCompanyIdsCall?.();
+        return ["company-1", "company-2"];
+      });
+
       const app = await createApp(adminActor);
 
       // supertest only sends the request once something calls .then() on
@@ -1185,11 +1211,19 @@ describe("instance settings routes", () => {
       postPromise.then(() => {}, () => {});
       const deletePromise = request(app).delete("/api/instance/task-drain");
       deletePromise.then(() => {}, () => {});
-      // Wait for the first transaction call to actually start. After that,
-      // the production queue — not this test — guarantees the second call
-      // cannot start until the test releases the first. That guarantee
-      // holds no matter how much wall-clock time this wait takes.
-      await firstTransactionStarted;
+      // Wait for two real events, in either order: the first transaction
+      // call actually started, and the DELETE's own listCompanyIds call
+      // proved it passed authorization and reached the transition queue
+      // behind the POST. Waiting on the first transaction call alone only
+      // proves the DELETE has not committed yet — supertest sends the
+      // DELETE over a real socket, so at that moment it may not have even
+      // reached the route handler. Waiting on both events proves the
+      // stronger claim: the DELETE arrived and the queue is holding it
+      // back, not that it simply has not shown up yet. After both events,
+      // the production queue — not this test — guarantees the DELETE's
+      // transaction cannot start until the test releases the POST's. That
+      // guarantee holds no matter how much wall-clock time this wait takes.
+      await Promise.all([firstTransactionStarted, secondListCompanyIdsCall]);
       expect(transactionCalls).toEqual(["post-start"]);
       expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
       expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
