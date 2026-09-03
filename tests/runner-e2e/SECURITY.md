@@ -20,10 +20,16 @@ gh api users/LOGIN --jq '{login,id}'
 The paid workflows reject manual dispatches when the workflow definition does
 not come from the default branch. A trusted dispatcher may name any branch in
 `paperclipai/paperclip` as the code under test. The authorization job resolves
-that branch through the GitHub API and passes only its immutable commit SHA to
-the catalog, image, and paid test checkouts. Report sanitization and AWS history
-publication explicitly use the trusted workflow commit. Never run the workflow
-definition from the target branch.
+that branch through the GitHub API and passes only its immutable commit SHA to a
+credential-free target-lock job. That job checks out the commit, regenerates
+`pnpm-lock.yaml` once with lifecycle scripts disabled and lockfile-only mode,
+then uploads the file under a run-attempt-scoped artifact ID. Catalog, image,
+and paid test jobs download that exact artifact by ID, verify its recorded
+SHA-256, and restore it before setup or a frozen dependency install. The lock
+resolver receives no provider credentials and must never run repository
+lifecycle scripts. Report sanitization and AWS history publication explicitly
+use the trusted workflow commit and do not consume the target lockfile. Never
+run the workflow definition from the target branch.
 
 The workflows verify both the original actor and triggering actor for every
 scheduled or manual attempt, including human reruns. Every
@@ -56,8 +62,8 @@ only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, and
 organization-level Actions secrets: environment scoping is the boundary that
 prevents branch or pull-request jobs from requesting them. Require approval
 from an account in `RUNNER_E2E_ALLOWED_ACTOR_IDS` for this environment and
-disable administrator bypass. The authorize,
-catalog, image, report, history, and Pages jobs receive none of these secrets.
+disable administrator bypass. The authorize, target-lock, catalog, image,
+report, history, and Pages jobs receive none of these secrets.
 Each full-stack matrix cell receives only its selected profile credential, plus
 Daytona only for Daytona cells. Secret-bearing and OIDC jobs use frozen installs
 without a shared dependency cache.
@@ -75,9 +81,10 @@ the actor gate, environment branch restriction, and protected default branch.
 When `RUNNER_E2E_AWS_ENABLED=true`, paid matrix cells use the exact RunsOn fleet
 selector `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`, matching the AWS
 fleet selected by `pr-trusted.yml` only after its stable numeric-ID trust gate.
-Any other or missing toggle value falls back to the existing `ubuntu-latest-m`
-paid runner and its lower concurrency ceiling. The workflow chooses between
-those two reviewed literal labels; it never evaluates a configured runner label.
+Any other or missing toggle value falls back to the standard GitHub-hosted
+`ubuntu-latest` runner and its lower concurrency ceiling. The workflow chooses
+between those two reviewed literal labels; it never evaluates a configured
+runner label.
 
 Keep both runner targets restricted to `paperclipai/paperclip` and workflows
 that independently authorize trusted source revisions. Never let a fork or

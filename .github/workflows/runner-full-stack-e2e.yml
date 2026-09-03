@@ -121,7 +121,7 @@ jobs:
           AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}
         run: |
           set -euo pipefail
-          github_runner='ubuntu-latest-m'
+          github_runner='ubuntu-latest'
           aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
 
           if [ "$AWS_PAID_RUNNER_ENABLED" = true ]; then
@@ -140,9 +140,56 @@ jobs:
             echo '::notice title=Paid runner routing::RUNNER_E2E_AWS_ENABLED is not true; using the existing paid runner'
           fi
 
+  target_lock:
+    name: Resolve target pnpm lockfile
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      lock_sha256: ${{ steps.lock.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Resolve target lockfile without lifecycle scripts
+        id: lock
+        run: |
+          set -euo pipefail
+          pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only
+          test -s pnpm-lock.yaml
+          unexpected="$(git status --short | awk '$2 != "pnpm-lock.yaml" { print }')"
+          if [ -n "$unexpected" ]; then
+            echo "Lockfile resolution changed files other than pnpm-lock.yaml:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+          echo "sha256=$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload resolved target lockfile
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-e2e-target-pnpm-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: pnpm-lock.yaml
+          retention-days: 30
+          if-no-files-found: error
+
   catalog:
     name: Validate catalog and select cells
-    needs: authorize
+    needs: [authorize, target_lock]
     if: github.event_name != 'schedule' || vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -159,6 +206,26 @@ jobs:
         with:
           ref: ${{ needs.authorize.outputs.target_sha }}
           persist-credentials: false
+
+      - name: Download resolved target lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-e2e-target-lock
+
+      - name: Restore resolved target lockfile
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          lock="$RUNNER_TEMP/runner-e2e-target-lock/pnpm-lock.yaml"
+          test -f "$lock"
+          test "$(find "$(dirname "$lock")" -type f | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -249,7 +316,7 @@ jobs:
 
   daytona_image:
     name: Publish verified Daytona image
-    needs: [authorize, catalog]
+    needs: [authorize, target_lock, catalog]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -265,6 +332,26 @@ jobs:
         with:
           ref: ${{ needs.authorize.outputs.target_sha }}
           persist-credentials: false
+
+      - name: Download resolved target lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-e2e-target-lock
+
+      - name: Restore resolved target lockfile
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          lock="$RUNNER_TEMP/runner-e2e-target-lock/pnpm-lock.yaml"
+          test -f "$lock"
+          test "$(find "$(dirname "$lock")" -type f | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
       - name: No Daytona image needed
         id: local_only
@@ -355,7 +442,7 @@ jobs:
 
   test:
     name: ${{ matrix.executionId }}
-    needs: [authorize, catalog, daytona_image]
+    needs: [authorize, target_lock, catalog, daytona_image]
     # The authorize job selects only one of two literal, reviewed runner labels;
     # no dispatch input or repository variable can inject an arbitrary label.
     runs-on: ${{ needs.authorize.outputs.test_runner }}
@@ -389,6 +476,26 @@ jobs:
         with:
           ref: ${{ needs.authorize.outputs.target_sha }}
           persist-credentials: false
+
+      - name: Download resolved target lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-e2e-target-lock
+
+      - name: Restore resolved target lockfile
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          lock="$RUNNER_TEMP/runner-e2e-target-lock/pnpm-lock.yaml"
+          test -f "$lock"
+          test "$(find "$(dirname "$lock")" -type f | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
