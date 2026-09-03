@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { and, asc, desc, eq, gte, isNull, lte, sql, or } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, isNull, lte, sql, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   estateAssets,
@@ -3346,6 +3346,92 @@ export function estateRoutes(
     }
 
     res.status(201).json({ accounts: created });
+  });
+
+  /**
+   * POST /estate/integrations/plaid/refresh
+   *
+   * Re-fetches current balances from Plaid for all linked accounts belonging
+   * to the calling user. Groups by plaidAccessToken to minimise API calls.
+   * Body: { companyId }
+   */
+  router.post("/estate/integrations/plaid/refresh", async (req, res) => {
+    assertBoard(req);
+    const client = plaidClient ?? createDefaultPlaidClient();
+    if (!client) {
+      res.status(503).json({ error: "Plaid integration not configured" });
+      return;
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const companyId = typeof body["companyId"] === "string" ? body["companyId"].trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+
+    const { userId } = req.actor as { userId: string };
+
+    const linkedAccounts = await db
+      .select()
+      .from(estateFinancialAccounts)
+      .where(
+        and(
+          eq(estateFinancialAccounts.companyId, companyId),
+          eq(estateFinancialAccounts.userId, userId),
+          isNotNull(estateFinancialAccounts.plaidAccessToken),
+        ),
+      );
+
+    if (linkedAccounts.length === 0) {
+      res.json({ accounts: [], refreshed: 0 });
+      return;
+    }
+
+    // Group by access token so we call Plaid once per item, not once per account.
+    const byToken = new Map<string, typeof linkedAccounts>();
+    for (const acct of linkedAccounts) {
+      if (!acct.plaidAccessToken) continue;
+      const group = byToken.get(acct.plaidAccessToken) ?? [];
+      group.push(acct);
+      byToken.set(acct.plaidAccessToken, group);
+    }
+
+    const updated: unknown[] = [];
+
+    for (const [accessToken, accounts] of byToken) {
+      const institutionName = accounts[0]?.institutionName ?? undefined;
+      let freshBalances: PlaidAccountBalance[];
+      try {
+        freshBalances = await client.getAccountBalances(accessToken, institutionName ?? undefined);
+      } catch {
+        continue;
+      }
+
+      const freshByAccountId = new Map(freshBalances.map((b) => [b.accountId, b]));
+
+      for (const acct of accounts) {
+        if (!acct.plaidAccountId) continue;
+        const fresh = freshByAccountId.get(acct.plaidAccountId);
+        if (!fresh) continue;
+
+        const [upd] = await db
+          .update(estateFinancialAccounts)
+          .set({
+            balanceCents: String(fresh.balanceCents),
+            balanceUpdatedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(estateFinancialAccounts.id, acct.id))
+          .returning();
+
+        await db.insert(estateBalanceHistory).values({
+          accountId: acct.id,
+          balanceCents: String(fresh.balanceCents),
+        });
+
+        updated.push({ ...upd, plaidAccessToken: undefined });
+      }
+    }
+
+    res.json({ accounts: updated, refreshed: updated.length });
   });
 
   // ---- Document Vault -------------------------------------------------------

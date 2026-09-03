@@ -249,3 +249,92 @@ describe("POST /estate/integrations/plaid/exchange", () => {
     expect(res.status).toBe(503);
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /estate/integrations/plaid/refresh
+// ---------------------------------------------------------------------------
+
+describe("POST /estate/integrations/plaid/refresh", () => {
+  it("re-fetches balances and returns updated accounts", async () => {
+    const acct = makeAccount();
+    const freshPlaid = makePlaidAccount({ balanceCents: 600000 });
+
+    const plaidClient: PlaidClient = {
+      createLinkToken: vi.fn(),
+      exchangePublicToken: vi.fn(),
+      getAccountBalances: vi.fn().mockResolvedValue([freshPlaid]),
+    };
+
+    const updatedAcct = { ...acct, balanceCents: "600000", plaidAccessToken: undefined };
+    const updateWhereMock = vi.fn().mockReturnValue({
+      returning: vi.fn().mockResolvedValue([updatedAcct]),
+    });
+
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([acct]),
+      update: vi.fn().mockReturnThis(),
+      set: vi.fn().mockReturnValue({ where: updateWhereMock }),
+      insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue([]) }),
+    } as unknown as Db;
+
+    const res = await request(createApp(db, plaidClient))
+      .post("/estate/integrations/plaid/refresh")
+      .send({ companyId: "company-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.accounts).toHaveLength(1);
+    expect(res.body.accounts[0].balanceCents).toBe("600000");
+    expect(res.body.accounts[0].plaidAccessToken).toBeUndefined();
+    expect(res.body.refreshed).toBe(1);
+    expect(plaidClient.getAccountBalances).toHaveBeenCalledWith("access-sandbox-xxx", "Big Bank");
+  });
+
+  it("returns empty when no Plaid-linked accounts exist", async () => {
+    const plaidClient: PlaidClient = {
+      createLinkToken: vi.fn(),
+      exchangePublicToken: vi.fn(),
+      getAccountBalances: vi.fn(),
+    };
+
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([]),
+    } as unknown as Db;
+
+    const res = await request(createApp(db, plaidClient))
+      .post("/estate/integrations/plaid/refresh")
+      .send({ companyId: "company-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.accounts).toHaveLength(0);
+    expect(res.body.refreshed).toBe(0);
+    expect(plaidClient.getAccountBalances).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when companyId is missing", async () => {
+    const plaidClient: PlaidClient = {
+      createLinkToken: vi.fn(),
+      exchangePublicToken: vi.fn(),
+      getAccountBalances: vi.fn(),
+    };
+    const db = {} as unknown as Db;
+
+    const res = await request(createApp(db, plaidClient))
+      .post("/estate/integrations/plaid/refresh")
+      .send({});
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 503 when Plaid client is not configured", async () => {
+    const db = {} as unknown as Db;
+    const res = await request(createApp(db, null))
+      .post("/estate/integrations/plaid/refresh")
+      .send({ companyId: "company-1" });
+
+    expect(res.status).toBe(503);
+  });
+});
