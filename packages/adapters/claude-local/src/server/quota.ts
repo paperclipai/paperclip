@@ -278,6 +278,7 @@ function usageOutputLooksRelevant(text: string): boolean {
   const normalized = normalizeForLabelSearch(text);
   return normalized.includes("currentsession")
     || normalized.includes("currentweek")
+    || statusLineUsageWindowsFromCleanedText(text).length > 0
     || normalized.includes("loadingusage")
     || normalized.includes("failedtoloadusagedata")
     || normalized.includes("tokenexpired")
@@ -287,6 +288,9 @@ function usageOutputLooksRelevant(text: string): boolean {
 
 function usageOutputLooksComplete(text: string): boolean {
   const normalized = normalizeForLabelSearch(text);
+  if (statusLineUsageWindowsFromCleanedText(text).length > 0) {
+    return true;
+  }
   if (
     normalized.includes("failedtoloadusagedata")
     || normalized.includes("tokenexpired")
@@ -329,6 +333,32 @@ function percentFromLine(line: string): number | null {
     return Math.max(0, Math.min(100, Math.round(100 - clamped)));
   }
   return Math.round(clamped);
+}
+
+function statusLineUsageWindowsFromCleanedText(cleanedText: string): QuotaWindow[] {
+  const match = cleanedText.match(
+    /\b5h\s*:\s*([0-9]{1,3}(?:\.[0-9]+)?)\s*%\s*(?:[|,;/]\s*)?7d\s*:\s*([0-9]{1,3}(?:\.[0-9]+)?)\s*%/i,
+  );
+  if (!match) return [];
+  const fiveHourPercent = Number(match[1]);
+  const sevenDayPercent = Number(match[2]);
+  if (!Number.isFinite(fiveHourPercent) || !Number.isFinite(sevenDayPercent)) return [];
+  return [
+    {
+      label: "Current session",
+      usedPercent: Math.min(100, Math.max(0, Math.round(fiveHourPercent))),
+      resetsAt: null,
+      valueLabel: null,
+      detail: null,
+    },
+    {
+      label: "Current week (all models)",
+      usedPercent: Math.min(100, Math.max(0, Math.round(sevenDayPercent))),
+      resetsAt: null,
+      valueLabel: null,
+      detail: null,
+    },
+  ];
 }
 
 function isQuotaLabel(line: string): boolean {
@@ -385,7 +415,8 @@ function formatClaudeCliDetail(label: string, lines: string[]): string | null {
 }
 
 export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
-  const cleaned = trimToLatestUsagePanel(cleanTerminalText(text)) ?? cleanTerminalText(text);
+  const fullCleaned = cleanTerminalText(text);
+  const cleaned = trimToLatestUsagePanel(fullCleaned) ?? fullCleaned;
   const usageError = extractUsageError(cleaned);
   if (usageError) throw new Error(usageError);
 
@@ -418,8 +449,16 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
     };
   });
 
+  const statusLineWindows = statusLineUsageWindowsFromCleanedText(fullCleaned);
   if (!windows.some((window) => normalizeForLabelSearch(window.label) === "currentsession")) {
+    if (statusLineWindows.length > 0) return statusLineWindows;
     throw new Error("Could not parse Claude CLI usage output.");
+  }
+  const labels = new Set(windows.map((window) => normalizeForLabelSearch(window.label)));
+  for (const window of statusLineWindows) {
+    if (!labels.has(normalizeForLabelSearch(window.label))) {
+      windows.push(window);
+    }
   }
   return windows;
 }
