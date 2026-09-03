@@ -25,6 +25,8 @@ import type {
   Project,
   Issue,
   IssueComment,
+  IssueCommentPresentation,
+  IssueCommentMetadata,
   IssueDocument,
   IssueDocumentSummary,
   IssueAssigneeAdapterOverrides,
@@ -1966,6 +1968,8 @@ export interface WorkerToHostMethods {
       authorAgentId?: string;
       /** Active human company member the comment is attributed to. Requires `issue.comments.create_human_attributed`. */
       actorUserId?: string;
+      presentation?: IssueCommentPresentation | null;
+      metadata?: IssueCommentMetadata | null;
     },
     result: IssueComment,
   ];
