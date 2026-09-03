@@ -188,6 +188,13 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
           : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),
       });
     } catch (error) {
+      // A turn/started notification can arrive and mark a turn active while
+      // turn/start is still pending. The turn/start request just rejected,
+      // so no turn was accepted. Roll that optimistic state back so a
+      // terminal notification for it cannot pass the active-turn check below
+      // and release a terminal event for a turn that was never accepted.
+      this.activeTurnId = null;
+      this.turnStarted = false;
       if (dispositionOnlyRecovery) {
         if (error instanceof CodexRpcError) {
           // A JSON-RPC error is a definite provider rejection: no turn was

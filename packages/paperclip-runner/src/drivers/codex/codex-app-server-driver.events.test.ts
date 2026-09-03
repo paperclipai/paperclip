@@ -520,4 +520,49 @@ describe("Codex app-server Codex driver", () => {
     ).toBe(false);
   });
 
+  it("does not release a terminal event for a turn when turn/start itself rejects", async () => {
+    const transport = new FakeCodexTransport();
+    let rejectTurnStart: (error: Error) => void = () => {};
+    transport.turnStartResponse = new Promise((_resolve, reject) => {
+      rejectTurnStart = reject;
+    });
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-terminal-reject-race",
+      normalizedSessionId: "normalized-terminal-reject-race",
+      workingDirectory: WORKSPACE,
+    });
+    const startTurnPromise = session.startTurn({
+      message: { role: "user", text: "Race the terminal event against a rejection." },
+    });
+    // The provider notifies turn/started and turn/completed ahead of its own
+    // turn/start response, then that response rejects. No turn was ever
+    // accepted, so neither notification may release a terminal event.
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "inProgress" },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: {
+        id: "turn-1",
+        status: "failed",
+        items: [],
+        error: { message: "provider rejected the turn" },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    rejectTurnStart(new CodexRpcError("turn/start rejected by provider", -32000));
+
+    await expect(startTurnPromise).rejects.toThrow(
+      "turn/start rejected by provider",
+    );
+
+    const events = await collectUntilTerminal(session.events());
+    const eventTypes = events.map((event) => event.eventType);
+    expect(eventTypes).not.toContain("turn.accepted");
+    expect(eventTypes).not.toContain("turn.completed");
+    expect(eventTypes).not.toContain("turn.failed");
+    expect(eventTypes).toContain("session.failed");
+  });
+
 });
