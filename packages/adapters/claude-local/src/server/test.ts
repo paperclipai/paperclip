@@ -315,7 +315,7 @@ export async function testEnvironment(
       const model = configuredModel;
       const effort = asString(config.effort, "").trim();
       const chrome = asBoolean(config.chrome, false);
-      const maxTurns = asNumber(config.maxTurnsPerRun, 0);
+      const maxTurns = asNumber(config.maxTurnsPerRun, 0) || 1000;
       const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
