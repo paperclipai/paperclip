@@ -618,7 +618,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     });
   });
 
-  it("builds a detailed sanitized shared bundle with issue and agent context", async () => {
+  it("builds a sanitized shared bundle without reading external instruction roots", async () => {
     const { companyId, issueId, targetCommentId, runId } = await seedIssueWithRichAgentComment();
 
     await svc.saveIssueVote({
@@ -662,8 +662,12 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     expect(sourceRun?.id).toBe(runId);
     expect(JSON.stringify(sourceRun)).toContain("gpt-5.4");
     expect(skillItems?.[1]?.sourceLocator).toBe("https://github.com/octo/research/tree/main/skills/public-skill");
-    expect(String(instructions?.entryBody)).toContain("[REDACTED]");
-    expect(String(instructions?.entryBody)).not.toContain("secret-value");
+    expect(instructions).toBeNull();
+    expect(runtime?.configuredInstructionsBundleMode).toBe("external");
+    expect(runtime?.configuredInstructionsFilePath).toBeNull();
+    expect(runtime?.configuredInstructionsRootPath).toBeNull();
+    expect(JSON.stringify(bundle)).not.toContain("secret-value");
+    expect(JSON.stringify(bundle)).not.toContain("private-workspace");
   });
 
   it("keeps earlier local votes local when a later vote enables sharing", async () => {

@@ -164,6 +164,10 @@ vi.mock("../services/secrets.js", () => ({
 
 vi.mock("../services/agent-instructions.js", () => ({
   agentInstructionsService: () => agentInstructionsSvc,
+  agentInstructionsBundleMode: (agent: { adapterConfig?: unknown }) => {
+    const config = agent.adapterConfig as Record<string, unknown> | undefined;
+    return config?.instructionsBundleMode === "external" ? "external" : "managed";
+  },
 }));
 
 vi.mock("../services/instance-settings.js", () => ({
@@ -610,6 +614,51 @@ describe("company portability", () => {
     expect(asTextFile(exported.files["agents/claudecoder/AGENTS.md"])).toContain(`- "${paperclipKey}"`);
   });
 
+  it("refuses to read external instruction roots without an instance-admin export grant", async () => {
+    agentSvc.list.mockResolvedValue([{
+      id: "external-agent",
+      companyId: "company-1",
+      name: "ExternalAgent",
+      status: "idle",
+      role: "engineer",
+      title: null,
+      icon: null,
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "codex_local",
+      adapterConfig: {
+        instructionsBundleMode: "external",
+        instructionsRootPath: "/private/host/instructions",
+      },
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      permissions: { canCreateAgents: false },
+      metadata: null,
+    }]);
+
+    await expect(companyPortabilityService({} as any).exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    })).rejects.toMatchObject({ status: 403 });
+    expect(agentInstructionsSvc.exportFiles).not.toHaveBeenCalled();
+
+    await expect(companyPortabilityService({} as any).exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    }, { allowExternalInstructions: true })).resolves.toMatchObject({
+      manifest: { agents: [expect.objectContaining({ slug: "externalagent" })] },
+    });
+    expect(agentInstructionsSvc.exportFiles).toHaveBeenCalledTimes(1);
+  });
+
   it("exports agent permission grants through the Paperclip extension and manifest", async () => {
     const db = {
       select: vi.fn((selection: Record<string, unknown>) => ({
@@ -700,6 +749,14 @@ describe("company portability", () => {
         adapterConfig: {
           env: {
             OPENAI_API_KEY: "sk-inline-secret-value",
+            OPENAI_KEY: {
+              type: "plain",
+              value: "sk-short-key-secret-value",
+            },
+            MONKEY: {
+              type: "plain",
+              value: "banana",
+            },
             NODE_ENV: {
               type: "plain",
               value: "development",
@@ -726,6 +783,7 @@ describe("company portability", () => {
 
     const serialized = JSON.stringify(exported);
     expect(serialized).not.toContain("sk-inline-secret-value");
+    expect(serialized).not.toContain("sk-short-key-secret-value");
     expect(exported.manifest.envInputs).toContainEqual({
       key: "OPENAI_API_KEY",
       description: "Optional default for OPENAI_API_KEY on agent inlinesecretagent",
@@ -734,6 +792,26 @@ describe("company portability", () => {
       kind: "secret",
       requirement: "optional",
       defaultValue: "",
+      portability: "portable",
+    });
+    expect(exported.manifest.envInputs).toContainEqual({
+      key: "OPENAI_KEY",
+      description: "Optional default for OPENAI_KEY on agent inlinesecretagent",
+      agentSlug: "inlinesecretagent",
+      projectSlug: null,
+      kind: "secret",
+      requirement: "optional",
+      defaultValue: "",
+      portability: "portable",
+    });
+    expect(exported.manifest.envInputs).toContainEqual({
+      key: "MONKEY",
+      description: "Optional default for MONKEY on agent inlinesecretagent",
+      agentSlug: "inlinesecretagent",
+      projectSlug: null,
+      kind: "plain",
+      requirement: "optional",
+      defaultValue: "banana",
       portability: "portable",
     });
     expect(exported.manifest.envInputs).toContainEqual({

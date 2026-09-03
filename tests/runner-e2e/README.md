@@ -80,9 +80,14 @@ workflows: 42 cells. Its cases are:
   same Plan, browser acceptance of the new revision, and verified execution;
 - `ask-question`: a direct answer from a task created in Ask mode.
 
-`openrouter-model-breadth` (**OpenRouter Model Breadth**) is five models from
-the tracked weekly tool-capable ranking snapshot × native OpenCode × local ×
-three workflows: 15 cells. Its cases are:
+`openrouter-model-breadth` (**OpenRouter Model Breadth**) is four qualified
+models from the tracked weekly tool-capable ranking snapshot × native OpenCode
+× local, with 11 supported model/workflow cells. Xiaomi MiMo V2.5 remains
+recorded in the immutable ranking snapshot but is excluded from paid
+qualification because its latency repeatedly exhausts the cell deadline.
+DeepSeek V4 Flash remains qualified for hello and question/resume, but its Plan
+cell is excluded after three successful semantic completions consistently
+ignored the required exact final response. Its cases are:
 
 - `hello-complete`: a basic nonce response and explicit Done transition;
 - `question-resume-complete`: one structured question, browser selection of
@@ -98,7 +103,7 @@ duplicating the final response. The second workflow restarts the isolated
 Paperclip server while the interaction is waiting, reloads that state, and
 then resumes it. The suite has no Daytona cells.
 
-The complete catalog is 71 cells and 123 expected paid agent turns. Follow-up
+The complete catalog is 67 cells and 116 expected paid agent turns. Follow-up
 steps remain ordered within their cell; all other cells are independent.
 Narrow selectors are strongly recommended while developing fixtures.
 
@@ -266,13 +271,48 @@ auto-stop/archive/delete values remain as cancellation backstops.
 ## GitHub Actions
 
 `Runner Full-Stack E2E` has only `schedule` and `workflow_dispatch` triggers; it
-never runs for a pull request or ordinary push. Because this repository is
-public, manual campaigns fail before checkout unless they run from the default
-branch and both the original actor and rerun actor have numeric GitHub user IDs
-in the non-empty JSON-array repository variable
-`RUNNER_E2E_ALLOWED_ACTOR_IDS`. Usernames are intentionally not trusted.
-The first scheduled attempt is trusted automation; any human rerun of a
-scheduled campaign must pass the triggering-actor allowlist.
+never runs for a pull request or ordinary push. Start the trusted workflow from
+the default branch. A CODEOWNER can set the optional `target_branch` input to
+any branch in `paperclipai/paperclip`. The authorization job resolves that
+branch to one immutable commit before any checkout. A separate credential-free
+job checks out the resolved commit and regenerates `pnpm-lock.yaml` once with
+`--ignore-scripts --no-frozen-lockfile --lockfile-only`. It uploads that exact
+lockfile under a run-attempt-scoped artifact ID and records its SHA-256.
+Catalog, image, shared-build, provider-pack, and paid test jobs download the
+artifact by ID, verify its digest, and restore it before setup or a frozen
+install. The shared-build, provider-pack, and paid test jobs all disable
+dependency lifecycle scripts, and provider secrets are introduced only in the
+final test step. This permits an authorized target branch to exercise an
+intentionally uncommitted workspace patch while keeping every target job on one
+identical dependency resolution. The shared-build job compiles the selected
+campaign's TypeScript outputs and native binaries once, then each paid cell
+verifies and extracts the immutable bundle. Remote native cells similarly reuse
+one verified provider pack. Report
+sanitization and AWS history publication do not consume the target lockfile;
+they explicitly check out and install from the trusted workflow commit. The
+workflow definition, runner-group permission, and protected-environment
+deployment still come from the default branch. Do not select the target branch
+in GitHub's **Use workflow from** control.
+
+Because this repository is public, manual campaigns fail before checkout unless
+the trusted workflow runs from the default branch and both the original actor
+and rerun actor have numeric GitHub user IDs in the non-empty JSON-array
+repository variable `RUNNER_E2E_ALLOWED_ACTOR_IDS`. Keep this stable-ID list in
+sync with the owners of `.github/**` in `.github/CODEOWNERS`. Usernames are
+intentionally not trusted. The first scheduled attempt is trusted automation;
+any human rerun of a scheduled campaign must pass the triggering-actor
+allowlist.
+
+For example, this command runs one branch cell through the trusted default-branch
+workflow:
+
+```bash
+gh workflow run runner-full-stack-e2e.yml \
+  --ref master \
+  -f target_branch=fix/example \
+  -f all=false \
+  -f id=core-compatibility.runner-codex.local.message-marker
+```
 
 Create a protected `runner-e2e-paid` GitHub environment, restrict it to the
 default branch, limit environment administration to trusted maintainers, and
@@ -286,17 +326,30 @@ accept comma-separated values for repeatable dimensions.
 The nightly cron is `08:47 UTC`, but scheduled execution is intentionally gated
 by the repository variable `RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED=true`. Set it
 only after the live acceptance ladder in the architecture plan is green.
-Set `RUNNER_E2E_MAX_PARALLEL` to an integer from 1–57 (default 32). Paid cells
-run on `ubuntu-latest-m`; multi-turn steps are sequential inside their cell
-while independent cells overlap. Artifacts and merged HTML/JUnit/normalized
-reports are retained for 30 days.
+Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
+ephemeral AWS RunsOn fleet selected by
+`runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
+proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
+integer from 1–100 on AWS (default 100); use at least 67 to run the current
+complete catalog in one wave. The fallback runner retains its 1–57 limit and
+default of 32. Multi-turn steps are sequential inside their cell while
+independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
+are retained for 30 days.
 
-Restrict the `ubuntu-latest-m` runner group to this workflow and the selected
-repository. Do not let pull-request or fork-triggered workflows target that
-group, do not mix it with untrusted workloads, and use ephemeral/reimaged
-runners so one paid cell cannot leave state for the next. These runner-group
-controls are external GitHub settings and are as important as the workflow
-checks in a public repository.
+Restrict the RunsOn fleet to this repository and independently trusted
+workflows. Do not let untrusted pull-request or fork-triggered workflows target
+it, and require a fresh ephemeral instance for each job so one paid cell cannot
+leave state for the next. Provider secrets remain protected by the stable-ID
+authorization checks and the default-branch-only `runner-e2e-paid` environment;
+the fleet itself is not an authorization boundary. These external fleet controls
+are as important as the workflow checks in a public repository. A CODEOWNER
+dispatch is an explicit authorization to execute the selected repository branch
+with the cell's scoped provider credential.
+
+Development branch campaigns share a concurrency key per target branch and
+cancel an older run when a replacement is dispatched. Default-branch target
+campaigns are retained and are never auto-cancelled, preserving their audit
+trail.
 
 GitHub Actions artifacts are access-controlled 30-day operational copies, not
 the permanent public history. They retain packaged PNG/WebM and generated

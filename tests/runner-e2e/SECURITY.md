@@ -9,15 +9,36 @@ changes.
 ## GitHub authorization
 
 Set `RUNNER_E2E_ALLOWED_ACTOR_IDS` to a non-empty JSON array of numeric GitHub
-user IDs, for example `[123456,789012]`. Resolve each ID from the authenticated
-CLI and verify the login before adding it:
+user IDs. Keep the list equal to the owners of `.github/**` in
+`.github/CODEOWNERS`. For example, use `[123456,789012]`. Resolve each ID from
+the authenticated CLI and verify the login before adding it:
 
 ```bash
 gh api users/LOGIN --jq '{login,id}'
 ```
 
-The paid workflows reject manual dispatches outside the default branch before
-checkout. They verify both the original actor and triggering actor for every
+The paid workflows reject manual dispatches when the workflow definition does
+not come from the default branch. A trusted dispatcher may name any branch in
+`paperclipai/paperclip` as the code under test. The authorization job resolves
+that branch through the GitHub API and passes only its immutable commit SHA to a
+credential-free target-lock job. That job checks out the commit, regenerates
+`pnpm-lock.yaml` once with lifecycle scripts disabled and lockfile-only mode,
+then uploads the file under a run-attempt-scoped artifact ID. Catalog, image,
+shared-build, provider-pack, and paid test jobs download that exact artifact by
+ID, verify its recorded SHA-256, and restore it before setup or a frozen
+dependency install. The lock resolver receives no provider credentials and
+must never run repository lifecycle scripts. The shared-build and provider-pack
+jobs also receive no provider credentials and disable dependency lifecycle
+scripts; they package outputs with SHA-256 sidecars that consumers verify
+before extraction. The paid test job installs with lifecycle scripts disabled,
+and materializes the exact pinned OpenCode executable from its lockfile-verified
+optional package without invoking package lifecycle code. Provider secrets are
+scoped only to the final test step rather than dependency setup. Report sanitization and AWS
+history publication explicitly use the trusted workflow commit and do not
+consume the target lockfile. Never run the workflow definition from the target
+branch.
+
+The workflows verify both the original actor and triggering actor for every
 scheduled or manual attempt, including human reruns. Every
 secret-bearing job repeats this check as its first step so GitHub's partial-job
 rerun feature cannot bypass a successful predecessor authorization job. The
@@ -48,8 +69,8 @@ only `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, and
 organization-level Actions secrets: environment scoping is the boundary that
 prevents branch or pull-request jobs from requesting them. Require approval
 from an account in `RUNNER_E2E_ALLOWED_ACTOR_IDS` for this environment and
-disable administrator bypass. The authorize,
-catalog, image, report, history, and Pages jobs receive none of these secrets.
+disable administrator bypass. The authorize, target-lock, catalog, image,
+report, history, and Pages jobs receive none of these secrets.
 Each full-stack matrix cell receives only its selected profile credential, plus
 Daytona only for Daytona cells. Secret-bearing and OIDC jobs use frozen installs
 without a shared dependency cache.
@@ -62,15 +83,39 @@ job. It contains no long-lived AWS key. Required reviewers may be added when a
 human approval on every nightly publication is acceptable; otherwise rely on
 the actor gate, environment branch restriction, and protected default branch.
 
-## Runner group isolation
+## Runner fleet isolation
 
-Restrict the `ubuntu-latest-m` runner group to `paperclipai/paperclip` and, when
-the GitHub plan supports selected-workflow restrictions, to
-`.github/workflows/runner-full-stack-e2e.yml` on the default branch. Never let
-fork or pull-request workflows target the group. Use ephemeral runners, or
-guaranteed reimaging between jobs, and do not share this group with untrusted
-workloads. Disable interactive SSH/debug access for paid jobs unless a separate
-incident procedure explicitly authorizes it.
+When `RUNNER_E2E_AWS_ENABLED=true`, paid matrix cells use the exact RunsOn fleet
+selector `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`, matching the AWS
+fleet selected by `pr-trusted.yml` only after its stable numeric-ID trust gate.
+Any other or missing toggle value falls back to the standard GitHub-hosted
+`ubuntu-latest` runner and its lower concurrency ceiling. The workflow chooses
+between those two reviewed literal labels; it never evaluates a configured
+runner label.
+
+Keep both runner targets restricted to `paperclipai/paperclip` and workflows
+that independently authorize trusted source revisions. Never let a fork or
+untrusted pull-request workflow target them. The RunsOn fleet must launch a
+fresh ephemeral instance for every job, prohibit persistent runner reuse, and
+disable interactive SSH/debug access unless a separate incident procedure
+explicitly authorizes it.
+
+Changing the runner does not widen who can authorize secret access. The paid
+workflow still has only schedule and manual triggers, requires its trusted
+definition to come from the protected default branch, requires allowlisted
+stable actor IDs before checkout, and repeats that authorization as the first
+matrix step. Provider credentials come only from the protected
+`runner-e2e-paid` environment. The fleet selector is an exact workflow literal;
+the only repository-controlled routing input is its boolean rollout switch, so
+configuration cannot redirect a secret-bearing job to an arbitrary runner.
+
+The optional target branch is code, not workflow authority. A CODEOWNER who
+dispatches a target branch explicitly authorizes that branch's selected test
+process to receive the cell's scoped provider credential. The workflow resolves
+the target only inside the same repository, pins one SHA for the campaign, and
+checks it out only after authorization. Target-controlled code cannot replace
+the report sanitizer or the AWS history publisher. Fork refs and
+target-controlled workflow definitions do not enter this path.
 
 ## AWS OIDC and S3
 

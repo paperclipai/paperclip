@@ -35,7 +35,7 @@ jobs:
           cache: pnpm
 
       - name: Refresh pnpm lockfile
-        run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Fail on unexpected file changes
         run: |

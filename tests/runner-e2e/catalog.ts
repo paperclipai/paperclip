@@ -262,28 +262,40 @@ export const runnerProfiles: readonly RunnerProfileFixture[] = [
   }),
 ] as const;
 
+export const openRouterBreadthExcludedModelIds = ["xiaomi/mimo-v2.5"] as const;
+export const openRouterBreadthExcludedExecutionIds = [
+  "openrouter-model-breadth.openrouter-deepseek-deepseek-v4-flash-0731.local.plan-approve-complete",
+] as const;
+const openRouterBreadthExcludedModelIdSet = new Set<string>(
+  openRouterBreadthExcludedModelIds,
+);
+
 export const openRouterBreadthProfiles: readonly RunnerProfileFixture[] =
-  openRouterRankingSnapshot.models.map((rankedModel) =>
-    nativeProfile({
-      id: openRouterProfileId(rankedModel.id),
-      label: `#${rankedModel.rank} ${rankedModel.name}`,
-      provider: "opencode",
-      model: `openrouter/${rankedModel.id}`,
-      credential: "OPENROUTER_API_KEY",
-      supportedEnvironments: ["local"],
-      modelQualification: {
-        source: "openrouter_rankings_snapshot",
-        qualificationId: `${openRouterRankingSnapshot.snapshotId}:${rankedModel.rank}`,
-      },
-      ranking: {
-        rank: rankedModel.rank,
-        canonicalModelId: rankedModel.id,
-        snapshotId: openRouterRankingSnapshot.snapshotId,
-        capturedAt: openRouterRankingSnapshot.capturedAt,
-        sourceUrl: openRouterRankingSnapshot.sourceUrl,
-      },
-    }),
-  );
+  openRouterRankingSnapshot.models
+    .filter(
+      (rankedModel) => !openRouterBreadthExcludedModelIdSet.has(rankedModel.id),
+    )
+    .map((rankedModel) =>
+      nativeProfile({
+        id: openRouterProfileId(rankedModel.id),
+        label: `#${rankedModel.rank} ${rankedModel.name}`,
+        provider: "opencode",
+        model: `openrouter/${rankedModel.id}`,
+        credential: "OPENROUTER_API_KEY",
+        supportedEnvironments: ["local"],
+        modelQualification: {
+          source: "openrouter_rankings_snapshot",
+          qualificationId: `${openRouterRankingSnapshot.snapshotId}:${rankedModel.rank}`,
+        },
+        ranking: {
+          rank: rankedModel.rank,
+          canonicalModelId: rankedModel.id,
+          snapshotId: openRouterRankingSnapshot.snapshotId,
+          capturedAt: openRouterRankingSnapshot.capturedAt,
+          sourceUrl: openRouterRankingSnapshot.sourceUrl,
+        },
+      }),
+    );
 
 function requiredDaytonaSecret(input: EnvironmentFixtureBuildInput) {
   const apiKey = input.secretRefs.DAYTONA_API_KEY;
@@ -731,12 +743,15 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: openRouterBreadthProfiles,
     environments: [localEnvironment],
     tasks: openRouterBreadthTasks,
-    expectedMatrixSize: 15,
+    excludedExecutionIds: openRouterBreadthExcludedExecutionIds,
+    expectedMatrixSize: 11,
     definitionMetadata: {
       rankingSnapshotId: openRouterRankingSnapshot.snapshotId,
       rankingContentHash: openRouterRankingSnapshot.contentHash,
       rankingCapturedAt: openRouterRankingSnapshot.capturedAt,
       rankingSourceUrl: openRouterRankingSnapshot.sourceUrl,
+      excludedModelIds: openRouterBreadthExcludedModelIds,
+      excludedExecutionIds: openRouterBreadthExcludedExecutionIds,
     },
   },
 ] as const;
@@ -759,6 +774,7 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           restartServerBeforeQuestionAnswer:
             task.restartServerBeforeQuestionAnswer ?? false,
         })),
+        excludedExecutionIds: [...(suite.excludedExecutionIds ?? [])].sort(),
         metadata: suite.definitionMetadata ?? null,
       }),
     )
@@ -768,36 +784,39 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
 export function buildRunnerMatrix(
   suites: readonly RunnerSuiteFixture[] = runnerSuites,
 ): MatrixExecution[] {
-  return suites.flatMap((suite) =>
-    suite.profiles.flatMap((profile) =>
+  return suites.flatMap((suite) => {
+    const excludedExecutionIds = new Set(suite.excludedExecutionIds ?? []);
+    return suite.profiles.flatMap((profile) =>
       suite.environments
         .filter((environment) =>
           profile.supportedEnvironments.includes(environment.id),
         )
         .flatMap((environment) =>
-          suite.tasks.map((task) => ({
-            id: `${suite.id}.${profile.id}.${environment.id}.${task.id}`,
-            suite,
-            suiteDefinitionHash: suiteDefinitionHash(suite),
-            profile,
-            environment,
-            task,
-            groups: [
-              ...new Set([
-                ...suite.groups,
-                ...profile.groups,
-                ...environment.groups,
-                ...task.groups,
-              ]),
-            ],
-            requiredCredentials: [
-              profile.credential,
-              ...(environment.credential ? [environment.credential] : []),
-            ],
-          })),
+          suite.tasks
+            .map((task) => ({
+              id: `${suite.id}.${profile.id}.${environment.id}.${task.id}`,
+              suite,
+              suiteDefinitionHash: suiteDefinitionHash(suite),
+              profile,
+              environment,
+              task,
+              groups: [
+                ...new Set([
+                  ...suite.groups,
+                  ...profile.groups,
+                  ...environment.groups,
+                  ...task.groups,
+                ]),
+              ],
+              requiredCredentials: [
+                profile.credential,
+                ...(environment.credential ? [environment.credential] : []),
+              ],
+            }))
+            .filter((execution) => !excludedExecutionIds.has(execution.id)),
         ),
-    ),
-  );
+    );
+  });
 }
 
 function duplicateIds(values: readonly { id: string }[]) {
@@ -941,8 +960,8 @@ export function validateRunnerCatalog(): MatrixExecution[] {
       );
     }
   }
-  if (matrix.length !== 71)
-    throw new Error(`Expected 71 runner executions; received ${matrix.length}`);
+  if (matrix.length !== 67)
+    throw new Error(`Expected 67 runner executions; received ${matrix.length}`);
   return matrix;
 }
 

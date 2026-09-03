@@ -5,6 +5,10 @@ on:
     - cron: "47 8 * * 0"
   workflow_dispatch:
     inputs:
+      target_branch:
+        description: "Branch in paperclipai/paperclip to test; the trusted workflow still runs from master"
+        type: string
+        required: false
       all:
         description: "Run the complete paid matrix when no narrower selector is supplied"
         type: boolean
@@ -38,8 +42,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: runner-full-stack-e2e-${{ github.ref }}
-  cancel-in-progress: false
+  group: runner-full-stack-e2e-${{ inputs.target_branch || github.event.repository.default_branch }}
+  # Development branch campaigns supersede older runs for the same target.
+  # Preserve every default-branch campaign for its paid audit trail.
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch }}
 
 jobs:
   authorize:
@@ -49,6 +55,11 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      test_runner: ${{ steps.runner.outputs.runner }}
+      max_parallel_default: ${{ steps.runner.outputs.max_parallel_default }}
+      max_parallel_limit: ${{ steps.runner.outputs.max_parallel_limit }}
+      target_sha: ${{ steps.target.outputs.sha }}
     steps:
       - name: Require default branch and allowlisted numeric actor IDs
         env:
@@ -83,9 +94,102 @@ jobs:
             fi
           done
 
+      - name: Resolve requested repository branch to an immutable commit
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_BRANCH: ${{ inputs.target_branch || github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TARGET_BRANCH" ] || [[ "$TARGET_BRANCH" == refs/* ]]; then
+            echo "target_branch must name a branch in this repository without a refs/ prefix." >&2
+            exit 1
+          fi
+          encoded_branch="$(jq -rn --arg branch "$TARGET_BRANCH" '$branch | @uri')"
+          target_sha="$(gh api -X GET "repos/$REPOSITORY/branches/$encoded_branch" --jq .commit.sha)"
+          if ! [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The requested repository branch did not resolve to a commit." >&2
+            exit 1
+          fi
+          echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
+          echo "Resolved the requested repository branch to $target_sha."
+
+      - name: Select paid test runner
+        id: runner
+        env:
+          AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}
+        run: |
+          set -euo pipefail
+          github_runner='ubuntu-latest'
+          aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
+
+          if [ "$AWS_PAID_RUNNER_ENABLED" = true ]; then
+            {
+              echo "runner=$aws_runner"
+              echo "max_parallel_default=100"
+              echo "max_parallel_limit=100"
+            } >> "$GITHUB_OUTPUT"
+            echo '::notice title=Paid runner routing::Using an ephemeral RunsOn Fleet runner'
+          else
+            {
+              echo "runner=$github_runner"
+              echo "max_parallel_default=32"
+              echo "max_parallel_limit=57"
+            } >> "$GITHUB_OUTPUT"
+            echo '::notice title=Paid runner routing::RUNNER_E2E_AWS_ENABLED is not true; using the existing paid runner'
+          fi
+
+  target_lock:
+    name: Resolve target pnpm lockfile
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      lock_sha256: ${{ steps.lock.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Resolve target lockfile without lifecycle scripts
+        id: lock
+        run: |
+          set -euo pipefail
+          pnpm install --ignore-scripts --no-frozen-lockfile --lockfile-only
+          test -s pnpm-lock.yaml
+          unexpected="$(git status --short | awk '$2 != "pnpm-lock.yaml" { print }')"
+          if [ -n "$unexpected" ]; then
+            echo "Lockfile resolution changed files other than pnpm-lock.yaml:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+          echo "sha256=$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload resolved target lockfile
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-e2e-target-pnpm-lock-${{ github.run_id }}-${{ github.run_attempt }}
+          path: pnpm-lock.yaml
+          retention-days: 30
+          if-no-files-found: error
+
   catalog:
     name: Validate catalog and select cells
-    needs: authorize
+    needs: [authorize, target_lock]
     if: github.event_name != 'schedule' || vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -94,11 +198,37 @@ jobs:
     outputs:
       matrix: ${{ steps.catalog.outputs.matrix }}
       needs_daytona: ${{ steps.catalog.outputs.needs_daytona }}
+      needs_runner_typescript: ${{ steps.catalog.outputs.needs_runner_typescript }}
+      needs_native_binaries: ${{ steps.catalog.outputs.needs_native_binaries }}
+      needs_remote_provider_pack: ${{ steps.catalog.outputs.needs_remote_provider_pack }}
       execution_ids: ${{ steps.catalog.outputs.execution_ids }}
       max_parallel: ${{ steps.catalog.outputs.max_parallel }}
       daytona_image_content_id: ${{ steps.daytona_image_content.outputs.content_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Download resolved target lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-e2e-target-lock
+
+      - name: Restore resolved target lockfile
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          lock="$RUNNER_TEMP/runner-e2e-target-lock/pnpm-lock.yaml"
+          test -f "$lock"
+          test "$(find "$(dirname "$lock")" -type f | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -128,7 +258,8 @@ jobs:
           SELECT_ENVIRONMENT: ${{ inputs.environment }}
           SELECT_CASE: ${{ inputs.case }}
           SELECT_ID: ${{ inputs.id }}
-          MAX_PARALLEL: ${{ vars.RUNNER_E2E_MAX_PARALLEL || '32' }}
+          MAX_PARALLEL: ${{ vars.RUNNER_E2E_MAX_PARALLEL || needs.authorize.outputs.max_parallel_default }}
+          MAX_PARALLEL_LIMIT: ${{ needs.authorize.outputs.max_parallel_limit }}
         run: |
           set -euo pipefail
           args=(--matrix-json)
@@ -173,18 +304,27 @@ jobs:
             args+=(--all)
           fi
           catalog_json="$(pnpm --silent test:e2e:runner -- "${args[@]}")"
-          echo "matrix=$(jq -c '{include: .include}' <<< "$catalog_json")" >> "$GITHUB_OUTPUT"
-          echo "needs_daytona=$(jq -r '.needsDaytona' <<< "$catalog_json")" >> "$GITHUB_OUTPUT"
-          echo "execution_ids=$(jq -c '.executionIds' <<< "$catalog_json")" >> "$GITHUB_OUTPUT"
-          if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -gt 57 ]; then
-            echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 1 through 57." >&2
+          {
+            echo "matrix=$(jq -c '{include: .include}' <<< "$catalog_json")"
+            echo "needs_daytona=$(jq -r '.needsDaytona' <<< "$catalog_json")"
+            echo "needs_runner_typescript=$(jq -r '[.include[] | select((.profileId == "runner-opencode") or (.profileId | startswith("runner-acpx-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
+            echo "needs_native_binaries=$(jq -r '[.include[] | select((.profileId | startswith("runner-")) or (.suiteId == "openrouter-model-breadth"))] | length > 0' <<< "$catalog_json")"
+            echo "needs_remote_provider_pack=$(jq -r '[.include[] | select((.environmentId == "daytona") and ((.profileId == "runner-opencode") or (.profileId | startswith("runner-acpx-"))))] | length > 0' <<< "$catalog_json")"
+            echo "execution_ids=$(jq -c '.executionIds' <<< "$catalog_json")"
+          } >> "$GITHUB_OUTPUT"
+          if ! [[ "$MAX_PARALLEL_LIMIT" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL_LIMIT" -gt 100 ]; then
+            echo "Runner selection emitted an invalid max-parallel limit." >&2
+            exit 1
+          fi
+          if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
+            echo "RUNNER_E2E_MAX_PARALLEL must be an integer from 1 through $MAX_PARALLEL_LIMIT for the selected runner." >&2
             exit 1
           fi
           echo "max_parallel=$MAX_PARALLEL" >> "$GITHUB_OUTPUT"
 
   daytona_image:
     name: Publish verified Daytona image
-    needs: [authorize, catalog]
+    needs: [authorize, target_lock, catalog]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -197,6 +337,29 @@ jobs:
       content_id: ${{ steps.image.outputs.content_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Download resolved target lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-e2e-target-lock
+
+      - name: Restore resolved target lockfile
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          lock="$RUNNER_TEMP/runner-e2e-target-lock/pnpm-lock.yaml"
+          test -f "$lock"
+          test "$(find "$(dirname "$lock")" -type f | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
       - name: No Daytona image needed
         id: local_only
@@ -225,6 +388,7 @@ jobs:
           NEEDS_DAYTONA: ${{ needs.catalog.outputs.needs_daytona }}
           IMAGE_CONTENT_ID: ${{ needs.catalog.outputs.daytona_image_content_id }}
           IMAGE_TAG: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${{ needs.catalog.outputs.daytona_image_content_id }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
         run: |
           set -euo pipefail
           if [ "$NEEDS_DAYTONA" != true ]; then
@@ -241,7 +405,7 @@ jobs:
             docker buildx build \
               --platform linux/amd64 \
               --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}" \
-              --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${GITHUB_SHA}" \
+              --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}" \
               --file docker/daytona-runner/Dockerfile \
               --tag "$IMAGE_TAG" \
               --push \
@@ -284,10 +448,260 @@ jobs:
           echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
           echo "content_id=$published_content_id" >> "$GITHUB_OUTPUT"
 
+  build_runner_artifacts:
+    name: Build reusable runner campaign artifacts
+    needs: [authorize, target_lock, catalog]
+    if: github.event_name != 'schedule' || vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true'
+    # Compile native binaries on the same reviewed image used to execute them,
+    # avoiding libc/architecture drift between GitHub-hosted and AWS lanes.
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      build_artifact_name: ${{ steps.build_artifact_name.outputs.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Download resolved target lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-e2e-target-lock
+
+      - name: Restore resolved target lockfile
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          lock="$RUNNER_TEMP/runner-e2e-target-lock/pnpm-lock.yaml"
+          test -f "$lock"
+          test "$(find "$(dirname "$lock")" -type f | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # build:typescript also builds the eval-kernel dependency, so the two
+      # TypeScript trees are compiled at most once in this campaign.
+      - name: Build shared TypeScript and native runner outputs
+        env:
+          NEEDS_RUNNER_TYPESCRIPT: ${{ needs.catalog.outputs.needs_runner_typescript }}
+          NEEDS_NATIVE_BINARIES: ${{ needs.catalog.outputs.needs_native_binaries }}
+        run: |
+          set -euo pipefail
+          if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
+            pnpm --filter @paperclipai/paperclip-runner build:typescript
+          else
+            pnpm --filter @paperclipai/paperclip-eval-kernel build
+          fi
+          if [ "$NEEDS_NATIVE_BINARIES" = true ]; then
+            pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+          fi
+
+      - name: Package immutable campaign outputs
+        env:
+          NEEDS_RUNNER_TYPESCRIPT: ${{ needs.catalog.outputs.needs_runner_typescript }}
+          NEEDS_NATIVE_BINARIES: ${{ needs.catalog.outputs.needs_native_binaries }}
+        run: |
+          set -euo pipefail
+          binary_root="packages/paperclip-runner/runner/target/debug"
+          binaries=(
+            conformance-tracer
+            paperclip-runnerd
+            fake-harness
+            fake-codex-app-server
+            fake-acpx-sidecar
+          )
+          archive_paths=(
+            packages/paperclip-eval-kernel/dist
+          )
+          if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
+            test -d packages/paperclip-runner/dist
+            archive_paths+=(packages/paperclip-runner/dist)
+          fi
+          if [ "$NEEDS_NATIVE_BINARIES" = true ]; then
+            for binary in "${binaries[@]}"; do
+              test -x "$binary_root/$binary"
+              archive_paths+=("$binary_root/$binary")
+            done
+          fi
+          tar --create --gzip \
+            --file runner-e2e-build-bundle.tar.gz \
+            "${archive_paths[@]}"
+          sha256sum runner-e2e-build-bundle.tar.gz > runner-e2e-build-bundle.tar.gz.sha256
+
+      - name: Name immutable shared campaign outputs
+        id: build_artifact_name
+        run: echo "name=runner-e2e-build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable shared campaign outputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.build_artifact_name.outputs.name }}
+          path: |
+            runner-e2e-build-bundle.tar.gz
+            runner-e2e-build-bundle.tar.gz.sha256
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  build_remote_provider_pack:
+    name: Build reusable remote provider pack
+    needs:
+      [authorize, target_lock, catalog, daytona_image, build_runner_artifacts]
+    if: github.event_name != 'schedule' || vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      provider_pack_artifact_name: ${{ steps.provider_pack_artifact_name.outputs.name }}
+    steps:
+      - name: No remote provider pack needed
+        if: needs.catalog.outputs.needs_remote_provider_pack != 'true'
+        run: echo "Selected cells do not require a remote provider pack."
+
+      - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Download resolved target lockfile
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-e2e-target-lock
+
+      - name: Restore resolved target lockfile
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          lock="$RUNNER_TEMP/runner-e2e-target-lock/pnpm-lock.yaml"
+          test -f "$lock"
+          test "$(find "$(dirname "$lock")" -type f | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+
+      - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Materialize verified pinned OpenCode executable
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
+
+      - name: Download immutable shared campaign outputs
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.build_runner_artifacts.outputs.build_artifact_name }}
+          path: runner-e2e-build
+
+      - name: Verify and restore shared TypeScript outputs
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        run: |
+          set -euo pipefail
+          (
+            cd runner-e2e-build
+            sha256sum --check runner-e2e-build-bundle.tar.gz.sha256
+          )
+          tar --extract --gzip \
+            --file runner-e2e-build/runner-e2e-build-bundle.tar.gz \
+            --directory "$GITHUB_WORKSPACE"
+          test -d packages/paperclip-eval-kernel/dist
+          test -d packages/paperclip-runner/dist
+
+      - name: Assemble native remote provider pack
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        env:
+          # A reused image can have an older source revision with the same
+          # content ID. Matching that revision lets remote execution reuse the
+          # verified pack already installed in the immutable image.
+          PAPERCLIP_RUNNER_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}
+        run: node packages/paperclip-runner/scripts/build-provider-pack.mjs packages/paperclip-runner/provider-pack
+
+      - name: Package verified remote provider pack
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        env:
+          IMAGE_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+          test -f packages/paperclip-runner/provider-pack/provider-pack.json
+          jq -e \
+            --arg revision "$IMAGE_SOURCE_REVISION" \
+            '.schema == "paperclip-runner/remote-provider-pack/v1" and
+             .payload.runnerSourceRevision == $revision and
+             (.digest | test("^sha256:[0-9a-f]{64}$"))' \
+            packages/paperclip-runner/provider-pack/provider-pack.json >/dev/null
+          tar --create --gzip \
+            --file runner-e2e-provider-pack.tar.gz \
+            packages/paperclip-runner/provider-pack
+          sha256sum runner-e2e-provider-pack.tar.gz > runner-e2e-provider-pack.tar.gz.sha256
+
+      - name: Name immutable remote provider pack
+        id: provider_pack_artifact_name
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        run: echo "name=runner-e2e-provider-pack-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable remote provider pack
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.provider_pack_artifact_name.outputs.name }}
+          path: |
+            runner-e2e-provider-pack.tar.gz
+            runner-e2e-provider-pack.tar.gz.sha256
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
   test:
     name: ${{ matrix.executionId }}
-    needs: [catalog, daytona_image]
-    runs-on: ubuntu-latest-m
+    needs:
+      [
+        authorize,
+        target_lock,
+        catalog,
+        daytona_image,
+        build_runner_artifacts,
+        build_remote_provider_pack,
+      ]
+    # The authorize job selects only one of two literal, reviewed runner labels;
+    # no dispatch input or repository variable can inject an arbitrary label.
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: ${{ matrix.timeoutMinutes }}
     permissions:
       contents: read
@@ -315,6 +729,29 @@ jobs:
           jq -e --argjson candidate "$ACTOR_ID" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Download resolved target lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
+          path: ${{ runner.temp }}/runner-e2e-target-lock
+
+      - name: Restore resolved target lockfile
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          lock="$RUNNER_TEMP/runner-e2e-target-lock/pnpm-lock.yaml"
+          test -f "$lock"
+          test "$(find "$(dirname "$lock")" -type f | wc -l | tr -d ' ')" = 1
+          test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+          cp "$lock" pnpm-lock.yaml
+          test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -324,31 +761,84 @@ jobs:
         with:
           node-version: 24
 
-      - run: pnpm install --frozen-lockfile
+      # This job receives provider credentials only in the final paid-test
+      # step. Keep target-selected dependency lifecycle code from running in
+      # the protected environment during setup.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
-      - name: Build runner TypeScript prerequisites
-        run: pnpm --filter @paperclipai/paperclip-eval-kernel build
+      - name: Materialize verified pinned OpenCode executable
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth')
+        run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
-      - name: Build local JS-backed provider artifacts
-        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
-        run: pnpm --filter @paperclipai/paperclip-runner build:typescript
+      - name: Download immutable campaign outputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.build_runner_artifacts.outputs.build_artifact_name }}
+          path: runner-e2e-build
 
-      - name: Build native remote provider pack
+      - name: Download immutable remote provider pack
+        if: matrix.environmentId == 'daytona' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.build_remote_provider_pack.outputs.provider_pack_artifact_name }}
+          path: runner-e2e-provider-pack
+
+      - name: Verify and restore campaign outputs
+        env:
+          NEEDS_RUNNER_TYPESCRIPT: ${{ matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth' }}
+          NEEDS_NATIVE_BINARY: ${{ startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth' }}
+        run: |
+          set -euo pipefail
+          (
+            cd runner-e2e-build
+            sha256sum --check runner-e2e-build-bundle.tar.gz.sha256
+          )
+          tar --extract --gzip \
+            --file runner-e2e-build/runner-e2e-build-bundle.tar.gz \
+            --directory "$GITHUB_WORKSPACE"
+          test -d packages/paperclip-eval-kernel/dist
+          if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
+            test -d packages/paperclip-runner/dist
+          fi
+          if [ "$NEEDS_NATIVE_BINARY" = true ]; then
+            test -x packages/paperclip-runner/runner/target/debug/paperclip-runnerd
+          fi
+
+      - name: Verify and restore remote provider pack
         if: matrix.environmentId == 'daytona' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-'))
         env:
-          # Reused images retain the source revision that was embedded in their
-          # provider pack. Matching it here lets the server reuse that exact
-          # preinstalled pack instead of uploading a duplicate to the lease.
-          PAPERCLIP_RUNNER_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}
-        run: pnpm --filter @paperclipai/paperclip-runner build:provider-pack
+          IMAGE_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}
+        run: |
+          set -euo pipefail
+          (
+            cd runner-e2e-provider-pack
+            sha256sum --check runner-e2e-provider-pack.tar.gz.sha256
+          )
+          tar --extract --gzip \
+            --file runner-e2e-provider-pack/runner-e2e-provider-pack.tar.gz \
+            --directory "$GITHUB_WORKSPACE"
+          jq -e \
+            --arg revision "$IMAGE_SOURCE_REVISION" \
+            '.schema == "paperclip-runner/remote-provider-pack/v1" and
+             .payload.runnerSourceRevision == $revision and
+             (.digest | test("^sha256:[0-9a-f]{64}$"))' \
+            packages/paperclip-runner/provider-pack/provider-pack.json >/dev/null
+
+      - name: Qualify local provider Node interpreter
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth')
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const mode = fs.statSync(process.execPath).mode & 0o777;
+          fs.chmodSync(process.execPath, mode & ~0o022);
+          if ((fs.statSync(process.execPath).mode & 0o022) !== 0) {
+            throw new Error("provider Node interpreter remains group- or world-writable");
+          }
+          NODE
 
       - name: Install pinned legacy Claude CLI
         if: matrix.profileId == 'legacy-claude'
         run: npm install --global --omit=dev @anthropic-ai/claude-code@2.1.19
-
-      - name: Build native runner binaries
-        if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
-        run: pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
 
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
@@ -376,7 +866,7 @@ jobs:
   report:
     name: Merge and enforce campaign result
     if: always() && needs.catalog.result == 'success'
-    needs: [catalog, daytona_image, test]
+    needs: [authorize, catalog, daytona_image, test]
     outputs:
       history_source_ready: ${{ steps.history_source_ready.outputs.ready }}
     runs-on: ubuntu-latest
@@ -385,6 +875,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Reporting and sanitization are part of the trusted workflow boundary.
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -471,7 +965,7 @@ jobs:
 
   publish_history:
     name: Publish pruned immutable history and landing site
-    needs: [catalog, report]
+    needs: [authorize, catalog, report]
     if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -485,6 +979,10 @@ jobs:
       name: runner-e2e-history
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Never execute target-controlled publication code with AWS credentials.
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:

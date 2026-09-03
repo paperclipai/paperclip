@@ -16,7 +16,7 @@ import { notFound } from "../errors.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
 import { logActivity } from "./activity-log.js";
-import { agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 
 const MANAGED_AGENT_ENTITY_TYPE = "managed_agent";
 const DEFAULT_MANAGED_AGENT_ADAPTER_TYPE = "process";
@@ -364,6 +364,9 @@ export function pluginManagedAgentService(
     const variables = await optionsForInstructionVariables(companyId);
     const declared = declaredInstructionFiles(declaration, variables);
     if (!declared) return null;
+    if (agentInstructionsBundleMode(agent) === "external") {
+      return { entryFile: declared.entryFile, changedFiles: [declared.entryFile] };
+    }
 
     let exported: Awaited<ReturnType<typeof instructions.exportFiles>>;
     try {

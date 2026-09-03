@@ -996,6 +996,24 @@ broker hostname is resolved once and the request is pinned to the approved
 address; IPv4 and IPv6 link-local destinations remain denied even when their
 host is allowlisted.
 
+## HTTP Adapter Private Endpoints
+
+HTTP adapters can call public HTTP(S) endpoints by default. Requests use the
+same DNS-pinning guard as remote connections, do not follow redirects, and
+reject loopback, RFC1918/private, and link-local or cloud-metadata destinations.
+
+Server owners can opt a trusted private service in with a comma-separated list
+of exact origins:
+
+```sh
+PAPERCLIP_HTTP_ADAPTER_PRIVATE_ENDPOINT_ALLOWLIST=http://hooks.internal.example:8080,https://10.0.0.42
+```
+
+Each entry must contain only a scheme, hostname, and optional port. Paths,
+credentials, query strings, fragments, and wildcards are ignored. Matching is
+by exact normalized origin, so allowing one port does not allow another.
+Link-local destinations remain denied even when explicitly listed.
+
 ## Company Deletion Toggle
 
 Company deletion is intended as a dev/debug capability and can be disabled at runtime:

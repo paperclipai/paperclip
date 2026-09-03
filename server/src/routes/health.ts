@@ -12,6 +12,7 @@ import {
   isCloudManagedInstance,
   type CloudInstanceEnv,
 } from "../services/cloud-instance.js";
+import { getCloudRuntimeIdentity } from "../services/cloud-runtime-identity.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import {
   inspectDatabaseBackupHealth,
@@ -88,12 +89,19 @@ function redactedDatabaseBackupHealth(databaseBackup: DatabaseBackupHealthStatus
 function getCloudHealthStatus(env: CloudInstanceEnv) {
   const context = getCloudStackContext(env);
   if (!context) return undefined;
+  const runtimeIdentity = env === process.env ? getCloudRuntimeIdentity() : null;
 
   return {
     managed: true as const,
     managedBy: "paperclip-cloud" as const,
     stackSlug: context.stackSlug,
     cloudBaseUrl: context.cloudOrigin,
+    ...(runtimeIdentity ? {
+      runtimeIdentity: {
+        canonicalOrigin: runtimeIdentity.canonicalOrigin,
+        stackSlug: runtimeIdentity.stackSlug,
+      },
+    } : {}),
   };
 }
 

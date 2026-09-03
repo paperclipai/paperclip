@@ -337,7 +337,7 @@ jobs:
         id: regen_lockfile
         run: |
           cp pnpm-lock.yaml "$RUNNER_TEMP/pnpm-lock.before.yaml"
-          pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          pnpm install --ignore-scripts --no-frozen-lockfile
           if cmp -s "$RUNNER_TEMP/pnpm-lock.before.yaml" pnpm-lock.yaml; then
             echo "regenerated=0" >> "$GITHUB_OUTPUT"
           else

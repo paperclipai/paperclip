@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   runnerEnvironments,
   runnerMatrix,
+  openRouterBreadthExcludedExecutionIds,
+  openRouterBreadthExcludedModelIds,
   openRouterBreadthProfiles,
   openRouterBreadthTasks,
   localIntegrityTasks,
@@ -21,16 +23,16 @@ import {
 describe("runner E2E catalog", () => {
   it("validates the core, local-integrity, and breadth suites", () => {
     expect(runnerProfiles).toHaveLength(7);
-    expect(openRouterBreadthProfiles).toHaveLength(5);
+    expect(openRouterBreadthProfiles).toHaveLength(4);
     expect(runnerEnvironments).toHaveLength(2);
     expect(runnerTasks).toHaveLength(3);
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      42, 14, 15,
+      42, 14, 11,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(71);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(71);
+    expect(validateRunnerCatalog()).toHaveLength(67);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(67);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
@@ -43,19 +45,29 @@ describe("runner E2E catalog", () => {
       runnerMatrix.filter(
         (entry) => entry.suite.id === "openrouter-model-breadth",
       ),
-    ).toHaveLength(15);
+    ).toHaveLength(11);
     expect(
       runnerMatrix.reduce(
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(123);
+    ).toBe(116);
   });
 
-  it("derives five local native OpenCode profiles from the ranked snapshot", () => {
+  it("derives the qualified local native OpenCode profiles from the ranked snapshot", () => {
+    expect(openRouterBreadthExcludedModelIds).toEqual(["xiaomi/mimo-v2.5"]);
+    expect(openRouterBreadthExcludedExecutionIds).toEqual([
+      "openrouter-model-breadth.openrouter-deepseek-deepseek-v4-flash-0731.local.plan-approve-complete",
+    ]);
+    expect(
+      runnerMatrix.some(
+        (execution) =>
+          execution.id === openRouterBreadthExcludedExecutionIds[0],
+      ),
+    ).toBe(false);
     expect(
       openRouterBreadthProfiles.map((profile) => profile.ranking?.rank),
-    ).toEqual([1, 2, 3, 4, 5]);
+    ).toEqual([1, 3, 4, 5]);
     expect(
       openRouterBreadthProfiles.every(
         (profile) =>
@@ -257,7 +269,7 @@ describe("runner E2E selectors", () => {
     const selected = selectRunnerExecutions(
       parseRunnerSelectors(["--suite", "openrouter-model-breadth"]),
     );
-    expect(selected).toHaveLength(15);
+    expect(selected).toHaveLength(11);
     expect(
       selected.every(
         (entry) =>
@@ -294,9 +306,9 @@ describe("runner E2E selectors", () => {
     const jobs = buildMatrixJobs(
       selectRunnerExecutions(parseRunnerSelectors(["--all"])),
     );
-    expect(jobs).toHaveLength(71);
+    expect(jobs).toHaveLength(67);
     expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(21);
-    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(71);
+    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(67);
     expect(
       jobs.every((job) =>
         runnerMatrix.some(
