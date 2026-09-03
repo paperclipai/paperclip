@@ -567,6 +567,34 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("done");
   });
 
+  it("completes a no-browser run without creating a scoped browser process", async () => {
+    const runId = randomUUID();
+    const result = await runChildProcess(
+      runId,
+      process.execPath,
+      ["-e", "process.stdout.write('no-browser');"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("no-browser");
+    await expect(
+      terminateRunScopedProcesses({
+        runId,
+        pid: result.pid,
+        processGroupId: result.pid,
+        processStartedAt: result.startedAt,
+        graceMs: 10,
+      }),
+    ).resolves.toMatchObject({ matchedPids: [] });
+  });
+
   it("waits for onSpawn before sending stdin to the child", async () => {
     const spawnDelayMs = 150;
     const startedAt = Date.now();
@@ -612,7 +640,7 @@ describe("runChildProcess", () => {
           "-e",
           [
             "const { spawn } = require('node:child_process');",
-            "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+            "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
             "process.stdout.write(String(child.pid));",
             "setInterval(() => {}, 1000);",
           ].join(" "),

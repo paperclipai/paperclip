@@ -24,7 +24,10 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
-import { runningProcesses } from "../../adapters/index.js";
+import {
+  runningProcesses,
+  terminateRunScopedProcesses,
+} from "../../adapters/index.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
 import { forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
@@ -1442,17 +1445,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     try {
-      await terminateLocalService(
-        {
-          pid: typeof pid === "number" && Number.isInteger(pid) && pid > 0
-            ? pid
-            : (processGroupId ?? 0),
-          processGroupId: typeof processGroupId === "number" && Number.isInteger(processGroupId) && processGroupId > 0
-            ? processGroupId
-            : null,
-        },
-        running ? { forceAfterMs: Math.max(1, running.graceSec) * 1000 } : undefined,
-      );
+      const scopedCleanup = await terminateRunScopedProcesses({
+        runId: input.run.id,
+        pid,
+        processGroupId,
+        processStartedAt: input.run.processStartedAt,
+        graceMs: running ? Math.max(1, running.graceSec) * 1000 : undefined,
+      });
+      // Runs created before scoped tagging was introduced cannot be discovered
+      // by the run marker. Preserve the old process-group cleanup only for that
+      // compatibility case; newly tagged descendants are handled above.
+      if (scopedCleanup.matchedPids.length === 0) {
+        await terminateLocalService(
+          {
+            pid: typeof pid === "number" && Number.isInteger(pid) && pid > 0
+              ? pid
+              : (processGroupId ?? 0),
+            processGroupId: typeof processGroupId === "number" && Number.isInteger(processGroupId) && processGroupId > 0
+              ? processGroupId
+              : null,
+          },
+          running ? { forceAfterMs: Math.max(1, running.graceSec) * 1000 } : undefined,
+        );
+      }
       runningProcesses.delete(input.run.id);
       const stillAlive =
         (typeof pid === "number" && isPidAlive(pid)) ||
@@ -4606,6 +4621,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : "run terminalized by recovery backstop: process and sandbox gone while heartbeat_runs.status stayed live";
 
     const now = new Date();
+    // The issue-terminal authority is allowed to run while the server remains
+    // alive, so it must tear down the adapter scope before releasing the run's
+    // in-memory ownership. This is also the restart-safe path: the persisted
+    // run id scopes the scan even when runningProcesses is empty.
+    if (issueTerminalStatus && (typeof pid === "number" || typeof processGroupId === "number")) {
+      const scopedCleanup = await terminateRunScopedProcesses({
+        runId: run.id,
+        pid,
+        processGroupId,
+        processStartedAt: run.processStartedAt,
+      });
+      if (scopedCleanup.matchedPids.length > 0) {
+        logger.info(
+          {
+            runId: run.id,
+            matchedPids: scopedCleanup.matchedPids,
+            termSignalledPids: scopedCleanup.termSignalledPids,
+            killSignalledPids: scopedCleanup.killSignalledPids,
+          },
+          "cleaned run-scoped adapter processes before terminalizing orphaned run",
+        );
+      }
+    }
     const updated = await db
       .update(heartbeatRuns)
       .set({

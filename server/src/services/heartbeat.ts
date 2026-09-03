@@ -7694,24 +7694,34 @@ async function terminateHeartbeatRunProcess(input: {
   processGroupId: number | null | undefined;
   processStartedAt?: Date | string | null;
   graceMs?: number;
+  cleanup?: () => Promise<void>;
 }) {
   const pid = input.pid ?? null;
   const processGroupId = input.processGroupId ?? null;
   if (typeof pid !== "number" && typeof processGroupId !== "number") return;
 
   if (input.runId) {
-    const scoped = await terminateRunScopedProcesses({
+    const scopedCleanupPromise = terminateRunScopedProcesses({
       runId: input.runId,
       pid,
       processGroupId,
       processStartedAt: input.processStartedAt,
       graceMs: input.graceMs,
     });
+    // A remote adapter owns processes on the execution host, not in this
+    // server's /proc. Run its exact-scope hook alongside local cleanup so
+    // cancellation cannot strand VDS descendants behind a killed SSH child.
+    const [scoped] = await Promise.all([
+      scopedCleanupPromise,
+      input.cleanup?.(),
+    ]);
     // Runs created before scoped tagging was deployed have no matching
     // environment marker. Keep the existing process-group fallback for that
     // compatibility case; newly tagged runs are cleaned through the exact
     // run scope above.
     if (scoped.matchedPids.length > 0) return;
+  } else {
+    await input.cleanup?.();
   }
 
   await terminateLocalService(
@@ -12883,6 +12893,7 @@ export function heartbeatService(
             processGroupId: running.processGroupId,
             processStartedAt: run.processStartedAt,
             graceMs: Math.max(1, running.graceSec) * 1000,
+            cleanup: running.cleanup,
           });
         }
       } finally {
@@ -25039,6 +25050,7 @@ export function heartbeatService(
           processGroupId: running.processGroupId,
           processStartedAt: run.processStartedAt,
           graceMs: Math.max(1, running.graceSec) * 1000,
+          cleanup: running.cleanup,
         });
       }
     } finally {
@@ -25163,6 +25175,7 @@ export function heartbeatService(
           processGroupId: running.processGroupId,
           processStartedAt: run.processStartedAt,
           graceMs: Math.max(1, running.graceSec) * 1000,
+          cleanup: running.cleanup,
         });
       }
       runningProcesses.delete(run.id);

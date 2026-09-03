@@ -83,6 +83,10 @@ interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
+  // Remote targets use this hook to reap their own host-local descendants.
+  // It is memoized at the spawn boundary so cancellation and close cleanup
+  // share one idempotent lease release.
+  cleanup?: () => Promise<void>;
 }
 
 interface SpawnTarget {
@@ -239,7 +243,7 @@ function matchesPersistedStart(
   if (expectedMs === null || bootSeconds === null) return true;
   const actualMs =
     (bootSeconds + identity.startTicks / LINUX_CLOCK_TICKS_PER_SECOND) * 1000;
-  return Number.isFinite(actualMs) && Math.abs(actualMs - expectedMs) <= 10_000;
+  return Number.isFinite(actualMs) && Math.abs(actualMs - expectedMs) <= 2_000;
 }
 
 async function listRunScopedProcessIdentities(runId: string) {
@@ -293,12 +297,20 @@ export async function terminateRunScopedProcesses(
   if (process.platform === "win32") return evidence;
 
   const identities = await listRunScopedProcessIdentities(input.runId);
-  evidence.matchedPids = identities.map((identity) => identity.pid).sort((a, b) => a - b);
   const bootSeconds = await readLinuxBootTimeSeconds();
-  const direct = identities.find(
+  // A persisted direct PID is the only identity vulnerable to PID reuse across
+  // a Paperclip restart. Descendants are selected by the exact opaque run
+  // marker; the direct PID must additionally match its persisted start time.
+  const eligibleIdentities = identities.filter(
     (identity) =>
-      identity.pid === input.pid &&
+      identity.pid !== input.pid ||
       matchesPersistedStart(identity, input.processStartedAt, bootSeconds),
+  );
+  evidence.matchedPids = eligibleIdentities
+    .map((identity) => identity.pid)
+    .sort((a, b) => a - b);
+  const direct = eligibleIdentities.find(
+    (identity) => identity.pid === input.pid,
   ) ?? null;
   if (
     direct !== null &&
@@ -3713,6 +3725,15 @@ export async function runChildProcess(
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
+        let targetCleanupPromise: Promise<void> | null = null;
+        const cleanupTarget = () => {
+          if (!targetCleanupPromise) {
+            targetCleanupPromise = Promise.resolve(target.cleanup?.()).catch((err) => {
+              onLogError(err, runId, "failed to clean up adapter execution target");
+            });
+          }
+          return targetCleanupPromise;
+        };
 
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
@@ -3721,7 +3742,12 @@ export async function runChildProcess(
             })
             : Promise.resolve();
 
-        runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
+        runningProcesses.set(runId, {
+          child,
+          graceSec: opts.graceSec,
+          processGroupId,
+          cleanup: cleanupTarget,
+        });
 
         let scopeCleanupPromise: Promise<RunScopedProcessCleanupEvidence> | null = null;
         const cleanupRunScope = () => {
@@ -3738,6 +3764,10 @@ export async function runChildProcess(
         };
 
         const stopRunScope = (onForceKill?: () => void) => {
+          // Local scope cleanup and remote target cleanup are independent. Run
+          // both immediately so killing the SSH transport cannot strand a VDS
+          // descendant while the local process-group grace window is running.
+          void cleanupTarget();
           void cleanupRunScope().then((evidence) => {
             if (evidence.matchedPids.length > 0) {
               if (evidence.killSignalledPids.length > 0) onForceKill?.();
@@ -3862,7 +3892,7 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
-          void target.cleanup?.();
+          void cleanupTarget();
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
           const msg =
@@ -3881,32 +3911,30 @@ export async function runChildProcess(
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
-            void cleanupRunScope().then(() =>
-              Promise.resolve()
-                .then(() => target.cleanup?.())
-                .finally(() => {
-                  resolve({
-                    exitCode: code,
-                    signal,
-                    timedOut,
-                    stdout,
-                    stderr,
-                    pid: child.pid ?? null,
-                    startedAt,
-                    terminalResultCleanup: terminalCleanupStarted
-                      ? {
-                          kind: "terminal_result_cleanup",
-                          stopped: true,
-                          stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-                          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-                          terminalResultSeen,
-                          signal: terminalCleanupSignal,
-                          forceKilled: terminalCleanupForceKilled,
-                        }
-                      : null,
-                  });
-                }),
-            );
+            void cleanupRunScope()
+              .then(() => cleanupTarget())
+              .then(() => {
+                resolve({
+                  exitCode: code,
+                  signal,
+                  timedOut,
+                  stdout,
+                  stderr,
+                  pid: child.pid ?? null,
+                  startedAt,
+                  terminalResultCleanup: terminalCleanupStarted
+                    ? {
+                        kind: "terminal_result_cleanup",
+                        stopped: true,
+                        stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                        reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                        terminalResultSeen,
+                        signal: terminalCleanupSignal,
+                        forceKilled: terminalCleanupForceKilled,
+                      }
+                    : null,
+                });
+              });
           });
         });
       })

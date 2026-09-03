@@ -288,20 +288,23 @@ async function cancelActiveRunsForCleanup(
   }
 }
 
-async function spawnOrphanedProcessGroup() {
+async function spawnOrphanedProcessGroup(runScope?: string) {
   const leader = spawn(
     process.execPath,
     [
       "-e",
       [
         "const { spawn } = require('node:child_process');",
-        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        `const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: ${runScope ? "true" : "false"}, stdio: 'ignore' });`,
         "process.stdout.write(String(child.pid));",
         "setTimeout(() => process.exit(0), 25);",
       ].join(" "),
     ],
     {
       detached: true,
+      env: runScope
+        ? { ...process.env, PAPERCLIP_RUN_PROCESS_SCOPE: runScope }
+        : undefined,
       stdio: ["ignore", "pipe", "ignore"],
     },
   );
@@ -523,6 +526,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processLossRetryCount?: number;
     runtimeMode?: "legacy" | "native";
     includeIssue?: boolean;
+    issueStatus?: "in_progress" | "done" | "cancelled";
     runErrorCode?: string | null;
     runError?: string | null;
     contextSnapshot?: Record<string, unknown>;
@@ -595,7 +599,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         id: issueId,
         companyId,
         title: "Recover local adapter after lost process",
-        status: "in_progress",
+        status: input?.issueStatus ?? "in_progress",
         priority: "medium",
         assigneeAgentId: agentId,
         checkoutRunId: runId,

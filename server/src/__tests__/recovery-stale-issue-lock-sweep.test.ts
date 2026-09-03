@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -411,6 +412,64 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRuns.id, runningRunId))
       .then((rows) => rows[0]?.status);
     expect(runStatus).toBe("cancelled");
+  });
+
+  it("reaps a run-scoped detached descendant when a terminal issue is recovered after restart", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const runScope = runningRunId;
+    const leader = spawn(
+      process.execPath,
+      [
+        "-e",
+        [
+          "const { spawn } = require('node:child_process');",
+          "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
+          "process.stdout.write(String(child.pid));",
+          "setTimeout(() => process.exit(0), 25);",
+        ].join(" "),
+      ],
+      {
+        detached: true,
+        env: { ...process.env, PAPERCLIP_RUN_PROCESS_SCOPE: runScope },
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+    let stdout = "";
+    leader.stdout?.on("data", (chunk) => { stdout += String(chunk); });
+    await new Promise<void>((resolve, reject) => {
+      leader.once("error", reject);
+      leader.once("close", () => resolve());
+    });
+    const descendantPid = Number.parseInt(stdout.trim(), 10);
+    expect(descendantPid).toBeGreaterThan(0);
+    expect(() => process.kill(descendantPid, 0)).not.toThrow();
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal issue with detached adapter descendant",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+    await db.update(heartbeatRuns).set({
+      processPid: leader.pid ?? null,
+      processGroupId: leader.pid ?? null,
+    }).where(eq(heartbeatRuns.id, runningRunId));
+
+    try {
+      const result = await heartbeatService(db).sweepStaleIssueLocks();
+      expect(result.terminalizedRunIds).toEqual([runningRunId]);
+      expect(result.cleared).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(() => process.kill(descendantPid, 0)).toThrow();
+    } finally {
+      try { process.kill(descendantPid, "SIGKILL"); } catch { /* already gone */ }
+    }
   });
 
   it("does not terminalize a running run whose process is alive and whose issue is not terminal", async () => {
