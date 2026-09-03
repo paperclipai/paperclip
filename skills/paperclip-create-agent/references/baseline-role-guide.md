@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # Baseline Role Guide (No-Template Fallback)
 
 Use this guide when no template under `references/agents/` is a close fit for the role you are hiring. It gives you a concrete structure for drafting a new `AGENTS.md` from scratch without asking the board for prompt-writing help.
