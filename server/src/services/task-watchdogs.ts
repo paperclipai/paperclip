@@ -356,6 +356,23 @@ function canonicalJson(value: unknown): string {
       : val);
 }
 
+// True when the material state (status, assignee, blockers, pending
+// interaction/approval paths) of the leaf `issueId` differs between the snapshot
+// the watchdog reviewed at wake and the current snapshot. Callers must only pass
+// a target that is a hashed leaf in at least one of the two snapshots; the stop
+// snapshot does not represent non-leaf issues, so their freshness cannot be
+// judged here (the caller falls back to strict whole-subtree equality instead).
+function targetLeafMaterialChanged(
+  reviewed: TaskWatchdogMaterialLeaf[],
+  current: TaskWatchdogMaterialLeaf[],
+  issueId: string,
+) {
+  const before = reviewed.find((leaf) => leaf.issueId === issueId) ?? null;
+  const after = current.find((leaf) => leaf.issueId === issueId) ?? null;
+  if (!before && !after) return false;
+  return canonicalJson(before) !== canonicalJson(after);
+}
+
 function isShrinkOfReviewedSnapshot(
   current: TaskWatchdogStopSnapshot,
   reviewed: TaskWatchdogStopSnapshot | null | undefined,
@@ -1617,7 +1634,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     companyId: string;
     watchedIssueId: string;
     stopFingerprint: string | null;
-  }) {
+  }, targetIssueId?: string | null) {
     if (!scope.stopFingerprint) {
       return {
         allowed: false as const,
@@ -1644,15 +1661,65 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
-    if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
+
+    // First, revival: staleness must block once the subtree regains a live,
+    // waiting, already-reviewed, or not-applicable path. This is the genuine
+    // safety property and is independent of the leaf being mutated.
+    if (classification.state !== "stopped") {
+      return {
+        allowed: false as const,
+        reason:
+          "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
+        classification,
+      };
+    }
+
+    // The subtree is still stopped. A watchdog run legitimately makes several
+    // sanctioned mutations to *distinct* stopped leaves (reassign, transition,
+    // create child), and every write moves the whole-subtree stop fingerprint —
+    // so requiring the re-derived fingerprint to still equal the frozen
+    // wake-time `scope.stopFingerprint` locked the run out of every gated
+    // mutation after its first (there is no route to refresh the wake
+    // fingerprint). Rather than a subtree-wide match, verify freshness of the
+    // *specific* leaf being mutated: allow only while that leaf's material state
+    // still matches what the watchdog reviewed at wake. This keeps a concurrent
+    // third-party edit to a leaf from being silently overwritten, while no
+    // longer treating the watchdog's own writes to other leaves as staleness.
+    // The per-leaf relaxation is only sound for a target the stop snapshot
+    // actually captures — i.e. a hashed leaf present in the reviewed and/or
+    // current material-leaf set. The snapshot does NOT carry a non-leaf issue's
+    // material state (a parent, the watched root, or an issue that has since
+    // gained children), so for any such target we cannot prove freshness and
+    // must fall back to strict whole-subtree equality rather than silently
+    // treating it as unchanged. This also covers a missing/mismatched reviewed
+    // baseline (e.g. advanced by a concurrent reconcile).
+    const reviewed = parseStopSnapshot(watchdog.lastObservedStopSnapshot);
+    const currentLeaves = classification.stopSnapshot.materialLeaves;
+    const targetIsHashedLeaf = !!targetIssueId &&
+      (currentLeaves.some((leaf) => leaf.issueId === targetIssueId) ||
+        (reviewed?.materialLeaves ?? []).some((leaf) => leaf.issueId === targetIssueId));
+
+    if (reviewed && reviewed.fingerprint === scope.stopFingerprint && targetIsHashedLeaf) {
+      if (targetLeafMaterialChanged(reviewed.materialLeaves, currentLeaves, targetIssueId!)) {
+        return {
+          allowed: false as const,
+          reason:
+            "Task-watchdog review is stale because the target issue was materially changed since it was reviewed; refresh the source state before mutating it.",
+          classification,
+        };
+      }
       return { allowed: true as const, classification };
     }
 
+    // No verifiable per-leaf baseline for this target: require the whole stopped
+    // subtree to be byte-for-byte what the run pinned at wake.
+    if (classification.stopFingerprint === scope.stopFingerprint) {
+      return { allowed: true as const, classification };
+    }
     return {
       allowed: false as const,
-      reason: classification.state === "stopped"
-        ? "Task-watchdog review is stale because the watched subtree stop fingerprint changed; refresh the source state before mutating it."
-        : "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
+      reason:
+        "Task-watchdog review is stale because the watched subtree stop fingerprint changed; refresh the source state before mutating it.",
       classification,
     };
   }
