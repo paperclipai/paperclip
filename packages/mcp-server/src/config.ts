@@ -4,6 +4,7 @@ export interface PaperclipMcpConfig {
   companyId: string | null;
   agentId: string | null;
   runId: string | null;
+  notionApiKey?: string | null;
 }
 
 function nonEmpty(value: string | undefined): string | null {
@@ -35,5 +36,6 @@ export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Papercl
     companyId: nonEmpty(env.PAPERCLIP_COMPANY_ID),
     agentId: nonEmpty(env.PAPERCLIP_AGENT_ID),
     runId: nonEmpty(env.PAPERCLIP_RUN_ID),
+    notionApiKey: nonEmpty(env.NOTION_INTEGRATION_TOKEN),
   };
 }
