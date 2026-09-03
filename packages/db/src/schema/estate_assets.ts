@@ -1,4 +1,4 @@
-import { pgEnum, pgTable, uuid, text, timestamp, numeric, index, jsonb } from "drizzle-orm/pg-core";
+import { pgEnum, pgTable, uuid, text, timestamp, numeric, index, jsonb, integer } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { estates } from "./estates.js";
 
@@ -28,6 +28,14 @@ export const estateAssets = pgTable(
     typeMetadata: jsonb("type_metadata").$type<Record<string, unknown>>(),
     estateId: uuid("estate_id").references(() => estates.id, { onDelete: "set null" }),
     notes: text("notes"),
+    // ATTOM property enrichment fields
+    attomPropertyId: text("attom_property_id"),
+    assessedValueCents: numeric("assessed_value_cents", { precision: 20, scale: 0 }),
+    valuationSource: text("valuation_source").default("manual"),
+    attomEnrichedAt: timestamp("attom_enriched_at", { withTimezone: true }),
+    attomSquareFeet: integer("attom_square_feet"),
+    attomLotSizeSqFt: integer("attom_lot_size_sq_ft"),
+    attomYearBuilt: integer("attom_year_built"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

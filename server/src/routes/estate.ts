@@ -250,10 +250,85 @@ export function createDefaultS3VaultClient(): S3VaultClient | null {
 const DEFAULT_VAULT_BUCKET = process.env.ESTATE_DOCS_S3_BUCKET ?? "iun-estate-docs";
 
 // ---------------------------------------------------------------------------
+// ATTOM client interface + default HTTP implementation
+// ---------------------------------------------------------------------------
+
+export interface AttomPropertyDetail {
+  attomId: string;
+  assessedValueCents: number | null;
+  marketValueCents: number | null;
+  squareFeet: number | null;
+  lotSizeSqFt: number | null;
+  yearBuilt: number | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  ownerName: string | null;
+  legalDescription: string | null;
+}
+
+export interface AttomClient {
+  getPropertyByAddress(address1: string, address2: string): Promise<AttomPropertyDetail | null>;
+}
+
+export function createDefaultAttomClient(): AttomClient | null {
+  const apiKey = process.env.ATTOM_API_KEY;
+  if (!apiKey) return null;
+  const baseUrl = "https://api.gateway.attomdata.com";
+
+  return {
+    async getPropertyByAddress(address1, address2) {
+      const params = new URLSearchParams({ address1, address2 });
+      const resp = await fetch(
+        `${baseUrl}/propertyapi/v1.0.0/property/address?${params.toString()}`,
+        { headers: { Accept: "application/json", apikey: apiKey } },
+      );
+      if (resp.status === 404) return null;
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`ATTOM API error ${resp.status}: ${text}`);
+      }
+      const data = (await resp.json()) as Record<string, unknown>;
+      const properties = (data["property"] as Array<Record<string, unknown>>) ?? [];
+      if (properties.length === 0) return null;
+      const prop = properties[0];
+      const identifier = (prop["identifier"] as Record<string, unknown>) ?? {};
+      const avm = (prop["avm"] as Record<string, unknown>) ?? {};
+      const avmAmount = (avm["amount"] as Record<string, unknown>) ?? {};
+      const building = (prop["building"] as Record<string, unknown>) ?? {};
+      const size = (building["size"] as Record<string, unknown>) ?? {};
+      const lot = (prop["lot"] as Record<string, unknown>) ?? {};
+      const summary = (prop["summary"] as Record<string, unknown>) ?? {};
+      const owner = (prop["owner"] as Record<string, unknown>) ?? {};
+      const owner1 = (owner["owner1"] as Record<string, unknown>) ?? {};
+      return {
+        attomId: String(identifier["attomId"] ?? identifier["obPropId"] ?? ""),
+        assessedValueCents: avmAmount["value"] != null ? Math.round(Number(avmAmount["value"]) * 100) : null,
+        marketValueCents: avmAmount["high"] != null ? Math.round(Number(avmAmount["high"]) * 100) : null,
+        squareFeet: size["livingsize"] != null ? Number(size["livingsize"]) : null,
+        lotSizeSqFt: lot["lotsize2"] != null ? Number(lot["lotsize2"]) : null,
+        yearBuilt: summary["yearbuilt"] != null ? Number(summary["yearbuilt"]) : null,
+        bedrooms: building["rooms"] != null ? Number((building["rooms"] as Record<string, unknown>)["beds"]) : null,
+        bathrooms: building["rooms"] != null ? Number((building["rooms"] as Record<string, unknown>)["bathstotal"]) : null,
+        ownerName:
+          owner1["lastNameAndSuffix"] != null
+            ? `${owner1["firstNameAndMi"] ?? ""} ${owner1["lastNameAndSuffix"]}`.trim()
+            : null,
+        legalDescription: (prop["legal"] as Record<string, unknown>)?.["description"] as string | null ?? null,
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
-export function estateRoutes(db: Db, plaidClient?: PlaidClient | null, s3VaultClient?: S3VaultClient | null) {
+export function estateRoutes(
+  db: Db,
+  plaidClient?: PlaidClient | null,
+  s3VaultClient?: S3VaultClient | null,
+  attomClient?: AttomClient | null,
+) {
   const router = Router();
 
   // ---- Asset Registry -------------------------------------------------------
@@ -2085,6 +2160,92 @@ export function estateRoutes(db: Db, plaidClient?: PlaidClient | null, s3VaultCl
       .returning();
     if (!deleted) throw notFound("Property tax bill not found");
     res.json({ deleted: true });
+  });
+
+  // =========================================================================
+  // ATTOM Property Enrichment
+  // =========================================================================
+
+  /**
+   * POST /estate/assets/:assetId/attom/enrich
+   *
+   * Looks up property details from ATTOM Data Solutions and writes assessed
+   * value, ATTOM property ID, and physical attributes back to the asset.
+   *
+   * Address resolution order:
+   *   1. address1/address2 fields in request body
+   *   2. address/city/state/zip fields in asset.typeMetadata
+   */
+  router.post("/estate/assets/:assetId/attom/enrich", async (req, res) => {
+    assertBoard(req);
+
+    const { companyId, address1: bodyAddress1, address2: bodyAddress2 } = req.body as {
+      companyId?: string;
+      address1?: string;
+      address2?: string;
+    };
+
+    if (!companyId) {
+      res.status(400).json({ error: "companyId is required" });
+      return;
+    }
+
+    const client = attomClient ?? createDefaultAttomClient();
+    if (!client) {
+      res.status(503).json({ error: "ATTOM integration is not configured" });
+      return;
+    }
+
+    const assetId = req.params.assetId;
+    const [asset] = await db
+      .select()
+      .from(estateAssets)
+      .where(and(eq(estateAssets.id, assetId), eq(estateAssets.companyId, companyId)));
+
+    if (!asset) {
+      res.status(404).json({ error: "Asset not found" });
+      return;
+    }
+
+    // Resolve address to pass to ATTOM
+    let address1 = bodyAddress1?.trim() ?? "";
+    let address2 = bodyAddress2?.trim() ?? "";
+
+    if (!address1) {
+      const meta = (asset.typeMetadata ?? {}) as Record<string, string | undefined>;
+      address1 = (meta["address"] ?? meta["street"] ?? "").trim();
+      if (meta["city"] || meta["state"]) {
+        address2 = `${meta["city"] ?? ""}, ${meta["state"] ?? ""} ${meta["zip"] ?? ""}`.trim().replace(/^,\s*/, "");
+      }
+    }
+
+    if (!address1) {
+      res.status(400).json({ error: "address is required — provide address1 in the request body or set address in the asset typeMetadata" });
+      return;
+    }
+
+    const detail = await client.getPropertyByAddress(address1, address2);
+    if (!detail) {
+      res.status(422).json({ error: "No property found at the provided address" });
+      return;
+    }
+
+    const [updated] = await db
+      .update(estateAssets)
+      .set({
+        attomPropertyId: detail.attomId || null,
+        assessedValueCents: detail.assessedValueCents != null ? String(detail.assessedValueCents) : null,
+        valuationSource: "attom",
+        attomEnrichedAt: new Date(),
+        attomSquareFeet: detail.squareFeet ?? null,
+        attomLotSizeSqFt: detail.lotSizeSqFt ?? null,
+        attomYearBuilt: detail.yearBuilt ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(estateAssets.id, assetId))
+      .returning();
+
+    res.json(updated);
   });
 
   // =========================================================================
