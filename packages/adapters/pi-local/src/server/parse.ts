@@ -99,7 +99,18 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
           result.finalMessage = text;
           result.messages.push(text);
         }
-        
+
+        // A turn can end with stopReason "error" (e.g. the provider returned
+        // insufficient-credits/rate-limit/etc.) and an empty content array —
+        // Pi's own process still exits 0 in this case. Without surfacing this
+        // as an error here, the run is reported as a content-less success
+        // (effectiveExitCode stays 0 below since `errors` stays empty), so
+        // Paperclip's recovery/handoff logic never sees a failure to act on.
+        if (asString(message.stopReason, "") === "error") {
+          const turnErrorMessage = asString(message.errorMessage, "").trim();
+          result.errors.push(turnErrorMessage || "Pi reported a turn-level error with no message.");
+        }
+
         // Extract usage and cost from assistant message
         const usage = asRecord(message.usage);
         if (usage) {
