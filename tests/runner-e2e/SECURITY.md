@@ -9,15 +9,23 @@ changes.
 ## GitHub authorization
 
 Set `RUNNER_E2E_ALLOWED_ACTOR_IDS` to a non-empty JSON array of numeric GitHub
-user IDs, for example `[123456,789012]`. Resolve each ID from the authenticated
-CLI and verify the login before adding it:
+user IDs. Keep the list equal to the owners of `.github/**` in
+`.github/CODEOWNERS`. For example, use `[123456,789012]`. Resolve each ID from
+the authenticated CLI and verify the login before adding it:
 
 ```bash
 gh api users/LOGIN --jq '{login,id}'
 ```
 
-The paid workflows reject manual dispatches outside the default branch before
-checkout. They verify both the original actor and triggering actor for every
+The paid workflows reject manual dispatches when the workflow definition does
+not come from the default branch. A trusted dispatcher may name any branch in
+`paperclipai/paperclip` as the code under test. The authorization job resolves
+that branch through the GitHub API and passes only its immutable commit SHA to
+the catalog, image, and paid test checkouts. Report sanitization and AWS history
+publication explicitly use the trusted workflow commit. Never run the workflow
+definition from the target branch.
+
+The workflows verify both the original actor and triggering actor for every
 scheduled or manual attempt, including human reruns. Every
 secret-bearing job repeats this check as its first step so GitHub's partial-job
 rerun feature cannot bypass a successful predecessor authorization job. The
@@ -78,13 +86,22 @@ fresh ephemeral instance for every job, prohibit persistent runner reuse, and
 disable interactive SSH/debug access unless a separate incident procedure
 explicitly authorizes it.
 
-Changing the runner does not widen secret access. The paid workflow still has
-only schedule and manual triggers, requires the protected default branch and
-allowlisted stable actor IDs before checkout, repeats that authorization as the
-first matrix step, and receives provider credentials only from the protected
+Changing the runner does not widen who can authorize secret access. The paid
+workflow still has only schedule and manual triggers, requires its trusted
+definition to come from the protected default branch, requires allowlisted
+stable actor IDs before checkout, and repeats that authorization as the first
+matrix step. Provider credentials come only from the protected
 `runner-e2e-paid` environment. The fleet selector is an exact workflow literal;
-the only repository-controlled input is its boolean rollout switch, so
+the only repository-controlled routing input is its boolean rollout switch, so
 configuration cannot redirect a secret-bearing job to an arbitrary runner.
+
+The optional target branch is code, not workflow authority. A CODEOWNER who
+dispatches a target branch explicitly authorizes that branch's selected test
+process to receive the cell's scoped provider credential. The workflow resolves
+the target only inside the same repository, pins one SHA for the campaign, and
+checks it out only after authorization. Target-controlled code cannot replace
+the report sanitizer or the AWS history publisher. Fork refs and
+target-controlled workflow definitions do not enter this path.
 
 ## AWS OIDC and S3
 

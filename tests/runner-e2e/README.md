@@ -266,13 +266,35 @@ auto-stop/archive/delete values remain as cancellation backstops.
 ## GitHub Actions
 
 `Runner Full-Stack E2E` has only `schedule` and `workflow_dispatch` triggers; it
-never runs for a pull request or ordinary push. Because this repository is
-public, manual campaigns fail before checkout unless they run from the default
-branch and both the original actor and rerun actor have numeric GitHub user IDs
-in the non-empty JSON-array repository variable
-`RUNNER_E2E_ALLOWED_ACTOR_IDS`. Usernames are intentionally not trusted.
-The first scheduled attempt is trusted automation; any human rerun of a
-scheduled campaign must pass the triggering-actor allowlist.
+never runs for a pull request or ordinary push. Start the trusted workflow from
+the default branch. A CODEOWNER can set the optional `target_branch` input to
+any branch in `paperclipai/paperclip`. The authorization job resolves that
+branch to one immutable commit before any checkout. Catalog, image, and paid
+test jobs check out that exact commit. Report sanitization and AWS history
+publication explicitly check out the trusted workflow commit. The workflow
+definition, runner-group permission, and protected-environment deployment still
+come from the default branch. Do not select the target branch in GitHub's **Use
+workflow from** control.
+
+Because this repository is public, manual campaigns fail before checkout unless
+the trusted workflow runs from the default branch and both the original actor
+and rerun actor have numeric GitHub user IDs in the non-empty JSON-array
+repository variable `RUNNER_E2E_ALLOWED_ACTOR_IDS`. Keep this stable-ID list in
+sync with the owners of `.github/**` in `.github/CODEOWNERS`. Usernames are
+intentionally not trusted. The first scheduled attempt is trusted automation;
+any human rerun of a scheduled campaign must pass the triggering-actor
+allowlist.
+
+For example, this command runs one branch cell through the trusted default-branch
+workflow:
+
+```bash
+gh workflow run runner-full-stack-e2e.yml \
+  --ref master \
+  -f target_branch=fix/example \
+  -f all=false \
+  -f id=core-compatibility.runner-codex.local.message-marker
+```
 
 Create a protected `runner-e2e-paid` GitHub environment, restrict it to the
 default branch, limit environment administration to trusted maintainers, and
@@ -302,11 +324,14 @@ it, and require a fresh ephemeral instance for each job so one paid cell cannot
 leave state for the next. Provider secrets remain protected by the stable-ID
 authorization checks and the default-branch-only `runner-e2e-paid` environment;
 the fleet itself is not an authorization boundary. These external fleet controls
-are as important as the workflow checks in a public repository.
+are as important as the workflow checks in a public repository. A CODEOWNER
+dispatch is an explicit authorization to execute the selected repository branch
+with the cell's scoped provider credential.
 
-Non-default validation runs share a concurrency key per ref and cancel an older
-run when a replacement is dispatched. Protected default-branch paid campaigns
-are retained and are never auto-cancelled, preserving their audit trail.
+Development branch campaigns share a concurrency key per target branch and
+cancel an older run when a replacement is dispatched. Default-branch target
+campaigns are retained and are never auto-cancelled, preserving their audit
+trail.
 
 GitHub Actions artifacts are access-controlled 30-day operational copies, not
 the permanent public history. They retain packaged PNG/WebM and generated

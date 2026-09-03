@@ -75,6 +75,13 @@ describe("public repository paid workflow security", () => {
     expect(authorizeJob).toContain(
       "AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}",
     );
+    expect(authorizeJob).toContain(
+      "Resolve requested repository branch to an immutable commit",
+    );
+    expect(authorizeJob).toContain(
+      "repos/$REPOSITORY/branches/$encoded_branch",
+    );
+    expect(authorizeJob).toContain('echo "sha=$target_sha"');
     expect(paidJob).toContain(
       "runs-on: ${{ needs.authorize.outputs.test_runner }}",
     );
@@ -89,7 +96,34 @@ describe("public repository paid workflow security", () => {
       '[ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]',
     );
     expect(fullStack).toContain(
-      "cancel-in-progress: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}",
+      "group: runner-full-stack-e2e-${{ inputs.target_branch || github.event.repository.default_branch }}",
+    );
+    expect(fullStack).toContain(
+      "cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch }}",
+    );
+    expect(
+      fullStack.match(
+        /ref: \$\{\{ needs\.authorize\.outputs\.target_sha \}\}/g,
+      ),
+    ).toHaveLength(3);
+    expect(fullStack.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(2);
+    expect(fullStack.match(/persist-credentials: false/g)).toHaveLength(5);
+    expect(fullStack).not.toContain("ref: ${{ inputs.target_branch }}");
+    expect(fullStack).toContain(
+      "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}",
+    );
+    const reportJob = fullStack.slice(
+      fullStack.indexOf("  report:"),
+      fullStack.indexOf("  publish_history:"),
+    );
+    const historyJob = fullStack.slice(fullStack.indexOf("  publish_history:"));
+    expect(reportJob).toContain("ref: ${{ github.sha }}");
+    expect(reportJob).not.toContain(
+      "ref: ${{ needs.authorize.outputs.target_sha }}",
+    );
+    expect(historyJob).toContain("ref: ${{ github.sha }}");
+    expect(historyJob).not.toContain(
+      "ref: ${{ needs.authorize.outputs.target_sha }}",
     );
     for (const [secret, condition] of Object.entries({
       OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",

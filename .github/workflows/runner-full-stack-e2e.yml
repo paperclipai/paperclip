@@ -5,6 +5,10 @@ on:
     - cron: "47 8 * * 0"
   workflow_dispatch:
     inputs:
+      target_branch:
+        description: "Branch in paperclipai/paperclip to test; the trusted workflow still runs from master"
+        type: string
+        required: false
       all:
         description: "Run the complete paid matrix when no narrower selector is supplied"
         type: boolean
@@ -38,10 +42,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: runner-full-stack-e2e-${{ github.ref }}
-  # Development-only validation refs supersede older runs on the same ref.
-  # Preserve every protected default-branch campaign for its paid audit trail.
-  cancel-in-progress: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
+  group: runner-full-stack-e2e-${{ inputs.target_branch || github.event.repository.default_branch }}
+  # Development branch campaigns supersede older runs for the same target.
+  # Preserve every default-branch campaign for its paid audit trail.
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch }}
 
 jobs:
   authorize:
@@ -55,6 +59,7 @@ jobs:
       test_runner: ${{ steps.runner.outputs.runner }}
       max_parallel_default: ${{ steps.runner.outputs.max_parallel_default }}
       max_parallel_limit: ${{ steps.runner.outputs.max_parallel_limit }}
+      target_sha: ${{ steps.target.outputs.sha }}
     steps:
       - name: Require default branch and allowlisted numeric actor IDs
         env:
@@ -88,6 +93,27 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Resolve requested repository branch to an immutable commit
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_BRANCH: ${{ inputs.target_branch || github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TARGET_BRANCH" ] || [[ "$TARGET_BRANCH" == refs/* ]]; then
+            echo "target_branch must name a branch in this repository without a refs/ prefix." >&2
+            exit 1
+          fi
+          encoded_branch="$(jq -rn --arg branch "$TARGET_BRANCH" '$branch | @uri')"
+          target_sha="$(gh api -X GET "repos/$REPOSITORY/branches/$encoded_branch" --jq .commit.sha)"
+          if ! [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The requested repository branch did not resolve to a commit." >&2
+            exit 1
+          fi
+          echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
+          echo "Resolved the requested repository branch to $target_sha."
 
       - name: Select paid test runner
         id: runner
@@ -130,6 +156,9 @@ jobs:
       daytona_image_content_id: ${{ steps.daytona_image_content.outputs.content_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -233,6 +262,9 @@ jobs:
       content_id: ${{ steps.image.outputs.content_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
+          persist-credentials: false
 
       - name: No Daytona image needed
         id: local_only
@@ -261,6 +293,7 @@ jobs:
           NEEDS_DAYTONA: ${{ needs.catalog.outputs.needs_daytona }}
           IMAGE_CONTENT_ID: ${{ needs.catalog.outputs.daytona_image_content_id }}
           IMAGE_TAG: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${{ needs.catalog.outputs.daytona_image_content_id }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
         run: |
           set -euo pipefail
           if [ "$NEEDS_DAYTONA" != true ]; then
@@ -277,7 +310,7 @@ jobs:
             docker buildx build \
               --platform linux/amd64 \
               --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}" \
-              --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${GITHUB_SHA}" \
+              --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}" \
               --file docker/daytona-runner/Dockerfile \
               --tag "$IMAGE_TAG" \
               --push \
@@ -354,6 +387,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ needs.authorize.outputs.target_sha }}
           persist-credentials: false
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -416,7 +450,7 @@ jobs:
   report:
     name: Merge and enforce campaign result
     if: always() && needs.catalog.result == 'success'
-    needs: [catalog, daytona_image, test]
+    needs: [authorize, catalog, daytona_image, test]
     outputs:
       history_source_ready: ${{ steps.history_source_ready.outputs.ready }}
     runs-on: ubuntu-latest
@@ -425,6 +459,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Reporting and sanitization are part of the trusted workflow boundary.
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -511,7 +549,7 @@ jobs:
 
   publish_history:
     name: Publish pruned immutable history and landing site
-    needs: [catalog, report]
+    needs: [authorize, catalog, report]
     if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -525,6 +563,10 @@ jobs:
       name: runner-e2e-history
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Never execute target-controlled publication code with AWS credentials.
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
