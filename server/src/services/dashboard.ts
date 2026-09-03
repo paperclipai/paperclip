@@ -84,9 +84,18 @@ export function dashboardService(db: Db) {
       const monthStart = getUtcMonthStart(now);
       const runActivityDays = getRecentUtcDateKeys(now, DASHBOARD_RUN_ACTIVITY_DAYS);
       const runActivityStart = new Date(`${runActivityDays[0]}T00:00:00.000Z`);
-      const [{ monthSpend }] = await db
+      // Tokens are summed alongside spend because on subscription-billed
+      // deployments `costCents` is forced to 0 at write time
+      // (normalizeBilledCostCents), so a month of heavy fleet activity reports
+      // as $0.00 while the token columns hold the real usage.
+      const [monthUsage] = await db
         .select({
           monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
+          inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::double precision`,
+          cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::double precision`,
+          outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::double precision`,
+          meteredRuns: sql<number>`count(*)::int`,
+          subscriptionRuns: sql<number>`count(*) filter (where ${costEvents.billingType} = 'subscription_included')::int`,
         })
         .from(costEvents)
         .where(
@@ -96,7 +105,14 @@ export function dashboardService(db: Db) {
           ),
         );
 
-      const monthSpendCents = Number(monthSpend);
+      const monthSpendCents = Number(monthUsage?.monthSpend ?? 0);
+      const meteredRuns = Number(monthUsage?.meteredRuns ?? 0);
+      // Only claim subscription-only billing when there is something to judge:
+      // with no metered runs this month, an empty period must not be reported
+      // as "subscription", which would suppress the spend tile on a deployment
+      // that does bill in dollars.
+      const monthBillingIsSubscriptionOnly =
+        meteredRuns > 0 && Number(monthUsage?.subscriptionRuns ?? 0) === meteredRuns;
       // Per-day run breakdown. A run is "recovered" when its retry chain later
       // succeeded (recovered_runs = all ancestors of a succeeded retry), so a
       // restart-killed run whose retry succeeded is pulled out of the headline
@@ -198,6 +214,10 @@ export function dashboardService(db: Db) {
           monthSpendCents,
           monthBudgetCents: company.budgetMonthlyCents,
           monthUtilizationPercent: Number(utilization.toFixed(2)),
+          monthInputTokens: Number(monthUsage?.inputTokens ?? 0),
+          monthCachedInputTokens: Number(monthUsage?.cachedInputTokens ?? 0),
+          monthOutputTokens: Number(monthUsage?.outputTokens ?? 0),
+          monthBillingIsSubscriptionOnly,
         },
         pendingApprovals,
         budgets: {
