@@ -766,6 +766,34 @@ jobs:
       # the protected environment during setup.
       - run: pnpm install --frozen-lockfile --ignore-scripts
 
+      # Sandbox-provider plugins are intentionally excluded from the root
+      # workspace. The ordinary root postinstall links the in-repo plugin SDK,
+      # but that lifecycle hook is deliberately disabled above. Prepare the
+      # one host plugin needed by Daytona explicitly, before this job receives
+      # provider credentials, and keep dependency lifecycle scripts disabled.
+      - name: Prepare bundled Daytona plugin without dependency lifecycle scripts
+        if: matrix.environmentId == 'daytona'
+        run: |
+          set -euo pipefail
+          daytona_root="packages/plugins/sandbox-providers/daytona"
+          sdk_root="packages/plugins/sdk"
+          test -d "$daytona_root"
+          test -d "$sdk_root"
+          test ! -L "$daytona_root"
+          test ! -L "$sdk_root"
+          test "$(jq -r .name "$daytona_root/package.json")" = "@paperclipai/plugin-daytona"
+          test "$(jq -r .name "$sdk_root/package.json")" = "@paperclipai/plugin-sdk"
+          (
+            cd "$daytona_root"
+            pnpm install --ignore-workspace --no-lockfile --ignore-scripts
+          )
+          node scripts/link-plugin-dev-sdk.mjs
+          test "$(realpath "$daytona_root/node_modules/@paperclipai/plugin-sdk")" = "$(realpath "$sdk_root")"
+          pnpm --dir "$daytona_root" build
+          test -f "$daytona_root/dist/manifest.js"
+          test -f "$daytona_root/dist/worker.js"
+          test -e "$daytona_root/node_modules/@daytonaio/sdk"
+
       - name: Materialize verified pinned OpenCode executable
         if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth')
         run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs

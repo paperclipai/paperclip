@@ -125,9 +125,38 @@ describe("public repository paid workflow security", () => {
     const paidInstall = paidJob.indexOf(
       "pnpm install --frozen-lockfile --ignore-scripts",
     );
+    const daytonaPluginPreparation = paidJob.indexOf(
+      "Prepare bundled Daytona plugin without dependency lifecycle scripts",
+    );
     const paidExecution = paidJob.indexOf("- name: Run paid cell");
     expect(paidInstall).toBeGreaterThan(0);
-    expect(paidExecution).toBeGreaterThan(paidInstall);
+    expect(daytonaPluginPreparation).toBeGreaterThan(paidInstall);
+    expect(paidExecution).toBeGreaterThan(daytonaPluginPreparation);
+    const preparedBeforeProviderAccess = paidJob.slice(
+      daytonaPluginPreparation,
+      paidExecution,
+    );
+    expect(preparedBeforeProviderAccess).toContain(
+      "if: matrix.environmentId == 'daytona'",
+    );
+    expect(preparedBeforeProviderAccess).toContain(
+      "pnpm install --ignore-workspace --no-lockfile --ignore-scripts",
+    );
+    expect(preparedBeforeProviderAccess).toContain(
+      "node scripts/link-plugin-dev-sdk.mjs",
+    );
+    expect(preparedBeforeProviderAccess).toContain(
+      '"@paperclipai/plugin-daytona"',
+    );
+    expect(preparedBeforeProviderAccess).toContain('"@paperclipai/plugin-sdk"');
+    expect(preparedBeforeProviderAccess).toContain(
+      'realpath "$daytona_root/node_modules/@paperclipai/plugin-sdk"',
+    );
+    expect(preparedBeforeProviderAccess).toContain(
+      'pnpm --dir "$daytona_root" build',
+    );
+    expect(preparedBeforeProviderAccess).not.toContain("secrets.");
+    expect(preparedBeforeProviderAccess).not.toContain("pnpm rebuild");
     expect(paidJob.slice(0, paidExecution)).not.toMatch(
       /secrets\.(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)_API_KEY/,
     );
