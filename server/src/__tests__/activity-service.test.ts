@@ -17,7 +17,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { activityService } from "../services/activity.ts";
+import { activityService, normalizeActivityLimit } from "../services/activity.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -115,6 +115,186 @@ describeEmbeddedPostgres("activity service", () => {
     const result = await activityService(db).list({ companyId, limit: 2 });
 
     expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
+  });
+
+  describe("date-windowed company activity", () => {
+    async function seedWindowCompany() {
+      const companyId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      // One event per day across Aug 8 - Aug 18, so a 7-day window has a
+      // strictly smaller answer than "the most recent N rows".
+      await db.insert(activityLog).values(
+        Array.from({ length: 11 }, (_, i) => {
+          const day = String(8 + i).padStart(2, "0");
+          return {
+            companyId,
+            actorType: "system" as const,
+            actorId: "system",
+            action: `test.aug${day}`,
+            entityType: "company",
+            entityId: companyId,
+            createdAt: new Date(`2026-08-${day}T12:00:00.000Z`),
+          };
+        }),
+      );
+
+      return companyId;
+    }
+
+    it("applies since/until as inclusive bounds rather than ignoring them", async () => {
+      const companyId = await seedWindowCompany();
+
+      const result = await activityService(db).list({
+        companyId,
+        since: new Date("2026-08-10T00:00:00.000Z"),
+        until: new Date("2026-08-17T00:00:00.000Z"),
+        limit: 1000,
+      });
+
+      // Aug 17's event is at 12:00, past the 00:00 upper bound, so the window
+      // is Aug 10-16 inclusive: the regression returned the newest rows
+      // (through Aug 18) regardless of the bounds.
+      expect(result.map((event) => event.action)).toEqual([
+        "test.aug16",
+        "test.aug15",
+        "test.aug14",
+        "test.aug13",
+        "test.aug12",
+        "test.aug11",
+        "test.aug10",
+      ]);
+    });
+
+    it("honors a limit above the old 500-row cap", async () => {
+      const companyId = randomUUID();
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      // Must exceed the old 500 cap, otherwise clamping is invisible: a caller
+      // asking for limit=1000 used to get 500 with no indication of truncation.
+      await db.insert(activityLog).values(
+        Array.from({ length: 600 }, (_, i) => ({
+          companyId,
+          actorType: "system" as const,
+          actorId: "system",
+          action: `test.bulk${i}`,
+          entityType: "company",
+          entityId: companyId,
+          createdAt: new Date(Date.UTC(2026, 7, 12, 0, 0, 0, i)),
+        })),
+      );
+
+      expect(normalizeActivityLimit(1000)).toBe(1000);
+      const result = await activityService(db).list({ companyId, limit: 1000 });
+      expect(result).toHaveLength(600);
+    });
+
+    it("pages through a window with offset without repeating or dropping rows", async () => {
+      const companyId = await seedWindowCompany();
+      const svc = activityService(db);
+      const filters = {
+        companyId,
+        since: new Date("2026-08-10T00:00:00.000Z"),
+        until: new Date("2026-08-17T00:00:00.000Z"),
+      };
+
+      const firstPage = await svc.list({ ...filters, limit: 3, offset: 0 });
+      const secondPage = await svc.list({ ...filters, limit: 3, offset: 3 });
+      const thirdPage = await svc.list({ ...filters, limit: 3, offset: 6 });
+
+      expect(firstPage.map((e) => e.action)).toEqual(["test.aug16", "test.aug15", "test.aug14"]);
+      expect(secondPage.map((e) => e.action)).toEqual(["test.aug13", "test.aug12", "test.aug11"]);
+      expect(thirdPage.map((e) => e.action)).toEqual(["test.aug10"]);
+    });
+
+    it("keeps offset paging stable when rows share a createdAt", async () => {
+      const companyId = randomUUID();
+      const sameInstant = new Date("2026-08-12T12:00:00.000Z");
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(activityLog).values(
+        Array.from({ length: 10 }, (_, i) => ({
+          companyId,
+          actorType: "system" as const,
+          actorId: "system",
+          action: `test.tie${i}`,
+          entityType: "company",
+          entityId: companyId,
+          createdAt: sameInstant,
+        })),
+      );
+
+      const svc = activityService(db);
+      const paged: string[] = [];
+      for (let offset = 0; offset < 10; offset += 2) {
+        const page = await svc.list({ companyId, limit: 2, offset });
+        paged.push(...page.map((e) => e.action));
+      }
+
+      // Without the id tiebreaker, equal-timestamp rows can reorder between
+      // queries and a paginated sweep silently loses records.
+      expect(new Set(paged).size).toBe(10);
+    });
+
+    it("keeps a pinned-until sweep stable while new activity is written", async () => {
+      const companyId = await seedWindowCompany();
+      const svc = activityService(db);
+      const filters = {
+        companyId,
+        since: new Date("2026-08-10T00:00:00.000Z"),
+        until: new Date("2026-08-17T00:00:00.000Z"),
+      };
+
+      // Offset paging is only sound against a result set that cannot change
+      // between requests. `until` is what supplies that: records are written
+      // with createdAt at the present, so a bound in the past excludes them and
+      // the sweep sees a frozen window. Interleave writes to prove it — without
+      // `until`, each insert shifts every later row by one and the sweep
+      // repeats records.
+      const paged: string[] = [];
+      for (let offset = 0; offset < 9; offset += 3) {
+        await db.insert(activityLog).values({
+          companyId,
+          actorType: "system" as const,
+          actorId: "system",
+          action: `test.concurrent${offset}`,
+          entityType: "company",
+          entityId: companyId,
+          createdAt: new Date("2026-08-20T12:00:00.000Z"),
+        });
+
+        const page = await svc.list({ ...filters, limit: 3, offset });
+        paged.push(...page.map((e) => e.action));
+      }
+
+      expect(paged).toEqual([
+        "test.aug16",
+        "test.aug15",
+        "test.aug14",
+        "test.aug13",
+        "test.aug12",
+        "test.aug11",
+        "test.aug10",
+      ]);
+    });
   });
 
   it("returns compact usage and result summaries for issue runs", async () => {
