@@ -77,6 +77,21 @@ export function resolveServiceShimPath(homeDir = os.homedir()): string {
   return process.env.PAPERCLIP_SHIM_PATH?.trim() || path.join(homeDir, ".local", "bin", "paperclipai");
 }
 
+export function resolveServicePath(homeDir = os.homedir()): string {
+  const inheritedPath = process.env.PATH?.trim();
+  if (inheritedPath) return inheritedPath;
+  return [
+    path.join(homeDir, ".local", "bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ].join(path.delimiter);
+}
+
 // The installed definition, not the current environment, is the truth
 // about what the service executes: PAPERCLIP_SHIM_PATH may have changed
 // or been unset since the definition was written.
@@ -138,6 +153,7 @@ ExecStart="${escapeSystemd(input.shimPath)}" run --instance "${escapeSystemd(inp
 Environment="PAPERCLIP_SERVICE_MANAGED=1"
 Environment="PAPERCLIP_INSTANCE_ID=${escapeSystemd(input.instanceId)}"
 Environment="PAPERCLIP_HOME=${escapeSystemd(input.homeDir)}"
+Environment="PATH=${escapeSystemd(resolveServicePath())}"
 WorkingDirectory=%h
 Restart=always
 RestartSec=5
@@ -150,6 +166,7 @@ WantedBy=default.target
 
 export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string }): string {
   const label = launchdServiceName(input.instanceId);
+  const servicePath = resolveServicePath();
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -164,6 +181,7 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
     <key>PAPERCLIP_SERVICE_MANAGED</key><string>1</string>
     <key>PAPERCLIP_INSTANCE_ID</key><string>${escapeXml(input.instanceId)}</string>
     <key>PAPERCLIP_HOME</key><string>${escapeXml(input.homeDir)}</string>
+    <key>PATH</key><string>${escapeXml(servicePath)}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

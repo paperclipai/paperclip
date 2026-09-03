@@ -16,6 +16,14 @@ export PAPERCLIP_DELEGATE_MODE=true
 export PAPERCLIP_DB_BACKUP_ENABLED=false
 export PAPERCLIP_OPEN_ON_LISTEN="${PAPERCLIP_OPEN_ON_LISTEN:-true}"
 
+# Node's --env-file-if-exists loads the instance .env after this script starts.
+# Keep user-installed CLIs such as Codex discoverable even when that file has
+# an older short PATH captured by a service manager.
+delegate_user_bin="$HOME/.local/bin"
+if [[ -d "$delegate_user_bin" && ":${PATH:-}:" != *":$delegate_user_bin:"* ]]; then
+  export PATH="$delegate_user_bin${PATH:+:$PATH}"
+fi
+
 delegate_truthy() {
   case "${1:-}" in
     [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) return 0 ;;
@@ -46,7 +54,25 @@ if [[ "${PAPERCLIP_SERVICE_MANAGED:-}" != "1" ]] && ! delegate_truthy "${PAPERCL
   fi
 fi
 
-exec "$(command -v node)" \
+delegate_node="${PAPERCLIP_NODE_PATH:-}"
+if [[ -z "$delegate_node" ]]; then
+  delegate_node="$(command -v node 2>/dev/null || true)"
+fi
+if [[ -z "$delegate_node" ]]; then
+  for delegate_candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+    if [[ -x "$delegate_candidate" ]]; then
+      delegate_node="$delegate_candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$delegate_node" ]]; then
+  echo "Error: Node.js is not on PATH and no supported absolute Node.js path was found." >&2
+  echo "Set PAPERCLIP_NODE_PATH to the Node.js executable and rerun setup." >&2
+  exit 1
+fi
+
+exec "$delegate_node" \
   --env-file-if-exists="$delegate_env_path" \
   "$delegate_repo_root/cli/node_modules/tsx/dist/cli.mjs" \
   "$delegate_repo_root/server/src/index.ts"

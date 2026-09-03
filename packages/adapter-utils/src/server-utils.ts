@@ -2365,7 +2365,16 @@ export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
   }
-  return "/usr/local/bin:/opt/homebrew/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
+  return [
+    path.join(os.homedir(), ".local", "bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ].join(path.delimiter);
 }
 
 function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
