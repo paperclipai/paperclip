@@ -1,9 +1,11 @@
 import {
+  createMemoryStorage,
   getTranslation,
   init,
   resolveLang,
   useCurrentLanguage,
   useI18nKeyless,
+  type I18nConfig,
   type Lang,
   type TranslationOptions,
 } from "i18n-keyless-react";
@@ -17,8 +19,14 @@ import {
  * stores it, and every later client gets it from the cache. Reviewers fix a
  * translation on the server dashboard instead of in a 40-file JSON diff.
  *
- * Only `English` ships in the bundle, so an offline or air-gapped instance
- * still renders every string in the primary language.
+ * The translation server is deployment configuration, read at build time:
+ *
+ *   VITE_I18N_KEYLESS_API_KEY  the project's public key (required to enable)
+ *   VITE_I18N_KEYLESS_API_URL  a self-hosted server; omit for the hosted one
+ *
+ * Without a key the UI stays English and makes no network request. Only
+ * English ships in the bundle, so an offline or air-gapped instance still
+ * renders every string in the primary language.
  */
 
 export const PRIMARY_LANGUAGE: Lang = "en";
@@ -96,18 +104,51 @@ export function languageDisplayName(lang: Lang): string {
   }
 }
 
+type Storage = NonNullable<I18nConfig["storage"]>;
+/** A storage adapter with the three methods the SDK reads and writes through. */
+export type KeyValueStorage = Storage & Required<Pick<Storage, "getItem" | "setItem" | "removeItem">>;
+
+/**
+ * The persistent cache for translations and the chosen language. A browser
+ * can deny `localStorage` (privacy mode, blocked site data): reading the
+ * property itself throws. In that case the SDK runs on an in-memory store,
+ * so the language choice lasts for the session and nothing aborts startup.
+ */
+export function resolveStorage(read: () => KeyValueStorage | undefined): KeyValueStorage {
+  try {
+    const storage = read();
+    if (!storage) return createMemoryStorage() as KeyValueStorage;
+    // Some browsers expose the object and throw on first use.
+    storage.getItem("i18n-keyless:probe");
+    return storage;
+  } catch {
+    return createMemoryStorage() as KeyValueStorage;
+  }
+}
+
 export function initI18nKeyless() {
-  void init({
-    API_KEY: "TXgf8PpHp3zxLJcc",
-    API_URL: "https://i18n-keyless.ambroselli.io",
-    storage: window.localStorage,
-    languages: {
-      primary: PRIMARY_LANGUAGE,
-      supported: [...SUPPORTED_LANGUAGES],
-      fallback: PRIMARY_LANGUAGE,
-      initWithDefault: detectBrowserLanguage(navigator.languages ?? [navigator.language]),
-    },
-  });
+  const apiKey = import.meta.env.VITE_I18N_KEYLESS_API_KEY as string | undefined;
+  if (!apiKey) return;
+  const apiUrl = import.meta.env.VITE_I18N_KEYLESS_API_URL as string | undefined;
+
+  try {
+    init({
+      API_KEY: apiKey,
+      ...(apiUrl ? { API_URL: apiUrl } : {}),
+      storage: resolveStorage(() => window.localStorage),
+      languages: {
+        primary: PRIMARY_LANGUAGE,
+        supported: [...SUPPORTED_LANGUAGES],
+        fallback: PRIMARY_LANGUAGE,
+        initWithDefault: detectBrowserLanguage(navigator.languages ?? [navigator.language]),
+      },
+    }).catch((error: unknown) => {
+      console.warn("i18n-keyless: translations unavailable, the UI stays in English", error);
+    });
+  } catch (error) {
+    // Translation is a progressive enhancement: never block the first render.
+    console.warn("i18n-keyless: initialization failed, the UI stays in English", error);
+  }
 }
 
 /** Disambiguates one-word labels for the translator ("Audit" is a log, not an exam). */
@@ -121,9 +162,8 @@ export const NAVIGATION_CONTEXT: TranslationOptions = {
  * `options` applies to every call (`context`, `namespace`, ...).
  * For JSX text prefer `<I18nKeylessText>` from `i18n-keyless-react`.
  *
- * Storybook and unit tests render components without the app entry, so the
- * SDK is not initialized there; the identity function keeps English in that
- * case instead of throwing.
+ * When the SDK is not initialized (no key configured, Storybook, unit tests)
+ * the identity function keeps English instead of throwing.
  */
 export function useT(options?: TranslationOptions): (text: string) => string {
   useCurrentLanguage();

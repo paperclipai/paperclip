@@ -1092,9 +1092,6 @@ importers:
       cmdk:
         specifier: ^1.1.1
         version: 1.1.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      i18n-keyless-react:
-        specifier: 3.5.0
-        version: 3.5.0(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
       i18next:
         specifier: ^26.3.6
         version: 26.3.6(typescript@7.0.2)
@@ -6449,14 +6446,6 @@ packages:
   human-signals@2.1.0:
     resolution: {integrity: sha512-B4FFZ6q/T2jhhksgkbEW3HBvWIfDW85snkQgawt07S7J5QXTk6BkNV+0yAeZrM5QpMAdYlocGoljn0sJ/WQkFw==}
     engines: {node: '>=10.17.0'}
-
-  i18n-keyless-core@3.5.0:
-    resolution: {integrity: sha512-KW375fgdBzUnUeJVvO5gHUf57xFQcxQLPdD3xmb+WRduCO4T9hntbt9enKKYFn44bIlf2xCNBDMhPolwNJpBcg==}
-
-  i18n-keyless-react@3.5.0:
-    resolution: {integrity: sha512-4gSP5h2aiw8UQOWmL0aKgWRwj+xC6TGE4JVEf5KGG6G7T8TjqB68Cp+itUZn31Y1O5t01emgYDV7jXf+wqhRrw==}
-    peerDependencies:
-      react: ^19.2.8
 
   i18next@26.3.6:
     resolution: {integrity: sha512-Bu5Z2nAXgfVyM8xvW3jk9EKRIuX37PudsrBViThNFx7CR7aaYTpP01cxNB/E4c4UUzTDiAZRstEhsRfPOL/8xA==}
@@ -13792,18 +13781,6 @@ snapshots:
       - supports-color
 
   human-signals@2.1.0: {}
-
-  i18n-keyless-core@3.5.0: {}
-
-  i18n-keyless-react@3.5.0(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8)):
-    dependencies:
-      i18n-keyless-core: 3.5.0
-      react: 19.2.8
-      zustand: 5.0.15(@types/react@19.2.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
-    transitivePeerDependencies:
-      - '@types/react'
-      - immer
-      - use-sync-external-store
 
   i18next@26.3.6(typescript@7.0.2):
     optionalDependencies:

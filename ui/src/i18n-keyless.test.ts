@@ -1,6 +1,48 @@
 import { describe, expect, it } from "vitest";
 
-import { detectBrowserLanguage, languageDisplayName, SUPPORTED_LANGUAGES } from "./i18n-keyless";
+import {
+  detectBrowserLanguage,
+  languageDisplayName,
+  resolveStorage,
+  SUPPORTED_LANGUAGES,
+} from "./i18n-keyless";
+
+describe("resolveStorage", () => {
+  it("keeps a working storage", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key),
+      clear: () => store.clear(),
+    };
+    expect(resolveStorage(() => storage)).toBe(storage);
+  });
+
+  it("falls back to memory when reading the storage property throws", () => {
+    const storage = resolveStorage(() => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    });
+    storage.setItem("k", "v");
+    expect(storage.getItem("k")).toBe("v");
+  });
+
+  it("falls back to memory when the storage throws on first use", () => {
+    const storage = resolveStorage(() => ({
+      getItem: () => {
+        throw new DOMException("QuotaExceededError");
+      },
+      setItem: () => {},
+      removeItem: () => {},
+      clear: () => {},
+    }));
+    expect(storage.getItem("k")).toBeNull();
+  });
+
+  it("falls back to memory when no storage is available", () => {
+    expect(resolveStorage(() => undefined).getItem("k")).toBeNull();
+  });
+});
 
 describe("detectBrowserLanguage", () => {
   it("returns the first supported language, most preferred first", () => {
