@@ -18,7 +18,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { issueService } from "../services/issues.js";
+import {
+  BLOCKER_ATTENTION_MAX_DEPTH,
+  issueService,
+} from "../services/issues.js";
 import { buildIssueGraphLivenessIncidentKey } from "../services/recovery/origins.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -331,6 +334,69 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       attentionBlockerCount: 0,
       sampleBlockerIdentifier: "PBR-3",
     });
+  });
+
+  it("keeps singleton and collection projections aligned through a maintained review descendant", async () => {
+    const { companyId, agentId } = await createCompany("PBP");
+    const rootId = await insertIssue({
+      companyId,
+      identifier: "PBP-1",
+      title: "Blocked source",
+      status: "blocked",
+    });
+
+    let blockedIssueId = rootId;
+    for (let index = 0; index < BLOCKER_ATTENTION_MAX_DEPTH; index += 1) {
+      const blockerId = await insertIssue({
+        companyId,
+        identifier: `PBP-${index + 2}`,
+        title: `Blocked dependency ${index + 1}`,
+        status: "blocked",
+      });
+      await block({ companyId, blockerIssueId: blockerId, blockedIssueId });
+      blockedIssueId = blockerId;
+    }
+
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: `PBP-${BLOCKER_ATTENTION_MAX_DEPTH + 2}`,
+      title: "Maintained review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: reviewLeafId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Confirm the maintained candidate?" },
+    });
+
+    const collectionIssue = (await svc.list(companyId, { status: "blocked" }))
+      .find((issue) => issue.id === rootId);
+    const exactIssue = await svc.getById(rootId);
+    expect(exactIssue).not.toBeNull();
+    const singletonAttention = await svc.listBlockerAttention(companyId, [exactIssue!]);
+    const exactAttention = singletonAttention.get(rootId);
+
+    expect(collectionIssue?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: `PBP-${BLOCKER_ATTENTION_MAX_DEPTH + 2}`,
+      terminalBlockerIssueId: reviewLeafId,
+      terminalBlocker: {
+        id: reviewLeafId,
+        identifier: `PBP-${BLOCKER_ATTENTION_MAX_DEPTH + 2}`,
+        title: "Maintained review leaf",
+      },
+    });
+    expect(exactAttention).toEqual(collectionIssue?.blockerAttention);
   });
 
   it("does not let another company's active run cover the blocker", async () => {

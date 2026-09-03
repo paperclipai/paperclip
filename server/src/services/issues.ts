@@ -2396,7 +2396,12 @@ async function listIssueBlockerAttentionMap(
   let frontier = roots.map((root) => root.id);
   let truncated = false;
   const pendingFinalizeBlockerIssueIds = new Set<string>();
-  for (let depth = 0; frontier.length > 0 && depth < BLOCKER_ATTENTION_MAX_DEPTH; depth += 1) {
+  // Expand until the reachable graph is exhausted. A depth cap makes the
+  // result depend on the caller's batch: collection reads can seed an
+  // intermediate blocker as another root, while an exact read starts only at
+  // the requested issue. nodesById prevents cycles from re-entering the
+  // frontier, and BLOCKER_ATTENTION_MAX_NODES remains the fail-closed bound.
+  while (frontier.length > 0) {
     const nextFrontier = new Set<string>();
 
     for (const chunk of chunkList([...new Set(frontier)], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
