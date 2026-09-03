@@ -440,6 +440,40 @@ describe("createGitRemoteAuthProvider", () => {
         const invocation = await provider(selfHostedUrl);
         expect(invocation?.env.GIT_SSL_CAINFO).toBeUndefined();
       });
+
+      it("never leaks the CA path into a GitHub invocation from the same provider, in either call order", async () => {
+        // Each invocation is a freshly-built env object for one specific execFile("git", ...)
+        // call, not process-wide state -- a mixed GitHub + self-hosted-GitLab company must see
+        // no cross-contamination regardless of which project is cloned first, or whether the
+        // per-provider credential memoization (keyed by providerId) is warm for one host and
+        // cold for the other.
+        const secrets = buildSecretsFake({ GITHUB_TOKEN: "gh-token", GITLAB_TOKEN: "glpat-token" });
+
+        const forward = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          secrets,
+          env: {
+            PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com",
+            PAPERCLIP_GITLAB_CA_CERT_PATH: "/paperclip/ca/lab-ca.pem",
+          },
+        });
+        const gitlabFirst = await forward(selfHostedUrl);
+        const githubSecond = await forward(githubUrl);
+        expect(gitlabFirst?.env.GIT_SSL_CAINFO).toBe("/paperclip/ca/lab-ca.pem");
+        expect(githubSecond?.env.GIT_SSL_CAINFO).toBeUndefined();
+        expect(githubSecond?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("gh-token");
+
+        const reversed = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          secrets,
+          env: {
+            PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com",
+            PAPERCLIP_GITLAB_CA_CERT_PATH: "/paperclip/ca/lab-ca.pem",
+          },
+        });
+        const githubFirst = await reversed(githubUrl);
+        const gitlabSecond = await reversed(selfHostedUrl);
+        expect(githubFirst?.env.GIT_SSL_CAINFO).toBeUndefined();
+        expect(gitlabSecond?.env.GIT_SSL_CAINFO).toBe("/paperclip/ca/lab-ca.pem");
+      });
     });
   });
 });
