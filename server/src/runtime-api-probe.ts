@@ -38,6 +38,8 @@
  * one of those origins to the credential-bearing default.
  */
 
+import { redactRemoteUrlCredential } from "./services/remote-url-credentials.js";
+
 export const RUNTIME_API_PROBE_PATH = "/api/health";
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
 // `application/json`, plus structured suffixes such as `application/problem+json`.
@@ -105,6 +107,18 @@ function isPaperclipHealthBody(parsed: unknown): boolean {
   const body = parsed as Record<string, unknown>;
   if (typeof body.status !== "string" || !HEALTH_STATUS_VALUES.has(body.status)) return false;
   return PAPERCLIP_HEALTH_MARKERS.some((key) => key in body);
+}
+
+/**
+ * Render an API URL for a startup log line.
+ *
+ * Naming the offending URL is the whole point of that line, but the configured
+ * value comes from operator env and may carry userinfo or a token query value,
+ * and a boot log is durable. Keep the origin and path — that is what identifies
+ * the misconfiguration — and drop the credentials.
+ */
+export function loggableApiUrl(apiUrl: string): string {
+  return redactRemoteUrlCredential(apiUrl, "the configured API URL");
 }
 
 export type RuntimeApiProbeResult =
