@@ -643,7 +643,7 @@ export function Layout() {
         )}
 
         {!isMobile && hasSecondarySidebar ? (
-          <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
+          <SecondarySidebar className="w-60 shrink-0">{secondarySidebar}</SecondarySidebar>
         ) : null}
 
         <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>

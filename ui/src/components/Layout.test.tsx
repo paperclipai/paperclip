@@ -586,6 +586,9 @@ describe("Layout", () => {
     expect(container.textContent).toContain("Apps sidebar");
     expect(container.textContent).toContain("Main company nav");
     expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+    const secondaryRail = container.querySelector("[data-secondary-sidebar]");
+    expect(secondaryRail?.classList.contains("w-60")).toBe(true);
+    expect(secondaryRail?.classList.contains("shrink-0")).toBe(true);
 
     await act(async () => {
       root.unmount();
