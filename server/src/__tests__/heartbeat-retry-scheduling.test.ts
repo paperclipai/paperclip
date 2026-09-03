@@ -36,6 +36,9 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+const HERMES_TRANSIENT_TEST_ADAPTER = "hermes_transient_test";
+const HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER = "hermes_transient_code_fallback_test";
+const UNCLASSIFIED_FAILURE_TEST_ADAPTER = "unclassified_failure_test";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -89,6 +92,59 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
+    registerServerAdapter({
+      type: HERMES_TRANSIENT_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage:
+          "API call failed after 3 retries: HTTP 429: The engine is currently overloaded, please try again later",
+        errorCode: "hermes_transient_upstream",
+        errorFamily: "transient_upstream",
+        resultJson: { errorFamily: "transient_upstream" },
+      }),
+      testEnvironment: async () => ({
+        adapterType: HERMES_TRANSIENT_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
+    registerServerAdapter({
+      type: HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage:
+          "API call failed after 3 retries: HTTP 429: The engine is currently overloaded, please try again later",
+        errorCode: "hermes_transient_upstream",
+        resultJson: {},
+      }),
+      testEnvironment: async () => ({
+        adapterType: HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
+    registerServerAdapter({
+      type: UNCLASSIFIED_FAILURE_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Hermes exited with code 1",
+        resultJson: {},
+      }),
+      testEnvironment: async () => ({
+        adapterType: UNCLASSIFIED_FAILURE_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
   }, 20_000);
 
   afterEach(async () => {
@@ -104,6 +160,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+    unregisterServerAdapter(HERMES_TRANSIENT_TEST_ADAPTER);
+    unregisterServerAdapter(HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER);
+    unregisterServerAdapter(UNCLASSIFIED_FAILURE_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -212,6 +271,99 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       createdAt: input.now,
     });
   }
+
+  async function invokeFailureAdapter(adapterType: string) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Hermes Test",
+      role: "engineer",
+      status: "idle",
+      adapterType,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+    return { agentId, runId: run!.id, failedRun };
+  }
+
+  it("automatically schedules a bounded retry for Hermes transient upstream failures", async () => {
+    const { runId, failedRun } = await invokeFailureAdapter(HERMES_TRANSIENT_TEST_ADAPTER);
+
+    expect(failedRun?.errorCode).toBe("hermes_transient_upstream");
+    expect(failedRun?.resultJson).toMatchObject({ errorFamily: "transient_upstream" });
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, runId))
+            .then((rows) => rows.length),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe(1);
+  });
+
+  it("keeps the Hermes transient error-code compatibility fallback retryable", async () => {
+    const { runId, failedRun } = await invokeFailureAdapter(HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER);
+
+    expect(failedRun?.errorCode).toBe("hermes_transient_upstream");
+    expect(failedRun?.resultJson).not.toMatchObject({ errorFamily: "transient_upstream" });
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, runId))
+            .then((rows) => rows.length),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe(1);
+  });
+
+  it("does not automatically retry an unclassified nonzero exit", async () => {
+    const { agentId, runId } = await invokeFailureAdapter(UNCLASSIFIED_FAILURE_TEST_ADAPTER);
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ status: agents.status })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0]?.status ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe("error");
+
+    const retries = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retries).toHaveLength(0);
+  });
 
   it("records provider quota failures, schedules the reset-time retry, and leaves the agent idle", async () => {
     const companyId = randomUUID();
