@@ -30,10 +30,12 @@ import { toolAccessService } from "./tool-access.js";
  *
  * GitLab additionally supports a self-managed instance at an operator-chosen domain (there is
  * no equivalent for GitHub — GHES stays out of scope, as it always has been here): set
- * `PAPERCLIP_GITLAB_HOSTS` to that instance's hostname (comma-separated for more than one) and
- * the same `GITLAB_TOKEN`/`PAPERCLIP_GITLAB_TOKEN` company secret or `GITLAB_TOKEN` server env
- * used for gitlab.com now also authenticates that host, with the credential helper scoped
- * strictly to it — never to gitlab.com or a different configured self-managed host.
+ * `PAPERCLIP_GITLAB_HOSTS` to that instance's `host[:port]` (comma-separated for more than one;
+ * include the port explicitly if the instance runs on a non-default one, e.g.
+ * `gitlab.mycompany.com:1234` — omitting it only matches the default HTTPS port) and the same
+ * `GITLAB_TOKEN`/`PAPERCLIP_GITLAB_TOKEN` company secret or `GITLAB_TOKEN` server env used for
+ * gitlab.com now also authenticates that host, with the credential helper scoped strictly to
+ * it — never to gitlab.com or a different configured self-managed host.
  */
 
 export type GitProviderId = "github" | "gitlab";
@@ -54,7 +56,8 @@ type GitHostProviderConfig = {
    * Server env var naming this provider's self-managed instance host(s), for operators who
    * run their own server on a custom domain (GitLab's self-hosted offering; there is no
    * equivalent GHES support here, matching this module's prior GHES-out-of-scope stance).
-   * Comma-separated; each entry is a bare hostname or a full URL (only the hostname is used).
+   * Comma-separated; each entry is a bare `host[:port]` or a full URL (only `host[:port]` is
+   * used — an explicit non-default port must be included, since it is not inferred).
    * Undefined for a provider with no self-hosted mode.
    */
   selfHostedEnvName?: string;
@@ -101,16 +104,23 @@ function getGitHostProvider(id: GitProviderId): GitHostProviderConfig {
 }
 
 /**
- * Extract a bare lowercase hostname from an operator-supplied entry in a `selfHostedEnvName`
- * value: either a full URL (`https://gitlab.mycompany.com/`) or a bare hostname
- * (`gitlab.mycompany.com`). Returns null for an empty or unparseable entry.
+ * Extract a lowercase `host[:port]` from an operator-supplied entry in a `selfHostedEnvName`
+ * value: either a full URL (`https://gitlab.mycompany.com:1234/`) or a bare
+ * `host[:port]` (`gitlab.mycompany.com:1234`). Returns null for an empty or unparseable entry.
+ *
+ * Deliberately `URL.host`, not `URL.hostname`: git's credential protocol carries the port as
+ * part of its `host=` field on a non-default port, and `credential.<url>.helper` config keys
+ * are matched port-for-port — a config key that omits the port is consulted only for the
+ * scheme's default port (443 for https), never for an arbitrary one. Dropping the port here
+ * would silently make a self-hosted instance on a custom port unreachable end-to-end: the
+ * helper would never even be consulted, let alone answer.
  */
 function normalizeConfiguredHost(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   try {
     const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
-    return url.hostname.toLowerCase() || null;
+    return url.host.toLowerCase() || null;
   } catch {
     return null;
   }
@@ -175,10 +185,12 @@ function resolveGitHostMatch(
     return null;
   }
   if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
-  const hostname = parsed.hostname.toLowerCase();
+  // `.host`, not `.hostname` — see `normalizeConfiguredHost` for why the port must survive to
+  // this comparison and into `scopedHosts`.
+  const hostWithPort = parsed.host.toLowerCase();
   for (const provider of GIT_HOST_PROVIDERS) {
-    if (resolveConfiguredSelfHostedHosts(provider, env).includes(hostname)) {
-      return { provider, scopedHosts: [hostname] };
+    if (resolveConfiguredSelfHostedHosts(provider, env).includes(hostWithPort)) {
+      return { provider, scopedHosts: [hostWithPort] };
     }
   }
   return null;

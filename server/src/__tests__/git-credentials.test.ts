@@ -340,6 +340,54 @@ describe("createGitRemoteAuthProvider", () => {
       expect(invocation?.source).toBe("server_env");
       expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("env-gitlab");
     });
+
+    describe("custom ports", () => {
+      const portedUrl = "https://gitlab.mycompany.com:1234/example/repo.git";
+
+      it("matches a configured host:port exactly, scoping the helper to host:port", async () => {
+        const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+        const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          secrets,
+          env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com:1234" },
+        });
+        const invocation = await provider(portedUrl);
+        expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("glpat-token");
+        // The config key must carry the port too -- git only consults credential.<url>.helper
+        // for the exact port it specifies (an omitted port matches only the default port).
+        expect(invocation?.configArgs.join(" ")).toContain(
+          "credential.https://gitlab.mycompany.com:1234.helper=",
+        );
+      });
+
+      it("accepts a configured full URL with a port", async () => {
+        const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+        const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          secrets,
+          env: { PAPERCLIP_GITLAB_HOSTS: "https://gitlab.mycompany.com:1234/" },
+        });
+        await expect(provider(portedUrl)).resolves.not.toBeNull();
+      });
+
+      it("does not match when the configured host omits the port the remote actually uses", async () => {
+        const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+        const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          // Configured without a port; the remote is on a non-default one. Least-privilege
+          // means this must stay out of scope rather than guessing the operator meant any port.
+          secrets,
+          env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com" },
+        });
+        await expect(provider(portedUrl)).resolves.toBeNull();
+      });
+
+      it("does not match a different port than the one configured", async () => {
+        const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+        const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          secrets,
+          env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com:5678" },
+        });
+        await expect(provider(portedUrl)).resolves.toBeNull();
+      });
+    });
   });
 });
 
@@ -491,6 +539,40 @@ describe("credential helper execution (real git, no network)", () => {
     const result = await runCredentialFill("protocol=https\nhost=gitlab.com\n\n", "github");
     expect(result.code).not.toBe(0);
     expect(result.stdout).not.toContain("abc123");
+  });
+
+  it("answers a self-hosted request on a custom port, with the port in git's host= line", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-cred-fill-port-"));
+    try {
+      const invocation = buildGitAuthInvocation(
+        {
+          token: "abc123",
+          source: "company_secret",
+          secretName: "GITLAB_TOKEN",
+          providerId: "gitlab",
+        },
+        ["gitlab.mycompany.com:1234"],
+      );
+      const result = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
+        const child = spawn("git", [...invocation.configArgs, "credential", "fill"], {
+          cwd,
+          env: { ...process.env, ...invocation.env },
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        let stdout = "";
+        child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+        child.on("error", reject);
+        child.on("close", (code) => resolve({ code, stdout }));
+        // Git's credential protocol carries the port as part of `host=` for a non-default port.
+        child.stdin.write("protocol=https\nhost=gitlab.mycompany.com:1234\n\n");
+        child.stdin.end();
+      });
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("username=oauth2");
+      expect(result.stdout).toContain("password=abc123");
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
   });
 });
 
