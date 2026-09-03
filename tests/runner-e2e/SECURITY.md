@@ -24,14 +24,17 @@ that branch through the GitHub API and passes only its immutable commit SHA to a
 credential-free target-lock job. That job checks out the commit, regenerates
 `pnpm-lock.yaml` once with lifecycle scripts disabled and lockfile-only mode,
 then uploads the file under a run-attempt-scoped artifact ID. Catalog, image,
-and paid test jobs download that exact artifact by ID, verify its recorded
-SHA-256, and restore it before setup or a frozen dependency install. The lock
-resolver receives no provider credentials and must never run repository
-lifecycle scripts. The paid test job also installs with lifecycle scripts
-disabled, and provider secrets are scoped only to its final test step rather
-than dependency setup. Report sanitization and AWS history publication
-explicitly use the trusted workflow commit and do not consume the target
-lockfile. Never run the workflow definition from the target branch.
+shared-build, provider-pack, and paid test jobs download that exact artifact by
+ID, verify its recorded SHA-256, and restore it before setup or a frozen
+dependency install. The lock resolver receives no provider credentials and
+must never run repository lifecycle scripts. The shared-build and provider-pack
+jobs also receive no provider credentials; they package outputs with SHA-256
+sidecars that consumers verify before extraction. The paid test job installs
+with lifecycle scripts disabled, and provider secrets are scoped only to its
+final test step rather than dependency setup. Report sanitization and AWS
+history publication explicitly use the trusted workflow commit and do not
+consume the target lockfile. Never run the workflow definition from the target
+branch.
 
 The workflows verify both the original actor and triggering actor for every
 scheduled or manual attempt, including human reruns. Every

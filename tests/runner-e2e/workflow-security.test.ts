@@ -3,6 +3,12 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+const fullStackTestNeeds =
+  /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
+const buildRunnerNeeds =
+  /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,?\s*\]/u;
+const buildRemoteProviderPackNeeds =
+  /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,?\s*\]/u;
 
 describe("public repository paid workflow security", () => {
   it("gates every provider-secret job with stable actor IDs", async () => {
@@ -111,9 +117,7 @@ describe("public repository paid workflow security", () => {
     expect(paidJob).toContain(
       "runs-on: ${{ needs.authorize.outputs.test_runner }}",
     );
-    expect(paidJob).toContain(
-      "needs: [authorize, target_lock, catalog, daytona_image]",
-    );
+    expect(paidJob).toMatch(fullStackTestNeeds);
     expect(paidJob).toContain("name: runner-e2e-paid");
     expect(paidJob).toMatch(
       /Reauthorize paid execution before provider access[\s\S]*actions\/checkout@[0-9a-f]{40}[\s\S]*persist-credentials: false[\s\S]*Download resolved target lockfile/,
@@ -145,6 +149,14 @@ describe("public repository paid workflow security", () => {
       ),
       fullStack.slice(
         fullStack.indexOf("  daytona_image:"),
+        fullStack.indexOf("  build_runner_artifacts:"),
+      ),
+      fullStack.slice(
+        fullStack.indexOf("  build_runner_artifacts:"),
+        fullStack.indexOf("  build_remote_provider_pack:"),
+      ),
+      fullStack.slice(
+        fullStack.indexOf("  build_remote_provider_pack:"),
         fullStack.indexOf("  test:"),
       ),
       paidJob,
@@ -176,13 +188,18 @@ describe("public repository paid workflow security", () => {
       );
     }
     expect(fullStack.match(/Download resolved target lockfile/g)).toHaveLength(
-      3,
+      5,
     );
     expect(fullStack.match(/Restore resolved target lockfile/g)).toHaveLength(
-      3,
+      5,
     );
+    expect(
+      fullStack.match(
+        /ref: \$\{\{ needs\.authorize\.outputs\.target_sha \}\}/g,
+      ),
+    ).toHaveLength(6);
     expect(fullStack.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(2);
-    expect(fullStack.match(/persist-credentials: false/g)).toHaveLength(6);
+    expect(fullStack.match(/persist-credentials: false/g)).toHaveLength(8);
     expect(fullStack).not.toContain("ref: ${{ inputs.target_branch }}");
     expect(fullStack).toContain(
       "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}",
@@ -258,6 +275,70 @@ describe("public repository paid workflow security", () => {
       expect(crons[0]).toMatch(/^\d{1,2} \d{1,2} \* \* 0$/);
       expect(workflow).toContain("workflow_dispatch:");
     }
+  });
+
+  it("builds runner outputs once without provider credentials and verifies them in every paid cell", async () => {
+    const workflow = await readFile(
+      path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"),
+      "utf8",
+    );
+    const buildJobStart = workflow.indexOf("  build_runner_artifacts:");
+    const testJobStart = workflow.indexOf("  test:", buildJobStart);
+    const reportJobStart = workflow.indexOf("  report:", testJobStart);
+    const buildJob = workflow.slice(buildJobStart, testJobStart);
+    const testJob = workflow.slice(testJobStart, reportJobStart);
+
+    expect(buildJobStart).toBeGreaterThan(0);
+    expect(testJobStart).toBeGreaterThan(buildJobStart);
+    expect(buildJob).toMatch(buildRunnerNeeds);
+    expect(buildJob).toMatch(buildRemoteProviderPackNeeds);
+    expect(buildJob).not.toContain("environment:");
+    expect(buildJob).not.toContain("secrets.");
+    expect(buildJob).toContain(
+      "pnpm --filter @paperclipai/paperclip-runner build:typescript",
+    );
+    expect(buildJob).toContain(
+      "pnpm --filter @paperclipai/paperclip-runner build:runner-binaries",
+    );
+    expect(buildJob).toContain(
+      "node packages/paperclip-runner/scripts/build-provider-pack.mjs",
+    );
+    expect(buildJob).toContain("runner-e2e-build-bundle.tar.gz.sha256");
+    expect(buildJob).toContain("runner-e2e-provider-pack.tar.gz.sha256");
+    expect(buildJob).toContain(
+      "build_artifact_name: ${{ steps.build_artifact_name.outputs.name }}",
+    );
+    expect(buildJob).toContain(
+      "needs.build_runner_artifacts.outputs.build_artifact_name",
+    );
+    expect(buildJob).toContain(
+      "provider_pack_artifact_name: ${{ steps.provider_pack_artifact_name.outputs.name }}",
+    );
+    expect(workflow).toContain("needs_runner_typescript=");
+    expect(workflow).toContain("needs_native_binaries=");
+    expect(workflow).toContain("needs_remote_provider_pack=");
+
+    expect(testJob).toMatch(fullStackTestNeeds);
+    expect(testJob).toContain("Download immutable campaign outputs");
+    expect(testJob).toContain("Download immutable remote provider pack");
+    expect(testJob).toContain(
+      "needs.build_runner_artifacts.outputs.build_artifact_name",
+    );
+    expect(testJob).toContain(
+      "needs.build_remote_provider_pack.outputs.provider_pack_artifact_name",
+    );
+    expect(testJob).toContain("sha256sum --check");
+    expect(testJob.indexOf("sha256sum --check")).toBeLessThan(
+      testJob.indexOf("tar --extract"),
+    );
+    expect(testJob).toContain(
+      "test -x packages/paperclip-runner/runner/target/debug/paperclip-runnerd",
+    );
+    expect(testJob).toContain(".payload.runnerSourceRevision == $revision");
+    expect(workflow).toContain("Qualify local provider Node interpreter");
+    expect(testJob).not.toContain("build:typescript");
+    expect(testJob).not.toContain("build:runner-binaries");
+    expect(testJob).not.toContain("build-provider-pack.mjs");
   });
 
   it("uses environment-scoped OIDC for a no-delete history publisher", async () => {
