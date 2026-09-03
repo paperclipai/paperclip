@@ -59,7 +59,7 @@
     "cmdk": "^1.1.1",
     "i18next": "^26.3.6",
     "lexical": "0.48.0",
-    "lucide-react": "^1.32.0",
+    "lucide-react": "^1.38.0",
     "mermaid": "^11.17.2",
     "motion": "^12.42.2",
     "radix-ui": "^1.6.7",
