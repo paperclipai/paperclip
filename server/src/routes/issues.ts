@@ -94,6 +94,7 @@ import {
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
   type IssueReviewPolicy,
+  type IssueUnblockDescriptor,
   type IssueThreadInteractionCanonicalResolverPolicy,
   type IssueCommentPresentation,
   type IssueQueuedCommentQueue,
@@ -245,7 +246,7 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
-import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+import { deliverAgentUnblockNotification, unblockDescriptorFingerprint } from "../services/routable-blocked.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
@@ -2961,6 +2962,43 @@ export function issueRoutes(
     shouldCache: (issue) => issue !== null,
   });
   const memoizeIssueReadDecision = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof decideIssueAccess>>>();
+
+  /**
+   * Wake the agent named by an issue's unblockDescriptor and record delivery.
+   *
+   * Every path that can leave an issue blocked with an agent-owned descriptor
+   * has to call this — entering blocked, attaching a descriptor to an issue
+   * that is *already* blocked, and creating an issue directly in blocked. It
+   * used to be wired only to the first, so a descriptor attached seconds after
+   * the transition (or a child born blocked) never notified anyone.
+   *
+   * Returns the persisted notification timestamp, or null when nothing was due
+   * (no descriptor, board/user owner, already notified for this descriptor).
+   */
+  async function notifyBlockedOwner(issue: {
+    id: string;
+    companyId: string;
+    status: string;
+    unblockDescriptor?: IssueUnblockDescriptor | null;
+    blockedTransitionAt?: Date | null;
+    blockedOwnerNotifiedAt?: Date | null;
+  }, supersedesNotifiedAt: Date | null = null): Promise<Date | null> {
+    let ownerNotifiedAt: Date | null = null;
+    await deliverAgentUnblockNotification({
+      issue,
+      supersedesNotifiedAt,
+      wakeup: heartbeat.wakeup,
+      markNotified: async (blockedOwnerNotifiedAt) => {
+        ownerNotifiedAt = blockedOwnerNotifiedAt;
+      },
+    });
+    if (!ownerNotifiedAt) return null;
+    await db.update(issueRows).set({ blockedOwnerNotifiedAt: ownerNotifiedAt }).where(and(
+      eq(issueRows.id, issue.id),
+      eq(issueRows.companyId, issue.companyId),
+    ));
+    return ownerNotifiedAt;
+  }
 
   function getIssueById(req: Request, id: string) {
     if (req.method !== "GET") return svc.getById(id);
@@ -9267,6 +9305,10 @@ export function issueRoutes(
       },
     });
 
+    // An issue can be born blocked; that owner needs waking exactly as much as
+    // one blocked by a later PATCH.
+    await notifyBlockedOwner(issue);
+
     if (executionPolicy?.monitor) {
       await logActivity(db, {
         companyId,
@@ -9467,6 +9509,10 @@ export function issueRoutes(
           : {}),
       },
     });
+
+    // A child can be born blocked with a descriptor already attached; without
+    // this the named owner is never woken and the child silently strands.
+    await notifyBlockedOwner(issue);
 
     if (executionPolicy?.monitor) {
       await logActivity(db, {
@@ -9689,6 +9735,8 @@ export function issueRoutes(
             : {}),
         },
       });
+
+      await notifyBlockedOwner(issue);
 
       const executionPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy);
       if (executionPolicy?.monitor) {
@@ -10270,6 +10318,15 @@ export function issueRoutes(
       }
     }
     const enteringBlocked = existing.status !== "blocked" && updateFields.status === "blocked";
+    // Attaching or re-pointing a descriptor on an issue that is *already*
+    // blocked is just as much a "someone owes this issue an action" event as
+    // the transition itself, and it was previously silent.
+    const previousDescriptor = (existing.unblockDescriptor ?? null) as IssueUnblockDescriptor | null;
+    const descriptorRepointedWhileBlocked = !enteringBlocked
+      && nextStatus === "blocked"
+      && descriptor !== null
+      && unblockDescriptorFingerprint(descriptor as IssueUnblockDescriptor)
+        !== (previousDescriptor ? unblockDescriptorFingerprint(previousDescriptor) : null);
     if (enteringBlocked) {
       const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
         ? [...new Set(req.body.blockedByIssueIds as string[])]
@@ -10576,21 +10633,20 @@ export function issueRoutes(
     for (const publication of postCommitActivityPublications) publishActivity(publication);
     await flushIssuePostCommitActions(postCommitIssueActions);
 
-    if (enteringBlocked) {
+    if (enteringBlocked || descriptorRepointedWhileBlocked) {
       const blockedIssue = issue;
-      let ownerNotifiedAt: Date | null = null;
-      await deliverAgentUnblockNotification({
-        issue: blockedIssue,
-        wakeup: heartbeat.wakeup,
-        markNotified: async (blockedOwnerNotifiedAt) => {
-          ownerNotifiedAt = blockedOwnerNotifiedAt;
-        },
-      });
+      // A re-point is a fresh obligation for a different owner, so the prior
+      // delivery stamp must not suppress it. That stamp is still what makes the
+      // new wakeup's key distinct: `blockedTransitionAt` does not move on a
+      // re-point, so without it a descriptor re-pointed A -> B -> A would
+      // rebuild the key A's first delivery already used.
+      const ownerNotifiedAt = await notifyBlockedOwner(
+        descriptorRepointedWhileBlocked
+          ? { ...blockedIssue, blockedOwnerNotifiedAt: null }
+          : blockedIssue,
+        descriptorRepointedWhileBlocked ? (blockedIssue.blockedOwnerNotifiedAt ?? null) : null,
+      );
       if (ownerNotifiedAt) {
-        await db.update(issueRows).set({ blockedOwnerNotifiedAt: ownerNotifiedAt }).where(and(
-          eq(issueRows.id, blockedIssue.id),
-          eq(issueRows.companyId, blockedIssue.companyId),
-        ));
         issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
       }
     }
