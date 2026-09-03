@@ -8,7 +8,6 @@ describe("BUILTIN_ADAPTER_CAPABILITY_DEFAULTS", () => {
       supportsSkills: true,
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
-      supportsModelProfiles: false,
       supportsAcp: false,
     });
   });
