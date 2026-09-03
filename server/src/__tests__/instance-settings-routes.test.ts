@@ -1203,27 +1203,27 @@ describe("instance settings routes", () => {
 
       const app = await createApp(adminActor);
 
-      // supertest only sends the request once something calls .then() on
-      // it, so kick both off eagerly instead of waiting for the final
-      // Promise.all below to do it — otherwise neither request would even
-      // reach the (still-pending) POST transaction during the wait.
+      // supertest only sends a request once something calls .then() on it,
+      // so force the POST to send now instead of waiting for the final
+      // Promise.all below to do it.
       const postPromise = request(app).post("/api/instance/task-drain").send({});
       postPromise.then(() => {}, () => {});
+      // Wait for the POST's transaction call to start before the test sends
+      // the DELETE. At that point the POST already called listCompanyIds,
+      // already entered the task-drain transition queue, and sits blocked
+      // inside the mocked db.transaction call — the POST holds the queue.
+      // Only a real event proves this; a fixed wait would not, because the
+      // event loop can take far longer than any fixed budget under CPU
+      // contention. Sending the DELETE only after this event fixes the
+      // request order by the queue, not by which socket the operating
+      // system happens to service first.
+      await firstTransactionStarted;
       const deletePromise = request(app).delete("/api/instance/task-drain");
       deletePromise.then(() => {}, () => {});
-      // Wait for two real events, in either order: the first transaction
-      // call actually started, and the DELETE's own listCompanyIds call
-      // proved it passed authorization and reached the transition queue
-      // behind the POST. Waiting on the first transaction call alone only
-      // proves the DELETE has not committed yet — supertest sends the
-      // DELETE over a real socket, so at that moment it may not have even
-      // reached the route handler. Waiting on both events proves the
-      // stronger claim: the DELETE arrived and the queue is holding it
-      // back, not that it simply has not shown up yet. After both events,
-      // the production queue — not this test — guarantees the DELETE's
-      // transaction cannot start until the test releases the POST's. That
-      // guarantee holds no matter how much wall-clock time this wait takes.
-      await Promise.all([firstTransactionStarted, secondListCompanyIdsCall]);
+      // Wait for the DELETE's own listCompanyIds call. It proves the DELETE
+      // passed authorization and reached the transition queue behind the
+      // POST — not merely that it has not shown up yet.
+      await secondListCompanyIdsCall;
       expect(transactionCalls).toEqual(["post-start"]);
       expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
       expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
