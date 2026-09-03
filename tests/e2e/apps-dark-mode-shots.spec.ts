@@ -161,7 +161,7 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await expect(page.locator('a[href$="/apps/advanced/gateways"]', { hasText: "Gateways" })).toHaveCount(0);
     await expect(page.locator('a[href$="/apps/advanced/profiles"]', { hasText: "Profiles" })).toHaveCount(0);
     await expect(page.locator('a[href$="/apps/advanced/audit"]', { hasText: "Activity" })).toHaveCount(0);
-    await expect(page.locator('a[href$="/activity"]', { hasText: "Activity" })).toBeVisible();
+    await expect(page.locator('a[href$="/activity"]', { hasText: "Audit" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Applications", exact: true })).toHaveCount(0);
     // Apps section lives in the same sidebar now.
     await expect(page.locator('a[href$="/apps"]', { hasText: "Connectors" })).toBeVisible();
