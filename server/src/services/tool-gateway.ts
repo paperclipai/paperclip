@@ -7242,7 +7242,7 @@ export function createToolGatewayService(
           connectedMcpExecution
             ? connectedMcpExecution.result
             : tool.providerType === "paperclip_plugin"
-            ? await runWithTimeout(
+            ? (await runWithTimeout(
                 pluginToolDispatcher!.executeTool(
                   tool.name,
                   effectiveParameters,
@@ -7254,7 +7254,7 @@ export function createToolGatewayService(
                   },
                 ),
                 executionTimeoutMs,
-              )
+              )).result
             : await runWithTimeout(executeBuiltinTool(session, tool, effectiveParameters), executionTimeoutMs);
 
         const resultValidation = validateToolContent({
