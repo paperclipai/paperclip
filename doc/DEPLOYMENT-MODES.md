@@ -163,6 +163,12 @@ only to real browser session actors in `authenticated/private`; unauthenticated
 requests, agent keys, board API keys, and local implicit board actors are
 rejected.
 
+This is intentionally a first-claim bootstrap contract: before an instance
+admin exists, the first authenticated browser session that completes the claim
+wins. Operators must keep a `bootstrap_pending` private deployment on a trusted
+network and complete setup before admitting untrusted users. This behavior is
+not an account-recovery or public-deployment mechanism.
+
 The CLI fallback remains supported in all authenticated setup states:
 
 ```sh

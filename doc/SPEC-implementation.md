@@ -414,6 +414,7 @@ Operational policy:
   - Default upload allowlist includes common images, PDF, plain text/markdown/JSON/CSV/HTML, ZIP, and video artifacts (`video/mp4`, `video/webm`, `video/quicktime`).
   - Attachment reads are company-scoped and expose stable path metadata: `contentPath`/`openPath` for inline-safe viewing and `downloadPath` for forced download.
   - Inline-safe responses use `Content-Disposition: inline`; unsafe types and explicit download requests use `attachment`.
+  - Script-capable content such as HTML is always served as an attachment with `X-Content-Type-Options: nosniff` and a sandboxed, deny-by-default CSP; it is never rendered inline on the Paperclip origin.
   - Video attachments are inline-safe and support single `Range: bytes=start-end` requests with `206`, `Content-Range`, and `Accept-Ranges: bytes` for browser playback/seeking.
 - Attachment-backed artifact work products use `type: "artifact"`, `provider: "paperclip"`, and metadata with `attachmentId`, `contentType`, `byteSize`, `contentPath`, `openPath`, `downloadPath`, and optional `originalFilename`.
 - Workspace-only file references use work product `metadata.resourceRef` with `kind: "workspace_file"`, `issueId`, `workspaceKind` (`execution_workspace` or `project_workspace`), `workspaceId`, `relativePath`, optional `line`/`column`, and `displayPath`. These references point at files in a workspace; they do not replace attachment-backed artifacts for deliverables that must be inspectable without workspace access.
@@ -1353,6 +1354,10 @@ Required UX behaviors:
 - CSRF protection for board session endpoints
 - rate limit auth and key-management endpoints
 - strict company boundary checks on every entity fetch/mutation
+- restricted `skill_test` and `task_bridge` keys cannot enumerate company-wide run telemetry, workspace-operation logs, or the company secret catalog
+- HTTP adapters use DNS-pinned outbound requests, reject redirects and link-local/metadata targets, and require an exact server-owner origin allowlist for private destinations
+- external instruction bundle roots and exports that read them require instance-admin access; managed company-scoped bundles remain available through normal company authorization
+- agent-authenticated callers cannot persist host-executed workspace commands, and restricted keys cannot invoke preconfigured workspace runtime controls
 
 ## 17. Testing Strategy
 

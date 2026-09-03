@@ -76,7 +76,7 @@ import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
-import { agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
@@ -555,6 +555,9 @@ function buildSkillExportDirMap(skills: CompanySkill[], companyIssuePrefix: stri
 function isSensitiveEnvKey(key: string) {
   const normalized = key.trim().toLowerCase();
   return (
+    normalized === "key" ||
+    normalized.endsWith("_key") ||
+    normalized.endsWith("-key") ||
     normalized === "token" ||
     normalized.endsWith("_token") ||
     normalized.endsWith("-token") ||
@@ -3834,7 +3837,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function exportBundle(
     companyId: string,
     input: CompanyPortabilityExport,
-    options: { preview?: boolean } = {},
+    options: { preview?: boolean; allowExternalInstructions?: boolean } = {},
   ): Promise<CompanyPortabilityExportResult> {
     const include = normalizeInclude({
       ...input.include,
@@ -4227,6 +4230,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.agents) {
+      if (
+        !options.allowExternalInstructions
+        && agentRows.some((agent) => agentInstructionsBundleMode(agent) === "external")
+      ) {
+        throw forbidden("Instance admin access is required to export external instruction bundles");
+      }
       const agentInstructionsById = new Map(
         await mapWithConcurrency(agentRows, EXPORT_READ_CONCURRENCY, async (agent) => (
           [agent.id, await instructions.exportFiles(agent)] as const
@@ -4817,6 +4826,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   async function previewExport(
     companyId: string,
     input: CompanyPortabilityExport,
+    options: { allowExternalInstructions?: boolean } = {},
   ): Promise<CompanyPortabilityExportPreviewResult> {
     const previewInput: CompanyPortabilityExport = {
       ...input,
@@ -4831,7 +4841,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (previewInput.include && previewInput.include.issues === undefined) {
       previewInput.include.issues = false;
     }
-    const exported = await exportBundle(companyId, previewInput, { preview: true });
+    const exported = await exportBundle(companyId, previewInput, {
+      preview: true,
+      allowExternalInstructions: options.allowExternalInstructions,
+    });
     return {
       ...exported,
       fileInventory: Object.keys(exported.files)

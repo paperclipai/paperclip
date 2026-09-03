@@ -47,6 +47,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
+import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
   agentService,
   agentInstructionsService,
@@ -1005,6 +1006,17 @@ export function agentRoutes(
     const decision = await decideAgentRead(req, agent);
     if (decision.allowed) return true;
     res.status(403).json({ error: "Agent is outside this actor's authorization boundary" });
+    return false;
+  }
+
+  async function assertRunTelemetryReadAllowed(req: Request, res: Response, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Run telemetry is outside this actor's authorization boundary" });
     return false;
   }
 
@@ -2548,6 +2560,15 @@ export function agentRoutes(
     );
   }
 
+  function assertExternalInstructionsAdmin(
+    req: Request,
+    agent: Parameters<typeof agentInstructionsBundleMode>[0],
+  ) {
+    if (agentInstructionsBundleMode(agent) === "external") {
+      assertInstanceAdmin(req);
+    }
+  }
+
   function adapterConfigTouchesInstructionsConfig(adapterConfig: Record<string, unknown>) {
     return KNOWN_INSTRUCTIONS_BUNDLE_KEYS.some((key) => adapterConfig[key] !== undefined);
   }
@@ -3584,16 +3605,10 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
-    if (trustPreset.kind === "denied") {
-      res.status(403).json({ error: trustPreset.detail });
-      return;
-    }
-    if (trustPreset.kind === "low_trust_review") {
-      res.json(buildLowTrustSelfView(agent));
-      return;
-    }
-    if (req.actor.keyScope?.kind === "task_bridge") {
+    if (
+      req.actor.keyScope?.kind === "task_bridge"
+      || req.actor.keyScope?.kind === "skill_test"
+    ) {
       res.json({
         id: agent.id,
         companyId: agent.companyId,
@@ -3603,6 +3618,15 @@ export function agentRoutes(
         status: agent.status,
         keyScope: req.actor.keyScope,
       });
+      return;
+    }
+    const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
+    if (trustPreset.kind === "denied") {
+      res.status(403).json({ error: trustPreset.detail });
+      return;
+    }
+    if (trustPreset.kind === "low_trust_review") {
+      res.json(buildLowTrustSelfView(agent));
       return;
     }
     res.json(await buildAgentDetail(agent));
@@ -3772,6 +3796,11 @@ export function agentRoutes(
       await assertSelectableAdapterType(rollbackAdapterType);
     }
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
+    assertExternalInstructionsAdmin(req, existing);
+    assertExternalInstructionsAdmin(req, {
+      ...existing,
+      adapterConfig: rollbackAdapterConfig,
+    });
     if (
       rollbackAdapterType !== existing.adapterType ||
       rollbackAdapterType === "paperclip_runner"
@@ -3903,6 +3932,12 @@ export function agentRoutes(
         rawHireAdapterConfig,
       ),
     );
+    assertExternalInstructionsAdmin(req, {
+      id: hiredAgentId,
+      companyId,
+      name: hireInput.name,
+      adapterConfig: requestedAdapterConfig,
+    });
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       hireInput.adapterType,
@@ -4122,6 +4157,12 @@ export function agentRoutes(
         rawCreateAdapterConfig,
       ),
     );
+    assertExternalInstructionsAdmin(req, {
+      id: agentId,
+      companyId,
+      name: createInput.name,
+      adapterConfig: requestedAdapterConfig,
+    });
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       createInput.adapterType,
@@ -4282,6 +4323,7 @@ export function agentRoutes(
     if (!existing) return;
 
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
@@ -4302,6 +4344,7 @@ export function agentRoutes(
     }
 
     const syncedAdapterConfig = syncInstructionsBundleConfigFromFilePath(existing, nextAdapterConfig);
+    assertExternalInstructionsAdmin(req, { ...existing, adapterConfig: syncedAdapterConfig });
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       syncedAdapterConfig,
@@ -4357,6 +4400,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanReadAgent(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
     res.json(await instructions.getBundle(existing));
   });
 
@@ -4365,6 +4409,8 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
+    if (req.body.mode === "external") assertInstanceAdmin(req);
 
     const actor = getActorInfo(req);
     const { bundle, adapterConfig } = await instructions.updateBundle(existing, req.body);
@@ -4411,6 +4457,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanReadAgent(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -4426,6 +4473,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const actor = getActorInfo(req);
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
@@ -4473,6 +4521,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -4560,6 +4609,7 @@ export function agentRoutes(
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
     if (touchesAdapterConfiguration) {
+      assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
       const changingAdapterType =
         typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
@@ -4631,6 +4681,10 @@ export function agentRoutes(
         adapterConfig: effectiveAdapterConfig,
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      assertExternalInstructionsAdmin(req, {
+        ...existing,
+        adapterConfig: patchData.adapterConfig,
+      });
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
@@ -5708,6 +5762,7 @@ export function agentRoutes(
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
@@ -5748,6 +5803,7 @@ export function agentRoutes(
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
 
     // `minCount` is a padding floor for callers that want a minimum number of
     // recent runs to render (e.g. dashboard cards). It must default to 0 so
@@ -5835,6 +5891,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(await runRedactions.redactForRun(
@@ -6308,6 +6365,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
@@ -6326,6 +6384,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -6342,6 +6401,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
     const context = asRecord(run.contextSnapshot);
     const executionWorkspaceId = asNonEmptyString(context?.executionWorkspaceId);
@@ -6353,6 +6413,7 @@ export function agentRoutes(
     const operationId = req.params.operationId as string;
     const operation = await getAccessibleResource(req, res, workspaceOperations.getById(operationId), "Workspace operation not found");
     if (!operation) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, operation.companyId))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
