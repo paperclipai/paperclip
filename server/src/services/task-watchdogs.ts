@@ -22,6 +22,7 @@ import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { hasScheduledIssueMonitorPath } from "./recovery/issue-graph-liveness.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
@@ -74,6 +75,10 @@ export type TaskWatchdogClassifierIssue = Pick<
   latestCommentAt?: Date | string | null;
   latestDocumentAt?: Date | string | null;
   latestWorkProductAt?: Date | string | null;
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
 };
 
 export type TaskWatchdogClassifierPath = {
@@ -408,15 +413,24 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
 
   const includedIds = included.map((issue) => issue.id);
   const includedIdSet = new Set(includedIds);
+  const monitorEvaluatedAt = input.evaluatedAt ?? new Date();
   const liveIssueIds = [
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
     ...pathIssueIds(input.queuedWakeRequests, input.watchdog.companyId),
+    ...included
+      .filter((issue) =>
+        ["in_progress", "in_review"].includes(issue.status) &&
+        Boolean(issue.assigneeAgentId) &&
+        !issue.assigneeUserId &&
+        hasScheduledIssueMonitorPath(issue, monitorEvaluatedAt)
+      )
+      .map((issue) => issue.id),
   ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
     return {
       state: "live",
-      reason: "At least one issue in the watched subtree has a live run, queued wake, or scheduled retry.",
+      reason: "At least one issue in the watched subtree has a live run, queued wake, scheduled retry, or issue monitor.",
       includedIssueIds: includedIds,
       liveIssueIds: uniqueLiveIssueIds,
     };
@@ -872,6 +886,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           parent_id,
           assignee_agent_id,
           assignee_user_id,
+          execution_policy,
+          execution_state,
+          monitor_next_check_at,
+          monitor_attempt_count,
           origin_kind,
           updated_at,
           created_at,
@@ -891,6 +909,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           child.parent_id,
           child.assignee_agent_id,
           child.assignee_user_id,
+          child.execution_policy,
+          child.execution_state,
+          child.monitor_next_check_at,
+          child.monitor_attempt_count,
           child.origin_kind,
           child.updated_at,
           child.created_at,
@@ -912,6 +934,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         parent_id AS "parentId",
         assignee_agent_id AS "assigneeAgentId",
         assignee_user_id AS "assigneeUserId",
+        execution_policy AS "executionPolicy",
+        execution_state AS "executionState",
+        monitor_next_check_at AS "monitorNextCheckAt",
+        monitor_attempt_count AS "monitorAttemptCount",
         origin_kind AS "originKind",
         updated_at AS "updatedAt",
         created_at AS "createdAt"
