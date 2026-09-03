@@ -4,7 +4,7 @@ import {
   CLOUD_RUNTIME_IDENTITY_AUDIENCE,
   CLOUD_RUNTIME_IDENTITY_ISSUER,
   CLOUD_RUNTIME_IDENTITY_JWS_TYPE,
-  runtimeAuthOrigin,
+  runtimeCanonicalOrigin,
   runtimePublicOrigin,
   verifyCloudRuntimeIdentityAssertion,
 } from "./cloud-runtime-identity.js";
@@ -80,7 +80,7 @@ describe("verifyCloudRuntimeIdentityAssertion", () => {
     } as NodeJS.ProcessEnv;
 
     expect(runtimePublicOrigin(selfHostedEnv)).toBe("https://app.example.test");
-    expect(runtimeAuthOrigin(selfHostedEnv)).toBe("https://auth.example.test");
+    expect(runtimeCanonicalOrigin()).toBeNull();
   });
 
   it("accepts a Cloud-signed claim for this exact stack and pool origin", () => {

@@ -57,7 +57,7 @@ import {
   tooManyRequests
 } from "../errors.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
-import { runtimeAuthOrigin } from "../services/cloud-runtime-identity.js";
+import { runtimeCanonicalOrigin } from "../services/cloud-runtime-identity.js";
 
 /**
  * Floor: when the hosting operator hides the Instance Access surface
@@ -154,7 +154,7 @@ function requestBaseUrl(req: Request) {
 }
 
 function resolveBaseUrl(req: Request, authPublicBaseUrl?: string): string {
-  const runtimeOrigin = runtimeAuthOrigin();
+  const runtimeOrigin = runtimeCanonicalOrigin();
   if (runtimeOrigin) return runtimeOrigin;
   if (authPublicBaseUrl) return authPublicBaseUrl.replace(/\/+$/, "");
   return requestBaseUrl(req);
