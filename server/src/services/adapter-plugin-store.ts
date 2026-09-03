@@ -5,6 +5,10 @@
  * ~/.paperclip/adapter-plugins.json. This is the source of truth for which
  * external adapters should be loaded at startup.
  *
+ * The store path can be overridden with the `PAPERCLIP_ADAPTER_PLUGINS_PATH`
+ * environment variable to support ConfigMap-mounted paths in Kubernetes/GitOps
+ * deployments.
+ *
  * Both the plugin store and the settings store are cached in memory after
  * the first read. Writes invalidate the cache so the next read picks up
  * the new state without a redundant disk round-trip.
@@ -45,9 +49,10 @@ interface AdapterSettings {
 
 function adapterPluginPaths() {
   const paperclipDir = resolvePaperclipHomeDir();
+  const storePath = process.env.PAPERCLIP_ADAPTER_PLUGINS_PATH;
   return {
     adapterPluginsDir: path.join(paperclipDir, "adapter-plugins"),
-    adapterPluginsStorePath: path.join(paperclipDir, "adapter-plugins.json"),
+    adapterPluginsStorePath: storePath || path.join(paperclipDir, "adapter-plugins.json"),
     adapterSettingsPath: path.join(paperclipDir, "adapter-settings.json"),
   };
 }
