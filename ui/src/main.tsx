@@ -23,8 +23,12 @@ import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
+import { initI18nKeyless } from "./i18n-keyless";
 
 initPluginBridge(React, ReactDOM);
+
+// Keyless UI translation: the English strings are the keys. Must run before the first render.
+initI18nKeyless();
 
 // React 19.2 emits an unbounded stream of performance.measure() entries for its
 // DevTools performance tracks and never clears them; on a long-lived tab they
