@@ -301,6 +301,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     now: Date,
   ) {
     const cutoff = new Date(now.getTime() - thresholds.creationWindowMs);
+    // Durability: the persisted review row is the "already notified" record, so
+    // it must keep counting even after a moderation/cleanup pass hides it
+    // (sets hidden_at). Intentionally omitting visibleIssueCondition() here —
+    // otherwise hiding/soft-deleting a notice resets the window and the notice
+    // reposts on the next tick (issue #11673). Cancelled reviews still do not
+    // count, matching the existing snooze/cap semantics.
     return db
       .select({ count: sql<number>`count(*)::int` })
       .from(issues)
@@ -309,7 +315,6 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.companyId, companyId),
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
-          visibleIssueCondition(),
           sql`${issues.status} <> 'cancelled'`,
           sql`${issues.createdAt} >= ${cutoff.toISOString()}::timestamptz`,
         ),
@@ -364,6 +369,31 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       streak += 1;
     }
     return streak;
+  }
+
+  // Durable lifetime count of notices created for a source issue under a given
+  // trigger. Keyed off the append-only activity log (issue.productivity_review_created),
+  // which is never hidden or soft-deleted, so removing/hiding the review notices
+  // cannot reset the ceiling. Used to give long_active_duration a hard lifetime
+  // cap: those issues stay active for the whole episode, constantly emit source
+  // activity, and therefore never satisfy the no-action streak suppression.
+  async function countLifetimeProductivityReviewsByTrigger(
+    companyId: string,
+    sourceIssueId: string,
+    trigger: ProductivityReviewTrigger,
+  ) {
+    return db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "issue.productivity_review_created"),
+          sql`${activityLog.details}->>'sourceIssueId' = ${sourceIssueId}`,
+          sql`${activityLog.details}->>'trigger' = ${trigger}`,
+        ),
+      )
+      .then((rows) => Number(rows[0]?.count ?? 0));
   }
 
   async function getRefreshCommentState(companyId: string, reviewIssueId: string) {
@@ -744,6 +774,22 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     );
     if (recentCreationCount >= opts.thresholds.maxCreationsPerWindow) {
       return { kind: "creation_capped" as const, reviewIssueId: null };
+    }
+
+    // long_active_duration never resolves while the source issue stays
+    // in_progress, and because such an issue is by definition actively running it
+    // continuously emits source activity — so the no-action streak below resets on
+    // every cycle and never suppresses it. Enforce a durable lifetime ceiling here
+    // (issue #11673) so a legitimately weeks-long issue stops being nudged forever.
+    if (evidence.trigger === "long_active_duration") {
+      const lifetimeLongActiveReviews = await countLifetimeProductivityReviewsByTrigger(
+        evidence.sourceIssue.companyId,
+        evidence.sourceIssue.id,
+        "long_active_duration",
+      );
+      if (lifetimeLongActiveReviews >= opts.thresholds.maxConsecutiveNoActionReviews) {
+        return { kind: "creation_capped" as const, reviewIssueId: null };
+      }
     }
 
     const consecutiveNoActionReviews = await countConsecutiveNoActionProductivityReviews(
