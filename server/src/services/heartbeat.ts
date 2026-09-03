@@ -14858,8 +14858,8 @@ export function heartbeatService(
   }
 
   async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
-    const row = await db
-      .select({ id: issues.id })
+    const assignedIssues = await db
+      .select({ id: issues.id, status: issues.status })
       .from(issues)
       .where(
         and(
@@ -14870,9 +14870,16 @@ export function heartbeatService(
           inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
         ),
       )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    return Boolean(row);
+      .then((rows) => rows);
+    if (assignedIssues.some((issue) => issue.status === "in_progress")) return true;
+
+    const todoIssueIds = assignedIssues
+      .filter((issue) => issue.status === "todo")
+      .map((issue) => issue.id);
+    if (todoIssueIds.length === 0) return false;
+
+    const dependencyReadiness = await issuesSvc.listDependencyReadiness(agent.companyId, todoIssueIds);
+    return todoIssueIds.some((issueId) => dependencyReadiness.get(issueId)?.isDependencyReady !== false);
   }
 
   async function markTimerHeartbeatChecked(

@@ -105,7 +105,7 @@ export function dashboardService(db: Db) {
       // Both recursive arms are bounded to the chart window: a retry is always
       // created after the run it retries, so ancestors of an out-of-window
       // child are themselves out of window and invisible to the membership
-      // test below. Unbounded, the seed walks every run the company ever had.
+      // join below. Unbounded, the seed walks every run the company ever had.
       const runActivityRows = (await db.execute(sql`
         WITH RECURSIVE recovered_runs(id) AS (
           SELECT parent.id
@@ -125,12 +125,13 @@ export function dashboardService(db: Db) {
           to_char(run.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
           run.status AS status,
           run.error_code AS error_code,
-          (run.id IN (SELECT id FROM recovered_runs)) AS recovered,
+          (recovered_run.id IS NOT NULL) AS recovered,
           count(*)::double precision AS count
         FROM ${heartbeatRuns} AS run
+        LEFT JOIN recovered_runs AS recovered_run ON recovered_run.id = run.id
         WHERE run.company_id = ${companyId}
           AND run.created_at >= ${runActivityStart.toISOString()}::timestamptz
-        GROUP BY date, run.status, run.error_code, recovered
+        GROUP BY date, run.status, run.error_code, (recovered_run.id IS NOT NULL)
       `)) as unknown as Iterable<{
         date: string;
         status: string;

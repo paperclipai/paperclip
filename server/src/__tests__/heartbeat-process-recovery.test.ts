@@ -1466,6 +1466,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(0);
   });
+  it("treats dependency-blocked assignments as non-actionable timer work", async () => {
+    const { companyId, agentId } = await seedIdleTimerAgentFixture();
+    const blockerIssueId = randomUUID();
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Finish prerequisite work",
+        status: "in_progress",
+        priority: "medium",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked assigned work",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat_scheduler",
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const requests = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(requests).toEqual([
+      expect.objectContaining({ reason: "heartbeat.timer.no_actionable_work" }),
+    ]);
+  });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
@@ -5960,6 +6007,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (runs[0]?.id) {
       await waitForRunToSettle(heartbeat, runs[0].id);
     }
+  });
+  it("batch-skips dependency-blocked assigned todo work before creating wakeups", async () => {
+    const blocked = await seedAssignedTodoNoRunFixture();
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId: blocked.companyId,
+      title: "Finish prerequisite work",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `T${blocked.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId: blocked.companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blocked.issueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dependencyBlockedSkipped).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const blockedWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, blocked.agentId));
+    expect(blockedWakeups).toHaveLength(0);
+    const blockedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, blocked.agentId));
+    expect(blockedRuns).toHaveLength(0);
   });
 
   it("does not duplicate initial assigned todo dispatch when a queued wake already exists", async () => {

@@ -3453,6 +3453,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
         ),
       );
+    const todoIssueIdsByCompany = new Map<string, string[]>();
+    for (const issue of candidates) {
+      if (issue.status !== "todo") continue;
+      const issueIds = todoIssueIdsByCompany.get(issue.companyId) ?? [];
+      issueIds.push(issue.id);
+      todoIssueIdsByCompany.set(issue.companyId, issueIds);
+    }
+    const dependencyReadinessByCompany = new Map<
+      string,
+      Awaited<ReturnType<typeof issuesSvc.listDependencyReadiness>>
+    >();
+    await Promise.all([...todoIssueIdsByCompany].map(async ([companyId, issueIds]) => {
+      dependencyReadinessByCompany.set(
+        companyId,
+        await issuesSvc.listDependencyReadiness(companyId, issueIds),
+      );
+    }));
 
     const result = {
       assignmentDispatched: 0,
@@ -3470,10 +3487,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
       skipped: 0,
+      dependencyBlockedSkipped: 0,
       issueIds: [] as string[],
     };
 
     for (const issue of candidates) {
+      const dependencyReadiness = dependencyReadinessByCompany
+        .get(issue.companyId)
+        ?.get(issue.id);
+      if (issue.status === "todo" && dependencyReadiness?.isDependencyReady === false) {
+        result.dependencyBlockedSkipped += 1;
+        result.skipped += 1;
+        continue;
+      }
+
       const executionState = issue.status === "in_review"
         ? parseIssueExecutionState(issue.executionState)
         : null;

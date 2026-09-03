@@ -7,6 +7,7 @@ import {
   agents,
   approvals,
   companies,
+  costEvents,
   createDb,
   heartbeatRuns,
   inboxDismissals,
@@ -49,6 +50,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     await db.delete(joinRequests);
     await db.delete(invites);
     await db.delete(activityLog);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(approvals);
     await db.delete(agents);
@@ -265,6 +267,64 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     expect(badges).toEqual({
       inbox: 3,
       approvals: 1,
+      failedRuns: 1,
+      joinRequests: 0,
+    });
+  });
+
+  it("adds agent and budget alerts without loading the dashboard run chart", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      budgetMonthlyCents: 100,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ErroredAgent",
+      role: "engineer",
+      status: "error",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      agentId,
+      provider: "test",
+      biller: "test",
+      billingType: "tokens",
+      model: "test-model",
+      costCents: 80,
+      occurredAt: new Date(),
+    });
+
+    const alertsOnly = await badgesSvc.get(companyId);
+    expect(alertsOnly).toEqual({
+      inbox: 2,
+      approvals: 0,
+      failedRuns: 0,
+      joinRequests: 0,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "failed",
+      createdAt: new Date(),
+    });
+
+    const failedRunDeduplicated = await badgesSvc.get(companyId);
+    expect(failedRunDeduplicated).toEqual({
+      inbox: 2,
+      approvals: 0,
       failedRuns: 1,
       joinRequests: 0,
     });
