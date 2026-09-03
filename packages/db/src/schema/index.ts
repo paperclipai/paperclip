@@ -80,6 +80,7 @@ export { estates, estateTypeEnum, maritalStatusEnum } from "./estates.js";
 export { estateBeneficiaries, designationTypeEnum } from "./estate_beneficiaries.js";
 export { estateTrusts, trustTypeEnum, trustFundingStatusEnum } from "./estate_trusts.js";
 export { estateTrustAssets } from "./estate_trust_assets.js";
+export { estateTrustDistributions, distributionTypeEnum } from "./estate_trust_distributions.js";
 export { estateCollaborators, collaboratorAccessLevelEnum } from "./estate_collaborators.js";
 export {
   estateDocuments,

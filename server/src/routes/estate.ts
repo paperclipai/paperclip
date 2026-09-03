@@ -25,6 +25,7 @@ import {
   estateCollaborators,
   estateDocuments,
   estateDocumentAccessLog,
+  estateTrustDistributions,
 } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
@@ -2904,6 +2905,165 @@ export function estateRoutes(
       .where(eq(estateTrustAssets.trustId, req.params.trustId));
 
     res.json({ assets: rows });
+  });
+
+  // ---- Trust distributions --------------------------------------------------
+
+  /**
+   * GET /estate/trusts/:trustId/distributions
+   *
+   * List all distributions recorded against a trust, newest first.
+   */
+  router.get("/estate/trusts/:trustId/distributions", async (req, res) => {
+    assertBoard(req);
+    const trust = await db
+      .select()
+      .from(estateTrusts)
+      .where(eq(estateTrusts.id, req.params.trustId))
+      .then((r) => r[0] ?? null);
+    if (!trust) throw notFound("Trust not found");
+    assertCompanyAccess(req, trust.companyId);
+
+    const rows = await db
+      .select()
+      .from(estateTrustDistributions)
+      .where(eq(estateTrustDistributions.trustId, req.params.trustId))
+      .orderBy(desc(estateTrustDistributions.distributionDate));
+
+    const totalCents = rows.reduce((sum, r) => sum + r.amountCents, 0);
+    res.json({ distributions: rows, totalAmountCents: totalCents, totalAmountDollars: totalCents / 100 });
+  });
+
+  /**
+   * POST /estate/trusts/:trustId/distributions
+   *
+   * Record a new distribution from a trust.
+   * Body: { beneficiaryId?, beneficiaryName?, amountCents, distributionDate, distributionType?, description? }
+   */
+  router.post("/estate/trusts/:trustId/distributions", async (req, res) => {
+    assertBoard(req);
+    const trust = await db
+      .select()
+      .from(estateTrusts)
+      .where(eq(estateTrusts.id, req.params.trustId))
+      .then((r) => r[0] ?? null);
+    if (!trust) throw notFound("Trust not found");
+    assertCompanyAccess(req, trust.companyId);
+
+    const { beneficiaryId, beneficiaryName, amountCents, distributionDate, distributionType, description } = req.body as {
+      beneficiaryId?: string;
+      beneficiaryName?: string;
+      amountCents?: number;
+      distributionDate?: string;
+      distributionType?: string;
+      description?: string;
+    };
+
+    if (!amountCents || typeof amountCents !== "number" || amountCents <= 0) {
+      throw badRequest("amountCents must be a positive integer");
+    }
+    if (!distributionDate || typeof distributionDate !== "string") {
+      throw badRequest("distributionDate is required (YYYY-MM-DD)");
+    }
+    if (!beneficiaryId && !beneficiaryName) {
+      throw badRequest("Either beneficiaryId or beneficiaryName is required");
+    }
+
+    const validTypes = ["income", "principal", "discretionary", "mandatory"] as const;
+    const distType = (distributionType ?? "discretionary") as typeof validTypes[number];
+    if (!validTypes.includes(distType)) {
+      throw badRequest(`distributionType must be one of: ${validTypes.join(", ")}`);
+    }
+
+    const [row] = await db
+      .insert(estateTrustDistributions)
+      .values({
+        trustId: req.params.trustId,
+        companyId: trust.companyId,
+        beneficiaryId: beneficiaryId ?? null,
+        beneficiaryName: beneficiaryName ?? null,
+        amountCents: Math.round(amountCents),
+        distributionDate,
+        distributionType: distType,
+        description: description ?? null,
+      })
+      .returning();
+
+    res.status(201).json({ distribution: row });
+  });
+
+  /**
+   * PATCH /estate/trust-distributions/:distributionId
+   *
+   * Update a distribution record (e.g. correct amount or description).
+   */
+  router.patch("/estate/trust-distributions/:distributionId", async (req, res) => {
+    assertBoard(req);
+    const dist = await db
+      .select()
+      .from(estateTrustDistributions)
+      .where(eq(estateTrustDistributions.id, req.params.distributionId))
+      .then((r) => r[0] ?? null);
+    if (!dist) throw notFound("Distribution not found");
+    assertCompanyAccess(req, dist.companyId);
+
+    const { amountCents, distributionDate, distributionType, description, beneficiaryId, beneficiaryName } = req.body as {
+      amountCents?: number;
+      distributionDate?: string;
+      distributionType?: string;
+      description?: string;
+      beneficiaryId?: string | null;
+      beneficiaryName?: string | null;
+    };
+
+    if (amountCents !== undefined && (typeof amountCents !== "number" || amountCents <= 0)) {
+      throw badRequest("amountCents must be a positive integer");
+    }
+
+    const validTypes = ["income", "principal", "discretionary", "mandatory"] as const;
+    if (distributionType !== undefined && !validTypes.includes(distributionType as typeof validTypes[number])) {
+      throw badRequest(`distributionType must be one of: ${validTypes.join(", ")}`);
+    }
+
+    const updates: Partial<typeof estateTrustDistributions.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (amountCents !== undefined) updates.amountCents = Math.round(amountCents);
+    if (distributionDate !== undefined) updates.distributionDate = distributionDate;
+    if (distributionType !== undefined) updates.distributionType = distributionType as typeof validTypes[number];
+    if (description !== undefined) updates.description = description;
+    if (beneficiaryId !== undefined) updates.beneficiaryId = beneficiaryId;
+    if (beneficiaryName !== undefined) updates.beneficiaryName = beneficiaryName;
+
+    const [updated] = await db
+      .update(estateTrustDistributions)
+      .set(updates)
+      .where(eq(estateTrustDistributions.id, req.params.distributionId))
+      .returning();
+
+    res.json({ distribution: updated });
+  });
+
+  /**
+   * DELETE /estate/trust-distributions/:distributionId
+   *
+   * Delete a distribution record.
+   */
+  router.delete("/estate/trust-distributions/:distributionId", async (req, res) => {
+    assertBoard(req);
+    const dist = await db
+      .select()
+      .from(estateTrustDistributions)
+      .where(eq(estateTrustDistributions.id, req.params.distributionId))
+      .then((r) => r[0] ?? null);
+    if (!dist) throw notFound("Distribution not found");
+    assertCompanyAccess(req, dist.companyId);
+
+    await db
+      .delete(estateTrustDistributions)
+      .where(eq(estateTrustDistributions.id, req.params.distributionId));
+
+    res.status(204).send();
   });
 
   // ---- Collaborators --------------------------------------------------------
