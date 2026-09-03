@@ -2084,4 +2084,83 @@ describe("review round circuit breaker", () => {
       changesRequestedCount: 1,
     });
   });
+
+  it("requires a comment to stop a review", () => {
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: reviewPendingIssue(),
+      policy,
+      requestedStatus: "blocked",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: " ",
+    })).toThrow("Stopping a review or approval stage requires a comment");
+  });
+
+  it("records a terminal review stop as a board-owned wait", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      issue: reviewPendingIssue(),
+      policy,
+      requestedStatus: "blocked",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+      commentBody: "Final mechanism failure. Board decision is required.",
+    });
+
+    expect(result.patch).toMatchObject({
+      status: "blocked",
+      unblockDescriptor: {
+        owner: "board",
+        action: "Board review is required before this issue can continue.",
+      },
+      executionState: {
+        status: "stopped",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        lastDecisionOutcome: "stopped",
+      },
+    });
+    expect(result.decision).toMatchObject({
+      stageId: reviewStageId,
+      stageType: "review",
+      outcome: "stopped",
+      body: "Final mechanism failure. Board decision is required.",
+    });
+    expect(result.workflowControlledUnblockDescriptor).toBe(true);
+  });
+
+  it("requires the board to resume a terminal review stop", () => {
+    const stoppedIssue = reviewPendingIssue(
+      { status: "blocked" },
+      {
+        status: "stopped",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        reviewRequest: null,
+        lastDecisionOutcome: "stopped",
+      },
+    );
+
+    expect(() => applyIssueExecutionPolicyTransition({
+      issue: stoppedIssue,
+      policy,
+      requestedStatus: "todo",
+      requestedAssigneePatch: {},
+      actor: { agentId: qaAgentId },
+    })).toThrow("Only the board can resume a stopped execution review");
+
+    const result = applyIssueExecutionPolicyTransition({
+      issue: stoppedIssue,
+      policy,
+      requestedStatus: "todo",
+      requestedAssigneePatch: {},
+      actor: { userId: boardUserId },
+      allowBoardOverride: true,
+    });
+    expect(result.patch).toEqual({ executionState: null });
+  });
 });

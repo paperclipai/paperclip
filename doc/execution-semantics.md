@@ -460,7 +460,7 @@ This is review/approval state: execution is paused because the next move belongs
 
 A healthy `in_review` issue has at least one valid action path:
 
-- a typed execution-policy participant who can approve or request changes
+- a typed execution-policy participant who can approve, request changes, or stop the review for board action
 - a pending issue-thread interaction or linked approval waiting for a named responder
 - a human owner via `assigneeUserId`
 - an active run or queued wake that is expected to process the review state
@@ -504,8 +504,11 @@ A healthy `blocked` issue has an explicit waiting path:
 - first-class blockers exist, and each unresolved leaf has a valid action path under this contract
 - the issue has an explicit recovery action that itself has a live or waiting path
 - the issue is waiting on a pending interaction, linked approval, human owner, or clearly named external owner/action
+- a terminal execution-review stop has a board-owned unblock descriptor
 
 A blocker chain is covered only when its unresolved leaf is live or explicitly waiting. An intermediate `blocked` issue does not make the chain healthy by itself.
+
+An active review or approval participant can stop a stage with a required decision comment. Paperclip records a `stopped` decision, clears the active participant, and creates a board-owned unblock descriptor. This is a deliberate wait. It does not wake an agent. Only the board can resume the execution policy.
 
 A `blocked` issue is stalled when the unresolved blocker leaf has no active run, queued wake, typed participant, pending interaction or approval, user owner, external owner/action, or recovery action. In that case the parent should show the first stalled leaf instead of presenting the dependency as calmly covered.
 

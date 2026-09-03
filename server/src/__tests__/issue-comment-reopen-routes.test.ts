@@ -2464,6 +2464,77 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("lets the active reviewer stop a policy stage for board action", async () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("in_review"),
+      assigneeAgentId: reviewerAgentId,
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+      ...issue,
+      ...patch,
+      executionState: patch.executionState,
+      status: patch.status ?? issue.status,
+      updatedAt: new Date(),
+      _tx: tx,
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor(reviewerAgentId)))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "blocked",
+        comment: "Final mechanism failure. Board decision is required.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Board review is required before this issue can continue.",
+        },
+        executionState: expect.objectContaining({
+          status: "stopped",
+          lastDecisionId: expect.any(String),
+          lastDecisionOutcome: "stopped",
+        }),
+      }),
+      mockTx,
+    );
+    expect(mockTxInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId: "11111111-1111-4111-8111-111111111111",
+        outcome: "stopped",
+        body: "Final mechanism failure. Board decision is required.",
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("auto-approves a reviewer comment with the APPROVED review marker", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const policy = await normalizePolicy({
@@ -3473,7 +3544,7 @@ describe.sequential("issue comment reopen routes", () => {
             reviewRequest: {
               instructions: "Please verify the fix against the reproduction steps and note any residual risk.",
             },
-            allowedActions: ["approve", "request_changes"],
+            allowedActions: ["approve", "request_changes", "stop"],
           }),
         }),
       }),
