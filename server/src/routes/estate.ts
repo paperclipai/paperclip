@@ -333,7 +333,7 @@ export function createDefaultAttomClient(): AttomClient | null {
 export interface SnugDocumentPayload {
   buffer: Buffer;
   contentType: string;
-  sizeByes: number;
+  sizeBytes: number;
 }
 
 export interface SnugClient {
@@ -356,7 +356,7 @@ export function createDefaultSnugClient(): SnugClient | null {
       const contentType = resp.headers.get("content-type") ?? "application/octet-stream";
       const arrayBuffer = await resp.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-      return { buffer, contentType, sizeByes: buffer.byteLength };
+      return { buffer, contentType, sizeBytes: buffer.byteLength };
     },
   };
 }
@@ -834,7 +834,7 @@ export function estateRoutes(
       return;
     }
 
-    const { buffer, contentType, sizeByes } = await snug.downloadDocument(documentUrl);
+    const { buffer, contentType, sizeBytes } = await snug.downloadDocument(documentUrl);
 
     const s3Key = `estates/${estateId}/documents/${randomBytes(16).toString("hex")}`;
     const bucket = DEFAULT_VAULT_BUCKET;
@@ -856,7 +856,7 @@ export function estateRoutes(
         title,
         s3Key,
         s3Bucket: bucket,
-        sizeByes,
+        sizeBytes,
       })
       .returning();
 
@@ -3357,7 +3357,7 @@ export function estateRoutes(
    * The client uploads the file directly to S3 using the presigned URL.
    * Returns 503 when S3 vault is not configured.
    *
-   * Body: { title, documentType?, contentType?, sizeByes?, contentHash?, accessPolicy?, companyId }
+   * Body: { title, documentType?, contentType?, sizeBytes?, contentHash?, accessPolicy?, companyId }
    */
   router.post("/estate/estates/:estateId/documents", async (req, res) => {
     assertBoard(req);
@@ -3373,7 +3373,7 @@ export function estateRoutes(
     const title = typeof body["title"] === "string" ? body["title"].trim() : null;
     const documentType = typeof body["documentType"] === "string" ? body["documentType"].trim() : "other";
     const contentType = typeof body["contentType"] === "string" ? body["contentType"].trim() : undefined;
-    const sizeByes = typeof body["sizeByes"] === "number" ? body["sizeByes"] : null;
+    const sizeBytes = typeof body["sizeBytes"] === "number" ? body["sizeBytes"] : null;
     const contentHash = typeof body["contentHash"] === "string" ? body["contentHash"].trim() : null;
     const accessPolicy = typeof body["accessPolicy"] === "string" ? body["accessPolicy"].trim() : "owner_only";
 
@@ -3402,7 +3402,7 @@ export function estateRoutes(
         s3Key,
         s3Bucket: bucket,
         contentHash,
-        sizeByes,
+        sizeBytes,
         accessPolicy: accessPolicy as typeof estateDocuments.$inferInsert["accessPolicy"],
       })
       .returning();

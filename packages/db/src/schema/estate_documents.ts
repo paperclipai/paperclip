@@ -41,7 +41,7 @@ export const estateDocuments = pgTable(
     s3Bucket: text("s3_bucket").notNull(),
     kmsKeyId: text("kms_key_id"),
     contentHash: text("content_hash"),
-    sizeByes: integer("size_bytes"),
+    sizeBytes: integer("size_bytes"),
     accessPolicy: documentAccessPolicyEnum("access_policy").notNull().default("owner_only"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),

@@ -44,7 +44,7 @@ function makeDocument(overrides: Record<string, unknown> = {}) {
     s3Bucket: "iun-estate-docs",
     kmsKeyId: null,
     contentHash: null,
-    sizeByes: null,
+    sizeBytes: null,
     accessPolicy: "owner_only",
     expiresAt: null,
     deletedAt: null,
@@ -68,7 +68,7 @@ function makeSnugClient(overrides: Partial<SnugClient> = {}): SnugClient {
     downloadDocument: vi.fn().mockResolvedValue({
       buffer: Buffer.from("fake-pdf-content"),
       contentType: "application/pdf",
-      sizeByes: 16,
+      sizeBytes: 16,
     }),
     ...overrides,
   };
