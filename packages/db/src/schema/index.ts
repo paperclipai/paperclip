@@ -81,3 +81,10 @@ export { estateBeneficiaries, designationTypeEnum } from "./estate_beneficiaries
 export { estateTrusts, trustTypeEnum, trustFundingStatusEnum } from "./estate_trusts.js";
 export { estateTrustAssets } from "./estate_trust_assets.js";
 export { estateCollaborators, collaboratorAccessLevelEnum } from "./estate_collaborators.js";
+export {
+  estateDocuments,
+  estateDocumentAccessLog,
+  documentTypeEnum,
+  documentAccessPolicyEnum,
+  documentAccessTypeEnum,
+} from "./estate_documents.js";

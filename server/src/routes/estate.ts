@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomBytes } from "node:crypto";
-import { and, asc, desc, eq, gte, lte, sql, or } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lte, sql, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   estateAssets,
@@ -23,6 +23,8 @@ import {
   estateTrusts,
   estateTrustAssets,
   estateCollaborators,
+  estateDocuments,
+  estateDocumentAccessLog,
 } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
@@ -189,10 +191,69 @@ export function createDefaultPlaidClient(): PlaidClient | null {
 }
 
 // ---------------------------------------------------------------------------
+// S3 Vault client interface + default implementation
+// ---------------------------------------------------------------------------
+
+export interface S3VaultClient {
+  createUploadUrl(opts: {
+    bucket: string;
+    key: string;
+    contentType?: string;
+    ttlSeconds?: number;
+  }): Promise<string>;
+  createDownloadUrl(opts: {
+    bucket: string;
+    key: string;
+    ttlSeconds?: number;
+  }): Promise<string>;
+  deleteObject(opts: { bucket: string; key: string }): Promise<void>;
+}
+
+export function createDefaultS3VaultClient(): S3VaultClient | null {
+  const bucket = process.env.ESTATE_DOCS_S3_BUCKET;
+  const region = process.env.ESTATE_DOCS_S3_REGION ?? process.env.AWS_REGION;
+  if (!bucket || !region) return null;
+
+  return {
+    async createUploadUrl({ bucket: b, key, contentType, ttlSeconds }) {
+      const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+      const client = new S3Client({ region });
+      // Cast to any to work around @smithy/types version mismatch between client-s3 and s3-request-presigner
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (getSignedUrl as any)(
+        client,
+        new PutObjectCommand({ Bucket: b, Key: key, ContentType: contentType }),
+        { expiresIn: ttlSeconds ?? 900 },
+      );
+    },
+    async createDownloadUrl({ bucket: b, key, ttlSeconds }) {
+      const { S3Client, GetObjectCommand } = await import("@aws-sdk/client-s3");
+      const { getSignedUrl } = await import("@aws-sdk/s3-request-presigner");
+      const client = new S3Client({ region });
+      // Cast to any to work around @smithy/types version mismatch between client-s3 and s3-request-presigner
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (getSignedUrl as any)(
+        client,
+        new GetObjectCommand({ Bucket: b, Key: key }),
+        { expiresIn: ttlSeconds ?? 900 },
+      );
+    },
+    async deleteObject({ bucket: b, key }) {
+      const { S3Client, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+      const client = new S3Client({ region });
+      await client.send(new DeleteObjectCommand({ Bucket: b, Key: key }));
+    },
+  };
+}
+
+const DEFAULT_VAULT_BUCKET = process.env.ESTATE_DOCS_S3_BUCKET ?? "iun-estate-docs";
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
-export function estateRoutes(db: Db, plaidClient?: PlaidClient | null) {
+export function estateRoutes(db: Db, plaidClient?: PlaidClient | null, s3VaultClient?: S3VaultClient | null) {
   const router = Router();
 
   // ---- Asset Registry -------------------------------------------------------
@@ -2819,6 +2880,160 @@ export function estateRoutes(db: Db, plaidClient?: PlaidClient | null) {
     }
 
     res.status(201).json({ accounts: created });
+  });
+
+  // ---- Document Vault -------------------------------------------------------
+
+  /**
+   * POST /estate/estates/:estateId/documents
+   *
+   * Creates a document metadata record and returns a presigned S3 PUT URL.
+   * The client uploads the file directly to S3 using the presigned URL.
+   * Returns 503 when S3 vault is not configured.
+   *
+   * Body: { title, documentType?, contentType?, sizeByes?, contentHash?, accessPolicy?, companyId }
+   */
+  router.post("/estate/estates/:estateId/documents", async (req, res) => {
+    assertBoard(req);
+    const vault = s3VaultClient ?? createDefaultS3VaultClient();
+    if (!vault) {
+      res.status(503).json({ error: "Document vault not configured" });
+      return;
+    }
+
+    const { estateId } = req.params as { estateId: string };
+    const body = req.body as Record<string, unknown>;
+    const companyId = typeof body["companyId"] === "string" ? body["companyId"].trim() : null;
+    const title = typeof body["title"] === "string" ? body["title"].trim() : null;
+    const documentType = typeof body["documentType"] === "string" ? body["documentType"].trim() : "other";
+    const contentType = typeof body["contentType"] === "string" ? body["contentType"].trim() : undefined;
+    const sizeByes = typeof body["sizeByes"] === "number" ? body["sizeByes"] : null;
+    const contentHash = typeof body["contentHash"] === "string" ? body["contentHash"].trim() : null;
+    const accessPolicy = typeof body["accessPolicy"] === "string" ? body["accessPolicy"].trim() : "owner_only";
+
+    if (!companyId) throw badRequest("companyId is required");
+    if (!title) throw badRequest("title is required");
+
+    const { userId } = req.actor as { userId: string };
+
+    const [estate] = await db
+      .select({ id: estates.id })
+      .from(estates)
+      .where(and(eq(estates.id, estateId), eq(estates.companyId, companyId)));
+    if (!estate) throw notFound("Estate not found");
+
+    const s3Key = `estates/${estateId}/documents/${randomBytes(16).toString("hex")}`;
+    const bucket = DEFAULT_VAULT_BUCKET;
+
+    const [doc] = await db
+      .insert(estateDocuments)
+      .values({
+        estateId,
+        companyId,
+        uploaderUserId: userId,
+        documentType: documentType as typeof estateDocuments.$inferInsert["documentType"],
+        title,
+        s3Key,
+        s3Bucket: bucket,
+        contentHash,
+        sizeByes,
+        accessPolicy: accessPolicy as typeof estateDocuments.$inferInsert["accessPolicy"],
+      })
+      .returning();
+
+    const uploadUrl = await vault.createUploadUrl({ bucket, key: s3Key, contentType, ttlSeconds: 900 });
+
+    res.status(201).json({ document: doc, uploadUrl, uploadUrlExpiresInSeconds: 900 });
+  });
+
+  /**
+   * GET /estate/estates/:estateId/documents
+   *
+   * Lists non-deleted documents for an estate.
+   */
+  router.get("/estate/estates/:estateId/documents", async (req, res) => {
+    assertBoard(req);
+    const { estateId } = req.params as { estateId: string };
+    const companyId = (req.query["companyId"] as string | undefined)?.trim();
+    if (!companyId) throw badRequest("companyId query param is required");
+
+    const [estate] = await db
+      .select({ id: estates.id })
+      .from(estates)
+      .where(and(eq(estates.id, estateId), eq(estates.companyId, companyId)));
+    if (!estate) throw notFound("Estate not found");
+
+    const docs = await db
+      .select()
+      .from(estateDocuments)
+      .where(and(eq(estateDocuments.estateId, estateId), isNull(estateDocuments.deletedAt)))
+      .orderBy(desc(estateDocuments.createdAt));
+
+    res.json({ documents: docs });
+  });
+
+  /**
+   * GET /estate/documents/:id/download-url
+   *
+   * Returns a presigned S3 GET URL (15-min TTL) and writes to access log.
+   * Returns 503 when S3 vault is not configured.
+   */
+  router.get("/estate/documents/:id/download-url", async (req, res) => {
+    assertBoard(req);
+    const vault = s3VaultClient ?? createDefaultS3VaultClient();
+    if (!vault) {
+      res.status(503).json({ error: "Document vault not configured" });
+      return;
+    }
+
+    const { id } = req.params as { id: string };
+    const { userId } = req.actor as { userId: string };
+
+    const [doc] = await db
+      .select()
+      .from(estateDocuments)
+      .where(and(eq(estateDocuments.id, id), isNull(estateDocuments.deletedAt)));
+    if (!doc) throw notFound("Document not found");
+
+    const downloadUrl = await vault.createDownloadUrl({
+      bucket: doc.s3Bucket,
+      key: doc.s3Key,
+      ttlSeconds: 900,
+    });
+
+    await db.insert(estateDocumentAccessLog).values({
+      documentId: id,
+      accessorUserId: userId,
+      accessType: "download",
+      ipAddress: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+    });
+
+    res.json({ downloadUrl, expiresInSeconds: 900 });
+  });
+
+  /**
+   * DELETE /estate/documents/:id
+   *
+   * Soft-deletes a document by setting deleted_at. Does not remove from S3.
+   * Hard deletion from S3 should be handled by a background cleanup job.
+   */
+  router.delete("/estate/documents/:id", async (req, res) => {
+    assertBoard(req);
+    const { id } = req.params as { id: string };
+
+    const [doc] = await db
+      .select({ id: estateDocuments.id, deletedAt: estateDocuments.deletedAt })
+      .from(estateDocuments)
+      .where(eq(estateDocuments.id, id));
+    if (!doc || doc.deletedAt) throw notFound("Document not found");
+
+    await db
+      .update(estateDocuments)
+      .set({ deletedAt: new Date() })
+      .where(eq(estateDocuments.id, id));
+
+    res.status(204).send();
   });
 
   return router;
