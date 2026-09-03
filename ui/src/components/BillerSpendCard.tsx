@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { CostByBiller, CostByProviderModel } from "@paperclipai/shared";
+import type { CostByBiller, CostByProviderModel, BillingType } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { QuotaBar } from "./QuotaBar";
 import { billingTypeDisplayName, formatCents, formatTokens, providerDisplayName } from "@/lib/utils";
@@ -37,7 +37,7 @@ export function BillerSpendCard({
   }, [providerRows]);
 
   const billingTypeBreakdown = useMemo(() => {
-    const map = new Map<string, number>();
+    const map = new Map<BillingType, number>();
     for (const entry of providerRows) {
       map.set(entry.billingType, (map.get(entry.billingType) ?? 0) + entry.costCents);
     }
@@ -107,7 +107,7 @@ export function BillerSpendCard({
               <div className="space-y-1.5">
                 {billingTypeBreakdown.map(([billingType, costCents]) => (
                   <div key={billingType} className="flex items-center justify-between gap-2 text-xs">
-                    <span className="text-muted-foreground">{billingTypeDisplayName(billingType as any)}</span>
+                    <span className="text-muted-foreground">{billingTypeDisplayName(billingType)}</span>
                     <span className="font-medium tabular-nums">{formatCents(costCents)}</span>
                   </div>
                 ))}
