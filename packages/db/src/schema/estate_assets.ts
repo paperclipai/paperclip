@@ -1,5 +1,6 @@
 import { pgEnum, pgTable, uuid, text, timestamp, numeric, index, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { estates } from "./estates.js";
 
 export const estateAssetTypeEnum = pgEnum("estate_asset_type", [
   "real_estate",
@@ -25,6 +26,7 @@ export const estateAssets = pgTable(
     valuationDate: timestamp("valuation_date", { withTimezone: true }),
     // Type-specific metadata: address/sqft for real_estate; ticker/shares for investment; etc.
     typeMetadata: jsonb("type_metadata").$type<Record<string, unknown>>(),
+    estateId: uuid("estate_id").references(() => estates.id, { onDelete: "set null" }),
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -33,5 +35,6 @@ export const estateAssets = pgTable(
     companyUserIdx: index("estate_assets_company_user_idx").on(table.companyId, table.userId),
     companyTypeIdx: index("estate_assets_company_type_idx").on(table.companyId, table.assetType),
     entityIdx: index("estate_assets_entity_idx").on(table.entityId),
+    estateIdx: index("estate_assets_estate_idx").on(table.estateId),
   }),
 );

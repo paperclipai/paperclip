@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { randomBytes } from "node:crypto";
 import { and, asc, desc, eq, gte, lte, sql, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -17,6 +18,11 @@ import {
   estateReviews,
   estatePropertyTaxBills,
   DEFAULT_REVIEW_CHECKLIST,
+  estates,
+  estateBeneficiaries,
+  estateTrusts,
+  estateTrustAssets,
+  estateCollaborators,
 } from "@paperclipai/db";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { badRequest, notFound } from "../errors.js";
@@ -1924,6 +1930,626 @@ export function estateRoutes(db: Db) {
       .returning();
     if (!deleted) throw notFound("Property tax bill not found");
     res.json({ deleted: true });
+  });
+
+  // =========================================================================
+  // Core Estate Entities — IUN-1568
+  // =========================================================================
+
+  // ---- Estates CRUD ---------------------------------------------------------
+
+  /** List estates owned by the authenticated user */
+  router.get("/estates", async (req, res) => {
+    assertBoard(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const userId =
+      typeof req.query.userId === "string" && req.query.userId.trim()
+        ? req.query.userId.trim()
+        : req.actor.userId ?? null;
+    if (!userId) throw badRequest("Could not resolve userId");
+
+    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const cursor = typeof req.query.cursor === "string" ? req.query.cursor.trim() : null;
+
+    let query = db
+      .select()
+      .from(estates)
+      .where(and(eq(estates.companyId, companyId), eq(estates.ownerUserId, userId)))
+      .orderBy(asc(estates.createdAt))
+      .limit(limit + 1) as any;
+
+    const rows = await query;
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+    res.json({ estates: items, nextCursor });
+  });
+
+  /** Create a new estate */
+  router.post("/estates", async (req, res) => {
+    assertBoard(req);
+    const body = req.body as Record<string, unknown>;
+    const companyId = typeof body.companyId === "string" ? body.companyId : null;
+    if (!companyId) throw badRequest("companyId is required");
+    assertCompanyAccess(req, companyId);
+
+    const userId =
+      typeof body.ownerUserId === "string" && body.ownerUserId.trim()
+        ? body.ownerUserId
+        : req.actor.userId ?? null;
+    if (!userId) throw badRequest("ownerUserId is required");
+    if (!body.name || typeof body.name !== "string") throw badRequest("name is required");
+
+    const [row] = await db
+      .insert(estates)
+      .values({
+        companyId,
+        ownerUserId: userId,
+        name: body.name,
+        estateType: (typeof body.estateType === "string" ? body.estateType : "individual") as typeof estates.$inferInsert["estateType"],
+        maritalStatus: typeof body.maritalStatus === "string"
+          ? (body.maritalStatus as typeof estates.$inferInsert["maritalStatus"])
+          : null,
+        stateOfResidence: typeof body.stateOfResidence === "string" ? body.stateOfResidence : null,
+        notes: typeof body.notes === "string" ? body.notes : null,
+      })
+      .returning();
+
+    res.status(201).json(row);
+  });
+
+  /** Get a single estate by id */
+  router.get("/estates/:estateId", async (req, res) => {
+    assertBoard(req);
+    const row = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!row) throw notFound("Estate not found");
+    assertCompanyAccess(req, row.companyId);
+    res.json(row);
+  });
+
+  /** Update an estate */
+  router.patch("/estates/:estateId", async (req, res) => {
+    assertBoard(req);
+    const existing = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!existing) throw notFound("Estate not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    const [updated] = await db
+      .update(estates)
+      .set({
+        name: typeof body.name === "string" ? body.name : existing.name,
+        estateType: typeof body.estateType === "string"
+          ? (body.estateType as typeof estates.$inferInsert["estateType"])
+          : existing.estateType,
+        maritalStatus: body.maritalStatus !== undefined
+          ? (body.maritalStatus as typeof estates.$inferInsert["maritalStatus"])
+          : existing.maritalStatus,
+        stateOfResidence: body.stateOfResidence !== undefined
+          ? (body.stateOfResidence as string | null)
+          : existing.stateOfResidence,
+        notes: body.notes !== undefined ? (body.notes as string | null) : existing.notes,
+        updatedAt: new Date(),
+      })
+      .where(eq(estates.id, req.params.estateId))
+      .returning();
+    res.json(updated);
+  });
+
+  /** Delete an estate */
+  router.delete("/estates/:estateId", async (req, res) => {
+    assertBoard(req);
+    const existing = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!existing) throw notFound("Estate not found");
+    assertCompanyAccess(req, existing.companyId);
+    await db.delete(estates).where(eq(estates.id, req.params.estateId));
+    res.status(204).send();
+  });
+
+  // ---- Assets by Estate -----------------------------------------------------
+
+  /** List assets for an estate */
+  router.get("/estates/:estateId/assets", async (req, res) => {
+    assertBoard(req);
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const rows = await db
+      .select()
+      .from(estateAssets)
+      .where(eq(estateAssets.estateId, req.params.estateId))
+      .orderBy(desc(estateAssets.createdAt))
+      .limit(limit);
+
+    res.json({ assets: rows });
+  });
+
+  /** Create an asset linked to an estate */
+  router.post("/estates/:estateId/assets", async (req, res) => {
+    assertBoard(req);
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    if (!body.name || typeof body.name !== "string") throw badRequest("name is required");
+    if (!body.assetType || typeof body.assetType !== "string") throw badRequest("assetType is required");
+
+    const [row] = await db
+      .insert(estateAssets)
+      .values({
+        companyId: estate.companyId,
+        userId: estate.ownerUserId,
+        estateId: estate.id,
+        name: body.name,
+        assetType: body.assetType as typeof estateAssets.$inferInsert["assetType"],
+        category: typeof body.category === "string" ? body.category : null,
+        tags: Array.isArray(body.tags) ? (body.tags as string[]) : null,
+        entityId: typeof body.entityId === "string" ? body.entityId : null,
+        currentValueCents: body.currentValueCents != null ? String(body.currentValueCents) : null,
+        valuationDate: body.valuationDate ? new Date(body.valuationDate as string) : null,
+        typeMetadata: typeof body.typeMetadata === "object" && body.typeMetadata !== null
+          ? (body.typeMetadata as Record<string, unknown>)
+          : null,
+        notes: typeof body.notes === "string" ? body.notes : null,
+      })
+      .returning();
+
+    res.status(201).json(row);
+  });
+
+  // ---- Beneficiaries --------------------------------------------------------
+
+  /** List beneficiaries for an estate */
+  router.get("/estates/:estateId/beneficiaries", async (req, res) => {
+    assertBoard(req);
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    const rows = await db
+      .select()
+      .from(estateBeneficiaries)
+      .where(eq(estateBeneficiaries.estateId, req.params.estateId))
+      .orderBy(asc(estateBeneficiaries.createdAt));
+
+    res.json({ beneficiaries: rows });
+  });
+
+  /** Create a beneficiary */
+  router.post("/estates/:estateId/beneficiaries", async (req, res) => {
+    assertBoard(req);
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    if (!body.name || typeof body.name !== "string") throw badRequest("name is required");
+
+    const [row] = await db
+      .insert(estateBeneficiaries)
+      .values({
+        estateId: estate.id,
+        companyId: estate.companyId,
+        name: body.name,
+        relationship: typeof body.relationship === "string" ? body.relationship : null,
+        email: typeof body.email === "string" ? body.email : null,
+        phone: typeof body.phone === "string" ? body.phone : null,
+        allocationPercentage: body.allocationPercentage != null ? String(body.allocationPercentage) : null,
+        designationType: (typeof body.designationType === "string"
+          ? body.designationType
+          : "primary") as typeof estateBeneficiaries.$inferInsert["designationType"],
+        notes: typeof body.notes === "string" ? body.notes : null,
+      })
+      .returning();
+
+    res.status(201).json(row);
+  });
+
+  /** Get a single beneficiary */
+  router.get("/estate/beneficiaries/:beneficiaryId", async (req, res) => {
+    assertBoard(req);
+    const row = await db
+      .select()
+      .from(estateBeneficiaries)
+      .where(eq(estateBeneficiaries.id, req.params.beneficiaryId))
+      .then((r) => r[0] ?? null);
+    if (!row) throw notFound("Beneficiary not found");
+    assertCompanyAccess(req, row.companyId);
+    res.json(row);
+  });
+
+  /** Update a beneficiary */
+  router.patch("/estate/beneficiaries/:beneficiaryId", async (req, res) => {
+    assertBoard(req);
+    const existing = await db
+      .select()
+      .from(estateBeneficiaries)
+      .where(eq(estateBeneficiaries.id, req.params.beneficiaryId))
+      .then((r) => r[0] ?? null);
+    if (!existing) throw notFound("Beneficiary not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    const [updated] = await db
+      .update(estateBeneficiaries)
+      .set({
+        name: typeof body.name === "string" ? body.name : existing.name,
+        relationship: body.relationship !== undefined ? (body.relationship as string | null) : existing.relationship,
+        email: body.email !== undefined ? (body.email as string | null) : existing.email,
+        phone: body.phone !== undefined ? (body.phone as string | null) : existing.phone,
+        allocationPercentage: body.allocationPercentage != null
+          ? String(body.allocationPercentage)
+          : existing.allocationPercentage,
+        designationType: typeof body.designationType === "string"
+          ? (body.designationType as typeof estateBeneficiaries.$inferInsert["designationType"])
+          : existing.designationType,
+        notes: body.notes !== undefined ? (body.notes as string | null) : existing.notes,
+        updatedAt: new Date(),
+      })
+      .where(eq(estateBeneficiaries.id, req.params.beneficiaryId))
+      .returning();
+    res.json(updated);
+  });
+
+  /** Delete a beneficiary */
+  router.delete("/estate/beneficiaries/:beneficiaryId", async (req, res) => {
+    assertBoard(req);
+    const existing = await db
+      .select()
+      .from(estateBeneficiaries)
+      .where(eq(estateBeneficiaries.id, req.params.beneficiaryId))
+      .then((r) => r[0] ?? null);
+    if (!existing) throw notFound("Beneficiary not found");
+    assertCompanyAccess(req, existing.companyId);
+    await db.delete(estateBeneficiaries).where(eq(estateBeneficiaries.id, req.params.beneficiaryId));
+    res.status(204).send();
+  });
+
+  // ---- Trusts ---------------------------------------------------------------
+
+  /** List trusts for an estate */
+  router.get("/estates/:estateId/trusts", async (req, res) => {
+    assertBoard(req);
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    const rows = await db
+      .select()
+      .from(estateTrusts)
+      .where(eq(estateTrusts.estateId, req.params.estateId))
+      .orderBy(asc(estateTrusts.createdAt));
+
+    res.json({ trusts: rows });
+  });
+
+  /** Create a trust */
+  router.post("/estates/:estateId/trusts", async (req, res) => {
+    assertBoard(req);
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    if (!body.trustName || typeof body.trustName !== "string") throw badRequest("trustName is required");
+    if (!body.trustType || typeof body.trustType !== "string") throw badRequest("trustType is required");
+
+    const [row] = await db
+      .insert(estateTrusts)
+      .values({
+        estateId: estate.id,
+        companyId: estate.companyId,
+        trustName: body.trustName,
+        trustType: body.trustType as typeof estateTrusts.$inferInsert["trustType"],
+        trusteeUserId: typeof body.trusteeUserId === "string" ? body.trusteeUserId : null,
+        successorTrusteeName: typeof body.successorTrusteeName === "string" ? body.successorTrusteeName : null,
+        fundingStatus: (typeof body.fundingStatus === "string" ? body.fundingStatus : "unfunded") as typeof estateTrusts.$inferInsert["fundingStatus"],
+        notes: typeof body.notes === "string" ? body.notes : null,
+      })
+      .returning();
+
+    res.status(201).json(row);
+  });
+
+  /** Get a single trust */
+  router.get("/estate/trusts/:trustId", async (req, res) => {
+    assertBoard(req);
+    const row = await db
+      .select()
+      .from(estateTrusts)
+      .where(eq(estateTrusts.id, req.params.trustId))
+      .then((r) => r[0] ?? null);
+    if (!row) throw notFound("Trust not found");
+    assertCompanyAccess(req, row.companyId);
+    res.json(row);
+  });
+
+  /** Update a trust */
+  router.patch("/estate/trusts/:trustId", async (req, res) => {
+    assertBoard(req);
+    const existing = await db
+      .select()
+      .from(estateTrusts)
+      .where(eq(estateTrusts.id, req.params.trustId))
+      .then((r) => r[0] ?? null);
+    if (!existing) throw notFound("Trust not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    const [updated] = await db
+      .update(estateTrusts)
+      .set({
+        trustName: typeof body.trustName === "string" ? body.trustName : existing.trustName,
+        trustType: typeof body.trustType === "string"
+          ? (body.trustType as typeof estateTrusts.$inferInsert["trustType"])
+          : existing.trustType,
+        trusteeUserId: body.trusteeUserId !== undefined ? (body.trusteeUserId as string | null) : existing.trusteeUserId,
+        successorTrusteeName: body.successorTrusteeName !== undefined
+          ? (body.successorTrusteeName as string | null)
+          : existing.successorTrusteeName,
+        fundingStatus: typeof body.fundingStatus === "string"
+          ? (body.fundingStatus as typeof estateTrusts.$inferInsert["fundingStatus"])
+          : existing.fundingStatus,
+        notes: body.notes !== undefined ? (body.notes as string | null) : existing.notes,
+        updatedAt: new Date(),
+      })
+      .where(eq(estateTrusts.id, req.params.trustId))
+      .returning();
+    res.json(updated);
+  });
+
+  /** Delete a trust */
+  router.delete("/estate/trusts/:trustId", async (req, res) => {
+    assertBoard(req);
+    const existing = await db
+      .select()
+      .from(estateTrusts)
+      .where(eq(estateTrusts.id, req.params.trustId))
+      .then((r) => r[0] ?? null);
+    if (!existing) throw notFound("Trust not found");
+    assertCompanyAccess(req, existing.companyId);
+    await db.delete(estateTrusts).where(eq(estateTrusts.id, req.params.trustId));
+    res.status(204).send();
+  });
+
+  // ---- Trust-asset linkage --------------------------------------------------
+
+  /** Link an asset to a trust */
+  router.post("/estate/trusts/:trustId/assets", async (req, res) => {
+    assertBoard(req);
+    const trust = await db
+      .select()
+      .from(estateTrusts)
+      .where(eq(estateTrusts.id, req.params.trustId))
+      .then((r) => r[0] ?? null);
+    if (!trust) throw notFound("Trust not found");
+    assertCompanyAccess(req, trust.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    if (!body.assetId || typeof body.assetId !== "string") throw badRequest("assetId is required");
+
+    const asset = await db
+      .select()
+      .from(estateAssets)
+      .where(eq(estateAssets.id, body.assetId))
+      .then((r) => r[0] ?? null);
+    if (!asset) throw notFound("Asset not found");
+    assertCompanyAccess(req, asset.companyId);
+
+    const [row] = await db
+      .insert(estateTrustAssets)
+      .values({
+        trustId: trust.id,
+        assetId: body.assetId,
+        transferDate: body.transferDate ? new Date(body.transferDate as string) : null,
+        transferDeedDocId: typeof body.transferDeedDocId === "string" ? body.transferDeedDocId : null,
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    res.status(201).json(row ?? { trustId: trust.id, assetId: body.assetId });
+  });
+
+  /** Unlink an asset from a trust */
+  router.delete("/estate/trusts/:trustId/assets/:assetId", async (req, res) => {
+    assertBoard(req);
+    const trust = await db
+      .select()
+      .from(estateTrusts)
+      .where(eq(estateTrusts.id, req.params.trustId))
+      .then((r) => r[0] ?? null);
+    if (!trust) throw notFound("Trust not found");
+    assertCompanyAccess(req, trust.companyId);
+
+    await db
+      .delete(estateTrustAssets)
+      .where(
+        and(
+          eq(estateTrustAssets.trustId, req.params.trustId),
+          eq(estateTrustAssets.assetId, req.params.assetId),
+        ),
+      );
+
+    res.status(204).send();
+  });
+
+  /** List assets linked to a trust */
+  router.get("/estate/trusts/:trustId/assets", async (req, res) => {
+    assertBoard(req);
+    const trust = await db
+      .select()
+      .from(estateTrusts)
+      .where(eq(estateTrusts.id, req.params.trustId))
+      .then((r) => r[0] ?? null);
+    if (!trust) throw notFound("Trust not found");
+    assertCompanyAccess(req, trust.companyId);
+
+    const rows = await db
+      .select({
+        trustId: estateTrustAssets.trustId,
+        assetId: estateTrustAssets.assetId,
+        transferDate: estateTrustAssets.transferDate,
+        transferDeedDocId: estateTrustAssets.transferDeedDocId,
+        createdAt: estateTrustAssets.createdAt,
+        assetName: estateAssets.name,
+        assetType: estateAssets.assetType,
+        currentValueCents: estateAssets.currentValueCents,
+      })
+      .from(estateTrustAssets)
+      .innerJoin(estateAssets, eq(estateTrustAssets.assetId, estateAssets.id))
+      .where(eq(estateTrustAssets.trustId, req.params.trustId));
+
+    res.json({ assets: rows });
+  });
+
+  // ---- Collaborators --------------------------------------------------------
+
+  /** List collaborators for an estate */
+  router.get("/estates/:estateId/collaborators", async (req, res) => {
+    assertBoard(req);
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    const rows = await db
+      .select()
+      .from(estateCollaborators)
+      .where(eq(estateCollaborators.estateId, req.params.estateId))
+      .orderBy(asc(estateCollaborators.createdAt));
+
+    res.json({ collaborators: rows });
+  });
+
+  /** Invite a collaborator to an estate */
+  router.post("/estates/:estateId/collaborators", async (req, res) => {
+    assertBoard(req);
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    const body = req.body as Record<string, unknown>;
+    if (!body.email || typeof body.email !== "string") throw badRequest("email is required");
+
+    const invitedByUserId = req.actor.userId ?? null;
+    if (!invitedByUserId) throw badRequest("Could not resolve inviting user");
+
+    const inviteToken = randomBytes(32).toString("hex");
+    const defaultExpiry = new Date();
+    defaultExpiry.setDate(defaultExpiry.getDate() + 30);
+
+    const [row] = await db
+      .insert(estateCollaborators)
+      .values({
+        estateId: estate.id,
+        companyId: estate.companyId,
+        invitedByUserId,
+        email: body.email,
+        accessLevel: (typeof body.accessLevel === "string" ? body.accessLevel : "read") as typeof estateCollaborators.$inferInsert["accessLevel"],
+        inviteToken,
+        expiresAt: body.expiresAt ? new Date(body.expiresAt as string) : defaultExpiry,
+      })
+      .returning();
+
+    res.status(201).json(row);
+  });
+
+  /** Accept a collaborator invite by token */
+  router.post("/estate/collaborators/:collaboratorId/accept", async (req, res) => {
+    assertBoard(req);
+    const existing = await db
+      .select()
+      .from(estateCollaborators)
+      .where(eq(estateCollaborators.id, req.params.collaboratorId))
+      .then((r) => r[0] ?? null);
+    if (!existing) throw notFound("Collaborator invite not found");
+
+    if (existing.acceptedAt) {
+      res.json({ message: "Already accepted", collaborator: existing });
+      return;
+    }
+
+    if (existing.expiresAt && existing.expiresAt < new Date()) {
+      throw badRequest("Invite has expired");
+    }
+
+    const advisorUserId = req.actor.userId ?? null;
+    const [updated] = await db
+      .update(estateCollaborators)
+      .set({
+        acceptedAt: new Date(),
+        advisorUserId,
+        updatedAt: new Date(),
+      })
+      .where(eq(estateCollaborators.id, req.params.collaboratorId))
+      .returning();
+
+    res.json(updated);
+  });
+
+  /** Revoke a collaborator */
+  router.delete("/estate/collaborators/:collaboratorId", async (req, res) => {
+    assertBoard(req);
+    const existing = await db
+      .select()
+      .from(estateCollaborators)
+      .where(eq(estateCollaborators.id, req.params.collaboratorId))
+      .then((r) => r[0] ?? null);
+    if (!existing) throw notFound("Collaborator not found");
+    assertCompanyAccess(req, existing.companyId);
+
+    await db.delete(estateCollaborators).where(eq(estateCollaborators.id, req.params.collaboratorId));
+    res.status(204).send();
   });
 
   return router;

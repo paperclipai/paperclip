@@ -421,6 +421,13 @@
       "when": 1746835200000,
       "tag": "0059_fix_heartbeat_runs_fk_cascades",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1756857600000,
+      "tag": "0060_estate_core_entities",
+      "breakpoints": true
     }
   ]
 }
