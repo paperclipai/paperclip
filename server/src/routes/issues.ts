@@ -6519,7 +6519,9 @@ export function issueRoutes(
         res.status(400).json({ error: "parentIssueId must be a UUID" });
         return;
       }
-      uuidFilters.parentId = rawParentIssueId.trim();
+      if (uuidFilters.parentId === undefined) {
+        uuidFilters.parentId = rawParentIssueId.trim();
+      }
     }
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {

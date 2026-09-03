@@ -959,6 +959,62 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([matchingIssueId]);
   });
 
+  it("keeps parentId precedence over the parentIssueId alias when both are present", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    const aliasParentId = randomUUID();
+    const parentChildIssueId = randomUUID();
+    const aliasChildIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values([
+      {
+        id: parentId,
+        companyId,
+        title: "Canonical parent",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: aliasParentId,
+        companyId,
+        title: "Alias parent",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: parentChildIssueId,
+        companyId,
+        title: "Canonical child",
+        status: "todo",
+        priority: "medium",
+        parentId,
+      },
+      {
+        id: aliasChildIssueId,
+        companyId,
+        title: "Alias child",
+        status: "todo",
+        priority: "medium",
+        parentId: aliasParentId,
+      },
+    ]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", parentId, parentIssueId: aliasParentId, limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([parentChildIssueId]);
+  });
+
   it("filters issue lists by goalId and createdByAgentId", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
