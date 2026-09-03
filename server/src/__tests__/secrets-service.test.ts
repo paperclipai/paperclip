@@ -37,6 +37,20 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// A deferred promise: a concurrency test resolves `resolve` from inside a
+// mocked call, then a waiter `await`s `promise`. This proves the waiter's
+// side reached a state, instead of guessing how long that state takes to
+// reach.
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describeEmbeddedPostgres("secretService", () => {
   let stopDb: (() => Promise<void>) | null = null;
   let db!: ReturnType<typeof createDb>;
@@ -383,6 +397,7 @@ describeEmbeddedPostgres("secretService", () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
     const events: string[] = [];
+    const firstEntered = deferred<void>();
     let releaseFirstWrite!: () => void;
     const firstWriteGate = new Promise<void>((resolve) => {
       releaseFirstWrite = resolve;
@@ -391,6 +406,7 @@ describeEmbeddedPostgres("secretService", () => {
     vi.spyOn(localEncryptedProvider, "createSecret")
       .mockImplementationOnce(async (input) => {
         events.push("first-provider-enter");
+        firstEntered.resolve();
         await firstWriteGate;
         events.push("first-provider-exit");
         return originalCreateSecret(input);
@@ -405,22 +421,36 @@ describeEmbeddedPostgres("secretService", () => {
       provider: "local_encrypted",
       value: "/company/codex-home/acct-a",
     });
-    // Give the first call a chance to acquire the lock and enter its provider
-    // write before the second call starts racing for the same lock.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const secondCreate = svc.create(companyId, {
-      name: `hand-named-${randomUUID()}`,
-      provider: "local_encrypted",
-      value: "/company/codex-home/acct-a",
-    });
-    // The second call must stay blocked on the lock while the first call
-    // still holds it: it must never enter its own provider write before the
-    // first call's provider write exits.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["first-provider-enter"]);
-
-    releaseFirstWrite();
-    await Promise.all([firstCreate, secondCreate]);
+    let secondCreate: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the first call now holds the
+      // lock and sits inside its provider write. The lock stays held until
+      // we release it below, so the second call, once we start it, must
+      // contend for the same lock while the first call still holds it.
+      await firstEntered.promise;
+      secondCreate = svc.create(companyId, {
+        name: `hand-named-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "/company/codex-home/acct-a",
+      });
+      // The lock is still held (we have not released it yet), so the second
+      // call must still be queued behind it.
+      expect(events).toEqual(["first-provider-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseFirstWrite();
+      outcomes = await Promise.allSettled([firstCreate, secondCreate]);
+    }
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
+    // The lock enforces this order: the second call cannot start its
+    // provider write until the first call's whole locked operation
+    // completes. This final order is proof of mutual exclusion, not a
+    // timing guess.
     expect(events).toEqual(["first-provider-enter", "first-provider-exit", "second-provider-enter"]);
   });
 
@@ -436,6 +466,7 @@ describeEmbeddedPostgres("secretService", () => {
       value: "/company/codex-home/acct-b",
     });
     const events: string[] = [];
+    const rotateEntered = deferred<void>();
     let releaseRotateWrite!: () => void;
     const rotateWriteGate = new Promise<void>((resolve) => {
       releaseRotateWrite = resolve;
@@ -443,6 +474,7 @@ describeEmbeddedPostgres("secretService", () => {
     const originalCreateVersion = localEncryptedProvider.createVersion.bind(localEncryptedProvider);
     vi.spyOn(localEncryptedProvider, "createVersion").mockImplementationOnce(async (input) => {
       events.push("rotate-provider-enter");
+      rotateEntered.resolve();
       await rotateWriteGate;
       events.push("rotate-provider-exit");
       return originalCreateVersion(input);
@@ -454,17 +486,35 @@ describeEmbeddedPostgres("secretService", () => {
     });
 
     const rotateCall = svc.rotate(existing.id, { value: "/company/codex-home/acct-b-rotated" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const createCall = svc.create(companyId, {
-      name: `hand-named-${randomUUID()}`,
-      provider: "local_encrypted",
-      value: "/company/codex-home/acct-b",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["rotate-provider-enter"]);
-
-    releaseRotateWrite();
-    await Promise.all([rotateCall, createCall]);
+    let createCall: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the rotate now holds the lock
+      // and sits inside its provider write. The lock stays held until we
+      // release it below, so the create call, once we start it, must
+      // contend for the same lock while the rotate still holds it.
+      await rotateEntered.promise;
+      createCall = svc.create(companyId, {
+        name: `hand-named-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "/company/codex-home/acct-b",
+      });
+      // The lock is still held (we have not released it yet), so the create
+      // call must still be queued behind it.
+      expect(events).toEqual(["rotate-provider-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseRotateWrite();
+      outcomes = await Promise.allSettled([rotateCall, createCall]);
+    }
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
+    // The lock enforces this order: the create call cannot start its
+    // provider write until the rotate's whole locked operation completes.
+    // This final order is proof of mutual exclusion, not a timing guess.
     expect(events).toEqual(["rotate-provider-enter", "rotate-provider-exit", "create-provider-enter"]);
   });
 
@@ -480,30 +530,41 @@ describeEmbeddedPostgres("secretService", () => {
     const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-create");
 
     const events: string[] = [];
+    const cleanupEntered = deferred<void>();
     let releaseCleanup!: () => void;
     const cleanupGate = new Promise<void>((resolve) => {
       releaseCleanup = resolve;
     });
     const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
       events.push("cleanup-enter");
+      cleanupEntered.resolve();
       await cleanupGate;
       await rm(accountHomeDir, { recursive: true, force: true });
       events.push("cleanup-exit");
     });
-    // Give the cleanup a chance to acquire the lock before the create starts
-    // racing for the same lock.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const createCall = svc.create(companyId, {
-      name: `account-home-${randomUUID()}`,
-      provider: "local_encrypted",
-      value: accountHomeDir,
-    });
-    // The create must stay queued behind the held lock.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["cleanup-enter"]);
-
-    releaseCleanup();
-    await cleanupCall;
+    let createCall: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the cleanup now holds the lock.
+      // The lock stays held until we release it below, so the create call,
+      // once we start it, must queue behind the cleanup.
+      await cleanupEntered.promise;
+      createCall = svc.create(companyId, {
+        name: `account-home-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: accountHomeDir,
+      });
+      // The lock is still held (we have not released it yet), so the create
+      // call must still be queued behind it.
+      expect(events).toEqual(["cleanup-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseCleanup();
+      outcomes = await Promise.allSettled([cleanupCall, createCall]);
+    }
+    if (outcomes[0]?.status === "rejected") throw outcomes[0].reason;
     await expect(createCall).rejects.toThrow(/no longer exists/);
   });
 
@@ -521,23 +582,37 @@ describeEmbeddedPostgres("secretService", () => {
     const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-rotate");
 
     const events: string[] = [];
+    const cleanupEntered = deferred<void>();
     let releaseCleanup!: () => void;
     const cleanupGate = new Promise<void>((resolve) => {
       releaseCleanup = resolve;
     });
     const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
       events.push("cleanup-enter");
+      cleanupEntered.resolve();
       await cleanupGate;
       await rm(accountHomeDir, { recursive: true, force: true });
       events.push("cleanup-exit");
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const rotateCall = svc.rotate(existing.id, { value: accountHomeDir });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(events).toEqual(["cleanup-enter"]);
-
-    releaseCleanup();
-    await cleanupCall;
+    let rotateCall: ReturnType<typeof svc.rotate> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the cleanup now holds the lock.
+      // The lock stays held until we release it below, so the rotate call,
+      // once we start it, must queue behind the cleanup.
+      await cleanupEntered.promise;
+      rotateCall = svc.rotate(existing.id, { value: accountHomeDir });
+      // The lock is still held (we have not released it yet), so the
+      // rotate call must still be queued behind it.
+      expect(events).toEqual(["cleanup-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseCleanup();
+      outcomes = await Promise.allSettled([cleanupCall, rotateCall]);
+    }
+    if (outcomes[0]?.status === "rejected") throw outcomes[0].reason;
     await expect(rotateCall).rejects.toThrow(/no longer exists/);
   });
 
