@@ -312,9 +312,14 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         path="status/:cardId"
         element={<StatusCardsExperimentalGate><StatusCards /></StatusCardsExperimentalGate>}
       />
+      <Route
+        path="status/:cardId/:tab"
+        element={<StatusCardsExperimentalGate><StatusCards /></StatusCardsExperimentalGate>}
+      />
       {/* Back-compat: the board lived at /status-cards before PAP-15223. */}
       <Route path="status-cards" element={<StatusCardsLegacyRedirect />} />
       <Route path="status-cards/:cardId" element={<StatusCardsLegacyRedirect />} />
+      <Route path="status-cards/:cardId/:tab" element={<StatusCardsLegacyRedirect />} />
       <Route
         path="review-queue"
         element={<PipelinesExperimentalGate><ReviewQueue /></PipelinesExperimentalGate>}
@@ -630,10 +635,10 @@ function CompanyRootRedirect() {
 }
 
 function StatusCardsLegacyRedirect() {
-  const { cardId } = useParams<{ cardId?: string }>();
+  const { cardId, tab } = useParams<{ cardId?: string; tab?: string }>();
   const prefix = useActiveCompanyPrefix();
   const base = prefix ? `/${prefix}` : "";
-  return <Navigate to={`${base}/status${cardId ? `/${cardId}` : ""}`} replace />;
+  return <Navigate to={`${base}/status${cardId ? `/${cardId}` : ""}${tab ? `/${tab}` : ""}`} replace />;
 }
 
 function AuditCompatibilityRedirect({
@@ -756,8 +761,10 @@ export function App() {
           <Route path="cases/:caseIdentifier" element={<UnprefixedBoardRedirect />} />
           <Route path="status" element={<UnprefixedBoardRedirect />} />
           <Route path="status/:cardId" element={<UnprefixedBoardRedirect />} />
+          <Route path="status/:cardId/:tab" element={<UnprefixedBoardRedirect />} />
           <Route path="status-cards" element={<UnprefixedBoardRedirect />} />
           <Route path="status-cards/:cardId" element={<UnprefixedBoardRedirect />} />
+          <Route path="status-cards/:cardId/:tab" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/add" element={<UnprefixedBoardRedirect />} />
