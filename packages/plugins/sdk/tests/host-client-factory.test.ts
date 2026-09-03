@@ -210,6 +210,47 @@ describe("createHostClientHandlers invocation company scope", () => {
     },
   );
 
+  it("gates routines.list/routines.get behind routines.read and honours the grant", async () => {
+    const routinesList = vi.fn(async () => []);
+    const routinesGet = vi.fn(async () => null);
+    const services = {
+      routines: {
+        list: routinesList,
+        get: routinesGet,
+      },
+    } as unknown as HostServices;
+
+    const denied = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+    await expect(
+      denied["routines.list"]({ companyId: "company-a" }),
+    ).rejects.toMatchObject({
+      name: "CapabilityDeniedError",
+      message: expect.stringContaining("routines.read"),
+    });
+    await expect(
+      denied["routines.get"]({ routineId: "routine-1", companyId: "company-a" }),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(routinesList).not.toHaveBeenCalled();
+    expect(routinesGet).not.toHaveBeenCalled();
+
+    const granted = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["routines.read"],
+      services,
+    });
+    await expect(
+      granted["routines.list"](
+        { companyId: "company-a" },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).resolves.toEqual([]);
+    expect(routinesList).toHaveBeenCalledWith({ companyId: "company-a" });
+  });
+
   it("checks invocation company scope before exposing authorization data", async () => {
     const searchAudit = vi.fn(async () => []);
     const services = {

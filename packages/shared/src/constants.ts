@@ -1336,6 +1336,7 @@ export const PLUGIN_CAPABILITIES = [
   "approvals.read",
   "issue.documents.read",
   "agents.read",
+  "routines.read",
   "goals.read",
   "goals.create",
   "goals.update",
