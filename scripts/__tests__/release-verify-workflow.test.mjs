@@ -31,6 +31,10 @@ test("release workflow delegates stable and canary verification to the reusable 
   );
   assert.doesNotMatch(prepareLockfileBlock, /cache: pnpm/);
   assert.match(
+    prepareLockfileBlock,
+    /uses: actions\/checkout@[0-9a-f]{40} # v7[\s\S]*?uses: pnpm\/action-setup@[0-9a-f]{40} # v6[\s\S]*?uses: actions\/setup-node@[0-9a-f]{40} # v7/,
+  );
+  assert.match(
     releaseWorkflow,
     /verify_canary:\n\s+needs: prepare_canary_lockfile\n\s+if: github\.event_name == 'push'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}\n\s+lockfile_artifact: canary-lockfile/,
   );
@@ -86,6 +90,17 @@ test("candidate-branch betas are validated and fully verified before publish", (
   assert.match(
     releaseWorkflow,
     /prepare_beta_candidate_lockfile:\n\s+needs: select_beta\n\s+if: needs\.select_beta\.outputs\.mode == 'candidate'[\s\S]*?Prepare beta candidate lockfile[\s\S]*?pnpm install --ignore-scripts --no-frozen-lockfile[\s\S]*?Upload prepared beta candidate lockfile[\s\S]*?name: beta-candidate-lockfile/,
+  );
+  const prepareBetaLockfileBlock = releaseWorkflow.match(
+    /  prepare_beta_candidate_lockfile:[\s\S]*?(?=\n  verify_beta_candidate:)/,
+  )?.[0];
+  assert.ok(
+    prepareBetaLockfileBlock,
+    "expected a beta candidate lockfile preparation job",
+  );
+  assert.match(
+    prepareBetaLockfileBlock,
+    /uses: actions\/checkout@[0-9a-f]{40} # v7[\s\S]*?uses: pnpm\/action-setup@[0-9a-f]{40} # v6[\s\S]*?uses: actions\/setup-node@[0-9a-f]{40} # v7/,
   );
   assert.match(
     releaseWorkflow,
