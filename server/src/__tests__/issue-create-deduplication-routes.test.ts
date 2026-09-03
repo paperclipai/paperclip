@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -86,6 +86,510 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     }).returning();
     return parent;
   }
+
+  async function seedAgent(companyId: string, name: string) {
+    const [agent] = await db.insert(agents).values({
+      companyId,
+      name,
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    }).returning();
+    return agent;
+  }
+
+  it("rejects an ineligible approval participant when a policy is created or patched", async () => {
+    const companyId = await seedCompany();
+    const coder = await seedAgent(companyId, "Coder");
+    const qa = await seedAgent(companyId, "QA");
+    const app = createApp();
+    const executionPolicy = {
+      stages: [
+        { type: "review", participants: [{ type: "agent", agentId: qa.id }] },
+        { type: "approval", participants: [{ type: "agent", agentId: coder.id }] },
+      ],
+    };
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Reject invalid policy on create", assigneeAgentId: coder.id, executionPolicy })
+      .expect(400);
+    expect(await db.select().from(issues)).toHaveLength(0);
+
+    const [existing] = await db.insert(issues).values({
+      companyId,
+      title: "Reject invalid policy on patch",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+    }).returning();
+
+    await request(app)
+      .patch(`/api/issues/${existing.id}`)
+      .send({ executionPolicy })
+      .expect(400);
+    const [persisted] = await db.select().from(issues).where(eq(issues.id, existing.id));
+    expect(persisted.executionPolicy).toBeNull();
+
+    await request(app)
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        status: "done",
+        assigneeAgentId: qa.id,
+        executionPolicy: {
+          mode: "normal",
+          stages: [
+            {
+              type: "review",
+              participants: [{ type: "agent", agentId: qa.id }],
+            },
+            {
+              type: "approval",
+              participants: [{ type: "agent", agentId: coder.id }],
+            },
+          ],
+        },
+      })
+      .expect(400);
+    const [unchanged] = await db.select().from(issues).where(eq(issues.id, existing.id));
+    expect(unchanged).toMatchObject({
+      status: "todo",
+      assigneeAgentId: coder.id,
+      executionPolicy: null,
+    });
+
+    const validPolicy = {
+      stages: [{ type: "approval", participants: [{ type: "agent", agentId: qa.id }] }],
+    };
+    const [assigneeOnlyPatch] = await db.insert(issues).values({
+      companyId,
+      title: "Reject assignee-only invalidation",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+      executionPolicy: validPolicy,
+    }).returning();
+    await request(app)
+      .patch(`/api/issues/${assigneeOnlyPatch.id}`)
+      .send({ assigneeAgentId: qa.id })
+      .expect(400);
+    const [assigneeOnlyPersisted] = await db.select().from(issues).where(eq(issues.id, assigneeOnlyPatch.id));
+    expect(assigneeOnlyPersisted.assigneeAgentId).toBe(coder.id);
+
+    const activeReviewStageId = randomUUID();
+    const nullReturnPolicy = {
+      stages: [
+        {
+          id: activeReviewStageId,
+          type: "review",
+          participants: [{ type: "agent", agentId: qa.id }],
+        },
+        {
+          id: randomUUID(),
+          type: "approval",
+          participants: [{ type: "agent", agentId: coder.id }],
+        },
+      ],
+    };
+    const [nullReturnAssignee] = await db.insert(issues).values({
+      companyId,
+      title: "Allow a null workflow return assignee",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+      executionState: {
+        status: "pending",
+        currentStageId: activeReviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qa.id },
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).returning();
+    await request(app)
+      .patch(`/api/issues/${nullReturnAssignee.id}`)
+      .send({ executionPolicy: nullReturnPolicy })
+      .expect(200);
+  });
+
+  it("serializes approval-policy narrowing with reassignment so they cannot jointly strand an approval", async () => {
+    const companyId = await seedCompany();
+    const coder = await seedAgent(companyId, "Coder");
+    const qa = await seedAgent(companyId, "QA");
+    const app = createApp();
+    const [issue] = await db.insert(issues).values({
+      companyId,
+      title: "Serialize approval eligibility",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+      executionPolicy: {
+        stages: [
+          {
+            type: "approval",
+            participants: [
+              { type: "agent", agentId: coder.id },
+              { type: "agent", agentId: qa.id },
+            ],
+          },
+        ],
+      },
+    }).returning();
+    const advisoryLockKey = 28510960;
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION paperclip_test_pause_approval_policy_narrowing()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF NEW.execution_policy IS DISTINCT FROM OLD.execution_policy THEN
+          PERFORM pg_advisory_xact_lock(${advisoryLockKey});
+          PERFORM pg_sleep(1);
+        END IF;
+        RETURN NEW;
+      END
+      $function$;
+      CREATE TRIGGER paperclip_test_pause_approval_policy_narrowing
+      BEFORE UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION paperclip_test_pause_approval_policy_narrowing();
+    `));
+
+    try {
+      const narrowing = request(app)
+        .patch(`/api/issues/${issue!.id}`)
+        .send({
+          executionPolicy: {
+            stages: [{ type: "approval", participants: [{ type: "agent", agentId: qa.id }] }],
+          },
+        })
+        .then((response) => response);
+
+      let narrowingPaused = false;
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const lockAvailable = await db.transaction(async (tx) => {
+          const [result] = await tx.execute<{ acquired: boolean }>(
+            sql`SELECT pg_try_advisory_lock(${advisoryLockKey}) AS acquired`,
+          );
+          if (result?.acquired) {
+            await tx.execute(sql`SELECT pg_advisory_unlock(${advisoryLockKey})`);
+          }
+          return result?.acquired ?? false;
+        });
+        if (!lockAvailable) {
+          narrowingPaused = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(narrowingPaused).toBe(true);
+
+      let reassignmentFinished = false;
+      const reassignment = request(app)
+        .patch(`/api/issues/${issue!.id}`)
+        .send({ assigneeAgentId: qa.id })
+        .then((response) => {
+          reassignmentFinished = true;
+          return response;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(reassignmentFinished).toBe(false);
+
+      const [narrowed, reassigned] = await Promise.all([narrowing, reassignment]);
+      expect.soft([narrowed.status, reassigned.status].sort()).toEqual([200, 400]);
+
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+      expect.soft(persisted.assigneeAgentId).toBe(coder.id);
+      expect.soft(persisted.executionPolicy).toMatchObject({
+        stages: [{ type: "approval", participants: [{ type: "agent", agentId: qa.id }] }],
+      });
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS paperclip_test_pause_approval_policy_narrowing ON issues;
+        DROP FUNCTION IF EXISTS paperclip_test_pause_approval_policy_narrowing();
+      `));
+    }
+  }, 20_000);
+
+  it("rejects a workflow restart whose transition was planned from a stale policy", async () => {
+    const companyId = await seedCompany();
+    const coder = await seedAgent(companyId, "Coder");
+    const qa = await seedAgent(companyId, "QA");
+    const security = await seedAgent(companyId, "Security");
+    const reviewStageId = randomUUID();
+    const approvalStageId = randomUUID();
+    const app = createApp();
+    const [issue] = await db.insert(issues).values({
+      companyId,
+      title: "Restart from a current policy",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+      executionPolicy: {
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            participants: [{ type: "agent", agentId: qa.id }],
+          },
+          {
+            id: approvalStageId,
+            type: "approval",
+            participants: [{ type: "agent", agentId: qa.id }],
+          },
+        ],
+      },
+      executionState: {
+        status: "changes_requested",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qa.id },
+        returnAssignee: { type: "agent", agentId: coder.id },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).returning();
+    const advisoryLockKey = 28510961;
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION paperclip_test_pause_restart_policy_update()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF NEW.execution_policy IS DISTINCT FROM OLD.execution_policy THEN
+          PERFORM pg_advisory_xact_lock(${advisoryLockKey});
+          PERFORM pg_sleep(1);
+        END IF;
+        RETURN NEW;
+      END
+      $function$;
+      CREATE TRIGGER paperclip_test_pause_restart_policy_update
+      BEFORE UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION paperclip_test_pause_restart_policy_update();
+    `));
+
+    try {
+      const policyUpdate = request(app)
+        .patch(`/api/issues/${issue!.id}`)
+        .send({
+          executionPolicy: {
+            stages: [
+              {
+                id: reviewStageId,
+                type: "review",
+                participants: [{ type: "agent", agentId: security.id }],
+              },
+              {
+                id: approvalStageId,
+                type: "approval",
+                participants: [{ type: "agent", agentId: qa.id }],
+              },
+            ],
+          },
+        })
+        .then((response) => response);
+
+      let policyUpdatePaused = false;
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const lockAvailable = await db.transaction(async (tx) => {
+          const [result] = await tx.execute<{ acquired: boolean }>(
+            sql`SELECT pg_try_advisory_lock(${advisoryLockKey}) AS acquired`,
+          );
+          if (result?.acquired) {
+            await tx.execute(sql`SELECT pg_advisory_unlock(${advisoryLockKey})`);
+          }
+          return result?.acquired ?? false;
+        });
+        if (!lockAvailable) {
+          policyUpdatePaused = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(policyUpdatePaused).toBe(true);
+
+      let restartFinished = false;
+      const restart = request(app)
+        .patch(`/api/issues/${issue!.id}`)
+        .send({ status: "done" })
+        .then((response) => {
+          restartFinished = true;
+          return response;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(restartFinished).toBe(false);
+
+      const [updatedPolicy, restarted] = await Promise.all([policyUpdate, restart]);
+      expect.soft([updatedPolicy.status, restarted.status].sort()).toEqual([200, 409]);
+
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+      expect.soft(persisted.executionPolicy).toMatchObject({
+        stages: [
+          { participants: [{ type: "agent", agentId: security.id }] },
+          { participants: [{ type: "agent", agentId: qa.id }] },
+        ],
+      });
+      expect.soft(persisted.executionState).toMatchObject({
+        status: "changes_requested",
+        currentParticipant: { type: "agent", agentId: qa.id },
+      });
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS paperclip_test_pause_restart_policy_update ON issues;
+        DROP FUNCTION IF EXISTS paperclip_test_pause_restart_policy_update();
+      `));
+    }
+  }, 20_000);
+
+  it("rejects a workflow start whose transition was planned from a stale policy", async () => {
+    const companyId = await seedCompany();
+    const coder = await seedAgent(companyId, "Coder");
+    const qa = await seedAgent(companyId, "QA");
+    const security = await seedAgent(companyId, "Security");
+    const app = createApp();
+    const [issue] = await db.insert(issues).values({
+      companyId,
+      title: "Start from a current policy",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coder.id,
+      executionPolicy: {
+        stages: [
+          { type: "review", participants: [{ type: "agent", agentId: qa.id }] },
+          { type: "approval", participants: [{ type: "agent", agentId: qa.id }] },
+        ],
+      },
+    }).returning();
+    const advisoryLockKey = 28510962;
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION paperclip_test_pause_start_policy_update()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF NEW.execution_policy IS DISTINCT FROM OLD.execution_policy THEN
+          PERFORM pg_advisory_xact_lock(${advisoryLockKey});
+          PERFORM pg_sleep(1);
+        END IF;
+        RETURN NEW;
+      END
+      $function$;
+      CREATE TRIGGER paperclip_test_pause_start_policy_update
+      BEFORE UPDATE ON issues
+      FOR EACH ROW EXECUTE FUNCTION paperclip_test_pause_start_policy_update();
+    `));
+
+    try {
+      const policyUpdate = request(app)
+        .patch(`/api/issues/${issue!.id}`)
+        .send({
+          executionPolicy: {
+            stages: [
+              { type: "review", participants: [{ type: "agent", agentId: security.id }] },
+              { type: "approval", participants: [{ type: "agent", agentId: qa.id }] },
+            ],
+          },
+        })
+        .then((response) => response);
+
+      let policyUpdatePaused = false;
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const lockAvailable = await db.transaction(async (tx) => {
+          const [result] = await tx.execute<{ acquired: boolean }>(
+            sql`SELECT pg_try_advisory_lock(${advisoryLockKey}) AS acquired`,
+          );
+          if (result?.acquired) {
+            await tx.execute(sql`SELECT pg_advisory_unlock(${advisoryLockKey})`);
+          }
+          return result?.acquired ?? false;
+        });
+        if (!lockAvailable) {
+          policyUpdatePaused = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(policyUpdatePaused).toBe(true);
+
+      let workflowStartFinished = false;
+      const workflowStart = request(app)
+        .patch(`/api/issues/${issue!.id}`)
+        .send({ status: "done" })
+        .then((response) => {
+          workflowStartFinished = true;
+          return response;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(workflowStartFinished).toBe(false);
+
+      const [updatedPolicy, started] = await Promise.all([policyUpdate, workflowStart]);
+      expect.soft([updatedPolicy.status, started.status].sort()).toEqual([200, 409]);
+
+      const [persisted] = await db.select().from(issues).where(eq(issues.id, issue!.id));
+      expect.soft(persisted.status).toBe("in_progress");
+      expect.soft(persisted.executionState).toBeNull();
+      expect.soft(persisted.executionPolicy).toMatchObject({
+        stages: [
+          { participants: [{ type: "agent", agentId: security.id }] },
+          { participants: [{ type: "agent", agentId: qa.id }] },
+        ],
+      });
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS paperclip_test_pause_start_policy_update ON issues;
+        DROP FUNCTION IF EXISTS paperclip_test_pause_start_policy_update();
+      `));
+    }
+  }, 20_000);
+
+  it("allows unrelated status changes for legacy invalid policies but still rejects workflow starts", async () => {
+    const companyId = await seedCompany();
+    const coder = await seedAgent(companyId, "Coder");
+    const legacyInvalidPolicy = {
+      stages: [{ type: "approval", participants: [{ type: "agent", agentId: coder.id }] }],
+    };
+    const [legacyStatusIssue, legacyWorkflowStartIssue] = await db.insert(issues).values([
+      {
+        companyId,
+        title: "Legacy invalid policy status transition",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: coder.id,
+        executionPolicy: legacyInvalidPolicy,
+      },
+      {
+        companyId,
+        title: "Legacy invalid policy workflow start",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: coder.id,
+        executionPolicy: legacyInvalidPolicy,
+      },
+    ]).returning();
+    const app = createApp();
+
+    const unrelatedStatus = await request(app)
+      .patch(`/api/issues/${legacyStatusIssue!.id}`)
+      .send({ status: "cancelled" });
+    expect.soft(unrelatedStatus.status).toBe(200);
+    expect.soft((await db.select().from(issues).where(eq(issues.id, legacyStatusIssue!.id)))[0]).toMatchObject({
+      status: "cancelled",
+    });
+
+    const workflowStart = await request(app)
+      .patch(`/api/issues/${legacyWorkflowStartIssue!.id}`)
+      .send({ status: "done" });
+    expect.soft(workflowStart.status).toBe(400);
+  });
 
   it("replays the existing issue for the same company idempotency key", async () => {
     const companyId = await seedCompany();
