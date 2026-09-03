@@ -10,6 +10,7 @@ import {
   heartbeatRuns,
   issueDocuments,
   issueComments,
+  issueThreadInteractions,
   issues,
   pipelineAutomationExecutions,
   pipelineCaseBlockers,
@@ -774,6 +775,52 @@ function readBreakdownConfig(config?: PipelineStageConfig | null): PipelineBreak
   };
 }
 
+/**
+ * Issue-driven stage gate (`autoAdvanceOnIssue` in stage config).
+ *
+ * Deterministic, config-driven advancement: a stage advances a case when the
+ * issues linked to that case (role `work` by default) satisfy a declared
+ * condition — a status from `statuses`, or an accepted `request_confirmation`
+ * interaction with none still pending. No agents interpret anything; the rule
+ * is evaluated on stage entry (backfill) and by a periodic sweep, mirroring
+ * how `autoAdvanceOnChildrenTerminal` + `maybeAutoAdvanceOnStageEntry` already
+ * cooperate.
+ */
+export interface PipelineIssueGateConfig {
+  toStageKey: string;
+  statuses: string[] | null;
+  interactionAccepted: boolean;
+  roles: string[];
+}
+
+const ISSUE_GATE_ROLES = ["origin", "conversation", "work", "automation"] as const;
+
+export function parseIssueGateConfig(config?: PipelineStageConfig | null): PipelineIssueGateConfig | null {
+  const raw = config?.autoAdvanceOnIssue;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const toStageKey = readOptionalTrimmedString(record.toStageKey);
+  const statuses = Array.isArray(record.statuses)
+    ? record.statuses
+        .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+        .map((s) => s.trim())
+    : [];
+  const interactionAccepted = record.interactionAccepted === true;
+  const roles = Array.isArray(record.roles)
+    ? record.roles.filter(
+        (r): r is string => typeof r === "string" && (ISSUE_GATE_ROLES as readonly string[]).includes(r),
+      )
+    : [];
+  if (!toStageKey) return null;
+  if (statuses.length === 0 && !interactionAccepted) return null;
+  return {
+    toStageKey,
+    statuses: statuses.length > 0 ? statuses : null,
+    interactionAccepted,
+    roles: roles.length > 0 ? roles : ["work"],
+  };
+}
+
 function childrenGateConfig(
   config?: PipelineStageConfig | null,
   options: { explicitZeroChildrenPass?: boolean } = {},
@@ -1498,6 +1545,42 @@ async function writeCaseEvent(
       payload: input.payload ?? {},
     })
     .returning();
+
+  // Mirror pipeline case events into the company activity log so live-update
+  // clients (LiveUpdatesProvider websocket) can invalidate pipeline queries —
+  // the same mechanism that keeps the Issues screen fresh. Without this, case
+  // transitions/claims/reviews land only in pipeline_case_events and the
+  // Pipelines board requires a manual refresh. Best-effort by design: activity
+  // mirroring must never break the case event itself.
+  //
+  // IMPORTANT: this function is often called inside a Postgres transaction. Any
+  // failing INSERT puts the whole transaction into "aborted" state — even if JS
+  // catches the error. We avoid FK violations by never passing runId: the
+  // activity_log.run_id column has a FK to heartbeat_runs.id, and the caller's
+  // runId may not yet exist in heartbeat_runs at the point writeCaseEvent runs.
+  // Attribution is already recorded in pipeline_case_events.actor_run_id; the
+  // activity log entry here exists solely for websocket invalidation.
+  try {
+    const actor = eventActorPatch(input.actor);
+    await logActivity(db as Db, {
+      companyId: input.companyId,
+      actorType: actor.actorType as "agent" | "user" | "system",
+      actorId: actor.actorAgentId ?? actor.actorUserId ?? "system",
+      agentId: actor.actorAgentId ?? null,
+      runId: null, // deliberately omitted — see comment above; attribution is in pipeline_case_events
+      action: `pipeline.case_${input.type}`,
+      entityType: "pipeline_case",
+      entityId: input.caseId,
+      details: {
+        fromStageId: input.fromStageId ?? null,
+        toStageId: input.toStageId ?? null,
+        ...(input.payload ?? {}),
+      },
+    });
+  } catch {
+    // best-effort — see comment above
+  }
+
   return event!;
 }
 
@@ -3354,8 +3437,177 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         automationLedgers: input.automationLedgers,
         visitedStageIds: input.autoAdvanceVisitedStageIds,
       });
+      await maybeAutoAdvanceOnIssueLifecycle(tx, {
+        companyId: input.companyId,
+        caseRow: updated,
+        stage: toStage,
+        automationLedgers: input.automationLedgers,
+        visitedStageIds: input.autoAdvanceVisitedStageIds,
+      });
     }
     return { case: updated, event, automationLedger: ledger };
+  }
+
+  /**
+   * Evaluate an `autoAdvanceOnIssue` gate for one case: true when any linked
+   * issue (roles from the rule, links not retired) currently satisfies the
+   * declared conditions. Deterministic — pure DB state, no clock, no agent.
+   */
+  async function issueGateSatisfiedForCase(
+    tx: PipelineDb,
+    input: { companyId: string; caseId: string; rule: PipelineIssueGateConfig },
+  ): Promise<{ satisfied: boolean; linkedCount: number }> {
+    const linked = await tx
+      .select({ issueId: pipelineCaseIssueLinks.issueId, status: issues.status })
+      .from(pipelineCaseIssueLinks)
+      .innerJoin(issues, eq(issues.id, pipelineCaseIssueLinks.issueId))
+      .where(
+        and(
+          eq(pipelineCaseIssueLinks.companyId, input.companyId),
+          eq(pipelineCaseIssueLinks.caseId, input.caseId),
+          isNull(pipelineCaseIssueLinks.retiredAt),
+          inArray(pipelineCaseIssueLinks.role, input.rule.roles),
+        ),
+      );
+    // `linked.length === 0` is not "not yet satisfied" — it means no issue on
+    // this case carries any of the rule's required roles at all, which no
+    // future status change can fix. Distinguished from a normal not-yet-true
+    // gate so the caller can flag it (see `flagIssueGateRoleMismatch`) instead
+    // of the sweep silently re-evaluating a structurally-unsatisfiable gate
+    // forever — a config where `roles` doesn't match how this pipeline's
+    // cases actually link their issues parks the case at this stage with zero
+    // automation executions and no signal anywhere that a role mismatch, not
+    // a pending status, is the cause.
+    if (linked.length === 0) return { satisfied: false, linkedCount: 0 };
+
+    if (input.rule.statuses && linked.some((row) => input.rule.statuses!.includes(row.status))) {
+      return { satisfied: true, linkedCount: linked.length };
+    }
+
+    if (input.rule.interactionAccepted) {
+      const issueIds = linked.map((row) => row.issueId);
+      const interactions = await tx
+        .select({ status: issueThreadInteractions.status })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            inArray(issueThreadInteractions.issueId, issueIds),
+            eq(issueThreadInteractions.kind, "request_confirmation"),
+          ),
+        );
+      const hasAccepted = interactions.some((row) => row.status === "accepted");
+      const hasPending = interactions.some((row) => row.status === "pending");
+      if (hasAccepted && !hasPending) return { satisfied: true, linkedCount: linked.length };
+    }
+
+    return { satisfied: false, linkedCount: linked.length };
+  }
+
+  /**
+   * One-time loud flag for a structurally-unsatisfiable `autoAdvanceOnIssue`
+   * gate (zero linked issues carry any of the rule's required roles). Posted
+   * once per case+stage (guarded by a prior `issue_gate_role_mismatch` case
+   * event) so the periodic sweep's repeated re-evaluation doesn't spam it.
+   * A case parked forever with no operator visibility is worse than a noisy
+   * one-off notice.
+   */
+  async function flagIssueGateRoleMismatch(
+    tx: PipelineDb,
+    input: {
+      companyId: string;
+      caseId: string;
+      stage: typeof pipelineStages.$inferSelect;
+      rule: PipelineIssueGateConfig;
+    },
+  ) {
+    const already = await tx
+      .select({ id: pipelineCaseEvents.id })
+      .from(pipelineCaseEvents)
+      .where(and(
+        eq(pipelineCaseEvents.companyId, input.companyId),
+        eq(pipelineCaseEvents.caseId, input.caseId),
+        eq(pipelineCaseEvents.type, "issue_gate_role_mismatch"),
+        eq(pipelineCaseEvents.fromStageId, input.stage.id),
+      ))
+      .limit(1);
+    if (already.length > 0) return;
+    await writeCaseEvent(tx, {
+      companyId: input.companyId,
+      caseId: input.caseId,
+      type: "issue_gate_role_mismatch",
+      actor: { type: "system" },
+      fromStageId: input.stage.id,
+      payload: { stageKey: input.stage.key, requiredRoles: input.rule.roles },
+    });
+    await postSystemCommentOnLinkedIssues(tx, {
+      companyId: input.companyId,
+      caseId: input.caseId,
+      roles: [...ISSUE_GATE_ROLES],
+      body: `⚠️ **Pipeline gate misconfiguration** — stage \`${input.stage.key}\`'s \`autoAdvanceOnIssue\` gate ` +
+        `requires a linked issue with role(s) \`${input.rule.roles.join(", ")}\`, but no non-retired issue link ` +
+        `on this case has that role. This case cannot advance past \`${input.stage.key}\` automatically and will ` +
+        `sit here indefinitely until an operator either relinks the correct role or fixes the stage config. ` +
+        `(Detected by the periodic gate sweep — this notice is posted once per stage.)`,
+    });
+  }
+
+  /**
+   * Issue-driven counterpart of `maybeAutoAdvanceOnStageEntry`: when the case's
+   * current stage declares `autoAdvanceOnIssue` and the linked issues already
+   * satisfy it (or satisfy it later, via the sweep), transition. Best-effort by
+   * design — same posture as the children gate: an unsatisfiable target stage
+   * (disabled, missing) must never break the surrounding transition.
+   */
+  async function maybeAutoAdvanceOnIssueLifecycle(
+    tx: PipelineDb,
+    input: {
+      companyId: string;
+      caseRow: typeof pipelineCases.$inferSelect;
+      stage: typeof pipelineStages.$inferSelect;
+      automationLedgers?: Array<typeof pipelineAutomationExecutions.$inferSelect>;
+      visitedStageIds?: Set<string>;
+    },
+  ) {
+    const rule = parseIssueGateConfig(stageConfig(input.stage));
+    if (!rule) return;
+    const visited = input.visitedStageIds ?? new Set<string>();
+    if (visited.has(input.stage.id)) return;
+    const result = await issueGateSatisfiedForCase(tx, {
+      companyId: input.companyId,
+      caseId: input.caseRow.id,
+      rule,
+    });
+    if (!result.satisfied) {
+      if (result.linkedCount === 0) {
+        await flagIssueGateRoleMismatch(tx, {
+          companyId: input.companyId,
+          caseId: input.caseRow.id,
+          stage: input.stage,
+          rule,
+        });
+      }
+      return;
+    }
+    const toStage = await getStageByKeyOrThrow(tx, input.caseRow.pipelineId, rule.toStageKey);
+    if (toStage.id === input.stage.id) return;
+    visited.add(input.stage.id);
+    try {
+      assertStageEnabled(toStage, "auto_advance");
+      await transitionCaseInTransaction(tx, {
+        companyId: input.companyId,
+        caseId: input.caseRow.id,
+        toStageKey: rule.toStageKey,
+        expectedVersion: input.caseRow.version,
+        actor: { type: "system" },
+        transitionClass: "auto",
+        reason: "issue_lifecycle",
+        automationLedgers: input.automationLedgers,
+        autoAdvanceVisitedStageIds: visited,
+      });
+    } catch {
+      // Best-effort: an unsatisfied gate (drift, approval) on the chained
+      // transition is recorded by the transition machinery itself.
+    }
   }
 
   // A case can enter an auto-advance stage after its children are already
@@ -4433,6 +4685,103 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         });
         return updated!;
       });
+    },
+
+    /**
+     * Periodic convergence pass for `autoAdvanceOnIssue` gates: re-evaluates
+     * every non-terminal case sitting on a stage with an issue gate and
+     * advances the ones whose linked issues now satisfy the rule. This is the
+     * safety net that makes the feature deterministic even when the issue
+     * changed long after the case entered the stage (no event bus, no hooks —
+     * same posture as the children-terminal entry backfill).
+     */
+    async sweepIssueGateCases(): Promise<{ evaluated: number; advanced: number; dispatched: number }> {
+      // Self-heal: any automation ledger still in `pending_dispatch` was created
+      // by an in-transaction transition whose creator could not dispatch
+      // post-commit (e.g. a sweep like this one, or a crashed process). There is
+      // no other reaper for these rows, so this sweep adopts them — execution is
+      // idempotent (executeAutomationLedger re-reads current state and its
+      // conflict target prevents duplicates).
+      const stale = await db
+        .select({ id: pipelineAutomationExecutions.id })
+        .from(pipelineAutomationExecutions)
+        .where(
+          and(
+            eq(pipelineAutomationExecutions.status, "failed"),
+            eq(pipelineAutomationExecutions.error, "pending_dispatch"),
+            sql`${pipelineAutomationExecutions.createdAt} < now() - interval '2 minutes'`,
+          ),
+        )
+        .limit(50);
+      let dispatched = 0;
+      if (stale.length > 0) {
+        for (const row of stale) {
+          try {
+            await executeAutomationLedger(row.id, { type: "system" });
+            dispatched += 1;
+          } catch {
+            // best-effort — retried on the next tick
+          }
+        }
+      }
+
+      const candidates = await db
+        .select({
+          caseRow: pipelineCases,
+          stage: pipelineStages,
+        })
+        .from(pipelineCases)
+        .innerJoin(pipelineStages, eq(pipelineStages.id, pipelineCases.stageId))
+        .where(
+          and(
+            isNull(pipelineCases.terminalKind),
+            isNotNull(pipelineCases.stageId),
+            sql`${pipelineStages.config} -> 'autoAdvanceOnIssue' is not null`,
+          ),
+        );
+
+      let advanced = 0;
+      for (const row of candidates) {
+        if (!parseIssueGateConfig(stageConfig(row.stage))) continue;
+        try {
+          // Ledgers created by the in-tx advance are executed AFTER the
+          // transaction commits — same contract as the public transitionCase:
+          // enqueueStageAutomationLedger writes a pending_dispatch row inside
+          // the tx, and only a post-commit executeAutomationLedgers call turns
+          // it into a real routine dispatch.
+          const ledgers: Array<typeof pipelineAutomationExecutions.$inferSelect> = [];
+          const result = await db.transaction(async (tx) => {
+            const fresh = await tx
+              .select()
+              .from(pipelineCases)
+              .where(eq(pipelineCases.id, row.caseRow.id))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (!fresh || fresh.terminalKind || fresh.stageId !== row.stage.id) return false;
+            await maybeAutoAdvanceOnIssueLifecycle(tx, {
+              companyId: fresh.companyId,
+              caseRow: fresh,
+              stage: row.stage,
+              automationLedgers: ledgers,
+            });
+            const after = await tx
+              .select({ stageId: pipelineCases.stageId })
+              .from(pipelineCases)
+              .where(eq(pipelineCases.id, fresh.id))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            return after !== null && after.stageId !== row.stage.id;
+          });
+          if (result) advanced += 1;
+          if (ledgers.length > 0) {
+            await executeAutomationLedgers(ledgers, { type: "system" });
+            dispatched += ledgers.length;
+          }
+        } catch {
+          // Best-effort per case: a failing candidate must not abort the sweep.
+        }
+      }
+      return { evaluated: candidates.length, advanced, dispatched };
     },
 
     async transitionCase(input: {

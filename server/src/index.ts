@@ -69,6 +69,7 @@ import {
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  pipelineService,
   statusCardService,
   toolAccessService,
   workspaceOperationService,
@@ -1175,6 +1176,20 @@ export async function startServer(): Promise<StartedServer> {
     // The throttle keeps the 30s cadence from flooding the log.
     let lastTerminalWorkspaceSkipLogAt = 0;
     const terminalWorkspaceSkipLogIntervalMs = 10 * 60 * 1000;
+    const pipelineGateSweeper = pipelineService(db as any);
+    const schedulePipelineIssueGateSweep = () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(pipelineGateSweeper
+        .sweepIssueGateCases()
+        .then((result) => {
+          if (result.advanced > 0) {
+            logger.info(result, "pipeline issue-gate sweep advanced cases");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "pipeline issue-gate sweep failed");
+        }));
+    };
     const scheduleTerminalWorkspaceSweep = () => {
       if (heartbeatSchedulerStopped) return;
       trackHeartbeatSchedulerWork(terminalWorkspaces
@@ -1470,6 +1485,7 @@ export async function startServer(): Promise<StartedServer> {
         if (heartbeatSchedulerStopped) return;
         scheduleMergedPullRequestConfirmationSweep();
         scheduleTerminalWorkspaceSweep();
+        schedulePipelineIssueGateSweep();
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
