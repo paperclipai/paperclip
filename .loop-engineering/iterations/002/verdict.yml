@@ -1,6 +1,0 @@
-iteration: 2
-verdict: failed
-progress: 0
-required_failures: 1
-external_blockers: 0
-stop_reason: "required gate failed"
