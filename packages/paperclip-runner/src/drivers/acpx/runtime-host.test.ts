@@ -95,6 +95,11 @@ async function waitForAcpxOperation<T>(
  * `deadline`. A callback that is still pending when the remaining time
  * runs out rejects with a timeout error instead of blocking the retry
  * loop past the helper deadline.
+ *
+ * A rejected attempt does not cancel `callback`. If `callback` later
+ * resolves to a `ManagedCodexCredentialLease`, close that lease so its
+ * kernel lock and active lease generation do not stay allocated for the
+ * rest of the test run.
  */
 async function runAcpxOperationAttempt<T>(
   callback: () => T | Promise<T>,
@@ -102,11 +107,20 @@ async function runAcpxOperationAttempt<T>(
 ): Promise<T> {
   const remainingMs = Math.max(0, deadline - Date.now());
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const callbackResult = Promise.resolve().then(callback);
+  void callbackResult.then(
+    (value) => {
+      if (timedOut) void closeLateCredentialLease(value);
+    },
+    () => undefined,
+  );
   try {
     return await Promise.race([
-      Promise.resolve().then(callback),
+      callbackResult,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
+          timedOut = true;
           reject(
             new Error(
               `ACPX operation attempt did not settle within the remaining ${remainingMs}ms of the helper deadline`,
@@ -117,6 +131,22 @@ async function runAcpxOperationAttempt<T>(
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Close `value` if it is a `ManagedCodexCredentialLease` (or another lease
+ * with the same `close()` shape). Swallow a close failure so cleanup of one
+ * late lease cannot mask the original test failure.
+ */
+async function closeLateCredentialLease(value: unknown): Promise<void> {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "close" in value &&
+    typeof (value as { close: unknown }).close === "function"
+  ) {
+    await (value as { close(): Promise<void> }).close().catch(() => undefined);
   }
 }
 
