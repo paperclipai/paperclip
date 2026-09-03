@@ -1,0 +1,81 @@
+schema: "paperclip/v1"
+agents:
+  backendengineer:
+    role: "engineer"
+    icon: "database"
+    capabilities: "Implements server, API, data, and infra code: HTTP/RPC handlers, services, business logic, schemas/migrations, queries, background jobs, server-side auth, observability, and IaC. Never touches front-end code; escalates cross-lane work to the CTO."
+    adapter:
+      config:
+        dangerouslySkipPermissions: true
+      type: "claude_local"
+  ceo:
+    role: "ceo"
+    adapter:
+      config:
+        dangerouslySkipPermissions: true
+      type: "claude_local"
+    runtime:
+      heartbeat:
+        intervalSec: 300
+    permissions:
+      canCreateAgents: true
+  cmo:
+    role: "cmo"
+    icon: "sparkles"
+    capabilities: "Owns marketing strategy, brand identity, positioning, voice, and the marketing roadmap. Drives brand-guideline creation through input from the CEO/board and prepares the company to hire a marketing team later."
+    adapter:
+      config:
+        dangerouslySkipPermissions: true
+      type: "claude_local"
+  coder:
+    role: "engineer"
+    icon: "code"
+    capabilities: "Implements coding tasks, writes and edits code, debugs issues, adds focused tests, and coordinates with QA and engineering leadership."
+    adapter:
+      type: "claude_local"
+  cto:
+    role: "cto"
+    icon: "crown"
+    capabilities: "Owns the agentic workflow, agent org chart, technical roadmap, and reusable project template. Hires and directs the FE/BE/QA/Security team; turns plans into delegated child issues; picks adapters and skills. Does NOT cut code — re-delegates all implementation to the appropriate engineering lane."
+    adapter:
+      config:
+        dangerouslySkipPermissions: true
+      type: "claude_local"
+    permissions:
+      canCreateAgents: true
+  frontendengineer:
+    role: "engineer"
+    icon: "code"
+    capabilities: "Implements front-end code: UI components, pages, routing, client state, styling, accessibility, responsiveness, and frontend build config. Never touches back-end code; escalates cross-lane work to the CTO."
+    adapter:
+      config:
+        dangerouslySkipPermissions: true
+      type: "claude_local"
+  qa:
+    role: "qa"
+    icon: "bug"
+    capabilities: "Owns manual and automated QA workflows including Playwright-driven browser verification, reproduces defects, validates fixes end-to-end, captures evidence, designs and maintains test harnesses, and reports concise actionable findings."
+    adapter:
+      config:
+        dangerouslySkipPermissions: true
+      type: "claude_local"
+  securityengineer:
+    role: "security"
+    icon: "shield"
+    capabilities: "Owns security posture across code, architecture, APIs, deployments, dependencies, and agent tool use. Threat-models, reviews concretely, drives remediations with evidence. Authorised to research standards (NIST, OWASP, GDPR, PII) and install them as company skills."
+    adapter:
+      config:
+        dangerouslySkipPermissions: true
+      type: "claude_local"
+company:
+  attachmentMaxBytes: 10485760
+sidebar:
+  agents:
+    - "ceo"
+    - "cmo"
+    - "cto"
+    - "backendengineer"
+    - "coder"
+    - "frontendengineer"
+    - "qa"
+    - "securityengineer"
