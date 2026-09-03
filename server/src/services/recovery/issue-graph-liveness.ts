@@ -212,10 +212,32 @@ export function classifyIssueReviewPaths(
   input: IssueGraphLivenessInput,
   issue: IssueLivenessIssueInput,
 ): IssueReviewPathFact[] {
-  if (issue.status !== "in_review") return [];
+  const paths: IssueReviewPathFact[] = [];
+
+  const appendWaitingPaths = (
+    entries: IssueLivenessWaitingPathInput[],
+    kind: "interaction" | "approval" | "recovery",
+  ) => {
+    for (const entry of entries) {
+      if (entry.companyId !== issue.companyId || entry.issueId !== issue.id) continue;
+      paths.push({
+        kind,
+        ref: entry.id ?? null,
+        agentId: null,
+        userId: null,
+        since: entry.createdAt ?? null,
+      });
+    }
+  };
+
+  // A pending interaction is a live review path regardless of issue status:
+  // a `blocked` card with a board-addressed ask is exactly the case that most
+  // needs surfacing, since nobody can act until the ask is answered.
+  appendWaitingPaths(input.pendingInteractions ?? [], "interaction");
+
+  if (issue.status !== "in_review") return paths;
   const nowMs = readDateMs(input.now ?? new Date()) ?? Date.now();
   const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
-  const paths: IssueReviewPathFact[] = [];
 
   if (issue.assigneeUserId) {
     paths.push({
@@ -275,22 +297,6 @@ export function classifyIssueReviewPaths(
   appendExecutionPaths(input.activeRuns ?? [], "active_run");
   appendExecutionPaths(input.queuedWakeRequests ?? [], "queued_wake");
 
-  const appendWaitingPaths = (
-    entries: IssueLivenessWaitingPathInput[],
-    kind: "interaction" | "approval" | "recovery",
-  ) => {
-    for (const entry of entries) {
-      if (entry.companyId !== issue.companyId || entry.issueId !== issue.id) continue;
-      paths.push({
-        kind,
-        ref: entry.id ?? null,
-        agentId: null,
-        userId: null,
-        since: entry.createdAt ?? null,
-      });
-    }
-  };
-  appendWaitingPaths(input.pendingInteractions ?? [], "interaction");
   appendWaitingPaths(input.pendingApprovals ?? [], "approval");
   appendWaitingPaths(input.openRecoveryIssues ?? [], "recovery");
 
