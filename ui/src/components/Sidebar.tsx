@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   DollarSign,
   History,
+  FileText,
   Search,
   SquarePen,
   Network,
@@ -229,6 +230,7 @@ export function Sidebar() {
             <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
           ) : null}
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          <SidebarNavItem to="/briefs" label="Briefs" icon={FileText} />
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           ) : null}

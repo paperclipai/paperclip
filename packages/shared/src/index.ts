@@ -1587,6 +1587,10 @@ export type {
   OAuthRedirectConstraints,
   QuotaWindow,
   ProviderQuotaResult,
+  BriefsOverview,
+  BriefsOverviewAgent,
+  BriefsOverviewSummaryItem,
+  BriefsOverviewWarning,
 } from "./types/index.js";
 export { WORKSPACE_READINESS_STATES } from "./types/index.js";
 export {

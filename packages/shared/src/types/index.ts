@@ -315,6 +315,12 @@ export {
   SETUP_TOKEN_TRANSPORT_ADVISORY_CODE,
 } from "./agent.js";
 export type {
+  BriefsOverview,
+  BriefsOverviewAgent,
+  BriefsOverviewSummaryItem,
+  BriefsOverviewWarning,
+} from "./briefs.js";
+export type {
   AgentEligibilityAgent,
   AgentEligibilityLifecycleReason,
   AgentInvalidOrgChainAncestor,

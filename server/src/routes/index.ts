@@ -4,6 +4,7 @@ export { companySkillRoutes } from "./company-skills.js";
 export { companySkillPolicyRoutes } from "./company-skill-policy.js";
 export { inboxAgentPolicyRoutes } from "./inbox-agent-policy.js";
 export { builtInAgentRoutes } from "./built-in-agents.js";
+export { briefsRoutes } from "./briefs.js";
 export { folderRoutes } from "./folders.js";
 export { summarySlotRoutes } from "./summary-slots.js";
 export { statusCardRoutes } from "./status-cards.js";

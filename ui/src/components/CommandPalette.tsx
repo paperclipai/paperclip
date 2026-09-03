@@ -30,6 +30,7 @@ import {
   History,
   SquarePen,
   FileCode2,
+  FileText,
   Plus,
   Search,
 } from "lucide-react";
@@ -372,6 +373,10 @@ export function CommandPalette() {
           <CommandItem onSelect={() => go("/goals")}>
             <Target className="mr-2 h-4 w-4" />
             Goals
+          </CommandItem>
+          <CommandItem onSelect={() => go("/briefs")}>
+            <FileText className="mr-2 h-4 w-4" />
+            Briefs
           </CommandItem>
           <CommandItem onSelect={() => go("/agents")}>
             <Bot className="mr-2 h-4 w-4" />

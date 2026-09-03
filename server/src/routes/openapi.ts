@@ -580,6 +580,10 @@ const responses = {
     description: "Conflict",
     content: { "application/json": { schema: ErrorSchema } },
   },
+  preconditionFailed: {
+    description: "Precondition failed",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
   payloadTooLarge: {
     description: "Payload too large",
     content: { "application/json": { schema: ErrorSchema } },
@@ -3627,6 +3631,20 @@ registry.registerPath({
   summary: "Get dashboard data",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/briefs/overview",
+  tags: ["briefs"],
+  summary: "Get Briefs overview",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    412: r.preconditionFailed,
+  },
 });
 
 registry.registerPath({
