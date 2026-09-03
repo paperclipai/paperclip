@@ -184,8 +184,14 @@ describe("public repository paid workflow security", () => {
     );
     const historyJob = fullStack.slice(fullStack.indexOf("  publish_history:"));
     expect(reportJob).toContain("ref: ${{ github.sha }}");
+    expect(reportJob).not.toContain(
+      "ref: ${{ needs.authorize.outputs.target_sha }}",
+    );
     expect(reportJob).not.toContain("Download resolved target lockfile");
     expect(historyJob).toContain("ref: ${{ github.sha }}");
+    expect(historyJob).not.toContain(
+      "ref: ${{ needs.authorize.outputs.target_sha }}",
+    );
     expect(historyJob).not.toContain("Download resolved target lockfile");
     for (const [secret, condition] of Object.entries({
       OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",
