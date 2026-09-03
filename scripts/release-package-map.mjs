@@ -26,7 +26,10 @@ function discoverPublicPackages() {
       const pkg = readJson(pkgPath);
       if (!pkg.private) {
         packages.push({
-          dir: relDir,
+          // The manifest and downstream consumers (check-release-package-bootstrap
+          // compares against git-reported changed paths) use forward slashes, so
+          // the discovered dir must not carry win32 separators.
+          dir: relDir.replaceAll("\\", "/"),
           pkgPath,
           name: pkg.name,
           version: pkg.version,
