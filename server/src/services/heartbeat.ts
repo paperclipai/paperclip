@@ -24973,6 +24973,7 @@ export function heartbeatService(
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    suppressImmediateRecovery?: boolean;
   };
 
   async function cancelRunInternal(
@@ -25067,7 +25068,9 @@ export function heartbeatService(
         message: options.eventMessage ?? "run cancelled",
         ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: options.suppressImmediateRecovery === true,
+      });
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
