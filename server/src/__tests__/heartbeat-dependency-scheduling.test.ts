@@ -509,7 +509,10 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
-  it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
+  it.each([
+    "issue_blockers_resolved",
+    "issue_children_completed",
+  ])("defers %s as a follow-up when the same issue is already running", async (wakeReason) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const blockerId = randomUUID();
@@ -580,11 +583,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       processGroupId: null,
     });
 
-    const idempotencyKey = `issue_blockers_resolved:${blockedIssueId}:${blockerId}`;
+    const idempotencyKey = `${wakeReason}:${blockedIssueId}:${blockerId}`;
     const wake = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "issue_blockers_resolved",
+      reason: wakeReason,
       payload: {
         issueId: blockedIssueId,
         resolvedBlockerIssueId: blockerId,
@@ -592,7 +595,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       idempotencyKey,
       contextSnapshot: {
         issueId: blockedIssueId,
-        wakeReason: "issue_blockers_resolved",
+        wakeReason,
         resolvedBlockerIssueId: blockerId,
       },
     });
