@@ -650,12 +650,14 @@ describe("ACPX runtime host", () => {
         code: "ENOENT",
       });
     });
-    const contender = await stageManagedCodexCredential({
-      agentHomeDirectory: credentialHome,
-      environment: {
-        PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-      },
-    });
+    const contender = await waitForAcpxOperation(() =>
+      stageManagedCodexCredential({
+        agentHomeDirectory: credentialHome,
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    );
     await contender.close();
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
@@ -772,14 +774,16 @@ describe("ACPX runtime host", () => {
       host.close({ reason: "retry close" }),
     ).resolves.toBeUndefined();
     await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
-    const contender = await stageManagedCodexCredential({
-      agentHomeDirectory: join(host.runtimeRoot(), "codex-home"),
-      environment: {
-        PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-      },
-    });
+    const contender = await waitForAcpxOperation(() =>
+      stageManagedCodexCredential({
+        agentHomeDirectory: join(host.runtimeRoot(), "codex-home"),
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    );
     await contender.close();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("scrubs credentials only after the exact pending runtime close resolves", async () => {
     const fixture = await hostFixture();
@@ -824,12 +828,14 @@ describe("ACPX runtime host", () => {
       undefined,
     ]);
     await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
-    const contender = await stageManagedCodexCredential({
-      agentHomeDirectory: credentialHome,
-      environment: {
-        PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
-      },
-    });
+    const contender = await waitForAcpxOperation(() =>
+      stageManagedCodexCredential({
+        agentHomeDirectory: credentialHome,
+        environment: {
+          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"owner":"contender"}',
+        },
+      }),
+    );
     await contender.close();
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
