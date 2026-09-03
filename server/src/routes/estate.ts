@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { and, asc, desc, eq, gte, isNull, lte, sql, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -207,6 +207,7 @@ export interface S3VaultClient {
     ttlSeconds?: number;
   }): Promise<string>;
   deleteObject(opts: { bucket: string; key: string }): Promise<void>;
+  putObject(opts: { bucket: string; key: string; buffer: Buffer; contentType?: string }): Promise<void>;
 }
 
 export function createDefaultS3VaultClient(): S3VaultClient | null {
@@ -243,6 +244,11 @@ export function createDefaultS3VaultClient(): S3VaultClient | null {
       const { S3Client, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
       const client = new S3Client({ region });
       await client.send(new DeleteObjectCommand({ Bucket: b, Key: key }));
+    },
+    async putObject({ bucket: b, key, buffer, contentType }) {
+      const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
+      const client = new S3Client({ region });
+      await client.send(new PutObjectCommand({ Bucket: b, Key: key, Body: buffer, ContentType: contentType }));
     },
   };
 }
@@ -320,6 +326,41 @@ export function createDefaultAttomClient(): AttomClient | null {
 }
 
 // ---------------------------------------------------------------------------
+// Snug client interface + default HTTP implementation
+// ---------------------------------------------------------------------------
+
+export interface SnugDocumentPayload {
+  buffer: Buffer;
+  contentType: string;
+  sizeByes: number;
+}
+
+export interface SnugClient {
+  downloadDocument(url: string): Promise<SnugDocumentPayload>;
+}
+
+export function createDefaultSnugClient(): SnugClient | null {
+  const apiKey = process.env.SNUG_API_KEY;
+  if (!apiKey) return null;
+
+  return {
+    async downloadDocument(url) {
+      const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`Snug download error ${resp.status}: ${text}`);
+      }
+      const contentType = resp.headers.get("content-type") ?? "application/octet-stream";
+      const arrayBuffer = await resp.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      return { buffer, contentType, sizeByes: buffer.byteLength };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
@@ -328,6 +369,7 @@ export function estateRoutes(
   plaidClient?: PlaidClient | null,
   s3VaultClient?: S3VaultClient | null,
   attomClient?: AttomClient | null,
+  snugClient?: SnugClient | null,
 ) {
   const router = Router();
 
@@ -715,6 +757,109 @@ export function estateRoutes(
     }
 
     res.json({ received: true });
+  });
+
+  // ---- Snug webhook ---------------------------------------------------------
+
+  /**
+   * POST /estate/integrations/snug/webhook
+   *
+   * Receives a document-completion event from the Snug legal document platform.
+   * Downloads the completed document server-side, stores it in the S3 vault,
+   * and creates an estate_documents record.
+   *
+   * Expected body:
+   *   { event, estateId, companyId, documentType, title, documentUrl }
+   *
+   * Signature verification: when SNUG_WEBHOOK_SECRET is set, the request must
+   * include X-Snug-Signature: sha256=<hex> computed over the raw body.
+   */
+  router.post("/estate/integrations/snug/webhook", async (req, res) => {
+    const secret = process.env.SNUG_WEBHOOK_SECRET;
+    if (secret) {
+      const sigHeader = req.headers["x-snug-signature"];
+      const rawSig = typeof sigHeader === "string" ? sigHeader.replace(/^sha256=/, "") : "";
+      const expected = createHmac("sha256", secret)
+        .update(JSON.stringify(req.body))
+        .digest("hex");
+      let match = false;
+      try {
+        match = timingSafeEqual(Buffer.from(rawSig, "hex"), Buffer.from(expected, "hex"));
+      } catch {
+        match = false;
+      }
+      if (!match) {
+        res.status(401).json({ error: "Invalid webhook signature" });
+        return;
+      }
+    }
+
+    const body = req.body as Record<string, unknown>;
+    const event = typeof body["event"] === "string" ? body["event"] : null;
+    if (event !== "document.completed") {
+      res.json({ received: true });
+      return;
+    }
+
+    const estateId = typeof body["estateId"] === "string" ? body["estateId"].trim() : null;
+    const companyId = typeof body["companyId"] === "string" ? body["companyId"].trim() : null;
+    const documentType = typeof body["documentType"] === "string" ? body["documentType"].trim() : "other";
+    const title = typeof body["title"] === "string" ? body["title"].trim() : null;
+    const documentUrl = typeof body["documentUrl"] === "string" ? body["documentUrl"].trim() : null;
+
+    if (!estateId || !companyId || !title || !documentUrl) {
+      res.status(400).json({ error: "estateId, companyId, title, and documentUrl are required" });
+      return;
+    }
+
+    const vault = s3VaultClient ?? createDefaultS3VaultClient();
+    if (!vault) {
+      res.status(503).json({ error: "Document vault not configured" });
+      return;
+    }
+
+    const snug = snugClient ?? createDefaultSnugClient();
+    if (!snug) {
+      res.status(503).json({ error: "Snug integration not configured" });
+      return;
+    }
+
+    const [estate] = await db
+      .select({ id: estates.id })
+      .from(estates)
+      .where(and(eq(estates.id, estateId), eq(estates.companyId, companyId)));
+    if (!estate) {
+      res.status(404).json({ error: "Estate not found" });
+      return;
+    }
+
+    const { buffer, contentType, sizeByes } = await snug.downloadDocument(documentUrl);
+
+    const s3Key = `estates/${estateId}/documents/${randomBytes(16).toString("hex")}`;
+    const bucket = DEFAULT_VAULT_BUCKET;
+
+    await vault.putObject({ bucket, key: s3Key, buffer, contentType });
+
+    const allowedDocTypes = ["will", "trust", "deed", "poa", "healthcare_directive", "insurance", "other"] as const;
+    const safeDocType = (allowedDocTypes as readonly string[]).includes(documentType)
+      ? (documentType as typeof allowedDocTypes[number])
+      : "other";
+
+    const [doc] = await db
+      .insert(estateDocuments)
+      .values({
+        estateId,
+        companyId,
+        uploaderUserId: "snug-webhook",
+        documentType: safeDocType,
+        title,
+        s3Key,
+        s3Bucket: bucket,
+        sizeByes,
+      })
+      .returning();
+
+    res.status(201).json({ received: true, document: doc });
   });
 
   // ---- Net worth ------------------------------------------------------------
