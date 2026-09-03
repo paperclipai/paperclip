@@ -1810,6 +1810,9 @@ function StreamlinedInbox() {
     onMutate: (run) => {
       setRetryingRunIds((prev) => new Set(prev).add(run.id));
     },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to retry run");
+    },
     onSuccess: ({ newRun, originalRun }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(originalRun.companyId, originalRun.agentId) });
@@ -1969,6 +1972,9 @@ function StreamlinedInbox() {
   const markAllReadMutation = useMutation({
     mutationFn: async (issueIds: string[]) => {
       await Promise.all(issueIds.map((issueId) => issuesApi.markRead(issueId)));
+    },
+    onError: (err) => {
+      setActionError(err instanceof Error ? err.message : "Failed to mark all as read");
     },
     onMutate: (issueIds) => {
       setFadingOutIssues((prev) => {
