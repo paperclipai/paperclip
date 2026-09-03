@@ -401,6 +401,7 @@ describe("AppDetail", () => {
   afterEach(() => {
     flushSync(() => root?.unmount());
     container.remove();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -1502,6 +1503,36 @@ describe("AppDetail", () => {
       returnTo: "/apps/conn-1/setup",
     });
     expect(navigateTopLevelMock).toHaveBeenCalledWith("https://accounts.example.test/authorize");
+  });
+
+  it("keeps personal managed authorization in the tenant until the provider is ready", async () => {
+    const session = "personal_background_session_1234";
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+      authorizationUrl: "https://provider.example.test/authorize?state=personal",
+    }));
+    mockParams.tab = "setup";
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    startPersonalAuthorizationMock.mockResolvedValue({
+      url: "https://my.paperclip.app/connections/confirm?session=legacy",
+      handoff: { kind: "paperclip_cloud", session },
+    });
+
+    await renderAppDetail();
+    await act(async () => {
+      findButton("Connect as me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(request).toHaveBeenCalledWith("/cloud/connections/handoff", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ session }),
+    }));
+    await vi.waitFor(() => {
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://provider.example.test/authorize?state=personal",
+      );
+    });
+    expect(navigateTopLevelMock).not.toHaveBeenCalledWith(expect.stringContaining("/connections/confirm"));
   });
 
   it("opens Permissions from app access instead of personal identity delegations", async () => {

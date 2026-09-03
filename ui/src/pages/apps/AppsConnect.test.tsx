@@ -254,6 +254,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -2396,6 +2397,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     }
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -2618,6 +2620,46 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     // Residual risk of a real-but-hostile authorization page: name the host the
     // operator is being handed to (PAP-17099).
     expect(container.textContent).toContain("auth.example.test");
+  });
+
+  it("exchanges a managed connect response in the tenant without opening Cloud confirmation", async () => {
+    const session = "managed_background_session_1234";
+    const request = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) =>
+      input === "/cloud/connections/handoff"
+        ? Response.json({ authorizationUrl: "https://provider.example.test/authorize?state=managed" })
+        : new Response(null, { status: 404 }));
+    connectAppMock.mockResolvedValue({
+      connectionId: "conn-1",
+      application: { id: "app-1", name: "mcp.example.test" },
+      connection: { id: "conn-1", credentialPolicy: "shared", status: "draft" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: {
+        kind: "oauth",
+        startUrl: "https://my.paperclip.app/connections/confirm?session=legacy",
+        handoff: { kind: "paperclip_cloud", session },
+      },
+    });
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+    await act(async () => {
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(request).toHaveBeenCalledWith("/cloud/connections/handoff", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ session }),
+    }));
+    await vi.waitFor(() => {
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://provider.example.test/authorize?state=managed",
+      );
+    });
+    expect(navigateTopLevelMock).not.toHaveBeenCalledWith(expect.stringContaining("/connections/confirm"));
   });
 
   /**

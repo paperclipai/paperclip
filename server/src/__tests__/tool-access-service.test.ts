@@ -5040,6 +5040,14 @@ describeEmbeddedPostgres("tool access service", () => {
     await grantBoardUser(db, company.id, userId, [], "owner");
     const profile = "drive.read" as const;
     const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+    connector.startAuthorization = vi.fn(async ({ returnState }) => ({
+      authorizationUrl: `https://my.example.test/connections/confirm?session=legacy&state=${encodeURIComponent(returnState)}`,
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      handoff: {
+        kind: "paperclip_cloud" as const,
+        session: "cloud_session_abcdefghijklmnop",
+      },
+    }));
     const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
     const actor = { actorType: "user" as const, actorId: userId };
     const driveDefinition = getConnectableAppDefinition("google-drive")!;
@@ -5062,6 +5070,10 @@ describeEmbeddedPostgres("tool access service", () => {
         actor,
       });
       const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      expect(started.handoff).toEqual({
+        kind: "paperclip_cloud",
+        session: "cloud_session_abcdefghijklmnop",
+      });
       const app = createRouteApp(
         db,
         boardSessionActor(company.id, "owner", userId),

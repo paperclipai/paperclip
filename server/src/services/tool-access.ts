@@ -9827,6 +9827,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         provider: "google",
         authorizationUrl: session.authorizationUrl,
         expiresAt: expiresAt.toISOString(),
+        ...(session.handoff ? { handoff: session.handoff } : {}),
         issuer: "https://accounts.google.com",
         resource: galleryMethod.defaults?.serverUrl ?? null,
         registrationSource: null,

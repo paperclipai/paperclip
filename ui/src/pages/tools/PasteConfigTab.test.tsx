@@ -181,6 +181,7 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
   afterEach(() => {
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -222,6 +223,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
   afterEach(() => {
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -372,6 +374,37 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(container.textContent).toContain("Unverified server");
     expect(container.textContent).toContain("mcp.notion.com");
     expect(container.textContent).not.toContain("Review actions for notion");
+  });
+
+  it("uses the background Cloud handoff returned with an imported OAuth connection", async () => {
+    const session = "imported_background_session_1234";
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+      authorizationUrl: "https://provider.example.test/authorize?state=imported",
+    }));
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const result = oauthConnectResult("https://my.paperclip.app/connections/confirm?session=legacy");
+    result.auth = {
+      ...result.auth!,
+      handoff: { kind: "paperclip_cloud", session },
+    };
+    toolsApiMock.connectApp.mockResolvedValue(result);
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(request).toHaveBeenCalledWith("/cloud/connections/handoff", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ session }),
+    }));
+    await vi.waitFor(() => {
+      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+        "https://provider.example.test/authorize?state=imported",
+      );
+    });
+    expect(navigateTopLevelMock).not.toHaveBeenCalledWith(expect.stringContaining("/connections/confirm"));
   });
 
   it("rejects an unsafe start URL and retries OAuth on the same connection", async () => {

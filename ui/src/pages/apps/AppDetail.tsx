@@ -23,8 +23,8 @@ import { accessApi } from "@/api/access";
 import { authApi } from "@/api/auth";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installPayload, installStateFrom, type InstallState } from "@/lib/tool-installs";
-import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
+import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -372,15 +372,20 @@ export function AppDetail() {
 
   const startOAuth = useMutation({
     mutationFn: () => toolsApi.startOAuth(connectionId),
-    onSuccess: ({ authorizationUrl }) => {
-      // Checked again at the navigation boundary (PAP-17099): the address came
-      // from the remote server, and this is where an unsafe scheme would run.
-      const target = resolveAuthorizationTarget(authorizationUrl);
-      if (!target.ok) {
-        pushToast({ title: "Couldn't start sign-in", body: target.message, tone: "error" });
-        return;
+    onSuccess: async (start) => {
+      try {
+        const target = await prepareOAuthNavigation(start);
+        if (target.kind === "reauthentication" && start.handoff) {
+          savePendingCloudHandoff(start.handoff.session);
+        }
+        navigateTopLevel(target.url);
+      } catch (error) {
+        pushToast({
+          title: "Couldn't start sign-in",
+          body: error instanceof Error ? error.message : "Please try again.",
+          tone: "error",
+        });
       }
-      navigateTopLevel(target.url);
     },
     onError: (error) =>
       pushToast({
@@ -409,13 +414,20 @@ export function AppDetail() {
         returnTo: appTabHref(connectionId, "setup"),
       });
     },
-    onSuccess: ({ url }) => {
-      const target = resolveAuthorizationTarget(url);
-      if (!target.ok) {
-        pushToast({ title: "Couldn't start sign-in", body: target.message, tone: "error" });
-        return;
+    onSuccess: async ({ url, handoff }) => {
+      try {
+        const target = await prepareOAuthNavigation({ authorizationUrl: url, handoff });
+        if (target.kind === "reauthentication" && handoff) {
+          savePendingCloudHandoff(handoff.session);
+        }
+        navigateTopLevel(target.url);
+      } catch (error) {
+        pushToast({
+          title: "Couldn't start sign-in",
+          body: error instanceof Error ? error.message : "Please try again.",
+          tone: "error",
+        });
       }
-      navigateTopLevel(target.url);
     },
     onError: (error) =>
       pushToast({

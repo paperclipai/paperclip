@@ -7,14 +7,15 @@ import type {
   McpJsonImportDraft,
   McpJsonImportPreview,
   ToolAppConnectionActionSummary,
+  ToolOAuthStartResult,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { toolsApi } from "@/api/tools";
-import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
+import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { useNavigate } from "@/lib/router";
 import {
   OAuthConnectStateScreen,
@@ -122,21 +123,27 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     },
   });
 
-  const openAuthorizationPage = (authorizationUrl: string) => {
-    const target = resolveAuthorizationTarget(authorizationUrl);
-    if (!target.ok) {
+  const openAuthorizationPage = async (
+    authorizationUrl: string,
+    handoff?: ToolOAuthStartResult["handoff"],
+  ) => {
+    try {
+      const target = await prepareOAuthNavigation({ authorizationUrl, handoff });
+      if (target.kind === "reauthentication" && handoff) {
+        savePendingCloudHandoff(handoff.session);
+      }
+      setAuthorizationHost(target.host);
+      setOAuthPhase(target.kind === "authorization" ? "redirecting" : "starting");
+      navigateTopLevel(target.url);
+    } catch (error) {
       setOAuthPhase("error");
-      setOAuthError(target.message);
-      return;
+      setOAuthError(error instanceof Error ? error.message : "Paperclip couldn’t start secure sign-in. Try again.");
     }
-    setAuthorizationHost(target.host);
-    setOAuthPhase("redirecting");
-    navigateTopLevel(target.url);
   };
 
   const oauthStartMutation = useMutation({
     mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),
-    onSuccess: ({ authorizationUrl }) => openAuthorizationPage(authorizationUrl),
+    onSuccess: (start) => void openAuthorizationPage(start.authorizationUrl, start.handoff),
     onError: (error) => {
       setOAuthPhase("error");
       setOAuthError(
@@ -172,7 +179,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         }
         const startUrl = result.auth.startUrl?.trim();
         if (startUrl) {
-          openAuthorizationPage(startUrl);
+          void openAuthorizationPage(startUrl, result.auth.handoff);
         } else {
           setOAuthPhase("starting");
           oauthStartMutation.mutate(result.connectionId);

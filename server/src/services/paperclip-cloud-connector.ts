@@ -67,6 +67,7 @@ type SealedEnvelope = {
 
 type ConnectorResponse = {
   confirmationUrl?: unknown;
+  handoff?: unknown;
   expiresAt?: unknown;
   scopes?: unknown;
   claimId?: unknown;
@@ -318,7 +319,12 @@ export function createPaperclipCloudConnector(input: {
       if (confirmationUrl.origin !== expectedBroker.origin || confirmationUrl.pathname !== "/connections/confirm") {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid confirmation URL", "CONNECTOR_BAD_RESPONSE");
       }
-      return { authorizationUrl: confirmationUrl.toString(), expiresAt: response.expiresAt };
+      const handoff = parseCloudHandoff(response.handoff);
+      return {
+        authorizationUrl: confirmationUrl.toString(),
+        expiresAt: response.expiresAt,
+        ...(handoff ? { handoff } : {}),
+      };
     },
     async claim(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; claimId: string; redemptionId: string }) {
       const profile = values.profile ?? "gmail.draft";
@@ -338,6 +344,25 @@ export function createPaperclipCloudConnector(input: {
       await call("revoke", { ...values, profile: values.profile ?? "gmail.draft" }, { field: "token", value: values.token });
     },
   };
+}
+
+function parseCloudHandoff(value: unknown): { kind: "paperclip_cloud"; session: string } | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid handoff", "CONNECTOR_BAD_RESPONSE");
+  }
+  const record = value as Record<string, unknown>;
+  const session = record.session;
+  if (
+    record.kind !== "tenant_background"
+    || typeof session !== "string"
+    || session.length < 16
+    || session.length > 512
+    || !/^[A-Za-z0-9_-]+$/.test(session)
+  ) {
+    throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid handoff", "CONNECTOR_BAD_RESPONSE");
+  }
+  return { kind: "paperclip_cloud", session };
 }
 
 export type PaperclipCloudConnector = ReturnType<typeof createPaperclipCloudConnector>;
