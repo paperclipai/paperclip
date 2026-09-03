@@ -50,6 +50,7 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
 import { CompanyActivity } from "./pages/audit/CompanyActivity";
+import { AuditHub } from "./pages/audit/AuditHub";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
 import { DecisionQueuePage } from "./pages/DecisionQueuePage";
@@ -325,6 +326,10 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
       <Route path="activity" element={<CompanyActivity />} />
+      <Route path="activity/runs" element={<AuditHub section="runs" />} />
+      <Route path="activity/costs" element={<AuditHub section="costs" />} />
+      <Route path="activity/budgets" element={<AuditHub section="budgets" />} />
+      <Route path="activity/timeline" element={<AuditHub section="timeline" />} />
       {/* `/audit` merged into the single Activity page (PAP-16302). Existing deep
           links keep working, preset to the agent-actions scope. */}
       <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />

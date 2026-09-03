@@ -69,6 +69,13 @@ vi.mock("./pages/audit/CompanyActivity", () => ({
   },
 }));
 
+vi.mock("./pages/audit/AuditHub", () => ({
+  AuditHub: ({ section }: { section: string }) => {
+    const location = useLocation();
+    return <div>{`AUDIT_${section.toUpperCase()}@${location.pathname}${location.search}`}</div>;
+  },
+}));
+
 vi.mock("./pages/Issues", () => ({
   Issues: () => {
     const location = useLocation();
@@ -149,6 +156,18 @@ describe("App Activity routing (PAP-16302)", () => {
     const root = renderAppAt(container, "/PAP/activity");
     await waitForRoute(container, "ACTIVITY_PAGE@/PAP/activity");
     expect(container.textContent).not.toContain("No organization matches prefix");
+    flushSync(() => root.unmount());
+  });
+
+  it("serves organization and entity-scoped run history beneath Activity", async () => {
+    const root = renderAppAt(
+      container,
+      "/PAP/activity/runs?entityType=routine&entityId=routine-1",
+    );
+    await waitForRoute(
+      container,
+      "AUDIT_RUNS@/PAP/activity/runs?entityType=routine&entityId=routine-1",
+    );
     flushSync(() => root.unmount());
   });
 
