@@ -5,5 +5,11 @@
       "description": "從建立公司開始。",
       "newCompany": "新公司"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "語言",
+      "description": "看板介面語言。尚未翻譯的頁面仍顯示英文。"
+    }
   }
 }

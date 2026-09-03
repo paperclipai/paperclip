@@ -5,5 +5,11 @@
       "description": "התחילו ביצירת חברה.",
       "newCompany": "חברה חדשה"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

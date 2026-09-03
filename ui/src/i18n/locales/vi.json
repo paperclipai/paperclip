@@ -5,5 +5,11 @@
       "description": "Bắt đầu bằng cách tạo một công ty.",
       "newCompany": "Công ty mới"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

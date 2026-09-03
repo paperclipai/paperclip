@@ -5,5 +5,11 @@
       "description": "Get started by creating an organization.",
       "newCompany": "New Organization"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

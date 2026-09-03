@@ -5,5 +5,11 @@
       "description": "Mulai dengan membuat perusahaan.",
       "newCompany": "Perusahaan Baru"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

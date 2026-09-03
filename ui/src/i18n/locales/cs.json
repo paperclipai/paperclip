@@ -5,5 +5,11 @@
       "description": "Začněte vytvořením společnosti.",
       "newCompany": "Nová společnost"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

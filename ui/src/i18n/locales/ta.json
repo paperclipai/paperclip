@@ -5,5 +5,11 @@
       "description": "ஒரு நிறுவனத்தை உருவாக்கி தொடங்குங்கள்.",
       "newCompany": "புதிய நிறுவனம்"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

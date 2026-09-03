@@ -5,5 +5,11 @@
       "description": "با ایجاد یک شرکت شروع کنید.",
       "newCompany": "شرکت جدید"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

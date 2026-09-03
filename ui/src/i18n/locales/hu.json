@@ -5,5 +5,11 @@
       "description": "Kezdje egy vállalat létrehozásával.",
       "newCompany": "Új vállalat"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

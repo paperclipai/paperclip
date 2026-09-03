@@ -5,5 +5,11 @@
       "description": "Kom igång genom att skapa ett företag.",
       "newCompany": "Nytt företag"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }
