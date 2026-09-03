@@ -1,0 +1,14 @@
+npm warn Unknown project config "auto-install-peers". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown user config "python". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+(!) Your Vite config uses features that are unsupported by `configLoader: 'native'`, which is planned to become the default in a future major version of Vite:
+  - `__dirname` (vitest.config.ts:7:25). Use `import.meta.dirname` instead
+Set `VITE_CONFIG_NATIVE_IGNORE_WARNING=true` to suppress this warning.
+
+ RUN  v4.1.10 /Users/robertdevore/2026/paperclip-kujo-fixes
+
+
+ Test Files  4 passed (4)
+      Tests  59 passed (59)
+   Start at  23:57:12
+   Duration  14.67s (transform 7.49s, setup 382ms, import 3.96s, tests 9.10s, environment 2ms)
+

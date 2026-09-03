@@ -1,0 +1,38 @@
+objective: "Fix exact scoped npm plugin installs and pass the real Paperclip version into plugin compatibility checks."
+checklist_file: ".loop-engineering/CHECKLIST.md"
+max_iterations: 8
+max_no_progress: 2
+max_consecutive_failures: 3
+
+allowed_actions:
+  - read_files
+  - edit_files
+  - run_tests
+  - commit_local_changes
+  - push_changes
+
+blocked_actions:
+  - deploy
+  - destructive_cleanup
+  - production_config_change
+
+eval_gates:
+  - id: targeted_tests
+    command: "npx --yes pnpm@9.15.4 exec vitest run packages/shared/src/npm-package-spec.test.ts cli/src/__tests__/plugin-init.test.ts server/src/__tests__/plugin-host-version.test.ts server/src/__tests__/plugin-routes-authz.test.ts"
+    required: true
+
+  - id: diff_check
+    command: "git diff --check"
+    required: true
+
+commit:
+  enabled: true
+  strategy: small_meaningful
+  push: true
+
+memory:
+  enabled: false
+  provider: strata
+  project: "Agent Notes"
+  mode: consolidate
+  retrieval_tests: true
