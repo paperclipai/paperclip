@@ -2177,6 +2177,13 @@ export function authorizationService(db: Db | DbTransaction) {
           explanation: "Allowed because the issue has no agent assignee.",
         });
       }
+      if (await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId)) {
+        return allow({
+          action: input.action,
+          reason: "allow_manager_chain",
+          explanation: "Allowed because the actor manages the issue assignee in the reporting chain.",
+        });
+      }
       if (
         input.action === "issue:comment" &&
         resource?.issueId &&
