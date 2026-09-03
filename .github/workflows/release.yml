@@ -168,7 +168,7 @@ jobs:
           node-version: 24
 
       - name: Install test dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Show browser version
         run: google-chrome --version

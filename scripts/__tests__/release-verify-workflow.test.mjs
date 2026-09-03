@@ -114,7 +114,7 @@ test("published canaries are gated by the exact-version onboarding browser smoke
   );
   assert.match(
     releaseWorkflow,
-    /smoke_canary_onboarding:[\s\S]*?Install test dependencies\n\s+run: pnpm install --frozen-lockfile/,
+    /smoke_canary_onboarding:[\s\S]*?Install test dependencies\n\s+run: pnpm install --no-frozen-lockfile/,
   );
   assert.doesNotMatch(
     releaseWorkflow.match(
@@ -198,7 +198,7 @@ test("release verify workflow covers the same split test surface as stable PR ve
   );
   assert.match(
     verifyWorkflow,
-    /runner_workflow_evals:[\s\S]*?Install dependencies\n\s+run: pnpm install --frozen-lockfile[\s\S]*?Run deterministic Runner workflow scorer tests/,
+    /runner_workflow_evals:[\s\S]*?Install dependencies\n\s+run: pnpm install --no-frozen-lockfile[\s\S]*?Run deterministic Runner workflow scorer tests/,
   );
   assert.match(verifyWorkflow, /pnpm test:runner-workflow-evals/);
 
@@ -367,6 +367,10 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
   }
 
   const chaosWorkflow = actionPinWorkflows[2];
+  assert.match(
+    chaosWorkflow,
+    /chaos_and_recovery:[\s\S]*?Install dependencies\n\s+run: pnpm install --no-frozen-lockfile/,
+  );
   const runnerBlock = chaosWorkflow.match(
     /- name: Run Runner fault and replay suites[\s\S]*?run: \|([\s\S]*?)(?=\n\s+- name: Build server test dependencies)/,
   )?.[1];
