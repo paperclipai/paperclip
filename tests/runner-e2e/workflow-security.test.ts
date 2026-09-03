@@ -105,11 +105,25 @@ describe("public repository paid workflow security", () => {
       fullStack.match(
         /ref: \$\{\{ needs\.authorize\.outputs\.target_sha \}\}/g,
       ),
-    ).toHaveLength(5);
+    ).toHaveLength(3);
+    expect(fullStack.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(2);
     expect(fullStack.match(/persist-credentials: false/g)).toHaveLength(5);
     expect(fullStack).not.toContain("ref: ${{ inputs.target_branch }}");
     expect(fullStack).toContain(
       "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}",
+    );
+    const reportJob = fullStack.slice(
+      fullStack.indexOf("  report:"),
+      fullStack.indexOf("  publish_history:"),
+    );
+    const historyJob = fullStack.slice(fullStack.indexOf("  publish_history:"));
+    expect(reportJob).toContain("ref: ${{ github.sha }}");
+    expect(reportJob).not.toContain(
+      "ref: ${{ needs.authorize.outputs.target_sha }}",
+    );
+    expect(historyJob).toContain("ref: ${{ github.sha }}");
+    expect(historyJob).not.toContain(
+      "ref: ${{ needs.authorize.outputs.target_sha }}",
     );
     for (const [secret, condition] of Object.entries({
       OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",

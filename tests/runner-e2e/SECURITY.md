@@ -21,7 +21,9 @@ The paid workflows reject manual dispatches when the workflow definition does
 not come from the default branch. A trusted dispatcher may name any branch in
 `paperclipai/paperclip` as the code under test. The authorization job resolves
 that branch through the GitHub API and passes only its immutable commit SHA to
-every checkout. Never run the workflow definition from the target branch.
+the catalog, image, and paid test checkouts. Report sanitization and AWS history
+publication explicitly use the trusted workflow commit. Never run the workflow
+definition from the target branch.
 
 The workflows verify both the original actor and triggering actor for every
 scheduled or manual attempt, including human reruns. Every
@@ -97,8 +99,9 @@ The optional target branch is code, not workflow authority. A CODEOWNER who
 dispatches a target branch explicitly authorizes that branch's selected test
 process to receive the cell's scoped provider credential. The workflow resolves
 the target only inside the same repository, pins one SHA for the campaign, and
-checks it out only after authorization. Fork refs and target-controlled workflow
-definitions do not enter this path.
+checks it out only after authorization. Target-controlled code cannot replace
+the report sanitizer or the AWS history publisher. Fork refs and
+target-controlled workflow definitions do not enter this path.
 
 ## AWS OIDC and S3
 

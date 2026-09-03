@@ -269,10 +269,12 @@ auto-stop/archive/delete values remain as cancellation backstops.
 never runs for a pull request or ordinary push. Start the trusted workflow from
 the default branch. A CODEOWNER can set the optional `target_branch` input to
 any branch in `paperclipai/paperclip`. The authorization job resolves that
-branch to one immutable commit before any checkout, and every later job checks
-out that exact commit. The workflow definition, runner-group permission, and
-protected-environment deployment still come from the default branch. Do not
-select the target branch in GitHub's **Use workflow from** control.
+branch to one immutable commit before any checkout. Catalog, image, and paid
+test jobs check out that exact commit. Report sanitization and AWS history
+publication explicitly check out the trusted workflow commit. The workflow
+definition, runner-group permission, and protected-environment deployment still
+come from the default branch. Do not select the target branch in GitHub's **Use
+workflow from** control.
 
 Because this repository is public, manual campaigns fail before checkout unless
 the trusted workflow runs from the default branch and both the original actor
