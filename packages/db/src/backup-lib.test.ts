@@ -115,6 +115,63 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   );
 
   it(
+    "redacts signing secrets from the pg_dump path and restores the row (RES-2769)",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_redaction_restore",
+      );
+      const backupDir = createTempDir("paperclip-db-backup-redaction-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+      cleanups.push(() => sourceSql.end());
+      cleanups.push(() => restoreSql.end());
+
+      const secret = "K7".padEnd(64, "x"); // 64-char token in the secret alphabet
+      const envBlob = `NODE_ENV=production PAPERCLIP_AGENT_JWT_SECRET=${secret} PORT=3000`;
+
+      try {
+        await sourceSql.unsafe(`CREATE TABLE run_events (id int PRIMARY KEY, payload text)`);
+        await sourceSql.unsafe(`INSERT INTO run_events (id, payload) VALUES (1, $1)`, [envBlob]);
+
+        // Default engine (no transforms) -> the fast pg_dump path, exactly as the
+        // hourly production backup runs.
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          filenamePrefix: "paperclip-redaction",
+        });
+
+        const dump = gunzipSync(await fs.promises.readFile(result.backupFile)).toString("utf8");
+        // Verification #3: zero secret assignments survive in the artefact.
+        expect(dump).not.toMatch(/PAPERCLIP_AGENT_JWT_SECRET=[A-Za-z0-9+/=_-]{8,}/);
+        expect(dump).toContain("PAPERCLIP_AGENT_JWT_SECRET=[REDACTED]");
+        // Non-secret surrounding content is preserved.
+        expect(dump).toContain("NODE_ENV=production");
+        expect(dump).toContain("PORT=3000");
+
+        // Verification #2: restore still succeeds and yields the redacted row.
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+        const [row] = await restoreSql.unsafe<{ payload: string }[]>(
+          `SELECT payload FROM run_events WHERE id = 1`,
+        );
+        expect(row?.payload).toBe(
+          `NODE_ENV=production PAPERCLIP_AGENT_JWT_SECRET=[REDACTED] PORT=3000`,
+        );
+      } finally {
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
     "backs up and restores large table payloads without materializing one giant string",
     async () => {
       const sourceConnectionString = await createTempDatabase();
