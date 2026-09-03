@@ -1868,6 +1868,16 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           }
           const now = new Date();
           const existing = issueDocuments.get(`${input.issueId}|${input.key}`);
+          if (existing) {
+            if (!input.baseRevisionId) {
+              throw new Error("Document update requires baseRevisionId");
+            }
+            if (input.baseRevisionId !== existing.latestRevisionId) {
+              throw new Error("Document was updated by someone else");
+            }
+          } else if (input.baseRevisionId) {
+            throw new Error("Document does not exist yet");
+          }
           const document: IssueDocument = {
             id: existing?.id ?? randomUUID(),
             companyId: input.companyId,
