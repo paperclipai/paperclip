@@ -105,6 +105,15 @@ describe("SidebarSection", () => {
     expect(projectsLabel?.parentElement?.textContent).toBe("Projects");
     expect(projectsLabel?.parentElement?.querySelector("svg")).toBeNull();
     expect(container.querySelector('button[aria-label="Collapse Projects"] svg')).toBeTruthy();
+
+    // Leading icon slot (caret or spacer) sits before the label so section
+    // text shares SidebarNavItem's label column — not the icon column.
+    const workRow = workLabel?.closest(".group\\/sidebar-section")?.firstElementChild;
+    const projectsRow = projectsLabel?.closest(".group\\/sidebar-section")?.firstElementChild;
+    expect(workRow?.children[0]?.getAttribute("aria-hidden")).toBe("true");
+    expect(projectsRow?.children[0]?.getAttribute("aria-label")).toBe("Collapse Projects");
+    expect(workRow?.className).toContain("gap-2.5");
+    expect(projectsRow?.className).toContain("gap-2.5");
   });
 
   it("keeps collapse on the caret and opens the menu from the heading", async () => {
