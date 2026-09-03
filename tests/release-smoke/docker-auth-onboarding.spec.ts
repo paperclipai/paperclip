@@ -109,19 +109,27 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(nextButton).toBeEnabled({ timeout: 10_000 });
     await nextButton.click();
 
-    // Step 4: keep the default adapter and connect (hire) the lead. Connect
-    // probes the adapter environment first and blocks the hire on a `fail`. In
-    // the smoke container no agent CLI is installed, which the probe reports as
-    // a warning rather than an error, so the hire proceeds — a genuine failure
-    // here means the published artifact cannot hire on a clean machine. Allow
-    // generous time for the probe + hire + auto-approval.
-    const connectButton = page.getByRole("button", {
-      name: "Connect",
+    // Step 4: select a model source, then hire the lead. The step opens on a
+    // "Model source" radio row; the Claude Code subscription tile is the
+    // default choice. Selecting it enables "Next", which probes the adapter
+    // environment and hires the lead on click. In the smoke container no agent
+    // CLI is installed, which the probe reports as a warning rather than an
+    // error, so the hire proceeds — a genuine failure here means the published
+    // artifact cannot hire on a clean machine. Allow generous time for the
+    // probe + hire + auto-approval.
+    const sourceTile = page.getByRole("radio", {
+      name: "Claude Code Subscription",
       exact: true,
     });
-    await expect(connectButton).toBeVisible({ timeout: 10_000 });
-    await expect(connectButton).toBeEnabled({ timeout: 30_000 });
-    await connectButton.click();
+    await expect(sourceTile).toBeVisible({ timeout: 10_000 });
+    await sourceTile.click();
+
+    const hireButton = page.getByRole("button", {
+      name: "Next",
+      exact: true,
+    });
+    await expect(hireButton).toBeEnabled({ timeout: 30_000 });
+    await hireButton.click();
 
     // Step 5: review, then launch. "Get started" provisions the onboarding
     // project and first task and, only on success, drops the user into the
