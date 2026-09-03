@@ -621,6 +621,63 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("allows a non-member user with a participation grant to comment on an active issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "Прикладываю запись экрана.",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "anna-user",
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
+      const allowed = input.action === "issue:comment";
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_issue_user_participation_grant" : "deny_missing_membership",
+        explanation: allowed ? "Allowed by an active issue user participation grant." : "Missing membership.",
+      };
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "anna-user",
+      companyIds: [],
+      source: "session",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Прикладываю запись экрана." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+  });
+
+  it("hides the issue from a user without membership and without a participation grant", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "issue:comment",
+      reason: "deny_missing_membership",
+      explanation: "Missing membership.",
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "stranger-user",
+      companyIds: [],
+      source: "session",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Чужая задача." });
+
+    expect(res.status).toBe(404);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("allows mention-granted non-assignee agent POST comments on closed issues without reopening", async () => {
     const mentionedAgentId = "33333333-3333-4333-8333-333333333333";
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
