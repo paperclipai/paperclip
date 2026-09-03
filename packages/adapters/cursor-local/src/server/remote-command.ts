@@ -212,10 +212,10 @@ export async function prepareCursorSandboxCommand(input: {
   }
 
   const sandboxPathEntries = candidateSandboxPathEntries(remoteSystemHomeDir);
-  const runtimeEnv = ensurePathInEnv(input.env);
+  const runtimeEnv = ensurePathInEnv(input.env) as Record<string, string>;
   const currentPath = runtimeEnv.PATH ?? runtimeEnv.Path ?? "";
   const nextPath = prependPosixPathEntries(currentPath, sandboxPathEntries);
-  const env = nextPath === currentPath ? input.env : { ...input.env, PATH: nextPath };
+  const env = nextPath === currentPath ? runtimeEnv : { ...runtimeEnv, PATH: nextPath };
   const addedPathEntry = nextPath === currentPath ? null : sandboxPathEntries[0];
 
   if (!runtimeInfo.preferredCommandPath) {
