@@ -226,6 +226,92 @@ describeEmbeddedPostgres("agent secret routes", () => {
     ]));
   });
 
+  it("projects API grants under their access alias and keeps distinct aliases for one secret", async () => {
+    const fixture = await seedAgentRun();
+    const svc = secretService(db);
+    // The managed key deliberately does not match either alias: an API-only grant
+    // must be addressable by the alias the operator approved, not by the reused
+    // secret's own key.
+    const sharedSecret = await svc.create(fixture.companyId, {
+      key: "OPENAI_API_KEY_DOTTA_PAPERCLLIPING",
+      name: "Shared OpenAI key",
+      provider: "local_encrypted",
+      value: "shared-openai-value",
+    });
+    const pairedSecret = await svc.create(fixture.companyId, {
+      key: "PAIRED_KEY",
+      name: "Injected and fetchable",
+      provider: "local_encrypted",
+      value: "paired-secret-value",
+    });
+    const evalsBinding = await svc.createBinding({
+      companyId: fixture.companyId,
+      secretId: sharedSecret.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "access.EVALS_OPENAI_API_KEY",
+      projectionClass: "class_2_runtime_only",
+    });
+    const runnerdBinding = await svc.createBinding({
+      companyId: fixture.companyId,
+      secretId: sharedSecret.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "access.runnerd_openai_api_key",
+    });
+    // env + access that project the same key stay one entry, delivered "both".
+    await svc.createBinding({
+      companyId: fixture.companyId,
+      secretId: pairedSecret.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "env.PAIRED_KEY",
+    });
+    await svc.createBinding({
+      companyId: fixture.companyId,
+      secretId: pairedSecret.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "access.PAIRED_KEY",
+    });
+
+    const list = await request(createApp(fixture)).get("/api/agents/me/secrets");
+    expect(list.status).toBe(200);
+    expect(list.body.secrets).toEqual([
+      expect.objectContaining({
+        key: "evals_openai_api_key",
+        name: "Shared OpenAI key",
+        delivery: "api",
+        projectionClass: "class_2_runtime_only",
+      }),
+      expect.objectContaining({ key: "paired_key", delivery: "both" }),
+      expect.objectContaining({ key: "runnerd_openai_api_key", delivery: "api" }),
+    ]);
+    expect(list.body.secrets.map((secret: { key: string }) => secret.key))
+      .not.toContain("openai_api_key_dotta_paperclliping");
+    expect(JSON.stringify(list.body)).not.toContain("-value");
+
+    // Each alias resolves through its own binding, not a single collapsed one.
+    for (const alias of ["evals_openai_api_key", "runnerd_openai_api_key"]) {
+      const fetched = await request(createApp(fixture)).post(`/api/agents/me/secrets/${alias}/value`);
+      expect(fetched.status, alias).toBe(200);
+      expect(fetched.body, alias).toEqual({ key: alias, value: "shared-openai-value", version: 1 });
+    }
+    const pairedFetched = await request(createApp(fixture)).post("/api/agents/me/secrets/paired_key/value");
+    expect(pairedFetched.status).toBe(200);
+    expect(pairedFetched.body).toEqual({ key: "paired_key", value: "paired-secret-value", version: 1 });
+
+    // The reused managed key is not itself a grant, so it stays unaddressable.
+    const byManagedKey = await request(createApp(fixture))
+      .post("/api/agents/me/secrets/openai_api_key_dotta_paperclliping/value");
+    expect(byManagedKey.status).toBe(403);
+
+    const events = await db.select().from(secretAccessEvents);
+    expect(events.filter((event) => event.secretId === sharedSecret.id).map((event) => event.configPath).sort())
+      .toEqual([evalsBinding.configPath, runnerdBinding.configPath].sort());
+    expect(events.every((event) => event.outcome === "success")).toBe(true);
+  });
+
   it("fails closed when run redaction registration cannot be persisted", async () => {
     const fixture = await seedAgentRun();
     await expect(createRunSecretRedactionRegistry(db).register(fixture.companyId, randomUUID(), "must-not-return"))
