@@ -38,14 +38,31 @@ test("release workflow delegates stable and canary verification to the reusable 
     releaseWorkflow,
     /verify_canary:\n\s+needs: prepare_canary_lockfile\n\s+if: github\.event_name == 'push'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}\n\s+lockfile_artifact: canary-lockfile/,
   );
-  // The stable lane is gated on the stable channel since the nightly lane
-  // was added; a `needs:` line (for example a preflight job) may sit between
-  // the gate and the delegation.
   // The stable preflight resolves source_ref to an immutable SHA exactly
-  // once; verification must consume that pin, not re-resolve the ref.
+  // once; one lockfile must be prepared from that pin and consumed by
+  // verification, preview, and publication without re-resolving the ref.
+  const prepareStableLockfileBlock = releaseWorkflow.match(
+    /  prepare_stable_lockfile:[\s\S]*?(?=\n  verify_stable:)/,
+  )?.[0];
+  assert.ok(
+    prepareStableLockfileBlock,
+    "expected a stable source lockfile preparation job",
+  );
+  assert.match(
+    prepareStableLockfileBlock,
+    /uses: actions\/checkout@[0-9a-f]{40} # v7[\s\S]*?ref: \$\{\{ needs\.preflight_stable\.outputs\.sha \}\}[\s\S]*?uses: pnpm\/action-setup@[0-9a-f]{40} # v6[\s\S]*?uses: actions\/setup-node@[0-9a-f]{40} # v7[\s\S]*?Prepare stable lockfile[\s\S]*?pnpm install --ignore-scripts --no-frozen-lockfile[\s\S]*?Upload prepared stable lockfile[\s\S]*?name: stable-lockfile/,
+  );
   assert.match(
     releaseWorkflow,
-    /verify_stable:\n\s+if: github\.event_name == 'workflow_dispatch' && inputs\.channel == 'stable'\n(?:\s+needs: [^\n]+\n)?\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ needs\.preflight_stable\.outputs\.sha \}\}/,
+    /verify_stable:\n\s+if: github\.event_name == 'workflow_dispatch' && inputs\.channel == 'stable'\n\s+needs: \[preflight_stable, prepare_stable_lockfile\]\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ needs\.preflight_stable\.outputs\.sha \}\}\n\s+lockfile_artifact: stable-lockfile/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /preview_stable:[\s\S]*?needs: \[preflight_stable, prepare_stable_lockfile, verify_stable\][\s\S]*?Restore prepared stable lockfile[\s\S]*?name: stable-lockfile[\s\S]*?pnpm install --frozen-lockfile/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /publish_stable:[\s\S]*?needs: \[preflight_stable, prepare_stable_lockfile, verify_stable\][\s\S]*?Restore prepared stable lockfile[\s\S]*?name: stable-lockfile[\s\S]*?pnpm install --frozen-lockfile/,
   );
   assert.doesNotMatch(
     releaseWorkflow,

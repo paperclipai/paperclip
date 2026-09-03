@@ -1055,16 +1055,61 @@ jobs:
           echo "::error::${msg}"
           exit 1
 
-  verify_stable:
+  prepare_stable_lockfile:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
     needs: preflight_stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout stable source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.preflight_stable.outputs.sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Prepare stable lockfile
+        run: |
+          pnpm install --ignore-scripts --no-frozen-lockfile
+
+          changed="$(git status --porcelain)"
+          if [ -n "$changed" ] && printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during stable lockfile preparation:"
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Upload prepared stable lockfile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: stable-lockfile
+          path: pnpm-lock.yaml
+          retention-days: 1
+          if-no-files-found: error
+
+  verify_stable:
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
+    needs: [preflight_stable, prepare_stable_lockfile]
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ needs.preflight_stable.outputs.sha }}
+      lockfile_artifact: stable-lockfile
 
   preview_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && inputs.dry_run
-    needs: [preflight_stable, verify_stable]
+    needs: [preflight_stable, prepare_stable_lockfile, verify_stable]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -1076,6 +1121,12 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.preflight_stable.outputs.sha }}
+
+      - name: Restore prepared stable lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: stable-lockfile
+          path: .
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -1092,7 +1143,7 @@ jobs:
         run: node ./scripts/release-package-map.mjs check
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Dry-run stable release
         env:
@@ -1106,7 +1157,7 @@ jobs:
 
   publish_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && !inputs.dry_run
-    needs: [preflight_stable, verify_stable]
+    needs: [preflight_stable, prepare_stable_lockfile, verify_stable]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: npm-stable
@@ -1124,6 +1175,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.preflight_stable.outputs.sha }}
 
+      - name: Restore prepared stable lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: stable-lockfile
+          path: .
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
@@ -1136,10 +1193,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Restore tracked install-time changes
-        run: git checkout -- pnpm-lock.yaml
+        run: pnpm install --frozen-lockfile
 
       - name: Configure git author
         run: |
