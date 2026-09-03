@@ -1,9 +1,10 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { HeartbeatRun } from "@paperclipai/shared";
+import type { HeartbeatRun, RoutineRunSummary } from "@paperclipai/shared";
 import { Activity, CircleDotDashed } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { heartbeatsApi } from "@/api/heartbeats";
+import { routinesApi } from "@/api/routines";
 import { EmptyState } from "@/components/EmptyState";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -41,13 +42,98 @@ function readableSource(source: string) {
   return source.replaceAll("_", " ");
 }
 
-export function AuditRuns({ companyId }: { companyId: string }) {
+function routineRunTitle(run: RoutineRunSummary) {
+  return run.linkedIssue?.title ?? run.trigger?.label ?? "Routine run";
+}
+
+function RoutineScopedRuns({
+  runs,
+  isLoading,
+  error,
+  onRetry,
+}: {
+  runs: RoutineRunSummary[];
+  isLoading: boolean;
+  error: Error | null;
+  onRetry: () => void;
+}) {
+  if (isLoading) {
+    return (
+      <div className="border-y border-border py-14 text-center text-sm text-muted-foreground">
+        Loading routine runs…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center gap-3 border-y border-border py-14 text-center">
+        <p className="text-sm text-muted-foreground">{error.message}</p>
+        <Button variant="outline" size="sm" onClick={onRetry}>Try again</Button>
+      </div>
+    );
+  }
+
+  if (runs.length === 0) {
+    return <EmptyState icon={Activity} message="No routine runs yet." />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold text-foreground">Routine runs</h2>
+        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+          Executions created by this routine, newest first.
+        </p>
+      </div>
+      <ul className="divide-y divide-border border-y border-border" aria-label="Routine runs">
+        {runs.map((run) => {
+          const content = (
+            <>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-foreground">{routineRunTitle(run)}</span>
+                  <StatusBadge status={run.status} />
+                </div>
+                <p className="mt-1 truncate text-sm text-muted-foreground">
+                  {run.trigger?.label ?? readableSource(run.source)}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground sm:justify-end">
+                <span className="capitalize">{readableSource(run.source)}</span>
+                <time dateTime={new Date(run.triggeredAt).toISOString()}>
+                  {relativeTime(run.triggeredAt)}
+                </time>
+              </div>
+            </>
+          );
+          const rowClassName = "flex flex-col gap-2 px-1 py-3 text-inherit no-underline transition-colors hover:bg-muted/50 sm:flex-row sm:items-start sm:justify-between sm:px-3";
+          return (
+            <li key={run.id}>
+              {run.linkedIssue ? (
+                <Link to={`/issues/${run.linkedIssue.identifier ?? run.linkedIssue.id}`} className={rowClassName}>
+                  {content}
+                </Link>
+              ) : (
+                <div className={rowClassName}>{content}</div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="text-xs text-muted-foreground">Showing the {RUN_LIMIT} most recent routine runs.</p>
+    </div>
+  );
+}
+
+export function AuditRuns({ companyId, routineId }: { companyId: string; routineId?: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const agentId = searchParams.get("agentId") ?? ALL;
   const status = searchParams.get("runStatus") ?? ALL;
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
+    enabled: !routineId,
   });
   const runs = useQuery({
     queryKey: queryKeys.audit.runs(companyId, agentId === ALL ? null : agentId),
@@ -55,6 +141,13 @@ export function AuditRuns({ companyId }: { companyId: string }) {
       heartbeatsApi.list(companyId, agentId === ALL ? undefined : agentId, RUN_LIMIT, {
         summary: true,
       }),
+    refetchInterval: 15_000,
+    enabled: !routineId,
+  });
+  const routineRuns = useQuery({
+    queryKey: [...queryKeys.routines.runs(routineId ?? ""), "audit"],
+    queryFn: () => routinesApi.listRuns(routineId!, RUN_LIMIT),
+    enabled: Boolean(routineId),
     refetchInterval: 15_000,
   });
   const agentById = useMemo(
@@ -93,6 +186,17 @@ export function AuditRuns({ companyId }: { companyId: string }) {
       { replace: true },
     );
   };
+
+  if (routineId) {
+    return (
+      <RoutineScopedRuns
+        runs={routineRuns.data ?? []}
+        isLoading={routineRuns.isLoading}
+        error={routineRuns.error instanceof Error ? routineRuns.error : null}
+        onRetry={() => void routineRuns.refetch()}
+      />
+    );
+  }
 
   return (
     <div className="space-y-4">

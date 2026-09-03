@@ -40,8 +40,14 @@ vi.mock("./AuditFeed", () => ({
 }));
 
 vi.mock("./AuditRuns", () => ({
-  AuditRuns: ({ companyId }: { companyId: string }) => (
-    <div data-testid="audit-runs" data-company={companyId} />
+  AuditRuns: ({ companyId, routineId }: { companyId: string; routineId?: string }) => (
+    <div data-testid="audit-runs" data-company={companyId} data-routine={routineId} />
+  ),
+}));
+
+vi.mock("./RoutineAuditActivity", () => ({
+  RoutineAuditActivity: ({ companyId, routineId }: { companyId: string; routineId: string }) => (
+    <div data-testid="routine-audit-activity" data-company={companyId} data-routine={routineId} />
   ),
 }));
 
@@ -87,7 +93,7 @@ describe("AuditHub", () => {
   }
 
   it("uses one clear section model and passes deep-link scopes to Activity", () => {
-    currentSearch = "mode=agents&agentId=agent-1&runId=run-1&entityType=routine&entityId=routine-1";
+    currentSearch = "mode=agents&agentId=agent-1&runId=run-1";
     render("activity");
 
     expect(container.querySelectorAll('[role="tab"]')).toHaveLength(5);
@@ -100,8 +106,27 @@ describe("AuditHub", () => {
     expect(feed?.dataset.mode).toBe("agents");
     expect(feed?.dataset.agent).toBe("agent-1");
     expect(feed?.dataset.run).toBe("run-1");
-    expect(feed?.dataset.entity).toBe(JSON.stringify({ type: "routine", id: "routine-1" }));
+    expect(feed?.dataset.entity).toBe(JSON.stringify(null));
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Audit" }]);
+  });
+
+  it("uses routine-scoped activity instead of the privileged organization feed", () => {
+    currentSearch = "entityType=routine&entityId=routine-1";
+    render("activity");
+
+    expect(container.querySelector('[data-testid="audit-feed"]')).toBeNull();
+    const activity = container.querySelector<HTMLElement>('[data-testid="routine-audit-activity"]');
+    expect(activity?.dataset.company).toBe("company-1");
+    expect(activity?.dataset.routine).toBe("routine-1");
+  });
+
+  it("passes routine scope to the Runs section", () => {
+    currentSearch = "entityType=routine&entityId=routine-1";
+    render("runs");
+
+    const runs = container.querySelector<HTMLElement>('[data-testid="audit-runs"]');
+    expect(runs?.dataset.company).toBe("company-1");
+    expect(runs?.dataset.routine).toBe("routine-1");
   });
 
   it("renders Timeline as the section after Budgets", () => {

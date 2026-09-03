@@ -10,6 +10,7 @@ import { Costs } from "@/pages/Costs";
 import { Timeline } from "@/pages/Timeline";
 import { AuditFeed, type AuditFeedMode } from "./AuditFeed";
 import { AuditRuns } from "./AuditRuns";
+import { RoutineAuditActivity } from "./RoutineAuditActivity";
 import {
   AUDIT_SECTIONS,
   auditScopeFromSearchParams,
@@ -24,6 +25,7 @@ export function AuditHub({ section }: { section: AuditSection }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const scope = auditScopeFromSearchParams(searchParams);
   const mode: AuditFeedMode = scope.mode === "agents" ? "agents" : "all";
+  const routineId = scope.entityType === "routine" ? scope.entityId ?? undefined : undefined;
 
   useEffect(() => {
     const current = AUDIT_SECTIONS.find((candidate) => candidate.value === section);
@@ -72,7 +74,9 @@ export function AuditHub({ section }: { section: AuditSection }) {
         <PageTabBar items={AUDIT_SECTIONS} value={section} align="start" />
       </Tabs>
 
-      {section === "activity" ? (
+      {section === "activity" && routineId ? (
+        <RoutineAuditActivity companyId={selectedCompanyId} routineId={routineId} />
+      ) : section === "activity" ? (
         <AuditFeed
           companyId={selectedCompanyId}
           hideHeader
@@ -87,7 +91,7 @@ export function AuditHub({ section }: { section: AuditSection }) {
           }
         />
       ) : section === "runs" ? (
-        <AuditRuns companyId={selectedCompanyId} />
+        <AuditRuns companyId={selectedCompanyId} routineId={routineId} />
       ) : section === "budgets" ? (
         <Costs embedded initialTab="budgets" lockTab />
       ) : section === "timeline" ? (
