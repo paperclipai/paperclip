@@ -1123,7 +1123,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const parsedIsError = asBoolean(parsed.is_error, false);
     const parsedSubtype = asString(parsed.subtype, "").trim().toLowerCase();
     const parsedSucceeded = parsedSubtype === "success" && !parsedIsError;
-    const failed = !parsedSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
+    // Paperclip's own terminal-result cleanup SIGTERMs the process group once
+    // the turn's terminal result is already on the wire but the CLI is still
+    // held open by an unmanaged background task. The resulting exit code (143)
+    // is produced by the harness, not by the CLI, so reporting it verbatim
+    // makes the heartbeat fail a run whose turn actually completed. Treat the
+    // exit code as clean in that case; `parsedIsError` still decides whether
+    // the turn itself failed.
+    //
+    // `forceKilled` is deliberately not part of the condition. It only records
+    // that the leftover background task ignored SIGTERM and had to be SIGKILLed
+    // after the grace period. Both signals land after the terminal result is
+    // already parsed, so neither says anything about the turn itself, and both
+    // exit codes are equally ours.
+    const stoppedByTerminalResultCleanup =
+      proc.terminalResultCleanup?.stopped === true &&
+      proc.terminalResultCleanup.terminalResultSeen === true;
+    const effectiveExitCode = stoppedByTerminalResultCleanup ? 0 : proc.exitCode;
+    const failed = !parsedSucceeded && ((effectiveExitCode ?? 0) !== 0 || parsedIsError);
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -1150,7 +1167,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       } as Record<string, unknown>)
       : null;
     const errorMessage = failed
-      ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
+      ? describeClaudeFailure(parsed) ?? `Claude exited with code ${effectiveExitCode ?? -1}`
       : null;
     const providerQuota =
       failed &&
@@ -1228,7 +1245,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     return {
-      exitCode: proc.exitCode,
+      exitCode: effectiveExitCode,
       signal: proc.signal,
       timedOut: false,
       errorMessage,
