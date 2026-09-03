@@ -114,6 +114,7 @@ describe("AppsSidebar", () => {
     await flushReact();
 
     expect(container.textContent).not.toContain("Apps");
+    expect(container.querySelector('nav[aria-label="Connectors"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Developer");
     expect(container.textContent).not.toContain("Advanced setup for developers");
     expect(container.textContent).not.toContain("Most teams");
@@ -122,7 +123,7 @@ describe("AppsSidebar", () => {
     // assert both advanced setup items remain absent at the item level below.
 
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps", label: "Connectors", end: true }),
+      expect.objectContaining({ to: "/apps", label: "Browse", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/review", label: "Review" }),

@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
+  Flag,
   LogOut,
-  Megaphone,
   Settings,
   type LucideIcon,
   UserRound,
@@ -16,6 +16,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
@@ -158,140 +159,153 @@ export function SidebarAccountMenu({
 
   return (
     <div className="bg-border/50 px-3 py-2 dark:bg-muted">
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
-            aria-label="Open account menu"
+      <div className={cn("flex items-center gap-0.5", !rail && "px-2")}>
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-background hover:text-foreground",
+                rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
+              )}
+              aria-label="Open account menu"
+            >
+              <Avatar size="sm">
+                {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
+                <AvatarFallback>{initials}</AvatarFallback>
+              </Avatar>
+              <span className={cn("min-w-0 flex-1 truncate", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>{displayName}</span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="top"
+            align="start"
+            sideOffset={10}
+            className="w-(--sz-277px) max-w-(--sz-calc-24) overflow-hidden rounded-t-2xl rounded-b-none border-border p-0 shadow-2xl"
           >
-            <Avatar size="sm">
-              {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
-              <AvatarFallback>{initials}</AvatarFallback>
-            </Avatar>
-            <span className={cn("min-w-0 flex-1 truncate", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>{displayName}</span>
-          </button>
-        </PopoverTrigger>
-        <PopoverContent
-          side="top"
-          align="start"
-          sideOffset={10}
-          className="w-(--sz-277px) max-w-(--sz-calc-24) overflow-hidden rounded-t-2xl rounded-b-none border-border p-0 shadow-2xl"
-        >
-          <div className="h-24 bg-(image:--gradient-extract-25)" />
-          <div className="-mt-8 px-4 pb-4">
-            <div className="flex items-start gap-3">
-              <div className="rounded-2xl border-4 border-popover bg-popover p-0.5 shadow-sm">
-                <Avatar size="lg">
-                  {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
-                  <AvatarFallback>{initials}</AvatarFallback>
-                </Avatar>
-              </div>
-              <div className="min-w-0 flex-1 pt-1">
-                <div className="flex items-center gap-2">
-                  <h2 className="truncate text-base font-semibold text-foreground">{displayName}</h2>
-                  <Badge variant="ghost" className="bg-accent text-(length:--text-nano) font-semibold uppercase tracking-wide text-muted-foreground">
-                    {accountBadge}
-                  </Badge>
+            <div className="h-24 bg-(image:--gradient-extract-25)" />
+            <div className="-mt-8 px-4 pb-4">
+              <div className="flex items-start gap-3">
+                <div className="rounded-2xl border-4 border-popover bg-popover p-0.5 shadow-sm">
+                  <Avatar size="lg">
+                    {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
+                    <AvatarFallback>{initials}</AvatarFallback>
+                  </Avatar>
                 </div>
-                <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
-                {sourceSha && sourceFullSha ? (
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {sourceBranch ? (
-                      <a
-                        href={`${SOURCE_REPOSITORY_URL}/tree/${encodeURIComponent(sourceBranch)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="block truncate transition-colors hover:text-foreground"
-                      >
-                        {sourceBranch}
-                      </a>
-                    ) : null}
-                    <p>
-                      Paperclip{" "}
-                      <a
-                        href={`${SOURCE_REPOSITORY_URL}/commit/${sourceFullSha}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="transition-colors hover:text-foreground"
-                      >
-                        {sourceSha.slice(0, 7)}
-                      </a>
-                    </p>
+                <div className="min-w-0 flex-1 pt-1">
+                  <div className="flex items-center gap-2">
+                    <h2 className="truncate text-base font-semibold text-foreground">{displayName}</h2>
+                    <Badge variant="ghost" className="bg-accent text-(length:--text-nano) font-semibold uppercase tracking-wide text-muted-foreground">
+                      {accountBadge}
+                    </Badge>
                   </div>
-                ) : version ? (
-                  <p className="mt-1 text-xs text-muted-foreground">Paperclip v{version}</p>
+                  <p className="truncate text-sm text-muted-foreground">{secondaryLabel}</p>
+                  {sourceSha && sourceFullSha ? (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {sourceBranch ? (
+                        <a
+                          href={`${SOURCE_REPOSITORY_URL}/tree/${encodeURIComponent(sourceBranch)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block truncate transition-colors hover:text-foreground"
+                        >
+                          {sourceBranch}
+                        </a>
+                      ) : null}
+                      <p>
+                        Paperclip{" "}
+                        <a
+                          href={`${SOURCE_REPOSITORY_URL}/commit/${sourceFullSha}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="transition-colors hover:text-foreground"
+                        >
+                          {sourceSha.slice(0, 7)}
+                        </a>
+                      </p>
+                    </div>
+                  ) : version ? (
+                    <p className="mt-1 text-xs text-muted-foreground">Paperclip v{version}</p>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-1">
+                <MenuAction
+                  label="Settings"
+                  description="Manage company and instance settings."
+                  icon={Settings}
+                  href="/company/settings"
+                  onClick={closeNavigationChrome}
+                />
+                <MenuAction
+                  label="View profile"
+                  description="Open your activity, task, and usage ledger."
+                  icon={UserRound}
+                  href={profileHref}
+                  onClick={closeNavigationChrome}
+                />
+                <MenuAction
+                  label="Edit profile"
+                  description="Update your display name and avatar."
+                  icon={UserRoundPen}
+                  href={PROFILE_SETTINGS_PATH}
+                  onClick={closeNavigationChrome}
+                />
+                <MenuAction
+                  label="Documentation"
+                  description="Open Paperclip docs in a new tab."
+                  icon={BookOpen}
+                  href={DOCS_URL}
+                  external
+                  onClick={() => setOpen(false)}
+                />
+                <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
+                {deploymentMode === "authenticated" ? (
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-destructive/10",
+                      signOutMutation.isPending && "cursor-not-allowed opacity-60",
+                    )}
+                    onClick={handleSignOut}
+                    disabled={signOutMutation.isPending}
+                  >
+                    <span className="mt-0.5 rounded-lg border border-border bg-background/70 p-2 text-muted-foreground">
+                      <LogOut className="size-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium text-foreground">
+                        {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        End this browser session.
+                      </span>
+                    </span>
+                  </button>
                 ) : null}
+                <SidebarServerInfo />
               </div>
             </div>
-
-            <div className="mt-4 space-y-1">
-              <MenuAction
-                label="Settings"
-                description="Manage company and instance settings."
-                icon={Settings}
-                href="/company/settings"
-                onClick={closeNavigationChrome}
-              />
-              <MenuAction
-                label="View profile"
-                description="Open your activity, task, and usage ledger."
-                icon={UserRound}
-                href={profileHref}
-                onClick={closeNavigationChrome}
-              />
-              <MenuAction
-                label="Edit profile"
-                description="Update your display name and avatar."
-                icon={UserRoundPen}
-                href={PROFILE_SETTINGS_PATH}
-                onClick={closeNavigationChrome}
-              />
-              <MenuAction
-                label="Documentation"
-                description="Open Paperclip docs in a new tab."
-                icon={BookOpen}
-                href={DOCS_URL}
-                external
-                onClick={() => setOpen(false)}
-              />
-              <MenuAction
-                label="Feedback"
-                description="Share feedback or report an issue."
-                icon={Megaphone}
+          </PopoverContent>
+        </Popover>
+        {!rail ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
                 href={FEEDBACK_URL}
-                external
-                onClick={() => setOpen(false)}
-              />
-              <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
-              {deploymentMode === "authenticated" ? (
-                <button
-                  type="button"
-                  className={cn(
-                    "flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-destructive/10",
-                    signOutMutation.isPending && "cursor-not-allowed opacity-60",
-                  )}
-                  onClick={handleSignOut}
-                  disabled={signOutMutation.isPending}
-                >
-                  <span className="mt-0.5 rounded-lg border border-border bg-background/70 p-2 text-muted-foreground">
-                    <LogOut className="size-4" />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium text-foreground">
-                      {signOutMutation.isPending ? "Signing out..." : "Sign out"}
-                    </span>
-                    <span className="block text-xs text-muted-foreground">
-                      End this browser session.
-                    </span>
-                  </span>
-                </button>
-              ) : null}
-              <SidebarServerInfo />
-            </div>
-          </div>
-        </PopoverContent>
-      </Popover>
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Share feedback"
+                className="flex size-8 shrink-0 items-center justify-center rounded-lg text-foreground/80 transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Flag className="h-4 w-4" aria-hidden="true" />
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="top">Share feedback</TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
     </div>
   );
 }

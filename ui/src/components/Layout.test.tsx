@@ -325,7 +325,7 @@ describe("Layout", () => {
     });
   });
 
-  it("scopes the Streamlined task-detail surface to the main pane and right sidebar row", async () => {
+  it("scopes the Streamlined task-detail surface while preserving balanced horizontal gutters", async () => {
     currentPathname = "/PAP/issues/PAP-1";
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: true,
@@ -347,8 +347,10 @@ describe("Layout", () => {
     expect(container.querySelector(".streamlined-task-detail-surface")).not.toBeNull();
     expect(container.querySelector("#main-content")?.classList.contains("pt-0")).toBe(true);
     expect(container.querySelector("#main-content")?.classList.contains("md:pt-0")).toBe(true);
-    expect(container.querySelector("#main-content")?.classList.contains("pr-0")).toBe(true);
-    expect(container.querySelector("#main-content")?.classList.contains("md:pr-0")).toBe(true);
+    expect(container.querySelector("#main-content")?.classList.contains("p-4")).toBe(true);
+    expect(container.querySelector("#main-content")?.classList.contains("md:p-6")).toBe(true);
+    expect(container.querySelector("#main-content")?.classList.contains("pr-0")).toBe(false);
+    expect(container.querySelector("#main-content")?.classList.contains("md:pr-0")).toBe(false);
 
     await act(async () => {
       root.unmount();
@@ -429,7 +431,7 @@ describe("Layout", () => {
     await act(async () => { root.unmount(); });
   });
 
-  it("keeps the app sidebar beside settings navigation on settings routes", async () => {
+  it("replaces the app sidebar with settings navigation on Streamlined settings routes", async () => {
     currentPathname = "/PAP/company/settings/access";
     mockPluginSlots.slots = [
       {
@@ -471,10 +473,10 @@ describe("Layout", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Company settings sidebar");
-    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("Main company nav");
     const secondaryRail = container.querySelector("[data-secondary-sidebar]");
-    expect(secondaryRail?.classList.contains("w-60")).toBe(true);
-    expect(secondaryRail?.classList.contains("bg-background")).toBe(true);
+    expect(secondaryRail).not.toBeNull();
+    expect(secondaryRail?.classList.contains("w-60")).toBe(false);
     expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Instance sidebar");
     expect(container.textContent).not.toContain("Plugin route sidebar");
@@ -553,7 +555,7 @@ describe("Layout", () => {
     });
   });
 
-  it("keeps the company nav beside settings on instance settings routes", async () => {
+  it("replaces the company nav on instance settings routes", async () => {
     currentPathname = "/PAP/company/settings/instance/general";
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -571,7 +573,7 @@ describe("Layout", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Company settings sidebar");
-    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("Main company nav");
     expect(container.textContent).not.toContain("Company rail");
     expect(container.textContent).not.toContain("Plugin route sidebar");
 
@@ -581,7 +583,7 @@ describe("Layout", () => {
   });
 
   it.each(["/PAP/company/export", "/PAP/company/import"])(
-    "keeps the company nav beside the shared settings sidebar on %s",
+    "replaces the company nav with the shared settings sidebar on %s",
     async (pathname) => {
       currentPathname = pathname;
       const root = createRoot(container);
@@ -600,7 +602,7 @@ describe("Layout", () => {
       await flushReact();
 
       expect(container.textContent).toContain("Company settings sidebar");
-      expect(container.textContent).toContain("Main company nav");
+      expect(container.textContent).not.toContain("Main company nav");
 
       await act(async () => {
         root.unmount();
