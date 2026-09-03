@@ -1,19 +1,28 @@
 import { createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { cloudRuntimeIdentity } from "@paperclipai/db";
+import { instanceSettings } from "@paperclipai/db";
 
 export const CLOUD_RUNTIME_IDENTITY_HEADER = "x-paperclip-cloud-runtime-identity";
 export const CLOUD_RUNTIME_IDENTITY_AUDIENCE = "paperclip-runtime-identity/v1";
 export const CLOUD_RUNTIME_IDENTITY_ISSUER = "paperclip-cloud";
 export const CLOUD_RUNTIME_IDENTITY_JWS_TYPE = "paperclip-cloud-runtime-identity+jwt";
 
-const SINGLETON_KEY = "default";
+const SINGLETON_KEY = "cloud-runtime-identity/v1";
 const MAX_ASSERTION_LIFETIME_SECONDS = 10 * 60;
 const MAX_CLOCK_SKEW_SECONDS = 30;
 const STACK_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
-type PersistedRuntimeIdentity = typeof cloudRuntimeIdentity.$inferSelect;
+type PersistedRuntimeIdentity = {
+  stackId: string;
+  claimId: string;
+  previousOrigin: string;
+  canonicalOrigin: string;
+  stackSlug: string;
+  appliedAt: Date;
+};
+
+type RuntimeIdentityDb = Pick<Db, "select" | "insert">;
 
 export type CloudRuntimeIdentitySnapshot = {
   stackId: string;
@@ -85,6 +94,44 @@ function snapshot(row: PersistedRuntimeIdentity): CloudRuntimeIdentitySnapshot {
   };
 }
 
+function parsePersistedIdentity(row: {
+  general: Record<string, unknown>;
+  createdAt: Date;
+}): PersistedRuntimeIdentity {
+  const value = row.general;
+  if (
+    value.v !== 1
+    || typeof value.stackId !== "string"
+    || typeof value.claimId !== "string"
+    || typeof value.previousOrigin !== "string"
+    || typeof value.canonicalOrigin !== "string"
+    || typeof value.stackSlug !== "string"
+  ) {
+    throw new Error("Persisted Cloud runtime identity is malformed");
+  }
+  return {
+    stackId: value.stackId,
+    claimId: value.claimId,
+    previousOrigin: value.previousOrigin,
+    canonicalOrigin: value.canonicalOrigin,
+    stackSlug: value.stackSlug,
+    appliedAt: row.createdAt,
+  };
+}
+
+async function readPersistedIdentity(db: RuntimeIdentityDb): Promise<PersistedRuntimeIdentity | null> {
+  const row = await db
+    .select({
+      general: instanceSettings.general,
+      createdAt: instanceSettings.createdAt,
+    })
+    .from(instanceSettings)
+    .where(eq(instanceSettings.singletonKey, SINGLETON_KEY))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return row ? parsePersistedIdentity(row) : null;
+}
+
 function applyCompatibilityEnvironment(identity: CloudRuntimeIdentitySnapshot, env: NodeJS.ProcessEnv) {
   const hostname = new URL(identity.canonicalOrigin).hostname;
   env.PAPERCLIP_PUBLIC_URL = identity.canonicalOrigin;
@@ -135,12 +182,7 @@ export async function initializeCloudRuntimeIdentity(
     currentIdentity = null;
     return null;
   }
-  const row = await db
-    .select()
-    .from(cloudRuntimeIdentity)
-    .where(eq(cloudRuntimeIdentity.singletonKey, SINGLETON_KEY))
-    .limit(1)
-    .then((rows) => rows[0] ?? null);
+  const row = await readPersistedIdentity(db);
   initialized = true;
   if (!row) {
     currentIdentity = null;
@@ -336,12 +378,7 @@ export async function applyCloudRuntimeIdentityAssertion(input: {
   const canonicalOrigin = claims.canonicalOrigin;
 
   const row = await input.db.transaction(async (tx) => {
-    const existing = await tx
-      .select()
-      .from(cloudRuntimeIdentity)
-      .where(eq(cloudRuntimeIdentity.singletonKey, SINGLETON_KEY))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+    const existing = await readPersistedIdentity(tx);
     if (existing) {
       if (!assertionsEqual(existing, claims)) {
         throw new Error("Cloud runtime identity is already claimed by another assertion");
@@ -351,24 +388,23 @@ export async function applyCloudRuntimeIdentityAssertion(input: {
 
     const now = input.now ?? new Date();
     await tx
-      .insert(cloudRuntimeIdentity)
+      .insert(instanceSettings)
       .values({
         singletonKey: SINGLETON_KEY,
-        stackId: claims.sub,
-        claimId: claims.claimId,
-        previousOrigin,
-        canonicalOrigin,
-        stackSlug: claims.stackSlug,
-        appliedAt: now,
+        general: {
+          v: 1,
+          stackId: claims.sub,
+          claimId: claims.claimId,
+          previousOrigin,
+          canonicalOrigin,
+          stackSlug: claims.stackSlug,
+        },
+        experimental: {},
+        createdAt: now,
         updatedAt: now,
       })
-      .onConflictDoNothing({ target: cloudRuntimeIdentity.singletonKey });
-    const durable = await tx
-      .select()
-      .from(cloudRuntimeIdentity)
-      .where(eq(cloudRuntimeIdentity.singletonKey, SINGLETON_KEY))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .onConflictDoNothing({ target: instanceSettings.singletonKey });
+    const durable = await readPersistedIdentity(tx);
     if (!durable || !assertionsEqual(durable, claims)) {
       throw new Error("Cloud runtime identity is already claimed by another assertion");
     }

@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { cloudRuntimeIdentity, createDb } from "@paperclipai/db";
+import { createDb, instanceSettings } from "@paperclipai/db";
 import {
   applyCloudRuntimeIdentityAssertion,
   CLOUD_RUNTIME_IDENTITY_AUDIENCE,
@@ -86,7 +86,7 @@ describeEmbeddedPostgres("Cloud runtime identity", () => {
   }, 20_000);
 
   beforeEach(async () => {
-    await db.delete(cloudRuntimeIdentity);
+    await db.delete(instanceSettings);
     resetCloudRuntimeIdentityForTests();
     process.env.PAPERCLIP_CLOUD_STACK_ID = STACK_ID;
     process.env.PAPERCLIP_PUBLIC_URL = POOL_ORIGIN;
