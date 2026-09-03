@@ -12,6 +12,7 @@ const mockApprovalService = vi.hoisted(() => ({
   resubmit: vi.fn(),
   listComments: vi.fn(),
   addComment: vi.fn(),
+  cancel: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -21,6 +22,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockIssueApprovalService = vi.hoisted(() => ({
   listIssuesForApproval: vi.fn(),
   linkManyForApproval: vi.fn(),
+}));
+
+const mockIssueService = vi.hoisted(() => ({
+  listReviewAttention: vi.fn(),
 }));
 
 const mockSecretService = vi.hoisted(() => ({
@@ -40,6 +45,9 @@ function registerModuleMocks() {
     issueApprovalService: () => mockIssueApprovalService,
     logActivity: mockLogActivity,
     secretService: () => mockSecretService,
+  }));
+  vi.doMock("../services/issues.js", () => ({
+    issueService: () => mockIssueService,
   }));
 }
 
@@ -113,6 +121,7 @@ describe("approval routes idempotent retries", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
+    vi.doUnmock("../services/issues.js");
     vi.doUnmock("../routes/approvals.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -127,9 +136,11 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.resubmit.mockReset();
     mockApprovalService.listComments.mockReset();
     mockApprovalService.addComment.mockReset();
+    mockApprovalService.cancel.mockReset();
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
+    mockIssueService.listReviewAttention.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
     mockAccessService.decide.mockReset();
@@ -141,6 +152,7 @@ describe("approval routes idempotent retries", () => {
     });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -442,5 +454,159 @@ describe("approval routes idempotent retries", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toContain("Status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
+  });
+
+  describe("POST /approvals/:id/cancel", () => {
+    it("requesting agent cancels own pending card → 200 + status cancelled", async () => {
+      mockApprovalService.getById.mockResolvedValue({
+        id: "approval-20",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "pending",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      });
+      mockApprovalService.cancel.mockResolvedValue({
+        id: "approval-20",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "cancelled",
+        payload: {},
+        requestedByAgentId: "agent-1",
+        decisionNote: "no longer needed",
+      });
+
+      const res = await request(await createAgentApp())
+        .post("/api/approvals/approval-20/cancel")
+        .send({ reason: "no longer needed" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("cancelled");
+    });
+
+    it("non-requesting agent → 403", async () => {
+      mockApprovalService.getById.mockResolvedValue({
+        id: "approval-21",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "pending",
+        payload: {},
+        requestedByAgentId: "other-agent",
+      });
+
+      // createAgentApp sets agentId = "agent-1", card was requested by "other-agent"
+      const res = await request(await createAgentApp())
+        .post("/api/approvals/approval-21/cancel")
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(mockApprovalService.cancel).not.toHaveBeenCalled();
+    });
+
+    it("already-resolved card → 200 with existing state returned (idempotent)", async () => {
+      const resolvedApproval = {
+        id: "approval-22",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      };
+      mockApprovalService.getById.mockResolvedValue(resolvedApproval);
+      // svc.cancel returns null when card is already resolved
+      mockApprovalService.cancel.mockResolvedValue(null);
+
+      const res = await request(await createAgentApp())
+        .post("/api/approvals/approval-22/cancel")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("approved");
+    });
+
+    it("blocks status-only recovery runs from cancelling approvals", async () => {
+      mockApprovalService.getById.mockResolvedValue({
+        id: "approval-24",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "pending",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      });
+
+      const res = await request(
+        await createAgentApp({
+          contextSnapshot: {
+            modelProfile: "cheap",
+            recoveryIntent: "status_only",
+            allowDeliverableWork: false,
+            allowDocumentUpdates: false,
+            resumeRequiresNormalModel: true,
+          },
+        }),
+      )
+        .post("/api/approvals/approval-24/cancel")
+        .send({});
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
+      expect(mockApprovalService.cancel).not.toHaveBeenCalled();
+    });
+
+    it("board member can cancel a card they did not request → 200", async () => {
+      mockApprovalService.getById.mockResolvedValue({
+        id: "approval-25",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "pending",
+        payload: {},
+        requestedByAgentId: "other-agent",
+      });
+      mockApprovalService.cancel.mockResolvedValue({
+        id: "approval-25",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "cancelled",
+        payload: {},
+        requestedByAgentId: "other-agent",
+        decisionNote: null,
+      });
+
+      const res = await request(await createApp())
+        .post("/api/approvals/approval-25/cancel")
+        .send({});
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe("cancelled");
+      expect(mockApprovalService.cancel).toHaveBeenCalledWith("approval-25", null);
+    });
+
+    it("reason field flows through to decisionNote in the response", async () => {
+      mockApprovalService.getById.mockResolvedValue({
+        id: "approval-23",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "pending",
+        payload: {},
+        requestedByAgentId: "agent-1",
+      });
+      mockApprovalService.cancel.mockResolvedValue({
+        id: "approval-23",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "cancelled",
+        payload: {},
+        requestedByAgentId: "agent-1",
+        decisionNote: "spec changed",
+      });
+
+      const res = await request(await createAgentApp())
+        .post("/api/approvals/approval-23/cancel")
+        .send({ reason: "spec changed" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.decisionNote).toBe("spec changed");
+      expect(mockApprovalService.cancel).toHaveBeenCalledWith("approval-23", "spec changed");
+    });
   });
 });
