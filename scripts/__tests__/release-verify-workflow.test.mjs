@@ -16,10 +16,19 @@ function readWorkflow(name) {
 
 test("release workflow delegates stable and canary verification to the reusable workflow", () => {
   const releaseWorkflow = readWorkflow("release.yml");
+  const lockfileReadyBlock = releaseWorkflow.match(
+    /  lockfile_ready:[\s\S]*?(?=\n  verify_canary:)/,
+  )?.[0];
 
+  assert.ok(lockfileReadyBlock, "expected a master-push lockfile readiness gate");
+  assert.match(
+    lockfileReadyBlock,
+    /Check lockfile synchronization[\s\S]*?pnpm install --ignore-scripts --no-frozen-lockfile[\s\S]*?ready=false/,
+  );
+  assert.doesNotMatch(lockfileReadyBlock, /cache: pnpm/);
   assert.match(
     releaseWorkflow,
-    /verify_canary:\n\s+if: github\.event_name == 'push'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/,
+    /verify_canary:\n\s+needs: lockfile_ready\n\s+if: github\.event_name == 'push' && needs\.lockfile_ready\.outputs\.ready == 'true'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/,
   );
   // The stable lane is gated on the stable channel since the nightly lane
   // was added; a `needs:` line (for example a preflight job) may sit between
@@ -114,7 +123,7 @@ test("published canaries are gated by the exact-version onboarding browser smoke
   );
   assert.match(
     releaseWorkflow,
-    /smoke_canary_onboarding:[\s\S]*?Install test dependencies\n\s+run: pnpm install --no-frozen-lockfile/,
+    /smoke_canary_onboarding:[\s\S]*?Install test dependencies\n\s+run: pnpm install --frozen-lockfile/,
   );
   assert.doesNotMatch(
     releaseWorkflow.match(
@@ -198,7 +207,7 @@ test("release verify workflow covers the same split test surface as stable PR ve
   );
   assert.match(
     verifyWorkflow,
-    /runner_workflow_evals:[\s\S]*?Install dependencies\n\s+run: pnpm install --no-frozen-lockfile[\s\S]*?Run deterministic Runner workflow scorer tests/,
+    /runner_workflow_evals:[\s\S]*?Install dependencies\n\s+run: pnpm install --frozen-lockfile[\s\S]*?Run deterministic Runner workflow scorer tests/,
   );
   assert.match(verifyWorkflow, /pnpm test:runner-workflow-evals/);
 
@@ -367,10 +376,6 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
   }
 
   const chaosWorkflow = actionPinWorkflows[2];
-  assert.match(
-    chaosWorkflow,
-    /chaos_and_recovery:[\s\S]*?Install dependencies\n\s+run: pnpm install --no-frozen-lockfile/,
-  );
   const runnerBlock = chaosWorkflow.match(
     /- name: Run Runner fault and replay suites[\s\S]*?run: \|([\s\S]*?)(?=\n\s+- name: Build server test dependencies)/,
   )?.[1];

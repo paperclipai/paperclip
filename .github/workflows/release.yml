@@ -64,8 +64,45 @@ env:
   NPM_PUBLISH_VERIFY_DELAY_SECONDS: "10"
 
 jobs:
-  verify_canary:
+  lockfile_ready:
     if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Check lockfile synchronization
+        id: check
+        run: |
+          cp pnpm-lock.yaml "$RUNNER_TEMP/pnpm-lock.before.yaml"
+          pnpm install --ignore-scripts --no-frozen-lockfile
+          if cmp -s "$RUNNER_TEMP/pnpm-lock.before.yaml" pnpm-lock.yaml; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "The canary release will wait for the automatic lockfile refresh PR." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  verify_canary:
+    needs: lockfile_ready
+    if: github.event_name == 'push' && needs.lockfile_ready.outputs.ready == 'true'
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ github.sha }}
@@ -168,7 +205,7 @@ jobs:
           node-version: 24
 
       - name: Install test dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Show browser version
         run: google-chrome --version

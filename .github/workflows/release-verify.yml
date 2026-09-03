@@ -186,7 +186,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Run deterministic Runner workflow scorer tests
         run: pnpm test:runner-workflow-evals
