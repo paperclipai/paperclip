@@ -88,6 +88,7 @@ import {
   type AcpRuntimeUsageBreakdown,
   type AcpRuntimeUsageCost,
 } from "acpx/runtime";
+import { readCodexSubscriptionCredentialIdentity } from "./codex-credential-identity.js";
 import {
   ACPX_HANDSHAKE_TIMEOUT_MS,
   ACPX_HANDSHAKE_TRANSPORT_POLL_MS,
@@ -1188,6 +1189,7 @@ async function prepareCodexSkillRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
+  inheritsHostEnvironment: boolean;
   moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
   // Step-timing seam: threaded from `buildRuntime` so the nested
@@ -1265,6 +1267,18 @@ async function prepareCodexSkillRuntime(input: {
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
 
   input.env.CODEX_HOME = effectiveCodexHome;
+  const hasConfiguredApiKeyOverride = Object.prototype.hasOwnProperty.call(
+    input.env,
+    "OPENAI_API_KEY",
+  );
+  const configuredApiKey = input.env.OPENAI_API_KEY?.trim();
+  const inheritedApiKey = input.inheritsHostEnvironment && !hasConfiguredApiKeyOverride
+    ? process.env.OPENAI_API_KEY?.trim()
+    : undefined;
+  const credentialIdentityHash =
+    configuredApiKey || inheritedApiKey
+      ? null
+      : await readCodexSubscriptionCredentialIdentity(effectiveCodexHome);
 
   return {
     identity: {
@@ -1274,6 +1288,7 @@ async function prepareCodexSkillRuntime(input: {
       selectedSkills: selectedSkills.map((entry) => entry.runtimeName).sort(),
       codexHome: effectiveCodexHome,
       skillsHome,
+      ...(credentialIdentityHash ? { credentialIdentityHash } : {}),
     },
     commandNotes: [`Prepared ACPX Codex skill home at ${skillsHome}.`],
   };
@@ -1965,6 +1980,7 @@ async function buildRuntime(input: {
         companyId: agent.companyId,
         config,
         env,
+        inheritsHostEnvironment: !executionTargetIsRemote,
         moduleDir: input.engine.moduleDir,
         onLog: input.ctx.onLog,
         onEvent: input.ctx.onEvent,
