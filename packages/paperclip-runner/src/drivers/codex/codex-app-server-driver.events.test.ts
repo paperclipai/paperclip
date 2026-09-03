@@ -463,4 +463,61 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  it("orders turn.accepted before a terminal event even when the provider notifies the terminal turn ahead of the turn/start response", async () => {
+    const transport = new FakeCodexTransport();
+    let resolveTurnStart: (value: Record<string, unknown>) => void = () => {};
+    transport.turnStartResponse = new Promise((resolve) => {
+      resolveTurnStart = resolve;
+    });
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-terminal-race",
+      normalizedSessionId: "normalized-terminal-race",
+      workingDirectory: WORKSPACE,
+    });
+    const startTurnPromise = session.startTurn({
+      message: { role: "user", text: "Race the terminal event." },
+    });
+    // Give the provider's turn/started and turn/completed notifications every
+    // chance to run ahead of the still-pending turn/start response, the way
+    // one read chunk can carry all three JSON-RPC lines back to back.
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "inProgress" },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: {
+        id: "turn-1",
+        status: "failed",
+        items: [],
+        error: { message: "provider rejected the turn" },
+      },
+    });
+    // A macrotask boundary drains every microtask the notification pump can
+    // run on its own, so an unguarded terminal handler has already run by
+    // the time the turn/start response resolves below.
+    await new Promise((resolve) => setImmediate(resolve));
+    resolveTurnStart({
+      turn: { id: "turn-1", status: "inProgress", items: [] },
+    });
+
+    const turn = await startTurnPromise;
+    expect(turn.turnId).toBe("turn-1");
+
+    const events = await collectUntilTerminal(session.events());
+    const eventTypes = events.map((event) => event.eventType);
+    expect(eventTypes).toEqual(
+      expect.arrayContaining(["turn.started", "turn.accepted", "turn.failed"]),
+    );
+    expect(eventTypes.indexOf("turn.started")).toBeLessThan(
+      eventTypes.indexOf("turn.accepted"),
+    );
+    expect(eventTypes.indexOf("turn.accepted")).toBeLessThan(
+      eventTypes.indexOf("turn.failed"),
+    );
+    expect(
+      events.some((event) => event.eventType === "session.failed"),
+    ).toBe(false);
+  });
+
 });

@@ -37,7 +37,7 @@ import {
 export async function pumpNotifications(state: CodexSessionState): Promise<void> {
     try {
       for await (const notification of state.transport.notifications()) {
-        mapNotification(state, notification);
+        await mapNotification(state, notification);
       }
     } catch (error) {
       state.emit("harness.diagnostic", {
@@ -52,11 +52,11 @@ export async function pumpNotifications(state: CodexSessionState): Promise<void>
     }
   }
 
-function mapNotification(state: CodexSessionState, notification: CodexRpcNotification): void {
+async function mapNotification(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
     const sourceSequenceBefore = state.sourceSequence;
     let rejected = false;
     try {
-      mapNotificationBody(state, notification);
+      await mapNotificationBody(state, notification);
     } catch (error) {
       rejected = true;
       throw error;
@@ -98,7 +98,7 @@ function mapNotification(state: CodexSessionState, notification: CodexRpcNotific
     }
   }
 
-function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): void {
+async function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
     if (!isSupportedCodexNotificationMethod(notification.method)) return;
     if (!isBoundCodexNotification(notification, {
       runId: state.runId,
@@ -365,6 +365,11 @@ function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNot
       return;
     }
     if (notification.method === "turn/completed") {
+      // A terminal notification can arrive on the provider's notification
+      // channel before turn/start's own response settles on the request
+      // channel. Wait for the pending turn/start to settle first, so
+      // turn.accepted always precedes the terminal event for the same turn.
+      await state.turnStartSettled;
       if (state.terminalTurns.has(turnId)) {
         mapTerminalTurn(state, turn, turnId);
         return;

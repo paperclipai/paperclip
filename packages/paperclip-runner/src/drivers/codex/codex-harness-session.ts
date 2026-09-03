@@ -164,6 +164,10 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       effectiveCollaborationMode,
     });
     this.turnStartPending = true;
+    let releaseTurnStartSettled: () => void = () => {};
+    this.turnStartSettled = new Promise((resolve) => {
+      releaseTurnStartSettled = resolve;
+    });
     let response: Record<string, unknown>;
     const requestedMode = this.opened.context.collaborationMode;
     try {
@@ -200,6 +204,11 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       throw error;
     } finally {
       this.turnStartPending = false;
+      // Release a terminal notification that arrived and parked itself
+      // while this turn/start was in flight. This runs before turn.accepted
+      // below, in the same synchronous continuation, so a released waiter
+      // never observes the terminal turn ahead of turn.accepted.
+      releaseTurnStartSettled();
     }
     const turn = record(response.turn);
     const turnId = text(turn.id);
