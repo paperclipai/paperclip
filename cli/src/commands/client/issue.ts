@@ -48,6 +48,7 @@ interface IssueBaseOptions extends BaseClientOptions {
   assigneeAgentId?: string;
   projectId?: string;
   match?: string;
+  staleHours?: string;
 }
 
 interface IssueCreateOptions extends BaseClientOptions {
@@ -179,6 +180,10 @@ export function registerIssueCommands(program: Command): void {
       .option("--assignee-agent-id <id>", "Filter by assignee agent ID")
       .option("--project-id <id>", "Filter by project ID")
       .option("--match <text>", "Local text match on identifier/title/description")
+      .option(
+        "--stale-hours <hours>",
+        "Only issues with no activity in the last N hours (saved-query example for stale-issue visibility: --status todo,in_progress,in_review,blocked --stale-hours 100)",
+      )
       .action(async (opts: IssueBaseOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -186,6 +191,7 @@ export function registerIssueCommands(program: Command): void {
           if (opts.status) params.set("status", opts.status);
           if (opts.assigneeAgentId) params.set("assigneeAgentId", opts.assigneeAgentId);
           if (opts.projectId) params.set("projectId", opts.projectId);
+          if (opts.staleHours) params.set("staleHours", opts.staleHours);
 
           const query = params.toString();
           const path = `${apiPath`/api/companies/${ctx.companyId}/issues`}${query ? `?${query}` : ""}`;
