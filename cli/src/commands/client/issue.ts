@@ -34,6 +34,7 @@ import {
   handleCommandError,
   inferContentTypeFromPath,
   printOutput,
+  readUtf8ContentFile,
   resolveCommandContext,
   type BaseClientOptions,
 } from "./common.js";
@@ -689,7 +690,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, key: string, opts: IssueDocumentPutOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const body = opts.bodyFile ? await readFile(opts.bodyFile, "utf8") : opts.body;
+          const body = opts.bodyFile ? await readUtf8ContentFile(opts.bodyFile) : opts.body;
           const payload = upsertIssueDocumentSchema.parse({
             title: opts.title,
             format: opts.format,
