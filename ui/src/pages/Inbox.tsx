@@ -36,7 +36,7 @@ import {
 } from "../lib/issue-filters";
 import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
-import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
+import { buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildCreatorUserOption } from "../lib/company-members";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
@@ -1153,12 +1153,7 @@ function StreamlinedInbox() {
       if (issue.createdByUserId) {
         const id = `user:${issue.createdByUserId}`;
         if (!options.has(id)) {
-          options.set(id, {
-            id,
-            label: formatAssigneeUserLabel(issue.createdByUserId, currentUserId) ?? issue.createdByUserId.slice(0, 5),
-            kind: "user",
-            searchText: `${issue.createdByUserId} board user human`,
-          });
+          options.set(id, buildCreatorUserOption(issue.createdByUserId, currentUserId, companyUserLabelMap));
         }
       }
     }
@@ -1195,7 +1190,7 @@ function StreamlinedInbox() {
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });
-  }, [agents, currentUserId, mineIssues, touchedIssues]);
+  }, [agents, companyUserLabelMap, currentUserId, mineIssues, touchedIssues]);
   const issuesToRender = useMemo(
     () => {
       if (tab === "mine") return visibleMineIssues;
