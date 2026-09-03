@@ -23,7 +23,6 @@ import {
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
   hidesCompanyPage,
-  normalizeAgentUrlKey,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
@@ -51,7 +50,7 @@ import {
 } from "../services/company-import-transfers.js";
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
-import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
+import { resolvePortableExportAgentSelection } from "../services/company-portability-agent-selection.js";
 import {
   accessService,
   agentService,
@@ -329,26 +328,9 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       ? true
       : input.include?.agents ?? true;
     if (!includesAgents) return instanceAdmin;
-    const companyAgents = (await agents.list(companyId, { includeTerminated: true }))
-      .filter((agent) => agent.status !== "terminated" && !readBuiltInAgentMarker(agent.metadata));
-    const requestedSelectors = (input.agents ?? [])
-      .map((selector) => selector.trim())
-      .filter(Boolean);
-    const requestedSelectorKeys = new Set(
-      requestedSelectors.flatMap((selector) => [selector, normalizeAgentUrlKey(selector) ?? selector]),
-    );
-    const selectedAgents = requestedSelectorKeys.size > 0
-      ? companyAgents.filter((agent) => (
-        requestedSelectorKeys.has(agent.id)
-        || requestedSelectorKeys.has(agent.name)
-        || requestedSelectorKeys.has(normalizeAgentUrlKey(agent.name) ?? agent.name)
-      ))
-      : companyAgents;
-    // Match the portability service's compatibility behavior: when every
-    // explicit selector is unknown (or names only built-in agents), it falls
-    // back to exporting all portable agents instead of producing an empty set.
-    const agentsToCheck = selectedAgents.length > 0 ? selectedAgents : companyAgents;
-    if (agentsToCheck.some((agent) => agentInstructionsBundleMode(agent) === "external")) {
+    const companyAgents = await agents.list(companyId, { includeTerminated: true });
+    const selection = resolvePortableExportAgentSelection(companyAgents, input.agents, includesAgents);
+    if (selection.agents.some((agent) => agentInstructionsBundleMode(agent) === "external")) {
       assertInstanceAdmin(req);
     }
     return instanceAdmin;

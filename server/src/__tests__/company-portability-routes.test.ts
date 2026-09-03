@@ -563,19 +563,11 @@ describe.sequential("company portability routes", () => {
     );
   });
 
-  it.sequential("allows a non-admin to export a selected managed agent when another agent uses external instructions", async () => {
+  it.sequential("uses the export selector resolver before checking external instructions", async () => {
     mockAgentService.list.mockResolvedValue([
       {
-        id: "managed-agent",
-        name: "Managed Agent",
-        companyId,
-        status: "active",
-        metadata: null,
-        adapterConfig: { instructionsBundleMode: "managed" },
-      },
-      {
         id: "external-agent",
-        name: "External Agent",
+        name: "Managed-Agent",
         companyId,
         status: "active",
         metadata: null,
@@ -583,6 +575,14 @@ describe.sequential("company portability routes", () => {
           instructionsBundleMode: "external",
           instructionsRootPath: "/srv/paperclip/external-agent",
         },
+      },
+      {
+        id: "managed-agent",
+        name: "Managed Agent",
+        companyId,
+        status: "active",
+        metadata: null,
+        adapterConfig: { instructionsBundleMode: "managed" },
       },
     ]);
     mockCompanyPortabilityService.exportBundle.mockResolvedValue(createExportResult());
