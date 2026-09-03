@@ -86,6 +86,35 @@ describe("task watchdog subtree classifier", () => {
     });
   });
 
+  it("treats a fully terminal subtree as complete instead of stopped", () => {
+    const result = classify({
+      issues: [
+        issue({ status: "done" }),
+        issue({ id: childId, identifier: "PAP-2", parentId: sourceId, status: "cancelled" }),
+      ],
+    });
+
+    expect(result).toEqual({
+      state: "complete",
+      reason: expect.any(String),
+      includedIssueIds: [sourceId, childId],
+    });
+  });
+
+  it("does not resurrect a completed subtree that was reviewed under an older fingerprint", () => {
+    const result = classify({
+      watchdog: {
+        companyId,
+        issueId: sourceId,
+        lastReviewedFingerprint: "task_watchdog_stop:legacy",
+        lastReviewedStopSnapshot: null,
+      },
+      issues: [issue({ status: "done" })],
+    });
+
+    expect(result.state).toBe("complete");
+  });
+
   it("keeps the material fingerprint stable across metadata-only ticks", () => {
     const initial = classify({
       issues: [issue({
@@ -281,7 +310,7 @@ describe("task watchdog subtree classifier", () => {
   it("excludes task-watchdog issues and their descendants from watched subtree scans", () => {
     const result = classify({
       issues: [
-        issue({ status: "done" }),
+        issue({ status: "blocked" }),
         issue({
           id: watchdogId,
           identifier: "PAP-3",
