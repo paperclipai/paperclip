@@ -1896,6 +1896,64 @@ describe("sandbox adapter execution targets", () => {
     }));
   });
 
+  it("surfaces sanitized non-timeout runner diagnostics and allowlisted metadata", async () => {
+    const runner = {
+      execute: vi.fn().mockResolvedValue({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: 'Kubernetes exec failed during setup with HTTP 403. Authorization: Bearer secret-value',
+        pid: null,
+        startedAt: new Date().toISOString(),
+        metadata: {
+          provider: "kubernetes",
+          backend: "sandbox-cr",
+          execFailure: "setup_or_transport",
+          statusCode: 403,
+          namespace: "private-namespace",
+          authorization: "secret-value",
+        },
+      }),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await expect(
+      ensureAdapterExecutionTargetCommandResolvable("agent-cli", target, "/local/workspace", {}),
+    ).rejects.toThrow(
+      'Command "agent-cli" is not installed or not on PATH in the sandbox environment. probe stderr: Kubernetes exec failed during setup with HTTP 403. Authorization: Bearer ***REDACTED*** runner metadata: provider=kubernetes, backend=sandbox-cr, execFailure=setup_or_transport, statusCode=403',
+    );
+  });
+
+  it("keeps a genuine runner timeout mapped to the command timeout message", async () => {
+    const runner = {
+      execute: vi.fn().mockResolvedValue({
+        exitCode: null,
+        signal: null,
+        timedOut: true,
+        stdout: "",
+        stderr: "execInPod timed out after 1000ms (pod=pod-1, container=agent, cmd0=sh).",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      }),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner,
+    };
+
+    await expect(
+      ensureAdapterExecutionTargetCommandResolvable("agent-cli", target, "/local/workspace", {}),
+    ).rejects.toThrow('Timed out checking command "agent-cli" on sandbox target.');
+  });
+
   it("runs shell commands through the same runner", async () => {
     const runner = {
       execute: vi.fn(async () => ({
