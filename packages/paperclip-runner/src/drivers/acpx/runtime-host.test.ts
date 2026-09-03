@@ -39,20 +39,29 @@ const pendingAdmissionCleanups = new Set<Promise<void>>();
 //
 // When a pass does not clear the quarantine,
 // `recoverQuarantinedCredentialCleanup` joins one more bounded attempt (up
-// to 1,000 ms) before it gives up (codex-credentials.ts:616-619). The
-// vitest default `vi.waitFor`
-// deadline is 1,000 ms, smaller than a single one of those inner bounds. So
-// a poll can time out even though the call is still in progress. Ten
-// seconds covers a realistic pass (a few real attempts, not the full
-// pathological sum) with margin. A 20-second per-test budget keeps this
-// wait reachable under the vitest per-test timeout.
-const ACPX_OPERATION_WAIT_DEADLINE_MS = 10_000;
-const ACPX_LONG_WAIT_TEST_TIMEOUT_MS = 20_000;
+// to 1,000 ms) before it gives up (codex-credentials.ts:616-619). So the
+// full documented recovery path costs at least 8,000 + 1,270 + 1,000 =
+// 10,270 ms. The vitest default `vi.waitFor` deadline is 1,000 ms, smaller
+// than a single one of those inner bounds. So a poll can time out even
+// though the call is still in progress.
+//
+// The helper deadline below adds margin on top of the 10,270 ms documented
+// floor for the real filesystem work each attempt also does (two file
+// removals and an intent-file delete, none of them bounded by
+// `DIRECTORY_SYNC_OPERATION_TIMEOUT_MS`) and for this helper's own 50 ms
+// poll granularity and Node event-loop scheduling jitter. A 30-second
+// per-test budget keeps this wait reachable under the vitest per-test
+// timeout, even for a test that runs the helper more than once.
+const ACPX_OPERATION_WAIT_DEADLINE_MS = 15_000;
+const ACPX_LONG_WAIT_TEST_TIMEOUT_MS = 30_000;
 
 /**
  * Poll a credential or sandbox operation. Use a deadline derived from the
  * real retry envelope described above. Unlike a bare `vi.waitFor`, report
- * the last observed error when the deadline expires.
+ * the last observed error when the deadline expires. Each attempt of
+ * `callback` is itself bounded by the remaining deadline, so a callback
+ * that stays pending cannot outlast the helper deadline and reach the
+ * enclosing vitest per-test timeout instead.
  */
 async function waitForAcpxOperation<T>(
   callback: () => T | Promise<T>,
@@ -63,7 +72,7 @@ async function waitForAcpxOperation<T>(
   );
   for (;;) {
     try {
-      return await callback();
+      return await runAcpxOperationAttempt(callback, deadline);
     } catch (error) {
       lastError = error;
     }
@@ -78,6 +87,36 @@ async function waitForAcpxOperation<T>(
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+/**
+ * Run one attempt of `callback`, bounded by the time remaining until
+ * `deadline`. A callback that is still pending when the remaining time
+ * runs out rejects with a timeout error instead of blocking the retry
+ * loop past the helper deadline.
+ */
+async function runAcpxOperationAttempt<T>(
+  callback: () => T | Promise<T>,
+  deadline: number,
+): Promise<T> {
+  const remainingMs = Math.max(0, deadline - Date.now());
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(callback),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new Error(
+              `ACPX operation attempt did not settle within the remaining ${remainingMs}ms of the helper deadline`,
+            ),
+          );
+        }, remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
