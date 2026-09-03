@@ -66,7 +66,7 @@
     "acpx": "0.13.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "better-auth": "1.7.0",
+    "better-auth": "1.7.2",
     "chokidar": "^5.0.0",
     "detect-port": "^2.1.0",
     "dompurify": "^3.4.13",
