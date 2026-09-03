@@ -16,6 +16,34 @@ export PAPERCLIP_DELEGATE_MODE=true
 export PAPERCLIP_DB_BACKUP_ENABLED=false
 export PAPERCLIP_OPEN_ON_LISTEN="${PAPERCLIP_OPEN_ON_LISTEN:-true}"
 
+delegate_truthy() {
+  case "${1:-}" in
+    [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [[ "${PAPERCLIP_SERVICE_MANAGED:-}" != "1" ]] && ! delegate_truthy "${PAPERCLIP_DELEGATE_FORCE_FOREGROUND:-false}"; then
+  delegate_tsx="$delegate_repo_root/cli/node_modules/tsx/dist/cli.mjs"
+  delegate_cli="$delegate_repo_root/cli/src/index.ts"
+  if [[ -f "$delegate_tsx" && -f "$delegate_cli" ]]; then
+    delegate_status_json="$(PAPERCLIP_HOME="$delegate_home" PAPERCLIP_INSTANCE_ID="$delegate_instance" \
+      "$(command -v node)" "$delegate_tsx" "$delegate_cli" service status \
+        --instance "$delegate_instance" --json 2>/dev/null)" || delegate_status_json=""
+    if [[ -n "$delegate_status_json" ]] && STATUS_JSON="$delegate_status_json" "$(command -v node)" -e '
+      try {
+        const status = JSON.parse(process.env.STATUS_JSON ?? "");
+        process.exit(status && status.installed === true && status.active === true ? 0 : 1);
+      } catch { process.exit(1); }
+    ' 2>/dev/null; then
+      echo "Paperclip instance '$delegate_instance' is already running as a background service." >&2
+      echo "Use 'paperclipai service status --instance $delegate_instance' or 'paperclipai service logs --instance $delegate_instance'." >&2
+      echo "Stop it first, or set PAPERCLIP_DELEGATE_FORCE_FOREGROUND=true to run a second foreground copy." >&2
+      exit 1
+    fi
+  fi
+fi
+
 exec "$(command -v node)" \
   --env-file-if-exists="$delegate_env_path" \
   "$delegate_repo_root/cli/node_modules/tsx/dist/cli.mjs" \

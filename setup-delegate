@@ -61,16 +61,19 @@ fi
 delegate_api_url="${PAPERCLIP_API_URL:-http://127.0.0.1:${delegate_configured_port:-3100}}"
 delegate_tsx="$delegate_repo_root/cli/node_modules/tsx/dist/cli.mjs"
 delegate_mcp_entry="$delegate_repo_root/packages/mcp-server/src/stdio.ts"
+delegate_cli_entry="$delegate_repo_root/cli/src/index.ts"
+delegate_service_shim="$delegate_repo_root/scripts/delegate-service-shim.sh"
 delegate_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-delegate-setup.XXXXXX")"
 delegate_desired_path="$delegate_tmp_dir/desired.json"
 delegate_server_pid=""
+delegate_service_active="false"
 
 cleanup_delegate_setup() {
   if [[ -n "$delegate_server_pid" ]] && kill -0 "$delegate_server_pid" 2>/dev/null; then
     kill -TERM "$delegate_server_pid" 2>/dev/null || true
     wait "$delegate_server_pid" 2>/dev/null || true
   fi
-  rm -r "$delegate_tmp_dir"
+  rm -rf "$delegate_tmp_dir"
 }
 trap cleanup_delegate_setup EXIT
 trap 'exit 130' INT TERM
@@ -80,11 +83,72 @@ PAPERCLIP_DELEGATE_DESIRED_PATH="$delegate_desired_path" \
 PAPERCLIP_DELEGATE_INSTANCE_DIR="$delegate_instance_dir" \
   "$delegate_node" "$delegate_bootstrap" prepare
 
-if ! PAPERCLIP_API_URL="$delegate_api_url" "$delegate_node" -e '
-  fetch(`${process.env.PAPERCLIP_API_URL.replace(/\/$/, "")}/api/health`)
-    .then((response) => { if (!response.ok) process.exit(1); })
-    .catch(() => process.exit(1));
-'; then
+delegate_truthy() {
+  case "${1:-}" in
+    [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+delegate_health_ok() {
+  PAPERCLIP_API_URL="$delegate_api_url" "$delegate_node" -e '
+    fetch(`${process.env.PAPERCLIP_API_URL.replace(/\/$/, "")}/api/health`)
+      .then((response) => { if (!response.ok) process.exit(1); })
+      .catch(() => process.exit(1));
+  ' 2>/dev/null
+}
+
+delegate_service_is_active() {
+  [[ -f "$delegate_tsx" && -f "$delegate_cli_entry" ]] || return 1
+  local status_json
+  status_json="$(PAPERCLIP_HOME="$delegate_home" PAPERCLIP_INSTANCE_ID="$delegate_instance" \
+    "$delegate_node" "$delegate_tsx" "$delegate_cli_entry" service status \
+      --instance "$delegate_instance" --json 2>/dev/null)" || return 1
+  STATUS_JSON="$status_json" "$delegate_node" -e '
+    try {
+      const status = JSON.parse(process.env.STATUS_JSON ?? "");
+      process.exit(status && status.installed === true && status.active === true ? 0 : 1);
+    } catch { process.exit(1); }
+  ' 2>/dev/null
+}
+
+delegate_service_install() {
+  [[ -f "$delegate_tsx" && -f "$delegate_cli_entry" && -x "$delegate_service_shim" ]] || return 1
+  PAPERCLIP_SHIM_PATH="$delegate_service_shim" \
+  PAPERCLIP_HOME="$delegate_home" \
+  PAPERCLIP_INSTANCE_ID="$delegate_instance" \
+    "$delegate_node" "$delegate_tsx" "$delegate_cli_entry" service install \
+      --instance "$delegate_instance"
+}
+
+delegate_wait_for_health() {
+  local attempts="${1:-60}"
+  local attempt=0
+  while [[ "$attempt" -lt "$attempts" ]]; do
+    if delegate_health_ok; then return 0; fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+if delegate_service_is_active; then
+  delegate_service_active="true"
+elif delegate_health_ok; then
+  delegate_service_active="false"
+elif ! delegate_truthy "${PAPERCLIP_DELEGATE_NO_SERVICE:-false}"; then
+  if delegate_service_install; then
+    if delegate_wait_for_health 60 && delegate_service_is_active; then
+      delegate_service_active="true"
+    else
+      echo "Background service install did not become healthy; falling back to a foreground server." >&2
+    fi
+  else
+    echo "Background service is not available here; using a foreground server (it stops with this terminal)." >&2
+  fi
+fi
+
+if [[ "$delegate_service_active" != "true" ]] && ! delegate_health_ok; then
   PAPERCLIP_HOME="$delegate_home" \
   PAPERCLIP_INSTANCE_ID="$delegate_instance" \
   PAPERCLIP_OPEN_ON_LISTEN=false \
@@ -135,11 +199,24 @@ if [[ "${PAPERCLIP_DELEGATE_SKIP_OPEN:-false}" != "true" ]] && command -v open >
   open "$delegate_api_url"
 fi
 
+if [[ "$delegate_service_active" == "true" ]]; then
+  if [[ -n "$delegate_server_pid" ]] && kill -0 "$delegate_server_pid" 2>/dev/null; then
+    kill -TERM "$delegate_server_pid" 2>/dev/null || true
+    wait "$delegate_server_pid" 2>/dev/null || true
+    delegate_server_pid=""
+  fi
+  echo "Paperclip is running as a background service (survives terminal close and restart)."
+  echo "Manage it with: paperclipai service status --instance $delegate_instance | paperclipai service logs --instance $delegate_instance | paperclipai service stop --instance $delegate_instance"
+  echo "After pulling updates, rebuild and restart: pnpm build && paperclipai service restart --instance $delegate_instance"
+  exit 0
+fi
+
 if [[ "${PAPERCLIP_DELEGATE_EXIT_AFTER_SETUP:-false}" == "true" ]]; then
   exit 0
 fi
 
 if [[ -n "$delegate_server_pid" ]]; then
+  echo "Foreground server running in this terminal (closes with the terminal). Press Ctrl+C to stop."
   set +e
   wait "$delegate_server_pid"
   delegate_exit_code=$?

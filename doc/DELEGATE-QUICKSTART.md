@@ -22,13 +22,31 @@ After onboarding, open Claude Code or Codex and say:
 
 ## Run again
 
+Setup installs Paperclip as a background service, so it survives terminal close and restart. Check it with:
+
 ```sh
-./run-delegate
+paperclipai service status
 ```
 
-## Stop
+Use `./run-delegate` only for a foreground copy. It refuses to start while the service owns the instance.
 
-Press `Ctrl+C` in the terminal running Paperclip.
+## Stop and service management
+
+```sh
+paperclipai service status
+paperclipai service logs
+paperclipai service stop
+```
+
+`Ctrl+C` stops a foreground `./run-delegate` copy only. It does not stop the background service.
+
+After pulling updates, rebuild and restart the service:
+
+```sh
+pnpm build && paperclipai service restart
+```
+
+Set `PAPERCLIP_DELEGATE_NO_SERVICE=true` to force foreground-only setup (containers and other hosts without a user supervisor). Set `PAPERCLIP_DELEGATE_FORCE_FOREGROUND=true` to run `./run-delegate` next to an active service.
 
 ## Product flow
 
