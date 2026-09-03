@@ -38,6 +38,18 @@ async function createSiblingDatabase(connectionString: string, databaseName: str
   return targetUrl.toString();
 }
 
+function overrideEnv(key: string, value: string): () => void {
+  const original = process.env[key];
+  process.env[key] = value;
+  return () => {
+    if (original === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = original;
+    }
+  };
+}
+
 afterEach(async () => {
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop();
@@ -109,6 +121,67 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(fs.existsSync(decOld)).toBe(false);
       } finally {
         Date.now = realDateNow;
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "fails the backup instead of hanging when pg_dump outlives the hard timeout",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-dump-timeout-");
+      const fakePgDump = path.join(backupDir, "fake-pg-dump-hang.sh");
+      fs.writeFileSync(fakePgDump, "#!/bin/sh\necho '-- partial dump'\nsleep 60\n", { mode: 0o755 });
+      const restorePgDumpPath = overrideEnv("PAPERCLIP_PG_DUMP_PATH", fakePgDump);
+
+      try {
+        await expect(
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-dump-timeout-test",
+            backupEngine: "pg_dump",
+            dumpTimeoutMs: 1_000,
+          }),
+        ).rejects.toThrow(/hard database backup timeout/);
+
+        // The failed attempt must not leave a partial backup artifact behind.
+        expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".sql.gz"))).toEqual([]);
+      } finally {
+        restorePgDumpPath();
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "fails the backup when pg_dump exits but its output stream never closes",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-wedged-stream-");
+      const fakePgDump = path.join(backupDir, "fake-pg-dump-wedge.sh");
+      // Reproduces the production wedge: the pg_dump child exits cleanly while
+      // another process keeps the stdout pipe's write end open, so the output
+      // stream never reaches EOF and the pipeline would never settle.
+      fs.writeFileSync(fakePgDump, "#!/bin/sh\nsleep 60 &\nexit 0\n", { mode: 0o755 });
+      const restorePgDumpPath = overrideEnv("PAPERCLIP_PG_DUMP_PATH", fakePgDump);
+
+      try {
+        await expect(
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-wedged-stream-test",
+            backupEngine: "pg_dump",
+          }),
+        ).rejects.toThrow(/output stream never closed/);
+
+        expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".sql.gz"))).toEqual([]);
+      } finally {
+        restorePgDumpPath();
       }
     },
     30_000,
