@@ -132,6 +132,7 @@ describe("SidebarAccountMenu", () => {
     );
     expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
     expect(feedbackButton?.getAttribute("target")).toBe("_blank");
+    expect(feedbackButton?.classList).toContain("text-muted-foreground");
     expect(feedbackButton?.classList).toContain("hover:bg-background");
     expect(feedbackButton?.querySelector("svg")?.classList).toContain("lucide-flag");
     expect(feedbackButton?.getAttribute("data-slot")).toBe("tooltip-trigger");
@@ -166,6 +167,7 @@ describe("SidebarAccountMenu", () => {
     );
     expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
     expect(feedbackButton?.getAttribute("target")).toBe("_blank");
+    expect(feedbackButton?.classList).toContain("text-muted-foreground");
     expect(feedbackButton?.classList).toContain("hover:bg-accent/50");
     expect(feedbackButton?.querySelector("svg")?.classList).toContain("lucide-flag");
     expect(feedbackButton?.getAttribute("data-slot")).toBe("tooltip-trigger");
