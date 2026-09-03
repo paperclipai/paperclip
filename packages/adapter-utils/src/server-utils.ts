@@ -133,6 +133,220 @@ export function signalRunningProcess(
   }
 }
 
+export const PAPERCLIP_RUN_PROCESS_SCOPE = "PAPERCLIP_RUN_PROCESS_SCOPE";
+
+export interface RunScopedProcessCleanupOptions {
+  runId: string;
+  pid: number | null | undefined;
+  processGroupId: number | null | undefined;
+  processStartedAt: Date | string | null | undefined;
+  graceMs?: number;
+}
+
+export interface RunScopedProcessCleanupEvidence {
+  runId: string;
+  matchedPids: number[];
+  termSignalledPids: number[];
+  killSignalledPids: number[];
+  processGroupSignalled: boolean;
+}
+
+interface LinuxProcessIdentity {
+  pid: number;
+  startTicks: number;
+  processGroupId: number;
+  state: string;
+  scoped: boolean;
+}
+
+const LINUX_CLOCK_TICKS_PER_SECOND = 100;
+
+function parseLinuxProcessStat(stat: string): {
+  startTicks: number;
+  processGroupId: number;
+  state: string;
+} | null {
+  const commandEnd = stat.lastIndexOf(")");
+  if (commandEnd < 0) return null;
+  // `/proc/<pid>/stat` fields 5 and 22 are offsets 2 and 19 after field 3.
+  const fields = stat.slice(commandEnd + 2).trim().split(/\s+/);
+  const state = fields[0];
+  const processGroupId = Number(fields[2]);
+  const startTicks = Number(fields[19]);
+  if (
+    typeof state !== "string" ||
+    !Number.isSafeInteger(processGroupId) ||
+    processGroupId <= 0 ||
+    !Number.isSafeInteger(startTicks) ||
+    startTicks < 0
+  ) {
+    return null;
+  }
+  return { processGroupId, startTicks, state };
+}
+
+async function readLinuxProcessIdentity(
+  pid: number,
+  runId: string,
+): Promise<LinuxProcessIdentity | null> {
+  if (process.platform !== "linux" || !Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const [stat, environ] = await Promise.all([
+      fs.readFile(`/proc/${pid}/stat`, "utf8"),
+      fs.readFile(`/proc/${pid}/environ`),
+    ]);
+    const parsedStat = parseLinuxProcessStat(stat);
+    if (!parsedStat) return null;
+    return {
+      pid,
+      ...parsedStat,
+      scoped: environ
+        .toString("utf8")
+        .split("\0")
+        .includes(`${PAPERCLIP_RUN_PROCESS_SCOPE}=${runId}`),
+    };
+  } catch {
+    // Processes can exit between /proc reads. Treat that race as already gone.
+    return null;
+  }
+}
+
+function processStartedAtMs(value: Date | string | null | undefined): number | null {
+  if (!value) return null;
+  const timestamp = (value instanceof Date ? value : new Date(value)).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+async function readLinuxBootTimeSeconds(): Promise<number | null> {
+  if (process.platform !== "linux") return null;
+  try {
+    const line = (await fs.readFile("/proc/stat", "utf8"))
+      .split("\n")
+      .find((value) => value.startsWith("btime "));
+    const bootSeconds = Number(line?.slice("btime ".length));
+    return Number.isFinite(bootSeconds) ? bootSeconds : null;
+  } catch {
+    return null;
+  }
+}
+
+function matchesPersistedStart(
+  identity: LinuxProcessIdentity,
+  startedAt: Date | string | null | undefined,
+  bootSeconds: number | null,
+) {
+  const expectedMs = processStartedAtMs(startedAt);
+  if (expectedMs === null || bootSeconds === null) return true;
+  const actualMs =
+    (bootSeconds + identity.startTicks / LINUX_CLOCK_TICKS_PER_SECOND) * 1000;
+  return Number.isFinite(actualMs) && Math.abs(actualMs - expectedMs) <= 10_000;
+}
+
+async function listRunScopedProcessIdentities(runId: string) {
+  if (process.platform !== "linux") return [];
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir("/proc", { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const pids = entries
+    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+    .map((entry) => Number(entry.name))
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+  const identities = await Promise.all(
+    pids.map((pid) => readLinuxProcessIdentity(pid, runId)),
+  );
+  return identities.filter(
+    (identity): identity is LinuxProcessIdentity =>
+      identity !== null && identity.scoped && identity.state !== "Z" && identity.state !== "X",
+  );
+}
+
+async function signalScopedPid(
+  pid: number,
+  runId: string,
+  expectedStartTicks: number,
+  signal: NodeJS.Signals,
+) {
+  const identity = await readLinuxProcessIdentity(pid, runId);
+  if (!identity || identity.startTicks !== expectedStartTicks) return false;
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Stop one Paperclip run's local process scope, including setsid descendants. */
+export async function terminateRunScopedProcesses(
+  input: RunScopedProcessCleanupOptions,
+): Promise<RunScopedProcessCleanupEvidence> {
+  const evidence: RunScopedProcessCleanupEvidence = {
+    runId: input.runId,
+    matchedPids: [],
+    termSignalledPids: [],
+    killSignalledPids: [],
+    processGroupSignalled: false,
+  };
+  if (process.platform === "win32") return evidence;
+
+  const identities = await listRunScopedProcessIdentities(input.runId);
+  evidence.matchedPids = identities.map((identity) => identity.pid).sort((a, b) => a - b);
+  const bootSeconds = await readLinuxBootTimeSeconds();
+  const direct = identities.find(
+    (identity) =>
+      identity.pid === input.pid &&
+      matchesPersistedStart(identity, input.processStartedAt, bootSeconds),
+  ) ?? null;
+  if (
+    direct !== null &&
+    direct.processGroupId === input.processGroupId &&
+    typeof input.processGroupId === "number" &&
+    Number.isInteger(input.processGroupId) &&
+    input.processGroupId > 0
+  ) {
+    try {
+      process.kill(-input.processGroupId, "SIGTERM");
+      evidence.processGroupSignalled = true;
+    } catch {
+      // The group may have exited between identity validation and signalling.
+    }
+  }
+
+  for (const identity of identities) {
+    if (
+      await signalScopedPid(
+        identity.pid,
+        input.runId,
+        identity.startTicks,
+        "SIGTERM",
+      )
+    ) {
+      evidence.termSignalledPids.push(identity.pid);
+    }
+  }
+
+  const graceMs = Math.max(1, input.graceMs ?? 1_000);
+  if (evidence.termSignalledPids.length > 0 || evidence.processGroupSignalled) {
+    await new Promise((resolve) => setTimeout(resolve, graceMs));
+  }
+  for (const identity of await listRunScopedProcessIdentities(input.runId)) {
+    if (
+      await signalScopedPid(
+        identity.pid,
+        input.runId,
+        identity.startTicks,
+        "SIGKILL",
+      )
+    ) {
+      evidence.killSignalledPids.push(identity.pid);
+    }
+  }
+  return evidence;
+}
+
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
@@ -3474,9 +3688,12 @@ export async function runChildProcess(
     if (opts.localProcessSandbox?.homeDir) {
       mergedEnv.HOME = opts.localProcessSandbox.homeDir;
     }
+    const runScopedRemoteEnv = opts.remoteExecution
+      ? { ...opts.env, [PAPERCLIP_RUN_PROCESS_SCOPE]: runId }
+      : null;
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
-      remoteEnv: opts.remoteExecution ? opts.env : null,
+      remoteEnv: runScopedRemoteEnv,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {
@@ -3484,6 +3701,9 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
+        // Every local adapter child carries its exact run scope so descendants
+        // that call setsid() remain discoverable without process-name matching.
+        childEnv[PAPERCLIP_RUN_PROCESS_SCOPE] = runId;
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
@@ -3502,6 +3722,36 @@ export async function runChildProcess(
             : Promise.resolve();
 
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
+
+        let scopeCleanupPromise: Promise<RunScopedProcessCleanupEvidence> | null = null;
+        const cleanupRunScope = () => {
+          if (!scopeCleanupPromise) {
+            scopeCleanupPromise = terminateRunScopedProcesses({
+              runId,
+              pid: child.pid,
+              processGroupId,
+              processStartedAt: startedAt,
+              graceMs: Math.max(1, opts.graceSec) * 1000,
+            });
+          }
+          return scopeCleanupPromise;
+        };
+
+        const stopRunScope = (onForceKill?: () => void) => {
+          void cleanupRunScope().then((evidence) => {
+            if (evidence.matchedPids.length > 0) {
+              if (evidence.killSignalledPids.length > 0) onForceKill?.();
+              return;
+            }
+            // Compatibility path for pre-scope runs or non-Linux hosts.
+            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            terminalCleanupKillTimer = setTimeout(() => {
+              terminalCleanupKillTimer = null;
+              onForceKill?.();
+              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+            }, Math.max(1, opts.graceSec) * 1000);
+          });
+        };
 
         let timedOut = false;
         let stdout = "";
@@ -3551,13 +3801,10 @@ export async function runChildProcess(
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
             terminalCleanupSignal = "SIGTERM";
-            signalRunningProcess({ child, processGroupId }, "SIGTERM");
-            terminalCleanupKillTimer = setTimeout(() => {
-              terminalCleanupKillTimer = null;
+            stopRunScope(() => {
               terminalCleanupSignal = "SIGKILL";
               terminalCleanupForceKilled = true;
-              signalRunningProcess({ child, processGroupId }, "SIGKILL");
-            }, Math.max(1, opts.graceSec) * 1000);
+            });
           }, graceMs);
         };
 
@@ -3566,10 +3813,7 @@ export async function runChildProcess(
             ? setTimeout(() => {
                 timedOut = true;
                 clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
-                setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
-                }, Math.max(1, opts.graceSec) * 1000);
+                stopRunScope();
               }, opts.timeoutSec * 1000)
             : null;
 
@@ -3637,30 +3881,32 @@ export async function runChildProcess(
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
-            void Promise.resolve()
-              .then(() => target.cleanup?.())
-              .finally(() => {
-              resolve({
-                exitCode: code,
-                signal,
-                timedOut,
-                stdout,
-                stderr,
-                pid: child.pid ?? null,
-                startedAt,
-                terminalResultCleanup: terminalCleanupStarted
-                  ? {
-                    kind: "terminal_result_cleanup",
-                    stopped: true,
-                    stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-                    reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-                    terminalResultSeen,
-                    signal: terminalCleanupSignal,
-                    forceKilled: terminalCleanupForceKilled,
-                  }
-                  : null,
-              });
-              });
+            void cleanupRunScope().then(() =>
+              Promise.resolve()
+                .then(() => target.cleanup?.())
+                .finally(() => {
+                  resolve({
+                    exitCode: code,
+                    signal,
+                    timedOut,
+                    stdout,
+                    stderr,
+                    pid: child.pid ?? null,
+                    startedAt,
+                    terminalResultCleanup: terminalCleanupStarted
+                      ? {
+                          kind: "terminal_result_cleanup",
+                          stopped: true,
+                          stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                          terminalResultSeen,
+                          signal: terminalCleanupSignal,
+                          forceKilled: terminalCleanupForceKilled,
+                        }
+                      : null,
+                  });
+                }),
+            );
           });
         });
       })

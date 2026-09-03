@@ -1299,6 +1299,37 @@ export async function buildSshSpawnTarget(input: {
       : `exec ${remoteCommandParts}`,
   ].join(" && ");
 
+  const runScope = input.env["PAPERCLIP_RUN_PROCESS_SCOPE"];
+  const cleanupRemoteRunScope = runScope
+    ? async () => {
+        // Re-read /proc/<pid>/environ immediately before each signal. The
+        // opaque run UUID is the process identity; never match by name.
+        const cleanupScript = [
+          `scope=${shellQuote(runScope)}`,
+          "for signal in TERM KILL; do",
+          "  for proc in /proc/[0-9]*; do",
+          "    pid=${proc##*/}",
+          "    if [ -r \"$proc/environ\" ] && tr '\\0' '\\n' < \"$proc/environ\" | grep -Fqx \"PAPERCLIP_RUN_PROCESS_SCOPE=$scope\"; then",
+          "      kill -$signal \"$pid\" 2>/dev/null || true",
+          "    fi",
+          "  done",
+          "  [ \"$signal\" = KILL ] || sleep 1",
+          "done",
+        ].join("\n");
+        const cleanupArgs = [
+          ...auth.args,
+          "-p",
+          String(input.spec.port),
+          `${input.spec.username}@${input.spec.host}`,
+          `sh -c ${shellQuote(cleanupScript)}`,
+        ];
+        await execFileText("ssh", cleanupArgs, {
+          timeout: 15_000,
+          maxBuffer: 32 * 1024,
+        }).catch(() => undefined);
+      }
+    : null;
+
   sshArgs.push(
     "-p",
     String(input.spec.port),
@@ -1309,7 +1340,10 @@ export async function buildSshSpawnTarget(input: {
   return {
     command: "ssh",
     args: sshArgs,
-    cleanup: auth.cleanup,
+    cleanup: async () => {
+      await cleanupRemoteRunScope?.();
+      await auth.cleanup();
+    },
   };
 }
 

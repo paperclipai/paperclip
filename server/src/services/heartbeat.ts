@@ -157,7 +157,11 @@ import {
   providerTraceStore,
   PROVIDER_TRACE_MAX_BYTES,
 } from "./provider-trace-store.js";
-import { getServerAdapter, runningProcesses } from "../adapters/index.js";
+import {
+  getServerAdapter,
+  runningProcesses,
+  terminateRunScopedProcesses,
+} from "../adapters/index.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
@@ -7685,13 +7689,30 @@ export async function persistHeartbeatRunProcessMetadata(
 }
 
 async function terminateHeartbeatRunProcess(input: {
+  runId?: string | null;
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
+  processStartedAt?: Date | string | null;
   graceMs?: number;
 }) {
   const pid = input.pid ?? null;
   const processGroupId = input.processGroupId ?? null;
   if (typeof pid !== "number" && typeof processGroupId !== "number") return;
+
+  if (input.runId) {
+    const scoped = await terminateRunScopedProcesses({
+      runId: input.runId,
+      pid,
+      processGroupId,
+      processStartedAt: input.processStartedAt,
+      graceMs: input.graceMs,
+    });
+    // Runs created before scoped tagging was deployed have no matching
+    // environment marker. Keep the existing process-group fallback for that
+    // compatibility case; newly tagged runs are cleaned through the exact
+    // run scope above.
+    if (scoped.matchedPids.length > 0) return;
+  }
 
   await terminateLocalService(
     {
@@ -12857,8 +12878,10 @@ export function heartbeatService(
         }
         if (running) {
           await terminateHeartbeatRunProcess({
+            runId: run.id,
             pid: running.child.pid,
             processGroupId: running.processGroupId,
+            processStartedAt: run.processStartedAt,
             graceMs: Math.max(1, running.graceSec) * 1000,
           });
         }
@@ -25011,8 +25034,10 @@ export function heartbeatService(
       });
       if (running) {
         await terminateHeartbeatRunProcess({
+          runId: run.id,
           pid: running.child.pid,
           processGroupId: running.processGroupId,
+          processStartedAt: run.processStartedAt,
           graceMs: Math.max(1, running.graceSec) * 1000,
         });
       }
@@ -25133,8 +25158,10 @@ export function heartbeatService(
       const running = runningProcesses.get(run.id);
       if (running) {
         await terminateHeartbeatRunProcess({
+          runId: run.id,
           pid: running.child.pid,
           processGroupId: running.processGroupId,
+          processStartedAt: run.processStartedAt,
           graceMs: Math.max(1, running.graceSec) * 1000,
         });
       }

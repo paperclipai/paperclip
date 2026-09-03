@@ -25,6 +25,7 @@ import {
   runChildProcess,
   sanitizeSshRemoteEnv,
   signalRunningProcess,
+  terminateRunScopedProcesses,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
@@ -631,6 +632,83 @@ describe("runChildProcess", () => {
       expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
 
       expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "reaps a detached run descendant by scope without touching an unscoped gateway",
+    async () => {
+      const gateway = spawn(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000)"],
+        { detached: true, stdio: "ignore" },
+      );
+      gateway.unref();
+      let descendantPid: number | null = null;
+      try {
+        const runId = randomUUID();
+        let observed = "";
+        const resultPromise = runChildProcess(
+          runId,
+          process.execPath,
+          [
+            "-e",
+            [
+              "const { spawn } = require('node:child_process');",
+              "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
+              "child.unref();",
+              "process.stdout.write(String(child.pid));",
+              "setTimeout(() => process.exit(0), 100);",
+            ].join(" "),
+          ],
+          {
+            cwd: process.cwd(),
+            env: {},
+            timeoutSec: 5,
+            graceSec: 1,
+            onLog: async (_stream, chunk) => {
+              observed += chunk;
+            },
+          },
+        );
+        const pidMatch = await waitForTextMatch(() => observed, /(\d+)/);
+        descendantPid = Number.parseInt(pidMatch?.[1] ?? "", 10);
+        expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
+        expect(isPidAlive(descendantPid)).toBe(true);
+        expect(gateway.pid && isPidAlive(gateway.pid)).toBe(true);
+
+        const result = await resultPromise;
+        expect(result.exitCode).toBe(0);
+        expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
+
+        // Teardown is idempotent after the first close-path cleanup. The
+        // process-start metadata also prevents a recycled direct PID from
+        // becoming a valid target.
+        const repeated = await terminateRunScopedProcesses({
+          runId,
+          pid: result.pid,
+          processGroupId: result.pid,
+          processStartedAt: result.startedAt,
+          graceMs: 10,
+        });
+        expect(repeated.matchedPids).toEqual([]);
+        expect(gateway.pid && isPidAlive(gateway.pid)).toBe(true);
+      } finally {
+        if (gateway.pid && isPidAlive(gateway.pid)) {
+          try {
+            process.kill(gateway.pid, "SIGKILL");
+          } catch {
+            // Ignore cleanup races.
+          }
+        }
+        if (descendantPid && isPidAlive(descendantPid)) {
+          try {
+            process.kill(descendantPid, "SIGKILL");
+          } catch {
+            // Ignore cleanup races.
+          }
+        }
+      }
     },
   );
 
