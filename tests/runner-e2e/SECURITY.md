@@ -62,15 +62,29 @@ job. It contains no long-lived AWS key. Required reviewers may be added when a
 human approval on every nightly publication is acceptable; otherwise rely on
 the actor gate, environment branch restriction, and protected default branch.
 
-## Runner group isolation
+## Runner fleet isolation
 
-Restrict the `ubuntu-latest-m` runner group to `paperclipai/paperclip` and, when
-the GitHub plan supports selected-workflow restrictions, to
-`.github/workflows/runner-full-stack-e2e.yml` on the default branch. Never let
-fork or pull-request workflows target the group. Use ephemeral runners, or
-guaranteed reimaging between jobs, and do not share this group with untrusted
-workloads. Disable interactive SSH/debug access for paid jobs unless a separate
-incident procedure explicitly authorizes it.
+When `RUNNER_E2E_AWS_ENABLED=true`, paid matrix cells use the exact RunsOn fleet
+selector `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`, matching the AWS
+fleet selected by `pr-trusted.yml` only after its stable numeric-ID trust gate.
+Any other or missing toggle value falls back to the existing `ubuntu-latest-m`
+paid runner and its lower concurrency ceiling. The workflow chooses between
+those two reviewed literal labels; it never evaluates a configured runner label.
+
+Keep both runner targets restricted to `paperclipai/paperclip` and workflows
+that independently authorize trusted source revisions. Never let a fork or
+untrusted pull-request workflow target them. The RunsOn fleet must launch a
+fresh ephemeral instance for every job, prohibit persistent runner reuse, and
+disable interactive SSH/debug access unless a separate incident procedure
+explicitly authorizes it.
+
+Changing the runner does not widen secret access. The paid workflow still has
+only schedule and manual triggers, requires the protected default branch and
+allowlisted stable actor IDs before checkout, repeats that authorization as the
+first matrix step, and receives provider credentials only from the protected
+`runner-e2e-paid` environment. The fleet selector is an exact workflow literal;
+the only repository-controlled input is its boolean rollout switch, so
+configuration cannot redirect a secret-bearing job to an arbitrary runner.
 
 ## AWS OIDC and S3
 
