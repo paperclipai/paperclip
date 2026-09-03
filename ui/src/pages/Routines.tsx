@@ -793,7 +793,7 @@ export function Routines() {
   }
 
   if (streamlinedUiEnabled && legacyRunsRequested) {
-    return <Navigate to={auditSectionHref("runs", { entityType: "routine" })} replace />;
+    return <Navigate to={auditSectionHref("runs", {})} replace />;
   }
 
   if (isLoading) {
@@ -852,9 +852,9 @@ export function Routines() {
         </div>
         <div className="flex items-center gap-2">
           {streamlinedUiEnabled ? (
-          <Button variant="outline" asChild>
-            <Link to={auditSectionHref("runs", { entityType: "routine" })}>View runs</Link>
-          </Button>
+            <Button variant="outline" asChild>
+              <Link to={auditSectionHref("runs", {})}>View all runs</Link>
+            </Button>
           ) : null}
           <Button onClick={openCreateRoutine}>
             <Plus className="mr-2 h-4 w-4" />

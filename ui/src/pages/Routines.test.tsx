@@ -1054,7 +1054,7 @@ describe("Routines page", () => {
       await flush();
     });
 
-    expect(container.querySelector('a[data-redirect][href="/activity/runs?entityType=routine"]'))
+    expect(container.querySelector('a[data-redirect][href="/activity/runs"]'))
       .not.toBeNull();
     expect(issuesListMock).not.toHaveBeenCalled();
 
