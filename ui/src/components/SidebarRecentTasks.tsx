@@ -5,6 +5,8 @@ import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { useSidebar } from "@/context/SidebarContext";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { useTranslation } from "i18n-keyless-react";
+import { NAVIGATION_CONTEXT } from "@/i18n-keyless";
 
 export function SidebarRecentTasks({
   companyId,
@@ -46,15 +48,16 @@ function RecentTasksList({
   liveIssueIds: ReadonlySet<string>;
   rail: boolean;
 }) {
+  const t = useTranslation(NAVIGATION_CONTEXT);
   const { entries } = useRecentTasks({ companyId, userId });
 
   if (rail && entries.length === 0) return null;
 
   return (
-    <SidebarSection label="Recent Tasks">
+    <SidebarSection label={t("Recent Tasks")}>
       {entries.length === 0 ? (
         <p className="mx-3 px-2 py-1 text-(length:--text-micro) leading-snug text-muted-foreground/70">
-          Open or create a task to keep it close at hand.
+          {t("Open or create a task to keep it close at hand.")}
         </p>
       ) : entries.map((entry) => (
         <SidebarNavItem
