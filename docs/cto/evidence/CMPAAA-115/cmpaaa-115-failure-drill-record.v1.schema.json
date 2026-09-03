@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cmpaaa:schemas:cmpaaa-115-failure-drill-record:v1",
+  "title": "CMPAAA-115 Failure Drill Record v1",
+  "description": "Field contract for CMPAAA-115 Phase A controlled failure drill evidence. CMPAAA-49 shared fields must keep the same names.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sample_id",
+    "candidate_id",
+    "run_id",
+    "lineage_id",
+    "traceback_request_id",
+    "checked_at",
+    "traceback_status",
+    "missing_lineage_fields",
+    "source_gate_decision_id",
+    "audit_evidence_refs",
+    "alert_id",
+    "alert_priority",
+    "alert_trigger_code",
+    "escalation_receiver",
+    "escalation_target_minutes",
+    "escalation_sent_at",
+    "escalation_acknowledged_at",
+    "mitigation_started_at",
+    "resolved_at",
+    "handling_latency_minutes"
+  ],
+  "properties": {
+    "sample_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lineage_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "traceback_request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checked_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "traceback_status": {
+      "type": "string",
+      "enum": [
+        "success",
+        "failed"
+      ]
+    },
+    "missing_lineage_fields": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "root_cause_category": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "lineage-node-missing",
+        "lineage-edge-missing",
+        "lineage-field-missing",
+        "traceback-runtime-failure",
+        null
+      ]
+    },
+    "source_gate_decision_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audit_evidence_refs": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "allOf": [
+        {
+          "contains": {
+            "type": "string",
+            "pattern": "^lineage://"
+          }
+        },
+        {
+          "contains": {
+            "type": "string",
+            "pattern": "^run://"
+          }
+        },
+        {
+          "contains": {
+            "type": "string",
+            "pattern": "^traceback://"
+          }
+        }
+      ]
+    },
+    "alert_id": {
+      "type": "string",
+      "pattern": "^rksalrt-[a-z0-9-]{6,}$"
+    },
+    "alert_priority": {
+      "type": "string",
+      "enum": [
+        "P0",
+        "P1",
+        "P2"
+      ]
+    },
+    "alert_trigger_code": {
+      "type": "string",
+      "pattern": "^[A-Z0-9_]+$"
+    },
+    "escalation_receiver": {
+      "type": "string",
+      "minLength": 1
+    },
+    "escalation_target_minutes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "escalation_sent_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "escalation_acknowledged_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "mitigation_started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resolved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "handling_latency_minutes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "traceback_status": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "traceback_status"
+        ]
+      },
+      "then": {
+        "required": [
+          "root_cause_category"
+        ],
+        "properties": {
+          "root_cause_category": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "alert_priority": {
+            "const": "P0"
+          }
+        },
+        "required": [
+          "alert_priority"
+        ]
+      },
+      "then": {
+        "properties": {
+          "escalation_target_minutes": {
+            "maximum": 15
+          }
+        }
+      }
+    }
+  ]
+}
