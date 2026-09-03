@@ -10,6 +10,11 @@ on:
         description: Commit SHA, branch, or tag to verify before release
         required: false
         type: string
+      lockfile_artifact:
+        description: Prepared lockfile artifact from the calling release workflow
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: runner-chaos-evals-${{ inputs.ref || github.ref }}
@@ -28,6 +33,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref || github.sha }}
+
+      - name: Restore prepared lockfile
+        if: inputs.lockfile_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.lockfile_artifact }}
+          path: .
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6

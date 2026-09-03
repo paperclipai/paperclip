@@ -64,14 +64,12 @@ env:
   NPM_PUBLISH_VERIFY_DELAY_SECONDS: "10"
 
 jobs:
-  lockfile_ready:
+  prepare_canary_lockfile:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
-    outputs:
-      ready: ${{ steps.check.outputs.ready }}
 
     steps:
       - name: Checkout repository
@@ -88,28 +86,38 @@ jobs:
         with:
           node-version: 24
 
-      - name: Check lockfile synchronization
-        id: check
+      # Manifest-only PRs cannot commit pnpm-lock.yaml. Resolve it once in an
+      # isolated job, then make every canary job enforce this exact artifact.
+      - name: Prepare canary lockfile
         run: |
-          cp pnpm-lock.yaml "$RUNNER_TEMP/pnpm-lock.before.yaml"
           pnpm install --ignore-scripts --no-frozen-lockfile
-          if cmp -s "$RUNNER_TEMP/pnpm-lock.before.yaml" pnpm-lock.yaml; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "The canary release will wait for the automatic lockfile refresh PR." >> "$GITHUB_STEP_SUMMARY"
+
+          changed="$(git status --porcelain)"
+          if [ -n "$changed" ] && printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during canary lockfile preparation:"
+            echo "$changed"
+            exit 1
           fi
 
+      - name: Upload prepared canary lockfile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: canary-lockfile
+          path: pnpm-lock.yaml
+          retention-days: 1
+          if-no-files-found: error
+
   verify_canary:
-    needs: lockfile_ready
-    if: github.event_name == 'push' && needs.lockfile_ready.outputs.ready == 'true'
+    needs: prepare_canary_lockfile
+    if: github.event_name == 'push'
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ github.sha }}
+      lockfile_artifact: canary-lockfile
 
   publish_canary:
     if: github.event_name == 'push'
-    needs: verify_canary
+    needs: [prepare_canary_lockfile, verify_canary]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: npm-canary
@@ -124,6 +132,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Restore prepared canary lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: canary-lockfile
+          path: .
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -140,10 +154,7 @@ jobs:
         run: node ./scripts/release-package-map.mjs check
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Restore tracked install-time changes
-        run: git checkout -- pnpm-lock.yaml
+        run: pnpm install --frozen-lockfile
 
       - name: Configure git author
         run: |
@@ -193,6 +204,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Restore prepared canary lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: canary-lockfile
+          path: .
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6

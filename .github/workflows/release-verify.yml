@@ -7,6 +7,11 @@ on:
         description: Commit SHA, branch, or tag to verify
         required: true
         type: string
+      lockfile_artifact:
+        description: Prepared lockfile artifact for a manifest-only source ref
+        required: false
+        type: string
+        default: ""
 
 jobs:
   runner_chaos_evals:
@@ -14,6 +19,7 @@ jobs:
     uses: ./.github/workflows/runner-chaos-evals.yml
     with:
       ref: ${{ inputs.ref }}
+      lockfile_artifact: ${{ inputs.lockfile_artifact }}
 
   typecheck:
     name: Typecheck
@@ -27,6 +33,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
+
+      - name: Restore prepared lockfile
+        if: inputs.lockfile_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.lockfile_artifact }}
+          path: .
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -43,7 +56,7 @@ jobs:
         run: node ./scripts/release-package-map.mjs check
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         run: pnpm -r typecheck
@@ -89,6 +102,13 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      - name: Restore prepared lockfile
+        if: inputs.lockfile_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.lockfile_artifact }}
+          path: .
+
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -101,7 +121,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Run grouped general test suites
         run: |
@@ -144,6 +164,13 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      - name: Restore prepared lockfile
+        if: inputs.lockfile_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.lockfile_artifact }}
+          path: .
+
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -156,7 +183,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Run serialized server test shard
         run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
@@ -173,6 +200,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
+
+      - name: Restore prepared lockfile
+        if: inputs.lockfile_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.lockfile_artifact }}
+          path: .
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -204,6 +238,13 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      - name: Restore prepared lockfile
+        if: inputs.lockfile_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.lockfile_artifact }}
+          path: .
+
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -216,7 +257,7 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Verify Paperclip Runner
         run: pnpm --filter @paperclipai/paperclip-runner check:all
