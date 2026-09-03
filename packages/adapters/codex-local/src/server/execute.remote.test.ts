@@ -12,6 +12,8 @@ const {
   runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+  prepareManagedCodexHome,
+  seedManagedCodexHome,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async () => ({
     exitCode: 1,
@@ -36,6 +38,15 @@ const {
     },
     stop: async () => {},
   })),
+  prepareManagedCodexHome: vi.fn(async (_env, _onLog, _companyId, options?: { targetHome?: string | null }) =>
+    options?.targetHome ?? "/tmp/paperclip-managed-codex-home"
+  ),
+  seedManagedCodexHome: vi.fn(async (targetHome: string) => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    await fs.mkdir(targetHome, { recursive: true });
+    await fs.writeFile(path.join(targetHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "test-key" }), "utf8");
+  }),
 }));
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
@@ -73,13 +84,28 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+vi.mock("./codex-home.js", async () => {
+  const actual = await vi.importActual<typeof import("./codex-home.js")>("./codex-home.js");
+  return {
+    ...actual,
+    prepareManagedCodexHome,
+    seedManagedCodexHome,
+  };
+});
+
 import { execute } from "./execute.js";
 
 describe("codex remote execution", () => {
   const cleanupDirs: string[] = [];
+  const originalPaperclipHome = process.env.PAPERCLIP_HOME;
+  const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
 
   afterEach(async () => {
     vi.clearAllMocks();
+    if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = originalPaperclipHome;
+    if (originalPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+    else process.env.PAPERCLIP_INSTANCE_ID = originalPaperclipInstanceId;
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -330,6 +356,74 @@ describe("codex remote execution", () => {
 
     // The staged temp dir is removed after execute completes (cleanup on teardown).
     await expect(readdir(snap.localDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("seeds Paperclip-managed per-agent CODEX_HOME instead of treating it as a user override", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-agent-home-"));
+    cleanupDirs.push(rootDir);
+    const paperclipHome = path.join(rootDir, "paperclip-home");
+    const workspaceDir = path.join(rootDir, "workspace");
+    const agentCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "codex-home",
+    );
+    await mkdir(workspaceDir, { recursive: true });
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+
+    await execute({
+      runId: "run-agent-home",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        engine: "cli",
+        command: "codex",
+        env: {
+          CODEX_HOME: agentCodexHome,
+          OPENAI_API_KEY: "",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(prepareManagedCodexHome).not.toHaveBeenCalled();
+    expect(seedManagedCodexHome).toHaveBeenCalledTimes(1);
+    expect(seedManagedCodexHome).toHaveBeenCalledWith(
+      agentCodexHome,
+      expect.anything(),
+      expect.any(Function),
+      {
+        apiKey: null,
+      },
+    );
+    expect(runChildProcess).toHaveBeenCalledTimes(1);
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { env: Record<string, string> }]
+      | undefined;
+    expect(call?.[3].env.CODEX_HOME).toBe(agentCodexHome);
   });
 
   it("does not resume saved Codex sessions for remote SSH execution without a matching remote identity", async () => {
