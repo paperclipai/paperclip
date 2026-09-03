@@ -193,7 +193,7 @@ async function verifySentinel(
     ["-c", `test -s ${shellQuote(buildSentinelPath(input.remoteCwd))}`],
     "/",
   );
-  return !result.timedOut && (result.exitCode ?? 0) === 0;
+  return !result.timedOut && result.exitCode === 0;
 }
 
 export async function handleBridgeRequest(request: Request, env: BridgeEnv): Promise<Response> {
