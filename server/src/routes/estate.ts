@@ -2552,5 +2552,76 @@ export function estateRoutes(db: Db) {
     res.status(204).send();
   });
 
+  // =========================================================================
+  // Federal Estate Tax Calculator (2026 OBBBA exemptions)
+  // =========================================================================
+
+  // 2026 OBBBA exemptions: $15M individual, $30M married / domestic partnership
+  const FEDERAL_EXEMPTION_INDIVIDUAL_CENTS = 1_500_000_000; // $15,000,000
+  const FEDERAL_EXEMPTION_MARRIED_CENTS = 3_000_000_000;    // $30,000,000
+  const FEDERAL_ESTATE_TAX_RATE = 0.4;
+
+  function getExemptionCents(maritalStatus: string | null): number {
+    return maritalStatus === "married" || maritalStatus === "domestic_partnership"
+      ? FEDERAL_EXEMPTION_MARRIED_CENTS
+      : FEDERAL_EXEMPTION_INDIVIDUAL_CENTS;
+  }
+
+  /** Compute federal estate tax summary for a given estate */
+  router.get("/estates/:estateId/tax-summary", async (req, res) => {
+    assertBoard(req);
+
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    // Sum assets directly linked to this estate
+    const [assetRow] = await db
+      .select({ total: sql<string>`coalesce(sum(current_value_cents), 0)` })
+      .from(estateAssets)
+      .where(and(eq(estateAssets.estateId, estate.id), eq(estateAssets.companyId, estate.companyId)));
+
+    // Sum financial accounts for the estate owner (Plaid + manual)
+    const [accountRow] = await db
+      .select({ total: sql<string>`coalesce(sum(balance_cents), 0)` })
+      .from(estateFinancialAccounts)
+      .where(
+        and(
+          eq(estateFinancialAccounts.companyId, estate.companyId),
+          eq(estateFinancialAccounts.userId, estate.ownerUserId),
+        ),
+      );
+
+    const assetsCents = Number(assetRow?.total ?? 0);
+    const accountsCents = Number(accountRow?.total ?? 0);
+    const grossEstateCents = assetsCents + accountsCents;
+
+    const exemptionCents = getExemptionCents(estate.maritalStatus ?? null);
+    const taxableEstateCents = Math.max(0, grossEstateCents - exemptionCents);
+    const estimatedFederalTaxCents = Math.round(taxableEstateCents * FEDERAL_ESTATE_TAX_RATE);
+
+    res.json({
+      estateId: estate.id,
+      estateName: estate.name,
+      maritalStatus: estate.maritalStatus,
+      grossEstateCents,
+      grossEstateDollars: grossEstateCents / 100,
+      federalExemptionCents: exemptionCents,
+      federalExemptionDollars: exemptionCents / 100,
+      taxableEstateCents,
+      taxableEstateDollars: taxableEstateCents / 100,
+      estimatedFederalTaxCents,
+      estimatedFederalTaxDollars: estimatedFederalTaxCents / 100,
+      taxRate: FEDERAL_ESTATE_TAX_RATE,
+      exemptionYear: 2026,
+      exemptionLaw: "OBBBA 2026",
+      asOfDate: new Date().toISOString(),
+    });
+  });
+
   return router;
 }
