@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { sanitizeInheritedPaperclipEnv } from "@paperclipai/adapter-utils/server-utils";
 
 type PreparedCodexRuntimeConfig = {
   notes: string[];
@@ -304,6 +305,98 @@ async function readFileOrNull(filePath: string): Promise<string | null> {
   return fs.readFile(filePath, "utf8").catch(() => null);
 }
 
+export type CodexProviderEnvKeySelection = {
+  /** Value of the root-level `model_provider` key. */
+  modelProvider: string;
+  /** `env_key` declared by that provider's `[model_providers.<id>]` table. */
+  envKey: string;
+};
+
+// A quoted scalar assignment on its own line: `key = "value"` or `key = 'value'`,
+// with an optional trailing comment. Deliberately narrow -- anything else (inline
+// tables, multi-line strings) yields no selection, which disables the check
+// rather than guessing.
+const ROOT_MODEL_PROVIDER_RE = /^\s*model_provider\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(?:#.*)?$/;
+const ENV_KEY_RE = /^\s*env_key\s*=\s*(?:"([^"]*)"|'([^']*)')\s*(?:#.*)?$/;
+
+function readQuotedAssignment(line: string, pattern: RegExp): string | null {
+  const match = pattern.exec(line);
+  if (!match) return null;
+  const value = (match[1] ?? match[2] ?? "").trim();
+  return value.length > 0 ? value : null;
+}
+
+// Best-effort read of the *effective* provider selection from config.toml text:
+// the root-level `model_provider`, plus the `env_key` its [model_providers.<id>]
+// table declares. Codex reads that env var at request time and aborts the run
+// when it is unset, so the pair is exactly what a pre-flight check needs.
+//
+// Deliberately a text scan rather than a real TOML parse: the merge code above
+// already reasons about this file line-by-line, the adapter carries no TOML
+// dependency, and every consumer of this function treats "no selection found"
+// as "nothing to check". A parse this narrow can only under-report.
+export function readSelectedProviderEnvKey(content: string): CodexProviderEnvKeySelection | null {
+  const lines = content.split("\n");
+  // TOML root-level keys must precede the first table header, so the search for
+  // `model_provider` stops there; a `model_provider` inside a table is a
+  // different key entirely (e.g. [profiles.x]) and must not be picked up.
+  let modelProvider: string | null = null;
+  for (const line of lines) {
+    if (parseTableHeaderPath(line) !== null) break;
+    modelProvider = readQuotedAssignment(line, ROOT_MODEL_PROVIDER_RE);
+    if (modelProvider !== null) break;
+  }
+  if (modelProvider === null) return null;
+
+  let inSelectedTable = false;
+  for (const line of lines) {
+    const headerPath = parseTableHeaderPath(line);
+    if (headerPath !== null) {
+      // Exactly [model_providers.<id>] -- a subtable such as
+      // [model_providers.<id>.http_headers] does not carry the provider's env_key.
+      inSelectedTable =
+        headerPath.length === 2 &&
+        headerPath[0] === "model_providers" &&
+        headerPath[1] === modelProvider;
+      continue;
+    }
+    if (!inSelectedTable) continue;
+    const envKey = readQuotedAssignment(line, ENV_KEY_RE);
+    if (envKey !== null) return { modelProvider, envKey };
+  }
+  return null;
+}
+
+// The selected provider's env_key when it resolves to nothing in the run env,
+// else null. An env var set to whitespace is treated as unset: codex sends it as
+// the bearer token and the provider rejects it, which is the same broken run
+// with a less obvious symptom.
+function findUnsetProviderEnvKey(
+  content: string,
+  resolveEnv: (name: string) => string | undefined,
+): CodexProviderEnvKeySelection | null {
+  const selection = readSelectedProviderEnvKey(content);
+  if (selection === null) return null;
+  const value = resolveEnv(selection.envKey);
+  return value === undefined || value.trim().length === 0 ? selection : null;
+}
+
+// Codex's own failure here is `Missing environment variable: \`X\``, which names
+// neither the config file the selection came from nor the setting that put it
+// there. Name all three.
+function describeUnsetProviderEnvKey(
+  selection: CodexProviderEnvKeySelection,
+  configTomlPath: string,
+): string {
+  return (
+    `Codex model_provider "${selection.modelProvider}" declares env_key "${selection.envKey}" in ` +
+    `"${configTomlPath}", but ${selection.envKey} is unset or empty in this run's environment. ` +
+    `Codex would fail with "Missing environment variable: \`${selection.envKey}\`". ` +
+    `Set ${selection.envKey} in the agent's adapter config env (or bind it as a secret), ` +
+    `or select a provider that does not need it via PAPERCLIP_CODEX_PROVIDERS.`
+  );
+}
+
 // Pre-run backup of the original config.toml, written before the merged file.
 // If a run dies without reaching cleanup() (a setup throw between prepare and
 // execution, SIGKILL, ...), the next prepare restores the original from this
@@ -336,14 +429,68 @@ function configTomlBackupPath(configTomlPath: string): string {
 export async function prepareCodexRuntimeConfig(input: {
   env: Record<string, string>;
   codexHome: string | null;
+  /**
+   * The explicitly configured `env.CODEX_HOME` when there is one (`codexHome` is
+   * null in that case). Read-only: its config.toml is inspected for diagnostics
+   * and never seeded, merged, or rewritten.
+   */
+  externalCodexHome?: string | null;
+  /**
+   * True when the codex process will run on a remote execution target. The
+   * control plane's `process.env` is not that process's environment, so the
+   * selected-provider env_key check degrades to a warning instead of failing
+   * a run whose env we cannot actually see.
+   */
+  executionTargetIsRemote?: boolean;
 }): Promise<PreparedCodexRuntimeConfig> {
+  // Two different questions, two resolvers -- conflating them is what makes the
+  // pre-flight check lie.
+  //
+  // `resolveEnv` answers "what should this {env:VAR} placeholder expand to?".
+  // The expansion is baked into config.toml here on the control plane and
+  // travels with the file, so the control plane's own process.env is a
+  // legitimate source even for a run that executes elsewhere.
   const resolveEnv = (name: string): string | undefined => input.env[name] ?? process.env[name];
+  // `resolveRunEnv` answers the narrower question the env_key check needs:
+  // "will the codex process itself see a value for this variable?". The spawned
+  // child's environment is `sanitizeInheritedPaperclipEnv(process.env)` with the
+  // adapter config env layered on top (runChildProcess in adapter-utils) -- note
+  // the sanitize step, which drops PAPERCLIP_*, so a provider whose env_key uses
+  // that prefix is NOT satisfied by the host process env.
+  //
+  // A remote target inherits none of it: only the explicit env record crosses
+  // the transport (sanitizeRemoteExecutionEnv + buildSshSpawnTarget), so the
+  // control plane's process.env is not evidence of anything. Its own login
+  // profile may still supply the value and we cannot read it from here, which is
+  // why a miss on a remote target warns rather than fails.
+  const inheritedEnv: NodeJS.ProcessEnv = input.executionTargetIsRemote
+    ? {}
+    : sanitizeInheritedPaperclipEnv(process.env);
+  const resolveRunEnv = (name: string): string | undefined => input.env[name] ?? inheritedEnv[name];
   const notes: string[] = [];
   const parsed = parseCodexProvidersConfig(
     input.env.PAPERCLIP_CODEX_PROVIDERS ?? process.env.PAPERCLIP_CODEX_PROVIDERS,
     resolveEnv,
     notes,
   );
+
+  // An explicitly configured CODEX_HOME is never merged into or rewritten, but
+  // its config can still select a provider whose env_key is unset. Reading it is
+  // free and warning beats letting codex die on its first model refresh -- but
+  // the merge is off for this home, so a warning is as far as it goes.
+  if (input.externalCodexHome) {
+    const externalConfigTomlPath = path.join(input.externalCodexHome, "config.toml");
+    const externalConfig = await readFileOrNull(externalConfigTomlPath);
+    const unset =
+      externalConfig === null ? null : findUnsetProviderEnvKey(externalConfig, resolveRunEnv);
+    if (unset) {
+      notes.push(
+        `Warning: ${describeUnsetProviderEnvKey(unset, externalConfigTomlPath)} ` +
+          `Paperclip does not merge model providers into an explicitly configured CODEX_HOME, ` +
+          `so it is leaving this file as-is.`,
+      );
+    }
+  }
 
   if (!parsed) {
     // Self-heal state left behind by a crashed run (cleanup() never ran).
@@ -405,11 +552,34 @@ export async function prepareCodexRuntimeConfig(input: {
     providerNames,
     parsed.modelProvider !== null,
   );
+  const merged = buildMergedConfigToml(base, parsed);
+
+  // The selection can come from either side of the merge -- PAPERCLIP_CODEX_PROVIDERS'
+  // own `model_provider`, or a root key already in the base config -- so the check
+  // runs against the merged result rather than the parsed input. A run whose
+  // selected provider names an unset env_key is guaranteed to die inside codex;
+  // fail here, where the error can name the provider, the env var, and the file.
+  // Nothing has been written yet, so a throw leaves the home exactly as it was.
+  const unsetEnvKey = findUnsetProviderEnvKey(merged, resolveRunEnv);
+  if (unsetEnvKey) {
+    if (input.executionTargetIsRemote) {
+      notes.push(
+        `Warning: ${describeUnsetProviderEnvKey(unsetEnvKey, configTomlPath)} ` +
+          `This run targets a remote execution host: the control plane's own environment does ` +
+          `not cross the transport, so ${unsetEnvKey.envKey} has to come from the adapter config ` +
+          `env or from the remote host's own login profile -- which Paperclip cannot read from ` +
+          `here, so this is a warning rather than a hard failure.`,
+      );
+    } else {
+      throw new Error(describeUnsetProviderEnvKey(unsetEnvKey, configTomlPath));
+    }
+  }
+
   await fs.mkdir(input.codexHome, { recursive: true });
   // Persist the original BEFORE writing the merged file so a run that never
   // reaches cleanup() can be restored by the next prepare.
   await fs.writeFile(backupPath, original ?? "", "utf8");
-  await fs.writeFile(configTomlPath, buildMergedConfigToml(base, parsed), "utf8");
+  await fs.writeFile(configTomlPath, merged, "utf8");
 
   return {
     notes: [
