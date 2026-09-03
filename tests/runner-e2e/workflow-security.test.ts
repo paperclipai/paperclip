@@ -306,6 +306,9 @@ describe("public repository paid workflow security", () => {
     expect(buildJob).toContain(
       "node packages/paperclip-runner/scripts/build-provider-pack.mjs",
     );
+    expect(buildJob).toContain(
+      "node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs",
+    );
     expect(buildJob).toContain("runner-e2e-build-bundle.tar.gz.sha256");
     expect(buildJob).toContain("runner-e2e-provider-pack.tar.gz.sha256");
     expect(buildJob).toContain(
@@ -339,6 +342,17 @@ describe("public repository paid workflow security", () => {
     );
     expect(testJob).toContain(".payload.runnerSourceRevision == $revision");
     expect(workflow).toContain("Qualify local provider Node interpreter");
+    expect(testJob).toContain(
+      "Materialize verified pinned OpenCode executable",
+    );
+    expect(testJob).toContain(
+      "matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth'",
+    );
+    expect(testJob).toContain(
+      "node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs",
+    );
+    expect(testJob).not.toContain("postinstall.mjs");
+    expect(testJob).not.toContain("pnpm rebuild");
     expect(testJob).not.toContain("build:typescript");
     expect(testJob).not.toContain("build:runner-binaries");
     expect(testJob).not.toContain("build-provider-pack.mjs");

@@ -619,6 +619,10 @@ jobs:
       - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Materialize verified pinned OpenCode executable
+        if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
+
       - name: Download immutable shared campaign outputs
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -761,6 +765,10 @@ jobs:
       # step. Keep target-selected dependency lifecycle code from running in
       # the protected environment during setup.
       - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Materialize verified pinned OpenCode executable
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'legacy-opencode' || matrix.profileId == 'runner-opencode' || matrix.suiteId == 'openrouter-model-breadth')
+        run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
       - name: Download immutable campaign outputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

@@ -31,8 +31,9 @@ must never run repository lifecycle scripts. The shared-build and provider-pack
 jobs also receive no provider credentials and disable dependency lifecycle
 scripts; they package outputs with SHA-256 sidecars that consumers verify
 before extraction. The paid test job installs with lifecycle scripts disabled,
-and provider secrets are scoped only to its final test step rather than
-dependency setup. Report sanitization and AWS
+and materializes the exact pinned OpenCode executable from its lockfile-verified
+optional package without invoking package lifecycle code. Provider secrets are
+scoped only to the final test step rather than dependency setup. Report sanitization and AWS
 history publication explicitly use the trusted workflow commit and do not
 consume the target lockfile. Never run the workflow definition from the target
 branch.
