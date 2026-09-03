@@ -18,15 +18,19 @@
  *
  * The broker is a fake, so no Tailscale Serve state is ever read or mutated.
  * Allocation is driven by an injected `isPortAvailable` that models a synthetic
- * host, and the only ports it will ever return are the `425xx`/`525xx` pairs
- * named below — deliberately far from a canary lane on `42000`/`42001`, which
- * this suite must not disturb. Guests do bind those two pairs on loopback, so
- * the readiness and exposure lifecycle is exercised for real; they are reaped in
- * `afterEach`. `PAPERCLIP_HOME` is redirected to a temp dir so the local-service
- * registry never touches the real instance on this host.
+ * host, and the only ports it will ever return are two app/HMR pairs the suite
+ * selects at run time: `beforeEach` scans the dedicated runtime exposure range
+ * and keeps the two lowest pairs that read free on the real loopback host at
+ * that moment. The suite never pins a fixed host port as a constant, so a
+ * short-lived socket that another process holds on the runner cannot make this
+ * suite fail. Guests do bind those two pairs on loopback, so the readiness and
+ * exposure lifecycle is exercised for real; they are reaped in `afterEach`.
+ * `PAPERCLIP_HOME` is redirected to a temp dir so the local-service registry
+ * never touches the real instance on this host.
  */
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -41,8 +45,14 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
+import {
+  deriveViteHmrPort,
+  RUNTIME_EXPOSURE_APP_PORT_MAX,
+  RUNTIME_EXPOSURE_APP_PORT_MIN,
+} from "@paperclipai/shared";
 
 import type { BrokerClient, BrokerListenerRequest } from "../services/runtime-exposure/broker-client.js";
+import { readListenerBindFacts } from "../services/runtime-exposure/loopback-listener.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   resetRuntimeServicesForTests,
@@ -54,12 +64,47 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-/** The pair lane B holds under an open lease. */
-const LEASED_APP_PORT = 42_501;
-const LEASED_HMR_PORT = 52_501;
-/** The next pair a correct allocator must relocate to. */
-const NEXT_APP_PORT = 42_502;
-const NEXT_HMR_PORT = 52_502;
+/**
+ * The pair lane B holds under an open lease, and the next pair a correct
+ * allocator must relocate to. `beforeEach` discovers both on the real host, so
+ * a fixed constant here can never lose a race with a short-lived socket
+ * elsewhere on the runner.
+ */
+let LEASED_APP_PORT: number;
+let LEASED_HMR_PORT: number;
+let NEXT_APP_PORT: number;
+let NEXT_HMR_PORT: number;
+
+/**
+ * A real loopback bind probe, matching production's `isLoopbackPortAvailable`
+ * and the identical helper in `workspace-runtime-exposure.test.ts`.
+ */
+async function isLoopbackPortFree(port: number): Promise<boolean> {
+  const facts = await readListenerBindFacts(port);
+  if (facts?.present) return false;
+
+  return await new Promise<boolean>((resolve) => {
+    const probe = net.createServer();
+    probe.unref();
+    probe.once("error", () => resolve(false));
+    probe.listen(port, "127.0.0.1", () => {
+      probe.close(() => resolve(true));
+    });
+  });
+}
+
+/**
+ * The first app port at or above `startAt` whose HMR companion is also free on
+ * the real host right now, mirroring the allocator's own scan.
+ */
+async function findFreeExposureAppPort(startAt: number): Promise<number> {
+  for (let appPort = startAt; appPort <= RUNTIME_EXPOSURE_APP_PORT_MAX; appPort += 1) {
+    if (await isLoopbackPortFree(appPort) && await isLoopbackPortFree(deriveViteHmrPort(appPort))) {
+      return appPort;
+    }
+  }
+  throw new Error("no free app/HMR port pair available in the dedicated runtime exposure range");
+}
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 
@@ -175,6 +220,14 @@ const GUEST_COMMAND =
     }, 60_000);
 
     beforeEach(async () => {
+      // Discover two verified-free pairs on the real host right before each
+      // case runs, so the window between the probe and the guest bind stays
+      // as short as possible.
+      LEASED_APP_PORT = await findFreeExposureAppPort(RUNTIME_EXPOSURE_APP_PORT_MIN);
+      LEASED_HMR_PORT = deriveViteHmrPort(LEASED_APP_PORT);
+      NEXT_APP_PORT = await findFreeExposureAppPort(LEASED_APP_PORT + 1);
+      NEXT_HMR_PORT = deriveViteHmrPort(NEXT_APP_PORT);
+
       workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pap17419-workspace-"));
       paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "pap17419-home-"));
       // Redirect the local-service registry into a throwaway instance. Without
