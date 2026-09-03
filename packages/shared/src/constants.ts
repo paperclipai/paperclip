@@ -815,6 +815,13 @@ export const CLASS3_STATIC_LEASE_ALLOWLIST = [
     configPath: "credentials.bot_token",
     envKey: "DISCORD_BOT_TOKEN",
   },
+  {
+    key: "wordpress.application_password",
+    label: "WordPress Application Password connector lease",
+    targetType: "tool_connection",
+    configPath: "credentials.application_password",
+    envKey: "WORDPRESS_APPLICATION_PASSWORD",
+  },
 ] as const;
 export type Class3StaticLeaseAllowlistKey = (typeof CLASS3_STATIC_LEASE_ALLOWLIST)[number]["key"];
 

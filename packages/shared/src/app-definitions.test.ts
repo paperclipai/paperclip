@@ -7,6 +7,7 @@ import { APP_STORE_DEFINITIONS, APP_STORE_HIDDEN_SLUGS, CONNECTABLE_APP_DEFINITI
 import { GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, type GoogleWorkspaceConnectorProfileId } from "./google-workspace-connectors.js";
 import { BLOCKED_MCP_PROVIDERS, SELF_SERVE_MCP_CANDIDATES, SELF_SERVE_MCP_RESEARCH } from "./self-serve-mcp-research.js";
 import { appDefinitionsSchema } from "./validators/app-definition.js";
+import { CLASS3_STATIC_LEASE_ALLOWLIST } from "./constants.js";
 
 const googleScope=(scope:string)=>`https://www.googleapis.com/auth/${scope}`;
 const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
@@ -28,6 +29,14 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
  {profile:"workspace-search.read",appSlug:"google-workspace-search",serverUrl:"https://workspacemcp.googleapis.com/mcp/v1",capability:"read",riskTier:"S3",scopes:[googleScope("gmail.readonly"),googleScope("drive.readonly"),googleScope("calendar.readonly"),googleScope("chat.messages.readonly")],writeTools:[]},
 ] as const satisfies ReadonlyArray<{profile:GoogleWorkspaceConnectorProfileId;appSlug:string;serverUrl:string;capability:"read"|"write"|"draft";riskTier:"S3"|"S4";scopes:readonly string[];writeTools:readonly string[]}>;
 describe("AppDefinition catalog",()=>{
+ it("registers WordPress as credential-only and class-3 allowlisted",()=>{
+  const wordpress=APP_DEFINITIONS.find((app)=>app.slug==="wordpress");
+  expect(wordpress?.methods).toHaveLength(1);
+  expect(wordpress?.methods[0]?.credentialFields?.map((field)=>field.key)).toEqual(["username","application_password"]);
+  expect(wordpress?.methods[0]?.keyPlacement).toEqual({location:"env",name:"WORDPRESS_CONNECTOR_RUNTIME_ONLY"});
+  expect(wordpress?.methods[0]?.requiredResourceFilters).toEqual(["project","agent"]);
+  expect(CLASS3_STATIC_LEASE_ALLOWLIST).toContainEqual(expect.objectContaining({key:"wordpress.application_password",targetType:"tool_connection",configPath:"credentials.application_password"}));
+ });
  it("validates all Wave 1 definitions",()=>expect(()=>appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
  it("contains every established provider plus the reviewed self-serve catalog",()=>{
  expect(APP_DEFINITIONS.map((app)=>app.slug)).toEqual(expect.arrayContaining(["zapier","github","slack","notion","posthog","linear","google-sheets","context7","composio","oauth-generic","api-key-generic","sentry","vercel","anthropic","gmail","google-drive","google-docs","google-slides","google-calendar","google-chat","google-people","google-workspace-search"]));
@@ -140,7 +149,7 @@ describe("AppDefinition catalog",()=>{
  });
  it("withholds unverified and reserved providers from the app store without deleting their definitions",()=>{
   expect([...APP_STORE_HIDDEN_SLUGS].sort()).toEqual([
-   "beehiiv","bitly","brex","candid","coda","composio","context7","egnyte","embat","github","kernel","local-falcon","make","manufact","oreilly","planetscale","razorpay","sanity","similarweb","slack","ticket-tailor","ticktick","xero",
+   "beehiiv","bitly","brex","candid","coda","composio","context7","egnyte","embat","github","kernel","local-falcon","make","manufact","oreilly","planetscale","razorpay","sanity","similarweb","slack","ticket-tailor","ticktick","wordpress","xero",
   ]);
   expect(APP_STORE_DEFINITIONS).toHaveLength(35);
   const connectableSlugs=new Set(CONNECTABLE_APP_DEFINITIONS.map((entry)=>entry.slug));

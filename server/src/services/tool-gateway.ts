@@ -116,6 +116,13 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 import { extendApprovedExecutionWaitDeadline } from "./approved-execution-wait.js";
+import {
+  assertWordPressConnectionScope,
+  executeWordPressAuthenticationCheck,
+  WORDPRESS_APPLICATION_PASSWORD_CONFIG_PATH,
+  WORDPRESS_AUTH_CHECK_TOOL,
+  WORDPRESS_USERNAME_CONFIG_PATH,
+} from "./wordpress-connector.js";
 
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
@@ -324,8 +331,8 @@ type RemoteHttpExecutionResult = {
 type RemoteHttpExecutionAudit = {
   transport: "mcp_remote";
   request: {
-    protocol: "MCP JSON-RPC 2.0";
-    httpMethod: "POST";
+    protocol: "MCP JSON-RPC 2.0" | "WordPress REST API";
+    httpMethod: "POST" | "GET";
     endpoint: string;
     mcpMethod: "tools/call";
     requestId: string;
@@ -4085,6 +4092,75 @@ export function createToolGatewayService(
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
     const grant = await resolveConnectionGrant(session, connection);
+    if (connection.config.sourceTemplateKey === "wordpress") {
+      if (entry.toolName !== WORDPRESS_AUTH_CHECK_TOOL.name) {
+        throw new ToolGatewayHttpError(403, "WordPress capability is not allowed", "wordpress_capability_denied");
+      }
+      const supplied = asRecord(parameters) ?? {};
+      if (Object.keys(supplied).length > 0) {
+        throw new ToolGatewayHttpError(400, "WordPress authentication check accepts no arguments", "wordpress_capability_denied");
+      }
+      const methodConfig = asRecord(connection.config.methodConfig) ?? {};
+      const allowedAgentIds = String(methodConfig.allowedAgentIds ?? "")
+        .split(",").map((value) => value.trim()).filter(Boolean);
+      try {
+        assertWordPressConnectionScope({
+          companyId: connection.companyId,
+          projectId: String(methodConfig.projectId ?? ""),
+          allowedAgentIds,
+        }, {
+          companyId: session.companyId,
+          projectId: session.projectId ?? null,
+          agentId: session.agentId,
+        });
+      } catch {
+        throw new ToolGatewayHttpError(403, "WordPress connection is outside the allowed scope", "wordpress_scope_denied");
+      }
+      const usernameRef = grant.credentialSecretRefs.find((ref) => ref.configPath === WORDPRESS_USERNAME_CONFIG_PATH);
+      const passwordRef = grant.credentialSecretRefs.find((ref) => ref.configPath === WORDPRESS_APPLICATION_PASSWORD_CONFIG_PATH);
+      if (!usernameRef || !passwordRef) {
+        throw new ToolGatewayHttpError(422, "WordPress connector credentials are missing", "wordpress_credentials_missing");
+      }
+      let username: string;
+      let applicationPassword: string;
+      try {
+        [username, applicationPassword] = await Promise.all([
+          resolveGrantSecretValue(session, connection, grant, usernameRef, WORDPRESS_USERNAME_CONFIG_PATH),
+          resolveGrantSecretValue(session, connection, grant, passwordRef, WORDPRESS_APPLICATION_PASSWORD_CONFIG_PATH),
+        ]);
+      } catch {
+        throw new ToolGatewayHttpError(422, "WordPress connector credentials could not be resolved", "wordpress_credentials_missing");
+      }
+      const result = await executeWordPressAuthenticationCheck({
+        baseUrl: String(methodConfig.baseUrl ?? ""),
+        username,
+        applicationPassword,
+        request: (url, init) => options.remoteHttpRequest
+          ? options.remoteHttpRequest(url, init)
+          : guardedRemoteHttpFetch(url, init, remoteHttpFetchOptions()),
+      }).catch(() => {
+        throw new ToolGatewayHttpError(502, "WordPress authentication check failed", "wordpress_authentication_failed");
+      });
+      return {
+        result: {
+          content: JSON.stringify(result),
+          data: result,
+        },
+        execution: {
+          transport: "mcp_remote",
+          request: {
+            protocol: "WordPress REST API",
+            httpMethod: "GET",
+            endpoint: `${new URL(String(methodConfig.baseUrl)).origin}/[wordpress-users-me]`,
+            mcpMethod: "tools/call",
+            requestId: `paperclip-tool-${randomUUID()}`,
+            upstreamToolName: entry.toolName,
+            dispatched: true,
+          },
+          response: { httpStatus: 200, contentType: "application/json", bodySizeBytes: 0, upstreamRequestId: null },
+        },
+      };
+    }
     const composioScopeRevision = `${grant.id}:${grant.status}:${grant.updatedAt.toISOString()}`;
     const composioChild = composioChildConfig(connection);
     let composioSession = composioChild

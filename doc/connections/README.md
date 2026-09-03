@@ -11,6 +11,8 @@ proof, and PR submission.
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
 [Gmail](./GMAIL.md), [PostHog](./POSTHOG.md). Optional credential custody:
 [Vercel Connect](./VERCEL-CONNECT.md).
+The deliberately narrow [WordPress read-only connection](./WORDPRESS.md) is the
+reference for a static-lease Application Password with project and agent scope.
 
 Post-read action: classify a new integration request, pick the right Paperclip
 layer to change, and avoid creating a parallel connection framework.

@@ -23,6 +23,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "google-chat",
   "google-people",
   "google-workspace-search",
+  "wordpress",
 ]);
 
 export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>
@@ -59,6 +60,7 @@ export const APP_STORE_HIDDEN_SLUGS = new Set([
   "ticket-tailor",
   "ticktick",
   "xero",
+  "wordpress",
 ]);
 
 export const APP_STORE_DEFINITIONS = CONNECTABLE_APP_DEFINITIONS.filter((app) =>

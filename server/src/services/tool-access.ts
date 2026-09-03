@@ -169,6 +169,15 @@ import { recordToolRuntimeAuditWriteFailure, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_ME
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
 import { listConnectionLifecycleEvents } from "./tool-connection-activity.js";
 import { ComposioApiError, createComposioClient, type ComposioClient } from "./composio.js";
+import {
+  executeWordPressAuthenticationCheck,
+  validateWordPressBaseUrl,
+  WORDPRESS_APPLICATION_PASSWORD_CONFIG_PATH,
+  WORDPRESS_AUTH_CHECK_TOOL,
+  WORDPRESS_USERNAME_CONFIG_PATH,
+  wordPressAuthenticationCheckUrl,
+  wordPressCredentialProjection,
+} from "./wordpress-connector.js";
 import { composioChildConfig, createComposioSessionManager } from "./composio-session-manager.js";
 import {
   createPaperclipCloudConnector,
@@ -5262,6 +5271,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     credentialHeaders?: Record<string, string>,
     actor?: ActorInfo,
   ): Promise<McpToolDescriptor[]> {
+    if (connection.config.sourceTemplateKey === "wordpress") {
+      return [{ ...WORDPRESS_AUTH_CHECK_TOOL }];
+    }
     if (connection.transport === "mcp_remote") return remoteTools(connection, credentialHeaders, actor);
     if (isComposioConnection(connection)) {
       await validateComposioConnection(connection);
@@ -5301,7 +5313,27 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function checkConnectionHealth(connectionId: string, actor?: ActorInfo): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
     try {
-      if (connection.transport === "mcp_remote") {
+      if (connection.config.sourceTemplateKey === "wordpress") {
+        const usernameRef = connection.credentialSecretRefs.find((ref) => ref.configPath === WORDPRESS_USERNAME_CONFIG_PATH);
+        const passwordRef = connection.credentialSecretRefs.find((ref) => ref.configPath === WORDPRESS_APPLICATION_PASSWORD_CONFIG_PATH);
+        if (!usernameRef || !passwordRef) throw unprocessable("WordPress connector credentials are missing");
+        const [username, applicationPassword] = await Promise.all([
+          secrets.resolveSecretValue(connection.companyId, usernameRef.secretId, usernameRef.versionSelector ?? "latest", {
+            consumerType: "tool_connection", consumerId: connection.id, configPath: usernameRef.configPath, actorType: "system",
+          }),
+          secrets.resolveSecretValue(connection.companyId, passwordRef.secretId, passwordRef.versionSelector ?? "latest", {
+            consumerType: "tool_connection", consumerId: connection.id, configPath: passwordRef.configPath, actorType: "system",
+          }),
+        ]);
+        await executeWordPressAuthenticationCheck({
+          baseUrl: String(asRecord(connection.config.methodConfig).baseUrl ?? ""),
+          username,
+          applicationPassword,
+          request: (url, init) => options.remoteHttpRequest
+            ? options.remoteHttpRequest(url, init)
+            : fetchRemoteHttpUrl(url, init),
+        });
+      } else if (connection.transport === "mcp_remote") {
         await assertComposioConnectedAccountActive(connection);
         const credentialHeaders = connection.credentialSource === "vercel_connect"
           ? await resolveCredentialHeaders(connection, actor, { forceRefresh: true })
@@ -5320,7 +5352,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           ? "Composio accepted the API key and returned its toolkits."
           : connection.transport === "local_stdio"
             ? "Approved stdio template is ready."
-            : "Remote MCP server responded to tools/list.",
+            : connection.config.sourceTemplateKey === "wordpress"
+              ? "WordPress accepted the masked read-only authentication check."
+              : "Remote MCP server responded to tools/list.",
       );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
@@ -8581,6 +8615,23 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const normalizedMethodConfig = isGoogleSheetsRobotMethod || !method
       ? null
       : normalizeConnectionMethodConfig(method, input.configValues);
+    if (galleryEntry?.slug === "wordpress") {
+      const values = normalizedMethodConfig?.values ?? {};
+      const baseUrl = validateWordPressBaseUrl(String(values.baseUrl ?? ""));
+      const projectId = String(values.projectId ?? "");
+      const allowedAgentIds = Array.from(new Set(String(values.allowedAgentIds ?? "")
+        .split(/[\s,]+/g).map((value) => value.trim()).filter(Boolean)));
+      const [project] = await db.select({ id: projects.id }).from(projects).where(and(
+        eq(projects.id, projectId), eq(projects.companyId, companyId),
+      )).limit(1);
+      if (!project) throw badRequest("WordPress project scope must belong to this company");
+      if (allowedAgentIds.length === 0) throw badRequest("WordPress requires an explicit allowed-agent set");
+      await assertAgentsInCompany(companyId, allowedAgentIds);
+      normalizedMethodConfig!.values.baseUrl = baseUrl;
+      normalizedMethodConfig!.values.projectId = projectId;
+      normalizedMethodConfig!.values.allowedAgentIds = allowedAgentIds.join(",");
+      normalizedMethodConfig!.url = wordPressAuthenticationCheckUrl(baseUrl);
+    }
     const remoteUrlCredential = transport === "mcp_remote" && input.link
       ? splitRemoteUrlCredential(input.link)
       : null;
@@ -8755,6 +8806,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           configPath: field.configPath,
           required: field.required ?? true,
           label: field.label,
+          ...(galleryEntry?.slug === "wordpress" ? wordPressCredentialProjection(field.configPath) : {}),
         });
         if (field.placement === "header" && field.key) {
           credentialRefs.push({
@@ -9265,6 +9317,20 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         || quarantinedRows.some((entry) => !reviewedIdSet.has(entry.id))
       ) {
         throw badRequest("Action review decisions must cover every currently quarantined action exactly once");
+      }
+    }
+    if (connection.config.sourceTemplateKey === "wordpress") {
+      if (input.access === "all_agents") {
+        throw badRequest("WordPress requires an explicit allowed-agent set");
+      }
+      const configuredAgentIds = new Set(String(asRecord(connection.config.methodConfig).allowedAgentIds ?? "")
+        .split(",").map((value) => value.trim()).filter(Boolean));
+      const requestedAgentIds = new Set(input.access.agentIds);
+      if (
+        configuredAgentIds.size !== requestedAgentIds.size
+        || [...configuredAgentIds].some((agentId) => !requestedAgentIds.has(agentId))
+      ) {
+        throw badRequest("WordPress access must match the configured allowed-agent set");
       }
     }
     if (input.access !== "all_agents") await assertAgentsInCompany(companyId, input.access.agentIds);

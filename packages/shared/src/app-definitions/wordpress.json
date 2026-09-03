@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "slug": "wordpress",
+  "name": "WordPress",
+  "description": "Verify a scoped WordPress Application Password through one read-only identity check.",
+  "categories": ["content"],
+  "featured": false,
+  "branding": { "logoUrl": "/brands/apps/api-key-generic.svg" },
+  "urlPatterns": [],
+  "docsUrl": "https://developer.wordpress.org/rest-api/using-the-rest-api/authentication/",
+  "methods": [
+    {
+      "key": "application-password-readonly",
+      "label": "Use an Application Password",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": ["customer"],
+      "whenToUse": "Use a dedicated WordPress Application Password for a masked read-only authentication check.",
+      "guidanceMd": "This connector exposes only a masked users/me authentication check. Bind it to one Paperclip project and an explicit agent allowlist.",
+      "riskTier": "S3",
+      "tenantFields": [
+        { "key": "baseUrl", "label": "WordPress base URL", "type": "text", "required": true, "advanced": true, "placeholder": "https://example.com", "helperMd": "HTTPS only. Do not include wp-json, credentials, query parameters, or fragments." },
+        { "key": "projectId", "label": "Paperclip project ID", "type": "text", "required": true, "advanced": true, "placeholder": "00000000-0000-0000-0000-000000000000", "helperMd": "Calls outside this exact project are denied.", "validation": { "pattern": "^[0-9a-fA-F-]{36}$", "maxLength": 36 } },
+        { "key": "allowedAgentIds", "label": "Allowed agent IDs", "type": "textarea", "required": true, "advanced": true, "placeholder": "agent UUID, agent UUID", "helperMd": "Comma-separated Paperclip agent IDs. Every other agent is denied.", "validation": { "pattern": "^[0-9a-fA-F,\\s-]+$", "maxLength": 4000 } }
+      ],
+      "credentialFields": [
+        { "key": "username", "label": "WordPress username", "type": "password", "required": true, "placeholder": "connector-user", "secret": true },
+        { "key": "application_password", "label": "WordPress Application Password", "type": "password", "required": true, "placeholder": "xxxx xxxx xxxx xxxx xxxx xxxx", "secret": true }
+      ],
+      "keyPlacement": { "location": "env", "name": "WORDPRESS_CONNECTOR_RUNTIME_ONLY" },
+      "warnings": [
+        "Read-only authentication check only. This connection cannot create, update, delete, publish, or otherwise write WordPress content."
+      ],
+      "requiredResourceFilters": ["project", "agent"]
+    }
+  ]
+}
