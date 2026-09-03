@@ -1159,21 +1159,118 @@ describe("shared ACPX engine runtime behavior", () => {
     await fs.symlink(outsideRoot, path.join(skill.source, "leak-dir"));
 
     const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "project");
+    await fs.mkdir(cwd, { recursive: true });
     const { meta } = await runExecutor({
       agent: "claude",
       stateDir,
+      cwd,
       paperclipRuntimeSkills: [skill],
       paperclipSkillSync: { desiredSkills: [skill.key] },
     });
 
-    const mountedRoot = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
-    const skillsHome = path.join(mountedRoot, ".claude", "skills");
+    // Skills must land under the project `cwd`'s `.claude/skills` — the only
+    // location the Claude Code SDK's `settingSources` scan actually
+    // discovers skills from. A stateDir-scoped bundle (the pre-fix behavior)
+    // is invisible to the SDK's Skill tool (TRY-1021).
+    const skillsHome = path.join(cwd, ".claude", "skills");
     const materializedSkill = path.join(skillsHome, skill.runtimeName);
     expect(await fs.readFile(path.join(materializedSkill, "SKILL.md"), "utf8")).toContain("# danger");
     expect(await pathExists(path.join(materializedSkill, "leak.txt"))).toBe(false);
     expect(await pathExists(path.join(materializedSkill, "leak-dir"))).toBe(false);
     expect(String(meta[0]?.prompt ?? "")).toContain(`Skill root: ${skillsHome}`);
   });
+
+  it.skipIf(process.platform === "win32")("revokes removed ACPX Claude skills from the project cwd", async () => {
+    const root = await makeTempRoot();
+    const skillRoot = path.join(root, "skills");
+    const cwd = path.join(root, "project");
+    await fs.mkdir(cwd, { recursive: true });
+    const keep = await createSkill(skillRoot, "keep");
+    const remove = await createSkill(skillRoot, "remove");
+
+    const baseConfig = {
+      agent: "claude",
+      stateDir: path.join(root, "state"),
+      cwd,
+      paperclipRuntimeSkills: [keep, remove],
+    };
+
+    await runExecutor({
+      ...baseConfig,
+      paperclipSkillSync: { desiredSkills: [keep.key, remove.key] },
+    });
+    const skillsHome = path.join(cwd, ".claude", "skills");
+    expect(await pathExists(path.join(skillsHome, remove.runtimeName, "SKILL.md"))).toBe(true);
+
+    await runExecutor({
+      ...baseConfig,
+      paperclipSkillSync: { desiredSkills: [keep.key] },
+    });
+
+    expect(await pathExists(path.join(skillsHome, keep.runtimeName, "SKILL.md"))).toBe(true);
+    expect(await pathExists(path.join(skillsHome, remove.runtimeName))).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "does not clobber a project-authored skill directory with the same name",
+    async () => {
+      const root = await makeTempRoot();
+      const skillRoot = path.join(root, "skills");
+      const cwd = path.join(root, "project");
+      const skill = await createSkill(skillRoot, "infra-deploy");
+
+      const skillsHome = path.join(cwd, ".claude", "skills");
+      const projectOwned = path.join(skillsHome, skill.runtimeName);
+      await fs.mkdir(projectOwned, { recursive: true });
+      await fs.writeFile(path.join(projectOwned, "SKILL.md"), "# hand-authored by the project\n", "utf8");
+
+      await runExecutor({
+        agent: "claude",
+        stateDir: path.join(root, "state"),
+        cwd,
+        paperclipRuntimeSkills: [skill],
+        paperclipSkillSync: { desiredSkills: [skill.key] },
+      });
+
+      // The project's own directory must survive untouched — Paperclip must
+      // never overwrite a same-named skill it didn't create.
+      expect(await fs.readFile(path.join(projectOwned, "SKILL.md"), "utf8")).toContain("hand-authored");
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not revoke a project-authored skill directory that reused a formerly-managed name",
+    async () => {
+      const root = await makeTempRoot();
+      const skillRoot = path.join(root, "skills");
+      const cwd = path.join(root, "project");
+      await fs.mkdir(cwd, { recursive: true });
+      const skill = await createSkill(skillRoot, "infra-deploy");
+
+      const baseConfig = {
+        agent: "claude",
+        stateDir: path.join(root, "state"),
+        cwd,
+        paperclipRuntimeSkills: [skill],
+      };
+
+      await runExecutor({ ...baseConfig, paperclipSkillSync: { desiredSkills: [skill.key] } });
+      const skillsHome = path.join(cwd, ".claude", "skills");
+      const target = path.join(skillsHome, skill.runtimeName);
+      expect(await pathExists(path.join(target, "SKILL.md"))).toBe(true);
+
+      // The project owner deselects the catalog skill and hand-authors their
+      // own directory with the same runtime name before the next run.
+      await fs.rm(target, { recursive: true, force: true });
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(path.join(target, "SKILL.md"), "# hand-authored by the project\n", "utf8");
+
+      await runExecutor({ ...baseConfig, paperclipSkillSync: { desiredSkills: [] } });
+
+      expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toContain("hand-authored");
+    },
+  );
 
   it.skipIf(process.platform === "win32")("revokes removed ACPX Codex skills and skips symlinked descendants", async () => {
     const root = await makeTempRoot();
