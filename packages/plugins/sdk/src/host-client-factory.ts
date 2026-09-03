@@ -87,6 +87,176 @@ export class InvocationScopeDeniedError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// Invocation company scope
+// ---------------------------------------------------------------------------
+
+/**
+ * The company a single worker→host call asks for, as the governed-access gate
+ * reads it off the JSON-RPC params.
+ *
+ * - `none` — the call references no company at all (instance-scoped state, an
+ *   unfiltered subscribe). Never gated.
+ * - `single` — one explicit company. Must match the invocation's company.
+ * - `all` — a wildcard read. Only `companies.list` may ask for it.
+ */
+export type CompanyScopeRequest =
+  | { kind: "none" }
+  | { kind: "single"; companyId: string }
+  | { kind: "all" };
+
+const NO_COMPANY_SCOPE: CompanyScopeRequest = { kind: "none" };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Derive which company a worker→host call references, from the method name and
+ * its JSON-RPC params.
+ *
+ * This is the single definition of "is this call company-scoped" for the whole
+ * SDK. `requireInvocationCompanyScope` gates on it, `createTestHarness` mirrors
+ * it so a fake `ctx` refuses exactly what the host refuses, and the host's own
+ * proactive-scope resolver (`plugin-worker-manager.ts` `referencedCompanyId`)
+ * is documented as tracking it. Change it in one place only.
+ */
+export function requestedCompanyScope(
+  method: WorkerToHostMethodName,
+  params: unknown,
+): CompanyScopeRequest {
+  if (method === "companies.list") return { kind: "all" };
+  if (!isRecord(params)) return NO_COMPANY_SCOPE;
+
+  const companyId = readNonEmptyString(params.companyId);
+  if (companyId) return { kind: "single", companyId };
+
+  if (params.scopeKind === "company") {
+    const scopeId = readNonEmptyString(params.scopeId);
+    return scopeId ? { kind: "single", companyId: scopeId } : { kind: "all" };
+  }
+
+  if (method === "events.subscribe" && isRecord(params.filter)) {
+    const filterCompanyId = readNonEmptyString(params.filter.companyId);
+    if (filterCompanyId) return { kind: "single", companyId: filterCompanyId };
+  }
+
+  return NO_COMPANY_SCOPE;
+}
+
+/**
+ * Enforce that a worker→host call stays inside the company authorized for the
+ * current top-level plugin invocation.
+ *
+ * Exported so test doubles can enforce the same rule with the same messages. A
+ * fake host that skips this check does not merely fail to test the gate, it
+ * deletes the gate from the model under test — the plugin then passes its whole
+ * suite and is refused by the real host on its first company-scoped call.
+ *
+ * @param pluginId - Plugin the call belongs to, for the error message
+ * @param method - Worker→host method being called
+ * @param params - JSON-RPC params for the call
+ * @param context - Invocation scope the host resolved for this call
+ * @throws InvocationScopeDeniedError when the call leaves its invocation's company
+ */
+export function requireInvocationCompanyScope(
+  pluginId: string,
+  method: WorkerToHostMethodName,
+  params: unknown,
+  context?: WorkerHostCallContext,
+): void {
+  const requested = requestedCompanyScope(method, params);
+  if (requested.kind === "none") return;
+
+  if (context?.invalidInvocationScope) {
+    throw new InvocationScopeDeniedError(
+      pluginId,
+      method,
+      "the worker referenced a missing, expired, or unknown invocation scope",
+    );
+  }
+
+  const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+
+  if (requested.kind === "all") {
+    if (method === "companies.list") return;
+    if (!allowedCompanyId) {
+      throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+    }
+    throw new InvocationScopeDeniedError(
+      pluginId,
+      method,
+      `the current invocation is scoped to company "${allowedCompanyId}"`,
+    );
+  }
+
+  if (!allowedCompanyId) {
+    throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+  }
+
+  if (requested.companyId !== allowedCompanyId) {
+    throw new InvocationScopeDeniedError(
+      pluginId,
+      method,
+      `requested company "${requested.companyId}" but the current invocation is scoped to company "${allowedCompanyId}"`,
+    );
+  }
+}
+
+/**
+ * Resolve the single company a call must run against, for the methods that
+ * cannot proceed without one (`config.get`, `secrets.resolve`).
+ *
+ * Unlike `requireInvocationCompanyScope`, this also refuses a call that names
+ * no company at all: outside an invocation there is nothing to fall back to, so
+ * "no company anywhere" is `company context is required` rather than a pass.
+ *
+ * @param pluginId - Plugin the call belongs to, for the error message
+ * @param method - Worker→host method being called
+ * @param params - JSON-RPC params for the call
+ * @param context - Invocation scope the host resolved for this call
+ * @returns The company the call resolves to
+ * @throws InvocationScopeDeniedError when no company resolves, or the call leaves its own
+ */
+export function resolveRequiredCompanyId(
+  pluginId: string,
+  method: WorkerToHostMethodName,
+  params: unknown,
+  context?: WorkerHostCallContext,
+): string {
+  if (context?.invalidInvocationScope) {
+    throw new InvocationScopeDeniedError(
+      pluginId,
+      method,
+      "the worker referenced a missing, expired, or unknown invocation scope",
+    );
+  }
+
+  const requested = requestedCompanyScope(method, params);
+  const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+  if (requested.kind === "single") {
+    if (!scopedCompanyId) {
+      throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+    }
+    if (requested.companyId !== scopedCompanyId) {
+      throw new InvocationScopeDeniedError(
+        pluginId,
+        method,
+        `requested company "${requested.companyId}" but the current invocation is scoped to company "${scopedCompanyId}"`,
+      );
+    }
+    return scopedCompanyId;
+  }
+
+  if (scopedCompanyId) return scopedCompanyId;
+
+  throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
+}
+
+// ---------------------------------------------------------------------------
 // Host service interfaces
 // ---------------------------------------------------------------------------
 
@@ -553,121 +723,6 @@ export function createHostClientHandlers(
   const { pluginId, services } = options;
   const capabilitySet = new Set<PluginCapability>(options.capabilities);
 
-  type CompanyScopeRequest =
-    | { kind: "none" }
-    | { kind: "single"; companyId: string }
-    | { kind: "all" };
-
-  const noCompanyScope: CompanyScopeRequest = { kind: "none" };
-
-  function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-  }
-
-  function readNonEmptyString(value: unknown): string | null {
-    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-  }
-
-  function requestedCompanyScope(
-    method: WorkerToHostMethodName,
-    params: unknown,
-  ): CompanyScopeRequest {
-    if (method === "companies.list") return { kind: "all" };
-    if (!isRecord(params)) return noCompanyScope;
-
-    const companyId = readNonEmptyString(params.companyId);
-    if (companyId) return { kind: "single", companyId };
-
-    if (params.scopeKind === "company") {
-      const scopeId = readNonEmptyString(params.scopeId);
-      return scopeId ? { kind: "single", companyId: scopeId } : { kind: "all" };
-    }
-
-    if (method === "events.subscribe" && isRecord(params.filter)) {
-      const filterCompanyId = readNonEmptyString(params.filter.companyId);
-      if (filterCompanyId) return { kind: "single", companyId: filterCompanyId };
-    }
-
-    return noCompanyScope;
-  }
-
-  function requireInvocationCompanyScope(
-    method: WorkerToHostMethodName,
-    params: unknown,
-    context?: WorkerHostCallContext,
-  ): void {
-    const requested = requestedCompanyScope(method, params);
-    if (requested.kind === "none") return;
-
-    if (context?.invalidInvocationScope) {
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        "the worker referenced a missing, expired, or unknown invocation scope",
-      );
-    }
-
-    const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
-
-    if (requested.kind === "all") {
-      if (method === "companies.list") return;
-      if (!allowedCompanyId) {
-        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-      }
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        `the current invocation is scoped to company "${allowedCompanyId}"`,
-      );
-    }
-
-    if (!allowedCompanyId) {
-      throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-    }
-
-    if (requested.companyId !== allowedCompanyId) {
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        `requested company "${requested.companyId}" but the current invocation is scoped to company "${allowedCompanyId}"`,
-      );
-    }
-  }
-
-  function resolveRequiredCompanyId(
-    method: WorkerToHostMethodName,
-    params: unknown,
-    context?: WorkerHostCallContext,
-  ): string {
-    if (context?.invalidInvocationScope) {
-      throw new InvocationScopeDeniedError(
-        pluginId,
-        method,
-        "the worker referenced a missing, expired, or unknown invocation scope",
-      );
-    }
-
-    const requested = requestedCompanyScope(method, params);
-    const scopedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
-    if (requested.kind === "single") {
-      if (!scopedCompanyId) {
-        throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-      }
-      if (requested.companyId !== scopedCompanyId) {
-        throw new InvocationScopeDeniedError(
-          pluginId,
-          method,
-          `requested company "${requested.companyId}" but the current invocation is scoped to company "${scopedCompanyId}"`,
-        );
-      }
-      return scopedCompanyId;
-    }
-
-    if (scopedCompanyId) return scopedCompanyId;
-
-    throw new InvocationScopeDeniedError(pluginId, method, "company context is required");
-  }
-
   /**
    * Assert that the plugin has the required capability for a method.
    * Throws `CapabilityDeniedError` if the capability is missing.
@@ -694,7 +749,7 @@ export function createHostClientHandlers(
   ): HostHandler<M> {
     return async (params: WorkerToHostMethods[M][0], context?: WorkerHostCallContext) => {
       requireCapability(method);
-      requireInvocationCompanyScope(method, params, context);
+      requireInvocationCompanyScope(pluginId, method, params, context);
       return handler(params, context);
     };
   }
@@ -706,7 +761,7 @@ export function createHostClientHandlers(
   return {
     // Config
     "config.get": gated("config.get", async (params, context) => {
-      const companyId = resolveRequiredCompanyId("config.get", params, context);
+      const companyId = resolveRequiredCompanyId(pluginId, "config.get", params, context);
       return services.config.get({ ...params, companyId }, context);
     }),
 
@@ -776,7 +831,7 @@ export function createHostClientHandlers(
 
     // Secrets
     "secrets.resolve": gated("secrets.resolve", async (params, context) => {
-      const companyId = resolveRequiredCompanyId("secrets.resolve", params, context);
+      const companyId = resolveRequiredCompanyId(pluginId, "secrets.resolve", params, context);
       return services.secrets.resolve({ ...params, companyId }, context);
     }),
 
