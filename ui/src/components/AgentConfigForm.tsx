@@ -61,10 +61,11 @@ import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
+import type { EnvironmentVariablesEditorHandle } from "./environment-variables-editor";
 import {
-  EnvironmentVariablesEditor,
-  type EnvironmentVariablesEditorHandle,
-} from "./environment-variables-editor";
+  AgentEnvironmentVariablesEditor,
+  replaceAgentCompanySecretEnv,
+} from "./AgentEnvironmentVariablesEditor";
 import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { useProposalReview } from "../pages/secrets/proposal-review";
@@ -273,16 +274,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
-  // User-secret definitions power the "User secret" env binding source. Requires
-  // secret-admin; non-admins simply get the free-text key fallback in the editor.
-  const { data: userSecretDefinitions = [] } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.secrets.userDefinitions(selectedCompanyId)
-      : ["user-secret-definitions", "none"],
-    queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
-    retry: false,
-  });
   // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
   // non-permitted viewers simply get an empty list.
   const editAgentId = !isCreate ? props.agent.id : null;
@@ -361,17 +352,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => resolveForcedKubernetesEnvironment(generalSettings?.executionMode, environments),
     [generalSettings?.executionMode, environments],
   );
-  const createSecret = useMutation({
-    mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select an organization to create secrets");
-      return secretsApi.create(selectedCompanyId, input);
-    },
-    onSuccess: () => {
-      if (!selectedCompanyId) return;
-      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
-    },
-  });
-
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
       if (!selectedCompanyId) throw new Error("Select an organization to upload images");
@@ -383,10 +363,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
   const agentRef = useRef<Agent | null>(null);
 
-  // Clear overlay when agent data refreshes (after save)
+  // Clear the overlay only when the persisted agent version changes. Query
+  // refreshes routinely replace the object without changing updatedAt; treating
+  // those as saves discards a promoted environment-variable draft.
   useEffect(() => {
     if (!isCreate) {
-      if (agentRef.current !== null && props.agent !== agentRef.current) {
+      const previous = agentRef.current;
+      if (
+        previous !== null
+        && (previous.id !== props.agent.id || String(previous.updatedAt) !== String(props.agent.updatedAt))
+      ) {
         setOverlay({ ...emptyOverlay });
       }
       agentRef.current = props.agent;
@@ -436,6 +422,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         if (!(alias in next)) nextAdapterConfig[key] = undefined;
       }
       return { ...prev, adapterConfig: nextAdapterConfig };
+    });
+  }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Replace env-delivered company secrets while retaining plain and user-secret bindings. */
+  const applyEnvironmentSecretBindings = useCallback((next: Record<string, EnvSecretRefBinding>) => {
+    if (isCreate) return;
+    setOverlay((prev) => {
+      const effective = { ...(props.agent.adapterConfig ?? {}), ...prev.adapterConfig } as Record<string, unknown>;
+      const currentEnv = (effective.env ?? {}) as Record<string, EnvBinding>;
+      return {
+        ...prev,
+        adapterConfig: {
+          ...prev.adapterConfig,
+          env: replaceAgentCompanySecretEnv(currentEnv, next),
+        },
+      };
     });
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1179,8 +1181,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <AgentSecretAccessEditor
               config={{ ...config, ...overlay.adapterConfig }}
               secrets={availableSecrets}
+              onEnvChange={applyEnvironmentSecretBindings}
               onChange={applyAccessGrants}
-              onCreateSecret={(name, value) => createSecret.mutateAsync({ name, value })}
               proposals={agentBindingProposals}
               onApproveProposal={proposalReview.requestApprove}
               onRejectProposal={proposalReview.requestReject}
@@ -1672,19 +1674,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </Field>
 
               <Field label="Environment variables" hint={help.envVars}>
-                <EnvironmentVariablesEditor
+                <AgentEnvironmentVariablesEditor
                   ref={environmentVariablesEditorRef}
                   value={
                     isCreate
                       ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
                       : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
                   }
-                  secrets={availableSecrets}
-                  userSecretDefinitions={userSecretDefinitions}
-                  onCreateSecret={async (name, value) => {
-                    const created = await createSecret.mutateAsync({ name, value });
-                    return created;
-                  }}
                   onChange={(env) =>
                     isCreate
                       ? set!({ envBindings: env ?? {}, envVars: "" })

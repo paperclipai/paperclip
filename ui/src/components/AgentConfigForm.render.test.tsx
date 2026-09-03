@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shared";
+import type { Agent, Environment } from "@paperclipai/shared";
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
@@ -252,6 +252,7 @@ async function renderForm(
   options: {
     showAdapterTestEnvironmentButton?: boolean;
     content?: "configuration" | "secrets";
+    hideInlineSave?: boolean;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -265,21 +266,43 @@ async function renderForm(
       mutations: { retry: false },
     },
   });
+  const onSave = vi.fn();
+  let saveAction: (() => void) | null = null;
+  let refreshAgent = () => {};
+
+  function FormHarness() {
+    const [agent, setAgent] = useState(() => makeAgent(agentOverrides));
+    refreshAgent = () => setAgent((current) => ({ ...current }));
+    return (
+      <>
+        {options.hideInlineSave ? (
+          <button type="button" onClick={() => saveAction?.()}>
+            Save agent
+          </button>
+        ) : null}
+        <AgentConfigForm
+          mode="edit"
+          agent={agent}
+          onSave={onSave}
+          onSaveActionChange={(next) => {
+            saveAction = next;
+          }}
+          hideInlineSave={options.hideInlineSave}
+          hidePromptTemplate
+          content={options.content}
+          showAdapterTypeField={false}
+          showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
+        />
+      </>
+    );
+  }
 
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
           <TooltipProvider>
-            <AgentConfigForm
-              mode="edit"
-              agent={makeAgent(agentOverrides)}
-              onSave={vi.fn()}
-              hidePromptTemplate
-              content={options.content}
-              showAdapterTypeField={false}
-              showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
-            />
+            <FormHarness />
           </TooltipProvider>
         </ToastProvider>
       </QueryClientProvider>,
@@ -287,7 +310,7 @@ async function renderForm(
   });
 
   await flushReact();
-  return { container, root };
+  return { container, root, onSave, refreshAgent };
 }
 
 async function renderCreateForm(
@@ -733,6 +756,57 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).not.toContain("Secret access");
   });
 
+  it("persists a new plain environment variable while preserving hidden secret assignments", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterConfig: {
+          env: {
+            YANDEX_ID_CLIENT_ID: {
+              type: "secret_ref",
+              secretId: "company-secret",
+              version: "latest",
+            },
+          },
+        },
+      },
+      { hideInlineSave: true },
+    );
+    roots.push(result.root);
+
+    await act(() => findButton(result.container, "Add variable")!.click());
+
+    const nameInput = result.container.querySelector<HTMLInputElement>(
+      'input[aria-label="Variable name"]',
+    )!;
+    const valueInput = result.container.querySelector<HTMLInputElement>(
+      'input[aria-label="Variable value"]',
+    )!;
+    await act(() => {
+      setInputValue(nameInput, "QA_PLAIN_CHECK");
+      setInputValue(valueInput, "zol12429");
+    });
+
+    await act(() => findButton(result.container, "Save")!.click());
+    await flushReact();
+    await act(() => result.refreshAgent());
+    await flushReact();
+    await act(() => findButton(result.container, "Save agent")!.click());
+    await flushReact();
+
+    expect(result.onSave).toHaveBeenCalledTimes(1);
+    const patch = result.onSave.mock.calls[0]![0] as Record<string, unknown>;
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    expect(adapterConfig.env).toEqual({
+      YANDEX_ID_CLIENT_ID: {
+        type: "secret_ref",
+        secretId: "company-secret",
+        version: "latest",
+      },
+      QA_PLAIN_CHECK: { type: "plain", value: "zol12429" },
+    });
+  });
+
   it("renders secret access as dedicated form content", async () => {
     const result = await renderForm(
       [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
@@ -742,8 +816,9 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     expect(result.container.textContent).toContain("Secret access");
-    expect(result.container.textContent).toContain("No secrets are bound to this agent yet.");
-    expect(result.container.textContent).not.toContain("Environment variables");
+    expect(result.container.textContent).toContain("Environment variables");
+    expect(result.container.textContent).toContain("No environment secrets assigned.");
+    expect(result.container.textContent).toContain("Add environment secret");
   });
 
   it("shows concise Environment copy when one runnable non-local environment exists", async () => {
@@ -1792,11 +1867,7 @@ describe("AgentConfigForm environment selector", () => {
     expect("storedSessionId" in payload).toBe(false);
   });
 
-  it("clears the false missing-definition error on the bound row after a login stores the token", async () => {
-    // Regression: the user-secret-definitions list read at page load does not
-    // yet contain the Claude token key, but it is not empty. A stale non-empty
-    // list makes the bound row show a false "no longer exists" error. The login
-    // must invalidate the list so the refetch clears the error.
+  it("keeps the login-created user-secret binding out of Configuration", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
     mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
       sessionId: "claude-session-1",
@@ -1805,32 +1876,6 @@ describe("AgentConfigForm environment selector", () => {
       expiresAt: null,
       failure: null,
     });
-    const makeDefinition = (key: string): UserSecretDefinition => ({
-      id: `def-${key}`,
-      companyId: "company-1",
-      key,
-      name: key.toUpperCase(),
-      description: null,
-      status: "active",
-      provider: "local_encrypted",
-      managedMode: "paperclip_managed",
-      providerConfigId: null,
-      providerMetadata: null,
-      usageGuidance: null,
-      createdByAgentId: null,
-      createdByUserId: null,
-      updatedByAgentId: null,
-      updatedByUserId: null,
-      deletedAt: null,
-      createdAt: new Date(0),
-      updatedAt: new Date(0),
-    });
-    const staleList = [makeDefinition("OTHER_SECRET")];
-    const freshList = [makeDefinition("OTHER_SECRET"), makeDefinition("CLAUDE_CODE_OAUTH_TOKEN")];
-    mockSecretsApi.listUserSecretDefinitions.mockReset();
-    mockSecretsApi.listUserSecretDefinitions
-      .mockResolvedValueOnce(staleList)
-      .mockResolvedValue(freshList);
 
     const result = await renderStatefulCreateClaudeSandbox([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
@@ -1849,20 +1894,9 @@ describe("AgentConfigForm environment selector", () => {
 
     // The login bound the fixed Claude token row.
     expect("CLAUDE_CODE_OAUTH_TOKEN" in (result.valuesRef.current.envBindings ?? {})).toBe(true);
-
-    // The invalidation refetched the definitions, so the stale list no longer
-    // drives the row.
-    await flushUntil(() => mockSecretsApi.listUserSecretDefinitions.mock.calls.length >= 2);
-    await flushUntil(() => {
-      const inputs = Array.from(result.container.querySelectorAll("input"));
-      return inputs.some((input) => (input as HTMLInputElement).value === "CLAUDE_CODE_OAUTH_TOKEN");
-    });
-
-    // Vacuous-pass guard: the bound row rendered.
     const inputs = Array.from(result.container.querySelectorAll("input"));
-    expect(inputs.some((input) => (input as HTMLInputElement).value === "CLAUDE_CODE_OAUTH_TOKEN")).toBe(true);
-    // The row shows no false missing-definition error.
-    expect(result.container.textContent ?? "").not.toContain("no longer exists");
+    expect(inputs.some((input) => (input as HTMLInputElement).value === "CLAUDE_CODE_OAUTH_TOKEN")).toBe(false);
+    expect(result.container.textContent ?? "").toContain("Assign secrets on the Secrets tab");
   });
 
   it("reports the non-secret stored-session claim to the parent on success", async () => {

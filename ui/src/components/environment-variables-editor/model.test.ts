@@ -264,5 +264,7 @@ describe("name suggestion helpers", () => {
 
   it("envKeyFromSecretName uppercases to snake", () => {
     expect(envKeyFromSecretName("github token")).toBe("GITHUB_TOKEN");
+    expect(envKeyFromSecretName("123 token")).toBe("_123_TOKEN");
+    expect(envKeyFromSecretName("!!!")).toBe("SECRET");
   });
 });

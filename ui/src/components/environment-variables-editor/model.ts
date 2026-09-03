@@ -297,10 +297,13 @@ export function secretNameFromKey(key: string): string {
 
 /** Suggest an env KEY (UPPER_SNAKE) from a secret name (for quick-bind). */
 export function envKeyFromSecretName(name: string): string {
-  return name
+  const normalized = name
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9_]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .slice(0, 64);
+  if (!normalized) return "SECRET";
+  if (/^[A-Z_]/.test(normalized)) return normalized;
+  return `_${normalized.slice(0, 63)}`;
 }
