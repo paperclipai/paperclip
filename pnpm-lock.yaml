@@ -7204,6 +7204,7 @@ packages:
 
   opencode-ai@1.18.17:
     resolution: {integrity: sha512-Pc2D3Y6iQ3BAjcKw9E+9J7VTWNazIwFknFfrolufMCrJ0FLxOIZfndoHmJrx4x1oqpK2CPAqK9D2V6nsp6Oebw==}
+    cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 
