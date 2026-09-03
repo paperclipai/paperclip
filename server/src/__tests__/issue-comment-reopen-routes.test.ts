@@ -450,7 +450,12 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
+  // AGE-759 regression: reassigning to an agent on a done issue must NOT by
+  // itself flip status back to todo. The web UI already sends an explicit
+  // `reopen: true` flag whenever it means to reopen (see
+  // `shouldImplicitlyReopenComment` in IssueChatThread.tsx); a plain
+  // comment + reassignment with no explicit flag must leave status alone.
+  it("does not implicitly reopen a done issue via the PATCH comment path just because it reassigns to an agent", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
@@ -459,6 +464,27 @@ describe.sequential("issue comment reopen routes", () => {
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello", assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    const patch = mockIssueService.update.mock.calls[0][1] as Record<string, unknown>;
+    expect(patch.assigneeAgentId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(patch.status).toBeUndefined();
+  });
+
+  it("reopens a done issue via the PATCH comment path when reassigning to an agent with explicit reopen=true", async () => {
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        comment: "hello",
+        reopen: true,
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -480,6 +506,41 @@ describe.sequential("issue comment reopen routes", () => {
           status: "todo",
         }),
       }),
+    );
+  });
+
+  // AGE-759 regression suite: PATCH /api/issues/:id with only { comment }
+  // must never change status. This is verified two ways: (1) the update
+  // call made to the issue service must not carry a status field, and
+  // (2) re-fetching the issue from the (now-updated) store afterward
+  // — the same `svc.getById` call the GET /api/issues/:id route makes as
+  // its first, authoritative step — still returns the original status.
+  // This proves persisted state is unchanged, not just the PATCH response.
+  describe("AGE-759: comment-only PATCH never changes status", () => {
+    it.each(["done", "cancelled", "in_review", "todo"] as const)(
+      "leaves a %s issue's status unchanged after a comment-only PATCH, verified by re-fetch",
+      async (status) => {
+        let stored = makeIssue(status);
+        mockIssueService.getById.mockImplementation(async () => stored);
+        mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+          stored = { ...stored, ...patch };
+          return makeIssueUpdateReceipt(stored, patch);
+        });
+
+        const app = await installActor(createApp());
+        const patchRes = await request(app)
+          .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+          .send({ comment: "operator note, no status field" });
+
+        expect(patchRes.status).toBe(200);
+        if (mockIssueService.update.mock.calls.length > 0) {
+          const patch = mockIssueService.update.mock.calls[0][1] as Record<string, unknown>;
+          expect(patch.status).toBeUndefined();
+        }
+
+        const refetched = await mockIssueService.getById("11111111-1111-4111-8111-111111111111");
+        expect(refetched.status).toBe(status);
+      },
     );
   });
 
@@ -560,7 +621,10 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("implicitly reopens closed issues via POST comments when an agent is assigned", async () => {
+  // AGE-759 regression: a comment-only POST on a done issue with an
+  // assigned agent must NOT silently reopen it. Explicit `reopen`/`resume`
+  // is required to move a terminal issue back to todo.
+  it("does not implicitly reopen a done issue via POST comments when an agent is assigned but no reopen flag is sent", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
@@ -569,6 +633,20 @@ describe.sequential("issue comment reopen routes", () => {
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("reopens a done issue via POST comments with an explicit reopen flag when an agent is assigned", async () => {
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello", reopen: true });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -1447,7 +1525,11 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("still implicitly reopens done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
+  // AGE-759 regression: a plain comment from a different run than the one
+  // that owns the issue still must NOT reopen a done issue without an
+  // explicit reopen/resume flag. Only the flag decides reopening now, not
+  // whether the commenting run differs from the owning run.
+  it("does not implicitly reopen done issues via POST comments when the comment runId differs from the issue's owning run and no reopen flag is sent", async () => {
     mockIssueService.getById.mockResolvedValue({
       ...makeIssue("done"),
       checkoutRunId: "run-owning",
@@ -1470,10 +1552,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "Real human follow-up — please reopen" });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
-    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("does not implicitly reopen done issues via the PATCH comment path when actor runId matches the issue's checkout run", async () => {
