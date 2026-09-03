@@ -88,23 +88,17 @@ test.describe("Contextual sidebar companion", () => {
     expect(labelBox!.width).toBeGreaterThan(20);
   });
 
-  test("preserves an expanded global preference across contextual navigation", async ({ page }) => {
-    await page.addInitScript(
-      ({ key }) => window.localStorage.setItem(key, "0"),
-      { key: COLLAPSED_STORAGE_KEY },
-    );
-
+  test("keeps the retired collapse control absent across contextual navigation", async ({ page }) => {
     await page.goto(`/${prefix}/company/settings`);
     await expect(page.locator('[data-contextual-sidebar="settings"]')).toBeVisible();
     await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
+    await expect(page.getByLabel(APP_SIDEBAR_EXPANDED_MARKER)).toHaveCount(0);
 
     await page.goto(`/${prefix}/dashboard`);
 
     await expect(page.locator("[data-contextual-sidebar]")).toHaveCount(0);
     await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
-    await expect(page.getByLabel(APP_SIDEBAR_EXPANDED_MARKER)).toBeVisible();
-    await expect.poll(() => page.evaluate((key) => window.localStorage.getItem(key), COLLAPSED_STORAGE_KEY))
-      .toBe("0");
+    await expect(page.getByLabel(APP_SIDEBAR_EXPANDED_MARKER)).toHaveCount(0);
   });
 
   test("uses Dashboard as the safe fallback for a direct Settings link", async ({ page }) => {
