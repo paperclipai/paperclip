@@ -8,7 +8,7 @@ interface ParsedPiOutput {
     inputTokens: number;
     outputTokens: number;
     cachedInputTokens: number;
-    costUsd: number;
+    costUsd: number | null;
   };
   finalMessage: string | null;
   toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; result: string | null; isError: boolean }>;
@@ -37,7 +37,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
       inputTokens: 0,
       outputTokens: 0,
       cachedInputTokens: 0,
-      costUsd: 0,
+      costUsd: null,
     },
     finalMessage: null,
     toolCalls: [],
@@ -110,7 +110,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
           // Pi stores cost in usage.cost.total (and broken down in usage.cost.input, etc.)
           const cost = asRecord(usage.cost);
           if (cost) {
-            result.usage.costUsd += asNumber(cost.total, 0);
+            result.usage.costUsd = (result.usage.costUsd ?? 0) + asNumber(cost.total, 0);
           }
         }
       }
@@ -206,9 +206,9 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
         // Cost may be in usage.costUsd (direct) or usage.cost.total (Pi format)
         const cost = asRecord(usage.cost);
         if (cost) {
-          result.usage.costUsd += asNumber(cost.total ?? usage.costUsd, 0);
-        } else {
-          result.usage.costUsd += asNumber(usage.costUsd, 0);
+          result.usage.costUsd = (result.usage.costUsd ?? 0) + asNumber(cost.total ?? usage.costUsd, 0);
+        } else if (usage.costUsd != null) {
+          result.usage.costUsd = (result.usage.costUsd ?? 0) + asNumber(usage.costUsd, 0);
         }
       }
     }
