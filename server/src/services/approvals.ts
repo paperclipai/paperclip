@@ -7,11 +7,19 @@ import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { secretService } from "./secrets.js";
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
+  const secretsSvc = secretService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
@@ -183,6 +191,22 @@ export function approvalService(db: Db) {
           hireApprovedAgentId = created?.id ?? null;
         }
         if (hireApprovedAgentId) {
+          // Persist the secret bindings for the freshly hired agent. Both the
+          // activatePendingApproval and create branches leave secret_ref values
+          // in adapterConfig.env without writing company_secret_bindings rows,
+          // so without this the agent fails every run with "Secret is not bound
+          // to ..." (binding_missing). Read the env back from the persisted
+          // agent so we sync exactly what was stored. See COD-362.
+          const hiredAgent = await agentsSvc.getById(hireApprovedAgentId);
+          const agentEnv = asRecord(hiredAgent?.adapterConfig)?.env;
+          if (agentEnv) {
+            await secretsSvc.syncEnvBindingsForTarget?.(
+              updated.companyId,
+              { targetType: "agent", targetId: hireApprovedAgentId },
+              agentEnv,
+            );
+          }
+
           const budgetMonthlyCents =
             typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0;
           if (budgetMonthlyCents > 0) {
