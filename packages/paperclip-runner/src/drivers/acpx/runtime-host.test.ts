@@ -25,6 +25,62 @@ const admissionControllers: AbortController[] = [];
 const pendingAdmissionOpenings = new Set<Promise<void>>();
 const pendingAdmissionCleanups = new Set<Promise<void>>();
 
+// A credential or sandbox poll in this file can run behind a real retry
+// envelope, not a mocked one. `stageManagedCodexCredential` first joins any
+// in-flight quarantine recovery (codex-credentials.ts:183, :610-625). That
+// recovery makes up to `MAX_AUTONOMOUS_CREDENTIAL_CLEANUP_ATTEMPTS` (8)
+// attempts (codex-credentials.ts:19). The backoff between attempts is 10,
+// 20, 40, 80, 160, 320, and 640 ms — 1,270 ms in total
+// (codex-credentials.ts:558, :578-582). Each attempt can also run one real
+// directory fsync. `DIRECTORY_SYNC_OPERATION_TIMEOUT_MS` (1,000 ms,
+// codex-credentials.ts:18, :569, :1304) bounds that fsync. So one full
+// recovery pass can cost up to 1,270 ms of backoff plus 8,000 ms of bounded
+// fsync waits.
+//
+// When a pass does not clear the quarantine,
+// `recoverQuarantinedCredentialCleanup` joins one more bounded attempt (up
+// to 1,000 ms) before it gives up (codex-credentials.ts:616-619). The
+// vitest default `vi.waitFor`
+// deadline is 1,000 ms, smaller than a single one of those inner bounds. So
+// a poll can time out even though the call is still in progress. Ten
+// seconds covers a realistic pass (a few real attempts, not the full
+// pathological sum) with margin. A 20-second per-test budget keeps this
+// wait reachable under the vitest per-test timeout.
+const ACPX_OPERATION_WAIT_DEADLINE_MS = 10_000;
+const ACPX_LONG_WAIT_TEST_TIMEOUT_MS = 20_000;
+
+/**
+ * Poll a credential or sandbox operation. Use a deadline derived from the
+ * real retry envelope described above. Unlike a bare `vi.waitFor`, report
+ * the last observed error when the deadline expires.
+ */
+async function waitForAcpxOperation<T>(
+  callback: () => T | Promise<T>,
+): Promise<T> {
+  const deadline = Date.now() + ACPX_OPERATION_WAIT_DEADLINE_MS;
+  let lastError: unknown = new Error(
+    "no attempt of this ACPX operation settled before the deadline",
+  );
+  for (;;) {
+    try {
+      return await callback();
+    } catch (error) {
+      lastError = error;
+    }
+    if (Date.now() >= deadline) {
+      const detail =
+        lastError instanceof Error
+          ? (lastError.stack ?? lastError.message)
+          : String(lastError);
+      throw new Error(
+        `ACPX operation did not settle within ${ACPX_OPERATION_WAIT_DEADLINE_MS}ms. Last observed error: ${detail}`,
+        { cause: lastError },
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 afterEach(async () => {
   for (const controller of admissionControllers.splice(0)) {
     if (!controller.signal.aborted) {
@@ -211,7 +267,7 @@ describe("ACPX runtime host", () => {
     expect(createRuntime).not.toHaveBeenCalled();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
     const authPath = join(credentialHome, "auth.json");
-    const contender = await vi.waitFor(() =>
+    const contender = await waitForAcpxOperation(() =>
       stageManagedCodexCredential({
         agentHomeDirectory: credentialHome,
         environment: {
@@ -235,7 +291,7 @@ describe("ACPX runtime host", () => {
     );
     await retryHost.close({ reason: "retry admission complete" });
     expect(retryRuntime.close).toHaveBeenCalledOnce();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("composes admission, isolation, model verification, and cleanup", async () => {
     const fixture = await hostFixture();
@@ -575,7 +631,7 @@ describe("ACPX runtime host", () => {
       ),
     ).rejects.toThrow(/initialization and cleanup failed/);
 
-    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledTimes(2));
+    await waitForAcpxOperation(() => expect(runtime.close).toHaveBeenCalledTimes(2));
     await expect(readFile(authPath, "utf8")).resolves.toContain(
       "failed-admission",
     );
@@ -589,7 +645,7 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow("already has an active lease");
 
     resolveRetryClose();
-    await vi.waitFor(async () => {
+    await waitForAcpxOperation(async () => {
       await expect(readFile(authPath)).rejects.toMatchObject({
         code: "ENOENT",
       });
@@ -601,7 +657,7 @@ describe("ACPX runtime host", () => {
       },
     });
     await contender.close();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("bounds post-handshake model verification and cleans the runtime", async () => {
     const fixture = await hostFixture();
@@ -748,8 +804,8 @@ describe("ACPX runtime host", () => {
     const authPath = join(credentialHome, "auth.json");
 
     const first = host.close({ reason: "runtime close pending" });
-    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(fixture.commandClose).toHaveBeenCalledOnce());
+    await waitForAcpxOperation(() => expect(runtime.close).toHaveBeenCalledOnce());
+    await waitForAcpxOperation(() => expect(fixture.commandClose).toHaveBeenCalledOnce());
     const second = host.close({ reason: "same exact close" });
     await expect(readFile(authPath, "utf8")).resolves.toBe("{}");
     await expect(
@@ -775,7 +831,7 @@ describe("ACPX runtime host", () => {
       },
     });
     await contender.close();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("retains the exact pending cleanup while independent resources close", async () => {
     const fixture = await hostFixture();
@@ -798,7 +854,7 @@ describe("ACPX runtime host", () => {
     );
 
     const first = host.close({ reason: "first close stalls" });
-    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
+    await waitForAcpxOperation(() => expect(runtime.close).toHaveBeenCalledOnce());
     const second = host.close({ reason: "same pending owner" });
     let settled = false;
     void Promise.all([first, second]).finally(() => {
@@ -808,7 +864,7 @@ describe("ACPX runtime host", () => {
     expect(settled).toBe(false);
     expect(runtime.close).toHaveBeenCalledOnce();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("retries only after the exact close outcome settles with failure", async () => {
     const fixture = await hostFixture();
@@ -1079,9 +1135,9 @@ describe("ACPX runtime host", () => {
       close: lateCommandClose,
     });
 
-    await vi.waitFor(() => expect(lateCommandClose).toHaveBeenCalledOnce());
+    await waitForAcpxOperation(() => expect(lateCommandClose).toHaveBeenCalledOnce());
     expect(openRuntime).not.toHaveBeenCalled();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("closes a credential lease that resolves after admission is aborted", async () => {
     const fixture = await hostFixture();
@@ -1140,10 +1196,10 @@ describe("ACPX runtime host", () => {
       close: lateCredentialClose,
     });
 
-    await vi.waitFor(() =>
+    await waitForAcpxOperation(() =>
       expect(lateCredentialClose).toHaveBeenCalledTimes(2),
     );
-    await vi.waitFor(async () =>
+    await waitForAcpxOperation(async () =>
       expect(readFile(lateCredentialPath)).rejects.toMatchObject({
         code: "ENOENT",
       }),
@@ -1156,7 +1212,7 @@ describe("ACPX runtime host", () => {
     });
     expect(openRuntime).not.toHaveBeenCalled();
     expect(fixture.commandClose).not.toHaveBeenCalled();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("retains managed credentials until an aborted late runtime is closed", async () => {
     const fixture = await hostFixture();
@@ -1219,7 +1275,7 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow("already has an active lease");
 
     runtimeAdmission.resolve(lateRuntime);
-    await vi.waitFor(() => expect(lateRuntime.close).toHaveBeenCalledTimes(2));
+    await waitForAcpxOperation(() => expect(lateRuntime.close).toHaveBeenCalledTimes(2));
     expect(lateRuntime.close).toHaveBeenNthCalledWith(1, {
       reason: "ACPX runtime admission aborted",
     });
@@ -1234,14 +1290,14 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow("already has an active lease");
 
     retryClose.resolve(undefined);
-    await vi.waitFor(async () => {
+    await waitForAcpxOperation(async () => {
       await expect(readFile(authPath)).rejects.toMatchObject({
         code: "ENOENT",
       });
     });
     // File removal precedes kernel lease release. Wait for the lease itself so
     // this assertion cannot race between those two ordered cleanup steps.
-    const contender = await vi.waitFor(() =>
+    const contender = await waitForAcpxOperation(() =>
       stageManagedCodexCredential({
         agentHomeDirectory: credentialHome,
         environment: {
@@ -1250,7 +1306,7 @@ describe("ACPX runtime host", () => {
       }),
     );
     await contender.close();
-  });
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 
   it("scrubs credentials after rejected runtime cleanup is proven", async () => {
     const fixture = await hostFixture();
@@ -1298,8 +1354,8 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
 
     providerCleanup.resolve(undefined);
-    await vi.waitFor(() => expect(credentialClose).toHaveBeenCalledOnce());
-  });
+    await waitForAcpxOperation(() => expect(credentialClose).toHaveBeenCalledOnce());
+  }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 });
 
 function runtimePort(
