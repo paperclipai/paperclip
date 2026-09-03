@@ -28,10 +28,11 @@ shared-build, provider-pack, and paid test jobs download that exact artifact by
 ID, verify its recorded SHA-256, and restore it before setup or a frozen
 dependency install. The lock resolver receives no provider credentials and
 must never run repository lifecycle scripts. The shared-build and provider-pack
-jobs also receive no provider credentials; they package outputs with SHA-256
-sidecars that consumers verify before extraction. The paid test job installs
-with lifecycle scripts disabled, and provider secrets are scoped only to its
-final test step rather than dependency setup. Report sanitization and AWS
+jobs also receive no provider credentials and disable dependency lifecycle
+scripts; they package outputs with SHA-256 sidecars that consumers verify
+before extraction. The paid test job installs with lifecycle scripts disabled,
+and provider secrets are scoped only to its final test step rather than
+dependency setup. Report sanitization and AWS
 history publication explicitly use the trusted workflow commit and do not
 consume the target lockfile. Never run the workflow definition from the target
 branch.

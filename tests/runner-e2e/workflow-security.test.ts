@@ -294,6 +294,9 @@ describe("public repository paid workflow security", () => {
     expect(buildJob).toMatch(buildRemoteProviderPackNeeds);
     expect(buildJob).not.toContain("environment:");
     expect(buildJob).not.toContain("secrets.");
+    expect(
+      buildJob.match(/pnpm install --frozen-lockfile --ignore-scripts/g),
+    ).toHaveLength(2);
     expect(buildJob).toContain(
       "pnpm --filter @paperclipai/paperclip-runner build:typescript",
     );

@@ -280,13 +280,14 @@ job checks out the resolved commit and regenerates `pnpm-lock.yaml` once with
 lockfile under a run-attempt-scoped artifact ID and records its SHA-256.
 Catalog, image, shared-build, provider-pack, and paid test jobs download the
 artifact by ID, verify its digest, and restore it before setup or a frozen
-install. The paid test job disables dependency lifecycle scripts, and provider
-secrets are introduced only in the final test step. This permits an authorized
-target branch to exercise an intentionally uncommitted workspace patch while
-keeping every target job on one identical dependency resolution. The
-shared-build job compiles the selected campaign's TypeScript outputs and native
-binaries once, then each paid cell verifies and extracts the immutable bundle.
-Remote native cells similarly reuse one verified provider pack. Report
+install. The shared-build, provider-pack, and paid test jobs all disable
+dependency lifecycle scripts, and provider secrets are introduced only in the
+final test step. This permits an authorized target branch to exercise an
+intentionally uncommitted workspace patch while keeping every target job on one
+identical dependency resolution. The shared-build job compiles the selected
+campaign's TypeScript outputs and native binaries once, then each paid cell
+verifies and extracts the immutable bundle. Remote native cells similarly reuse
+one verified provider pack. Report
 sanitization and AWS history publication do not consume the target lockfile;
 they explicitly check out and install from the trusted workflow commit. The
 workflow definition, runner-group permission, and protected-environment

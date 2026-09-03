@@ -495,7 +495,7 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       # build:typescript also builds the eval-kernel dependency, so the two
       # TypeScript trees are compiled at most once in this campaign.
@@ -617,7 +617,7 @@ jobs:
           cache: pnpm
 
       - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Download immutable shared campaign outputs
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
