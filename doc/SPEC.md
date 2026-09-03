@@ -383,7 +383,7 @@ Flow:
 | -------- | ------------------------------------------------------------ |
 | Frontend | React + Vite                                                 |
 | Backend  | TypeScript + Express (REST API, not tRPC — need non-TS clients) |
-| Database | PostgreSQL (see [doc/DATABASE.md](./doc/DATABASE.md) for details — PGlite embedded for dev, Docker or hosted Supabase for production) |
+| Database | PostgreSQL (see [doc/DATABASE.md](./DATABASE.md) for details — PGlite embedded for dev, Docker or hosted Supabase for production) |
 | Auth     | [Better Auth](https://www.better-auth.com/)                  |
 
 ### Concurrency Model: Atomic Task Checkout
