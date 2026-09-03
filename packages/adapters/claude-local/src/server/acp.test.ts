@@ -506,7 +506,7 @@ describe("claude_local ACP lane", () => {
     const skillRoot = (result.sessionParams?.skills as { skillRoot?: string }).skillRoot;
     expect(skillRoot).toBeTruthy();
     await expect(fs.readFile(path.join(skillRoot!, "review", "SKILL.md"), "utf8")).resolves.toContain("review skill");
-    expect(runtimes[0]?.setConfigInputs.map((input) => [input.key, input.value])).toEqual([["effort", "high"]]);
+    expect(runtimes[0]?.setConfigInputs.map((input) => [input.key, input.value])).toEqual([]);
     expect(meta[0]?.commandNotes?.join("\n")).toContain("set via ANTHROPIC_MODEL");
     expect(meta[0]?.env?.ANTHROPIC_MODEL).toBe("claude-opus-4-7");
     const settings = JSON.parse(await fs.readFile(path.join(root, ".claude", "settings.local.json"), "utf8"));
