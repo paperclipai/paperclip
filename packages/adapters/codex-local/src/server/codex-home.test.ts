@@ -878,6 +878,7 @@ describe("evaluateCodexCredentialReadiness", () => {
       const zero = await fs.readFile(path.join(zeroHome, "config.toml"), "utf8");
       expect(alpha).toContain('[mcp_servers."alpha"]');
       expect(alpha).toContain('Authorization = "Bearer alpha-token"');
+      expect(alpha).toContain('default_tools_approval_mode = "approve"');
       expect(zero).not.toContain("mcp_servers.");
       expect(zero).not.toContain("stale-token");
       expect(alphaHome).not.toBe(zeroHome);
