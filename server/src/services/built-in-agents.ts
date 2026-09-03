@@ -860,7 +860,12 @@ export function builtInAgentService(db: Db) {
     return ensured;
   }
 
-  async function defaultProvisionInput(companyId: string, definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput) {
+  async function defaultProvisionInput(
+    companyId: string,
+    definition: BuiltInAgentDefinition,
+    input: BuiltInAgentProvisionInput,
+    existing?: { adapterType: string; adapterConfig: unknown } | null,
+  ) {
     if (input.adapterType || input.adapterConfig) return input;
     if (definition.defaultAdapterType || definition.defaultAdapterConfig) {
       return {
@@ -882,10 +887,34 @@ export function builtInAgentService(db: Db) {
       && hasCompleteAdapterConfig(row.adapterType, row.adapterConfig)
     );
     if (!candidate) return input;
+    // Only the adapterType is borrowed from the candidate -- copying its
+    // adapterConfig would leak secrets (e.g. apiKey) between agents and would
+    // silently mark this built-in as fully configured before an operator has
+    // chosen its own model. adapterConfig therefore falls back to whatever
+    // this built-in agent already has, NOT a hardcoded {}: a bare {} here is
+    // not a "no config yet" default, it is a caller-supplied adapterConfig as
+    // far as ensure() is concerned (ensure() only falls back to the existing
+    // agent's config when resolvedInput.adapterConfig is undefined), so
+    // returning {} clobbered whatever adapterConfig (instructions bundle
+    // tracking, skill sync prefs, etc.) the existing agent already had every
+    // time this branch re-ran on an agent whose adapterConfig still lacked a
+    // model. See AGE-607 / AGE-583.
+    //
+    // That fallback is only safe when the borrowed adapterType matches what
+    // this agent already had: the existing adapterConfig's fields are shaped
+    // for its *previous* adapter. If the candidate's adapterType differs
+    // (e.g. the previous candidate was terminated/reassigned and a
+    // differently-typed agent now qualifies), carrying old fields forward
+    // under a new adapter discriminator would pair stale, adapter-specific
+    // config with the wrong schema. In that case start fresh, same as a
+    // brand-new agent would.
+    const adapterTypeUnchanged = existing?.adapterType === candidate.adapterType;
     return {
       ...input,
       adapterType: candidate.adapterType,
-      adapterConfig: {},
+      adapterConfig: adapterTypeUnchanged && isPlainRecord(existing?.adapterConfig)
+        ? { ...existing!.adapterConfig }
+        : {},
     };
   }
 
@@ -1611,7 +1640,7 @@ export function builtInAgentService(db: Db) {
     );
     const resolvedInput = existingPendingApproval || preserveExistingAdapter
       ? input
-      : await defaultProvisionInput(companyId, definition, input);
+      : await defaultProvisionInput(companyId, definition, input, existing);
     if (!existingPendingApproval && !preserveExistingAdapter) {
       await assertKnownBuiltInAgentModel(definition, resolvedInput);
     }
