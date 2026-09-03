@@ -208,6 +208,25 @@ export function buildContinuationSummaryMarkdown(input: {
   return truncateText(body, ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS);
 }
 
+/**
+ * Canonical read for the per-issue continuation summary.
+ *
+ * The continuation summary is stored as a normal versioned document
+ * (`documents` + `document_revisions`) joined to the issue via `issue_documents`
+ * under the well-known key `ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY`. That table
+ * trio is the per-issue, append-only revision log: each call to
+ * {@link refreshIssueContinuationSummary} (or any other caller of
+ * `documentService.upsertIssueDocument` with this key) inserts a new row in
+ * `document_revisions` and bumps `documents.latest_revision_*`. Older revisions
+ * are retained for audit and human/board review; only the latest is returned
+ * here.
+ *
+ * Returns `null` when no revision exists yet — callers should treat that as
+ * "no summary" and fall back to whatever full-context behavior they had before.
+ * Do **not** reach into the `documents` / `document_revisions` tables directly
+ * from heartbeat code; route reads through this helper so the storage layout
+ * can evolve without breaking call sites.
+ */
 export async function getIssueContinuationSummaryDocument(
   db: Db,
   issueId: string,
@@ -239,6 +258,20 @@ export async function getIssueContinuationSummaryDocument(
   };
 }
 
+/**
+ * Canonical write for the per-issue continuation summary.
+ *
+ * Builds the next summary body from the latest run and the previous summary,
+ * then persists it via `documentService.upsertIssueDocument`. That call
+ * inserts a fresh row in `document_revisions` (incrementing `revision_number`)
+ * and updates `documents.latest_*` inside a single transaction with optimistic
+ * concurrency on `baseRevisionId`. This function is the supported way to
+ * append a new continuation-summary revision; future checkpoint-write paths
+ * (token-threshold checkpoints, summarizer integrations, etc.) should also
+ * route through `documentService.upsertIssueDocument` with
+ * `ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY` rather than writing to the
+ * `documents` / `document_revisions` tables directly.
+ */
 export async function refreshIssueContinuationSummary(input: {
   db: Db;
   issueId: string;
