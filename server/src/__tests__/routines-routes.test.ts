@@ -308,6 +308,13 @@ describe("routine routes", () => {
     mockAnnotationService.remapOpenThreadsForRoutineDocument.mockResolvedValue([]);
   });
 
+  it('rejects inline triggers before routine creation', async () => {
+    const app = await createApp({ type: 'board', userId: 'board-user', source: 'session', isInstanceAdmin: true, companyIds: [companyId] });
+    const res = await request(app).post(`/api/companies/${companyId}/routines`).send({ title: 'Daily routine', triggers: [{ kind: 'schedule', cronExpression: '0 9 * * *', timezone: 'America/New_York' }] });
+    expect(res.status).toBe(400);
+    expect(mockRoutineService.create).not.toHaveBeenCalled();
+  });
+
   it("passes project filters to the routine list service", async () => {
     const app = await createApp({
       type: "board",

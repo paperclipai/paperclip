@@ -65,6 +65,8 @@ Fields:
 
 **Catch-up policies:**
 
+Create routine triggers separately with the endpoint below; inline `triggers` in a create request are rejected with `400`.
+
 | Value | Behaviour |
 |-------|-----------|
 | `skip_missed` (default) | Missed scheduled runs are dropped |

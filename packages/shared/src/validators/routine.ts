@@ -78,7 +78,7 @@ export const createRoutineSchema = z.object({
   activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).optional(),
   variables: z.array(routineVariableSchema).optional().default([]),
   env: envConfigSchema.optional().nullable(),
-});
+}).strict();
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 
