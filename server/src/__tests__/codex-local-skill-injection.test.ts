@@ -30,9 +30,36 @@ async function createCustomSkill(root: string, skillName: string) {
   );
 }
 
+async function createManagedCatalogSkill(root: string, companyId: string, runtimeName: string) {
+  const skillDir = path.join(root, "skills", companyId, "__catalog__", runtimeName);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---\nname: ${runtimeName}\n---\n`,
+    "utf8",
+  );
+  return skillDir;
+}
+
+async function createCompanyOwnedSkill(root: string, companyId: string, slug: string) {
+  const skillDir = path.join(root, "companies", companyId, "skills", slug);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---\nname: ${slug}\n---\n`,
+    "utf8",
+  );
+  await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+  await fs.writeFile(path.join(skillDir, "references", "governance.md"), "# governance\n", "utf8");
+  return skillDir;
+}
+
 describe("codex local adapter skill injection", () => {
   const paperclipKey = "paperclipai/paperclip/paperclip";
   const createAgentKey = "paperclipai/paperclip/paperclip-create-agent";
+  const modernDeliveryKey = "local/928c96addb/modern-delivery";
+  const modernDeliveryRuntimeName = "modern-delivery--126abb30bb";
+  const companyId = "5e0fb142-c4c0-4b6b-ab76-8465065b22e7";
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
@@ -91,6 +118,107 @@ describe("codex local adapter skill injection", () => {
       expect.objectContaining({
         stream: "stdout",
         chunk: expect.stringContaining('Injected Codex skill "paperclip-create-agent"'),
+      }),
+    );
+  });
+
+  it("repairs a Codex skill symlink that still points at a stale managed catalog mount", async () => {
+    const instanceRoot = await makeTempDir("paperclip-codex-instance-");
+    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    cleanupDirs.add(instanceRoot);
+    cleanupDirs.add(skillsHome);
+
+    const staleCatalogDir = await createManagedCatalogSkill(
+      instanceRoot,
+      companyId,
+      modernDeliveryRuntimeName,
+    );
+    const currentSource = await createCompanyOwnedSkill(instanceRoot, companyId, "modern-delivery");
+    await fs.writeFile(
+      path.join(staleCatalogDir, "SKILL.md"),
+      "---\nname: stale\n---\n",
+      "utf8",
+    );
+    await fs.symlink(
+      staleCatalogDir,
+      path.join(skillsHome, modernDeliveryRuntimeName),
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    await ensureCodexSkillsInjected(
+      async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+      {
+        skillsHome,
+        skillsEntries: [{
+          key: modernDeliveryKey,
+          runtimeName: modernDeliveryRuntimeName,
+          source: currentSource,
+        }],
+      },
+    );
+
+    expect(await fs.realpath(path.join(skillsHome, modernDeliveryRuntimeName))).toBe(
+      await fs.realpath(currentSource),
+    );
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        stream: "stdout",
+        chunk: expect.stringContaining(`Repaired Codex skill "${modernDeliveryRuntimeName}"`),
+      }),
+    );
+  });
+
+  it("repairs a Codex skill symlink that still points at a stale company-owned corpus", async () => {
+    const instanceRoot = await makeTempDir("paperclip-codex-instance-");
+    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    cleanupDirs.add(instanceRoot);
+    cleanupDirs.add(skillsHome);
+
+    const staleCompanyOwnedDir = await createCompanyOwnedSkill(instanceRoot, companyId, "modern-delivery");
+    const currentSource = path.join(
+      instanceRoot,
+      "companies",
+      companyId,
+      "skills",
+      "modern-delivery-v2",
+    );
+    await fs.mkdir(currentSource, { recursive: true });
+    await fs.writeFile(
+      path.join(currentSource, "SKILL.md"),
+      "---\nname: modern-delivery-v2\n---\n",
+      "utf8",
+    );
+    await fs.mkdir(path.join(currentSource, "references"), { recursive: true });
+    await fs.writeFile(path.join(currentSource, "references", "governance.md"), "# governance v2\n", "utf8");
+    await fs.symlink(
+      staleCompanyOwnedDir,
+      path.join(skillsHome, modernDeliveryRuntimeName),
+    );
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    await ensureCodexSkillsInjected(
+      async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+      {
+        skillsHome,
+        skillsEntries: [{
+          key: modernDeliveryKey,
+          runtimeName: modernDeliveryRuntimeName,
+          source: currentSource,
+        }],
+      },
+    );
+
+    expect(await fs.realpath(path.join(skillsHome, modernDeliveryRuntimeName))).toBe(
+      await fs.realpath(currentSource),
+    );
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        stream: "stdout",
+        chunk: expect.stringContaining(`Repaired Codex skill "${modernDeliveryRuntimeName}"`),
       }),
     );
   });
