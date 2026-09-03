@@ -107,6 +107,10 @@ function monthKey(date: Date): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+function dayKey(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+
 function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
   const months = Math.max(1, monthlyMonths);
   const now = new Date(nowMs);
@@ -115,15 +119,24 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
 
 /**
  * Tiered backup pruning:
- * - Daily tier: keep ALL backups from the last `dailyDays` days
+ * - Recent tier: keep ALL backups from the last 24 hours (full intra-day
+ *   fidelity regardless of backup interval, e.g. hourly schedules)
+ * - Daily tier: keep the NEWEST backup per calendar day for `dailyDays` days
  * - Weekly tier: keep the NEWEST backup per calendar week for `weeklyWeeks` weeks
  * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
  * - Everything else is deleted
+ *
+ * The recent tier exists so sub-daily schedules (e.g. hourly) stay bounded:
+ * without it the daily tier keeps every hourly file for `dailyDays` days,
+ * which can exhaust the backup volume.
  */
+const RECENT_TIER_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
   if (!existsSync(backupDir)) return 0;
 
   const now = Date.now();
+  const recentCutoff = now - RECENT_TIER_WINDOW_MS;
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
   const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
@@ -142,17 +155,29 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   // Sort newest first so the first entry per week/month bucket is the one we keep
   entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
+  const keepDayBuckets = new Set<string>();
   const keepWeekBuckets = new Set<string>();
   const keepMonthBuckets = new Set<string>();
   const toDelete: string[] = [];
 
   for (const entry of entries) {
-    // Daily tier — keep everything within dailyDays
-    if (entry.mtimeMs >= dailyCutoff) continue;
+    // Recent tier — keep everything from the last 24 hours
+    if (entry.mtimeMs >= recentCutoff) continue;
 
     const date = new Date(entry.mtimeMs);
+    const day = dayKey(date);
     const week = isoWeekKey(date);
     const month = monthKey(date);
+
+    // Daily tier — keep newest per calendar day within dailyDays
+    if (entry.mtimeMs >= dailyCutoff) {
+      if (keepDayBuckets.has(day)) {
+        toDelete.push(entry.fullPath);
+      } else {
+        keepDayBuckets.add(day);
+      }
+      continue;
+    }
 
     // Weekly tier — keep newest per calendar week
     if (entry.mtimeMs >= weeklyCutoff) {
