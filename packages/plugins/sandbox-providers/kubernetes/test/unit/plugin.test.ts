@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import plugin from "../../src/plugin.js";
+import { ExecInPodTimeoutError } from "../../src/pod-exec.js";
+import plugin, { mapKubernetesExecError } from "../../src/plugin.js";
 
 describe("plugin", () => {
   it("exports the kubernetes driver", () => {
@@ -71,6 +72,41 @@ describe("plugin", () => {
   it("onHealth returns ok", async () => {
     const result = await plugin.definition.onHealth!();
     expect(result.status).toBe("ok");
+  });
+
+  it("maps an exec setup exception to a failed non-timeout result without exposing its message", () => {
+    const result = mapKubernetesExecError(
+      new Error("websocket upgrade failed: Authorization: Bearer secret-value"),
+      { provider: "kubernetes", backend: "sandbox-cr" },
+    );
+
+    expect(result).toEqual({
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "Kubernetes exec failed before command completion.",
+      metadata: {
+        provider: "kubernetes",
+        backend: "sandbox-cr",
+        execFailure: "setup_or_transport",
+      },
+    });
+  });
+
+  it("keeps an exec watchdog timeout as a timeout result", () => {
+    const error = new ExecInPodTimeoutError("execInPod timed out after 1000ms (pod=pod-1, container=agent, cmd0=sh).");
+
+    expect(mapKubernetesExecError(error, { provider: "kubernetes", backend: "sandbox-cr" })).toEqual({
+      exitCode: null,
+      timedOut: true,
+      stdout: "",
+      stderr: error.message,
+      metadata: {
+        provider: "kubernetes",
+        backend: "sandbox-cr",
+        execFailure: "timeout",
+      },
+    });
   });
 
   it("validateConfig warns about FQDN limitation in standard mode", async () => {
