@@ -20,6 +20,8 @@ import { assertForegroundRunAllowed } from "../services/service-manager.js";
 import { removeRuntimeInfoForPid, writeRuntimeInfo } from "../runtime-info.js";
 import { printUpdateNotice } from "../update-notice.js";
 import { ensureWorktreeSeeded } from "./worktree.js";
+import { buildLocalHealthUrl } from "../utils/health-url.js";
+import { startListenerWatchdog } from "../services/listener-watchdog.js";
 
 interface RunOptions {
   config?: string;
@@ -104,6 +106,37 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     startedAt: new Date().toISOString(),
   });
   process.once("exit", () => removeRuntimeInfoForPid(process.pid, instanceId));
+
+  // A supervisor can only restart a process which actually exits.  On Windows
+  // a rare listener-loss failure used to leave this Node process alive forever,
+  // so Task Scheduler (and any other supported service manager) saw it as
+  // running.  Probe the listener from inside the managed process and request
+  // the server's existing ordered SIGTERM shutdown after three failures.  That
+  // shutdown drains/reconciles heartbeat work and stops embedded PostgreSQL
+  // before the service manager starts the replacement process.
+  if (process.env.PAPERCLIP_SERVICE_MANAGED === "1") {
+    const healthUrl = buildLocalHealthUrl(startedServer.host, startedServer.listenPort);
+    const watchdog = startListenerWatchdog({
+      probe: async () => {
+        try {
+          const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
+          const body = await response.json() as { status?: unknown };
+          return response.ok && body.status === "ok"
+            ? { ok: true }
+            : { ok: false, error: `health returned ${response.status}` };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      onFailure: ({ failures, error }) => {
+        console.error(
+          `[paperclip] listener-watchdog restart: reason=listener_unhealthy oldPid=${process.pid} failures=${failures} error=${error ?? "unknown"} outcome=ordered_shutdown_requested`,
+        );
+        process.kill(process.pid, "SIGTERM");
+      },
+    });
+    process.once("exit", () => watchdog.stop());
+  }
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");
