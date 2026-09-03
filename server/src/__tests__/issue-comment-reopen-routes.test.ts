@@ -527,6 +527,32 @@ describe.sequential("issue comment reopen routes", () => {
     expect(res.body.error).toBe("Agent not found");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  it("AGE-925: a comment-only PATCH that omits assigneeAgentId leaves the assignee untouched (null executionPolicy)", async () => {
+    // Regression for AGE-925. Reported repro: PATCH {status, comment, priority}
+    // with assigneeAgentId omitted, executionPolicy null, allegedly read back a
+    // different (unrequested) assigneeAgentId. Confirmed live against a fresh
+    // scratch issue (AGE-930) that the current route does NOT reproduce a
+    // write-side change for this exact shape; this test locks that in.
+    const issue = { ...makeIssue("todo"), executionPolicy: null, executionState: null };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo", comment: "repro comment-only patch omitting assigneeAgentId", priority: "medium" });
+
+    expect(res.status).toBe(200);
+    // The service must never receive an assigneeAgentId key when the caller
+    // omitted it -- not undefined-coerced-to-a-value, not backfilled from a
+    // workflow/monitor transition, not routed to a different agent.
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.not.objectContaining({ assigneeAgentId: expect.anything() }),
+    );
+    expect(res.body.assigneeAgentId).toBe("22222222-2222-4222-8222-222222222222");
+  });
   it("reopens closed issues via the PATCH comment path", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
