@@ -164,7 +164,7 @@ jobs:
       - name: Publish canary
         env:
           GITHUB_ACTIONS: "true"
-        run: ./scripts/release.sh canary --skip-verify
+        run: ./scripts/release.sh canary --skip-verify --prepared-lockfile
 
       - name: Dump npm debug logs
         if: failure()
@@ -738,7 +738,7 @@ jobs:
         run: |
           args=(beta --skip-verify)
           if [ "${{ needs.select_beta.outputs.mode }}" = "candidate" ]; then
-            args+=(--from-candidate)
+            args+=(--from-candidate --prepared-lockfile)
           fi
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             args+=(--dry-run)
@@ -1149,7 +1149,7 @@ jobs:
         env:
           GITHUB_ACTIONS: "true"
         run: |
-          args=(stable --skip-verify --dry-run)
+          args=(stable --skip-verify --dry-run --prepared-lockfile)
           if [ -n "${{ inputs.stable_date }}" ]; then
             args+=(--date "${{ inputs.stable_date }}")
           fi
@@ -1220,7 +1220,7 @@ jobs:
         env:
           GITHUB_ACTIONS: "true"
         run: |
-          args=(stable --skip-verify)
+          args=(stable --skip-verify --prepared-lockfile)
           if [ -n "${{ inputs.stable_date }}" ]; then
             args+=(--date "${{ inputs.stable_date }}")
           fi

@@ -57,6 +57,7 @@ require_channel_tag_absent_at_head() {
   echo "[fixture] require_channel_tag_absent_at_head $1"
 }
 require_clean_worktree() { :; }
+require_clean_worktree_or_prepared_lockfile() { :; }
 require_npm_publish_auth() { :; }
 git_local_tag_exists() { return 1; }
 git_remote_tag_exists() { return 1; }

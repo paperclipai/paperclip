@@ -20,7 +20,10 @@ test("release workflow delegates stable and canary verification to the reusable 
     /  prepare_canary_lockfile:[\s\S]*?(?=\n  verify_canary:)/,
   )?.[0];
 
-  assert.ok(prepareLockfileBlock, "expected a master-push lockfile preparation job");
+  assert.ok(
+    prepareLockfileBlock,
+    "expected a master-push lockfile preparation job",
+  );
   assert.match(
     prepareLockfileBlock,
     /Prepare canary lockfile[\s\S]*?pnpm install --ignore-scripts --no-frozen-lockfile/,
@@ -62,7 +65,15 @@ test("release workflow delegates stable and canary verification to the reusable 
   );
   assert.match(
     releaseWorkflow,
+    /preview_stable:[\s\S]*?args=\(stable --skip-verify --dry-run --prepared-lockfile\)/,
+  );
+  assert.match(
+    releaseWorkflow,
     /publish_stable:[\s\S]*?needs: \[preflight_stable, prepare_stable_lockfile, verify_stable\][\s\S]*?Restore prepared stable lockfile[\s\S]*?name: stable-lockfile[\s\S]*?pnpm install --frozen-lockfile/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /publish_stable:[\s\S]*?args=\(stable --skip-verify --prepared-lockfile\)/,
   );
   assert.doesNotMatch(
     releaseWorkflow,
@@ -131,6 +142,10 @@ test("candidate-branch betas are validated and fully verified before publish", (
     releaseWorkflow,
     /publish_beta:[\s\S]*?Restore prepared beta candidate lockfile[\s\S]*?name: beta-candidate-lockfile[\s\S]*?pnpm install --frozen-lockfile/,
   );
+  assert.match(
+    releaseWorkflow,
+    /if \[ "\$\{\{ needs\.select_beta\.outputs\.mode \}\}" = "candidate" \]; then\n\s+args\+=\(--from-candidate --prepared-lockfile\)/,
+  );
 });
 
 test("post-publish beta smoke survives the skipped candidate-verification ancestor", () => {
@@ -156,6 +171,10 @@ test("published canaries are gated by the exact-version onboarding browser smoke
   assert.match(
     releaseWorkflow,
     /publish_canary:[\s\S]*?Restore prepared canary lockfile[\s\S]*?name: canary-lockfile[\s\S]*?Install dependencies\n\s+run: pnpm install --frozen-lockfile/,
+  );
+  assert.match(
+    releaseWorkflow,
+    /Publish canary[\s\S]*?\.\/scripts\/release\.sh canary --skip-verify --prepared-lockfile/,
   );
   assert.match(
     releaseWorkflow,

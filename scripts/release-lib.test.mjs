@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -165,6 +165,101 @@ ${
     status,
   };
 }
+
+function runPreparedLockfileGuard({
+  lockfileState = "clean",
+  addExtraChange = false,
+} = {}) {
+  const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-release-lockfile-"));
+
+  execFileSync("git", ["init", "--quiet"], { cwd: fixtureDir });
+  writeFileSync(join(fixtureDir, "package.json"), "{}\n");
+  writeFileSync(join(fixtureDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+  execFileSync("git", ["add", "package.json", "pnpm-lock.yaml"], {
+    cwd: fixtureDir,
+  });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "--quiet",
+      "-m",
+      "fixture",
+    ],
+    { cwd: fixtureDir },
+  );
+
+  if (lockfileState !== "clean") {
+    writeFileSync(
+      join(fixtureDir, "pnpm-lock.yaml"),
+      "lockfileVersion: '9.0'\nchanged: true\n",
+    );
+  }
+  if (lockfileState === "staged") {
+    execFileSync("git", ["add", "pnpm-lock.yaml"], { cwd: fixtureDir });
+  }
+  if (addExtraChange) {
+    writeFileSync(join(fixtureDir, "extra.txt"), "unexpected\n");
+  }
+
+  let status = 0;
+  let output = "";
+  try {
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        `set -euo pipefail
+source "${repoRoot}/scripts/release-lib.sh"
+require_clean_worktree_or_prepared_lockfile`,
+      ],
+      {
+        cwd: fixtureDir,
+        encoding: "utf8",
+        env: { ...process.env, REPO_ROOT: fixtureDir },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+  } catch (error) {
+    status = error.status ?? 1;
+    output = `${error.stdout ?? ""}${error.stderr ?? ""}`;
+  } finally {
+    rmSync(fixtureDir, { recursive: true, force: true });
+  }
+
+  return { output, status };
+}
+
+test("prepared lockfile guard accepts a clean tree or one unstaged lockfile", () => {
+  assert.equal(runPreparedLockfileGuard().status, 0);
+  assert.equal(
+    runPreparedLockfileGuard({ lockfileState: "unstaged" }).status,
+    0,
+  );
+});
+
+test("prepared lockfile guard rejects staged or unrelated changes", () => {
+  const staged = runPreparedLockfileGuard({ lockfileState: "staged" });
+  const unrelated = runPreparedLockfileGuard({
+    lockfileState: "unstaged",
+    addExtraChange: true,
+  });
+
+  assert.notEqual(staged.status, 0);
+  assert.match(
+    staged.output,
+    /changes other than the prepared pnpm-lock\.yaml/,
+  );
+  assert.notEqual(unrelated.status, 0);
+  assert.match(
+    unrelated.output,
+    /changes other than the prepared pnpm-lock\.yaml/,
+  );
+});
 
 test("publish_package_to_npm returns after a successful pnpm publish", () => {
   const result = runPublishHelper({ pnpmMode: "success" });

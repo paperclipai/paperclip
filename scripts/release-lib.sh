@@ -485,6 +485,17 @@ require_clean_worktree() {
   fi
 }
 
+require_clean_worktree_or_prepared_lockfile() {
+  local status
+
+  status="$(git -C "$REPO_ROOT" status --porcelain)"
+  if [ -z "$status" ] || [ "$status" = " M pnpm-lock.yaml" ]; then
+    return
+  fi
+
+  release_fail "working tree contains changes other than the prepared pnpm-lock.yaml. Commit, stash, or remove them before releasing."
+}
+
 require_on_master_branch() {
   local current_branch
   current_branch="$(git_current_branch)"

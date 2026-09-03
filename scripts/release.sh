@@ -14,13 +14,14 @@ print_version_only=false
 from_candidate=false
 notes_file_override=
 tag_name=""
+prepared_lockfile=false
 
 cleanup_on_exit=false
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|nightly|beta|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version] [--notes-file PATH]
+  ./scripts/release.sh <canary|nightly|beta|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version] [--prepared-lockfile] [--notes-file PATH]
 
 Examples:
   ./scripts/release.sh canary
@@ -56,6 +57,8 @@ Notes:
   - The script rewrites versions temporarily and restores the working tree on
     exit. Tags always point at the original source commit, not a generated
     release commit.
+  - --prepared-lockfile permits only an unstaged pnpm-lock.yaml change. CI
+    uses it after a frozen install of a source-specific lockfile artifact.
 EOF
 }
 
@@ -117,6 +120,7 @@ while [ $# -gt 0 ]; do
     --dry-run) dry_run=true ;;
     --skip-verify) skip_verify=true ;;
     --print-version) print_version_only=true ;;
+    --prepared-lockfile) prepared_lockfile=true ;;
     --from-candidate) from_candidate=true ;;
     --notes-file)
       shift
@@ -220,7 +224,11 @@ if [ -n "$notes_file_override" ]; then
   NOTES_FILE="$notes_file_override"
 fi
 
-require_clean_worktree
+if [ "$prepared_lockfile" = true ]; then
+  require_clean_worktree_or_prepared_lockfile
+else
+  require_clean_worktree
+fi
 require_npm_publish_auth "$dry_run"
 
 if [ "$channel" = "stable" ] && [ "$dry_run" = false ] && [ ! -f "$NOTES_FILE" ]; then
