@@ -417,6 +417,8 @@ Source-scoped recovery actions are snapshots of the source issue's liveness stat
 
 When newer source activity restores a valid live or waiting path, the recovery action is stale and should be folded through the explicit recovery lifecycle instead of being hidden or deleted. Folding means resolving or cancelling the recovery action with a resolution outcome and note that preserve the audit trail.
 
+An explicitly retained `backlog` disposition is terminal for the stale recovery action, but not for the source issue. The recovery-resolution operation must preserve that status atomically while resolving or cancelling the action with a required audit note. `backlog` is preserve-only in this operation: it cannot move a source issue into backlog. The operation must not wake or check out an agent, enqueue a retry, manufacture a blocker, or transiently move the source issue through another status. Only a structured resume request should restore a live source-work path.
+
 Plain comments alone do not make a recovery action stale. A comment can provide evidence, but the recovery action should remain visible when the source issue is still stalled and the comment does not create a valid action-path primitive such as a wake, monitor, interaction, approval, blocker, human owner, execution participant, terminal disposition, or delegated follow-up.
 
 ### Agent-assigned `todo`

@@ -101,6 +101,30 @@ describe("issue subresource commands", () => {
     ]);
   });
 
+  it("passes an intentional backlog disposition to recovery resolution", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await run([
+      "issue", "recovery:resolve", ISSUE_ID,
+      "--outcome", "restored",
+      "--source-issue-status", "backlog",
+      "--action-id", APPROVAL_ID,
+      "--resolution-note", "The source issue is intentionally parked in backlog.",
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`http://localhost:3100/api/issues/${ISSUE_ID}/recovery-actions/resolve`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      actionId: APPROVAL_ID,
+      outcome: "restored",
+      sourceIssueStatus: "backlog",
+      resolutionNote: "The source issue is intentionally parked in backlog.",
+    });
+  });
+
   it("wraps document and work product endpoints", async () => {
     const fetchMock = vi
       .fn()

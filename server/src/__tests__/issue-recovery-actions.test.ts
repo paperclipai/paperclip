@@ -1675,6 +1675,196 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it("keeps a backlogged source unchanged when the service cancels its stale recovery action", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "backlog", assigneeAgentId: null, assigneeUserId: "board-user" })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:intentional-backlog-service",
+      evidence: { sourceRunId: "run-1" },
+      nextAction: "Confirm the intentional backlog disposition.",
+      wakePolicy: { type: "manual" },
+    });
+
+    const cancelled = await recoveryActionSvc.resolveActiveForIssue({
+      companyId,
+      sourceIssueId,
+      actionId: action.id,
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "The source issue is intentionally parked in backlog.",
+    });
+
+    expect(cancelled).toMatchObject({
+      id: action.id,
+      status: "cancelled",
+      outcome: "cancelled",
+      resolutionNote: "The source issue is intentionally parked in backlog.",
+    });
+    expect(cancelled?.resolvedAt).toBeTruthy();
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject({
+      status: "backlog",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+  });
+
+  it("rejects backlog preservation when the locked source is not already backlog", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:not-backlog",
+      evidence: { sourceRunId: "run-1" },
+      nextAction: "Confirm the source disposition.",
+      wakePolicy: { type: "manual" },
+    });
+
+    await request(createApp())
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "backlog",
+        resolutionNote: "This request must not move active work into backlog.",
+      })
+      .expect(409);
+
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject({ status: "in_progress" });
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({
+      id: action.id,
+      status: "active",
+    });
+    expect(
+      await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.entityId, sourceIssueId)),
+    ).toHaveLength(0);
+  });
+
+  it("lets only the recovery owner resolve an action while preserving a board-owned backlog", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "backlog", assigneeAgentId: null, assigneeUserId: "board-user" })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:intentional-backlog-route",
+      evidence: { sourceRunId: "run-1" },
+      nextAction: "Confirm the intentional backlog disposition.",
+      wakePolicy: { type: "manual" },
+    });
+    const managerRunId = randomUUID();
+    const peerRunId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: managerId, runId: managerRunId, issueId: sourceIssueId });
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: peerRunId, issueId: sourceIssueId });
+    const enqueueRecoveryActionWakeup = vi.fn(async () => null);
+    const routeOptions = { recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup };
+
+    await request(createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId: peerRunId,
+      source: "agent_jwt",
+    }, routeOptions))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "backlog",
+        resolutionNote: "A peer must not clear another owner's action.",
+      })
+      .expect(403);
+
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toMatchObject({
+      id: action.id,
+      status: "active",
+    });
+
+    const resolved = await request(createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId: managerRunId,
+      source: "agent_jwt",
+    }, routeOptions))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "backlog",
+        resolutionNote: "The source issue is intentionally parked in backlog.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "backlog",
+      assigneeAgentId: null,
+      assigneeUserId: "board-user",
+      checkoutRunId: null,
+      executionRunId: null,
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: "The source issue is intentionally parked in backlog.",
+    });
+    expect(resolved.body.recoveryAction.resolvedAt).toBeTruthy();
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    expect(enqueueRecoveryActionWakeup).not.toHaveBeenCalled();
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(2);
+    expect(await db.select().from(issueRelations)).toHaveLength(0);
+    expect(
+      await db.select().from(issues).where(eq(issues.status, "blocked")),
+    ).toHaveLength(0);
+    expect(await db.select().from(issueInboxArchives)).toHaveLength(0);
+
+    const activityRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, sourceIssueId));
+    expect(activityRows.map((row) => row.action)).not.toContain("issue.updated");
+    expect(activityRows.find((row) => row.action === "issue.recovery_action_resolved")?.details).toMatchObject({
+      recoveryActionId: action.id,
+      recoveryActionStatus: "resolved",
+      outcome: "restored",
+      sourceIssueStatus: "backlog",
+      resolutionNote: "The source issue is intentionally parked in backlog.",
+    });
+  });
+
   it("hands restored work back to the recorded return owner and records the outcome", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db
