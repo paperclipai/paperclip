@@ -19,7 +19,7 @@ const ALL_FALSE: AdapterCapabilities = {
  * the server's login capability declaration in `server/src/adapters/registry.ts`.
  * Reconcile the two together if any adapter's login flow changes.
  */
-const KNOWN_DEFAULTS: Record<string, AdapterCapabilities> = {
+export const BUILTIN_ADAPTER_CAPABILITY_DEFAULTS: Record<string, AdapterCapabilities> = {
   claude_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsAcp: true, login: { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" } },
   codex_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsAcp: true, login: { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" } },
   paperclip_runner: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: false, requiresMaterializedRuntimeSkills: false, supportsAcp: false },
@@ -29,6 +29,7 @@ const KNOWN_DEFAULTS: Record<string, AdapterCapabilities> = {
   kimi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: true },
   opencode_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false },
   pi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false },
+  hermes_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false, supportsAcp: false },
   openclaw_gateway: ALL_FALSE,
 };
 
@@ -57,5 +58,5 @@ export function useAdapterCapabilities(): (type: string) => AdapterCapabilities 
   }, [adapters]);
 
   return (type: string): AdapterCapabilities =>
-    capMap.get(type) ?? KNOWN_DEFAULTS[type] ?? ALL_FALSE;
+    capMap.get(type) ?? BUILTIN_ADAPTER_CAPABILITY_DEFAULTS[type] ?? ALL_FALSE;
 }
