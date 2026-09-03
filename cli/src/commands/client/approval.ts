@@ -20,6 +20,7 @@ import {
 interface ApprovalListOptions extends BaseClientOptions {
   companyId?: string;
   status?: string;
+  dedupKey?: string;
 }
 
 interface ApprovalDecisionOptions extends BaseClientOptions {
@@ -52,11 +53,13 @@ export function registerApprovalCommands(program: Command): void {
       .description("List approvals for a company")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .option("--status <status>", "Status filter")
+      .option("--dedup-key <key>", "Exact match on payload.dedupKey")
       .action(async (opts: ApprovalListOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
           const params = new URLSearchParams();
           if (opts.status) params.set("status", opts.status);
+          if (opts.dedupKey) params.set("dedupKey", opts.dedupKey);
           const query = params.toString();
           const rows =
             (await ctx.api.get<Approval[]>(

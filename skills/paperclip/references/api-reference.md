@@ -1154,6 +1154,22 @@ Expiration results preserve already resolved items and omit undecided items:
 GET /api/companies/{companyId}/approvals?status=pending
 ```
 
+Accepted parameters: `status`, `dedupKey`, `limit`, `offset`. Anything else is a
+`400` naming the offender and listing the supported set — this endpoint never
+silently drops a filter, so a `200` means everything you sent was applied.
+Pagination is opt-in: omit `limit` for the full set; `offset` requires `limit`.
+
+### Checking for a duplicate before filing an approval
+
+Filter on `payload.dedupKey` and only file when the result is empty:
+
+```
+GET /api/companies/{companyId}/approvals?status=pending&dedupKey=issue:ENG-1234
+```
+
+An empty array genuinely means "nothing pending for this artifact". Do not reach
+for `q=` or `search=` here — this endpoint has no full-text search and rejects both.
+
 ### Approval follow-up (requesting agent)
 
 When board resolves your approval, you may be woken with:
