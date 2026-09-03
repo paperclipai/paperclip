@@ -700,6 +700,7 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+type DbWriter = Pick<Db, "select" | "execute" | "delete" | "insert">;
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -713,13 +714,16 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
-};
-type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
-  executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
   actorAgentId?: string | null;
   actorUserId?: string | null;
+};
+type IssueCreateOptions = {
+  afterCreateInTransaction?: (tx: DbWriter, issue: typeof issues.$inferSelect) => Promise<void>;
+};
+type IssueChildCreateInput = IssueCreateInput & {
+  executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
 };
 type AcceptedPlanDecompositionInput = {
   acceptedPlanRevisionId: string;
@@ -797,6 +801,8 @@ export type IssueDependencyReadiness = {
   blockerIssueIds: string[];
   unresolvedBlockerIssueIds: string[];
   unresolvedBlockerCount: number;
+  /** True when a direct blocker is in progress or has a queued/running execution. */
+  blockingTreeLive?: boolean;
   /** Blockers whose status is `done` but whose execution workspace has not yet finalized. */
   pendingFinalizeBlockerIssueIds: string[];
   allBlockersDone: boolean;
@@ -1032,6 +1038,7 @@ function createIssueDependencyReadiness(issueId: string): IssueDependencyReadine
     blockerIssueIds: [],
     unresolvedBlockerIssueIds: [],
     unresolvedBlockerCount: 0,
+    blockingTreeLive: false,
     pendingFinalizeBlockerIssueIds: [],
     allBlockersDone: true,
     isDependencyReady: true,
@@ -1270,6 +1277,7 @@ async function listIssueDependencyReadinessMap(
       blockerIssueId: issueRelations.issueId,
       blockerStatus: issues.status,
       blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+      blockerExecutionRunId: issues.executionRunId,
     })
     .from(issueRelations)
     .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -1298,10 +1306,27 @@ async function listIssueDependencyReadinessMap(
     companyId,
     doneBlockerWorkspacePairs,
   );
+  const activeBlockerRunIds = new Set<string>();
+  const blockerRunIds = [...new Set(blockerRows
+    .map((row) => row.blockerExecutionRunId)
+    .filter((runId): runId is string => runId !== null))];
+  if (blockerRunIds.length > 0) {
+    const activeRuns = await dbOrTx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        inArray(heartbeatRuns.id, blockerRunIds),
+        inArray(heartbeatRuns.status, BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES),
+      ));
+    for (const run of activeRuns) activeBlockerRunIds.add(run.id);
+  }
 
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
+    if (row.blockerStatus === "in_progress" || (row.blockerExecutionRunId && activeBlockerRunIds.has(row.blockerExecutionRunId))) {
+      current.blockingTreeLive = true;
+    }
     // Only done blockers resolve dependents; cancelled blockers stay unresolved
     // until an operator removes or replaces the blocker relationship explicitly.
     if (row.blockerStatus !== "done") {
@@ -2132,6 +2157,7 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     state: input.state ?? "none",
     reason: input.reason ?? null,
     unresolvedBlockerCount: input.unresolvedBlockerCount ?? 0,
+    unresolvedBlockerIssueIds: input.unresolvedBlockerIssueIds ?? [],
     coveredBlockerCount: input.coveredBlockerCount ?? 0,
     stalledBlockerCount: input.stalledBlockerCount ?? 0,
     attentionBlockerCount: input.attentionBlockerCount ?? 0,
@@ -2380,11 +2406,24 @@ async function listIssueBlockerAttentionMap(
   companyId: string,
   issueRows: IssueBlockerAttentionInputNode[],
 ): Promise<Map<string, IssueBlockerAttention>> {
-  const roots = issueRows.filter((row) => row.companyId === companyId && row.status === "blocked");
   const attentionMap = new Map<string, IssueBlockerAttention>();
+  const roots = issueRows.filter((row) => row.companyId === companyId && row.status === "blocked");
+  const nonBlockedIssueIds = issueRows
+    .filter((row) => row.companyId === companyId && row.status !== "blocked")
+    .map((row) => row.id);
+
   for (const row of issueRows) {
-    if (row.status !== "blocked") {
-      attentionMap.set(row.id, createIssueBlockerAttention());
+    if (row.companyId !== companyId || row.status === "blocked") continue;
+    attentionMap.set(row.id, createIssueBlockerAttention());
+  }
+  for (const chunk of chunkList(nonBlockedIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const readinessByIssueId = await listIssueDependencyReadinessMap(dbOrTx, companyId, chunk);
+    for (const readiness of readinessByIssueId.values()) {
+      attentionMap.set(readiness.issueId, createIssueBlockerAttention({
+        unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+        unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+        blockingTreeLive: readiness.blockingTreeLive,
+      }));
     }
   }
   if (roots.length === 0) return attentionMap;
@@ -2826,6 +2865,14 @@ async function listIssueBlockerAttentionMap(
       const blocker = nodesById.get(edge.blockerIssueId);
       return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);
     });
+    const unresolvedBlockerIssueIds = [...new Set(topLevelEdges.map((edge) => edge.blockerIssueId))];
+    if (root.status !== "blocked") {
+      attentionMap.set(root.id, createIssueBlockerAttention({
+        unresolvedBlockerCount: unresolvedBlockerIssueIds.length,
+        unresolvedBlockerIssueIds,
+      }));
+      continue;
+    }
     if (topLevelEdges.length === 0) {
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
@@ -2879,7 +2926,8 @@ async function listIssueBlockerAttentionMap(
     attentionMap.set(root.id, createIssueBlockerAttention({
       state,
       reason,
-      unresolvedBlockerCount: topLevelEdges.length,
+      unresolvedBlockerCount: unresolvedBlockerIssueIds.length,
+      unresolvedBlockerIssueIds,
       coveredBlockerCount,
       stalledBlockerCount,
       attentionBlockerCount,
@@ -5270,6 +5318,40 @@ export function issueService(db: Db) {
     );
   }
 
+  async function ensureParentBlockedByChild(
+    companyId: string,
+    parentId: string,
+    childId: string,
+    actor: { agentId?: string | null; userId?: string | null } = {},
+    dbOrTx: DbWriter = db,
+  ): Promise<boolean> {
+    if (dbOrTx === db) {
+      return db.transaction((tx) => ensureParentBlockedByChild(companyId, parentId, childId, actor, tx));
+    }
+    const [parent] = await dbOrTx
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, parentId)))
+      .for("update");
+    if (!parent) throw notFound("Parent issue not found");
+    const existingBlockers = await dbOrTx
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, parentId),
+        eq(issueRelations.type, "blocks"),
+      ));
+    if (existingBlockers.some((row) => row.blockerIssueId === childId)) return false;
+    await syncBlockedByIssueIds(
+      parentId,
+      companyId,
+      [...new Set([...existingBlockers.map((row) => row.blockerIssueId), childId])],
+      actor,
+      dbOrTx,
+    );
+    return true;
+  }
   async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
     return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
@@ -6770,6 +6852,7 @@ export function issueService(db: Db) {
       };
     },
 
+    ensureParentBlockedByChild,
     createChild: async (
       parentIssueId: string,
       data: IssueChildCreateInput,
@@ -6841,7 +6924,7 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
-      let child = await issueService(db).create(parent.companyId, {
+      const child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
         projectId: childProjectId,
@@ -6861,21 +6944,17 @@ export function issueService(db: Db) {
         ...(inheritStrategyOnly
           ? { skipExecutionWorkspaceInheritance: true }
           : { inheritExecutionWorkspaceFromIssueId: parent.id }),
-      });
-
-      if (blockParentUntilDone) {
-        const existingBlockers = await db
-          .select({ blockerIssueId: issueRelations.issueId })
-          .from(issueRelations)
-          .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
-        await syncBlockedByIssueIds(
-          parent.id,
-          parent.companyId,
-          [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
-          { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
-        );
-        [child] = await withIssueRelationSummaries(parent.companyId, [child], db);
-      }
+      }, blockParentUntilDone
+        ? {
+            afterCreateInTransaction: (tx, createdChild) => ensureParentBlockedByChild(
+              parent.companyId,
+              parent.id,
+              createdChild.id,
+              { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+              tx,
+            ).then(() => undefined),
+          }
+        : undefined);
 
       return {
         issue: child,
@@ -7158,7 +7237,7 @@ export function issueService(db: Db) {
       });
     },
 
-    create: async (companyId: string, data: IssueCreateInput) => {
+    create: async (companyId: string, data: IssueCreateInput, options: IssueCreateOptions = {}) => {
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -7172,8 +7251,26 @@ export function issueService(db: Db) {
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
         onDeduplicated,
+        acceptanceCriteria,
+        blockParentUntilDone,
+        actorAgentId,
+        actorUserId,
         ...issueData
       } = data;
+      if (blockParentUntilDone && !issueData.parentId) {
+        throw unprocessable("blockParentUntilDone requires parentId");
+      }
+      if (blockParentUntilDone && issueData.parentId) {
+        const [parent] = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, issueData.parentId)));
+        if (!parent) throw notFound("Parent issue not found");
+      }
+      issueData.description = appendAcceptanceCriteriaToDescription(
+        issueData.description,
+        acceptanceCriteria,
+      );
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -7255,6 +7352,25 @@ export function issueService(db: Db) {
               .insert(issueCreateIdempotencyKeys)
               .values({ companyId, idempotencyKey, issueId: existingIssue.id })
               .onConflictDoNothing();
+          }
+          if (blockParentUntilDone) {
+            if (deduplicationReason === "idempotency_key" && existingIssue.parentId !== issueData.parentId) {
+              throw conflict("Idempotency replay cannot change parentId for blockParentUntilDone");
+            }
+            if (existingIssue.parentId) {
+              await ensureParentBlockedByChild(
+                companyId,
+                existingIssue.parentId,
+                existingIssue.id,
+                {
+                  agentId: actorAgentId ?? issueData.createdByAgentId ?? null,
+                  userId: actorUserId ?? issueData.createdByUserId ?? null,
+                },
+                tx,
+              );
+            } else if (deduplicationReason === "idempotency_key") {
+              throw conflict("Idempotency replay cannot add blockParentUntilDone to an issue without parentId");
+            }
           }
           if (deduplicationReason) onDeduplicated?.(deduplicationReason);
           const [enriched] = await withIssueLabels(tx, [existingIssue]);
@@ -7488,6 +7604,21 @@ export function issueService(db: Db) {
             },
             tx,
           );
+        }
+        if (blockParentUntilDone && issueData.parentId) {
+          await ensureParentBlockedByChild(
+            companyId,
+            issueData.parentId,
+            issue.id,
+            {
+              agentId: actorAgentId ?? issueData.createdByAgentId ?? null,
+              userId: actorUserId ?? issueData.createdByUserId ?? null,
+            },
+            tx,
+          );
+        }
+        if (options.afterCreateInTransaction) {
+          await options.afterCreateInTransaction(tx, issue);
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
         const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);

@@ -1913,6 +1913,7 @@ export {
   type CompanySearchExtractQuery,
   type CompanySearchQuery,
   createIssueSchema,
+  createIssueInputObjectSchema,
   createIssueInputSchema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,

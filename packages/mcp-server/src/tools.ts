@@ -8,6 +8,7 @@ import {
   connectionRequestInputSchema,
   connectionsSearchInputSchema,
   createApprovalSchema,
+  createIssueInputObjectSchema,
   createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
   requestCheckboxConfirmationPayloadSchema,
@@ -130,7 +131,7 @@ const upsertDocumentToolSchema = z.object({
 
 const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
-}).merge(createIssueInputSchema);
+}).merge(createIssueInputObjectSchema);
 
 const updateIssueToolSchema = z.object({
   issueId: issueIdSchema,
@@ -513,10 +514,12 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipCreateIssue",
-      "Create a new issue",
+      "Create a new issue. With parentId, optional blockParentUntilDone adds a parent blocker edge; acceptanceCriteria append to the description.",
       createIssueToolSchema,
-      async ({ companyId, ...body }) =>
-        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+      async ({ companyId, ...body }) => {
+        const validatedBody = createIssueInputSchema.parse(body);
+        return client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body: validatedBody });
+      },
     ),
     makeTool(
       "paperclipUpdateIssue",

@@ -417,6 +417,7 @@ export {
 
 export {
   createIssueSchema,
+  createIssueInputObjectSchema,
   createIssueInputSchema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,

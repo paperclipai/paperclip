@@ -512,7 +512,7 @@ const createIssueBaseSchema = z.object({
     agentId: z.string().guid(),
     instructions: multilineTextSchema.optional().nullable(),
   }).strict().optional().nullable(),
-});
+}).strict();
 
 function requireBlockedStatusForUnblockDescriptor(
   value: { status?: string; unblockDescriptor?: unknown },
@@ -542,18 +542,48 @@ const onboardingFirstTaskMarkerSchema = {
   onboardingFirstTask: z.boolean().optional(),
 };
 
-export const createIssueInputSchema = createIssueBaseSchema.extend({
+const createIssueParentBlockerFields = {
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional()
+    .describe("Appended to the issue description as Acceptance Criteria; create-only"),
+  blockParentUntilDone: z.boolean().optional().default(false)
+    .describe("When true with parentId, adds this issue as a blocks-edge on the parent (same as POST /issues/:id/children)"),
+};
+
+function requireParentIdForBlockParentUntilDone(
+  value: { parentId?: string | null; blockParentUntilDone?: boolean },
+  ctx: z.RefinementCtx,
+) {
+  if (value.blockParentUntilDone && !value.parentId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "blockParentUntilDone requires parentId",
+      path: ["blockParentUntilDone"],
+    });
+  }
+}
+
+export const createIssueInputObjectSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
   ...onboardingFirstTaskMarkerSchema,
+  ...createIssueParentBlockerFields,
+});
+
+export const createIssueInputSchema = createIssueInputObjectSchema.superRefine((value, ctx) => {
+  requireBlockedStatusForUnblockDescriptor(value, ctx);
+  requireParentIdForBlockParentUntilDone(value, ctx);
 });
 
 export const createIssueSchema = withCreateIssueStatusDefault(
   createIssueBaseSchema.extend({
     ...createIssueDuplicateGuardSchema,
     ...onboardingFirstTaskMarkerSchema,
+    ...createIssueParentBlockerFields,
   }),
-).superRefine(requireBlockedStatusForUnblockDescriptor);
+).superRefine((value, ctx) => {
+  requireBlockedStatusForUnblockDescriptor(value, ctx);
+  requireParentIdForBlockParentUntilDone(value, ctx);
+});
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
@@ -570,10 +600,7 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBa
     inheritExecutionWorkspaceFromIssueId: true,
     watchdogDiscovery: true,
   })
-  .extend({
-    acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
-    blockParentUntilDone: z.boolean().optional().default(false),
-  })).superRefine(requireBlockedStatusForUnblockDescriptor);
+  .extend(createIssueParentBlockerFields)).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
@@ -597,7 +624,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     responsibleUserId: true,
     watchdog: true,
   }),
-).partial().extend({
+).strict().partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
