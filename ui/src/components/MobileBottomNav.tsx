@@ -13,7 +13,8 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Badge } from "@/components/ui/badge";
-import { NAVIGATION_CONTEXT, useT } from "@/i18n-keyless";
+import { useTranslation } from "i18n-keyless-react";
+import { NAVIGATION_CONTEXT } from "@/i18n-keyless";
 
 interface MobileBottomNavProps {
   visible: boolean;
@@ -41,7 +42,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const inboxBadge = useInboxBadge(selectedCompanyId);
-  const t = useT(NAVIGATION_CONTEXT);
+  const t = useTranslation(NAVIGATION_CONTEXT);
 
   const items = useMemo<MobileNavItem[]>(
     () => [

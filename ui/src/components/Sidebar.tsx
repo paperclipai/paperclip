@@ -46,11 +46,12 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
-import { NAVIGATION_CONTEXT, useT } from "@/i18n-keyless";
+import { useTranslation } from "i18n-keyless-react";
+import { NAVIGATION_CONTEXT } from "@/i18n-keyless";
 
 export function Sidebar() {
   const { openNewIssue } = useDialogActions();
-  const t = useT(NAVIGATION_CONTEXT);
+  const t = useTranslation(NAVIGATION_CONTEXT);
   // Every labeled section is collapsible (session-scoped, default open) —
   // one policy across static nav groups and the data-driven sections.
   const [workOpen, setWorkOpen] = useState(true);

@@ -1,14 +1,4 @@
-import {
-  createMemoryStorage,
-  getTranslation,
-  init,
-  resolveLang,
-  useCurrentLanguage,
-  useI18nKeyless,
-  type I18nConfig,
-  type Lang,
-  type TranslationOptions,
-} from "i18n-keyless-react";
+import { createMemoryStorage, init, resolveLang, type I18nConfig, type Lang, type TranslationOptions } from "i18n-keyless-react";
 
 /**
  * Keyless UI translation.
@@ -155,19 +145,3 @@ export function initI18nKeyless() {
 export const NAVIGATION_CONTEXT: TranslationOptions = {
   context: "Navigation menu item in an app that manages AI agents, tasks and projects",
 };
-
-/**
- * Reactive translator for string props (`label`, `aria-label`, `placeholder`).
- * Re-renders the caller when the language changes or a translation arrives.
- * `options` applies to every call (`context`, `namespace`, ...).
- * For JSX text prefer `<I18nKeylessText>` from `i18n-keyless-react`.
- *
- * When the SDK is not initialized (no key configured, Storybook, unit tests)
- * the identity function keeps English instead of throwing.
- */
-export function useT(options?: TranslationOptions): (text: string) => string {
-  useCurrentLanguage();
-  useI18nKeyless((state) => state.translations);
-  const initialized = useI18nKeyless((state) => Boolean(state.config.API_KEY));
-  return initialized ? (text) => getTranslation(text, options) : (text) => text;
-}

@@ -1,8 +1,8 @@
 import { Languages } from "lucide-react";
-import { setCurrentLanguage, useCurrentLanguage, useI18nKeyless, type Lang } from "i18n-keyless-react";
+import { setCurrentLanguage, useCurrentLanguage, useI18nKeyless, useTranslation, type Lang } from "i18n-keyless-react";
 
 import { cn } from "@/lib/utils";
-import { languageDisplayName, PRIMARY_LANGUAGE, SUPPORTED_LANGUAGES, useT } from "@/i18n-keyless";
+import { languageDisplayName, PRIMARY_LANGUAGE, SUPPORTED_LANGUAGES } from "@/i18n-keyless";
 
 interface LanguageMenuActionProps {
   className?: string;
@@ -17,7 +17,7 @@ interface LanguageMenuActionProps {
  * no translation server is configured (see `ui/src/i18n-keyless.ts`).
  */
 export function LanguageMenuAction({ className, onAfterChange }: LanguageMenuActionProps) {
-  const t = useT();
+  const t = useTranslation();
   const current = useCurrentLanguage() ?? PRIMARY_LANGUAGE;
   const enabled = useI18nKeyless((state) => Boolean(state.config.API_KEY));
   const label = t("Language");

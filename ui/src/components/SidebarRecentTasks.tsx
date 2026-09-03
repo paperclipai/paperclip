@@ -5,7 +5,8 @@ import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { useSidebar } from "@/context/SidebarContext";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
-import { NAVIGATION_CONTEXT, useT } from "@/i18n-keyless";
+import { useTranslation } from "i18n-keyless-react";
+import { NAVIGATION_CONTEXT } from "@/i18n-keyless";
 
 export function SidebarRecentTasks({
   companyId,
@@ -47,7 +48,7 @@ function RecentTasksList({
   liveIssueIds: ReadonlySet<string>;
   rail: boolean;
 }) {
-  const t = useT(NAVIGATION_CONTEXT);
+  const t = useTranslation(NAVIGATION_CONTEXT);
   const { entries } = useRecentTasks({ companyId, userId });
 
   if (rail && entries.length === 0) return null;
