@@ -182,6 +182,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/agent-instructions.js", () => ({
     agentInstructionsService: () => mockAgentInstructionsService,
+    agentInstructionsBundleMode: (agent: { adapterConfig?: unknown }) => {
+      const config = agent.adapterConfig as Record<string, unknown> | undefined;
+      return config?.instructionsBundleMode === "external" ? "external" : "managed";
+    },
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
   }));
 
