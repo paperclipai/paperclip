@@ -418,31 +418,25 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$IMAGE_TAG@$digest" >/dev/null
           immutable="${IMAGE_TAG%:*}@$digest"
-          # The Daytona base image is large. The build cache plus a second full
-          # anonymous pull can exhaust a standard GitHub-hosted runner before
-          # Docker creates the tiny metadata-probe container. The pushed digest
-          # is already immutable, so release the local builder/cache first.
-          docker buildx prune --all --force >/dev/null
-          docker system prune --all --force >/dev/null
-          anonymous_config="$(mktemp -d)"
-          docker --config "$anonymous_config" pull "$immutable"
           # The Dockerfile's final two RUN steps execute the runner metadata,
           # transport-mode, provider-pack JSON, and pinned ACP binary checks as
-          # root and as the unprivileged Daytona user. Starting another
-          # container after this full pull can exhaust the hosted runner's thin
-          # writable layer even after pruning, so assert the published image
-          # configuration here without creating a redundant container.
-          image_config="$(docker image inspect "$immutable" \
-            --format '{{json .}}')"
-          published_content_id="$(jq -r '.Config.Labels["io.paperclip.runner.content-id"] // empty' <<< "$image_config")"
-          source_revision="$(jq -r '.Config.Labels["org.opencontainers.image.revision"] // empty' <<< "$image_config")"
+          # root and as the unprivileged Daytona user. Buildx reads the signed
+          # digest's OCI config directly from GHCR, so verification does not
+          # download the image's large filesystem layers. Logging out first
+          # preserves the proof that Daytona can retrieve this public image
+          # without the workflow's package credentials.
+          docker logout ghcr.io >/dev/null
+          image_config="$(docker buildx imagetools inspect "$immutable" \
+            --format '{{json .Image}}')"
+          published_content_id="$(jq -r '.config.Labels["io.paperclip.runner.content-id"] // empty' <<< "$image_config")"
+          source_revision="$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<< "$image_config")"
           test "$published_content_id" = "$IMAGE_CONTENT_ID"
           [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]]
           jq -e \
-            '.Architecture == "amd64" and
-             .Os == "linux" and
-             .Config.User == "daytona" and
-             (.Config.Env | any(startswith("PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=")))' \
+            '.architecture == "amd64" and
+             .os == "linux" and
+             .config.User == "daytona" and
+             (.config.Env | any(startswith("PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=")))' \
             <<< "$image_config" >/dev/null
           echo "image=$immutable" >> "$GITHUB_OUTPUT"
           echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
