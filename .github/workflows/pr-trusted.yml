@@ -5,6 +5,16 @@ name: Trusted PR CI
 # drift from this file.
 on:
   workflow_call:
+    inputs:
+      heavy_runner_mode:
+        description: Route heavy CI jobs to GitHub-hosted or trusted Fleet runners.
+        required: false
+        type: string
+        default: github
+      trusted_workflow_sha:
+        description: Immutable SHA used by the trusted caller for this reusable workflow.
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -32,6 +42,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           AWS_CI_ENABLED: ${{ vars.AWS_CI_ENABLED }}
           TRUSTED_USER_IDS: ${{ vars.AWS_CI_TRUSTED_USER_IDS }}
+          HEAVY_RUNNER_MODE: ${{ inputs.heavy_runner_mode }}
+          EXPECTED_TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_REPOSITORY: ${{ github.repository }}
           EVENT_REPOSITORY_ID: ${{ github.repository_id }}
@@ -70,6 +82,15 @@ jobs:
             jq -e --argjson user_id "$user_id" 'index($user_id) != null' \
               <<< "$TRUSTED_USER_IDS" >/dev/null
           }
+
+          case "$HEAVY_RUNNER_MODE" in
+            github) fail_closed 'caller selected GitHub-hosted heavy jobs' ;;
+            fleet) ;;
+            *) fail_closed 'heavy runner mode is invalid' ;;
+          esac
+
+          is_commit_sha "$EXPECTED_TRUSTED_WORKFLOW_SHA" \
+            || fail_closed 'trusted workflow pin is not an immutable commit SHA'
 
           [[ "$AWS_CI_ENABLED" == 'true' ]] || fail_closed 'AWS_CI_ENABLED is not true'
           # Reusable workflows retain the caller's github context and event
@@ -209,11 +230,17 @@ jobs:
 
           jq -e \
             --argjson repository_id 1170821064 \
-            --arg event_name "$EVENT_NAME" '
+            --arg event_name "$EVENT_NAME" \
+            --arg expected_sha "$EXPECTED_TRUSTED_WORKFLOW_SHA" \
+            --arg expected_workflow "paperclipai/paperclip/.github/workflows/pr-trusted.yml@$EXPECTED_TRUSTED_WORKFLOW_SHA" '
               .repository.id == $repository_id and
-              .event == $event_name
+              .event == $event_name and
+              .path == ".github/workflows/pr.yml" and
+              ((.referenced_workflows // []) | length) == 1 and
+              .referenced_workflows[0].path == $expected_workflow and
+              .referenced_workflows[0].sha == $expected_sha
             ' <<< "$run_json" >/dev/null 2>&1 \
-            || fail_closed 'current workflow run does not match the expected repository event'
+            || fail_closed 'current workflow run does not match the immutable trusted caller'
 
           echo "runner=$aws_runner" >> "$GITHUB_OUTPUT"
           echo '::notice title=AWS CI routing::Using an ephemeral RunsOn Fleet runner'
@@ -255,7 +282,7 @@ jobs:
 
   policy:
     needs: [gate]
-    runs-on: ${{ needs.gate.outputs.runner }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       lockfile_regenerated: ${{ steps.regen_lockfile.outputs.regenerated }}
@@ -491,7 +518,7 @@ jobs:
     name: verify
     if: ${{ always() }}
     needs: [gate, policy, typecheck_release_registry, general_tests, build]
-    runs-on: ${{ needs.gate.outputs.runner }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
@@ -787,7 +814,7 @@ jobs:
     name: e2e
     if: ${{ always() }}
     needs: [gate, policy, e2e_shards]
-    runs-on: ${{ needs.gate.outputs.runner }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:

@@ -92,6 +92,44 @@ function runStackScope(stack, prBaseRef) {
   }
 }
 
+function runHeavyRunnerMode(mode, trustedWorkflowSha) {
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const match = workflow.match(
+    /      - name: Validate PR identity and select runner[\s\S]*?        run: \|\n([\s\S]*?)\n\n      - name: Select stacked PR CI scope/,
+  );
+  assert.ok(match, "trusted workflow must define the runner route script");
+  const routeScript = match[1]
+    .split("\n")
+    .map((line) => line.replace(/^ {10}/, ""))
+    .join("\n");
+  const identityChecks = routeScript.indexOf('[[ "$AWS_CI_ENABLED"');
+  assert.ok(identityChecks > 0, "runner mode checks must happen before identity and Fleet checks");
+  const modeScript = `${routeScript.slice(0, identityChecks)}\necho "continued=true" >> "$GITHUB_OUTPUT"\n`;
+  const scratch = mkdtempSync(path.join(tmpdir(), "paperclip-runner-mode-"));
+  const output = path.join(scratch, "github-output");
+
+  try {
+    const result = spawnSync("bash", ["-c", modeScript], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        EXPECTED_TRUSTED_WORKFLOW_SHA: trustedWorkflowSha,
+        GITHUB_OUTPUT: output,
+        HEAVY_RUNNER_MODE: mode,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return Object.fromEntries(
+      readFileSync(output, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => line.split("=")),
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 test("the e2e shards form a complete, non-overlapping partition", () => {
   const specs = listE2eSpecs();
   assert.ok(specs.length > 0, "expected a non-empty e2e spec set");
@@ -161,6 +199,76 @@ test("shard arguments are validated", () => {
 
 test("pr.yml calls the trusted PR workflow at an immutable SHA", () => {
   assert.ok(readPinnedTrustedPrWorkflow().length > 0);
+});
+
+test("the trusted PR workflow defaults heavy jobs to GitHub-hosted runners", () => {
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const jobs = readWorkflowJobs(workflow);
+
+  assert.match(
+    workflow,
+    /heavy_runner_mode:\n {8}description:[^\n]+\n {8}required: false\n {8}type: string\n {8}default: github/,
+    "the reusable workflow must fail safe when the trusted caller omits the runner mode",
+  );
+  assert.match(
+    workflow,
+    /trusted_workflow_sha:\n {8}description:[^\n]+\n {8}required: true\n {8}type: string/,
+    "the reusable workflow must require its immutable caller pin",
+  );
+
+  const gate = jobs.get("gate");
+  assert.match(gate, /HEAVY_RUNNER_MODE: \$\{\{ inputs\.heavy_runner_mode \}\}/);
+  assert.match(gate, /EXPECTED_TRUSTED_WORKFLOW_SHA: \$\{\{ inputs\.trusted_workflow_sha \}\}/);
+  assert.match(gate, /github\) fail_closed 'caller selected GitHub-hosted heavy jobs'/);
+  assert.match(gate, /fleet\) ;;/);
+  assert.match(gate, /\*\) fail_closed 'heavy runner mode is invalid'/);
+
+  const immutableSha = "a".repeat(40);
+  assert.equal(runHeavyRunnerMode("github", immutableSha).runner, "ubuntu-latest");
+  assert.equal(runHeavyRunnerMode("invalid", immutableSha).runner, "ubuntu-latest");
+  assert.equal(runHeavyRunnerMode("fleet", "main").runner, "ubuntu-latest");
+  assert.equal(runHeavyRunnerMode("fleet", immutableSha).continued, "true");
+});
+
+test("the trusted PR workflow validates its immutable caller before Fleet routing", () => {
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const gate = readWorkflowJobs(workflow).get("gate");
+
+  assert.match(
+    gate,
+    /is_commit_sha "\$EXPECTED_TRUSTED_WORKFLOW_SHA"[\s\\\n]+\|\| fail_closed 'trusted workflow pin is not an immutable commit SHA'/,
+  );
+  assert.match(gate, /\.path == "\.github\/workflows\/pr\.yml"/);
+  assert.match(gate, /\(\(\.referenced_workflows \/\/ \[\]\) \| length\) == 1/);
+  assert.match(gate, /\.referenced_workflows\[0\]\.path == \$expected_workflow/);
+  assert.match(gate, /\.referenced_workflows\[0\]\.sha == \$expected_sha/);
+
+  const validation = gate.indexOf(".referenced_workflows[0].sha == $expected_sha");
+  const fleetRoute = gate.indexOf('echo "runner=$aws_runner"');
+  assert.ok(validation >= 0 && fleetRoute > validation, "Fleet routing must follow immutable caller validation");
+});
+
+test("only heavy CI jobs use the selected runner", () => {
+  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const jobs = readWorkflowJobs(workflow);
+  const dynamicRunner = /^ {4}runs-on: \$\{\{ needs\.gate\.outputs\.runner \}\}$/m;
+  const expectedHeavyJobs = [
+    "build",
+    "canary_dry_run",
+    "e2e_shards",
+    "general_tests",
+    "typecheck_release_registry",
+    "verify_serialized_server",
+  ];
+  const actualHeavyJobs = [...jobs]
+    .filter(([, body]) => dynamicRunner.test(body))
+    .map(([id]) => id)
+    .sort();
+
+  assert.deepEqual(actualHeavyJobs, expectedHeavyJobs);
+  for (const jobId of ["gate", "policy", "verify", "e2e"]) {
+    assert.match(jobs.get(jobId), /^ {4}runs-on: ubuntu-latest$/m, `${jobId} must stay GitHub-hosted`);
+  }
 });
 
 test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
