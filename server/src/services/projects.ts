@@ -585,7 +585,11 @@ export function projectService(db: Db) {
     projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
 
     // Also write goalId to the legacy column (first goal or null)
-    const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
+    // The resolved set is canonical for persistence as well as validation:
+    // falling back to the raw legacy field here would write an id that
+    // skipped validation whenever `goalIds: []` and `goalId` arrive
+    // together (goalIds wins resolution, mirroring the update path).
+    const legacyGoalId = ids?.[0] ?? null;
 
     const row = await db
       .insert(projects)

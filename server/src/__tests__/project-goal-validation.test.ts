@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -115,6 +116,30 @@ describeEmbeddedPostgres("project goal validation", () => {
       .create(companyId, { name: "Rocket", goalIds: [foreignGoalId] })
       .then(() => null, (error: unknown) => error);
     expectUnprocessable(failure, foreignGoalId);
+  });
+
+  it("ignores the legacy goalId when an explicit empty goalIds list wins resolution", async () => {
+    // goalIds and goalId may arrive together; the resolved set (goalIds
+    // first) is canonical for persistence too. Before this rule, an empty
+    // list skipped validation while the raw legacy id was still written —
+    // unvalidated, and unchecked for ownership.
+    const companyId = await seedCompany("Conflicting Fields Co");
+    const otherCompanyId = await seedCompany("Conflicting Other Co");
+    const foreignGoalId = await seedGoal(otherCompanyId, "Should not link");
+    const projects = projectService(db);
+
+    const created = await projects.create(companyId, {
+      name: "Rocket",
+      goalIds: [],
+      goalId: foreignGoalId,
+    });
+    expect(created.goalIds).toEqual([]);
+
+    const [row] = await db
+      .select({ goalId: projectsTable.goalId })
+      .from(projectsTable)
+      .where(eq(projectsTable.id, created.id));
+    expect(row.goalId).toBeNull();
   });
 
   it("rejects an update to an unknown or foreign goal and leaves links unchanged", async () => {
