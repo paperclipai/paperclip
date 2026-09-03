@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AdapterModel } from "@paperclipai/adapter-utils";
+import type { AdapterModel, AdapterModelDiscoveryContext } from "@paperclipai/adapter-utils";
 import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
 const MODELS_CACHE_TTL_MS = 60_000;
@@ -197,9 +197,15 @@ export async function ensurePiModelConfiguredAndAvailable(input: {
   return models;
 }
 
-export async function listPiModels(): Promise<AdapterModel[]> {
+export async function listPiModels(
+  ctx?: AdapterModelDiscoveryContext,
+): Promise<AdapterModel[]> {
   try {
-    return await discoverPiModelsCached();
+    // `pi --list-models` only enumerates providers it can authenticate, so a
+    // provider whose credential lives in a company secret is invisible unless
+    // that env is handed in. Without ctx this falls back to the server process
+    // env, which is the pre-existing behaviour.
+    return await discoverPiModelsCached({ env: ctx?.env });
   } catch {
     return [];
   }

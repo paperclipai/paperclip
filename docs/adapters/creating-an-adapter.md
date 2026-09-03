@@ -68,6 +68,33 @@ Core fields: ...
 export { createServerAdapter } from "./server/index.js";
 ```
 
+### Dynamic model discovery
+
+A static `models` array is enough for a fixed catalogue. Declare `listModels` instead when the adapter discovers models at runtime, for example by starting a provider CLI.
+
+```ts
+listModels?: (ctx?: AdapterModelDiscoveryContext) => Promise<AdapterModel[]>;
+refreshModels?: (ctx?: AdapterModelDiscoveryContext) => Promise<AdapterModel[]>;
+```
+
+`ctx.env` holds an already-resolved environment. The server resolves company secrets with the same code path that execution uses, so the adapter never reads the secret store itself. Forward `ctx.env` to whatever process you start:
+
+```ts
+export async function listMyModels(ctx?: AdapterModelDiscoveryContext) {
+  return await discoverModels({ env: ctx?.env });
+}
+```
+
+The context is optional, and it is absent for callers that do not name an agent. Always keep a working fallback for that case.
+
+This matters when a provider CLI lists only the providers it can authenticate. Without `ctx.env`, discovery sees only the server process environment. A key stored as a per-company secret then shows no models, and the operator must hardcode the provider in an on-disk config instead.
+
+The models route passes the context when the request names an agent:
+
+```
+GET /companies/:companyId/adapters/:type/models?agentId=<agentId>
+```
+
 ## Step 2: Server Execute
 
 `src/server/execute.ts` is the core. It receives an `AdapterExecutionContext` and returns an `AdapterExecutionResult`.
