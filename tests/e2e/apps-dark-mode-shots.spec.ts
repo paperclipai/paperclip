@@ -115,12 +115,12 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await healthy?.close();
   });
 
-  test("sidebar says Apps and links to /apps", async ({ page }) => {
+  test("sidebar says Connectors and links to /apps", async ({ page }) => {
     await forceDark(page);
     await page.goto(`/${seed.prefix}/dashboard`);
-    const appsLink = page.getByRole("link", { name: "Apps", exact: true });
-    await expect(appsLink).toBeVisible({ timeout: 30_000 });
-    await expect(appsLink).toHaveAttribute("href", new RegExp(`/${seed.prefix}/apps$`));
+    const connectorsLink = page.getByRole("link", { name: "Connectors", exact: true });
+    await expect(connectorsLink).toBeVisible({ timeout: 30_000 });
+    await expect(connectorsLink).toHaveAttribute("href", new RegExp(`/${seed.prefix}/apps$`));
   });
 
   test("apps list dark mode with attention banner", async ({ page }) => {
