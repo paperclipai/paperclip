@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-31T18:31:00Z",
+  "afterCapturedAt": "2026-08-31T19:54:42Z",
+  "source": {
+    "branch": "codex/core-ui-refactor-082826",
+    "commit": "67f9867bc65002e9c4b8cc68ad57a491231e86df",
+    "dirty": true,
+    "companyPrefix": "TES",
+    "theme": "dark"
+  },
+  "viewports": {
+    "desktop": { "width": 1440, "height": 900, "deviceScaleFactor": 1 },
+    "compact": { "width": 1024, "height": 768, "deviceScaleFactor": 1 }
+  },
+  "captures": [
+    { "surface": "left-nav-dashboard", "viewport": "desktop", "route": "/TES/dashboard", "file": "before/desktop/left-nav-dashboard.png", "sha256": "865a32eed79e3e3d8b41297feff4cd04207c390b9e4a8d391faddba3806511af" },
+    { "surface": "inbox", "viewport": "desktop", "route": "/TES/inbox/mine", "file": "before/desktop/inbox.png", "sha256": "84b30bea26d9a85f125c59ffbf9678afe4d6a707b811afa9b67e357d7776367d" },
+    { "surface": "tasks", "viewport": "desktop", "route": "/TES/issues", "file": "before/desktop/tasks.png", "sha256": "23bee284e8f9a82ecf003404fbd6b3edf3e45c55410bffa9cbfba7cb6569e281" },
+    { "surface": "activity", "viewport": "desktop", "route": "/TES/activity", "file": "before/desktop/activity.png", "sha256": "9d9924e72c929a0db2752ed78e33036c36061c9cb81fcab2362bd2450fc8e468" },
+    { "surface": "task-detail", "viewport": "desktop", "route": "/TES/issues/TES-1", "file": "before/desktop/task-detail.png", "sha256": "297133eb835387ccc9c308ca22246eb8e75e52cc29bf6d5322a8628de483a3f7" },
+    { "surface": "agent-detail", "viewport": "desktop", "route": "/TES/agents/test/dashboard", "file": "before/desktop/agent-detail.png", "sha256": "8e6db40642df204a592373aeb1a63e5fac0d89c552f8dc371310eb3a9cc224a5" },
+    { "surface": "routines", "viewport": "desktop", "route": "/TES/routines", "file": "before/desktop/routines.png", "sha256": "e208b038f7f68c1389d8a1c7f09250bc8bf6a61219f79cb9f4444f509d289d1b" },
+    { "surface": "skills", "viewport": "desktop", "route": "/TES/skills", "file": "before/desktop/skills.png", "sha256": "99e7e1db04e84e0e88cb93679b54aece7274edae6cd0a65daf54d31229c4a17c" },
+    { "surface": "settings", "viewport": "desktop", "route": "/TES/company/settings", "file": "before/desktop/settings.png", "sha256": "77a1cb5668fe1c718d5968415a9654ac59e2a53561ebeb33229f14653bcf6267" },
+    { "surface": "left-nav-dashboard", "viewport": "compact", "route": "/TES/dashboard", "file": "before/compact/left-nav-dashboard.png", "sha256": "9d415bcd462a7a6ff080f9f3126e9be06d131c2cc8733f490522c538f7703052" },
+    { "surface": "inbox", "viewport": "compact", "route": "/TES/inbox/mine", "file": "before/compact/inbox.png", "sha256": "0a40a2c30df8b8a3a0856d2650ad4df2bd3378b4392b9c7f97dacb9ebaeca6c4" },
+    { "surface": "task-detail", "viewport": "compact", "route": "/TES/issues/TES-1", "file": "before/compact/task-detail.png", "sha256": "345cf187212095d947943199c871d5397cd19234cef826b5ac65beafe8680bfa" },
+    { "surface": "agent-detail", "viewport": "compact", "route": "/TES/agents/test/dashboard", "file": "before/compact/agent-detail.png", "sha256": "8b8bf6db0f57d83c8ef8ccb514dc41dd2ecedf23912e0bf44b43ea5ec3eade77" },
+    { "surface": "routines", "viewport": "compact", "route": "/TES/routines", "file": "before/compact/routines.png", "sha256": "c6eb69d2d3ade9b9de55cc86b0edb2cd54ba7d7ad51122299ee3fb1e48624387" },
+    { "surface": "skills", "viewport": "compact", "route": "/TES/skills", "file": "before/compact/skills.png", "sha256": "da7d1d5aa0f276babbdf383255c8713715d42387641367ead2e27c694bc708cd" },
+    { "surface": "settings", "viewport": "compact", "route": "/TES/company/settings", "file": "before/compact/settings.png", "sha256": "6d5365a6189cadd0ad9233d12cfadf78999a8dc46917872c769c3eb6b640614f" },
+    { "surface": "left-nav-dashboard", "viewport": "desktop", "route": "/TES/dashboard", "file": "after/desktop/left-nav-dashboard.png", "sha256": "34f9c26f9cf8314b5da1ce16004a3b210cbf8ff8ac2b71dd6d5ee1a4e2c55166" },
+    { "surface": "left-nav-dashboard", "viewport": "compact", "route": "/TES/dashboard", "file": "after/compact/left-nav-dashboard.png", "sha256": "f860d7b0a9eb81fea7bd1f17ce17f256b0c920ae2e92e8080a39804b89995a8b" },
+    { "surface": "task-detail", "viewport": "desktop", "route": "/TES/issues/TES-1", "file": "after/desktop/task-detail.png", "sha256": "c4cd72850d7ba87815cd4e0db354ed7c843f6430259e8c389a54cd8144c1936e" },
+    { "surface": "task-detail", "viewport": "compact", "route": "/TES/issues/TES-1", "file": "after/compact/task-detail.png", "sha256": "f376fe8abd1dcf70f7e2411f313faf366ee5893fb7e4bbe30c0697f65c0acda8" },
+    { "surface": "inbox", "viewport": "desktop", "route": "/TES/inbox/mine", "file": "after/desktop/inbox.png", "sha256": "e2ecc5491280875921f19948c69b2eb4c3f3064cde047cb2126ca595e5c17da7" },
+    { "surface": "inbox", "viewport": "compact", "route": "/TES/inbox/mine", "file": "after/compact/inbox.png", "sha256": "86af0f32f1a98bca2f27b8d8c0ea15649089049f21566edbff2e125159013d36" },
+    { "surface": "tasks", "viewport": "desktop", "route": "/TES/issues", "file": "after/desktop/tasks.png", "sha256": "9868019794142deb84a7a818549edc009910fd64942ca57af285a6b35ae98803" },
+    { "surface": "tasks", "viewport": "compact", "route": "/TES/issues", "file": "after/compact/tasks.png", "sha256": "4ca0e95cda18051eb1b015e0bdf8131d259f793bddc45b82a4f34a1eadeeaaf3" },
+    { "surface": "activity", "viewport": "desktop", "route": "/TES/activity", "file": "after/desktop/activity.png", "sha256": "bda23301ad7cb93a944c00b1591e14c4c21359bce07ff93d38c353983be7df51" },
+    { "surface": "agent-detail", "viewport": "desktop", "route": "/TES/agents/test/overview", "file": "after/desktop/agent-detail.png", "sha256": "4e2d1c31133e06b856ac07071c3ef62e2eda7e756601ed9e24ea5cfd82a917fe" },
+    { "surface": "agent-detail", "viewport": "compact", "route": "/TES/agents/test/overview", "file": "after/compact/agent-detail.png", "sha256": "641113c75850ff3d7fbb0cb22a0bde563d8135b9f2d2e29eee2192336575c330" },
+    { "surface": "routines", "viewport": "desktop", "route": "/TES/routines", "file": "after/desktop/routines.png", "sha256": "c089e41a252a7fbba2a095b24114f1467d937b9227ac867238a5f547db7e517c" },
+    { "surface": "routines", "viewport": "compact", "route": "/TES/routines", "file": "after/compact/routines.png", "sha256": "90ff5af943d6f6a7755bad76cfbe7b816552709fb0b2a10d807f2b8244680981" },
+    { "surface": "skills", "viewport": "desktop", "route": "/TES/skills", "file": "after/desktop/skills.png", "sha256": "f833d478831c01be8a73e8fb87f9538d547a67b2e90a25fb88108ee5c49cfc8a" },
+    { "surface": "skills", "viewport": "compact", "route": "/TES/skills", "file": "after/compact/skills.png", "sha256": "898a99b66eca376b692047c9d65701ba95575752fe67488cd7c32b6924801771" },
+    { "surface": "settings", "viewport": "desktop", "route": "/TES/company/settings", "file": "after/desktop/settings.png", "sha256": "3d1adf63ec65f827c8d4d91369fc751e450599cafe4bb1d941b8184e69441e6b" },
+    { "surface": "settings", "viewport": "compact", "route": "/TES/company/settings", "file": "after/compact/settings.png", "sha256": "772a458a9ea1f3685005ca4ae54d70767b4eb7172b6e77eb8ecd23ea96ffd9cc" }
+  ]
+}

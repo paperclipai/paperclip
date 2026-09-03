@@ -6,7 +6,10 @@ import {
   House,
   Inbox,
   LayoutDashboard,
+  Shield,
+  SlidersHorizontal,
   SquarePen,
+  UserRoundPen,
   Users,
 } from "lucide-react";
 import { BreadcrumbBar } from "@/components/BreadcrumbBar";
@@ -16,9 +19,13 @@ import { KeyboardShortcutsCheatsheetContent } from "@/components/KeyboardShortcu
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Sidebar } from "@/components/Sidebar";
+import { ContextualSidebarFrame } from "@/components/ContextualSidebarFrame";
 import { PluginLauncherProvider } from "@/plugins/launchers";
 import { SidebarAccountMenu } from "@/components/SidebarAccountMenu";
 import { SidebarCompanyMenu } from "@/components/SidebarCompanyMenu";
+import { SidebarNavItem } from "@/components/SidebarNavItem";
+import { SidebarShell as AppSidebarShell } from "@/components/SidebarShell";
+import { SecondarySidebar } from "@/components/SecondarySidebar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -71,12 +78,62 @@ function RouteSetter({ to }: { to: string }) {
   return null;
 }
 
-function SidebarShell({ collapsed = false }: { collapsed?: boolean }) {
+function GlobalSidebarPreview({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <div className="h-[520px] overflow-hidden border border-border bg-background">
       <div className="flex h-full min-h-0">
         <div className={cn("overflow-hidden transition-[width]", collapsed ? "w-0" : "w-60")}>
           <Sidebar />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContextualTakeoverPreview() {
+  return (
+    <div className="h-[520px] overflow-hidden border border-border bg-background">
+      <div className="flex h-full min-h-0">
+        <AppSidebarShell open resizable storageKey="paperclip.storybook.contextual-sidebar.width">
+          <div className="flex min-h-0 flex-1">
+            <SecondarySidebar>
+              <ContextualSidebarFrame
+                surface="settings"
+                title="Settings"
+                icon={SlidersHorizontal}
+              >
+                <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
+                  <SidebarNavItem
+                    to="/company/settings"
+                    label="General"
+                    icon={SlidersHorizontal}
+                    end
+                  />
+                  <SidebarNavItem
+                    to="/company/settings/instance/profile"
+                    label="Profile"
+                    icon={UserRoundPen}
+                    end
+                  />
+                  <SidebarNavItem
+                    to="/company/settings/instance/access"
+                    label="Access"
+                    icon={Shield}
+                    end
+                  />
+                </nav>
+              </ContextualSidebarFrame>
+            </SecondarySidebar>
+          </div>
+          <SidebarAccountMenu deploymentMode="authenticated" forceExpanded />
+        </AppSidebarShell>
+        <div className="flex min-w-0 flex-1 items-center justify-center bg-background p-8 text-center">
+          <div>
+            <div className="text-sm font-medium text-foreground">Settings content</div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              The contextual navigation fully replaces the global sidebar in the same resizable shell.
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -243,9 +300,13 @@ function NavigationLayoutStories() {
 
         <Section eyebrow="Sidebar" title="Expanded and collapsed shell states">
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_220px]">
-            <SidebarShell />
-            <SidebarShell collapsed />
+            <GlobalSidebarPreview />
+            <GlobalSidebarPreview collapsed />
           </div>
+        </Section>
+
+        <Section eyebrow="Contextual navigation" title="Settings replaces the global sidebar">
+          <ContextualTakeoverPreview />
         </Section>
 
         <Section eyebrow="Menus" title="Account, company, and switcher menus in open state">

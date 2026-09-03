@@ -141,6 +141,26 @@ function seedAgentDetailData(queryClient: QueryClient) {
     storybookIssues.slice(0, 4),
   );
   queryClient.setQueryData(queryKeys.agents.list(COMPANY_ID), storybookAgents);
+  queryClient.setQueryData(queryKeys.agents.skills(AGENT_ID), {
+    adapterType: "codex_local",
+    supported: true,
+    mode: "persistent",
+    desiredSkills: ["paperclipai/paperclip/design-guide", "paperclipai/paperclip/check-pr"],
+    entries: [],
+    warnings: [],
+  });
+  queryClient.setQueryData(queryKeys.companySkills.list(COMPANY_ID), [
+    {
+      id: "skill-design-guide",
+      key: "paperclipai/paperclip/design-guide",
+      name: "Design Guide",
+    },
+    {
+      id: "skill-check-pr",
+      key: "paperclipai/paperclip/check-pr",
+      name: "Check PR",
+    },
+  ]);
   queryClient.setQueryData(queryKeys.budgets.overview(COMPANY_ID), budgetOverviewFixture);
   queryClient.setQueryData(queryKeys.resourceMemberships.mine(COMPANY_ID), {
     projectMemberships: {},
@@ -196,6 +216,9 @@ const meta: Meta = {
 export default meta;
 type Story = StoryObj;
 
-export const Dashboard: Story = {
+export const Overview: Story = {
   render: () => <AgentDetailScenario />,
 };
+
+/** @deprecated Kept as a stable visual-review permalink. */
+export const Dashboard: Story = Overview;
