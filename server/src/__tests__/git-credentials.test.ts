@@ -1,8 +1,10 @@
-import { spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { promisify } from "node:util";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
@@ -388,6 +390,57 @@ describe("createGitRemoteAuthProvider", () => {
         await expect(provider(portedUrl)).resolves.toBeNull();
       });
     });
+
+    describe("custom CA (PAPERCLIP_GITLAB_CA_CERT_PATH)", () => {
+      it("sets GIT_SSL_CAINFO for a self-hosted match when a CA cert path is configured", async () => {
+        const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+        const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          secrets,
+          env: {
+            PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com",
+            PAPERCLIP_GITLAB_CA_CERT_PATH: "/paperclip/ca/lab-ca.pem",
+          },
+        });
+        const invocation = await provider(selfHostedUrl);
+        expect(invocation?.env.GIT_SSL_CAINFO).toBe("/paperclip/ca/lab-ca.pem");
+      });
+
+      it("does not set GIT_SSL_CAINFO when no CA cert path is configured", async () => {
+        const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+        const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          secrets,
+          env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com" },
+        });
+        const invocation = await provider(selfHostedUrl);
+        expect(invocation?.env.GIT_SSL_CAINFO).toBeUndefined();
+      });
+
+      it("never sets GIT_SSL_CAINFO for gitlab.com itself, even with a CA cert path configured", async () => {
+        // GIT_SSL_CAINFO replaces (not augments) git's default trust store for the process it
+        // is set on. Applying a self-hosted CA bundle to a gitlab.com clone would break that
+        // clone's TLS verification unless the bundle happened to also carry the public roots.
+        const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+        const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          secrets,
+          env: {
+            PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com",
+            PAPERCLIP_GITLAB_CA_CERT_PATH: "/paperclip/ca/lab-ca.pem",
+          },
+        });
+        const invocation = await provider("https://gitlab.com/example/repo.git");
+        expect(invocation?.env.GIT_SSL_CAINFO).toBeUndefined();
+      });
+
+      it("trims whitespace and treats a blank configured path as unset", async () => {
+        const secrets = buildSecretsFake({ GITLAB_TOKEN: "glpat-token" });
+        const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+          secrets,
+          env: { PAPERCLIP_GITLAB_HOSTS: "gitlab.mycompany.com", PAPERCLIP_GITLAB_CA_CERT_PATH: "   " },
+        });
+        const invocation = await provider(selfHostedUrl);
+        expect(invocation?.env.GIT_SSL_CAINFO).toBeUndefined();
+      });
+    });
   });
 });
 
@@ -464,6 +517,30 @@ describe("buildGitAuthInvocation", () => {
     expect(joined).toContain("oauth2");
     expect(joined).not.toContain("credential.https://gitlab.com.helper=");
     expect(joined).not.toContain("credential.https://www.gitlab.com.helper=");
+  });
+
+  it("sets GIT_SSL_CAINFO when a caCertPath is passed", () => {
+    const invocation = buildGitAuthInvocation(
+      {
+        token: "super-secret-token",
+        source: "company_secret",
+        secretName: "GITLAB_TOKEN",
+        providerId: "gitlab",
+      },
+      ["gitlab.mycompany.com"],
+      "/paperclip/ca/lab-ca.pem",
+    );
+    expect(invocation.env.GIT_SSL_CAINFO).toBe("/paperclip/ca/lab-ca.pem");
+  });
+
+  it("omits GIT_SSL_CAINFO when no caCertPath is passed", () => {
+    const invocation = buildGitAuthInvocation({
+      token: "super-secret-token",
+      source: "company_secret",
+      secretName: "GITHUB_TOKEN",
+      providerId: "github",
+    });
+    expect(invocation.env.GIT_SSL_CAINFO).toBeUndefined();
   });
 });
 
@@ -573,6 +650,79 @@ describe("credential helper execution (real git, no network)", () => {
     } finally {
       await fs.rm(cwd, { recursive: true, force: true });
     }
+  });
+});
+
+// This module never sends real bytes over the wire on its own (`buildGitAuthInvocation` only
+// prepares config); GIT_SSL_CAINFO is trusted to work exactly as git's own docs say. Prove that
+// trust against a real self-signed TLS server instead of assuming it: without GIT_SSL_CAINFO
+// git must reject the self-signed cert, and with it pointed at the exact cert, git must get
+// past the TLS handshake (and only then fail for an unrelated reason -- there is no real git
+// server behind the test endpoint).
+//
+// The availability check must be synchronous and run at collection time (not inside beforeAll):
+// `describe.skipIf`/`it.skipIf` evaluate their condition immediately when called, before any
+// hook runs, so a boolean only known once an async beforeAll completes would never take effect.
+const opensslAvailable = (() => {
+  try {
+    execFileSync("openssl", ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!opensslAvailable)("GIT_SSL_CAINFO against a real self-signed TLS server", () => {
+  const execFileAsync = promisify(execFile);
+  let workDir: string;
+  let certPath: string;
+  let server: https.Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    workDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-ca-test-"));
+    certPath = path.join(workDir, "cert.pem");
+    const keyPath = path.join(workDir, "key.pem");
+    await execFileAsync("openssl", [
+      "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", keyPath, "-out", certPath, "-days", "1",
+      "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+    ]);
+    const [key, cert] = await Promise.all([fs.readFile(keyPath), fs.readFile(certPath)]);
+    server = https.createServer({ key, cert }, (_req, res) => {
+      res.writeHead(404);
+      res.end("not a real git server");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    baseUrl = `https://127.0.0.1:${port}/example/repo.git`;
+  });
+
+  afterAll(async () => {
+    if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (workDir) await fs.rm(workDir, { recursive: true, force: true });
+  });
+
+  it("rejects the self-signed cert with no GIT_SSL_CAINFO", async () => {
+    await expect(
+      execFileAsync("git", ["ls-remote", baseUrl], { env: { ...process.env } }),
+    ).rejects.toThrow(/certificate|SSL|TLS/i);
+  });
+
+  it("gets past the TLS handshake once GIT_SSL_CAINFO points at the exact cert", async () => {
+    const error = await execFileAsync("git", ["ls-remote", baseUrl], {
+      env: { ...process.env, GIT_SSL_CAINFO: certPath },
+    }).then(
+      () => null,
+      (err: unknown) => err as { stderr?: string; message: string },
+    );
+    // Still fails -- there is no real git smart-HTTP backend behind the test endpoint -- but
+    // the failure must not be a certificate/TLS error, proving trust was actually established.
+    expect(error).not.toBeNull();
+    const failureText = `${error?.stderr ?? ""} ${error?.message ?? ""}`;
+    expect(failureText).not.toMatch(/certificate|SSL certificate problem|unable to get local issuer/i);
+    expect(failureText).toMatch(/not found|repository/i);
   });
 });
 
