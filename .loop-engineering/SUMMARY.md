@@ -2,17 +2,17 @@
 
 ## Verdict
 
-partial
+blocked
 
 ## Completed
 
-- configured loop run completed through iteration 1
+- configured loop run completed through iteration 3
 
 ## Verification
 
-- passed: targeted_tests, diff_check
+- passed: targeted_tests, targeted_tests, targeted_tests
 - blocked: none
-- failed: none
+- failed: diff_check, diff_check, diff_check
 
 ## Commits
 
@@ -33,4 +33,4 @@ partial
 
 ## Next Start
 
-- remaining checklist items require another iteration or external action
+- repeated-failure: required gate failed 3 times
