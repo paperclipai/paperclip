@@ -159,6 +159,27 @@ describe("parseIssueExecutionState", () => {
     expect(state).not.toBeNull();
     expect(state!.status).toBe("pending");
   });
+
+  it("parses a stopped state", () => {
+    const state = parseIssueExecutionState({
+      status: "stopped",
+      currentStageId: null,
+      currentStageIndex: null,
+      currentStageType: null,
+      currentParticipant: null,
+      returnAssignee: { type: "agent", agentId: coderAgentId },
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      lastDecisionOutcome: "stopped",
+      monitor: null,
+    });
+
+    expect(state).toMatchObject({
+      status: "stopped",
+      lastDecisionOutcome: "stopped",
+    });
+  });
 });
 
 describe("issue execution policy transitions", () => {
