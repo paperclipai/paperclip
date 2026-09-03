@@ -52,6 +52,11 @@ const concurrencyPolicyOptions = [
     title: "Skip if active",
     description: "Drop overlapping trigger occurrences while the routine is already active.",
   },
+  {
+    value: "cancel_previous",
+    title: "Cancel previous",
+    description: "Cancel stranded earlier issues before starting the newest run. Keep a live run working.",
+  },
 ];
 
 const catchUpPolicyOptions = [

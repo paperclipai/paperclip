@@ -70,6 +70,7 @@ Controls what happens when a trigger fires while the previous run issue is still
 | `coalesce_if_active` **(default)** | New run is marked `coalesced` and linked to the existing active run — no new issue created |
 | `skip_if_active` | New run is marked `skipped` and linked to the existing active run — no new issue created |
 | `always_enqueue` | Always create a new issue regardless of active runs |
+| `cancel_previous` | Cancel open predecessor issues with no live heartbeat, mark their runs failed, and create the newest run; coalesce when a predecessor still has a live heartbeat |
 
 ---
 

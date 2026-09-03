@@ -100,6 +100,12 @@ describe("routine validators", () => {
     expect(() => updateRoutineSchema.parse({ activityGateScope: "agent" })).toThrow();
   });
 
+  it("accepts the cancel_previous concurrency policy", () => {
+    expect(updateRoutineSchema.parse({ concurrencyPolicy: "cancel_previous" }).concurrencyPolicy).toBe(
+      "cancel_previous",
+    );
+  });
+
   it("accepts date variables with valid YYYY-MM-DD defaults", () => {
     expect(routineVariableSchema.parse({
       name: "startDate",
