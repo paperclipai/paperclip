@@ -781,11 +781,12 @@ jobs:
           test -d "$sdk_root"
           test ! -L "$daytona_root"
           test ! -L "$sdk_root"
+          test -f "$daytona_root/pnpm-lock.yaml"
           test "$(jq -r .name "$daytona_root/package.json")" = "@paperclipai/plugin-daytona"
           test "$(jq -r .name "$sdk_root/package.json")" = "@paperclipai/plugin-sdk"
           (
             cd "$daytona_root"
-            pnpm install --ignore-workspace --no-lockfile --ignore-scripts
+            pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts
           )
           node scripts/link-plugin-dev-sdk.mjs
           test "$(realpath "$daytona_root/node_modules/@paperclipai/plugin-sdk")" = "$(realpath "$sdk_root")"

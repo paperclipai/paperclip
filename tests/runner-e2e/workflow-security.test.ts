@@ -140,8 +140,12 @@ describe("public repository paid workflow security", () => {
       "if: matrix.environmentId == 'daytona'",
     );
     expect(preparedBeforeProviderAccess).toContain(
-      "pnpm install --ignore-workspace --no-lockfile --ignore-scripts",
+      'test -f "$daytona_root/pnpm-lock.yaml"',
     );
+    expect(preparedBeforeProviderAccess).toContain(
+      "pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts",
+    );
+    expect(preparedBeforeProviderAccess).not.toContain("--no-lockfile");
     expect(preparedBeforeProviderAccess).toContain(
       "node scripts/link-plugin-dev-sdk.mjs",
     );
