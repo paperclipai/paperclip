@@ -60,6 +60,7 @@ jobs:
       test_runner: ${{ steps.runner.outputs.runner }}
       max_parallel_default: ${{ steps.runner.outputs.max_parallel_default }}
       max_parallel_limit: ${{ steps.runner.outputs.max_parallel_limit }}
+      playwright_channel: ${{ steps.runner.outputs.playwright_channel }}
       target_sha: ${{ steps.target.outputs.sha }}
       target_ref: ${{ steps.target.outputs.ref }}
     steps:
@@ -132,6 +133,7 @@ jobs:
               echo "runner=$aws_runner"
               echo "max_parallel_default=100"
               echo "max_parallel_limit=100"
+              echo "playwright_channel=chrome"
             } >> "$GITHUB_OUTPUT"
             echo '::notice title=Paid runner routing::Using an ephemeral RunsOn Fleet runner'
           else
@@ -139,6 +141,7 @@ jobs:
               echo "runner=$github_runner"
               echo "max_parallel_default=32"
               echo "max_parallel_limit=57"
+              echo "playwright_channel="
             } >> "$GITHUB_OUTPUT"
             echo '::notice title=Paid runner routing::RUNNER_E2E_AWS_ENABLED is not true; using the proven GitHub-hosted runner'
           fi
@@ -841,6 +844,7 @@ jobs:
         run: node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
 
       - name: Download immutable campaign outputs
+        if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ needs.build_runner_artifacts.outputs.build_artifact_name }}
@@ -854,6 +858,7 @@ jobs:
           path: runner-e2e-provider-pack
 
       - name: Verify and restore campaign outputs
+        if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         env:
           NEEDS_RUNNER_TYPESCRIPT: ${{ matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth' }}
           NEEDS_NATIVE_BINARY: ${{ startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth' }}
@@ -910,7 +915,16 @@ jobs:
         if: matrix.profileId == 'legacy-claude'
         run: npm install --global --omit=dev @anthropic-ai/claude-code@2.1.19
 
-      - name: Install Chromium headless shell
+      - name: Qualify preinstalled Chrome
+        if: needs.authorize.outputs.playwright_channel == 'chrome'
+        run: |
+          set -euo pipefail
+          chrome_path="$(command -v google-chrome)"
+          test -x "$chrome_path"
+          google-chrome --version
+
+      - name: Install Chromium headless shell on GitHub-hosted fallback
+        if: needs.authorize.outputs.playwright_channel != 'chrome'
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
@@ -935,6 +949,7 @@ jobs:
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.executionId }}
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: ${{ needs.authorize.outputs.playwright_channel }}
         run: pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
 
       - name: Upload access-controlled packaged cell evidence

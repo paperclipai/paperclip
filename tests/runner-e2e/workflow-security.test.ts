@@ -198,6 +198,11 @@ describe("public repository paid workflow security", () => {
       "AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}",
     );
     expect(authorizeJob).toContain(
+      "playwright_channel: ${{ steps.runner.outputs.playwright_channel }}",
+    );
+    expect(authorizeJob).toContain('echo "playwright_channel=chrome"');
+    expect(authorizeJob).toContain('echo "playwright_channel="');
+    expect(authorizeJob).toContain(
       "Resolve requested repository branch to an immutable commit",
     );
     expect(authorizeJob).toContain(
@@ -240,6 +245,17 @@ describe("public repository paid workflow security", () => {
     );
     expect(paidJob).toContain(
       "pnpm exec playwright install --with-deps --only-shell chromium",
+    );
+    expect(paidJob).toContain("name: Qualify preinstalled Chrome");
+    expect(paidJob).toContain(
+      "if: needs.authorize.outputs.playwright_channel == 'chrome'",
+    );
+    expect(paidJob).toContain("google-chrome --version");
+    expect(paidJob).toContain(
+      "if: needs.authorize.outputs.playwright_channel != 'chrome'",
+    );
+    expect(paidJob).toContain(
+      "PAPERCLIP_PLAYWRIGHT_CHANNEL: ${{ needs.authorize.outputs.playwright_channel }}",
     );
     expect(paidJob).not.toContain(
       "pnpm exec playwright install --with-deps chromium",
@@ -519,6 +535,11 @@ describe("public repository paid workflow security", () => {
 
     expect(testJob).toMatch(fullStackTestNeeds);
     expect(testJob).toContain("Download immutable campaign outputs");
+    expect(
+      testJob.match(
+        /if: startsWith\(matrix\.profileId, 'runner-'\) \|\| matrix\.suiteId == 'openrouter-model-breadth'/gu,
+      ),
+    ).toHaveLength(2);
     expect(testJob).toContain("Download immutable remote provider pack");
     expect(testJob).toContain(
       "needs.build_runner_artifacts.outputs.build_artifact_name",
@@ -549,6 +570,24 @@ describe("public repository paid workflow security", () => {
     expect(testJob).not.toContain("build:typescript");
     expect(testJob).not.toContain("build:runner-binaries");
     expect(testJob).not.toContain("build-provider-pack.mjs");
+  });
+
+  it("uses the reviewed AWS Chrome channel without weakening the local executable override", async () => {
+    const config = await readFile(
+      path.join(repositoryRoot, "tests/runner-e2e/playwright.config.ts"),
+      "utf8",
+    );
+
+    expect(config).toContain(
+      "process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL?.trim()",
+    );
+    expect(config).toContain("{ channel: playwrightChannel }");
+    expect(config).toContain(
+      "process.env.PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE?.trim()",
+    );
+    expect(config).toContain(
+      "PAPERCLIP_PLAYWRIGHT_CHANNEL and PAPERCLIP_RUNNER_E2E_CHROMIUM_EXECUTABLE are mutually exclusive",
+    );
   });
 
   it("binds rerun evidence and Pages artifacts to the exact workflow attempt", async () => {
