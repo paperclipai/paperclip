@@ -91,4 +91,43 @@ describe("waitForCapabilityLiveProcess", () => {
 
     expect(unhandledRejections).toEqual([]);
   });
+
+  it("raises no unhandled rejection when an attempt rejects after the deadline already won the race", async () => {
+    vi.useFakeTimers();
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      let rejectLateAttempt: (error: unknown) => void = () => {};
+      const promise = waitForCapabilityLiveProcess(
+        "late-rejection",
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectLateAttempt = reject;
+          }),
+      );
+      const caughtError = promise.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(
+        CAPABILITY_LIVE_PROCESS_WAIT_DEADLINE_MS + 200,
+      );
+
+      const error = (await caughtError) as Error;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toContain("late-rejection");
+      expect(error.message).toContain(
+        `did not settle within ${CAPABILITY_LIVE_PROCESS_WAIT_DEADLINE_MS}ms`,
+      );
+
+      rejectLateAttempt(new Error("late attempt failure"));
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+
+    expect(unhandledRejections).toEqual([]);
+  });
 });
