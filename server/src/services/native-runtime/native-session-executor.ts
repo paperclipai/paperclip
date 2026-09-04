@@ -6680,7 +6680,7 @@ async function createRunnerdBackendWithinSessionClaim(
       checkpointable = await inspectRemoteHarnessState();
     }
     if (!checkpointable.complete) {
-      void input.onLog?.(
+      await input.onLog?.(
         "stderr",
         `[paperclip-runner] remote checkpoint skipped: exact suspended harness state unavailable (process=${settlement} reason=${checkpointable.incompleteReason})\n`,
       );

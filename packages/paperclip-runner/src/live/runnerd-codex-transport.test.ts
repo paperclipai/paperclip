@@ -131,6 +131,23 @@ it("identifies an active provider turn that must stop before suspension", () => 
   });
 });
 
+it("infers a remote provider turn until its own terminal event is durable", () => {
+  expect(
+    runnerdRecoveryInternals.providerTurnIsActiveFromCommittedEvents([
+      { eventType: "turn.started" },
+      { eventType: "run.result.proposed" },
+      { eventType: "run.terminal" },
+    ]),
+  ).toBe(true);
+  expect(
+    runnerdRecoveryInternals.providerTurnIsActiveFromCommittedEvents([
+      { eventType: "turn.started" },
+      { eventType: "run.terminal" },
+      { eventType: "turn.interrupted" },
+    ]),
+  ).toBe(false);
+});
+
 it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
   const settledSteps: string[] = [];
   await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
@@ -163,6 +180,74 @@ it("quiesces the control route before checkpoint and containment regardless of p
     },
   });
   expect(unsettledSteps).toEqual(["release", "checkpoint", "kill"]);
+});
+
+it("waits for the exact durable suspension command behind prior close work", async () => {
+  const commands = [
+    {
+      commandId: "command_close_drain",
+      type: "runner.drain",
+      status: "pending",
+    },
+  ];
+  let lifecycle = "ready";
+  let pumpCount = 0;
+
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend: (commandId) => {
+        commands.push({
+          commandId,
+          type: "runner.suspend",
+          status: "pending",
+        });
+      },
+      readRunnerState: async () => ({ lifecycle }),
+      runnerHasExited: async () => true,
+      pump: () => {
+        pumpCount += 1;
+        if (pumpCount === 1) commands[0]!.status = "completed";
+        if (pumpCount === 2) {
+          commands[1]!.status = "completed";
+          lifecycle = "suspended";
+        }
+      },
+      deadline: Date.now() + 1_000,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(true);
+  expect(commands.map((command) => command.type)).toEqual([
+    "runner.drain",
+    "runner.suspend",
+  ]);
+  expect(pumpCount).toBeGreaterThanOrEqual(2);
+});
+
+it("does not accept process exit without durable suspension", async () => {
+  const commands: Array<{
+    commandId: string;
+    type: string;
+    status: string;
+  }> = [];
+
+  await expect(
+    runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend: (commandId) => {
+        commands.push({
+          commandId,
+          type: "runner.suspend",
+          status: "pending",
+        });
+      },
+      readRunnerState: async () => ({ lifecycle: "ready" }),
+      runnerHasExited: async () => true,
+      pump: () => undefined,
+      deadline: Date.now() + 5,
+      pollIntervalMs: 0,
+    }),
+  ).resolves.toBe(false);
 });
 
 it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {

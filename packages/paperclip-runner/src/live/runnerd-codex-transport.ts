@@ -469,6 +469,24 @@ function providerDrainStateFromSnapshot(state: Record<string, unknown>): {
   };
 }
 
+function providerTurnIsActiveFromCommittedEvents(
+  events: readonly { eventType: string }[],
+): boolean {
+  let active = false;
+  for (const event of events) {
+    if (event.eventType === "turn.started") active = true;
+    else if (
+      event.eventType === "turn.completed" ||
+      event.eventType === "turn.failed" ||
+      event.eventType === "turn.interrupted" ||
+      event.eventType === "turn.cancelled"
+    ) {
+      active = false;
+    }
+  }
+  return active;
+}
+
 async function releaseRunnerProcessOwnership(input: {
   runnerSettled: boolean;
   checkpoint:
@@ -500,6 +518,63 @@ async function releaseRunnerProcessOwnership(input: {
   }
   if (checkpointFailure !== undefined) throw checkpointFailure;
   if (releaseFailure !== undefined) throw releaseFailure;
+}
+
+async function awaitRunnerSuspensionBarrier(input: {
+  commands: () => readonly {
+    commandId: string;
+    type: string;
+    status: string;
+  }[];
+  queueSuspend: (commandId: string) => void;
+  readRunnerState: () => Promise<Record<string, unknown>>;
+  runnerHasExited: () => Promise<boolean>;
+  pump: () => void;
+  deadline: number;
+  pollIntervalMs?: number;
+}): Promise<boolean> {
+  const existing = [...input.commands()]
+    .reverse()
+    .find(
+      (command) =>
+        command.type === "runner.suspend" && command.status === "pending",
+    );
+  const commandId =
+    existing?.commandId ??
+    `command_close_suspend_${randomUUID().replaceAll("-", "")}`;
+  if (!existing) input.queueSuspend(commandId);
+
+  while (Date.now() < input.deadline) {
+    input.pump();
+    const command = input
+      .commands()
+      .find((candidate) => candidate.commandId === commandId);
+    if (
+      command !== undefined &&
+      command.status !== "pending" &&
+      command.status !== "completed"
+    ) {
+      return false;
+    }
+    let lifecycle: unknown;
+    try {
+      lifecycle = (await input.readRunnerState()).lifecycle;
+    } catch {
+      // A remote filesystem can lag the command-result delivery by a small
+      // amount. Keep the single close deadline as the fail-closed bound.
+    }
+    if (command?.status === "completed" && lifecycle === "suspended") {
+      return true;
+    }
+    // Process completion alone is not a suspension proof. The durable state
+    // write precedes the terminal command result and process exit, so allow
+    // either observation to arrive first while staying within the same bound.
+    await input.runnerHasExited();
+    await new Promise<void>((resolveWait) =>
+      setTimeout(resolveWait, input.pollIntervalMs ?? 10),
+    );
+  }
+  return false;
 }
 
 function bridgedCodexQuestionParams(
@@ -2138,13 +2213,24 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
-  async #stopActiveProviderTurnBeforeSuspend(): Promise<boolean> {
+  async #stopActiveProviderTurnBeforeSuspend(
+    deadline: number,
+  ): Promise<boolean> {
     const state = this.#providerDrainState();
     const core = this.#core;
+    const inferredActiveProviderTurnId =
+      state === null &&
+      core !== null &&
+      providerTurnIsActiveFromCommittedEvents(core.store.state.committedEvents)
+        ? this.#turnId || this.#durableTurnId
+        : null;
+    const activeProviderTurnId =
+      state !== null && state !== "unreadable"
+        ? state.activeProviderTurnId
+        : inferredActiveProviderTurnId;
     if (
-      state === null ||
       state === "unreadable" ||
-      state.activeProviderTurnId === null ||
+      activeProviderTurnId === null ||
       core === null
     ) {
       return false;
@@ -2156,7 +2242,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       commandId,
       true,
     );
-    const deadline = Date.now() + 1_000;
     while (Date.now() < deadline) {
       this.#pumpEventsSafely();
       const command = core.store.state.commands.find(
@@ -2164,7 +2249,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       );
       if (command?.status === "completed") {
         this.#diagnostic(
-          `stopped active provider turn ${state.activeProviderTurnId} before runner suspension`,
+          `stopped active provider turn ${activeProviderTurnId} before runner suspension`,
         );
         return true;
       }
@@ -2261,7 +2346,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #closeOnce(): Promise<void> {
     this.#closed = true;
     const adoptedRunner = this.options.adoptExistingRunner;
-    let runnerSettled = this.#handle === null && adoptedRunner === undefined;
+    let runnerSuspended = this.#handle === null && adoptedRunner === undefined;
+    let suspensionRequired = false;
     if (
       this.#core !== null &&
       (this.#handle !== null || adoptedRunner !== undefined) &&
@@ -2270,50 +2356,55 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // A terminal provider frame can become visible one control loop before
       // its durable provider suffix is ACKed. Drain it before suspension so a
       // fresh run authority never inherits the prior run's pending events.
+      const closeDeadline = Date.now() + (this.options.closeGraceMs ?? 10_000);
       if (!(await this.#runnerHasExited())) {
         const stoppedActiveTurn =
-          await this.#stopActiveProviderTurnBeforeSuspend();
+          await this.#stopActiveProviderTurnBeforeSuspend(closeDeadline);
         await this.#drainSettledProviderEventsBeforeSuspend(
-          stoppedActiveTurn ? 5_000 : 1_000,
+          Math.min(
+            stoppedActiveTurn ? 5_000 : 1_000,
+            Math.max(0, closeDeadline - Date.now()),
+          ),
         );
       }
-      const runnerAlreadyStopping =
-        (await this.#runnerHasExited()) ||
-        this.#core.store.state.commands.some(
-          (command) =>
-            (command.type === "runner.suspend" ||
-              command.type === "runner.shutdown") &&
-            command.status === "pending",
+      suspensionRequired = true;
+      runnerSuspended = await awaitRunnerSuspensionBarrier({
+        commands: () => this.#core?.store.state.commands ?? [],
+        queueSuspend: (commandId) => {
+          this.#core?.queueCommand("runner.suspend", {}, commandId, true);
+        },
+        readRunnerState: () => this.#readDurableRunnerState(),
+        runnerHasExited: () => this.#runnerHasExited(),
+        pump: () => this.#pumpEventsSafely(),
+        deadline: closeDeadline,
+      });
+      if (!runnerSuspended) {
+        this.#diagnostic(
+          "runner did not prove durable suspension before checkpoint",
         );
-      // A terminal provider event settles the turn, but it does not stop the
-      // runner process. Close therefore needs an explicit lifecycle command
-      // unless one is already pending or the process has exited. Completed
-      // lifecycle commands can belong to an earlier restored runner process.
-      if (!runnerAlreadyStopping) {
-        this.#core.queueCommand("runner.suspend", {}, undefined, true);
       }
       try {
         if (this.#handle) {
           const result = await waitForProcess(
             this.#handle,
-            this.options.closeGraceMs ?? 10_000,
+            Math.max(0, closeDeadline - Date.now()),
           );
           this.#evidence.runnerExited = true;
           this.#evidence.runnerExitCode = result.code;
           this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
-          runnerSettled = true;
           if (result.stderr.trim())
             this.#diagnostic(result.stderr.trim().slice(-4_096));
         } else if (adoptedRunner) {
-          const deadline = Date.now() + (this.options.closeGraceMs ?? 10_000);
-          while ((await adoptedRunner.isAlive()) && Date.now() < deadline) {
+          while (
+            (await adoptedRunner.isAlive()) &&
+            Date.now() < closeDeadline
+          ) {
             await new Promise((resolveWait) => setTimeout(resolveWait, 25));
           }
           if (await adoptedRunner.isAlive()) {
             await adoptedRunner.signal?.("SIGKILL");
           }
           this.#evidence.runnerExited = !(await adoptedRunner.isAlive());
-          runnerSettled = this.#evidence.runnerExited;
         }
       } catch (error) {
         this.#diagnostic(`runner shutdown failed: ${String(error)}`);
@@ -2356,7 +2447,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // an incomplete or identity-conflicting state remains fail-closed.
     try {
       await releaseRunnerProcessOwnership({
-        runnerSettled,
+        runnerSettled: runnerSuspended,
         checkpoint: this.#controlPlaneCheckpoint,
         forceKill: () => {
           this.#handle?.child.kill("SIGKILL");
@@ -2367,6 +2458,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await this.#core?.stop();
       this.#controlPlaneCheckpoint = null;
       this.#controlPlaneRelease = null;
+    }
+    if (suspensionRequired && !runnerSuspended) {
+      throw new Error(
+        "provider_transport_failed: runner did not durably suspend before checkpoint",
+      );
     }
     if (this.#ownsRoot) rmSync(this.#root, { recursive: true, force: true });
     this.#publish();
@@ -3775,9 +3871,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           result.code === 0 &&
           (this.options.lifecyclePolicy?.mode ?? "per_turn") === "per_turn" &&
           (this.#core?.store.state.committedEvents.some(
-            (event) =>
-              event.eventType === "runner.suspending" ||
-              event.eventType === "run.terminal",
+            (event) => event.eventType === "runner.suspending",
           ) ??
             false);
         if (expectedPerTurnExit) return;
@@ -3999,7 +4093,9 @@ export const runnerdLaunchProfileInternals = Object.freeze({
 });
 
 export const runnerdRecoveryInternals = Object.freeze({
+  awaitRunnerSuspensionBarrier,
   providerDrainStateFromSnapshot,
+  providerTurnIsActiveFromCommittedEvents,
   recoveredRunAttachment,
   releaseRunnerProcessOwnership,
 });
