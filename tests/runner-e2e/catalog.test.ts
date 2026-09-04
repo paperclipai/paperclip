@@ -121,6 +121,24 @@ describe("runner E2E catalog", () => {
     expect(localQuestion?.buildPrompt("nonce")).toContain(
       "refer to it only as “the terminal marker.”",
     );
+    expect(localQuestion?.buildPrompt("nonce")).toContain(
+      'API_ORIGIN="${PAPERCLIP_API_URL%/}"; API_ORIGIN="${API_ORIGIN%/api}"',
+    );
+    expect(localQuestion?.buildPrompt("nonce")).toContain(
+      '"idempotencyKey":"question-nonce"',
+    );
+    expect(localQuestion?.buildPrompt("nonce")).toContain(
+      'PATCH $API_ORIGIN/api/issues/$PAPERCLIP_TASK_ID with exactly {"status":"in_review"}',
+    );
+    expect(localQuestion?.buildPrompt("nonce")).toContain(
+      "Do not include `reviewInteractionId`",
+    );
+    expect(localQuestion?.buildPrompt("nonce")).toContain(
+      "retry only that PATCH and never POST the interaction again",
+    );
+    expect(localQuestion?.buildPrompt("nonce")).toContain(
+      "make exactly one completion write",
+    );
     const legacyQuestionExitInstruction =
       "In a legacy runner, after those two writes succeed, end the current response and heartbeat immediately. Do not wait, sleep, poll, or fetch the interaction; `wake_assignee` will start a new heartbeat after the user answers.";
     expect(localQuestion?.buildPrompt("nonce")).toContain(
