@@ -5,14 +5,16 @@ import { join } from "node:path";
 import test from "node:test";
 import { extractImportSpecifiers, scanModuleBoundaries } from "./check-module-boundaries.mjs";
 
-test("extractImportSpecifiers recognizes static, re-exported, and dynamic dependencies", () => {
+test("extractImportSpecifiers recognizes supported TypeScript dependency forms", () => {
   assert.deepEqual(
     extractImportSpecifiers([
       'import type { Db } from "@paperclipai/db";',
       'export { helper } from "./helper.js";',
       'const adapter = await import("../adapters/postgres.js");',
+      'const postgres = require("postgres");',
+      'import fs = require("node:fs");',
     ].join("\n")),
-    ["@paperclipai/db", "./helper.js", "../adapters/postgres.js"],
+    ["@paperclipai/db", "./helper.js", "../adapters/postgres.js", "postgres", "node:fs"],
   );
 });
 
@@ -32,7 +34,13 @@ test("scanModuleBoundaries rejects outward dependencies and module-internal impo
       'import { service } from "../../../services/example.js";',
       'import { run } from "../application/run.js";',
     ].join("\n"));
-    write("modules/watchdog/application/run.ts", 'import { adapter } from "../adapters/postgres.js";\n');
+    write(
+      "modules/watchdog/application/run.ts",
+      [
+        'import { adapter } from "../adapters/postgres.js";',
+        'import db = require("@paperclipai/db");',
+      ].join("\n"),
+    );
     write("modules/watchdog/adapters/postgres.ts", 'import { eq } from "drizzle-orm";\n');
     write("modules/watchdog/index.ts", 'export { run } from "./application/run.js";\n');
     write("services/example.ts", 'import { run } from "../modules/watchdog/application/run.js";\n');
@@ -42,6 +50,7 @@ test("scanModuleBoundaries rejects outward dependencies and module-internal impo
       violations.map(({ specifier, reason }) => ({ specifier, reason })),
       [
         { specifier: "../adapters/postgres.js", reason: "application cannot import concrete adapters" },
+        { specifier: "@paperclipai/db", reason: "application cannot import database packages" },
         { specifier: "drizzle-orm", reason: "domain cannot import database packages" },
         { specifier: "../../../services/example.js", reason: "domain cannot import server services or routes" },
         { specifier: "../application/run.js", reason: "domain cannot depend on outer module layers" },
