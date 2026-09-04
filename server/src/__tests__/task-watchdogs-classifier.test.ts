@@ -387,4 +387,44 @@ describe("task watchdog subtree classifier", () => {
 
     expect(result.state).toBe("not_applicable");
   });
+
+  // LUN-7052 hypothesis check. That ticket assumed a child's pending card masks
+  // a dead parent as `live` forever. It does not: waits are material state that
+  // feeds the stop fingerprint, and only a run or a queued wake yields `live`.
+  // Pinned so the assumption cannot come back as a "fix".
+  it("does not read a parent as live because children carry pending interactions", () => {
+    const otherChildId = "child-2";
+    const result = classify({
+      issues: [
+        issue({ status: "in_progress" }),
+        issue({ id: childId, identifier: "PAP-2", parentId: sourceId, status: "in_progress" }),
+        issue({ id: otherChildId, identifier: "PAP-3", parentId: sourceId, status: "in_progress" }),
+      ],
+      pendingInteractions: [
+        { companyId, issueId: childId, id: "interaction-1", kind: "ask_user_questions", status: "pending" },
+        { companyId, issueId: otherChildId, id: "interaction-2", kind: "request_confirmation", status: "pending" },
+      ],
+    });
+
+    expect(result.state).toBe("stopped");
+  });
+
+  it("names the issue and the signal that make the subtree live", () => {
+    const result = classify({
+      issues: [
+        issue(),
+        issue({ id: childId, identifier: "PAP-2", parentId: sourceId, status: "todo" }),
+      ],
+      activeRuns: [{ companyId, issueId: sourceId, agentId: "agent-1", status: "running" }],
+      queuedWakeRequests: [{ companyId, issueId: childId, agentId: "agent-1", status: "queued" }],
+    });
+
+    expect(result.state).toBe("live");
+    if (result.state !== "live") return;
+    expect(result.liveSignals).toEqual([
+      { issueId: childId, identifier: "PAP-2", kind: "queued_wake_request", status: "queued" },
+      { issueId: sourceId, identifier: "PAP-1", kind: "active_run", status: "running" },
+    ]);
+    expect(result.reason).toContain("PAP-1 has a active_run in status running");
+  });
 });

@@ -143,6 +143,13 @@ export type TaskWatchdogStopSnapshot = {
   waitsByIssueId: TaskWatchdogWaitsByIssueId;
 };
 
+export type TaskWatchdogLiveSignal = {
+  issueId: string;
+  identifier: string | null;
+  kind: "active_run" | "queued_wake_request";
+  status: string;
+};
+
 type TaskWatchdogPendingInteractionsByIssueId = Record<string, Array<{
   id: string;
   kind: string | null;
@@ -159,6 +166,9 @@ export type TaskWatchdogClassifierResult =
     reason: string;
     includedIssueIds: string[];
     liveIssueIds: string[];
+    // Which issue carries which live signal. A watchdog that is refused a
+    // repair can only re-check the verdict if the refusal names both.
+    liveSignals: TaskWatchdogLiveSignal[];
   }
   | {
     state: "pending_first_run";
@@ -290,6 +300,50 @@ function pathIssueIds(paths: TaskWatchdogClassifierPath[] | undefined, companyId
   );
 }
 
+// A watchdog that is refused a mutation because the subtree reads `live` cannot
+// verify that verdict unless it is told which issue is live and what makes it
+// live: `GET /api/live-runs` is scoped to the caller, so another agent's run on
+// the watched issue is invisible from the watchdog run.
+function collectLiveSignals(
+  companyId: string,
+  includedIdSet: Set<string>,
+  issuesById: Map<string, TaskWatchdogClassifierIssue>,
+  activeRuns: TaskWatchdogClassifierPath[] | undefined,
+  queuedWakeRequests: TaskWatchdogClassifierPath[] | undefined,
+): TaskWatchdogLiveSignal[] {
+  const signals: TaskWatchdogLiveSignal[] = [];
+  const seen = new Set<string>();
+  const add = (paths: TaskWatchdogClassifierPath[] | undefined, kind: TaskWatchdogLiveSignal["kind"]) => {
+    for (const path of paths ?? []) {
+      if (path.companyId !== companyId) continue;
+      if (typeof path.issueId !== "string" || !includedIdSet.has(path.issueId)) continue;
+      const key = `${kind}:${path.issueId}:${path.status}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      signals.push({
+        issueId: path.issueId,
+        identifier: issuesById.get(path.issueId)?.identifier ?? null,
+        kind,
+        status: path.status,
+      });
+    }
+  };
+  add(activeRuns, "active_run");
+  add(queuedWakeRequests, "queued_wake_request");
+  return signals.sort((left, right) =>
+    left.issueId === right.issueId
+      ? left.kind.localeCompare(right.kind)
+      : left.issueId.localeCompare(right.issueId)
+  );
+}
+
+function describeLiveSignals(signals: TaskWatchdogLiveSignal[]) {
+  if (signals.length === 0) return "no signal could be attributed";
+  return signals
+    .map((signal) => `${signal.identifier ?? signal.issueId} has a ${signal.kind} in status ${signal.status}`)
+    .join("; ");
+}
+
 function waitingPathIds(
   paths: TaskWatchdogClassifierWaitingPath[] | undefined,
   companyId: string,
@@ -414,11 +468,21 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
+    const liveSignals = collectLiveSignals(
+      input.watchdog.companyId,
+      includedIdSet,
+      issuesById,
+      input.activeRuns,
+      input.queuedWakeRequests,
+    );
     return {
       state: "live",
-      reason: "At least one issue in the watched subtree has a live run, queued wake, or scheduled retry.",
+      reason: `At least one issue in the watched subtree has a live run, queued wake, or scheduled retry: ${
+        describeLiveSignals(liveSignals)
+      }.`,
       includedIssueIds: includedIds,
       liveIssueIds: uniqueLiveIssueIds,
+      liveSignals,
     };
   }
 
@@ -1502,12 +1566,36 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       };
     }
 
+    // The liveness read above and the wake enqueued below are not one atomic
+    // step: `collectClassifierInput` snapshots the subtree, then the trigger
+    // does several writes. A wake landing on the watched issue inside that
+    // window (a board comment enqueues one) turns the subtree live before the
+    // watchdog run starts, and `revalidateMutationScope` then refuses every
+    // repair for the whole run. Measured on LUN-6807: the source run and the
+    // watchdog wake were created 13 ms apart, and the watchdog stayed refused
+    // for the ~6 minutes the source run held the issue. Re-read liveness right
+    // before enqueuing so a watchdog run that is guaranteed to be a no-op is
+    // never woken at all.
     const watchdogIssue = await ensureReusableWatchdogIssue({
       watchdog,
       sourceIssue,
       classification,
       runId: opts.runId ?? null,
     });
+
+    const recheck = classifyTaskWatchdogSubtree(
+      await collectClassifierInput(watchdog.companyId, watchdog),
+    );
+    if (recheck.state !== "stopped") {
+      return { state: recheck.state, reason: recheck.reason, classification: recheck };
+    }
+    if (recheck.stopFingerprint !== classification.stopFingerprint) {
+      // Still stopped, but on different material state than the one the wake
+      // would have carried. Let the next reconcile pass trigger on the state
+      // the watchdog would actually be handed.
+      return { state: "stop_fingerprint_changed" as const, reason: recheck.reason, classification: recheck };
+    }
+
     const now = new Date();
     await db
       .update(issueWatchdogs)
@@ -1652,7 +1740,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       allowed: false as const,
       reason: classification.state === "stopped"
         ? "Task-watchdog review is stale because the watched subtree stop fingerprint changed; refresh the source state before mutating it."
-        : "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
+        : classification.state === "live"
+        ? `Task-watchdog review is stale because the watched subtree has a live path: ${
+          describeLiveSignals(classification.liveSignals)
+        }. Wait for that path to finish before mutating the source state.`
+        : "Task-watchdog review is stale because the watched subtree now has a waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
       classification,
     };
   }
