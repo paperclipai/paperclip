@@ -387,11 +387,13 @@ integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 - `ChildProcess` — one event for each worker-thread `error`.
 - `LinkedErrors` — the `error.cause` chain of each captured error.
 
-An uncaught exception on the main thread is a server event too, but it does
-not come from a default Sentry integration. See "PostgreSQL Null-Socket
-Write Guard" below: that guard, not `OnUncaughtException`, owns the
-process's `uncaughtException` decision, and it reports the exception to
-Sentry itself before the process exits.
+An uncaught exception on the main thread is a server event too. While the
+PostgreSQL null-socket write guard is on, it does not come from a default
+Sentry integration — see "PostgreSQL Null-Socket Write Guard" below: that
+guard, not `OnUncaughtException`, owns the process's `uncaughtException`
+decision, and it reports the exception to Sentry itself before the process
+exits. When an operator turns that guard off, `OnUncaughtException` stays
+active and reports the exception instead.
 
 **Server context the kept integrations attach**
 
@@ -413,9 +415,10 @@ Sentry itself before the process exits.
 - `ContextLines` — 7 local source lines around each stack frame.
 - The outbound breadcrumb of `Http` — outbound request URLs and query
   strings.
-- `OnUncaughtException` — removed so it never registers its own
-  `uncaughtException` listener. See "PostgreSQL Null-Socket Write Guard"
-  below for why one listener, not two, must own that event.
+- `OnUncaughtException` — removed while the PostgreSQL null-socket write
+  guard is on, so it never registers a second, independent
+  `uncaughtException` listener. Kept active when an operator turns that
+  guard off. See "PostgreSQL Null-Socket Write Guard" below.
 
 **Browser events this feature adds**
 
@@ -496,24 +499,34 @@ This environment variable is the guard's one operator control.
   no `uncaughtException` listener of its own for this fault, so Node's
   default behavior returns for it: the known, otherwise-neutralized
   `TypeError` ends the server process the same way it did before this
-  guard existed. Turn the guard off only to compare behavior against the
-  unguarded process, or once the operator has upgraded past the
-  underlying driver defect.
+  guard existed. When Sentry error monitoring is also on, Sentry's own
+  default `OnUncaughtException` integration stays active in this case (see
+  "Sentry interaction" below), so the exception still reaches Sentry
+  before the process ends. Turn the guard off only to compare behavior
+  against the unguarded process, or once the operator has upgraded past
+  the underlying driver defect.
 
 ### Sentry interaction
 
 An operator who also enables server-side Sentry error monitoring gets no
-second, independent `uncaughtException` listener from Sentry. `sentry.ts`
-removes Sentry's default `OnUncaughtException` integration for exactly
-this reason: Node calls every listener registered for an event, not only
-the first one, so a second listener would still end the process on the
-known, neutralized fault, regardless of which listener runs first. This
-guard is the sole owner of the process's `uncaughtException` decision. It
-reports every exception it does not neutralize to Sentry itself, through
-the same `captureException` and `shutdownSentry` calls a server startup
-failure uses (see "Sentry Error Monitoring" above). A deployment with no
-Sentry DSN set sees no change from this interaction: both calls are
-no-ops.
+second, independent `uncaughtException` listener from Sentry while this
+guard is on. `sentry.ts` removes Sentry's default `OnUncaughtException`
+integration for exactly this reason: Node calls every listener registered
+for an event, not only the first one, so a second listener would still end
+the process on the known, neutralized fault, regardless of which listener
+runs first. While the guard is on, it is the sole owner of the process's
+`uncaughtException` decision. It reports every exception it does not
+neutralize to Sentry itself, through the same `captureException` and
+`shutdownSentry` calls a server startup failure uses (see "Sentry Error
+Monitoring" above). A deployment with no Sentry DSN set sees no change
+from this interaction: both calls are no-ops.
+
+When an operator turns the guard off
+(`POSTGRES_NULL_SOCKET_GUARD_ENABLED=false`), no module registers an
+`uncaughtException` listener on the guard's behalf, so `sentry.ts` keeps
+Sentry's default `OnUncaughtException` integration active instead. An
+unrelated uncaught exception then reaches Sentry through that default
+integration rather than through the guard's own reporting call.
 
 ## Sandbox Startup Trace Spans
 

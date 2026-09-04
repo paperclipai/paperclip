@@ -23,9 +23,11 @@ import * as sentryModule from "../sentry.js";
 const DSN_ENV = "SENTRY_DSN";
 const FRONTEND_DSN_ENV = "SENTRY_DSN_FRONTEND";
 const BACKEND_DSN_ENV = "SENTRY_DSN_BACKEND";
+const GUARD_ENABLED_ENV = "POSTGRES_NULL_SOCKET_GUARD_ENABLED";
 const originalDsn = process.env[DSN_ENV];
 const originalFrontendDsn = process.env[FRONTEND_DSN_ENV];
 const originalBackendDsn = process.env[BACKEND_DSN_ENV];
+const originalGuardEnabled = process.env[GUARD_ENABLED_ENV];
 
 async function importFreshSentry() {
   vi.resetModules();
@@ -96,6 +98,7 @@ beforeEach(() => {
   delete process.env[DSN_ENV];
   delete process.env[FRONTEND_DSN_ENV];
   delete process.env[BACKEND_DSN_ENV];
+  delete process.env[GUARD_ENABLED_ENV];
 });
 
 afterEach(() => {
@@ -105,6 +108,8 @@ afterEach(() => {
   else process.env[FRONTEND_DSN_ENV] = originalFrontendDsn;
   if (originalBackendDsn === undefined) delete process.env[BACKEND_DSN_ENV];
   else process.env[BACKEND_DSN_ENV] = originalBackendDsn;
+  if (originalGuardEnabled === undefined) delete process.env[GUARD_ENABLED_ENV];
+  else process.env[GUARD_ENABLED_ENV] = originalGuardEnabled;
   vi.restoreAllMocks();
   vi.doUnmock("@sentry/node");
   vi.doUnmock("../peer-version-check.js");
@@ -422,6 +427,26 @@ describe("buildSentryInitOptions", () => {
     expect(names).not.toContain("OnUncaughtException");
   });
 
+  it("keeps OnUncaughtException in the resolved list when the guard does not own it", async () => {
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions(
+      "https://public@o0.ingest.sentry.io/1",
+      {
+        httpIntegration: () => ({ name: "Http" }),
+        onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+      },
+      false,
+    );
+    const resolved = options.integrations(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+
+    // The postgres null-socket write guard registers no `uncaughtException`
+    // listener when an operator disables it, so Sentry's own default
+    // integration must stay active — otherwise an unrelated uncaught
+    // exception would reach no error reporter at all.
+    expect(resolved.map((i) => i.name)).toContain("OnUncaughtException");
+  });
+
   it("the resolved server integration list keeps OnUnhandledRejection, LinkedErrors, and RequestData", async () => {
     const { buildSentryInitOptions } = await importFreshSentry();
 
@@ -479,6 +504,40 @@ describe("with @sentry/node mocked", () => {
 
     await shutdownSentry();
     expect(mocks.close).toHaveBeenCalledWith(5_000);
+  });
+
+  it("removes the default OnUncaughtException integration when the postgres null-socket write guard is on", async () => {
+    process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
+    const mocks = mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    const initOptions = mocks.init.mock.calls[0][0] as {
+      integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
+    };
+    const resolved = initOptions.integrations([{ name: "OnUncaughtException" }]);
+
+    expect(resolved.map((i) => i.name)).not.toContain("OnUncaughtException");
+  });
+
+  it("keeps the default OnUncaughtException integration when an operator disables the guard", async () => {
+    process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
+    process.env[GUARD_ENABLED_ENV] = "false";
+    const mocks = mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    const initOptions = mocks.init.mock.calls[0][0] as {
+      integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
+    };
+    const resolved = initOptions.integrations([{ name: "OnUncaughtException" }]);
+
+    // The guard registers no `uncaughtException` listener when disabled, so
+    // Sentry's own default integration must stay active — otherwise an
+    // unrelated uncaught exception reaches no error reporter at all.
+    expect(resolved.map((i) => i.name)).toContain("OnUncaughtException");
   });
 });
 

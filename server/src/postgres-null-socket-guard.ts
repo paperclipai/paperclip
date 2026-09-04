@@ -19,24 +19,32 @@
 // line, with a fixed marker and the error name only — never a query, a
 // query parameter, a connection URL, a host name, or a database name.
 //
-// Interaction with Sentry: this module is the sole owner of the process's
-// `uncaughtException` decision. `sentry.ts` removes the default
-// `OnUncaughtException` integration from `Sentry.init`, so an operator who
-// installs `@sentry/node` and sets a Sentry DSN gets no second,
-// independent `uncaughtException` listener — Node calls every registered
-// listener for an event, not just the first one, so a second listener
-// would still end the process on the known, neutralized fault regardless
-// of listener order. Instead, for every uncaught exception this module
-// does not neutralize, it reports the error to Sentry itself (through
+// Interaction with Sentry: while this guard is enabled, it is the sole
+// owner of the process's `uncaughtException` decision. `sentry.ts` reads
+// the same opt-out this module reads (`postgres-null-socket-guard-env.ts`)
+// and removes the default `OnUncaughtException` integration from
+// `Sentry.init` only in that case, so an operator who installs
+// `@sentry/node` and sets a Sentry DSN gets no second, independent
+// `uncaughtException` listener — Node calls every registered listener for
+// an event, not just the first one, so a second listener would still end
+// the process on the known, neutralized fault regardless of listener
+// order. Instead, for every uncaught exception this module does not
+// neutralize, it reports the error to Sentry itself (through
 // `captureException`) and waits for the client to flush (through
 // `shutdownSentry`) before it ends the process — the same sequence
 // `index.ts` uses for a startup failure. A deployment with no Sentry DSN
 // set sees no change: both calls are no-ops.
+//
+// An operator who disables this guard
+// (`POSTGRES_NULL_SOCKET_GUARD_ENABLED=false`) registers no listener here,
+// so `sentry.ts` keeps the default `OnUncaughtException` integration active
+// instead — an unrelated uncaught exception still reaches Sentry through
+// that integration rather than Node's silent default handler.
 
 import { logger } from "./middleware/logger.js";
 import { captureException, shutdownSentry } from "./sentry.js";
+import { isGuardEnabled } from "./postgres-null-socket-guard-env.js";
 
-const GUARD_ENABLED_ENV_VAR = "POSTGRES_NULL_SOCKET_GUARD_ENABLED";
 const GUARD_MARKER = "postgres_null_socket_write_guard_neutralized";
 
 // Both V8 message spellings for a read of a property on `null`. The wording
@@ -63,20 +71,10 @@ export function isPostgresNullSocketWriteCrash(error: unknown): boolean {
   return stack.split("\n").some((line) => NEXT_WRITE_FRAME_PATTERN.test(line));
 }
 
-/**
- * Reads the runtime opt-out. An operator sets `false` or `0` to disable the
- * guard; every other value, including an unset variable, keeps it enabled.
- * Follows the same boolean convention as `envBoolean` in
- * `packages/db/src/client.ts`: a value other than a recognized true/false
- * spelling is a configuration mistake, so this throws instead of guessing.
- */
-export function isGuardEnabled(env: NodeJS.ProcessEnv): boolean {
-  const value = env[GUARD_ENABLED_ENV_VAR]?.trim().toLowerCase();
-  if (value === undefined || value === "") return true;
-  if (value === "true" || value === "1") return true;
-  if (value === "false" || value === "0") return false;
-  throw new Error(`${GUARD_ENABLED_ENV_VAR} must be "true" or "false", got: ${env[GUARD_ENABLED_ENV_VAR]}`);
-}
+// Re-exported so existing callers (including tests) can keep importing the
+// opt-out check from this module. See postgres-null-socket-guard-env.ts for
+// why the check itself lives in a separate leaf module.
+export { isGuardEnabled };
 
 /**
  * Handles one uncaught exception. The known driver fault logs one
