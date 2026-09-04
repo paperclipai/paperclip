@@ -15,7 +15,7 @@ use std::os::unix::process::CommandExt;
 use std::os::fd::AsRawFd;
 
 #[cfg(target_os = "macos")]
-use std::os::unix::fs::{DirBuilderExt, FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 
 #[cfg(target_os = "macos")]
 use uuid::Uuid;
@@ -290,7 +290,6 @@ struct InheritedCommand {
 #[cfg(target_os = "macos")]
 struct TemporaryExecutable {
     path: PathBuf,
-    directory: PathBuf,
     _file: File,
 }
 
@@ -298,7 +297,6 @@ struct TemporaryExecutable {
 impl Drop for TemporaryExecutable {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
-        let _ = fs::remove_dir(&self.directory);
     }
 }
 
@@ -306,29 +304,31 @@ impl Drop for TemporaryExecutable {
 fn materialize_executable(
     artifact: &VerifiedProcessArtifact,
 ) -> Result<TemporaryExecutable, LocalRunnerError> {
-    let directory = std::env::temp_dir().join(format!(
+    let directory = artifact.display_path.parent().ok_or_else(|| {
+        LocalRunnerError::invalid(format!(
+            "verified process artifact {} has no parent directory",
+            artifact.display_path.display()
+        ))
+    })?;
+    let directory_metadata = fs::symlink_metadata(directory)
+        .map_err(|error| snapshot_error(&artifact.display_path, error))?;
+    if !directory_metadata.is_dir() || directory_metadata.permissions().mode() & 0o022 != 0 {
+        return Err(LocalRunnerError::invalid(format!(
+            "verified process artifact directory {} must be a directory that is not group- or world-writable",
+            directory.display()
+        )));
+    }
+    let path = directory.join(format!(
         ".paperclip-verified-executable-{}",
         Uuid::new_v4().simple()
     ));
-    let mut directory_builder = fs::DirBuilder::new();
-    directory_builder.mode(0o700);
-    directory_builder
-        .create(&directory)
-        .map_err(|error| snapshot_error(&artifact.display_path, error))?;
-    let path = directory.join("launch");
-    let writable = OpenOptions::new()
+    let mut writable = OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
         .mode(0o700)
-        .open(&path);
-    let mut writable = match writable {
-        Ok(file) => file,
-        Err(error) => {
-            let _ = fs::remove_dir(&directory);
-            return Err(snapshot_error(&artifact.display_path, error));
-        }
-    };
+        .open(&path)
+        .map_err(|error| snapshot_error(&artifact.display_path, error))?;
     let result = (|| {
         let length = artifact
             .file
@@ -375,13 +375,11 @@ fn materialize_executable(
         drop(writable);
         Ok(TemporaryExecutable {
             path: path.clone(),
-            directory: directory.clone(),
             _file: file,
         })
     })();
     if result.is_err() {
         let _ = fs::remove_file(path);
-        let _ = fs::remove_dir(directory);
     }
     result
 }

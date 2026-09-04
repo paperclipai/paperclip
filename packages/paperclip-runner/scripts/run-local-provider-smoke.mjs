@@ -175,7 +175,7 @@ const rustSources = await filesUnder(
     path.endsWith(".rs") ||
     path.endsWith("Cargo.toml") ||
     path.endsWith("Cargo.lock"),
-  (path) => path.endsWith("/target"),
+  (path) => /\/(?:target|tests|benches|examples)$/u.test(path),
 );
 await assertArtifactsFresh("runnerd", rustSources, [runnerd]);
 

@@ -1,6 +1,8 @@
 #![cfg(unix)]
 
 use std::fs::{self, File};
+#[cfg(target_os = "macos")]
+use std::io::Read;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -33,6 +35,21 @@ fn write_executable(path: &Path, contents: &str) {
 
 fn sha256(contents: &str) -> String {
     format!("sha256:{:x}", Sha256::digest(contents.as_bytes()))
+}
+
+#[cfg(target_os = "macos")]
+fn sha256_file(path: &Path) -> String {
+    let mut file = File::open(path).unwrap();
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).unwrap();
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    format!("sha256:{:x}", digest.finalize())
 }
 
 #[test]
@@ -105,7 +122,14 @@ fn verified_launch_uses_open_command_and_script_after_atomic_path_replacement() 
     #[cfg(target_os = "linux")]
     assert!(inherited_runtime.starts_with("/proc/self/fd/"));
     #[cfg(target_os = "macos")]
-    assert!(inherited_runtime.contains(".paperclip-verified-executable-"));
+    {
+        assert!(inherited_runtime.contains(".paperclip-verified-executable-"));
+        assert_eq!(
+            Path::new(&inherited_runtime).parent(),
+            command.parent(),
+            "macOS verified launches must preserve loader-relative runtime layout"
+        );
+    }
     assert_eq!(
         process
             .receive_stdout_line(Duration::from_secs(1))
@@ -115,6 +139,55 @@ fn verified_launch_uses_open_command_and_script_after_atomic_path_replacement() 
     );
     process.wait().unwrap();
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn verified_launch_preserves_homebrew_node_loader_layout() {
+    let resolved = Command::new("/usr/bin/which")
+        .arg("node")
+        .output()
+        .expect("node lookup should run");
+    assert!(
+        resolved.status.success(),
+        "node should be available on PATH"
+    );
+    let node = fs::canonicalize(
+        String::from_utf8(resolved.stdout)
+            .expect("node path should be UTF-8")
+            .trim(),
+    )
+    .expect("node path should resolve");
+    let launch = VerifiedProcessLaunch::new(
+        VerifiedProcessArtifact::snapshot_verified(
+            node.clone(),
+            File::open(&node).unwrap(),
+            &sha256_file(&node),
+        )
+        .unwrap(),
+        vec![
+            VerifiedProcessArgument::Literal("--eval".to_owned()),
+            VerifiedProcessArgument::Literal("console.log(process.execPath)".to_owned()),
+        ],
+    );
+
+    let mut process = SupervisedProcess::spawn_verified_with_environment_keys(
+        &launch,
+        Duration::from_millis(50),
+        1024,
+        &[],
+    )
+    .expect("verified Node should start with its loader-relative libraries");
+    let executed_node = process
+        .receive_stdout_line(Duration::from_secs(2))
+        .unwrap()
+        .expect("Node should report its executable path");
+    assert_eq!(
+        Path::new(&executed_node).parent(),
+        node.parent(),
+        "verified Node must execute beside the authenticated runtime"
+    );
+    process.wait().unwrap();
 }
 
 fn spawn_linger_process() -> (SupervisedProcess, u32, u64) {
