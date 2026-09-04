@@ -671,6 +671,27 @@ function OnboardingWizardInner({
     (saved?.credentialMode as CredentialMode) ?? "subscription",
   );
   /**
+   * Whether Connect has been pressed for the current source.
+   *
+   * The step's footer button is what starts the sign-in now, so this is the
+   * whole of the difference between the card being absent and the card running:
+   * the panel is mounted with `autoStart` the moment this is true, and it
+   * cancels back to false. Deliberately not in the draft — a login is a live
+   * server session with a deadline on it, and restoring a wizard an hour later
+   * into "connecting" would be describing a session that is long gone.
+   */
+  const [loginStarted, setLoginStarted] = useState(false);
+  /**
+   * Whether that sign-in reached its success state.
+   *
+   * Only the displayed-code login ever sits here to be read: the browser-code
+   * login advances the step from its own success, so nothing gets the chance
+   * to render this. It exists because OpenAI's login finishes in another tab,
+   * with nothing to type back — so the step has to wait, and the footer button
+   * is where the waiting shows.
+   */
+  const [loginConnected, setLoginConnected] = useState(false);
+  /**
    * The key itself, held only for as long as the wizard is open. It is written
    * into the adapter config at hire time and never into the draft — a draft is
    * `localStorage`, and a provider key does not belong there.
@@ -1137,6 +1158,56 @@ function OnboardingWizardInner({
     sourceSelected && !adapterEnvLoading && !missionUnresolvedForHire;
 
   /**
+   * Whether this step has a sign-in to do before it can hire.
+   *
+   * The same four conditions the card itself renders on, named once so the
+   * footer button and the card cannot disagree about whether a login is
+   * happening. When it is false — an API key, a source already signed in on the
+   * sandbox, no sandbox to sign in against — Connect goes straight to the hire,
+   * exactly as it did before.
+   */
+  const connectStepNeedsLogin = Boolean(
+    credentialMode !== "api" &&
+      showAdapterLoginPanel &&
+      createdCompanyId &&
+      resolvedLoginEnvironmentId,
+  );
+
+  /**
+   * Whether the source's login ends by taking a code back from the customer.
+   *
+   * This is what splits the two waits, and it is a real difference rather than
+   * a cosmetic one. The browser-code login finishes here, in the field on the
+   * card, so the button is busy and says so. The displayed-code login finishes
+   * somewhere else entirely — another tab, possibly another device — so the
+   * button is not busy, it is waiting, and a spinner would be claiming work
+   * this screen is not doing.
+   */
+  const loginSubmitsBrowserCode =
+    adapterCaps.login?.panelMode === "submitted_browser_code";
+
+  // Connect is pressed, the login is running, and it has not succeeded yet.
+  const connectStepLoggingIn =
+    connectStepNeedsLogin && loginStarted && !loginConnected;
+
+  /**
+   * What the step's primary action does, for both the button and Cmd+Enter.
+   *
+   * One function rather than the condition written twice. The keyboard path
+   * has drifted from the button here before — the comment on its `step === 4`
+   * branch is about exactly that — and the gap it left was a hire that skipped
+   * a check. This one would be worse: Cmd+Enter would hire before the sign-in
+   * it is meant to start, against a source with no credential.
+   */
+  function handleConnectStepPrimary() {
+    if (connectStepNeedsLogin && !loginStarted) {
+      setLoginStarted(true);
+      return;
+    }
+    void handleGiveHeartbeat();
+  }
+
+  /**
    * When the input canvas is open: exactly when a source has been chosen.
    *
    * The card is the answer to the tile that was just pressed, so an untouched
@@ -1152,7 +1223,32 @@ function OnboardingWizardInner({
    * unanswered, and the visible tiles are the thing to press. `showAdapterLoginPanel`
    * still decides what goes *inside* the canvas — only not whether it exists.
    */
-  const canvasOpen = sourceSelected;
+  /**
+   * The one thing that can be wrong here before anything is pressed: there is
+   * no sandbox to sign in against, so Connect cannot get anywhere. Worth saying
+   * on arrival rather than after a press that goes nowhere.
+   *
+   * Its two neighbours in the old canvas are not worth the same. "Checking this
+   * source's credentials…" narrated a request nothing was waiting on, and "this
+   * source is already signed in" answered a question the customer had not asked
+   * yet — both were written for a canvas that opened on selection, and the
+   * press is what opens it now.
+   */
+  const connectStepHasNoSandbox =
+    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
+
+  /**
+   * Open once there is something in it: a key field, a sign-in that has been
+   * started, or the news that no sign-in is possible.
+   *
+   * It no longer opens on selection alone. The card is the sign-in itself now,
+   * and a sign-in starts when Connect is pressed — so between picking a tile
+   * and pressing the button there is nothing to put here, and the step is the
+   * question and the button, which is what the design draws.
+   */
+  const canvasOpen =
+    sourceSelected &&
+    (credentialMode === "api" || loginStarted || connectStepHasNoSandbox);
 
   // The default (or a saved) adapterType can name an adapter the server has
   // since disabled — e.g. a cloud sandbox registry without claude_local. The
@@ -1223,6 +1319,16 @@ function OnboardingWizardInner({
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url, credentialMode, apiKey]);
+
+  // A login belongs to one source in one credential mode. Switching either
+  // means the card on screen is answering a question nobody asked any more, so
+  // the step goes back to offering Connect. The panel is keyed on the adapter
+  // as well, so it unmounts on the same change and releases its server session
+  // on the way out.
+  useEffect(() => {
+    setLoginStarted(false);
+    setLoginConnected(false);
+  }, [adapterType, credentialMode]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -2101,8 +2207,16 @@ function OnboardingWizardInner({
       // the condition out here again is what let this path hire against a
       // source the tile row had never shown, after the button was gated and
       // this was not.
-      else if (step === 4 && agentName.trim() && connectStepReady)
-        handleGiveHeartbeat();
+      // Also gated on `connectStepLoggingIn`, the way the button is: a sign-in
+      // that is already running has nothing for this to do, and re-entering it
+      // would start a second server session.
+      else if (
+        step === 4 &&
+        agentName.trim() &&
+        connectStepReady &&
+        !connectStepLoggingIn
+      )
+        handleConnectStepPrimary();
       else if (step === 5) handleLaunchToDashboard();
     }
   }
@@ -2797,17 +2911,36 @@ function OnboardingWizardInner({
                     ) : showAdapterLoginPanel &&
                       createdCompanyId &&
                       resolvedLoginEnvironmentId ? (
-                      /* Shows as soon as the cheap auth signal reports no ready
-                         credential, well before any adapter environment test
-                         runs. Reuses the same panel the agent configuration
-                         form shows after a test — see AdapterLoginPanel in
-                         AgentConfigForm.tsx. No "Use saved login" control: the
-                         hire step already applies a stored login on its own. */
+                      /* The same panel the agent configuration form shows after
+                         a test — see AdapterLoginPanel in AgentConfigForm.tsx —
+                         in the connect step's chrome and driven by the step's
+                         own footer button. `autoStart` is that button: mounting
+                         only happens once Connect is pressed, so the press has
+                         already been taken by the time the panel exists.
+
+                         No "Use saved login" control: the hire step already
+                         applies a stored login on its own. */
                       <AdapterLoginPanel
                         key={`${adapterType}:${resolvedLoginEnvironmentId}`}
                         companyId={createdCompanyId}
                         adapterType={adapterType}
                         environmentId={resolvedLoginEnvironmentId}
+                        chrome="onboarding"
+                        autoStart
+                        onCancel={() => setLoginStarted(false)}
+                        onConnected={() => {
+                          setLoginConnected(true);
+                          // The browser-code login ends here, on this screen,
+                          // so the step moves on by itself — there is no
+                          // success state to sit on, and one would be a screen
+                          // whose only content is that you may continue.
+                          //
+                          // The displayed-code login does not: it is still
+                          // running in another tab when this fires, and the
+                          // customer's attention is there. It waits for the
+                          // press, which is what the enabled Next is for.
+                          if (loginSubmitsBrowserCode) void handleGiveHeartbeat();
+                        }}
                         onStored={() => {
                           queryClient.invalidateQueries({
                             queryKey: queryKeys.agents.authSignal(
@@ -2819,20 +2952,18 @@ function OnboardingWizardInner({
                         }}
                       />
                     ) : (
-                      /* No panel to show, and the two reasons for that are not
-                         the same news. Saying either is better than an empty
-                         card — the canvas is open because a source is selected,
-                         and a blank one reads as something that failed to load —
-                         but they must not be conflated: telling someone with no
-                         sandbox that they are "already signed in" on it is
-                         false, and it hides the one thing actually blocking
-                         them. */
+                      /* The canvas only opens without a panel for one reason
+                         now — `connectStepHasNoSandbox` — and it is the reason
+                         worth saying out loud, because it is the one that makes
+                         Connect a dead press.
+
+                         Its two former neighbours are gone with the canvas that
+                         opened on selection: "already signed in" reassured
+                         against a question nobody had asked, and "checking…"
+                         narrated a request the customer was not waiting on.
+                         Neither survives a canvas that opens on a press. */
                       <p className="text-xs text-muted-foreground">
-                        {authSignalUndecided
-                          ? "Checking this source's credentials…"
-                          : canShowAdapterLogin
-                            ? "This source is already signed in on the managed sandbox."
-                            : "No managed sandbox is available to sign in against yet."}
+                        No managed sandbox is available to sign in against yet.
                       </p>
                     )}
                   </ConnectInputCanvas>
@@ -3030,16 +3161,37 @@ function OnboardingWizardInner({
                       ? "Continue"
                       : step === 5
                         ? "Get started"
-                        : "Next"
+                        : step === 4
+                          ? // "Connect" is the step's own verb, and it is what
+                            // starts the sign-in rather than what follows it.
+                            //
+                            // It becomes "Next" for the displayed-code login
+                            // once that is running: at that point the sign-in
+                            // is happening somewhere else, the button is not
+                            // the thing doing it, and offering to "Connect" a
+                            // second time would read as a retry.
+                            connectStepLoggingIn && !loginSubmitsBrowserCode
+                            ? "Next"
+                            : "Connect"
+                          : "Next"
                   }
                   loadingLabel={
                     step === 1
                       ? "Creating..."
                       : step === 4
-                        ? "Connecting..."
+                        ? "Connecting"
                         : "Launching..."
                   }
-                  loading={step === 3 ? false : loading}
+                  // The browser-code login is finished on this screen, so the
+                  // button is genuinely busy for its duration and shows it. The
+                  // displayed-code login is not — see `loginSubmitsBrowserCode`
+                  // — so it stays a still, disabled Next instead of spinning
+                  // against work happening in another tab.
+                  loading={
+                    step === 3
+                      ? false
+                      : loading || (connectStepLoggingIn && loginSubmitsBrowserCode)
+                  }
                   primaryDisabled={
                     step === 1
                       ? !companyName.trim() || loading
@@ -3052,7 +3204,11 @@ function OnboardingWizardInner({
                             // it, and be hired against whatever the draft
                             // happened to carry. See `connectStepReady`, which
                             // Cmd+Enter asks as well.
-                            !connectStepReady || loading
+                            !connectStepReady ||
+                            loading ||
+                            // A sign-in is running and has not landed. Nothing
+                            // to press until it does.
+                            connectStepLoggingIn
                           : loading || launchStateIncomplete
                   }
                   onPrimary={() => {
@@ -3060,7 +3216,10 @@ function OnboardingWizardInner({
                       if (skipsMissionStep) void handleCreateCompany();
                       else setStep(2);
                     } else if (step === 3) setStep(4);
-                    else if (step === 4) handleGiveHeartbeat();
+                    // One button, two jobs — start the sign-in, or hire — and
+                    // Cmd+Enter has to do the same thing. See
+                    // `handleConnectStepPrimary`.
+                    else if (step === 4) handleConnectStepPrimary();
                     else handleLaunchToDashboard();
                   }}
                 />

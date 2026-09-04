@@ -92,10 +92,14 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   await source.waitFor({ timeout: 30_000 });
   await source.click();
 
-  // The forward button reads "Next" here too, so wait for it to enable rather
-  // than for it to appear — it is already on screen, disabled, and clicking a
-  // disabled button raises nothing and does nothing.
-  const connectNext = page.getByRole("button", { name: /^Next$/ });
+  // "Connect", not "Next": this step's button starts the sign-in where there
+  // is one to start, so it is named for what it does. Here there is none —
+  // this instance has no sandbox environment, so the step has no login to
+  // offer and Connect goes straight to the hire.
+  //
+  // Waited on for enabled rather than for visible: it is already on screen,
+  // disabled, and clicking a disabled button raises nothing and does nothing.
+  const connectNext = page.getByRole("button", { name: /^Connect$/ });
   await expect(connectNext).toBeEnabled({ timeout: 30_000 });
   await connectNext.click();
 

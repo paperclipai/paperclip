@@ -1441,6 +1441,19 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(mockClipboard.copyTextToClipboard).toHaveBeenCalledWith("WXYZ-1234");
     expect(mockClipboard.copyTextToClipboard).toHaveBeenCalledWith("https://auth.example.test/device");
+
+    // Code above URL, and the numbering agrees. Opening the page is what leaves
+    // this screen for a form that wants the code from it, so the code is read
+    // while it is still in front of you. The panel used to run the other way.
+    const labels = [...result.container.querySelectorAll("div")]
+      .map((el) => el.textContent?.trim())
+      .filter((t) => t === "1. Code" || t === "2. Authentication URL");
+    expect(labels).toEqual(["1. Code", "2. Authentication URL"]);
+
+    const codeIndex = result.container.textContent!.indexOf("WXYZ-1234");
+    const urlIndex = result.container.textContent!.indexOf("https://auth.example.test/device");
+    expect(codeIndex).toBeGreaterThan(-1);
+    expect(urlIndex).toBeGreaterThan(codeIndex);
   });
 
   it("keeps the code and URL visible after a later poll returns no prompt", async () => {
@@ -1509,6 +1522,36 @@ describe("AgentConfigForm environment selector", () => {
     expect(login?.disabled).toBe(false);
     expect(findButton(result.container, "Cancel")).toBeFalsy();
     expect(result.container.textContent).not.toContain("WXYZ-1234");
+  });
+
+  it("releases an active login session when the panel unmounts", async () => {
+    // The server holds a one-per-owner reservation until the session reaches a
+    // terminal state, so a panel that disappears mid-login would leave the owner
+    // unable to start another until it expires.
+    //
+    // Reachable in the settings form only by navigating away, which is why this
+    // went unnoticed. The connect step unmounts the panel routinely — Cancel
+    // closes the canvas, switching source remounts it under a new key, closing
+    // the wizard drops it — so the cleanup is what keeps an immediate retry
+    // possible. Deliberately not pushed to `roots`: this test does the unmount
+    // itself, and that unmount is the thing under test.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    expect(findButton(result.container, "Cancel"), "the login should be active").toBeTruthy();
+
+    mockAgentsApi.cancelAdapterAuthLogin.mockClear();
+    await act(async () => {
+      result.root.unmount();
+    });
+
+    expect(mockAgentsApi.cancelAdapterAuthLogin).toHaveBeenCalledWith(
+      "company-1",
+      "codex_local",
+      "session-1",
+    );
   });
 
   it("announces the login state through a polite live region", async () => {

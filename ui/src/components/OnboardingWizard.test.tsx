@@ -67,6 +67,37 @@ const mockAgentsApi = vi.hoisted(() => ({
       status: "present",
     }),
   ),
+  // The sign-in routes. The connect step's Connect button starts a login rather
+  // than hiring when the signal says the source has no credential, so the two
+  // login shapes need enough of a server to reach the state the step is about:
+  // a session that is running, and a prompt to show for it.
+  startClaudeSetupTokenLogin: vi.fn(async () => ({
+    sessionId: "claude-session-1",
+    status: "pending",
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  })),
+  getClaudeSetupTokenLoginStatus: vi.fn(async () => ({
+    sessionId: "claude-session-1",
+    status: "pending",
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  })),
+  getClaudeSetupTokenLoginPrompt: vi.fn(async () => ({
+    authorizationUrl: "https://claude.ai/oauth/authorize?code=true",
+    transportAdvisory: null,
+  })),
+  cancelClaudeSetupTokenLogin: vi.fn(async () => ({})),
+  submitClaudeSetupTokenBrowserCode: vi.fn(async () => ({})),
+  completeClaudeSetupTokenLogin: vi.fn(async () => ({ storedSessionId: "stored-1" })),
+  startAdapterAuthLogin: vi.fn(async () => ({
+    sessionId: "codex-session-1",
+    status: "pending",
+  })),
+  getAdapterAuthLoginStatus: vi.fn(async () => ({
+    sessionId: "codex-session-1",
+    status: "pending",
+    prompt: { url: "https://auth.openai.com/codex/device", code: "Q2RJ-E1YIF" },
+  })),
+  cancelAdapterAuthLogin: vi.fn(async () => ({})),
 }));
 // The adapter registry mock below always returns this function, so a test
 // can shape the built adapter config (e.g. a configured ANTHROPIC_API_KEY)
@@ -162,19 +193,29 @@ vi.mock("../adapters/use-disabled-adapters", () => ({
   // makes it undefined and the call throws.
   useAdapterRegistryLoaded: () => true,
 }));
-// Adapters with a declared login capability, mirroring the real registry
-// closely enough for the login-panel gate: `claude_local` and `codex_local`
-// both support a sandbox login. Every other type has none, matching the
-// real `useAdapterCapabilities` fallback for an unlisted type.
-const ADAPTERS_WITH_LOGIN = new Set(["claude_local", "codex_local"]);
+// Adapters with a declared login capability, mirroring the real registry:
+// `claude_local` and `codex_local` both support a sandbox login, and every
+// other type has none, matching the real `useAdapterCapabilities` fallback for
+// an unlisted type.
+//
+// The panel modes are the real ones rather than one mode for both. They used to
+// be, back when nothing outside the panel dispatcher read them. The connect
+// step reads them now — the two logins end in different places, so its button
+// waits differently for each — and a mock that called Claude's login
+// `displayed_code` would have the step testing the wrong half of that.
+// Reconcile with KNOWN_DEFAULTS in `adapters/use-adapter-capabilities.ts`.
+const ADAPTER_LOGIN_MODES: Record<string, "displayed_code" | "submitted_browser_code"> = {
+  claude_local: "submitted_browser_code",
+  codex_local: "displayed_code",
+};
 vi.mock("../adapters/use-adapter-capabilities", () => ({
   useAdapterCapabilities: () => (type: string) => ({
     supportsInstructionsBundle: false,
     supportsSkills: false,
     supportsLocalAgentJwt: false,
     requiresMaterializedRuntimeSkills: false,
-    login: ADAPTERS_WITH_LOGIN.has(type)
-      ? { panelMode: "displayed_code" as const, timeoutPolicy: "fixed" as const }
+    login: ADAPTER_LOGIN_MODES[type]
+      ? { panelMode: ADAPTER_LOGIN_MODES[type]!, timeoutPolicy: "fixed" as const }
       : undefined,
   }),
 }));
@@ -243,6 +284,20 @@ async function pickFirstSource(
   const tile = [...document.body.querySelectorAll("button[aria-checked]")][0];
   const label = tile?.textContent?.trim() ?? "";
   await click((text) => text === label);
+}
+
+/**
+ * The arc footer's primary button, whatever this step calls it.
+ *
+ * Step 4 calls it "Connect", because there it starts a sign-in rather than
+ * simply advancing; every other arc step calls it "Next". These tests are about
+ * what the press does, not what it reads, so they match either — restating the
+ * label at twenty call sites would make a copy change look like a behaviour
+ * regression. The label itself is pinned once, in the step test that is about
+ * the label.
+ */
+function isArcPrimary(text: string): boolean {
+  return text.startsWith("Next") || text.startsWith("Connect");
 }
 
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
@@ -388,7 +443,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         setControlledValue(agentField, "Ada");
       });
       await flushReact();
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(document.body.textContent).toContain("Connect a model");
       await pickFirstSource(clickByText);
@@ -398,7 +453,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // Through Connect to Review, so the Mission-row assertion runs against
       // the checklist that actually renders it — stopping at the model step
       // would let a Mission regression pass unseen.
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       // The review step is the heading and the woken agent, nothing else: the
       // checklist that restated the walk in three rows is gone, and with it
       // the Mission row that could only render unchecked.
@@ -460,9 +515,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         setControlledValue(agentField, "Ada");
       });
       await flushReact();
-      await clickText((t) => t.startsWith("Next"));
+      await clickText((t) => isArcPrimary(t));
       await pickFirstSource(clickText);
-      await clickText((t) => t.startsWith("Next"));
+      await clickText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       // The mock is declared with no parameters, so index the call rather than
@@ -495,12 +550,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         setControlledValue(agentField, "Ada");
       });
       await flushReact();
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       expect(document.body.textContent).toContain("Connect a model");
       await pickFirstSource(clickByText);
 
       const connect = [...document.body.querySelectorAll("button")].find((b) =>
-        b.textContent?.trim().startsWith("Next"),
+        isArcPrimary(b.textContent?.trim() ?? ""),
       )!;
       await act(async () => {
         connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -639,7 +694,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         setControlledValue(agentField, "Ada");
       });
       await flushReact();
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       expect(document.body.textContent).toContain("Connect a model");
 
       // Pick a source. The step arrives with nothing chosen — `adapterType`
@@ -667,7 +722,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       expect(document.body.textContent).toContain(
@@ -692,7 +747,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
 
@@ -738,7 +793,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           setControlledValue(field, KEY);
         });
         await flushReact();
-        await handles.clickByText((t) => t.startsWith("Next"));
+        await handles.clickByText((t) => isArcPrimary(t));
         return handles;
       }
 
@@ -821,7 +876,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         mockAgentsApi.hire.mockRejectedValueOnce(new Error("network went away"));
         const { root, clickByText } = await connectWithApiKey();
 
-        await clickByText((t) => t.startsWith("Next"));
+        await clickByText((t) => isArcPrimary(t));
 
         expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
 
@@ -841,12 +896,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
 
       // Switch to API keys, which changes the configuration the hire will send.
       await clickByText((t) => t.startsWith("Use API key"));
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
 
@@ -868,13 +923,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
 
       // A second Connect must not treat the first (cached) blocking result as
       // reusable — it re-probes, and the create path stays closed.
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
 
@@ -889,7 +944,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -914,7 +969,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // scenario this test is named for.
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -939,7 +994,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       // The status route must not even be asked — the conflict is decided
@@ -964,7 +1019,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
@@ -989,7 +1044,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
       const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
@@ -1008,7 +1063,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // The default `beforeEach` mock already rejects with a 404 `ApiError`.
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
       const testArgs = mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[];
@@ -1062,7 +1117,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       );
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
 
@@ -1085,7 +1140,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       expect(document.body.textContent).toContain(
@@ -1106,10 +1161,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockAgentsApi.hire.mockRejectedValue(new Error("hire failed"));
       const { root, clickByText } = await openConnectStep();
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(1);
 
-      await clickByText((t) => t.startsWith("Next"));
+      await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(2);
 
       await act(async () => root.unmount());
@@ -1895,12 +1950,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       ).toBe(false);
 
       const cta = [...document.body.querySelectorAll("button")].find(
-        (b) => b.textContent?.trim() === "Next",
+        (b) => isArcPrimary(b.textContent?.trim() ?? ""),
       );
-      expect(cta, "the step should render its Next button").toBeTruthy();
+      expect(cta, "the step should render its forward button").toBeTruthy();
       expect(
         cta!.hasAttribute("disabled"),
-        "Next must not advance a question the step has not visibly asked",
+        "Connect must not advance a question the step has not visibly asked",
       ).toBe(true);
 
       // And it opens again the moment the customer answers it themselves.
@@ -1909,7 +1964,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       for (let i = 0; i < 5; i++) await flushReact();
       const ctaAfter = [...document.body.querySelectorAll("button")].find(
-        (b) => b.textContent?.trim() === "Next",
+        (b) => isArcPrimary(b.textContent?.trim() ?? ""),
       );
       expect(ctaAfter!.hasAttribute("disabled")).toBe(false);
 
@@ -1936,11 +1991,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       ).toBe(false);
 
       const cta = [...document.body.querySelectorAll("button")].find(
-        (b) => b.textContent?.trim() === "Next",
+        (b) => isArcPrimary(b.textContent?.trim() ?? ""),
       );
       expect(
         cta!.hasAttribute("disabled"),
-        "Next must not hire an adapter the row never offered",
+        "Connect must not hire an adapter the row never offered",
       ).toBe(true);
 
       await act(async () => root.unmount());
@@ -2006,24 +2061,122 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
-    it("shows the login panel for claude_local when the signal reports no ready credential", async () => {
+    /** Press the step's forward button and let the sign-in queries settle. */
+    async function pressArcPrimary() {
+      const cta = [...document.body.querySelectorAll("button")].find((b) =>
+        isArcPrimary(b.textContent?.trim() ?? ""),
+      );
+      expect(cta, "the step should render its forward button").toBeTruthy();
+      await act(async () => {
+        cta!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 8; i++) await flushReact();
+    }
+
+    it("starts the claude_local sign-in on Connect when the signal reports no ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });
-      expect(document.body.textContent).toContain("Sign in to Anthropic");
+
+      // Nothing before the press. The card *is* the sign-in now, so it does not
+      // exist until the step has been asked to start one — which is the whole
+      // difference between this step and the one it replaced.
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
+      await pressArcPrimary();
+
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalled();
+      // Connect started a sign-in rather than hiring. The ordering is the point:
+      // a hire here would create an agent with no credential to run on.
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain(
+        "Open Claude link then come back and enter code",
+      );
+
       await act(async () => root.unmount());
     });
 
-    it("shows the login panel for codex_local when the signal cannot decide", async () => {
+    it("submits the browser code on the paste, not on the first keystroke", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pressArcPrimary();
+
+      const field = document.body.querySelector(
+        'input[aria-label="Authorization code"]',
+      ) as HTMLInputElement | null;
+      expect(field, "the Claude card should offer a code field").toBeTruthy();
+
+      // The trap this pins. `isValidBrowserCode` reads like a completeness
+      // check and is not one — it accepts any printable ASCII from a single
+      // character up — so an auto-submit keyed off the value fires here, on the
+      // first character of anyone typing the code rather than pasting it, and
+      // clears the field they are typing into.
+      await act(async () => {
+        setControlledValue(field!, "Q");
+      });
+      for (let i = 0; i < 4; i++) await flushReact();
+      expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).not.toHaveBeenCalled();
+
+      // The paste is the answer, so it goes without a press. Order matches a
+      // real paste: the event lands before the value changes.
+      await act(async () => {
+        field!.dispatchEvent(new Event("paste", { bubbles: true }));
+        setControlledValue(field!, "Q2RJ-E1YIF-authorization-code");
+      });
+      for (let i = 0; i < 4; i++) await flushReact();
+      expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledWith(
+        "company-new",
+        "claude-session-1",
+        "Q2RJ-E1YIF-authorization-code",
+      );
+
+      await act(async () => root.unmount());
+    });
+
+    it("starts the codex_local sign-in on Connect when the signal cannot decide", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
       const { root } = await openStep4({ adapterType: "codex_local" });
-      expect(document.body.textContent).toContain("Sign in to OpenAI");
+
+      expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+
+      await pressArcPrimary();
+
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalled();
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      // The displayed-code login hands a code over rather than taking one back,
+      // so both halves of it have to reach the screen.
+      expect(document.body.textContent).toContain("Copy this code then open the authentication link");
+      expect(document.body.textContent).toContain("Q2RJ-E1YIF");
+
+      // Code above link, deliberately. Pressing the link is what takes the
+      // customer to another tab, and it wants the code that was on this one —
+      // so the code has to have been read before the link is there to press.
+      const code = [...document.body.querySelectorAll("span")].find(
+        (el) => el.textContent?.trim() === "Q2RJ-E1YIF",
+      );
+      const link = document.body.querySelector('a[href*="auth.openai.com"]');
+      expect(code, "the code row should render").toBeTruthy();
+      expect(link, "the link row should render").toBeTruthy();
+      expect(
+        code!.compareDocumentPosition(link!) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "the code should come before the link",
+      ).toBeTruthy();
+
       await act(async () => root.unmount());
     });
 
-    it("hides the login panel when the signal reports a ready credential", async () => {
+    it("hires on Connect, with no sign-in, when the signal reports a ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
       const { root } = await openStep4({ adapterType: "claude_local" });
-      expect(document.body.textContent).not.toContain("Sign in to Anthropic");
+
+      await pressArcPrimary();
+
+      // The positive half is what makes this a test: a source that is already
+      // signed in goes straight to the hire, so Connect keeps its old meaning
+      // wherever there is no sign-in to do. Asserting only the absence of a
+      // card would pass just as well if the button had stopped working.
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
       await act(async () => root.unmount());
     });
 
