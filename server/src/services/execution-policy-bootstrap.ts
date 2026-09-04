@@ -1,27 +1,11 @@
 /**
- * Cloud execution-policy bootstrap.
+ * Bootstrap persists the Kubernetes-only execution policy and reconciles one
+ * instance-wide managed environment with company-scoped tracking bindings.
+ * Operator edits win unless PAPERCLIP_K8S_CONFIG_AUTHORITATIVE opts into
+ * manifest ownership; operator archives remain protected in either mode.
  *
- * Lets an operator / gitops deployment force the instance onto the Kubernetes
- * sandbox provider purely via environment variables, with no manual product-API
- * calls. On startup we:
- *   1. Parse `PAPERCLIP_EXECUTION_MODE` (+ `PAPERCLIP_K8S_*`) from the env.
- *   2. Persist `executionMode` into instance general settings (so the per-run
- *      heartbeat guard enforces it).
- *   3. Idempotently ensure a configured Kubernetes sandbox environment for every
- *      company (mirrors `ensureLocalEnvironment`).
- *
- * The managed-environment reconciler preserves a row whose stock fields were
- * edited in the board (or that predates stock tracking) and only reports that
- * an update is available, so by default a changed `PAPERCLIP_K8S_*` value does
- * not reach such a row. `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE=true` declares the
- * env-supplied config the source of truth: every boot applies it over operator
- * edits and resets the stock baseline.
- *
- * The boot hook is *configuration convenience*; the actual security gate is the
- * per-run guard in the heartbeat (see `execution-allowlist.ts`). Even with no
- * boot hook, setting `executionMode=kubernetes` denies local execution.
- *
- * The env-var parsing is a pure function so it is trivially unit-testable.
+ * The heartbeat enforces the persisted policy, not this boot hook. Disabling
+ * bootstrap does not reset executionMode or permit local fallback.
  */
 
 import type { Db } from "@paperclipai/db";
@@ -36,13 +20,7 @@ export type ExecutionPolicyBootstrapEnv = Record<string, string | undefined>;
 export interface ExecutionPolicyBootstrap {
   executionMode: Extract<InstanceExecutionMode, "kubernetes">;
   kubernetesConfig: KubernetesEnvironmentConfigInput;
-  /**
-   * `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE=true`. When set, the managed
-   * Kubernetes environment's stock fields are overwritten with the env-declared
-   * config on every boot, even when an operator edited the row in the board.
-   * Kept outside `kubernetesConfig` because that object is stored verbatim in
-   * `environment.config`.
-   */
+  /** Kept outside kubernetesConfig because that object is stored as provider config. */
   applyOverOperatorEdits: boolean;
 }
 
@@ -77,10 +55,8 @@ function parseList(value: string | undefined): string[] | undefined {
 }
 
 /**
- * Parse the forced-execution-mode env config. Returns null when execution is
- * unrestricted (no env, or `PAPERCLIP_EXECUTION_MODE=any`). Throws on an
- * unrecognized mode so a misconfigured deployment fails loudly instead of
- * silently allowing local execution.
+ * A null result disables bootstrap; it says nothing about persisted policy.
+ * Reject unknown modes so a typo cannot silently skip the policy write.
  */
 export function parseExecutionPolicyBootstrapEnv(
   env: ExecutionPolicyBootstrapEnv,
@@ -158,11 +134,6 @@ export function parseExecutionPolicyBootstrapEnv(
   };
 }
 
-/**
- * Apply the parsed bootstrap to the database: persist `executionMode` into
- * instance settings and ensure a configured Kubernetes environment for every
- * company. Idempotent; safe to call on every boot.
- */
 export async function applyExecutionPolicyBootstrap(
   db: Db,
   bootstrap: ExecutionPolicyBootstrap,
@@ -211,9 +182,6 @@ export async function applyExecutionPolicyBootstrap(
   return { executionMode: bootstrap.executionMode, companiesConfigured: configured };
 }
 
-/**
- * Convenience: parse + apply from a raw env map. Returns null when unrestricted.
- */
 export async function bootstrapExecutionPolicyFromEnv(
   db: Db,
   env: ExecutionPolicyBootstrapEnv = process.env,
