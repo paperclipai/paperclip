@@ -5923,9 +5923,14 @@ async function createRunnerdBackendWithinSessionClaim(
   const inspectRemoteHarnessState = async (): Promise<{
     complete: boolean;
     runnerState: Record<string, unknown> | null;
+    incompleteReason: "unavailable" | "not_suspended" | null;
   }> => {
     if (!remoteCommandRunner || !remoteStateDirectory) {
-      return { complete: false, runnerState: null };
+      return {
+        complete: false,
+        runnerState: null,
+        incompleteReason: "unavailable",
+      };
     }
     const requirements = persistenceProfile.directories.flatMap((directory) => {
       const path = remotePersistencePath(directory);
@@ -5948,7 +5953,11 @@ async function createRunnerdBackendWithinSessionClaim(
       timeoutMs: 10_000,
     });
     if (inspected.exitCode !== 0 || inspected.timedOut) {
-      return { complete: false, runnerState: null };
+      return {
+        complete: false,
+        runnerState: null,
+        incompleteReason: "unavailable",
+      };
     }
     let runnerState: Record<string, unknown>;
     try {
@@ -5969,7 +5978,11 @@ async function createRunnerdBackendWithinSessionClaim(
       throw new Error("runner_harness_state_mismatch");
     }
     if (runnerState.lifecycle !== "suspended") {
-      return { complete: false, runnerState: null };
+      return {
+        complete: false,
+        runnerState: null,
+        incompleteReason: "not_suspended",
+      };
     }
     const providerSessionIdentity =
       providerSessionIdentityFromRunnerState(runnerState);
@@ -5991,7 +6004,7 @@ async function createRunnerdBackendWithinSessionClaim(
     ) {
       throw new Error("runner_harness_state_mismatch");
     }
-    return { complete: true, runnerState };
+    return { complete: true, runnerState, incompleteReason: null };
   };
 
   const recordInPlaceHarnessReuse = async (
@@ -6413,7 +6426,9 @@ async function createRunnerdBackendWithinSessionClaim(
     );
   };
 
-  const checkpointRemoteRunner = async () => {
+  const checkpointRemoteRunner = async (
+    settlement: "settled" | "unsettled",
+  ) => {
     if (
       !remoteCommandRunner ||
       !remoteStateDirectory ||
@@ -6427,8 +6442,22 @@ async function createRunnerdBackendWithinSessionClaim(
     // `runner_harness_state_mismatch`. Only checkpoint a harness that runnerd
     // has proved complete. A malformed or identity-conflicting state still
     // throws from inspectRemoteHarnessState and therefore fails closed.
-    const checkpointable = await inspectRemoteHarnessState();
-    if (!checkpointable.complete) return;
+    let checkpointable = await inspectRemoteHarnessState();
+    // The remote runner writes its suspended lifecycle and provider state
+    // before the outer process-owner RPC necessarily observes completion.
+    // Allow a very small bounded visibility window without ever accepting an
+    // active, incomplete, malformed, or identity-conflicting checkpoint.
+    for (let attempt = 1; !checkpointable.complete && attempt < 3; attempt++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      checkpointable = await inspectRemoteHarnessState();
+    }
+    if (!checkpointable.complete) {
+      void input.onLog?.(
+        "stderr",
+        `[paperclip-runner] remote checkpoint skipped: exact suspended harness state unavailable (process=${settlement} reason=${checkpointable.incompleteReason})\n`,
+      );
+      return;
+    }
     const backupSpanAttributes = {
       provider: input.execution.provider.kind,
       harness: input.execution.session.driverKind,

@@ -129,11 +129,12 @@ it("identifies an active provider turn that must stop before suspension", () => 
   });
 });
 
-it("checkpoints a settled remote runner before containment and release", async () => {
+it("probes an exact durable checkpoint before containment regardless of process completion", async () => {
   const settledSteps: string[] = [];
   await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
     runnerSettled: true,
-    checkpoint: async () => {
+    checkpoint: async (settlement) => {
+      expect(settlement).toBe("settled");
       settledSteps.push("checkpoint");
     },
     forceKill: () => {
@@ -148,7 +149,8 @@ it("checkpoints a settled remote runner before containment and release", async (
   const unsettledSteps: string[] = [];
   await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
     runnerSettled: false,
-    checkpoint: async () => {
+    checkpoint: async (settlement) => {
+      expect(settlement).toBe("unsettled");
       unsettledSteps.push("checkpoint");
     },
     forceKill: () => {
@@ -158,7 +160,7 @@ it("checkpoints a settled remote runner before containment and release", async (
       unsettledSteps.push("release");
     },
   });
-  expect(unsettledSteps).toEqual(["kill", "release"]);
+  expect(unsettledSteps).toEqual(["checkpoint", "kill", "release"]);
 });
 
 it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {

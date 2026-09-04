@@ -417,14 +417,21 @@ function providerDrainStateFromSnapshot(state: Record<string, unknown>): {
 
 async function releaseRunnerProcessOwnership(input: {
   runnerSettled: boolean;
-  checkpoint: (() => Promise<void> | void) | null;
+  checkpoint:
+    ((settlement: "settled" | "unsettled") => Promise<void> | void) | null;
   forceKill: () => void;
   release: (() => Promise<void> | void) | null;
 }): Promise<void> {
   let checkpointFailure: unknown;
   try {
-    if (input.runnerSettled && input.checkpoint !== null) {
-      await input.checkpoint();
+    if (input.checkpoint !== null) {
+      // Command-managed remote runners can durably suspend before their
+      // process-owner RPC observes completion. The checkpoint callback is the
+      // authority here: it must independently require the exact suspended
+      // runner/session binding before copying any provider state. Probe even
+      // after the bounded process wait expires so that a valid remote
+      // checkpoint is not discarded solely because the outer RPC is late.
+      await input.checkpoint(input.runnerSettled ? "settled" : "unsettled");
     }
   } catch (error) {
     checkpointFailure = error;
@@ -747,8 +754,8 @@ export interface CapabilityRunnerdCodexTransportOptions {
       | "runner_local_connect_failed"
       | "runner_direct_wss_failed"
       | "runner_ingress_unavailable";
-    /** Persists suspended remote state before its process owner is released. */
-    checkpoint?: () => Promise<void> | void;
+    /** Persists only exact, independently verified suspended remote state. */
+    checkpoint?: (settlement: "settled" | "unsettled") => Promise<void> | void;
     release: () => Promise<void> | void;
   }>;
   /** Optional remote process owner used only by the new runner coordinator. */
@@ -2225,8 +2232,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#pump = null;
     this.#queue.close();
     // A suspended remote runner still owns the only readable copy of its
-    // provider state. Persist that state before releasing its process owner;
-    // an unconfirmed runner is killed first and is never checkpointed.
+    // provider state. Probe its independently verified durable state before
+    // releasing the process owner even when the outer process wait was late;
+    // an incomplete or identity-conflicting state remains fail-closed.
     try {
       await releaseRunnerProcessOwnership({
         runnerSettled,
