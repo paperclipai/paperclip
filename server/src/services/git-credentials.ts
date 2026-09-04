@@ -317,6 +317,9 @@ export async function resolveManagedGitHubIdentitySelection(
   const dedicated = context.agentId
     ? grants.filter((grant) => grant.kind === "agent" && grant.subjectAgentId === context.agentId)
     : [];
+  // Connections are already restricted above to the owner-selected install
+  // targets. Within that consent boundary the server-resolved responsible user
+  // is authoritative; standing delegation is only an ownerless-run fallback.
   const personal = context.responsibleUserId
     ? grants.filter((grant) => grant.kind === "user" && grant.subjectUserId === context.responsibleUserId)
     : [];

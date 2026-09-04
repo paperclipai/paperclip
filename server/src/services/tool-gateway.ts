@@ -3209,6 +3209,10 @@ export function createToolGatewayService(
       return agentGrant;
     }
 
+    // The owner-selected connection install is the consent boundary for agent use.
+    // `responsibleUserId` is resolved and persisted by the control plane, never
+    // accepted from agent input, so a run carrying it uses that owner's grant
+    // directly. Delegation is reserved for genuinely ownerless unattended runs.
     let userGrant = connection.credentialPolicy === "shared" ? undefined : await findUserGrant();
     if (!userGrant && !actingUserId && autonomous && session.agentId && connection.credentialPolicy !== "shared") {
       const delegated = await db.select({ grant: connectionGrants }).from(connectionGrantDelegations).innerJoin(

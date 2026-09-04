@@ -297,9 +297,11 @@ describe("AgentToolsTab", () => {
         id: "conn-github",
         companyId: "company-1",
         name: "Agent GitHub",
+        enabled: true,
+        status: "active",
         config: { sourceTemplateKey: "github" },
         transportConfig: {},
-        installs: [],
+        installs: [{ targetType: "company", targetId: "company-1" }],
       }],
     });
     mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
@@ -336,6 +338,74 @@ describe("AgentToolsTab", () => {
     expect(text).toContain("takes precedence over the responsible person's GitHub");
     expect(container.querySelector('a[href="/apps/conn-github/permissions"]')?.textContent).toBe("Manage GitHub identity");
     expect(text).not.toContain("Connect my GitHub");
+  });
+
+  it("does not display a grant from a disabled or uninstalled GitHub connection", async () => {
+    mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [],
+      bindings: [],
+      allowedTools: [],
+      allowedToolNames: [],
+      installedConnections: [],
+    } satisfies ToolProfileEffectiveSummary);
+    mockToolsApi.listConnections.mockResolvedValue({
+      connections: [{
+        id: "conn-github",
+        companyId: "company-1",
+        name: "Disabled GitHub",
+        enabled: false,
+        status: "active",
+        config: { sourceTemplateKey: "github" },
+        transportConfig: {},
+        installs: [{ targetType: "company", targetId: "company-1" }],
+      }],
+    });
+    mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
+    mockToolsApi.listCatalog.mockResolvedValue({ catalog: [] });
+
+    await renderTab();
+
+    const text = container.textContent ?? "";
+    expect(mockToolsApi.listConnectionGrants).not.toHaveBeenCalled();
+    expect(text).toContain("Use responsible person's GitHub");
+    expect(text).not.toContain("@dottabot");
+  });
+
+  it("shows a retryable error instead of connection setup when grants cannot be loaded", async () => {
+    mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [],
+      bindings: [],
+      allowedTools: [],
+      allowedToolNames: [],
+      installedConnections: [],
+    } satisfies ToolProfileEffectiveSummary);
+    mockToolsApi.listConnections.mockResolvedValue({
+      connections: [{
+        id: "conn-github",
+        companyId: "company-1",
+        name: "Agent GitHub",
+        enabled: true,
+        status: "active",
+        config: { sourceTemplateKey: "github" },
+        transportConfig: {},
+        installs: [{ targetType: "company", targetId: "company-1" }],
+      }],
+    });
+    mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
+    mockToolsApi.listCatalog.mockResolvedValue({ catalog: [] });
+    mockToolsApi.listConnectionGrants.mockRejectedValue(new Error("temporary failure"));
+
+    await renderTab();
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Could not load GitHub identity");
+    expect(text).toContain("Your existing setup was not changed");
+    expect(text).not.toContain("Connect my GitHub");
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Retry")).toBe(true);
   });
 
   it("autosaves installed apps for the current agent", async () => {

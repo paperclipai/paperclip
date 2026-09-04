@@ -22,6 +22,15 @@ through to another person, an organization credential, or a legacy token.
 Agent grants are company-scoped, have exactly one `subjectAgentId`, cannot be
 organization defaults, and are installed only for that agent.
 
+The connection installation is the credential owner's consent boundary. A
+personal setup may target every agent or a selected set, and runtime resolution
+considers only an enabled, active connection installed for the current agent.
+Within that boundary, Paperclip treats the run's server-resolved
+`responsibleUserId` as its credential principal, including for automated work;
+agents cannot choose or spoof this field. The owner must still be an active
+non-viewer company member at each use. A standing delegation is needed only
+when a run genuinely has no responsible user.
+
 ## Credential lifecycle
 
 The production, staging, and development GitHub Apps deliberately disable

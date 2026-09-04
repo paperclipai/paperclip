@@ -13686,6 +13686,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           });
         }
       } else if (connection.credentialPolicy !== "shared" && actingUserId) {
+        // Installation targets express the grant owner's consent to agent use;
+        // the control-plane-resolved responsible user selects whose grant is in
+        // force. A separate standing delegation is required only when no such
+        // responsible user exists for unattended work.
         const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
           eq(companyMemberships.companyId, connection.companyId),
           eq(companyMemberships.principalType, "user"),

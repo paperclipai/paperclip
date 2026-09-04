@@ -30,16 +30,27 @@ function isGitHubConnection(connection: ToolConnection): boolean {
   return (connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey) === "github";
 }
 
+function isEligibleGitHubIdentityConnection(connection: ToolConnection, agentId: string): boolean {
+  return isGitHubConnection(connection)
+    && connection.enabled
+    && connection.status === "active"
+    && isAgentInstalled(installStateFrom(connection.installs), agentId);
+}
+
 function GitHubIdentitySection({
   agentName,
   dedicatedIdentity,
   personalIdentity,
   loading,
+  loadError,
+  onRetry,
 }: {
   agentName: string;
   dedicatedIdentity: { connection: ToolConnection; grant: ConnectionGrant } | null;
   personalIdentity: { connection: ToolConnection; grant: ConnectionGrant } | null;
   loading: boolean;
+  loadError: boolean;
+  onRetry: () => void;
 }) {
   const dedicatedLogin = dedicatedIdentity?.grant.providerTenant?.github?.login;
   const personalLogin = personalIdentity?.grant.providerTenant?.github?.login;
@@ -55,6 +66,13 @@ function GitHubIdentitySection({
             <h3 className="text-sm font-semibold text-foreground">GitHub identity</h3>
             {loading ? (
               <p className="mt-0.5 text-xs text-muted-foreground">Checking GitHub identity…</p>
+            ) : loadError ? (
+              <>
+                <p className="mt-0.5 text-sm font-medium text-foreground">Could not load GitHub identity</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Paperclip could not verify this agent&apos;s current connection. Your existing setup was not changed.
+                </p>
+              </>
             ) : dedicatedIdentity ? (
               <>
                 <p className="mt-0.5 text-sm font-medium text-foreground">
@@ -82,7 +100,9 @@ function GitHubIdentitySection({
 
         {!loading ? (
           <div className="flex flex-wrap items-center gap-2">
-            {dedicatedIdentity ? (
+            {loadError ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
+            ) : dedicatedIdentity ? (
               <Button variant="outline" size="sm" asChild>
                 <Link to={`/apps/${dedicatedIdentity.connection.id}/permissions`}>Manage GitHub identity</Link>
               </Button>
@@ -335,18 +355,18 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
   });
 
   const connectionList = connectionsQuery.data?.connections ?? [];
-  const githubConnections = useMemo(
-    () => connectionList.filter(isGitHubConnection),
-    [connectionList],
+  const eligibleGitHubConnections = useMemo(
+    () => connectionList.filter((connection) => isEligibleGitHubIdentityConnection(connection, agent.id)),
+    [agent.id, connectionList],
   );
   const githubGrantQueries = useQueries({
-    queries: githubConnections.map((connection) => ({
+    queries: eligibleGitHubConnections.map((connection) => ({
       queryKey: queryKeys.tools.connectionGrants(connection.id),
       queryFn: () => toolsApi.listConnectionGrants(connection.id),
       staleTime: 30_000,
     })),
   });
-  const githubIdentityRows = githubConnections.flatMap((connection, index) =>
+  const githubIdentityRows = eligibleGitHubConnections.flatMap((connection, index) =>
     (githubGrantQueries[index]?.data?.grants ?? []).map((grant) => ({
       connection,
       grant,
@@ -560,6 +580,13 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         dedicatedIdentity={dedicatedGitHubIdentity}
         personalIdentity={personalGitHubIdentity}
         loading={connectionsQuery.isLoading || githubGrantQueries.some((query) => query.isLoading)}
+        loadError={connectionsQuery.isError || githubGrantQueries.some((query) => query.isError)}
+        onRetry={() => {
+          if (connectionsQuery.isError) void connectionsQuery.refetch();
+          for (const query of githubGrantQueries) {
+            if (query.isError) void query.refetch();
+          }
+        }}
       />
 
       <InstalledAppsSection
