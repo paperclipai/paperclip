@@ -171,8 +171,11 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     else process.env.PAPERCLIP_HOME = originalPaperclipHome;
   });
 
-  async function seedRun(label: string) {
-    const db = createDb(temporary.connectionString);
+  async function seedRun(
+    label: string,
+    existingDb?: ReturnType<typeof createDb>,
+  ) {
+    const db = existingDb ?? createDb(temporary.connectionString);
     const issueId = randomUUID();
     const runId = randomUUID();
     await db.insert(issues).values({
@@ -265,6 +268,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   }) {
     const startedAt = await readProcessStartedAt(input.runnerPid);
     if (!startedAt) throw new Error("Runner process start fingerprint unavailable");
+    const providerStartedAt = input.providerPid
+      ? await readProcessStartedAt(input.providerPid)
+      : null;
     const now = new Date();
     await input.fixture.db
       .update(heartbeatRuns)
@@ -291,7 +297,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
               runnerPid: input.runnerPid,
               runnerProcessGroupId: input.processGroupId,
               providerPid: input.providerPid,
+              providerProcessStartedAt: providerStartedAt,
               codexPid: input.providerPid,
+              codexProcessStartedAt: providerStartedAt,
             },
           },
         },
@@ -962,4 +970,29 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       { controllerGeneration: 5, providerAttempt: 0 },
     ]);
   });
+
+  it("classifies every requested recovery candidate without an implicit 100-run cap", async () => {
+    const db = createDb(temporary.connectionString);
+    const fixtures: Array<Awaited<ReturnType<typeof seedRun>>> = [];
+    for (let index = 0; index < 101; index += 1) {
+      fixtures.push(
+        await seedRun(`BULK-${String(index).padStart(3, "0")}`, db),
+      );
+    }
+
+    const dispositions = await claimNativeRestartRecoveries({
+      db,
+      controller: { ...successor, bootId: randomUUID() },
+      restartKind: "hard",
+      now: new Date(),
+      runIds: fixtures.map((fixture) => fixture.runId),
+    });
+
+    expect(dispositions).toHaveLength(101);
+    expect(
+      dispositions.every(
+        (disposition) => disposition.kind === "bootstrap_incomplete",
+      ),
+    ).toBe(true);
+  }, 30_000);
 });

@@ -13,13 +13,16 @@ import {
   constants,
   fchmodSync,
   fstatSync,
+  ftruncateSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
+  readSync,
   readFileSync,
   renameSync,
   unlinkSync,
+  writeSync,
   writeFileSync,
   type Stats,
 } from "node:fs";
@@ -50,6 +53,8 @@ const maxCommands = 500;
 const maxCommittedEventWindow = 64;
 const maxStateBytes = 192 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
+export const RUNNER_DIAGNOSTIC_MAX_BYTES = 64 * 1024;
+const RUNNER_DIAGNOSTIC_COMPACTION_INTERVAL_MS = 1_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
 const commandTypes = new Set([
@@ -246,6 +251,58 @@ export interface RunnerProcessLaunchSpec {
   args: readonly string[];
   cwd: string;
   environment: NodeJS.ProcessEnv;
+}
+
+function compactRunnerDiagnosticFile(filePath: string): void {
+  let fd: number | null = null;
+  try {
+    fd = openSync(filePath, "r+");
+    const size = fstatSync(fd).size;
+    if (size <= RUNNER_DIAGNOSTIC_MAX_BYTES) return;
+    const tail = Buffer.allocUnsafe(RUNNER_DIAGNOSTIC_MAX_BYTES);
+    let read = 0;
+    while (read < tail.length) {
+      const bytesRead = readSync(
+        fd,
+        tail,
+        read,
+        tail.length - read,
+        size - tail.length + read,
+      );
+      if (bytesRead === 0) break;
+      read += bytesRead;
+    }
+    ftruncateSync(fd, 0);
+    if (read > 0) writeSync(fd, tail, 0, read, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+      // Diagnostics are best-effort and must never become execution authority.
+    }
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+export function startRunnerDiagnosticMaintenance(
+  diagnosticsDirectory: string,
+): () => void {
+  const paths = [
+    resolve(diagnosticsDirectory, "runnerd.stdout.log"),
+    resolve(diagnosticsDirectory, "runnerd.stderr.log"),
+  ];
+  const compact = () => {
+    for (const filePath of paths) compactRunnerDiagnosticFile(filePath);
+  };
+  compact();
+  const interval = setInterval(
+    compact,
+    RUNNER_DIAGNOSTIC_COMPACTION_INTERVAL_MS,
+  );
+  interval.unref?.();
+  return () => {
+    clearInterval(interval);
+    compact();
+  };
 }
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
@@ -2118,8 +2175,11 @@ export function spawnRunner(options: {
   let stderrPath: string | null = null;
   let stdoutFd: number | null = null;
   let stderrFd: number | null = null;
+  let stopDiagnosticMaintenance: (() => void) | null = null;
   if (diagnosticsDirectory) {
     mkdirSync(diagnosticsDirectory, { recursive: true, mode: 0o700 });
+    stopDiagnosticMaintenance =
+      startRunnerDiagnosticMaintenance(diagnosticsDirectory);
     stdoutPath = resolve(diagnosticsDirectory, "runnerd.stdout.log");
     stderrPath = resolve(diagnosticsDirectory, "runnerd.stderr.log");
     stdoutFd = openSync(stdoutPath, "a", 0o600);
@@ -2153,7 +2213,7 @@ export function spawnRunner(options: {
       return "";
     }
   };
-  const completion = new Promise<RunnerProcessResult>(
+  const processCompletion = new Promise<RunnerProcessResult>(
     (resolveCompletion, rejectCompletion) => {
       child.once("error", rejectCompletion);
       child.once("exit", (code, signal) =>
@@ -2164,6 +2224,16 @@ export function spawnRunner(options: {
           stderr: stderr || boundedDiagnostic(stderrPath),
         }),
       );
+    },
+  );
+  const completion = processCompletion.then(
+    (result) => {
+      stopDiagnosticMaintenance?.();
+      return result;
+    },
+    (error: unknown) => {
+      stopDiagnosticMaintenance?.();
+      throw error;
     },
   );
   return withRestart({

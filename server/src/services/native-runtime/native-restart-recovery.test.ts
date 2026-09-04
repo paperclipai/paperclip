@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   classifyNativeRunnerRecoveryEvidence,
   evaluateNativeControllerTakeover,
+  evaluateNativeProviderProcesses,
   nextNativeProviderAttempt,
 } from "./native-restart-recovery.js";
 
@@ -93,6 +94,18 @@ describe("native restart recovery classification", () => {
       },
       expected: null,
     },
+    {
+      name: "blocks while a live provider PID has no durable fingerprint",
+      evidence: {
+        runnerPidAlive: false,
+        runnerGroupAlive: false,
+        processStartMatches: false,
+        knownProviderProcessIdentityAmbiguous: true,
+        hasCheckpoint: true,
+        hasProviderEvidence: true,
+      },
+      expected: null,
+    },
   ])("$name", ({ evidence, expected }) => {
     expect(classifyNativeRunnerRecoveryEvidence(evidence).claimKind).toBe(
       expected,
@@ -140,8 +153,7 @@ describe("native controller takeover fencing", () => {
         owner: owner(),
         now,
         isProcessAlive: () => true,
-        readProcessStartedAt: async () =>
-          new Date("2026-09-04T11:30:00.000Z"),
+        readProcessStartedAt: async () => new Date("2026-09-04T11:30:00.000Z"),
       }),
     ).resolves.toEqual({
       allowed: true,
@@ -165,7 +177,7 @@ describe("native controller takeover fencing", () => {
     expect(readStartedAt).toHaveBeenCalledWith(123);
   });
 
-  it("takes over an expired lease without consulting a potentially recycled PID", async () => {
+  it("does not let lease expiry bypass a live controller fence", async () => {
     const isProcessAlive = vi.fn(() => true);
     await expect(
       evaluateNativeControllerTakeover({
@@ -175,8 +187,23 @@ describe("native controller takeover fencing", () => {
         now,
         isProcessAlive,
       }),
-    ).resolves.toEqual({ allowed: true, reason: "lease_expired" });
-    expect(isProcessAlive).not.toHaveBeenCalled();
+    ).resolves.toEqual({ allowed: false, reason: "controller_still_alive" });
+    expect(isProcessAlive).toHaveBeenCalledWith(123);
+  });
+
+  it("takes over an expired lease after proving the controller died", async () => {
+    await expect(
+      evaluateNativeControllerTakeover({
+        owner: owner({
+          leaseExpiresAt: new Date("2026-09-04T11:59:59.000Z"),
+        }),
+        now,
+        isProcessAlive: () => false,
+      }),
+    ).resolves.toEqual({
+      allowed: true,
+      reason: "expired_lease_controller_process_dead",
+    });
   });
 
   it("keeps a coordinated previous controller fenced until that exact process exits", async () => {
@@ -194,6 +221,39 @@ describe("native controller takeover fencing", () => {
     ).resolves.toEqual({
       allowed: false,
       reason: "coordinated_controller_still_alive",
+    });
+  });
+});
+
+describe("native provider process fencing", () => {
+  const recordedStart = new Date("2026-09-04T11:00:00.000Z");
+
+  it("does not mistake a recycled provider PID for the old live provider", async () => {
+    await expect(
+      evaluateNativeProviderProcesses({
+        identities: [{ pid: 456, processStartedAt: recordedStart }],
+        isProcessAlive: () => true,
+        readProcessStartedAt: async () => new Date("2026-09-04T11:30:00.000Z"),
+      }),
+    ).resolves.toEqual({
+      knownPids: [456],
+      livePids: [],
+      ambiguousLivePids: [],
+      recycledPids: [456],
+    });
+  });
+
+  it("fails closed when a live provider has no comparable fingerprint", async () => {
+    await expect(
+      evaluateNativeProviderProcesses({
+        identities: [{ pid: 456, processStartedAt: null }],
+        isProcessAlive: () => true,
+        readProcessStartedAt: async () => recordedStart,
+      }),
+    ).resolves.toMatchObject({
+      livePids: [],
+      ambiguousLivePids: [456],
+      recycledPids: [],
     });
   });
 });

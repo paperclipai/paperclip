@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,7 +44,11 @@ describe("dev server status helpers", () => {
       lastRestartAt: "2026-03-20T11:30:00.000Z",
     });
 
-    expect(readPersistedDevServerStatus({ PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath })).toEqual({
+    expect(
+      readPersistedDevServerStatus({
+        PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath,
+      }),
+    ).toEqual({
       dirty: true,
       lastChangedAt: "2026-03-20T12:00:00.000Z",
       changedPathCount: 4,
@@ -78,7 +88,11 @@ describe("dev server status helpers", () => {
       pendingMigrations: [],
     });
 
-    expect(readPersistedDevServerStatus({ PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath })).toBeNull();
+    expect(
+      readPersistedDevServerStatus({
+        PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath,
+      }),
+    ).toBeNull();
   });
 
   it("writes restart requests next to the persisted status file", () => {
@@ -89,13 +103,20 @@ describe("dev server status helpers", () => {
     });
 
     const env = { PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath };
-    expect(writeDevServerRestartRequest({
-      requestedAt: "2026-03-20T12:05:00.000Z",
-      reason: "manual_restart_now",
-    }, env)).toBe(true);
+    expect(
+      writeDevServerRestartRequest(
+        {
+          requestedAt: "2026-03-20T12:05:00.000Z",
+          reason: "manual_restart_now",
+        },
+        env,
+      ),
+    ).toBe(true);
 
     const requestPath = getDevServerRestartRequestFilePath(env);
-    expect(requestPath).toBe(path.join(path.dirname(filePath), "dev-server-restart-request.json"));
+    expect(requestPath).toBe(
+      path.join(path.dirname(filePath), "dev-server-restart-request.json"),
+    );
     expect(requestPath && existsSync(requestPath)).toBe(true);
     expect(JSON.parse(readFileSync(requestPath!, "utf8"))).toEqual({
       requestedAt: "2026-03-20T12:05:00.000Z",
@@ -130,5 +151,38 @@ describe("dev server status helpers", () => {
 
     removeDevServerRestartRequest({ requestId: "restart-new" }, env);
     expect(readDevServerRestartRequest(env)).toBeNull();
+  });
+
+  it("does not consume a newer request written after an older request is claimed", () => {
+    const filePath = createTempStatusFile({ dirty: true });
+    const env = { PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath };
+    writeDevServerRestartRequest(
+      {
+        requestedAt: "2026-09-04T12:00:00.000Z",
+        reason: "manual_restart_now",
+        requestId: "restart-old",
+        mode: "hot",
+      },
+      env,
+    );
+
+    removeDevServerRestartRequest({ requestId: "restart-old" }, env, {
+      afterClaim: () => {
+        writeDevServerRestartRequest(
+          {
+            requestedAt: "2026-09-04T12:00:01.000Z",
+            reason: "manual_restart_now",
+            requestId: "restart-new",
+            mode: "hot",
+          },
+          env,
+        );
+      },
+    });
+
+    expect(readDevServerRestartRequest(env)).toMatchObject({
+      requestId: "restart-new",
+      requestedAt: "2026-09-04T12:00:01.000Z",
+    });
   });
 });

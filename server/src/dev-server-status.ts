@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 const MAX_PERSISTED_DEV_SERVER_STATUS_BYTES = 64 * 1024;
@@ -15,7 +25,11 @@ export type PersistedDevServerStatus = {
 export type DevServerHealthStatus = {
   enabled: true;
   restartRequired: boolean;
-  reason: "backend_changes" | "pending_migrations" | "backend_changes_and_pending_migrations" | null;
+  reason:
+    | "backend_changes"
+    | "pending_migrations"
+    | "backend_changes_and_pending_migrations"
+    | null;
   lastChangedAt: string | null;
   changedPathCount: number;
   changedPathsSample: string[];
@@ -39,7 +53,10 @@ export function getDevServerRestartRequestFilePath(
 ): string | null {
   const statusFilePath = env.PAPERCLIP_DEV_SERVER_STATUS_FILE?.trim();
   if (!statusFilePath) return null;
-  return path.join(path.dirname(statusFilePath), "dev-server-restart-request.json");
+  return path.join(
+    path.dirname(statusFilePath),
+    "dev-server-restart-request.json",
+  );
 }
 
 export function writeDevServerRestartRequest(
@@ -50,15 +67,25 @@ export function writeDevServerRestartRequest(
   if (!filePath) return false;
 
   mkdirSync(path.dirname(filePath), { recursive: true });
-  writeFileSync(filePath, `${JSON.stringify(request, null, 2)}\n`, "utf8");
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tempPath, `${JSON.stringify(request, null, 2)}\n`, "utf8");
+    renameSync(tempPath, filePath);
+  } finally {
+    try {
+      unlinkSync(tempPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
   return true;
 }
 
-export function readDevServerRestartRequest(
-  env: NodeJS.ProcessEnv = process.env,
+function readDevServerRestartRequestAtPath(
+  filePath: string,
 ): DevServerRestartRequest | null {
-  const filePath = getDevServerRestartRequestFilePath(env);
-  if (!filePath || !existsSync(filePath)) return null;
   try {
     if (statSync(filePath).size > MAX_PERSISTED_DEV_SERVER_STATUS_BYTES)
       return null;
@@ -88,17 +115,45 @@ export function readDevServerRestartRequest(
   }
 }
 
+export function readDevServerRestartRequest(
+  env: NodeJS.ProcessEnv = process.env,
+): DevServerRestartRequest | null {
+  const filePath = getDevServerRestartRequestFilePath(env);
+  if (!filePath || !existsSync(filePath)) return null;
+  return readDevServerRestartRequestAtPath(filePath);
+}
+
 export function removeDevServerRestartRequest(
   expected?: Pick<DevServerRestartRequest, "requestId">,
   env: NodeJS.ProcessEnv = process.env,
+  hooks: { afterClaim?: () => void } = {},
 ): void {
   const filePath = getDevServerRestartRequestFilePath(env);
   if (!filePath) return;
-  if (expected?.requestId) {
-    const current = readDevServerRestartRequest(env);
-    if (current?.requestId !== expected.requestId) return;
+  const claimedPath = `${filePath}.${process.pid}.${randomUUID()}.claim`;
+  try {
+    renameSync(filePath, claimedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return;
+    throw error;
   }
-  rmSync(filePath, { force: true });
+  hooks.afterClaim?.();
+
+  const claimed = readDevServerRestartRequestAtPath(claimedPath);
+  const shouldRemove =
+    !expected?.requestId || claimed?.requestId === expected.requestId;
+  if (!shouldRemove) {
+    try {
+      // A hard link is an atomic no-clobber restore. If a newer writer already
+      // recreated the shared path, leave that newer request untouched.
+      linkSync(claimedPath, filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") {
+        throw error;
+      }
+    }
+  }
+  unlinkSync(claimedPath);
 }
 
 function normalizeStringArray(value: unknown): string[] {
@@ -125,12 +180,18 @@ export function readPersistedDevServerStatus(
     if (statSync(filePath).size > MAX_PERSISTED_DEV_SERVER_STATUS_BYTES) {
       return null;
     }
-    const raw = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
-    const changedPathsSample = normalizeStringArray(raw.changedPathsSample).slice(0, 5);
+    const raw = JSON.parse(readFileSync(filePath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    const changedPathsSample = normalizeStringArray(
+      raw.changedPathsSample,
+    ).slice(0, 5);
     const pendingMigrations = normalizeStringArray(raw.pendingMigrations);
     const changedPathCountRaw = raw.changedPathCount;
     const changedPathCount =
-      typeof changedPathCountRaw === "number" && Number.isFinite(changedPathCountRaw)
+      typeof changedPathCountRaw === "number" &&
+      Number.isFinite(changedPathCountRaw)
         ? Math.max(0, Math.trunc(changedPathCountRaw))
         : changedPathsSample.length;
     const dirtyRaw = raw.dirty;
@@ -178,7 +239,8 @@ export function toDevServerHealthStatus(
     pendingMigrations: persisted.pendingMigrations,
     autoRestartEnabled: opts.autoRestartEnabled,
     activeRunCount: opts.activeRunCount,
-    waitingForIdle: restartRequired && opts.autoRestartEnabled && opts.activeRunCount > 0,
+    waitingForIdle:
+      restartRequired && opts.autoRestartEnabled && opts.activeRunCount > 0,
     lastRestartAt: persisted.lastRestartAt,
   };
 }

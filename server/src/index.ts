@@ -890,7 +890,9 @@ export async function startServer(): Promise<StartedServer> {
   process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
-  
+
+  let startupListenerBound = false;
+  try {
   setupRunnerPrpWebSocketServer(server, { apiUrl: configuredApiUrl });
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
@@ -934,6 +936,7 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
+  startupListenerBound = true;
 
   try {
     const result = await workspaceOperationService(db as any)
@@ -1871,6 +1874,33 @@ export async function startServer(): Promise<StartedServer> {
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
   };
+  } catch (error) {
+    if (startupListenerBound) {
+      await new Promise<void>((resolveClose) => {
+        try {
+          server.close((closeError?: Error) => {
+            if (
+              closeError &&
+              (closeError as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING"
+            ) {
+              logger.error(
+                { err: closeError },
+                "failed to close HTTP listener after startup failure",
+              );
+            }
+            resolveClose();
+          });
+        } catch (closeError) {
+          logger.error(
+            { err: closeError },
+            "failed to close HTTP listener after startup failure",
+          );
+          resolveClose();
+        }
+      });
+    }
+    throw error;
+  }
 }
 
 function isMainModule(metaUrl: string): boolean {

@@ -84,7 +84,9 @@ function processIsAlive(pid: number | null | undefined): boolean {
   }
 }
 
-function processGroupIsAlive(processGroupId: number | null | undefined): boolean {
+function processGroupIsAlive(
+  processGroupId: number | null | undefined,
+): boolean {
   if (
     process.platform === "win32" ||
     !processGroupId ||
@@ -149,16 +151,25 @@ export async function evaluateNativeControllerTakeover(input: {
   if (!owner.leaseOwner || !owner.leaseExpiresAt) {
     return { allowed: true, reason: "unowned" };
   }
-  if (owner.leaseExpiresAt <= now) {
-    return { allowed: true, reason: "lease_expired" };
-  }
 
   const priorPid = owner.controllerPid;
   if (!priorPid) {
-    return { allowed: false, reason: "live_legacy_lease_without_controller_identity" };
+    return {
+      allowed: false,
+      reason:
+        owner.leaseExpiresAt <= now
+          ? "expired_lease_without_controller_identity"
+          : "live_legacy_lease_without_controller_identity",
+    };
   }
   if (!isAlive(priorPid)) {
-    return { allowed: true, reason: "controller_process_dead" };
+    return {
+      allowed: true,
+      reason:
+        owner.leaseExpiresAt <= now
+          ? "expired_lease_controller_process_dead"
+          : "controller_process_dead",
+    };
   }
 
   const observedStartedAt = await readStartedAt(priorPid);
@@ -176,7 +187,10 @@ export async function evaluateNativeControllerTakeover(input: {
     coordinated.pid === priorPid &&
     coordinated.processStartedAt &&
     owner.controllerProcessStartedAt &&
-    sameProcessStart(coordinated.processStartedAt, owner.controllerProcessStartedAt)
+    sameProcessStart(
+      coordinated.processStartedAt,
+      owner.controllerProcessStartedAt,
+    )
   ) {
     return { allowed: false, reason: "coordinated_controller_still_alive" };
   }
@@ -184,11 +198,62 @@ export async function evaluateNativeControllerTakeover(input: {
   return { allowed: false, reason: "controller_still_alive" };
 }
 
+export type NativeProviderProcessIdentity = {
+  pid: number;
+  processStartedAt: Date | null;
+};
+
+export async function evaluateNativeProviderProcesses(input: {
+  identities: NativeProviderProcessIdentity[];
+  isProcessAlive?: (pid: number) => boolean;
+  readProcessStartedAt?: (pid: number) => Promise<Date | null>;
+}): Promise<{
+  knownPids: number[];
+  livePids: number[];
+  ambiguousLivePids: number[];
+  recycledPids: number[];
+}> {
+  const isAlive = input.isProcessAlive ?? processIsAlive;
+  const readStartedAt = input.readProcessStartedAt ?? observedProcessStart;
+  const expectedStarts = new Map<number, Date | null>();
+  for (const identity of input.identities) {
+    const current = expectedStarts.get(identity.pid);
+    if (
+      current === undefined ||
+      (current === null && identity.processStartedAt)
+    ) {
+      expectedStarts.set(identity.pid, identity.processStartedAt);
+    }
+  }
+
+  const livePids: number[] = [];
+  const ambiguousLivePids: number[] = [];
+  const recycledPids: number[] = [];
+  for (const [pid, expectedStartedAt] of expectedStarts) {
+    if (!isAlive(pid)) continue;
+    const observedStartedAt = await readStartedAt(pid);
+    if (!expectedStartedAt || !observedStartedAt) {
+      ambiguousLivePids.push(pid);
+    } else if (sameProcessStart(expectedStartedAt, observedStartedAt)) {
+      livePids.push(pid);
+    } else {
+      recycledPids.push(pid);
+    }
+  }
+  return {
+    knownPids: [...expectedStarts.keys()],
+    livePids,
+    ambiguousLivePids,
+    recycledPids,
+  };
+}
+
 export function classifyNativeRunnerRecoveryEvidence(input: {
   runnerPidAlive: boolean;
   runnerGroupAlive: boolean;
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
+  knownProviderProcessIdentityAmbiguous?: boolean;
   hasCheckpoint: boolean;
   checkpointIdentityMatches?: boolean;
   hasProviderEvidence: boolean;
@@ -214,6 +279,12 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
     return {
       claimKind: null,
       reason: "live_provider_process_without_runner_authority",
+    };
+  }
+  if (input.knownProviderProcessIdentityAmbiguous) {
+    return {
+      claimKind: null,
+      reason: "live_provider_process_identity_unverifiable",
     };
   }
   const checkpointIdentityMatches =
@@ -253,6 +324,8 @@ function historyEntry(input: {
   hasProviderEvidence: boolean;
   knownProviderPids?: number[];
   liveProviderPids?: number[];
+  ambiguousProviderPids?: number[];
+  recycledProviderPids?: number[];
   stderrTail?: string | null;
 }) {
   return {
@@ -283,6 +356,8 @@ function historyEntry(input: {
     hasProviderEvidence: input.hasProviderEvidence,
     knownProviderPids: input.knownProviderPids ?? [],
     liveProviderPids: input.liveProviderPids ?? [],
+    ambiguousProviderPids: input.ambiguousProviderPids ?? [],
+    recycledProviderPids: input.recycledProviderPids ?? [],
     stderrTail:
       input.stderrTail && input.stderrTail.trim()
         ? redactSensitiveText(input.stderrTail).slice(-4_096)
@@ -327,8 +402,9 @@ export async function claimNativeRestartRecoveries(input: {
   } | null;
 }): Promise<NativeRestartRecoveryDisposition[]> {
   const now = input.now ?? new Date();
-  const controller = input.controller ?? (await currentNativeControllerIdentity());
-  const candidates = await input.db
+  const controller =
+    input.controller ?? (await currentNativeControllerIdentity());
+  const candidateQuery = input.db
     .select({ runId: heartbeatRuns.id })
     .from(heartbeatRuns)
     .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
@@ -357,7 +433,10 @@ export async function claimNativeRestartRecoveries(input: {
           : []),
       ),
     )
-    .limit(input.limit ?? 100);
+    .orderBy(heartbeatRuns.id);
+  const candidates = await (input.limit === undefined
+    ? candidateQuery
+    : candidateQuery.limit(input.limit));
 
   const dispositions: NativeRestartRecoveryDisposition[] = [];
   for (const candidate of candidates) {
@@ -385,13 +464,25 @@ export async function claimNativeRestartRecoveries(input: {
         .limit(1)
         .then((rows) => rows[0] ?? null);
       if (!row) {
-        return { kind: "blocked", runId: candidate.runId, reason: "recovery_rows_missing" } as const;
+        return {
+          kind: "blocked",
+          runId: candidate.runId,
+          reason: "recovery_rows_missing",
+        } as const;
       }
       if (row.coordinator.resultId) {
-        return { kind: "already_finalized", runId: row.run.id, reason: "result_already_persisted" } as const;
+        return {
+          kind: "already_finalized",
+          runId: row.run.id,
+          reason: "result_already_persisted",
+        } as const;
       }
       if (row.issueExecutionRunId !== row.run.id) {
-        return { kind: "blocked", runId: row.run.id, reason: "issue_execution_lock_changed" } as const;
+        return {
+          kind: "blocked",
+          runId: row.run.id,
+          reason: "issue_execution_lock_changed",
+        } as const;
       }
 
       const takeover = await evaluateNativeControllerTakeover({
@@ -440,9 +531,10 @@ export async function claimNativeRestartRecoveries(input: {
 
       const runnerPidAlive = processIsAlive(row.run.processPid);
       const runnerGroupAlive = processGroupIsAlive(row.run.processGroupId);
-      const observedRunnerStart = row.run.processPid && runnerPidAlive
-        ? await observedProcessStart(row.run.processPid)
-        : null;
+      const observedRunnerStart =
+        row.run.processPid && runnerPidAlive
+          ? await observedProcessStart(row.run.processPid)
+          : null;
       const exactRunnerIdentity =
         runnerPidAlive &&
         row.run.processPid !== null &&
@@ -451,7 +543,9 @@ export async function claimNativeRestartRecoveries(input: {
       const profile = row.run.runnerProfileJson ?? {};
       const checkpoint = profile.sessionCheckpoint;
       const checkpointRecord =
-        checkpoint && typeof checkpoint === "object" && !Array.isArray(checkpoint)
+        checkpoint &&
+        typeof checkpoint === "object" &&
+        !Array.isArray(checkpoint)
           ? (checkpoint as Record<string, unknown>)
           : {};
       const hasCheckpoint = checkpoint !== undefined && checkpoint !== null;
@@ -505,11 +599,26 @@ export async function claimNativeRestartRecoveries(input: {
         !Array.isArray(checkpointRecord.process)
           ? (checkpointRecord.process as Record<string, unknown>)
           : {};
-      const knownProviderPids = new Set<number>();
-      for (const field of ["providerPid", "codexPid", "sidecarPid", "agentPid"] as const) {
+      const providerProcessIdentities: NativeProviderProcessIdentity[] = [];
+      const checkpointProcessFields = [
+        ["providerPid", "providerProcessStartedAt"],
+        ["codexPid", "codexProcessStartedAt"],
+        ["sidecarPid", "sidecarProcessStartedAt"],
+        ["agentPid", "agentProcessStartedAt"],
+      ] as const;
+      for (const [field, startedAtField] of checkpointProcessFields) {
         const value = checkpointProcess[field];
         if (typeof value === "number" && Number.isInteger(value) && value > 0) {
-          knownProviderPids.add(value);
+          const rawStartedAt = checkpointProcess[startedAtField];
+          const parsedStartedAt =
+            typeof rawStartedAt === "string" ? new Date(rawStartedAt) : null;
+          providerProcessIdentities.push({
+            pid: value,
+            processStartedAt:
+              parsedStartedAt && !Number.isNaN(parsedStartedAt.getTime())
+                ? parsedStartedAt
+                : null,
+          });
         }
       }
       for (const providerEvent of providerEvents) {
@@ -530,11 +639,25 @@ export async function claimNativeRestartRecoveries(input: {
           Number.isInteger(processId) &&
           processId > 0
         ) {
-          knownProviderPids.add(processId);
+          const rawStartedAt =
+            eventPayload.processStartedAt ??
+            eventPayload.providerProcessStartedAt;
+          const parsedStartedAt =
+            typeof rawStartedAt === "string" ? new Date(rawStartedAt) : null;
+          providerProcessIdentities.push({
+            pid: processId,
+            processStartedAt:
+              parsedStartedAt && !Number.isNaN(parsedStartedAt.getTime())
+                ? parsedStartedAt
+                : null,
+          });
         }
       }
-      if (row.run.processPid) knownProviderPids.delete(row.run.processPid);
-      const liveProviderPids = [...knownProviderPids].filter(processIsAlive);
+      const providerProcesses = await evaluateNativeProviderProcesses({
+        identities: providerProcessIdentities.filter(
+          (identity) => identity.pid !== row.run.processPid,
+        ),
+      });
       const hasProviderEvidence =
         hasCheckpointProviderIdentity || providerEvents.length > 0;
 
@@ -542,7 +665,9 @@ export async function claimNativeRestartRecoveries(input: {
         runnerPidAlive,
         runnerGroupAlive,
         processStartMatches: exactRunnerIdentity,
-        knownProviderProcessAlive: liveProviderPids.length > 0,
+        knownProviderProcessAlive: providerProcesses.livePids.length > 0,
+        knownProviderProcessIdentityAmbiguous:
+          providerProcesses.ambiguousLivePids.length > 0,
         hasCheckpoint,
         checkpointIdentityMatches,
         hasProviderEvidence,
@@ -566,8 +691,10 @@ export async function claimNativeRestartRecoveries(input: {
           hasCheckpoint,
           checkpointIdentityMatches,
           hasProviderEvidence,
-          knownProviderPids: [...knownProviderPids],
-          liveProviderPids,
+          knownProviderPids: providerProcesses.knownPids,
+          liveProviderPids: providerProcesses.livePids,
+          ambiguousProviderPids: providerProcesses.ambiguousLivePids,
+          recycledProviderPids: providerProcesses.recycledPids,
           stderrTail: row.run.stderrExcerpt,
         });
         await tx
@@ -604,8 +731,10 @@ export async function claimNativeRestartRecoveries(input: {
         hasCheckpoint,
         checkpointIdentityMatches,
         hasProviderEvidence,
-        knownProviderPids: [...knownProviderPids],
-        liveProviderPids,
+        knownProviderPids: providerProcesses.knownPids,
+        liveProviderPids: providerProcesses.livePids,
+        ambiguousProviderPids: providerProcesses.ambiguousLivePids,
+        recycledProviderPids: providerProcesses.recycledPids,
         stderrTail: row.run.stderrExcerpt,
       });
       const claimed = await tx
@@ -637,13 +766,20 @@ export async function claimNativeRestartRecoveries(input: {
             eq(nativeRunFinalizations.phase, row.coordinator.phase),
             row.coordinator.leaseOwner === null
               ? isNull(nativeRunFinalizations.leaseOwner)
-              : eq(nativeRunFinalizations.leaseOwner, row.coordinator.leaseOwner),
+              : eq(
+                  nativeRunFinalizations.leaseOwner,
+                  row.coordinator.leaseOwner,
+                ),
           ),
         )
         .returning({ runId: nativeRunFinalizations.runId })
         .then((rows) => rows[0] ?? null);
       if (!claimed) {
-        return { kind: "awaiting_evidence", runId: row.run.id, reason: "concurrent_recovery_claim" } as const;
+        return {
+          kind: "awaiting_evidence",
+          runId: row.run.id,
+          reason: "concurrent_recovery_claim",
+        } as const;
       }
 
       await tx
@@ -685,7 +821,10 @@ export async function claimNativeRestartRecoveries(input: {
           },
         } satisfies NativeRestartRecoveryClaim;
       }
-      return { kind: claimKind, ...common } satisfies NativeRestartRecoveryClaim;
+      return {
+        kind: claimKind,
+        ...common,
+      } satisfies NativeRestartRecoveryClaim;
     });
     dispositions.push(disposition);
   }
@@ -694,7 +833,10 @@ export async function claimNativeRestartRecoveries(input: {
 
 export async function nativeRestartRecoverySummary(db: Db) {
   const rows = await db
-    .select({ state: nativeRunFinalizations.recoveryState, count: sql<number>`count(*)::int` })
+    .select({
+      state: nativeRunFinalizations.recoveryState,
+      count: sql<number>`count(*)::int`,
+    })
     .from(nativeRunFinalizations)
     .where(
       inArray(nativeRunFinalizations.recoveryState, [
@@ -706,5 +848,7 @@ export async function nativeRestartRecoverySummary(db: Db) {
       ]),
     )
     .groupBy(nativeRunFinalizations.recoveryState);
-  return Object.fromEntries(rows.map((row) => [row.state ?? "unknown", row.count]));
+  return Object.fromEntries(
+    rows.map((row) => [row.state ?? "unknown", row.count]),
+  );
 }

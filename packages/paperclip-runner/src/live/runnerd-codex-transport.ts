@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -38,6 +39,7 @@ import {
   DurablePrpControlPlane,
   durableRecoveryInternals,
   spawnRunner,
+  startRunnerDiagnosticMaintenance,
   waitForProcess,
   type RunnerProcessHandle,
   type RunnerProcessConnection,
@@ -72,6 +74,50 @@ const MAX_NOTIFICATION_COUNT = 2_048;
 const MAX_NOTIFICATION_BYTES = 4 * 1024 * 1024;
 const RUNNER_CLIENT_VERSION = "0.3.0";
 const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
+
+function readLocalProcessStartedAt(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (process.platform === "linux") {
+      return new Date(statSync(`/proc/${pid}`).ctimeMs).toISOString();
+    }
+    if (
+      ["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(
+        process.platform,
+      )
+    ) {
+      const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+        timeout: 1_500,
+        windowsHide: true,
+      }).trim();
+      const parsed = new Date(raw);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+    if (process.platform === "win32") {
+      const script = [
+        `$target = Get-Process -Id ${pid} -ErrorAction Stop`,
+        "$target.StartTime.ToUniversalTime().ToString('o')",
+      ].join("; ");
+      for (const command of ["powershell.exe", "pwsh.exe"]) {
+        try {
+          const raw = execFileSync(
+            command,
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            { encoding: "utf8", timeout: 1_500, windowsHide: true },
+          ).trim();
+          const parsed = new Date(raw);
+          if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+        } catch {
+          // Try the other supported PowerShell host.
+        }
+      }
+    }
+  } catch {
+    // Process exit and restricted process metadata both produce no fingerprint.
+  }
+  return null;
+}
 
 const CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS = `## Codex-style collaboration
 
@@ -541,9 +587,13 @@ export interface CapabilityRunnerdProcessEvidence {
   runnerPid: number | null;
   runnerProcessGroupId: number | null;
   providerPid: number | null;
+  providerProcessStartedAt: string | null;
   codexPid: number | null;
+  codexProcessStartedAt: string | null;
   sidecarPid: number | null;
+  sidecarProcessStartedAt: string | null;
   agentPid: number | null;
+  agentProcessStartedAt: string | null;
   providerDriver: string | null;
   providerVersion: string | null;
   acpxAgent: QualifiedAcpxAgent | null;
@@ -1605,6 +1655,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #core: DurablePrpControlPlane | null = null;
   #handle: RunnerProcessHandle | null = null;
   #adoptedRunnerMonitor: NodeJS.Timeout | null = null;
+  #stopAdoptedDiagnosticMaintenance: (() => void) | null = null;
   #pump: NodeJS.Timeout | null = null;
   #eventIndex = 0;
   #threadId = "";
@@ -1657,9 +1708,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       runnerPid: null,
       runnerProcessGroupId: null,
       providerPid: null,
+      providerProcessStartedAt: null,
       codexPid: null,
+      codexProcessStartedAt: null,
       sidecarPid: null,
+      sidecarProcessStartedAt: null,
       agentPid: null,
+      agentProcessStartedAt: null,
       providerDriver: null,
       providerVersion: null,
       acpxAgent: null,
@@ -2083,6 +2138,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#adoptedRunnerMonitor !== null)
       clearInterval(this.#adoptedRunnerMonitor);
     this.#adoptedRunnerMonitor = null;
+    this.#stopAdoptedDiagnosticMaintenance?.();
+    this.#stopAdoptedDiagnosticMaintenance = null;
     this.#core?.disconnectActiveRunner();
     if (this.#controlPlaneRelease !== null) await this.#controlPlaneRelease();
     await this.#core?.stop();
@@ -2182,6 +2239,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#adoptedRunnerMonitor !== null)
       clearInterval(this.#adoptedRunnerMonitor);
     this.#adoptedRunnerMonitor = null;
+    this.#stopAdoptedDiagnosticMaintenance?.();
+    this.#stopAdoptedDiagnosticMaintenance = null;
     this.#queue.close();
     // Ensure a runner that missed or could not finish the graceful lifecycle
     // command cannot keep the control-plane server alive during teardown.
@@ -2862,9 +2921,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       runAttachment !== null && runAttachment.providerIdentityEventIndex >= 0
         ? runAttachment.providerIdentityEventIndex
         : committedEvents.length;
-    const adoptedProviderIdentityIndex = latestProviderIdentityEventIndex(
-      committedEvents,
-    );
+    const adoptedProviderIdentityIndex =
+      latestProviderIdentityEventIndex(committedEvents);
     if (
       this.options.adoptExistingRunner &&
       exactAuthority &&
@@ -2882,6 +2940,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (registration === null) await core.start();
     else this.#controlPlaneRelease = registration.release;
     const adoptedRunner = this.options.adoptExistingRunner;
+    if (adoptedRunner) {
+      this.#stopAdoptedDiagnosticMaintenance = startRunnerDiagnosticMaintenance(
+        resolve(this.#root, "diagnostics"),
+      );
+    }
     const handle = adoptedRunner
       ? null
       : spawnRunner({
@@ -3134,6 +3197,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           typeof diagnostic.pid === "number"
         ) {
           this.#evidence.agentPid = diagnostic.pid;
+          this.#evidence.agentProcessStartedAt = readLocalProcessStartedAt(
+            diagnostic.pid,
+          );
           this.#publish();
         }
       }
@@ -3351,8 +3417,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const providerIdentity = record(started.providerIdentity);
     if (pid !== null) {
       this.#evidence.providerPid = pid;
-      if (descriptor.driver === "acpx_runtime") this.#evidence.sidecarPid = pid;
-      else this.#evidence.codexPid = pid;
+      this.#evidence.providerProcessStartedAt = readLocalProcessStartedAt(pid);
+      if (descriptor.driver === "acpx_runtime") {
+        this.#evidence.sidecarPid = pid;
+        this.#evidence.sidecarProcessStartedAt =
+          this.#evidence.providerProcessStartedAt;
+      } else {
+        this.#evidence.codexPid = pid;
+        this.#evidence.codexProcessStartedAt =
+          this.#evidence.providerProcessStartedAt;
+      }
     }
     if (typeof descriptor.driver === "string")
       this.#evidence.providerDriver = descriptor.driver;
@@ -3370,8 +3444,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#evidence.agentRuntimeVersion = descriptor.agentRuntimeVersion;
     if (typeof descriptor.acpProtocolVersion === "number")
       this.#evidence.acpProtocolVersion = descriptor.acpProtocolVersion;
-    if (typeof descriptor.agentProcessId === "number")
+    if (typeof descriptor.agentProcessId === "number") {
       this.#evidence.agentPid = descriptor.agentProcessId;
+      this.#evidence.agentProcessStartedAt = readLocalProcessStartedAt(
+        descriptor.agentProcessId,
+      );
+    }
     if (
       runtimeIdentity.executionKind === "local_process" ||
       runtimeIdentity.executionKind === "remote_service"
