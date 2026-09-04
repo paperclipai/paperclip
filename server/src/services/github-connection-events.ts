@@ -48,6 +48,92 @@ function positiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
+function boundedString(value: unknown, maximum: number): string | null {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum ? value : null;
+}
+
+function identifier(value: unknown): string | null {
+  return typeof value === "string" && /^[1-9][0-9]{0,30}$/.test(value) ? value : null;
+}
+
+function isoDate(value: unknown): string | null {
+  const candidate = boundedString(value, 100);
+  if (!candidate || Number.isNaN(Date.parse(candidate))) return null;
+  return new Date(candidate).toISOString();
+}
+
+function commitSha(value: unknown): string | null {
+  return typeof value === "string" && /^[0-9a-f]{40,64}$/i.test(value) ? value.toLowerCase() : null;
+}
+
+function githubUrl(value: unknown): string | null {
+  const candidate = boundedString(value, 2_000);
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function compact(values: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== null && value !== undefined));
+}
+
+/**
+ * Treat the sealed Cloud batch as an untrusted boundary. Cloud already normalizes
+ * GitHub payloads, but the instance independently allowlists and bounds the small
+ * reconciliation record that it persists and processes.
+ */
+function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
+  const payload = record(event.payload);
+  const base = {
+    event: boundedString(payload.event, 100),
+    action: boundedString(payload.action, 100),
+    installationId: identifier(payload.installationId),
+    repositoryId: identifier(payload.repositoryId),
+    repository: boundedString(payload.repository, 300),
+    senderId: identifier(payload.senderId),
+    senderLogin: boundedString(payload.senderLogin, 100),
+  };
+  if (event.event === "pull_request") {
+    return compact({
+      ...base,
+      number: positiveInteger(payload.number),
+      url: githubUrl(payload.url),
+      state: boundedString(payload.state, 40),
+      merged: payload.merged === true,
+      mergedAt: isoDate(payload.mergedAt),
+      updatedAt: isoDate(payload.updatedAt),
+      headRef: boundedString(payload.headRef, 300),
+      headSha: commitSha(payload.headSha),
+      baseRef: boundedString(payload.baseRef, 300),
+      baseSha: commitSha(payload.baseSha),
+    });
+  }
+  if (event.event === "installation_repositories") {
+    const repositoryIds = (value: unknown) => Array.isArray(value)
+      ? value.slice(0, 1_000).flatMap((item) => identifier(item) ?? [])
+      : [];
+    return compact({
+      ...base,
+      repositorySelection: boundedString(payload.repositorySelection, 40),
+      repositoriesAdded: repositoryIds(payload.repositoriesAdded),
+      repositoriesRemoved: repositoryIds(payload.repositoriesRemoved),
+    });
+  }
+  if (event.event === "installation") {
+    return compact({
+      ...base,
+      accountId: identifier(payload.accountId),
+      accountLogin: boundedString(payload.accountLogin, 100),
+      repositorySelection: boundedString(payload.repositorySelection, 40),
+    });
+  }
+  return compact(base);
+}
+
 function bindingRows(rows: Array<{
   grant: typeof connectionGrants.$inferSelect;
   connection: typeof toolConnections.$inferSelect;
@@ -221,6 +307,7 @@ export function githubConnectionEventService(
 
   async function processForCompany(companyId: string, bindings: GitHubBinding[], event: LeasedEvent) {
     const receiptAt = now();
+    const normalizedEvent = { ...event, payload: normalizeLeasedPayload(event) };
     const [receipt] = await db.insert(connectionEventDeliveries).values({
       companyId,
       provider: event.provider,
@@ -229,7 +316,7 @@ export function githubConnectionEventService(
       action: event.action,
       installationId: event.installationId,
       repositoryId: event.repositoryId,
-      normalizedPayload: event.payload,
+      normalizedPayload: normalizedEvent.payload,
       providerCreatedAt: new Date(event.createdAt),
       status: "received",
       attempts: 1,
@@ -250,9 +337,9 @@ export function githubConnectionEventService(
       }).where(eq(connectionEventDeliveries.id, existing!.id));
     }
     try {
-      if (event.event === "pull_request") await applyPullRequestEvent(companyId, event);
+      if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
       if (event.event === "installation" || event.event === "installation_repositories") {
-        for (const binding of bindings) await applyInstallationEvent(binding, event);
+        for (const binding of bindings) await applyInstallationEvent(binding, normalizedEvent);
       } else {
         const touchedAt = now();
         for (const binding of bindings) {

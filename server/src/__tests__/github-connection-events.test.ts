@@ -128,6 +128,10 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
         headSha: "a".repeat(40),
         baseRef: "master",
         baseSha: "b".repeat(40),
+        body: "private pull request body",
+        comments: [{ body: "private review comment" }],
+        accessToken: "ghu_must_not_be_persisted",
+        arbitraryNested: { credential: "also-must-not-be-persisted" },
       },
     };
     let poll = 0;
@@ -161,8 +165,25 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
       connectionEventDeliveries.providerDeliveryId,
       leasedEvent.id,
     ));
-    expect(receipt).toMatchObject({ status: "processed", attempts: 1, provider: "github" });
-    expect(JSON.stringify(receipt)).not.toContain("pull_request.body");
+    expect(receipt).toMatchObject({
+      status: "processed",
+      attempts: 1,
+      provider: "github",
+      normalizedPayload: {
+        repository: "paperclipai/paperclip",
+        number: 123,
+        state: "closed",
+        merged: true,
+        mergedAt: "2026-09-04T11:59:00.000Z",
+        updatedAt: "2026-09-04T11:59:01.000Z",
+        url: "https://github.com/paperclipai/paperclip/pull/123",
+        headRef: "feature",
+        headSha: "a".repeat(40),
+        baseRef: "master",
+        baseSha: "b".repeat(40),
+      },
+    });
+    expect(JSON.stringify(receipt)).not.toMatch(/private pull request|private review|ghu_|also-must-not/);
     const [activity] = await db.select().from(activityLog).where(eq(activityLog.action, "tool_connection.webhook_processed"));
     expect(activity?.details).toEqual({
       provider: "github",
