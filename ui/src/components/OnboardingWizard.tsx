@@ -128,7 +128,6 @@ import {
 import { AgentPreview } from "./onboarding/AgentPreview";
 import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceTiles";
 import { CredentialModeLink } from "./onboarding/CredentialModeLink";
-import { ApiKeyField, ConnectInputCanvas } from "./onboarding/ConnectInputCanvas";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
@@ -1230,6 +1229,20 @@ function OnboardingWizardInner({
       connectPhase === "waiting" ||
       connectPhase === "connecting");
   const connectCardSpace = connectCardLive || (connectHasCard && connectPhase === "unwindCard");
+  /**
+   * Whether the card's contents are rendered at all.
+   *
+   * A beat longer than its space, and that beat matters. The height animates
+   * away over `unwindRoom`, and an element with nothing in it has no height to
+   * animate *from* — unmounting the contents when the space starts closing
+   * collapsed the column in a single frame instead, a 54px jump measured right
+   * after the fade. They stay until the room has finished closing.
+   *
+   * It cannot simply be "always", either: the panel starts a server session on
+   * mount, so rendering it at idle would open an OAuth session merely because
+   * the step was visited.
+   */
+  const connectCardMounted = connectCardSpace || connectPhase === "unwindRoom";
   const connectLinkSpace =
     connectPhase === "idle" ||
     connectPhase === "collapsing" ||
@@ -3054,11 +3067,10 @@ function OnboardingWizardInner({
                     {/*
                       The wrapper is always rendered — that is what lets its
                       height animate rather than jump — but its contents are
-                      not. The panel starts a server session on mount, so
-                      mounting it before the sequence begins would open an OAuth
-                      session merely because the step was visited.
+                      not, and they outlive the space by a beat. See
+                      `connectCardMounted`.
                     */}
-                    {!connectCardSpace ? null : credentialMode === "api" ? (
+                    {!connectCardMounted ? null : credentialMode === "api" ? (
                       <OnboardingLoginCard
                         instruction={`Provide your ${
                           CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
