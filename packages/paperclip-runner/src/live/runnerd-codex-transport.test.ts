@@ -131,7 +131,7 @@ it("identifies an active provider turn that must stop before suspension", () => 
   });
 });
 
-it("probes an exact durable checkpoint before containment regardless of process completion", async () => {
+it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
   const settledSteps: string[] = [];
   await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
     runnerSettled: true,
@@ -146,7 +146,7 @@ it("probes an exact durable checkpoint before containment regardless of process 
       settledSteps.push("release");
     },
   });
-  expect(settledSteps).toEqual(["checkpoint", "kill", "release"]);
+  expect(settledSteps).toEqual(["release", "checkpoint", "kill"]);
 
   const unsettledSteps: string[] = [];
   await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
@@ -162,7 +162,7 @@ it("probes an exact durable checkpoint before containment regardless of process 
       unsettledSteps.push("release");
     },
   });
-  expect(unsettledSteps).toEqual(["checkpoint", "kill", "release"]);
+  expect(unsettledSteps).toEqual(["release", "checkpoint", "kill"]);
 });
 
 it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {
@@ -2271,7 +2271,9 @@ it("adopts a live runner on the same durable authority without spawning a duplic
     }
     server.closeAllConnections();
     if (server.listening) {
-      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      await new Promise<void>((resolveClose) =>
+        server.close(() => resolveClose()),
+      );
     }
     await rm(stateDirectory, { recursive: true, force: true });
   }

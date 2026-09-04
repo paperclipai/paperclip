@@ -476,27 +476,27 @@ async function releaseRunnerProcessOwnership(input: {
   forceKill: () => void;
   release: (() => Promise<void> | void) | null;
 }): Promise<void> {
+  let releaseFailure: unknown;
+  try {
+    if (input.release !== null) await input.release();
+  } catch (error) {
+    releaseFailure = error;
+  }
   let checkpointFailure: unknown;
   try {
     if (input.checkpoint !== null) {
-      // Command-managed remote runners can durably suspend before their
-      // process-owner RPC observes completion. The checkpoint callback is the
-      // authority here: it must independently require the exact suspended
-      // runner/session binding before copying any provider state. Probe even
-      // after the bounded process wait expires so that a valid remote
-      // checkpoint is not discarded solely because the outer RPC is late.
+      // Release only the authenticated control route first. In provider-ingress
+      // mode this stops its reconnect loop; it does not release the sandbox
+      // lease or the runner process owner. The bounded process wait above may
+      // observe the remote exec before this route has fully quiesced, while the
+      // exact durable state becomes readable only after it has. Keep the
+      // independently verified checkpoint ahead of process containment.
       await input.checkpoint(input.runnerSettled ? "settled" : "unsettled");
     }
   } catch (error) {
     checkpointFailure = error;
   } finally {
     input.forceKill();
-  }
-  let releaseFailure: unknown;
-  try {
-    if (input.release !== null) await input.release();
-  } catch (error) {
-    releaseFailure = error;
   }
   if (checkpointFailure !== undefined) throw checkpointFailure;
   if (releaseFailure !== undefined) throw releaseFailure;
@@ -2351,8 +2351,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#adoptedRunnerMonitor = null;
     this.#queue.close();
     // A suspended remote runner still owns the only readable copy of its
-    // provider state. Probe its independently verified durable state before
-    // releasing the process owner even when the outer process wait was late;
+    // provider state. Quiesce the authenticated route, then probe its
+    // independently verified durable state before releasing the process owner;
     // an incomplete or identity-conflicting state remains fail-closed.
     try {
       await releaseRunnerProcessOwnership({
