@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { runningProcesses } from "../../../adapters/index.js";
+import { runningProcesses } from "../../../adapters/utils.js";
 import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../../../services/local-service-supervisor.js";
 import { createProcessAdapter } from "./process.js";
 

@@ -1,4 +1,4 @@
-import { runningProcesses } from "../../../adapters/index.js";
+import { runningProcesses } from "../../../adapters/utils.js";
 import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../../../services/local-service-supervisor.js";
 import type { RunProcessController } from "../application/ports.js";
 import type { RunProcessCleanupOutcome, RunProcessMetadata } from "../application/types.js";
