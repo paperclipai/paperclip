@@ -596,6 +596,7 @@ describe("runner E2E server isolation", () => {
       {
         PAPERCLIP_HOME: "/tmp/cell/paperclip-home",
         PAPERCLIP_CONFIG: "/tmp/cell/paperclip-home/instances/e2e/config.json",
+        XDG_CACHE_HOME: "/tmp/cell/xdg-cache",
         PAPERCLIP_AGENT_JWT_SECRET: "generated-agent-jwt",
         PAPERCLIP_DECISION_SIGNING_SECRET: "generated-decision-key",
         PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "generated-tool-key",
@@ -608,6 +609,7 @@ describe("runner E2E server isolation", () => {
     expect(env.OPENAI_ORG_ID).toBeUndefined();
     expect(env.PAPERCLIP_API_KEY).toBeUndefined();
     expect(env.PAPERCLIP_AGENT_API_KEY).toBeUndefined();
+    expect(env.XDG_CACHE_HOME).toBe("/tmp/cell/xdg-cache");
     expect(env.PAPERCLIP_AGENT_JWT_SECRET).toBe("generated-agent-jwt");
     expect(env.PAPERCLIP_TASK_BRIDGE_TOKEN).toBeUndefined();
     expect(env.PAPERCLIP_SETUP_TOKEN).toBeUndefined();

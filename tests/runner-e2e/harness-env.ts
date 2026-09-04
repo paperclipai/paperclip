@@ -136,6 +136,11 @@ export function assertIsolatedServerEnvironment(
       "Paperclip server paths escape the isolated temporary root",
     );
   }
+  if (env.XDG_CACHE_HOME !== path.join(expected.temporaryRoot, "xdg-cache")) {
+    throw new Error(
+      "Paperclip server cache does not use the allocated temporary root",
+    );
+  }
   for (const key of [
     ...CREDENTIAL_NAMES,
     ...DATABASE_KEYS,

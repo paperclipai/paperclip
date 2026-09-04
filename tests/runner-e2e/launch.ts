@@ -397,6 +397,7 @@ async function runAttempt(input: {
     const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: providerPath,
+      XDG_CACHE_HOME: path.join(temporaryRoot, "xdg-cache"),
       PAPERCLIP_RUNNER_E2E_EXECUTION_IDS: JSON.stringify(
         executions.map((candidate) => candidate.id),
       ),
