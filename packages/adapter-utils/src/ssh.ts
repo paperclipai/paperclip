@@ -57,23 +57,24 @@ export function createSshCommandManagedRuntimeRunner(input: {
       const command = commandInput.command.trim();
       const args = commandInput.args ?? [];
       const cwd = commandInput.cwd?.trim() || defaultCwd;
-      const envEntries = Object.entries(commandInput.env ?? {})
-        .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-      const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
-        : "";
-      const exportPrefix = envEntries.length > 0
-        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
-        : "";
-      const commandScript = command === "sh" || command === "bash"
-        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+      const env = Object.fromEntries(
+        Object.entries(commandInput.env ?? {})
+          .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+      );
+      // The environment is handed to `runSshCommand`, which sources it from a
+      // 0600 remote file instead of writing `env KEY=value …` into the command
+      // line (REVIP-3492). Exported values are inherited by the command below,
+      // so a `sh -c` payload still sees them.
+      const commandScript = (command === "sh" || command === "bash")
+        && (args[0] === "-c" || args[0] === "-lc")
+        && typeof args[1] === "string"
+        ? args[1]
+        : `exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
       const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
 
       try {
         const result = await runSshCommand(input.spec, remoteCommand, {
+          env,
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
@@ -157,6 +158,100 @@ export function shellQuote(value: string) {
 
 function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+/**
+ * Remote directory that holds the short-lived per-run environment files. The
+ * path is expanded on the remote side so it always lands in the SSH user's own
+ * home, and it is created with mode 0700.
+ */
+const REMOTE_ENV_DIR_EXPR = '"$HOME/.paperclip-run-env"';
+
+/**
+ * Shell expression for one run's environment file. The identifier is a UUID, so
+ * it needs no quoting beyond the surrounding double quotes that let `$HOME`
+ * expand remotely.
+ */
+export function remoteEnvFilePathExpr(id: string) {
+  // Splice the id inside the same double quotes the directory expression uses,
+  // so both stay one `$HOME`-expanding token and the directory name is spelled
+  // exactly once.
+  return `${REMOTE_ENV_DIR_EXPR.slice(0, -1)}/${id}.env"`;
+}
+
+/**
+ * Body of the per-run environment file. Every value is passed as an `export`
+ * assignment, and the final line removes the file, so a wrapper that sources it
+ * leaves nothing behind on disk even when the run is killed later.
+ *
+ * Exported for the regression tests that assert secrets are shell-quoted here
+ * rather than spliced into any command line (REVIP-3492).
+ */
+export function buildRemoteEnvFileContent(entries: Array<[string, string]>, pathExpr: string): string {
+  return [
+    ...entries.map(([key, value]) => `export ${key}=${shellQuote(value)}`),
+    `rm -f ${pathExpr}`,
+    "",
+  ].join("\n");
+}
+
+/**
+ * Hand the remote environment to the run through a 0600 file instead of the
+ * command line.
+ *
+ * Environment assignments written as `exec env KEY=value …` end up in the argv
+ * of the local `ssh` client, and `/proc/<pid>/cmdline` is world-readable on
+ * Linux. That exposed every injected agent secret to any local user for the
+ * whole lifetime of the run (REVIP-3492). The values now travel over the stdin
+ * of a separate SSH invocation whose own argv only names the target path; the
+ * file is created under `umask 077`, and it deletes itself the moment the run
+ * wrapper sources it.
+ *
+ * Returns `null` when there is nothing to inject, so a run without environment
+ * overrides still opens exactly one connection.
+ */
+async function provisionRemoteEnvFile(input: {
+  spec: SshConnectionConfig;
+  env: Array<[string, string]>;
+  timeoutMs?: number;
+}): Promise<{ sourceExpr: string; cleanup: () => Promise<void> } | null> {
+  if (input.env.length === 0) {
+    return null;
+  }
+  for (const [key] of input.env) {
+    if (!isValidShellEnvKey(key)) {
+      throw new Error(`Invalid SSH environment variable key: ${key}`);
+    }
+  }
+
+  const pathExpr = remoteEnvFilePathExpr(randomUUID());
+  // `umask 077` has to precede the redirection so the file is never briefly
+  // group- or world-readable between creation and `chmod`.
+  const writeScript = [
+    "umask 077",
+    `mkdir -p ${REMOTE_ENV_DIR_EXPR}`,
+    `chmod 700 ${REMOTE_ENV_DIR_EXPR}`,
+    `cat > ${pathExpr}`,
+    `chmod 600 ${pathExpr}`,
+  ].join(" && ");
+
+  await runSshCommand(input.spec, writeScript, {
+    stdin: buildRemoteEnvFileContent(input.env, pathExpr),
+    timeoutMs: input.timeoutMs ?? 30_000,
+  });
+
+  return {
+    sourceExpr: pathExpr,
+    cleanup: async () => {
+      // Best effort: the file removes itself once the wrapper sources it, so
+      // this only matters when the run never got that far.
+      try {
+        await runSshCommand(input.spec, `rm -f ${pathExpr}`, { timeoutMs: 15_000 });
+      } catch {
+        // A remote that is already gone cannot leak the file either.
+      }
+    },
+  };
 }
 
 export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionSpec | null {
@@ -1223,15 +1318,25 @@ export async function runSshCommand(
     // .bash_profile typically sources .bashrc itself; only source .bashrc
     // directly when no .bash_profile exists, so a host that adds nvm in
     // .bashrc still resolves node without a double-run of the setup.
-    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
+    // The values never ride the command line: `provisionRemoteEnvFile` ships
+    // them over stdin into a 0600 file that the wrapper sources and that
+    // deletes itself (REVIP-3492). Sourcing happens after the profiles so
+    // caller-supplied overrides still win over anything a profile re-exports.
+    const envFile = await provisionRemoteEnvFile({ spec: config, env: envEntries });
+    if (envFile) {
+      const previousCleanup = cleanup;
+      cleanup = async () => {
+        await envFile.cleanup();
+        await previousCleanup();
+      };
+    }
     const remoteScript = [
       'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-      envArgs.length > 0
-        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
-        : `exec sh -c ${shellQuote(remoteCommand)}`,
+      ...(envFile ? [`. ${envFile.sourceExpr}`] : []),
+      `exec sh -c ${shellQuote(remoteCommand)}`,
     ].join(" && ");
 
     sshArgs.push(
@@ -1271,11 +1376,19 @@ export async function buildSshSpawnTarget(input: {
       throw new Error(`Invalid SSH environment variable key: ${key}`);
     }
   }
-  const auth = await createSshAuthArgs(input.spec);
+  const envEntries = Object.entries(input.env)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  // Provision the environment before the auth material so a failure here leaves
+  // no temporary key file behind.
+  const envFile = await provisionRemoteEnvFile({ spec: input.spec, env: envEntries });
+  let auth: { args: string[]; cleanup: () => Promise<void> };
+  try {
+    auth = await createSshAuthArgs(input.spec);
+  } catch (error) {
+    await envFile?.cleanup();
+    throw error;
+  }
   const sshArgs = [...auth.args];
-  const envArgs = Object.entries(input.env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
   // Source the login profiles first, then run `env KEY=VAL cmd` so
   // user-supplied identity overrides win over anything a profile re-exports.
@@ -1294,9 +1407,12 @@ export async function buildSshSpawnTarget(input: {
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
     `cd ${shellQuote(input.spec.remoteCwd)}`,
-    envArgs.length > 0
-      ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
-      : `exec ${remoteCommandParts}`,
+    // Never `exec env KEY=value …` here: this ssh client lives for the whole
+    // agent run, so every assignment would sit in its world-readable
+    // /proc/<pid>/cmdline for that entire time (REVIP-3492). The values are
+    // sourced from a 0600 file that removes itself as it is read.
+    ...(envFile ? [`. ${envFile.sourceExpr}`] : []),
+    `exec ${remoteCommandParts}`,
   ].join(" && ");
 
   sshArgs.push(
@@ -1309,7 +1425,10 @@ export async function buildSshSpawnTarget(input: {
   return {
     command: "ssh",
     args: sshArgs,
-    cleanup: auth.cleanup,
+    cleanup: async () => {
+      await envFile?.cleanup();
+      await auth.cleanup();
+    },
   };
 }
 
