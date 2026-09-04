@@ -25,6 +25,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { toolAccessService } from "./tool-access.js";
+import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -201,6 +202,15 @@ export function connectionIntentService(db: Db) {
       && connection.enabled
     );
     if (matching.length === 0) return null;
+    if (input.serviceSlug === "github") {
+      const selection = await resolveManagedGitHubIdentitySelection(db, input.companyId, {
+        agentId: input.agentId,
+        responsibleUserId: input.responsibleUserId,
+      });
+      return selection.grant
+        ? matching.find((connection) => connection.id === selection.grant!.connectionId) ?? null
+        : null;
+    }
     const effective = await access.getEffectiveProfilesForAgent(input.companyId, input.agentId);
     const installedIds = new Set(effective.installedConnections.map((connection) => connection.id));
     const installed = matching.filter((connection) => installedIds.has(connection.id));

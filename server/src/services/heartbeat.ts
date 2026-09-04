@@ -102,6 +102,7 @@ import { logger } from "../middleware/logger.js";
 import {
   createGitRemoteAuthProvider,
   describeGitAuthFailure,
+  filterResolvedGitHubConnectionsForRun,
   GIT_CREDENTIAL_TOKEN_ENV_KEY,
   scrubGitCredentialText,
   type GitRemoteAuthProvider,
@@ -4050,13 +4051,29 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     input.agent.companyId,
     input.agent.id,
   );
+  const [runIdentity] = await input.db
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.agent.companyId),
+      eq(heartbeatRuns.agentId, input.agent.id),
+    ))
+    .limit(1);
+  const resolvedInstalledConnections = await filterResolvedGitHubConnectionsForRun({
+    db: input.db,
+    companyId: input.agent.companyId,
+    agentId: input.agent.id,
+    responsibleUserId: runIdentity?.responsibleUserId ?? null,
+    connections: effective.installedConnections,
+  });
   const permittedConnectionIds = new Set([
     ...effective.entries
       .filter((entry) => entry.effect === "include" && entry.connectionId)
       .map((entry) => entry.connectionId!),
     ...effective.allowedTools.map((tool) => tool.connectionId),
   ]);
-  const installedConnectionIds = new Set(
+  const allInstalledConnectionIds = new Set(
     effective.installedConnections.map((connection) => connection.id),
   );
   const permittedConnections =
@@ -4080,11 +4097,11 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       (connection) =>
         (connection.transport === "mcp_remote" ||
           connection.transport === "local_stdio") &&
-        !installedConnectionIds.has(connection.id),
+        !allInstalledConnectionIds.has(connection.id),
     )
     .map(({ id, name }) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const assignedConnections = effective.installedConnections.filter(
+  const assignedConnections = resolvedInstalledConnections.filter(
     (connection) =>
       permittedConnectionIds.has(connection.id) &&
       connection.status === "active" &&
@@ -4093,7 +4110,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       (connection.transport === "mcp_remote" ||
         connection.transport === "local_stdio"),
   );
-  const unhealthyConnections = effective.installedConnections.filter(
+  const unhealthyConnections = resolvedInstalledConnections.filter(
     (connection) =>
       permittedConnectionIds.has(connection.id) &&
       (connection.transport === "mcp_remote" ||
@@ -4500,6 +4517,8 @@ export async function createManagedMcpRunConfig(input: {
       enabled: toolConnections.enabled,
       status: toolConnections.status,
       healthStatus: toolConnections.healthStatus,
+      config: toolConnections.config,
+      transportConfig: toolConnections.transportConfig,
     })
     .from(toolConnectionInstalls)
     .innerJoin(
@@ -4515,17 +4534,35 @@ export async function createManagedMcpRunConfig(input: {
         sql`((${toolConnectionInstalls.targetType} = 'company' and ${toolConnectionInstalls.targetId} = ${input.agent.companyId}) or (${toolConnectionInstalls.targetType} = 'agent' and ${toolConnectionInstalls.targetId} = ${input.agent.id}))`,
       ),
     );
+  const [runIdentity] = await input.db
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.agent.companyId),
+      eq(heartbeatRuns.agentId, input.agent.id),
+    ))
+    .limit(1);
+  const resolvedAvailableInstalls = await filterResolvedGitHubConnectionsForRun({
+    db: input.db,
+    companyId: input.agent.companyId,
+    agentId: input.agent.id,
+    responsibleUserId: runIdentity?.responsibleUserId ?? null,
+    connections: installRows.filter(
+      (install) =>
+        install.enabled &&
+        install.status === "active" &&
+        !["degraded", "failed", "error", "missing_secret"].includes(
+          install.healthStatus,
+        ),
+    ).map((install) => ({
+      id: install.connectionId,
+      config: install.config,
+      transportConfig: install.transportConfig,
+    })),
+  });
   const availableInstalledConnectionIds = new Set(
-    installRows
-      .filter(
-        (install) =>
-          install.enabled &&
-          install.status === "active" &&
-          !["degraded", "failed", "error", "missing_secret"].includes(
-            install.healthStatus,
-          ),
-      )
-      .map((install) => install.connectionId),
+    resolvedAvailableInstalls.map((install) => install.id),
   );
 
   const applicableGateways = rows.filter((gateway) =>

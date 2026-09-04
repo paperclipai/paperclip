@@ -267,17 +267,18 @@ export function createGitRemoteAuthProvider(
   };
 }
 
-async function resolveManagedGitHubCredential(
+export async function resolveManagedGitHubIdentitySelection(
   db: Db,
-  secrets: GitCredentialSecretsDeps,
   companyId: string,
   context: {
-    issueId?: string | null;
-    heartbeatRunId?: string | null;
     responsibleUserId?: string | null;
     agentId?: string | null;
   },
-): Promise<{ configured: boolean; credential?: GitCredential; error?: string }> {
+): Promise<{
+  configured: boolean;
+  grant?: typeof connectionGrants.$inferSelect;
+  error?: string;
+}> {
   const connections = await db.select().from(toolConnections).where(and(
     eq(toolConnections.companyId, companyId),
     eq(toolConnections.enabled, true),
@@ -335,7 +336,58 @@ async function resolveManagedGitHubCredential(
         : "More than one managed GitHub identity matches this run",
     };
   }
-  let grant = candidates[0]!;
+  const grant = candidates[0]!;
+  if (grant.status !== "active") return { configured: true, error: "The managed GitHub identity must be reconnected" };
+  return { configured: true, grant };
+}
+
+export async function filterResolvedGitHubConnectionsForRun<T extends {
+  id: string;
+  config?: unknown;
+  transportConfig?: unknown;
+}>(input: {
+  db: Db;
+  companyId: string;
+  agentId: string;
+  responsibleUserId?: string | null;
+  connections: T[];
+}): Promise<T[]> {
+  const githubConnections = input.connections.filter((connection) => {
+    const config = connection.config && typeof connection.config === "object"
+      ? connection.config as Record<string, unknown>
+      : {};
+    const transportConfig = connection.transportConfig && typeof connection.transportConfig === "object"
+      ? connection.transportConfig as Record<string, unknown>
+      : {};
+    return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
+  });
+  if (githubConnections.length === 0) return input.connections;
+  const selection = await resolveManagedGitHubIdentitySelection(input.db, input.companyId, {
+    agentId: input.agentId,
+    responsibleUserId: input.responsibleUserId ?? null,
+  });
+  const selectedConnectionId = selection.grant?.connectionId ?? null;
+  const githubIds = new Set(githubConnections.map((connection) => connection.id));
+  return input.connections.filter((connection) =>
+    !githubIds.has(connection.id) || connection.id === selectedConnectionId,
+  );
+}
+
+async function resolveManagedGitHubCredential(
+  db: Db,
+  secrets: GitCredentialSecretsDeps,
+  companyId: string,
+  context: {
+    issueId?: string | null;
+    heartbeatRunId?: string | null;
+    responsibleUserId?: string | null;
+    agentId?: string | null;
+  },
+): Promise<{ configured: boolean; credential?: GitCredential; error?: string }> {
+  const selection = await resolveManagedGitHubIdentitySelection(db, companyId, context);
+  if (!selection.configured) return { configured: false };
+  if (!selection.grant) return { configured: true, error: selection.error };
+  let grant = selection.grant;
   if (grant.kind === "user" && grant.subjectUserId) {
     const [membership] = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
       eq(companyMemberships.companyId, companyId),
@@ -345,7 +397,6 @@ async function resolveManagedGitHubCredential(
     )).limit(1);
     if (!membership) return { configured: true, error: "The managed GitHub identity owner is not an active company member" };
   }
-  if (grant.status !== "active") return { configured: true, error: "The managed GitHub identity must be reconnected" };
   const expiresAt = grant.providerTenant?.oauth?.accessTokenExpiresAt;
   const refreshedAt = grant.providerTenant?.oauth?.refreshedAt;
   const expiryMs = typeof expiresAt === "string" ? Date.parse(expiresAt) : Number.NaN;
