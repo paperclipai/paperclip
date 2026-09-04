@@ -270,3 +270,29 @@ export const FOOTER_SETTLE = { duration: 0.34, ease: TAG_SWAP_EASE } as const;
 export const SOURCE_COLLAPSE_MS = SOURCE_COLLAPSE_MOVE.duration * 1000;
 export const CARD_EXIT_MS = CARD_EXIT.duration * 1000;
 export const FOOTER_SETTLE_MS = FOOTER_SETTLE.duration * 1000;
+
+/**
+ * Making room for the card, and giving it back.
+ *
+ * Its own beat, before the card is visible at all. The card used to arrive by
+ * mounting, which meant its space appeared in a single frame: everything above
+ * jumped to its new position instead of travelling there, and the credential
+ * link's space vanished at the same instant, compounding it.
+ *
+ * Nothing mounts or unmounts to make this happen now. The card and the link are
+ * both always rendered, and their *heights* animate — so every frame is a real
+ * layout the column can settle into, and the whole step slides. The card only
+ * fades in once the room exists.
+ */
+export const MAKE_ROOM = { duration: 0.34, ease: TAG_SWAP_EASE } as const;
+export const MAKE_ROOM_MS = MAKE_ROOM.duration * 1000;
+
+/**
+ * The unpicked tile's fade, shortened from the tag's exit.
+ *
+ * It leaves the flow at once and travels nowhere, so while it is still legible
+ * it sits on top of the tile moving underneath it. At the tag's 260ms that
+ * overlap was long enough to read as two tiles briefly occupying one another;
+ * at 180 the survivor is clear before it arrives.
+ */
+export const SOURCE_EXIT_FADE = { duration: 0.18, ease: TAG_SWAP_EASE } as const;

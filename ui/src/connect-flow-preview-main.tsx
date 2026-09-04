@@ -1,14 +1,14 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AnimatePresence, LayoutGroup, MotionConfig, motion } from "motion/react";
+import { MotionConfig, motion } from "motion/react";
 import { isValidBrowserCode } from "@paperclipai/shared";
 import {
   CARD_ENTER,
   CARD_EXIT,
   CARD_EXIT_MS,
   CONNECTED_HOLD_MS,
-  FOOTER_SETTLE,
-  FOOTER_SETTLE_MS,
+  MAKE_ROOM,
+  MAKE_ROOM_MS,
   SOURCE_COLLAPSE_MS,
   SOURCE_LINK_EXIT,
 } from "./components/onboarding/onboarding-motion";
@@ -93,9 +93,11 @@ type Phase =
   | "ready"
   | "waiting"
   | "connecting"
-  /** Back, first beat: the card leaves, then the footer comes back up. */
+  /** Back 1: the card fades while still holding its space. */
   | "unwindCard"
-  /** Back, second beat: the row reopens and the button reverts. */
+  /** Back 2: the room closes — everything slides back, the link's space returns. */
+  | "unwindRoom"
+  /** Back 3: the row reopens, the link fades back, the button reverts. */
   | "unwindRow"
   | "done";
 
@@ -145,9 +147,12 @@ function ConnectFlowPreview({
     } else if (phase === "loading") {
       after(PROMPT_DELAY_MS, () => setPhase("ready"));
     } else if (phase === "unwindCard") {
-      // The card's own fade, then the footer's climb back up, before the row
-      // is touched at all.
-      after(CARD_EXIT_MS + FOOTER_SETTLE_MS, () => setPhase("unwindRow"));
+      // The card's own fade, with its space still held.
+      after(CARD_EXIT_MS, () => setPhase("unwindRoom"));
+    } else if (phase === "unwindRoom") {
+      // The room closing: the card's height going and the link's coming back,
+      // together, so the column slides once rather than twice.
+      after(MAKE_ROOM_MS, () => setPhase("unwindRow"));
     } else if (phase === "unwindRow") {
       after(SOURCE_COLLAPSE_MS, () => {
         setSelectedId(null);
@@ -198,8 +203,20 @@ function ConnectFlowPreview({
     phase !== "idle" &&
     phase !== "unwindRow" &&
     phase !== "done";
-  const cardOpen =
+
+  /*
+    Space and visibility are separate throughout, and that separation is the
+    whole fix. The link fades on the first beat but keeps its space until the
+    second, so pressing a tile moves nothing vertically; the card takes its
+    space on the second beat but only becomes visible on the third, so the
+    column has finished sliding before anything appears in it.
+  */
+  const cardLive =
     phase === "loading" || phase === "ready" || phase === "waiting" || phase === "connecting";
+  const cardSpace = cardLive || phase === "unwindCard";
+  const linkSpace =
+    phase === "idle" || phase === "collapsing" || phase === "unwindRoom" || phase === "unwindRow";
+  const linkVisible = phase === "idle" || phase === "unwindRow";
   const done = phase === "done";
 
   // Four labels, three shapes. The button is only ever pressable on `ready`:
@@ -248,10 +265,6 @@ function ConnectFlowPreview({
           />
         </div>
 
-        {/* The card and the footer are one layout problem: the footer moves
-            because the card arrived or left. They have to share a group for
-            motion to measure them together — see the footer's own note. */}
-        <LayoutGroup>
         {!done && (
           <>
             <div className="space-y-2 pt-12">
@@ -267,47 +280,51 @@ function ConnectFlowPreview({
                   collapses. Once a sign-in is running there is no switching to
                   keys without abandoning it, so leaving the control on screen
                   would invite a press that cannot be honoured. */}
-              <AnimatePresence initial={false}>
-                {!collapsed && (
-                  <motion.div
-                    key="credential-mode"
-                    /*
-                      Its height leaves with it, not just its opacity.
-
-                      Fading alone left the row occupying space until the exit
-                      finished and then removing it in one frame, which dropped
-                      everything below by its full height at once — measured at
-                      a 22px jump 211ms in, and the single largest source of the
-                      choppiness. Collapsing the height over the same fade makes
-                      the footer glide instead of snap.
-                    */
-                    className="overflow-hidden"
-                    exit={{ opacity: 0, height: 0, transition: SOURCE_LINK_EXIT }}
-                  >
-                    <CredentialModeLink
-                      mode={mode}
-                      onChange={(next) => setUseApiKeys(next === "api")}
-                    />
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              {/*
+                Always rendered; only its height and opacity move, and they move
+                on different beats. Fading it and removing its space together is
+                what produced the jump on the very first press — the row above
+                had not moved yet, so the column shortened for no visible
+                reason.
+              */}
+              <motion.div
+                className="overflow-hidden"
+                initial={false}
+                animate={{ opacity: linkVisible ? 1 : 0, height: linkSpace ? "auto" : 0 }}
+                transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
+              >
+                <CredentialModeLink
+                  mode={mode}
+                  onChange={(next) => setUseApiKeys(next === "api")}
+                />
+              </motion.div>
             </div>
 
             {/*
-              The card holds its own space while it fades out — AnimatePresence
-              keeps it mounted through the exit — so the footer below does not
-              begin climbing until the card is genuinely gone. That is what
-              makes Back read as two beats rather than one blur.
+              Room first, card second. `height` opens the space over MAKE_ROOM
+              — which the link's collapse shares, so the column slides once —
+              and the opacity only starts once that has finished. Reversed on
+              the way out: fade, then give the room back.
+
+              Nothing mounts or unmounts here. A mount changes layout in one
+              frame, and no easing can smooth a step that has already happened.
             */}
-            <AnimatePresence initial={false}>
-              {cardOpen && (
-                <motion.div
-                  key="auth-card"
-                  className="mt-5"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1, transition: CARD_ENTER }}
-                  exit={{ opacity: 0, transition: CARD_EXIT }}
-                >
+            <motion.div
+              className="overflow-hidden"
+              initial={false}
+              animate={{
+                height: cardSpace ? "auto" : 0,
+                marginTop: cardSpace ? 20 : 0,
+                opacity: cardLive ? 1 : 0,
+              }}
+              transition={{
+                height: MAKE_ROOM,
+                marginTop: MAKE_ROOM,
+                opacity: cardLive
+                  ? { ...CARD_ENTER, delay: MAKE_ROOM.duration }
+                  : CARD_EXIT,
+              }}
+            >
                   <OnboardingLoginCard
                     loading={phase === "loading"}
                     instruction={
@@ -343,9 +360,7 @@ function ConnectFlowPreview({
                       }}
                     />
                       </OnboardingLoginCard>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            </motion.div>
           </>
         )}
 
@@ -359,16 +374,6 @@ function ConnectFlowPreview({
           It is also the only way out now that the card has no Cancel of its
           own: one control, and what it undoes depends on how far in you are.
         */}
-        {/* `layout`, not an animated height: the footer's position changes
-            because the card above it mounted or unmounted, and letting motion
-            measure that is what the canvas's own notes recommend after three
-            failed attempts at animating a height directly.
-
-            Inside the same `LayoutGroup` as the card, which is the part that
-            makes the *exit* work. AnimatePresence defers the unmount until the
-            fade finishes, and without a shared group motion never measures the
-            footer again — it snapped up 64px in one frame, 223ms in. */}
-        <motion.div layout transition={FOOTER_SETTLE}>
         <FooterNav
           onBack={() => {
             if (phase === "idle" || phase === "unwindCard" || phase === "unwindRow") return;
@@ -388,8 +393,6 @@ function ConnectFlowPreview({
             }
           }}
         />
-        </motion.div>
-        </LayoutGroup>
       </div>
     </MotionConfig>
   );

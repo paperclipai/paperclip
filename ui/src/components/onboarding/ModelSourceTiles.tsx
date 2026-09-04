@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 
 import { cn } from "../../lib/utils";
 import {
-  SOURCE_COLLAPSE_FADE,
+  SOURCE_EXIT_FADE,
   SOURCE_COLLAPSE_MOVE,
   TAG_SWAP_ENTER,
   TAG_SWAP_EXIT,
@@ -198,7 +198,7 @@ export function ModelSourceTiles({
             key={source.id}
             layout
             transition={SOURCE_COLLAPSE_MOVE}
-            exit={{ opacity: 0, transition: SOURCE_COLLAPSE_FADE }}
+            exit={{ opacity: 0, transition: SOURCE_EXIT_FADE }}
             className={cn(
               "flex min-w-0",
               collapsed ? "w-(--sz-source-tile-two-up)" : "flex-1",
