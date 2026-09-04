@@ -18,7 +18,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * to it. Building alone means the deployed bundle is this screen and the pieces
  * it composes, full stop. It also leaves the app's own build untouched.
  *
- *   pnpm --filter @paperclipai/ui build:flow-preview
+ *   cd ui && npx vite build --config vite.flow-preview.config.mjs
+ *
+ * Invoked directly rather than through a `build:flow-preview` script, and the
+ * reason is governance rather than taste: CODEOWNERS owns `package.json` by
+ * bare name, which matches at any depth, so adding one line to `ui/package.json`
+ * puts a preview-only convenience behind a code-owner review. The command is
+ * the same either way.
  */
 
 const OUT_DIR = "dist-flow-preview";

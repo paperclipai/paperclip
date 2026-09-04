@@ -17,7 +17,6 @@
     "dev": "vite",
     "build": "vite build",
     "build:preview": "vite build --config vite.preview.config.mjs",
-    "build:flow-preview": "vite build --config vite.flow-preview.config.mjs",
     "storybook": "storybook dev -p 6006 -c storybook/.storybook",
     "build-storybook": "storybook build -c storybook/.storybook -o storybook-static",
     "preview": "vite preview",
