@@ -19754,6 +19754,23 @@ export function heartbeatService(
           },
           "run referenced-project sync",
         );
+        try {
+          await appendRunEvent(currentRun, seq++, {
+            eventType: "adapter.auth_token_missing",
+            stream: "system",
+            level: "warn",
+            message:
+              "Agent JWT secret is missing; this run has no PAPERCLIP_API_KEY, so unauthenticated API writes would be attributed to the board instead of the agent.",
+            payload: { adapterType: agent.adapterType },
+          });
+        } catch (err) {
+          // The event is purely diagnostic; a persistence failure must not
+          // prevent the adapter from launching.
+          logger.warn(
+            { runId: run.id, err },
+            "failed to persist adapter.auth_token_missing run event",
+          );
+        }
       }
       // The wake payload is built before the execution workspace is resolved, so
       // attach the branch pin here; the shared wake-prompt renderer surfaces it as

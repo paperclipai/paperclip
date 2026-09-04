@@ -1,6 +1,13 @@
 import { createHmac } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import {
+  createLocalAgentJwt,
+  ensureLocalTrustedAgentJwtSecret,
+  verifyLocalAgentJwt,
+} from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
@@ -315,5 +322,77 @@ describe("agent local JWT", () => {
       adapter_type: "claude_local",
       run_id: "run-1",
     });
+  });
+});
+
+describe("ensureLocalTrustedAgentJwtSecret", () => {
+  const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
+  const betterAuthSecretEnv = "BETTER_AUTH_SECRET";
+  const originalEnv = {
+    secret: process.env[secretEnv],
+    betterAuthSecret: process.env[betterAuthSecretEnv],
+  };
+  let tempDir: string;
+
+  beforeEach(() => {
+    delete process.env[secretEnv];
+    delete process.env[betterAuthSecretEnv];
+    tempDir = mkdtempSync(path.join(os.tmpdir(), "agent-jwt-secret-"));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+    if (originalEnv.secret === undefined) delete process.env[secretEnv];
+    else process.env[secretEnv] = originalEnv.secret;
+    if (originalEnv.betterAuthSecret === undefined) delete process.env[betterAuthSecretEnv];
+    else process.env[betterAuthSecretEnv] = originalEnv.betterAuthSecret;
+  });
+
+  it("is a no-op when a secret is already in the environment", () => {
+    process.env[secretEnv] = "already-set";
+    const envFilePath = path.join(tempDir, ".env");
+    const result = ensureLocalTrustedAgentJwtSecret(envFilePath);
+    expect(result.source).toBe("process_env");
+    expect(existsSync(envFilePath)).toBe(false);
+    expect(process.env[secretEnv]).toBe("already-set");
+  });
+
+  it("treats BETTER_AUTH_SECRET as a sufficient signing secret", () => {
+    process.env[betterAuthSecretEnv] = "better-auth-secret";
+    const envFilePath = path.join(tempDir, ".env");
+    const result = ensureLocalTrustedAgentJwtSecret(envFilePath);
+    expect(result.source).toBe("process_env");
+    expect(existsSync(envFilePath)).toBe(false);
+  });
+
+  it("loads an existing env-file secret into the environment", () => {
+    const envFilePath = path.join(tempDir, ".env");
+    writeFileSync(envFilePath, "PAPERCLIP_INSTANCE_ID=default\nPAPERCLIP_AGENT_JWT_SECRET=file-secret\n");
+    const result = ensureLocalTrustedAgentJwtSecret(envFilePath);
+    expect(result.source).toBe("env_file");
+    expect(process.env[secretEnv]).toBe("file-secret");
+  });
+
+  it("generates and persists a secret when none exists, preserving other entries", () => {
+    const envFilePath = path.join(tempDir, ".env");
+    writeFileSync(envFilePath, "PAPERCLIP_INSTANCE_ID=default\n");
+    const result = ensureLocalTrustedAgentJwtSecret(envFilePath);
+    expect(result.source).toBe("generated");
+    const generated = process.env[secretEnv];
+    expect(generated).toMatch(/^[0-9a-f]{64}$/);
+    const contents = readFileSync(envFilePath, "utf8");
+    expect(contents).toContain("PAPERCLIP_INSTANCE_ID=default");
+    expect(contents).toContain(`PAPERCLIP_AGENT_JWT_SECRET=${generated}`);
+    // The generated secret must produce working run tokens end to end.
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(token).not.toBeNull();
+    expect(verifyLocalAgentJwt(token!)).toMatchObject({ sub: "agent-1" });
+  });
+
+  it("creates the env file when it does not exist yet", () => {
+    const envFilePath = path.join(tempDir, "nested", ".env");
+    const result = ensureLocalTrustedAgentJwtSecret(envFilePath);
+    expect(result.source).toBe("generated");
+    expect(readFileSync(envFilePath, "utf8")).toContain("PAPERCLIP_AGENT_JWT_SECRET=");
   });
 });
