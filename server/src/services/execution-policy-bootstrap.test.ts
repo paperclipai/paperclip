@@ -31,6 +31,7 @@ function env(overrides: Record<string, string | undefined>): ExecutionPolicyBoot
 const bootstrap: ExecutionPolicyBootstrap = {
   executionMode: "kubernetes",
   kubernetesConfig: { inCluster: true, backend: "job" },
+  applyOverOperatorEdits: false,
 };
 
 // `applyExecutionPolicyBootstrap` constructs its services internally from the
@@ -120,6 +121,33 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     expect(parsed?.kubernetesConfig.timeoutMs).toBeUndefined();
   });
 
+  it("defaults applyOverOperatorEdits to false and keeps the flag out of the stored config", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }));
+    expect(parsed?.applyOverOperatorEdits).toBe(false);
+    expect(parsed?.kubernetesConfig).not.toHaveProperty("applyOverOperatorEdits");
+  });
+
+  it("reads PAPERCLIP_K8S_CONFIG_AUTHORITATIVE into applyOverOperatorEdits", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "true" }),
+    );
+    expect(parsed?.applyOverOperatorEdits).toBe(true);
+    expect(parsed?.kubernetesConfig).not.toHaveProperty("applyOverOperatorEdits");
+    expect(
+      parseExecutionPolicyBootstrapEnv(
+        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "false" }),
+      )?.applyOverOperatorEdits,
+    ).toBe(false);
+  });
+
+  it("throws when PAPERCLIP_K8S_CONFIG_AUTHORITATIVE is not a boolean", () => {
+    expect(() =>
+      parseExecutionPolicyBootstrapEnv(
+        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "sometimes" }),
+      ),
+    ).toThrow(/PAPERCLIP_K8S_CONFIG_AUTHORITATIVE/);
+  });
+
   it("throws when PAPERCLIP_K8S_RPC_TIMEOUT_MS is not a positive integer", () => {
     expect(() =>
       parseExecutionPolicyBootstrapEnv(
@@ -149,6 +177,27 @@ describe("applyExecutionPolicyBootstrap", () => {
 
     expect(result).toEqual({ executionMode: "kubernetes", companiesConfigured: 3 });
     expect(ensureKubernetesEnvironment).toHaveBeenCalledTimes(3);
+    expect(ensureKubernetesEnvironment).toHaveBeenCalledWith(
+      "c1",
+      bootstrap.kubernetesConfig,
+      { applyOverOperatorEdits: false },
+    );
+  });
+
+  it("passes applyOverOperatorEdits through to every managed environment ensure", async () => {
+    listCompanyIds.mockResolvedValue(["c1", "c2"]);
+    ensureKubernetesEnvironment.mockResolvedValue({ id: "env" });
+
+    await applyExecutionPolicyBootstrap(fakeDb, { ...bootstrap, applyOverOperatorEdits: true });
+
+    expect(ensureKubernetesEnvironment).toHaveBeenCalledTimes(2);
+    for (const companyId of ["c1", "c2"]) {
+      expect(ensureKubernetesEnvironment).toHaveBeenCalledWith(
+        companyId,
+        bootstrap.kubernetesConfig,
+        { applyOverOperatorEdits: true },
+      );
+    }
   });
 
   it("throws when at least one company fails, after attempting every company", async () => {

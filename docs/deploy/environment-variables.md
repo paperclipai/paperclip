@@ -122,6 +122,29 @@ Unknown field names are logged and ignored (mixed-version fleet safe).
 Malformed JSON or an invalid value for a known field refuses startup — policy
 configuration fails closed.
 
+## Kubernetes execution policy
+
+Set these to force every agent run onto the Kubernetes sandbox provider from the deployment manifest, with no product API calls. The server reads them at boot, stores `executionMode` in instance settings, and ensures one managed Kubernetes environment per company. The per-run guard in the heartbeat enforces the mode; the variables below only configure the managed environment.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAPERCLIP_EXECUTION_MODE` | `any` | Set to `kubernetes` to deny local execution and turn the bootstrap on. `any` and unset mean no forced mode, and every `PAPERCLIP_K8S_*` value is then ignored. |
+| `PAPERCLIP_K8S_IN_CLUSTER` | `false` | `true` when the server runs inside the cluster and should use its service account. |
+| `PAPERCLIP_K8S_BACKEND` | plugin default | `job` or `sandbox-cr`. |
+| `PAPERCLIP_K8S_EGRESS_MODE` | plugin default | `cilium` or `standard`. |
+| `PAPERCLIP_K8S_EGRESS_ALLOW_FQDNS` | (unset) | Comma-separated hostnames sandboxes may reach. |
+| `PAPERCLIP_K8S_EGRESS_ALLOW_CIDRS` | (unset) | Comma-separated CIDR ranges sandboxes may reach. |
+| `PAPERCLIP_K8S_RUNTIME_CLASS_NAME` | (unset) | RuntimeClass for sandbox pods. |
+| `PAPERCLIP_K8S_NAMESPACE_PREFIX` | plugin default | Prefix for per-company sandbox namespaces. |
+| `PAPERCLIP_K8S_IMAGE_REGISTRY` | (unset) | Registry that sandbox images are pulled from. |
+| `PAPERCLIP_K8S_RPC_TIMEOUT_MS` | plugin default | Timeout for calls to the sandbox provider, in milliseconds. |
+| `PAPERCLIP_K8S_ADAPTER_TYPE` | (unset) | Adapter type the managed environment is created for. |
+| `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE` | `false` | When `true`, every boot applies the values above over edits an operator made to the managed environment in the board and resets its stock baseline. When `false`, an edited environment keeps the edit and the boot log reports that an update is available. A manually archived environment is never reactivated. |
+
+Adapter availability inside the managed environment follows `PAPERCLIP_ADAPTERS` and `PAPERCLIP_ADAPTERS_FILE`, the same variables the instance uses.
+
+An invalid value in any of these fails startup. Set `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE=true` when the manifest is the only place the environment is meant to be configured, for example under a GitOps controller; leave it unset when operators tune the environment in the board.
+
 ## Secrets
 
 | Variable | Default | Description |
