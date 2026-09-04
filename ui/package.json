@@ -61,17 +61,17 @@
     "lexical": "0.48.0",
     "lucide-react": "^1.38.0",
     "mermaid": "^11.17.2",
-    "motion": "^12.42.2",
+    "motion": "^13.1.1",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-i18next": "^17.0.11",
+    "react-i18next": "^17.0.12",
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.12.3",
     "react-router-dom": "^7.18.2",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.6.0",
-    "yjs": "13.6.29"
+    "yjs": "13.6.32"
   },
   "devDependencies": {
     "@sentry/browser": "10.71.0",
@@ -81,13 +81,13 @@
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.1",
     "storybook": "10.5.10",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=24.11.0"

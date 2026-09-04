@@ -11,6 +11,92 @@ const buildRemoteProviderPackNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,?\s*\]/u;
 
 describe("public repository paid workflow security", () => {
+  it("keeps pnpm bootstrap registry telemetry out of trusted workflow setup", async () => {
+    for (const workflowName of [
+      "runner-full-stack-e2e.yml",
+      "pr-trusted.yml",
+    ]) {
+      const workflow = await readFile(
+        path.join(repositoryRoot, ".github/workflows", workflowName),
+        "utf8",
+      );
+      const pnpmSetupSteps = workflow
+        .split(/\n(?= {6}- )/u)
+        .filter((step) => step.includes("uses: pnpm/action-setup@"));
+
+      expect(pnpmSetupSteps, workflowName).toHaveLength(7);
+      for (const step of pnpmSetupSteps) {
+        expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
+        expect(step, workflowName).toContain('NPM_CONFIG_FUND: "false"');
+        expect(step, workflowName).toContain(
+          'NPM_CONFIG_UPDATE_NOTIFIER: "false"',
+        );
+      }
+      for (const variable of [
+        "NPM_CONFIG_AUDIT",
+        "NPM_CONFIG_FUND",
+        "NPM_CONFIG_UPDATE_NOTIFIER",
+      ]) {
+        expect(
+          workflow.match(new RegExp(`${variable}:`, "gu")),
+          workflowName,
+        ).toHaveLength(pnpmSetupSteps.length);
+      }
+    }
+  });
+
+  it("installs a modern Node runtime before every trusted pnpm bootstrap", async () => {
+    const workflows = [
+      {
+        name: "runner-full-stack-e2e.yml",
+        expectedCachedSetupNodeSteps: 4,
+      },
+      {
+        name: "pr-trusted.yml",
+        expectedCachedSetupNodeSteps: 7,
+      },
+    ];
+
+    for (const { name, expectedCachedSetupNodeSteps } of workflows) {
+      const workflow = await readFile(
+        path.join(repositoryRoot, ".github/workflows", name),
+        "utf8",
+      );
+      const steps = workflow.split(/\n(?= {6}- )/u);
+      const pnpmSetupStepIndexes = steps.flatMap((step, index) =>
+        step.includes("uses: pnpm/action-setup@") ? [index] : [],
+      );
+
+      expect(pnpmSetupStepIndexes, name).toHaveLength(7);
+      for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
+        const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
+        const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;
+        expect(nodeBootstrapStep, name).toContain("uses: actions/setup-node@");
+        expect(nodeBootstrapStep, name).not.toContain("cache: pnpm");
+
+        const nodeVersionMatch = nodeBootstrapStep.match(
+          /^\s*node-version:\s*["']?(\d+)(?:\.(\d+))?/mu,
+        );
+        expect(nodeVersionMatch, name).not.toBeNull();
+        const nodeMajor = Number(nodeVersionMatch![1]);
+        const nodeMinor = Number(nodeVersionMatch![2] ?? 0);
+        expect(
+          nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 13),
+          `${name} must install Node >=22.13 before pnpm/action-setup`,
+        ).toBe(true);
+
+        const conditionPattern = /^ {6}- if:\s*(.+)$/mu;
+        expect(nodeBootstrapStep.match(conditionPattern)?.[1] ?? null).toBe(
+          pnpmSetupStep.match(conditionPattern)?.[1] ?? null,
+        );
+      }
+
+      expect(workflow.match(/^\s+cache: pnpm$/gmu), name).toHaveLength(
+        expectedCachedSetupNodeSteps,
+      );
+    }
+  });
+
   it("gates every provider-secret job with stable actor IDs", async () => {
     const workflows = await Promise.all(
       ["runner-full-stack-e2e.yml", "runner-live-evals.yml", "e2e.yml"].map(

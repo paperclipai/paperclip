@@ -174,14 +174,16 @@ describe("Connectors landing page", () => {
   it("renders one connector list with the requested header and no gallery sections", async () => {
     await renderBrowse();
 
-    expect(setBreadcrumbsMock).toHaveBeenCalledWith([]);
+    expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Connectors" }]);
     expect(setBreadcrumbsMock).not.toHaveBeenCalledWith(expect.arrayContaining([
       expect.objectContaining({ href: "/dashboard" }),
     ]));
-    expect(container.querySelector("header")?.textContent).toBe("Connectors");
+    expect(container.querySelector("header")?.textContent).not.toContain("Connectors");
     expect(
       container.querySelector('header input[aria-label="Search connectors"]'),
     ).toBeTruthy();
+    expect(container.querySelector("header")?.classList).toContain("justify-start");
+    expect(container.querySelector("header")?.classList).not.toContain("justify-end");
     expect(container.querySelector('[aria-label="Popular apps"]')).toBeNull();
     expect(container.querySelector('[aria-label="Connected apps"]')).toBeNull();
     expect(container.querySelector('[aria-label="All apps"]')).toBeNull();

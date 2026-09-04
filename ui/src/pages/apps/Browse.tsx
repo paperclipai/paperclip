@@ -209,10 +209,7 @@ export function Browse() {
   const [connectionToRemove, setConnectionToRemove] = useState<ConnectionRemovalTarget | null>(null);
 
   useEffect(() => {
-    // Apps is already its own navigation root and the page has its own title.
-    // Leave the global bar empty instead of duplicating "Connectors" or
-    // offering a path back out of Apps.
-    setBreadcrumbs([]);
+    setBreadcrumbs([{ label: "Connectors" }]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
 
@@ -403,8 +400,7 @@ export function Browse() {
 
   return (
     <div className="max-w-5xl space-y-5 pb-12">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="shrink-0 text-xl font-bold text-foreground">Connectors</h1>
+      <header className="flex justify-start">
         <div className="relative w-full max-w-md">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
