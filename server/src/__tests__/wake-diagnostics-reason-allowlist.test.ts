@@ -33,6 +33,11 @@ const KNOWN_DYNAMIC_REASON_SOURCES = new Set([
   // getHeartbeatDailyCapBlock() only ever returns "heartbeat.daily_run_limit" or
   // "heartbeat.daily_cost_limit", both already in the allow-list.
   "dailyCapBlock.reason",
+  // services/heartbeat.ts re-enqueues a stored wake: `candidates` is selected
+  // `.from(agentWakeupRequests)`, so `candidate.reason` is a value another write
+  // site already put in this column. It propagates a reason, it never creates one,
+  // so it cannot introduce a literal the allow-list has not already seen.
+  "candidate.reason",
 ]);
 
 function walkTsFiles(dir: string, out: string[] = []): string[] {
@@ -77,6 +82,13 @@ function buildStringConstantMap(): Map<string, string> {
   ].filter((d) => fs.existsSync(d));
   const constMap = new Map<string, string>();
   const constRe = /(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*(?::\s*[^=]+)?=\s*"([^"]+)"/g;
+  // Some reason constants are members of a frozen lookup object rather than plain
+  // string constants, e.g. `RECOVERY_REASON_KINDS = { runLivenessContinuation:
+  // "run_liveness_continuation" } as const`. Index those members as `OBJECT.key`.
+  const constObjRe = /(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*\{([^}]*)\}\s*as const/g;
+  // And an alias of such a member, e.g. `const X_REASON = RECOVERY_REASON_KINDS.key`.
+  const aliasRe = /(?:export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*([A-Z][A-Z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\s*;/g;
+  const aliases: [string, string][] = [];
   for (const dir of dirs) {
     for (const file of walkTsFiles(dir)) {
       const text = fs.readFileSync(file, "utf8");
@@ -85,9 +97,57 @@ function buildStringConstantMap(): Map<string, string> {
       while ((m = constRe.exec(text))) {
         constMap.set(m[1], m[2]);
       }
+      constObjRe.lastIndex = 0;
+      while ((m = constObjRe.exec(text))) {
+        const objectName = m[1];
+        for (const member of m[2].matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*"([^"]+)"/g)) {
+          constMap.set(`${objectName}.${member[1]}`, member[2]);
+        }
+      }
+      aliasRe.lastIndex = 0;
+      while ((m = aliasRe.exec(text))) {
+        aliases.push([m[1], m[2]]);
+      }
     }
   }
+  // Resolve aliases after every file is indexed, so declaration order does not matter.
+  for (const [name, target] of aliases) {
+    const value = constMap.get(target);
+    if (value !== undefined) constMap.set(name, value);
+  }
   return constMap;
+}
+
+/**
+ * Reduces a `reason` expression to the literals it can produce.
+ *
+ * Resolution ladder, in order: a double-quoted literal (both branches of a ternary
+ * count), a SCREAMING_SNAKE string constant from the constant map, or an identifier
+ * already listed in KNOWN_DYNAMIC_REASON_SOURCES. Returns null when none apply, so
+ * the caller reports the site rather than reading an empty result as success.
+ */
+function literalsFromReasonExpression(
+  expression: string,
+  constMap: Map<string, string>,
+): string[] | null {
+  // For `cond ? "a" : "b"`, the strings before the `?` belong to the condition.
+  const questionIdx = expression.indexOf("?");
+  const valueExpr = questionIdx === -1 ? expression : expression.slice(questionIdx + 1);
+
+  const quoted = [...valueExpr.matchAll(/"([^"]+)"/g)].map((q) => q[1]);
+  if (quoted.length > 0) return quoted;
+
+  const resolved: string[] = [];
+  let sawIdentifier = false;
+  for (const idMatch of valueExpr.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/g)) {
+    const identifier = idMatch[0];
+    sawIdentifier = true;
+    if (constMap.has(identifier)) resolved.push(constMap.get(identifier)!);
+    else if (KNOWN_DYNAMIC_REASON_SOURCES.has(identifier)) continue;
+    else return null;
+  }
+  if (!sawIdentifier) return null;
+  return resolved;
 }
 
 /** Splits an argument list on top-level commas, ignoring nested brackets and strings. */
@@ -140,6 +200,7 @@ function resolveSpreadReasonFromCallSites(
   text: string,
   writeSiteIndex: number,
   spreadName: string,
+  constMap: Map<string, string>,
 ): { literals: string[] } | null {
   const before = text.slice(0, writeSiteIndex);
   const declRe = /(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
@@ -170,7 +231,14 @@ function resolveSpreadReasonFromCallSites(
     if (arg === undefined) continue; // optional parameter omitted -- carries no reason
     if (!arg.startsWith("{")) return null; // a variable or call -- cannot prove absence
     if (!hasReasonProperty(arg)) continue; // inline object, provably no reason
-    for (const q of arg.matchAll(/reason\s*:\s*"([^"]+)"/g)) literals.add(q[1]);
+    // The property is there. It only counts as resolved when it reduces to a
+    // literal. Shorthand `{ reason }`, or `{ reason: someVar }`, carries a value
+    // this scan cannot see, so it must fail rather than read as an empty success.
+    const reasonExpr = arg.match(/\breason\s*:\s*([^,\n}]*)/);
+    if (!reasonExpr) return null; // shorthand `{ reason }` -- value not visible here
+    const argLiterals = literalsFromReasonExpression(reasonExpr[1], constMap);
+    if (argLiterals === null) return null;
+    for (const literal of argLiterals) literals.add(literal);
   }
   return { literals: [...literals] };
 }
@@ -191,6 +259,7 @@ function resolveReasonFromHelperCallSites(
   text: string,
   writeSiteIndex: number,
   identifier: string,
+  constMap: Map<string, string>,
 ): string[] | null {
   // `input.reason` / `opts.reason` -> the parameter is the part before the dot.
   const paramName = identifier.split(".")[0];
@@ -215,15 +284,20 @@ function resolveReasonFromHelperCallSites(
     }
     const args = extractBalancedParens(text, openIdx);
     const reasonLine = args.match(/\breason\s*:\s*([^\n]*)/);
-    if (!reasonLine) continue;
+    if (!reasonLine) {
+      // Shorthand `{ reason }` at a call site hides the value just as a spread
+      // does. Absence of a `reason:` key is only safe when no reason is mentioned.
+      if (hasReasonProperty(args)) return null;
+      continue;
+    }
     // Read only the value position. For a ternary such as
     // `reason: kind === "monitor" ? "monitor_due" : "issue_status_changed"`, the
     // strings before the `?` belong to the condition, not to the reason.
-    const questionIdx = reasonLine[1].indexOf("?");
-    const valueExpr = questionIdx === -1
-      ? reasonLine[1]
-      : reasonLine[1].slice(questionIdx + 1);
-    for (const q of valueExpr.matchAll(/"([^"]+)"/g)) literals.add(q[1]);
+    // A call site that names a reason but cannot be reduced -- `reason: someVar` --
+    // must not hide behind sibling call sites that could.
+    const callLiterals = literalsFromReasonExpression(reasonLine[1], constMap);
+    if (callLiterals === null) return null;
+    for (const literal of callLiterals) literals.add(literal);
   }
   return literals.size > 0 ? [...literals] : null;
 }
@@ -262,7 +336,7 @@ function collectWakeupReasonLiterals(): { reason: string; files: string[] }[] {
         const spread = /\.\.\.[A-Za-z_][A-Za-z0-9_]*/.test(block);
         if (!shorthand && !spread) continue;
         if (shorthand) {
-          const traced = resolveReasonFromHelperCallSites(text, m.index, "reason");
+          const traced = resolveReasonFromHelperCallSites(text, m.index, "reason", constMap);
           if (traced) {
             for (const literal of traced) {
               if (!found.has(literal)) found.set(literal, new Set());
@@ -280,7 +354,7 @@ function collectWakeupReasonLiterals(): { reason: string; files: string[] }[] {
           // variable, a nested spread, a call -- is reported rather than skipped.
           for (const spreadMatch of block.matchAll(/\.\.\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
             const spreadName = spreadMatch[1];
-            const resolved = resolveSpreadReasonFromCallSites(text, m.index, spreadName);
+            const resolved = resolveSpreadReasonFromCallSites(text, m.index, spreadName, constMap);
             if (!resolved) {
               const key = `...${spreadName} (unprovable spread)`;
               if (!unresolved.has(key)) unresolved.set(key, new Set());
@@ -310,7 +384,7 @@ function collectWakeupReasonLiterals(): { reason: string; files: string[] }[] {
       } else if (identifier.includes(".")) {
         // A helper parameter such as `input.reason`. Trace the helper's call sites
         // rather than trusting it, so a new call site with a new literal is caught.
-        const traced = resolveReasonFromHelperCallSites(text, m.index, identifier);
+        const traced = resolveReasonFromHelperCallSites(text, m.index, identifier, constMap);
         if (traced) {
           for (const literal of traced) {
             if (!found.has(literal)) found.set(literal, new Set());

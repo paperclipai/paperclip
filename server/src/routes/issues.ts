@@ -1186,9 +1186,11 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "heartbeat_timer",
   "issue_monitor_recovery",
   "issue_monitor_recovery_issue",
-  // Recovery sweeps (services/recovery/service.ts).
+  // Recovery sweeps (services/recovery/ and services/heartbeat.ts).
   "issue_disposition_repair",
   "provider_quota_recovery",
+  "finish_successful_run_handoff",
+  "issue_review_path_lost",
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
