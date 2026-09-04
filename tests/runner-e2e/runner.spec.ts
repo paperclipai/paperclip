@@ -1024,14 +1024,25 @@ for (const execution of executions) {
             requestId: restartRequestId,
             deadlineAt,
           });
-          await page.goto(
-            `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
-            // A restarted Vite dev server may keep loading its fresh module
-            // graph after the task UI is already usable. Bind navigation only
-            // to the committed canonical route, then let the explicit UI and
-            // API assertions below prove readiness and preserved state.
-            { waitUntil: "commit" },
+          const documentSentinel = `__paperclip_runner_restart_${nonce.replaceAll("-", "_")}`;
+          await page.evaluate(
+            (key) => Reflect.set(window, key, true),
+            documentSentinel,
           );
+          try {
+            await page.goto(
+              `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
+              // The replacement Vite server can commit and render a fresh
+              // document while its navigation lifecycle remains unsettled.
+              // The sentinel and explicit assertions below prove the new
+              // document and durable state even when Playwright times out.
+              { waitUntil: "commit" },
+            );
+          } catch (error) {
+            if (!(error instanceof Error) || error.name !== "TimeoutError") {
+              throw error;
+            }
+          }
           await expect(
             page
               .getByRole("radio", {
@@ -1040,6 +1051,12 @@ for (const execution of executions) {
               })
               .last(),
           ).toBeVisible({ timeout: 30_000 });
+          expect(
+            await page.evaluate(
+              (key) => Reflect.get(window, key) === true,
+              documentSentinel,
+            ),
+          ).toBe(false);
           const reloadedInteractions = await api.get<InteractionRecord[]>(
             `/api/issues/${issue.id}/interactions`,
           );
