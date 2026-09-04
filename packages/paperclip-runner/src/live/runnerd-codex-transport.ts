@@ -3052,16 +3052,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const committedEvents = core.store.state.committedEvents;
     const runAttachment = recoveredRunAttachment(core.store.state);
-    // Relaunching the exact run authority has no run.attach command to wake
+    // Reconnecting the exact run authority has no run.attach command to wake
     // provider restoration. Queue a unique, side-effect-free barrier before
-    // runnerd starts so every provider backend restores its durable session
-    // and emits a fresh session.resumed event while executing the probe. A
-    // live adopted process already owns that provider session and therefore
-    // must use its committed identity instead of waiting for a second resume.
+    // runnerd starts so every provider backend restores its durable session.
     const recoveryProbeCommandId =
-      exactAuthority &&
-      runAttachment === null &&
-      this.options.adoptExistingRunner === undefined
+      exactAuthority && runAttachment === null
         ? `command_resume_probe_${randomUUID().replaceAll("-", "")}`
         : null;
     if (recoveryProbeCommandId !== null) {
@@ -3168,8 +3163,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (recoveryProbeCommandId !== null) {
       await this.#waitCommand("runner.drain", recoveryProbeCommandId);
     }
+    // A relaunched executor must prove that it restored the provider by
+    // emitting a fresh resume identity. An adopted live executor keeps the
+    // already-verified provider session, so its authenticated drain plus the
+    // committed identity above are the corresponding continuity proof.
     await this.#waitForProviderIdentity(
-      recoveryProbeCommandId === null ? undefined : "session.resumed",
+      recoveryProbeCommandId !== null && adoptedRunner === undefined
+        ? "session.resumed"
+        : undefined,
     );
     this.#startupComplete = true;
     this.#diagnostic(
