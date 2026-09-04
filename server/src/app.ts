@@ -774,9 +774,18 @@ export async function createApp(
       res.end("Upgrade Required");
     });
     const { createServer: createViteServer } = await import("vite");
+    const configuredViteCacheDir = process.env.PAPERCLIP_VITE_CACHE_DIR?.trim();
     const vite = await createViteServer({
       root: uiRoot,
+      ...(configuredViteCacheDir
+        ? { cacheDir: path.resolve(configuredViteCacheDir) }
+        : {}),
       appType: "custom",
+      // Vite otherwise discovers every HTML entry below the UI root. Generated
+      // Storybook output can reference dependencies that are intentionally not
+      // part of the application install, poisoning a clean embedded dev-server
+      // cache before the browser opens. The embedded UI has one real entry.
+      optimizeDeps: { entries: [path.resolve(uiRoot, "index.html")] },
       server: {
         // Listener binding and browser HMR hostname are deliberately separate:
         // exposed branch runtimes stay loopback-only while the browser uses the
