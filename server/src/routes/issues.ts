@@ -209,6 +209,7 @@ import {
   readAcceptedPlanConfirmationTarget,
   type IssuePostCommitAction,
 } from "../services/issues.js";
+import type { IssueCreateDeduplicationReason } from "../services/issues.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
@@ -9191,7 +9192,7 @@ export function issueRoutes(
       projectId: createBody.projectId ?? null,
       executionPolicy,
     }, actor);
-    let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+    let deduplicationReason: IssueCreateDeduplicationReason | null = null;
     const createInput = {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
@@ -9205,7 +9206,7 @@ export function issueRoutes(
       actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
       trustExplicitResponsibleUserId: actor.actorType === "user",
       watchdogActorRunId: actor.runId,
-      onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
+      onDeduplicated: (reason: IssueCreateDeduplicationReason) => {
         deduplicationReason = reason;
       },
     };
