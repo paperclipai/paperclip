@@ -59,7 +59,7 @@ async function collectSourceFiles(target) {
 // state; this heuristic only needs to hold for the code this guard scans.
 const REGEX_PRECEDING_KEYWORDS = new Set([
   "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
-  "yield", "case", "throw", "do", "else",
+  "yield", "case", "throw", "do", "else", "await",
 ]);
 
 function isRegexLiteralStart(source, index) {

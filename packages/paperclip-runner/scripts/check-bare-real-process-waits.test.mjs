@@ -194,6 +194,18 @@ test("rejects a vi.waitFor( that follows a regex literal with a quantifier's ope
   ]);
 });
 
+test("rejects a vi.waitFor( that follows an await-prefixed regex literal with a closing brace inside a template literal interpolation", () => {
+  const source = [
+    "async function example() {",
+    "  const message = `status: ${await /}/.test(x) ? await vi.waitFor(() => expect(x).toBe(1)) : false}`;",
+    "}",
+  ].join("\n");
+
+  assert.deepEqual(findBareRealProcessWaits(source), [
+    { line: 2, pattern: "vi.waitFor(" },
+  ]);
+});
+
 test("ignores a vi.waitFor( written inside a regex literal's own text, inside a template literal interpolation", () => {
   const source = [
     "async function example() {",
