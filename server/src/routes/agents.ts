@@ -4643,12 +4643,19 @@ export function agentRoutes(
         res.status(422).json({ error: "runtimeConfig must be an object" });
         return;
       }
+      // Merge before validating. runtimeConfig is one JSONB column, and the
+      // write below merges the patch onto the stored value, so a key the caller
+      // omitted keeps its stored value. The transition check must see that same
+      // merged result. Checking the raw patch would report a change to
+      // debug.providerTrace whenever the caller simply left `debug` out, and
+      // would then demand instance-admin rights for an unrelated edit.
+      const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
+      requestedRuntimeConfig = { ...existingRuntimeConfig, ...runtimeConfig };
       assertProviderTraceSettingTransition(
         req,
-        runtimeConfig,
+        requestedRuntimeConfig,
         existing.runtimeConfig,
       );
-      requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
@@ -4747,8 +4754,7 @@ export function agentRoutes(
       // needs an atomic write for both columns -- a JSONB merge in SQL or a
       // version check -- and the config-revision snapshot reads the patch as a
       // plain object, so that change belongs in the service layer.
-      const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
-      patchData.runtimeConfig = { ...existingRuntimeConfig, ...requestedRuntimeConfig };
+      patchData.runtimeConfig = requestedRuntimeConfig;
     }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       await assertAgentDefaultEnvironmentSelection(

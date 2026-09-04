@@ -172,7 +172,7 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
-async function createApp() {
+async function createApp(actorOverrides: Record<string, unknown> = {}) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -186,6 +186,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -435,6 +436,58 @@ describe("agent routes adapter validation", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     const runtimeConfig = patch.runtimeConfig as Record<string, unknown>;
+    expect(runtimeConfig.heartbeat).toEqual({ enabled: true, intervalSec: 300 });
+    expect(runtimeConfig.workspaceRuntime).toEqual({ desiredState: "running" });
+  });
+
+  it("does not demand instance-admin when a partial patch leaves debug.providerTrace untouched", async () => {
+    // The transition check must compare the stored value with the merged result,
+    // not with the raw patch. An agent that already has providerTrace "raw" keeps
+    // it when the caller omits `debug`, so this is not a transition and must not
+    // require instance-admin. The suite runs as a non-admin actor.
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId: "company-1",
+      name: "Codex",
+      urlKey: "codex",
+      role: "engineer",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        debug: { providerTrace: "raw" },
+        heartbeat: { enabled: true, intervalSec: 300 },
+      },
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    // assertInstanceAdmin returns early for a "local_implicit" actor, so the
+    // default test actor could never reach the check. Use a session actor.
+    const app = await createApp({ source: "session", isInstanceAdmin: false });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({
+          runtimeConfig: { workspaceRuntime: { desiredState: "running" } },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const runtimeConfig = patch.runtimeConfig as Record<string, unknown>;
+    expect(runtimeConfig.debug).toEqual({ providerTrace: "raw" });
     expect(runtimeConfig.heartbeat).toEqual({ enabled: true, intervalSec: 300 });
     expect(runtimeConfig.workspaceRuntime).toEqual({ desiredState: "running" });
   });
