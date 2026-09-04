@@ -120,7 +120,7 @@ export function trackAgentTaskCompleted(
     agent_id: dims.agentId,
     adapter_type: asEventDimension(dims.adapterType),
     ...(dims.model ? { model: dims.model } : {}),
-    ...(dims.taskId ? { task_id: client.hashTaskId(dims.taskId) } : {}),
+    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
   });
 }
 
@@ -149,7 +149,7 @@ export function trackAgentTaskRun(
     ...(dims.inputTokens === undefined ? {} : { input_tokens: dims.inputTokens }),
     ...(dims.outputTokens === undefined ? {} : { output_tokens: dims.outputTokens }),
     ...(dims.cachedTokens === undefined ? {} : { cached_tokens: dims.cachedTokens }),
-    ...(dims.taskId ? { task_id: client.hashTaskId(dims.taskId) } : {}),
+    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
   });
 }
 

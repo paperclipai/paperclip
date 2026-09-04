@@ -82,10 +82,8 @@ the run's terminal transition. Do not emit it for a run that is still active.
 
 The event's `task_id` dimension is optional and privacy-protected. Never emit
 the raw task id. Pass the raw id to `trackAgentTaskRun()` in `events.ts`. The
-helper calls `hashTaskId()` on `client.ts`, which derives the emitted value
-with a keyed HMAC over the per-installation secret. This keyed derivation
-stops two installations from producing the same hash for the same raw task
-id, which a plain salted hash does not stop.
+helper calls `hashPrivateRef()` on `client.ts`, which derives the emitted
+value with a salted hash of the per-installation secret.
 
 Use `trackAgentTaskRun()` to emit this event. The generated contract remains
 the authority for its exact dimensions and optionality.

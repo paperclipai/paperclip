@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash } from "node:crypto";
 import type {
   TelemetryConfig,
   TelemetryDimensions,
@@ -64,15 +64,6 @@ type TrackArgs<K extends TelemetryEventName> =
 // Length of the truncated hex `batchId`. 32 hex chars = 128 bits — the
 // collision-safe floor. Do not lower below 32.
 const BATCH_ID_HEX_LENGTH = 32;
-
-// Domain-separation label for `hashTaskId`. Bump the version segment when
-// the derivation changes. This keeps an old hash distinct from a new one.
-// The label carries the version. The emitted hash carries no prefix,
-// because the backend schema pattern accepts exactly 32 lowercase hex
-// characters.
-const TASK_ID_HASH_LABEL = "paperclip.telemetry.task_id.v1";
-// Length of the truncated hex task-id hash. 32 hex characters equal 128 bits.
-const TASK_ID_HASH_HEX_LENGTH = 32;
 
 /**
  * A chunk awaiting retry. `events` + `batchId` are frozen at first send and
@@ -478,22 +469,6 @@ export class TelemetryClient {
       .update(state.salt + value)
       .digest("hex")
       .slice(0, 16);
-  }
-
-  /**
-   * Derives a stable, non-reversible id for a task from its raw id. The
-   * method uses the per-installation secret as an HMAC key. This differs
-   * from `hashPrivateRef`, which uses a salted hash instead of a keyed
-   * HMAC. The keyed HMAC design stops two installations from deriving the
-   * same value for the same raw id. Call this method before you send a
-   * task id. Never send the raw task id.
-   */
-  hashTaskId(taskId: string): string {
-    const state = this.getState();
-    return createHmac("sha256", state.salt)
-      .update(`${TASK_ID_HASH_LABEL}:${taskId}`)
-      .digest("hex")
-      .slice(0, TASK_ID_HASH_HEX_LENGTH);
   }
 
   private getState(): TelemetryState {

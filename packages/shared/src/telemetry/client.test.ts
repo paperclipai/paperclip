@@ -518,41 +518,6 @@ describe("TelemetryClient batched retry + backoff", () => {
   });
 });
 
-// `hashTaskId` derives the wire `task_id` value. It differs from
-// `hashPrivateRef`, which uses a salted hash. `hashTaskId` uses the
-// per-installation secret as an HMAC key. Two installations never derive
-// the same value for the same raw task id.
-describe("TelemetryClient hashTaskId", () => {
-  it("returns 32 lowercase hexadecimal characters", () => {
-    const { client } = makeClient();
-
-    const hashed = client.hashTaskId("11111111-1111-4111-8111-111111111111");
-
-    expect(hashed).toMatch(/^[0-9a-f]{32}$/);
-  });
-
-  it("uses the per-installation secret as the HMAC key: different secrets yield different values", () => {
-    const stateA = vi.fn(() => ({ ...TEST_STATE, salt: "secret-a" }));
-    const stateB = vi.fn(() => ({ ...TEST_STATE, salt: "secret-b" }));
-    const { client: clientA } = makeClient(stateA);
-    const { client: clientB } = makeClient(stateB);
-
-    const taskId = "11111111-1111-4111-8111-111111111111";
-
-    expect(clientA.hashTaskId(taskId)).not.toBe(clientB.hashTaskId(taskId));
-  });
-
-  it("derives a stable value for the same secret and task id", () => {
-    const state = vi.fn(() => ({ ...TEST_STATE, salt: "secret-a" }));
-    const { client: first } = makeClient(state);
-    const { client: second } = makeClient(state);
-
-    const taskId = "11111111-1111-4111-8111-111111111111";
-
-    expect(first.hashTaskId(taskId)).toBe(second.hashTaskId(taskId));
-  });
-});
-
 // The pending-retry store is bounded at
 // config.maxPendingRetryBatches. On overflow the OLDEST batch is evicted
 // (newest prioritized) and each eviction is logged (no silent loss). In-memory

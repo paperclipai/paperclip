@@ -23,7 +23,7 @@ import {
 
 const mockTelemetryClient = vi.hoisted(() => ({
   track: vi.fn(),
-  hashTaskId: vi.fn((taskId: string) => `hashed:${taskId}`),
+  hashPrivateRef: vi.fn((value: string) => `hashed:${value}`),
 }));
 vi.mock("../../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 

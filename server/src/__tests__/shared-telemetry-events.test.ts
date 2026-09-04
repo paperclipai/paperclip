@@ -14,8 +14,7 @@ import type { EventDimensionsMap, TelemetryClient } from "@paperclipai/shared/te
 function createClient(): TelemetryClient {
   return {
     track: vi.fn(),
-    hashPrivateRef: vi.fn((value: string) => `hashed:${value}`),
-    hashTaskId: vi.fn((value: string) => createHash("sha256").update(value).digest("hex").slice(0, 32)),
+    hashPrivateRef: vi.fn((value: string) => createHash("sha256").update(value).digest("hex").slice(0, 16)),
   } as unknown as TelemetryClient;
 }
 
@@ -93,9 +92,9 @@ describe("shared telemetry agent events", () => {
       taskId: rawTaskId,
     });
 
-    expect(client.hashTaskId).toHaveBeenCalledWith(rawTaskId);
+    expect(client.hashPrivateRef).toHaveBeenCalledWith(rawTaskId);
     const sentDimensions = vi.mocked(client.track).mock.calls[0]?.[1] as Record<string, unknown>;
-    expect(sentDimensions.task_id).toMatch(/^[0-9a-f]{32}$/);
+    expect(sentDimensions.task_id).toMatch(/^[0-9a-f]{16}$/);
     expect(sentDimensions.task_id).not.toBe(rawTaskId);
     expect(JSON.stringify(sentDimensions)).not.toContain(rawTaskId);
   });
@@ -109,7 +108,7 @@ describe("shared telemetry agent events", () => {
       adapterType: "codex_local",
     });
 
-    expect(client.hashTaskId).not.toHaveBeenCalled();
+    expect(client.hashPrivateRef).not.toHaveBeenCalled();
     expect(client.track).toHaveBeenCalledWith("agent.task_completed", {
       agent_role: "qa",
       agent_id: "33333333-3333-4333-8333-333333333333",
@@ -134,7 +133,7 @@ describe("shared telemetry agent events", () => {
       taskId: rawTaskId,
     });
 
-    expect(client.hashTaskId).toHaveBeenCalledWith(rawTaskId);
+    expect(client.hashPrivateRef).toHaveBeenCalledWith(rawTaskId);
     const sentDimensions = vi.mocked(client.track).mock.calls[0]?.[1] as Record<string, unknown>;
     expect(sentDimensions).toMatchObject({
       agent_id: "44444444-4444-4444-8444-444444444444",
@@ -147,7 +146,7 @@ describe("shared telemetry agent events", () => {
       output_tokens: 200,
       cached_tokens: 50,
     });
-    expect(sentDimensions.task_id).toMatch(/^[0-9a-f]{32}$/);
+    expect(sentDimensions.task_id).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it("omits every absent optional dimension for agent.task_run", () => {
@@ -158,7 +157,7 @@ describe("shared telemetry agent events", () => {
       state: "failed",
     });
 
-    expect(client.hashTaskId).not.toHaveBeenCalled();
+    expect(client.hashPrivateRef).not.toHaveBeenCalled();
     expect(client.track).toHaveBeenCalledWith("agent.task_run", {
       agent_id: "55555555-5555-4555-8555-555555555555",
       state: "failed",
