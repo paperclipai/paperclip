@@ -273,6 +273,82 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     expect(JSON.stringify(persistedConfig)).not.toContain(literalApiKey);
   });
 
+  it("converts OpenClaw gateway credential strings into persisted secret refs", async () => {
+    const companyId = await seedCompany();
+    const literalAuthToken = `openclaw-token-${randomUUID()}`;
+    const literalPassword = `openclaw-password-${randomUUID()}`;
+    const literalDeviceToken = `openclaw-device-token-${randomUUID()}`;
+    const literalPrivateKeyPem = [
+      "-----BEGIN PRIVATE KEY-----",
+      `openclaw-device-key-${randomUUID()}`,
+      "-----END PRIVATE KEY-----",
+    ].join("\n");
+
+    const created = await agentService(db).create(companyId, {
+      name: "OpenClaw Gateway",
+      role: "engineer",
+      status: "idle",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "ws://127.0.0.1:18789",
+        authToken: literalAuthToken,
+        password: literalPassword,
+        deviceToken: literalDeviceToken,
+        devicePrivateKeyPem: literalPrivateKeyPem,
+      },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    const persistedRows = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, created.id));
+    const persistedConfig = persistedRows[0]?.adapterConfig as Record<string, unknown>;
+    const serializedConfig = JSON.stringify(persistedConfig);
+    expect(serializedConfig).not.toContain(literalAuthToken);
+    expect(serializedConfig).not.toContain(literalPassword);
+    expect(serializedConfig).not.toContain(literalDeviceToken);
+    expect(serializedConfig).not.toContain(literalPrivateKeyPem);
+    for (const key of ["authToken", "password", "deviceToken", "devicePrivateKeyPem"]) {
+      expect(persistedConfig[key]).toMatchObject({
+        type: "secret_ref",
+        version: "latest",
+      });
+    }
+    expect(persistedConfig.url).toBe("ws://127.0.0.1:18789");
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.companyId, companyId),
+        eq(companySecretBindings.targetType, "agent"),
+        eq(companySecretBindings.targetId, created.id),
+      ));
+    expect(bindings.map((binding) => binding.configPath).sort()).toEqual([
+      "authToken",
+      "devicePrivateKeyPem",
+      "deviceToken",
+      "password",
+    ]);
+
+    const resolved = await secretService(db).resolveAdapterConfigForRuntime(
+      companyId,
+      persistedConfig,
+      {
+        consumerType: "agent",
+        consumerId: created.id,
+      },
+      { adapterType: "openclaw_gateway" },
+    );
+    expect(resolved.config.authToken).toBe(literalAuthToken);
+    expect(resolved.config.password).toBe(literalPassword);
+    expect(resolved.config.deviceToken).toBe(literalDeviceToken);
+    expect(resolved.config.devicePrivateKeyPem).toBe(literalPrivateKeyPem);
+  });
+
   it("replaces agent secret bindings when adapterConfig env changes", async () => {
     const companyId = await seedCompany();
     const secrets = secretService(db);
