@@ -1305,7 +1305,10 @@ impl ManagedProviderCommandExecutor {
             "status": state.lifecycle,
             "provider": state.descriptor.provider_label(),
             "driver": state.descriptor.driver(),
+            "driverSessionId": state.provider_session_id,
             "providerSessionId": state.provider_session_id,
+            "sessionId": state.provider_session_id,
+            "providerAccountSessionId": state.provider_session_id,
             "activeProviderTurnId": state.active_turn_id,
             "durableEventCursor": state.durable_event_cursor,
         })))

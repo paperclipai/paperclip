@@ -32,7 +32,13 @@ type BackendFactoryOptions = {
   runnerInstanceId?: string;
   acpxRuntimeDirectory?: string;
   workingDirectoryAuthority?: "local_filesystem" | "remote_runner";
-  codexTransportFactory?: () => unknown;
+  codexTransportFactory?: (recoveryContext?: {
+    persistedSession?: {
+      driverSessionId: string;
+      providerSessionId?: string | null;
+      activeTurnId?: string | null;
+    };
+  }) => unknown;
   dynamicToolHandler?: (call: unknown) => Promise<unknown>;
   onSpawn?: (meta: {
     pid: number;
@@ -53,6 +59,12 @@ type RunnerTransportOptions = {
   opencodePermissionMode?: "allow" | "ask" | "deny";
   acpxAgent?: "claude" | "codex";
   acpxPermissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  resumeActiveTurnId?: string | null;
+  resumeProviderSession?: {
+    driverSessionId: string;
+    providerSessionId?: string | null;
+    activeTurnId?: string | null;
+  };
 };
 
 const durableControlPlaneState = (identity: Record<string, unknown>) => ({
@@ -3029,6 +3041,36 @@ describe("runnerd provider runtime wiring", () => {
       process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
     }
     await rm(isolatedStateDirectory, { recursive: true, force: true });
+  });
+
+  it("passes the run checkpoint active turn into restart recovery", async () => {
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-active-turn-recovery",
+    });
+
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!({
+      persistedSession: {
+        driverSessionId: "driver-session-active-turn",
+        providerSessionId: "provider-session-active-turn",
+        activeTurnId: "provider-turn-active",
+      },
+    });
+
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resumeActiveTurnId: "provider-turn-active",
+        resumeProviderSession: expect.objectContaining({
+          driverSessionId: "driver-session-active-turn",
+          providerSessionId: "provider-session-active-turn",
+          activeTurnId: "provider-turn-active",
+        }),
+      }),
+    );
   });
 
   it("rejects overlapping runs for the same runnerd provider session scope", async () => {

@@ -697,7 +697,8 @@ export interface CapabilityRunnerdCodexTransportOptions {
   /**
    * Exact provider identity from the database checkpoint. A verified adopted
    * runner may use this when its original identity event has left the bounded
-   * PRP replay window; thread/read still validates it against the live runner.
+   * PRP replay window. Recovery remains blocked until an authenticated live
+   * snapshot or a fresh identity event matches this checkpoint.
    */
   resumeProviderSession?: {
     driverSessionId: string;
@@ -810,8 +811,14 @@ export function resolveRunnerdSessionIdentity(input: unknown): {
     descriptor.processId ??
     started.processId ??
     started.pid;
-  const threadId = started.threadId ?? started.providerSessionId;
-  const sessionId = started.sessionId ?? started.providerAccountSessionId;
+  const threadId =
+    started.threadId ?? started.driverSessionId ?? started.providerSessionId;
+  const sessionId =
+    started.sessionId ??
+    started.providerAccountSessionId ??
+    (started.driverSessionId === undefined
+      ? undefined
+      : started.providerSessionId);
   return {
     processId: typeof processId === "number" ? processId : null,
     threadId:
@@ -1672,7 +1679,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #threadId = "";
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
-  #providerIdentityRestoredFromCheckpoint = false;
+  #checkpointProviderIdentityExpectation: {
+    driverSessionId: string;
+    providerSessionId: string;
+    providerIdentity: Record<string, unknown> | null;
+  } | null = null;
+  #checkpointProviderIdentityConfirmed = false;
   #turnId = "";
   #turnStartResponsePending = false;
   #turnStartResponseEpoch = 0;
@@ -1827,11 +1839,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (method === "thread/read") {
       if (this.#core === null) await this.#resume();
-      // An authenticated recovered runner has already restarted the provider
-      // and emitted harness.ready with its exact durable thread identity. Ask
-      // runnerd for its provider snapshot rather than reading its filesystem:
-      // remote process owners need the same recovery contract as local ones.
+      // Ask the authenticated runner for its live provider snapshot rather
+      // than reading its filesystem. This both supports remote process owners
+      // and proves any identity restored after PRP event compaction before the
+      // checkpoint-backed thread is exposed to the driver.
       const snapshot = await this.#commandResult("session.snapshot", {});
+      this.#confirmCheckpointProviderIdentity(
+        snapshot,
+        "authenticated session.snapshot",
+      );
       const activeProviderTurnId =
         typeof snapshot.activeProviderTurnId === "string" &&
         snapshot.activeProviderTurnId.length > 0
@@ -1909,7 +1925,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await this.#command("session.destroy", params);
       return {};
     }
-    if (method === "thread/resume")
+    if (method === "thread/resume") {
+      if (
+        this.#checkpointProviderIdentityExpectation !== null &&
+        !this.#checkpointProviderIdentityConfirmed
+      ) {
+        const snapshot = await this.#commandResult("session.snapshot", {});
+        this.#confirmCheckpointProviderIdentity(
+          snapshot,
+          "authenticated session.snapshot",
+        );
+      }
       return {
         thread: {
           id: this.#threadId,
@@ -1919,6 +1945,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             : { providerIdentity: structuredClone(this.#providerIdentity) }),
         },
       };
+    }
     throw new Error(
       `PRP Codex transport does not expose provider method ${method}`,
     );
@@ -2962,9 +2989,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           structuredClone(this.options.resumeProviderSession.providerIdentity),
         );
       }
-      this.#providerIdentityRestoredFromCheckpoint = true;
+      this.#checkpointProviderIdentityExpectation = {
+        driverSessionId: this.#threadId,
+        providerSessionId: this.#sessionId,
+        providerIdentity:
+          this.#providerIdentity === null
+            ? null
+            : structuredClone(this.#providerIdentity),
+      };
       this.#diagnostic(
-        "restored adopted provider identity from the exact durable checkpoint after PRP event compaction",
+        "restored adopted provider identity from the exact durable checkpoint after PRP event compaction; awaiting live confirmation",
       );
     }
     const registration = this.options.controlPlaneRegistration
@@ -3156,7 +3190,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#pumpEvents();
       if (
         this.#threadId.length > 0 &&
-        (this.#providerIdentityRestoredFromCheckpoint ||
+        (this.#checkpointProviderIdentityExpectation !== null ||
           this.#evidence.providerExecutionKind === "remote_service" ||
           this.#evidence.providerPid !== null)
       )
@@ -3446,6 +3480,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       sessionId,
     } = resolveRunnerdSessionIdentity(started);
     const providerIdentity = record(started.providerIdentity);
+    this.#confirmCheckpointProviderIdentity(started, event.eventType);
     if (pid !== null) {
       this.#evidence.providerPid = pid;
       this.#evidence.providerProcessStartedAt = readLocalProcessStartedAt(pid);
@@ -3498,6 +3533,44 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#providerIdentity = structuredClone(providerIdentity);
     }
     this.#publish();
+  }
+
+  #confirmCheckpointProviderIdentity(input: unknown, source: string): void {
+    const checkpointExpectation = this.#checkpointProviderIdentityExpectation;
+    if (checkpointExpectation === null) return;
+    const { threadId, sessionId } = resolveRunnerdSessionIdentity(input);
+    const providerIdentity = record(record(input).providerIdentity);
+    if (
+      threadId === null &&
+      sessionId === null &&
+      typeof providerIdentity.kind !== "string"
+    ) {
+      return;
+    }
+    const providerIdentityMatches =
+      checkpointExpectation.providerIdentity === null ||
+      (typeof providerIdentity.kind === "string" &&
+        durableRecoveryInternals.canonicalJson(providerIdentity) ===
+          durableRecoveryInternals.canonicalJson(
+            checkpointExpectation.providerIdentity,
+          ));
+    const mismatchFields = [
+      ...(threadId === checkpointExpectation.driverSessionId
+        ? []
+        : ["driverSessionId"]),
+      ...(sessionId === checkpointExpectation.providerSessionId
+        ? []
+        : ["providerSessionId"]),
+      ...(providerIdentityMatches ? [] : ["providerIdentity"]),
+    ];
+    if (mismatchFields.length > 0) {
+      throw new Error(
+        `native_adopted_provider_identity_mismatch: ${source} did not match the exact durable checkpoint (${mismatchFields.join(", ")})`,
+      );
+    }
+    if (this.#checkpointProviderIdentityConfirmed) return;
+    this.#checkpointProviderIdentityConfirmed = true;
+    this.#diagnostic(`confirmed adopted provider identity against ${source}`);
   }
 
   #flushPendingTraceRehydrations(): void {

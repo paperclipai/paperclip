@@ -890,6 +890,17 @@ it("resolves canonical and legacy durable session identities", () => {
   });
   expect(
     resolveRunnerdSessionIdentity({
+      driverSessionId: "provider-thread-2",
+      providerSessionId: "provider-account-2",
+      processId: 4243,
+    }),
+  ).toEqual({
+    processId: 4243,
+    threadId: "provider-thread-2",
+    sessionId: "provider-account-2",
+  });
+  expect(
+    resolveRunnerdSessionIdentity({
       threadId: "legacy-thread-1",
       sessionId: "legacy-session-1",
       runtimeIdentity: { process_id: 4343 },
@@ -1987,7 +1998,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
   }
 }, 30_000);
 
-it("adopts a live runner on the same durable authority without spawning a duplicate", async () => {
+async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const server = createServer();
   let authority: DurablePrpControlPlane | null = null;
@@ -2061,33 +2072,37 @@ it("adopts a live runner on the same durable authority without spawning a duplic
       "control-plane",
       "control-plane-state.json",
     );
-    const controlPlaneState = JSON.parse(
-      await readFile(controlPlaneStatePath, "utf8"),
-    ) as { committedEvents: Array<{ eventType: string }> };
-    controlPlaneState.committedEvents =
-      controlPlaneState.committedEvents.filter(
-        (event) =>
-          event.eventType !== "harness.ready" &&
-          event.eventType !== "session.started" &&
-          event.eventType !== "session.resumed",
+    const compactProviderIdentityEvents = async () => {
+      const controlPlaneState = JSON.parse(
+        await readFile(controlPlaneStatePath, "utf8"),
+      ) as { committedEvents: Array<{ eventType: string }> };
+      controlPlaneState.committedEvents =
+        controlPlaneState.committedEvents.filter(
+          (event) =>
+            event.eventType !== "harness.ready" &&
+            event.eventType !== "session.started" &&
+            event.eventType !== "session.resumed",
+        );
+      await writeFile(
+        controlPlaneStatePath,
+        `${JSON.stringify(controlPlaneState, null, 2)}\n`,
+        { mode: 0o600 },
       );
-    await writeFile(
-      controlPlaneStatePath,
-      `${JSON.stringify(controlPlaneState, null, 2)}\n`,
-      { mode: 0o600 },
-    );
+    };
+    await compactProviderIdentityEvents();
 
     const duplicateLauncher = vi.fn(() => {
       throw new Error("duplicate runner spawn attempted");
     });
+    const openedThread = opened.thread as Record<string, unknown>;
     adopted = createCapabilityRunnerdCodexTransport({
       ...sharedOptions,
       resumeDynamicTools: [],
       resumeProviderSession: {
-        driverSessionId: String((opened.thread as Record<string, unknown>).id),
-        providerSessionId: String(
-          (opened.thread as Record<string, unknown>).sessionId,
-        ),
+        driverSessionId: String(openedThread.id),
+        providerSessionId: mismatchedCheckpoint
+          ? "wrong-provider-session"
+          : String(openedThread.sessionId),
       },
       runnerProcessLauncher: duplicateLauncher,
       adoptExistingRunner: {
@@ -2104,6 +2119,14 @@ it("adopts a live runner on the same durable authority without spawning a duplic
         },
       },
     });
+    if (mismatchedCheckpoint) {
+      await expect(
+        adopted.transport.request("thread/read", {}),
+      ).rejects.toThrow("native_adopted_provider_identity_mismatch");
+      expect(duplicateLauncher).not.toHaveBeenCalled();
+      expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+      return;
+    }
     await expect(adopted.transport.request("thread/read", {})).resolves.toEqual(
       expect.objectContaining({
         thread: expect.objectContaining({ id: "codex-thread-1" }),
@@ -2115,7 +2138,10 @@ it("adopts a live runner on the same durable authority without spawning a duplic
       `adopted runner ${runnerPid} authenticated to its durable PRP authority`,
     );
     expect(adopted.evidence().diagnostics).toContain(
-      "restored adopted provider identity from the exact durable checkpoint after PRP event compaction",
+      "restored adopted provider identity from the exact durable checkpoint after PRP event compaction; awaiting live confirmation",
+    );
+    expect(adopted.evidence().diagnostics).toContain(
+      "confirmed adopted provider identity against authenticated session.snapshot",
     );
   } finally {
     await adopted?.transport.close().catch(() => undefined);
@@ -2134,7 +2160,19 @@ it("adopts a live runner on the same durable authority without spawning a duplic
     }
     await rm(stateDirectory, { recursive: true, force: true });
   }
-}, 30_000);
+}
+
+it(
+  "adopts a live runner on the same durable authority without spawning a duplicate",
+  () => verifyLiveRunnerAdoption(false),
+  30_000,
+);
+
+it(
+  "rejects a live runner whose provider identity mismatches the compacted checkpoint",
+  () => verifyLiveRunnerAdoption(true),
+  30_000,
+);
 
 it("surfaces a runner exit while provider-ingress readiness is still pending", async () => {
   const neverReady = new Promise<void>(() => undefined);
