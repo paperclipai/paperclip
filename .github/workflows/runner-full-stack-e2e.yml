@@ -14,7 +14,7 @@ on:
         type: boolean
         default: true
       group:
-        description: "Comma-separated groups (AND semantics: legacy,native,local,daytona,warm,core,breadth)"
+        description: "Comma-separated groups (AND semantics: legacy,native,local,daytona,core,breadth)"
         type: string
         required: false
       suite:
@@ -409,10 +409,7 @@ jobs:
           NEEDS_DAYTONA: ${{ needs.catalog.outputs.needs_daytona }}
           IMAGE_CONTENT_ID: ${{ needs.catalog.outputs.daytona_image_content_id }}
           IMAGE_TAG: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${{ needs.catalog.outputs.daytona_image_content_id }}
-          IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
-          TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           if [ "$NEEDS_DAYTONA" != true ]; then
@@ -428,24 +425,12 @@ jobs:
           if docker buildx imagetools inspect "$IMAGE_TAG" >/dev/null 2>&1; then
             digest="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           else
-            cache_args=(
-              --cache-from "type=registry,ref=${IMAGE_CACHE}"
-            )
-            if [ "$TARGET_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
-              cache_args+=(
-                --cache-to "type=registry,ref=${IMAGE_CACHE},mode=max"
-              )
-              echo '::notice title=Daytona image cache::Publishing cache from the trusted default-branch target'
-            else
-              echo '::notice title=Daytona image cache::Using the default-branch cache without publishing development-branch layers'
-            fi
             docker buildx build \
               --platform linux/amd64 \
               --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}" \
               --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}" \
               --file docker/daytona-runner/Dockerfile \
               --tag "$IMAGE_TAG" \
-              "${cache_args[@]}" \
               --push \
               .
             digest="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
@@ -1102,8 +1087,6 @@ jobs:
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
-          PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}
-          PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}
         run: |
           set +e
           pnpm test:e2e:runner:report
@@ -1121,20 +1104,51 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Verify normalized history source report
+      - name: Qualify public preview raster sanitizer
+        if: always()
+        run: |
+          set -euo pipefail
+          if ! command -v convert >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install --no-install-recommends -y imagemagick
+          fi
+          convert -version
+
+      - name: Prepare public history bundle with redacted layout previews
+        id: prepare_public_history
+        if: always()
+        run: |
+          set -euo pipefail
+          pnpm test:e2e:runner:history:prepare -- \
+            "$GITHUB_WORKSPACE/runner-e2e-merged-report/normalized" \
+            "$GITHUB_WORKSPACE/runner-e2e-public-report/normalized"
+
+      - name: Upload prepared public history source
+        if: always() && steps.prepare_public_history.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-e2e-public-history-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-e2e-public-report/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Verify prepared history source and public layout previews
         id: history_source_ready
         if: always()
         run: |
           set -euo pipefail
-          dashboard_root="runner-e2e-merged-report/normalized"
-          if [ -f "$dashboard_root/index.html" ] && [ -f "$dashboard_root/normalized-results.json" ]; then
+          dashboard_root="runner-e2e-public-report/normalized"
+          public_preview="$(find "$dashboard_root/evidence" -type f -path '*/public-visuals/*.png' -print -quit 2>/dev/null || true)"
+          unexpected_png="$(find "$dashboard_root/evidence" -type f -name '*.png' ! -path '*/public-visuals/*.png' -print -quit 2>/dev/null || true)"
+          passed_count="$(jq '[.results[] | select(.status == "passed")] | length' "$dashboard_root/normalized-results.json" 2>/dev/null || echo invalid)"
+          if [ "${{ steps.prepare_public_history.outcome }}" = "success" ] && [ -f "$dashboard_root/index.html" ] && [ -z "$unexpected_png" ] && { [ "$passed_count" = "0" ] || [ -n "$public_preview" ]; }; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
 
   publish_history:
-    name: Publish S3 history and Pages bundle with declared screenshots
+    name: Publish pruned immutable history and landing site
     needs: [authorize, catalog, report]
     if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
     runs-on: ubuntu-latest
@@ -1170,13 +1184,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Install publisher-only Chromium
-        run: pnpm exec playwright install --with-deps --only-shell chromium
-
-      - name: Download access-controlled normalized campaign
+      - name: Download prepared public campaign
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: runner-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
+          name: runner-e2e-public-history-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-e2e-merged-report
 
       - name: Exchange GitHub OIDC identity for scoped AWS credentials
@@ -1185,7 +1196,7 @@ jobs:
           role-to-assume: ${{ vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
           aws-region: ${{ vars.RUNNER_E2E_HISTORY_AWS_REGION }}
 
-      - name: Publish trusted summary and declared screenshots to public bundles
+      - name: Prune private evidence and publish immutable campaign history
         env:
           PAPERCLIP_RUNNER_E2E_REPORT_DIR: ${{ github.workspace }}/runner-e2e-merged-report/normalized
           RUNNER_E2E_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_HISTORY_S3_BUCKET }}
@@ -1198,15 +1209,15 @@ jobs:
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         run: echo "name=github-pages-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
-      - name: Package pruned dashboard with declared screenshots for GitHub Pages
+      - name: Package pruned structured dashboard for GitHub Pages
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           name: ${{ steps.pages_artifact_name.outputs.name }}
-          path: runner-e2e-merged-report/pages
+          path: runner-e2e-merged-report/normalized
 
   pages:
-    name: Publish latest dashboard with declared screenshots
+    name: Publish latest structured dashboard
     needs: [report, publish_history]
     if: always() && needs.report.outputs.history_source_ready == 'true' && needs.publish_history.result == 'success' && vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
     runs-on: ubuntu-latest
