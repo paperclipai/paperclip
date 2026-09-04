@@ -26,11 +26,5 @@ and the use cases behind a factory function. Code outside the module imports
 only that entry point, never a file inside `domain/`, `application/`, or
 `adapters/` directly.
 
-## Import-boundary gate
-
-`import-boundary.test.ts` in this directory reads the static
-`import ... from "..."` and `export ... from "..."` specifiers from each
-module source file and rejects a specifier that a layer's rule forbids. The
-gate reads source text; it does not evaluate a dynamic `await import(...)`
-call. That residual is a known, accepted gap. A future gate change to close
-it is out of scope for the module that first introduced this gate.
+Code review and the TypeScript compiler enforce this layer rule. There is
+no automated test for it.
