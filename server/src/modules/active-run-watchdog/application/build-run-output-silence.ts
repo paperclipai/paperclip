@@ -8,8 +8,16 @@ export type BuildRunOutputSilenceDeps = {
   criticalThresholdMs: number;
 };
 
+export type BuildRunOutputSilenceRunInput = Pick<
+  RunSnapshot,
+  "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
+>;
+
 export function createBuildRunOutputSilence(deps: BuildRunOutputSilenceDeps) {
-  return async function buildRunOutputSilence(run: RunSnapshot, now: Date): Promise<RunOutputSilenceSummary> {
+  return async function buildRunOutputSilence(
+    run: BuildRunOutputSilenceRunInput,
+    now: Date,
+  ): Promise<RunOutputSilenceSummary> {
     const [decisionState, evaluation] = await Promise.all([
       deps.reader.findLatestDecision(run.companyId, run.id, now),
       deps.reader.findOpenStaleRunEvaluation(run.companyId, run.id),

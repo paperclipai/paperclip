@@ -30,7 +30,6 @@ export function createFoldSourceResolvedRun(deps: FoldSourceResolvedRunDeps) {
       adapterType: input.runningAgentAdapterType,
       fallbackPid: input.run.processPid,
       fallbackProcessGroupId: input.run.processGroupId,
-      graceMs: null,
     });
 
     return deps.writer.foldSourceResolvedRun(input.run.companyId, {

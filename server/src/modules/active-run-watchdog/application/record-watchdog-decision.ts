@@ -83,6 +83,7 @@ export function createRecordWatchdogDecision(deps: RecordWatchdogDecisionDeps) {
 
     return deps.writer.recordDecision(input.companyId, {
       runId: run.id,
+      actor: input.actor,
       evaluationIssueId: input.evaluationIssueId ?? null,
       decision: input.decision,
       snoozedUntil: effectiveSnoozedUntil,

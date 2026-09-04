@@ -75,7 +75,6 @@ export type RunProcessMetadata = {
   adapterType: string;
   fallbackPid: number | null;
   fallbackProcessGroupId: number | null;
-  graceMs: number | null;
 };
 
 export type RunProcessCleanupOutcome =
@@ -124,6 +123,7 @@ export type WatchdogDecisionActor =
 
 export type RecordDecisionInput = {
   runId: string;
+  actor: WatchdogDecisionActor;
   evaluationIssueId: string | null;
   decision: "snooze" | "continue" | "dismissed_false_positive";
   snoozedUntil: Date | null;
