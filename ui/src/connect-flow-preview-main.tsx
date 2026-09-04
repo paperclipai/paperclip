@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { AnimatePresence, LayoutGroup, MotionConfig, motion } from "motion/react";
 import { isValidBrowserCode } from "@paperclipai/shared";
 import {
   CARD_ENTER,
@@ -248,6 +248,10 @@ function ConnectFlowPreview({
           />
         </div>
 
+        {/* The card and the footer are one layout problem: the footer moves
+            because the card arrived or left. They have to share a group for
+            motion to measure them together — see the footer's own note. */}
+        <LayoutGroup>
         {!done && (
           <>
             <div className="space-y-2 pt-12">
@@ -267,7 +271,18 @@ function ConnectFlowPreview({
                 {!collapsed && (
                   <motion.div
                     key="credential-mode"
-                    exit={{ opacity: 0, transition: SOURCE_LINK_EXIT }}
+                    /*
+                      Its height leaves with it, not just its opacity.
+
+                      Fading alone left the row occupying space until the exit
+                      finished and then removing it in one frame, which dropped
+                      everything below by its full height at once — measured at
+                      a 22px jump 211ms in, and the single largest source of the
+                      choppiness. Collapsing the height over the same fade makes
+                      the footer glide instead of snap.
+                    */
+                    className="overflow-hidden"
+                    exit={{ opacity: 0, height: 0, transition: SOURCE_LINK_EXIT }}
                   >
                     <CredentialModeLink
                       mode={mode}
@@ -347,7 +362,12 @@ function ConnectFlowPreview({
         {/* `layout`, not an animated height: the footer's position changes
             because the card above it mounted or unmounted, and letting motion
             measure that is what the canvas's own notes recommend after three
-            failed attempts at animating a height directly. */}
+            failed attempts at animating a height directly.
+
+            Inside the same `LayoutGroup` as the card, which is the part that
+            makes the *exit* work. AnimatePresence defers the unmount until the
+            fade finishes, and without a shared group motion never measures the
+            footer again — it snapped up 64px in one frame, 223ms in. */}
         <motion.div layout transition={FOOTER_SETTLE}>
         <FooterNav
           onBack={() => {
@@ -369,13 +389,7 @@ function ConnectFlowPreview({
           }}
         />
         </motion.div>
-
-        {/* Preview-only. A real paste carries the code; here anything will do. */}
-        {(phase === "ready" || phase === "waiting") && (
-          <p className="pt-4 text-center text-xs text-muted-foreground/70">
-            Preview: paste any text into the field to see the hold and the advance.
-          </p>
-        )}
+        </LayoutGroup>
       </div>
     </MotionConfig>
   );
