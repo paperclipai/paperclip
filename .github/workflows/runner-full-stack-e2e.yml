@@ -76,8 +76,8 @@ jobs:
           dimensions="$(identify -format '%wx%h' "$preview")"
           width="${dimensions%x*}"
           height="${dimensions#*x}"
-          test "$width" -le 160
-          test "$height" -le 160
+          test "$width" -le 96
+          test "$height" -le 96
           test -z "$(find public-report/evidence -type f -name final-state.png ! -path '*/public-visuals/*' -print -quit)"
           grep -F 'public-visuals/final-state.png' public-report/index.html
           grep -F '<img src=' public-report/index.html
