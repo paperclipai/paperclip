@@ -211,6 +211,20 @@ unacknowledged facts.
 The production durable control plane and live-session suites cover reconnect,
 ACK replay, restart recovery, backpressure, lease expiry, drain, and revoke.
 
+Run the credential-free native server restart suite from the repository root:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport.test.ts -t 'adopts a live runner'
+```
+
+These tests use isolated PostgreSQL instances, temporary `PAPERCLIP_HOME`
+directories, real `paperclip-runnerd` processes, and a deterministic fake Codex
+app server. They cover hot and hard server restarts with both live and dead
+runners, result-finalization races, incomplete bootstrap recovery, repeated
+crashes, steering replay, and mismatched process identities.
+
 Use `--json` for the complete trace or `--output <path>` to write it. The CLI
 and browser show connection counts, safe lease ID and expiry, stable identities,
 source and ACK cursors, outbox current/peak bytes, command delivery/effect

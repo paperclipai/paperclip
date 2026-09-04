@@ -64,7 +64,6 @@
     "test:storybook-visual:update": "node scripts/storybook-visual-baseline.mjs download && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts --update-snapshots && node scripts/storybook-visual-baseline.mjs pack",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
     "test:e2e:runner": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/launch.ts",
-    "test:e2e:runner:restart": "pnpm --filter @paperclipai/paperclip-runner build:runner-binaries && vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts && pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport.test.ts -t 'adopts a live runner'",
     "test:e2e:runner:image-id": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/daytona-image-content.ts",
     "test:e2e:runner:dashboard": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/dashboard-regenerate.ts",
     "test:e2e:runner:models:update": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/openrouter-models-update.ts",
