@@ -129,6 +129,38 @@ it("identifies an active provider turn that must stop before suspension", () => 
   });
 });
 
+it("checkpoints a settled remote runner before containment and release", async () => {
+  const settledSteps: string[] = [];
+  await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: true,
+    checkpoint: async () => {
+      settledSteps.push("checkpoint");
+    },
+    forceKill: () => {
+      settledSteps.push("kill");
+    },
+    release: async () => {
+      settledSteps.push("release");
+    },
+  });
+  expect(settledSteps).toEqual(["checkpoint", "kill", "release"]);
+
+  const unsettledSteps: string[] = [];
+  await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: false,
+    checkpoint: async () => {
+      unsettledSteps.push("checkpoint");
+    },
+    forceKill: () => {
+      unsettledSteps.push("kill");
+    },
+    release: async () => {
+      unsettledSteps.push("release");
+    },
+  });
+  expect(unsettledSteps).toEqual(["kill", "release"]);
+});
+
 it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {
   const tools = [
     {
@@ -1927,12 +1959,63 @@ it("cold-restores a suspended provider session under its durable run binding", a
   );
   await mismatched.transport.close();
 
+  const externalIdentity = {
+    ...secondIdentity,
+    runId: "run-cold-external",
+    turnId: "turn-cold-external",
+    itemId: "item-cold-external",
+  };
+  const externalRotationSteps: string[] = [];
+  const externallyRotated = createCapabilityRunnerdCodexTransport({
+    ...options,
+    runnerStateDirectory: externallyOwnedRunnerStateDirectory,
+    readRunnerState,
+    prepareExternalRunnerState: async () => {
+      externalRotationSteps.push("prepared");
+    },
+    archiveExternalRunnerState: async ({ archiveKey }) => {
+      expect(externalRotationSteps).toEqual(["prepared"]);
+      const archiveDirectory = join(
+        stateDirectory,
+        "external-authority-epochs",
+        archiveKey,
+      );
+      await mkdir(archiveDirectory, { recursive: true });
+      await rename(
+        join(externallyOwnedRunnerStateDirectory, "runner-state.json"),
+        join(archiveDirectory, "runner-state.json"),
+      );
+      externalRotationSteps.push("archived");
+    },
+    resumeDynamicTools: dynamicTools,
+    resumeCompletionContract: {
+      revision: "contract-external",
+      criterionIds: ["criterion-external"],
+    },
+    prpIdentity: externalIdentity,
+  });
+  externallyRotated.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    const read = await externallyRotated.transport.request("thread/read", {});
+    expect(read.thread).toMatchObject({
+      id: firstProviderThread.id,
+      sessionId: firstProviderThread.sessionId,
+      cwd: tmpdir(),
+    });
+    expect(externalRotationSteps).toEqual(["prepared", "archived"]);
+  } finally {
+    await externallyRotated.transport.close();
+  }
+
   const restored = createCapabilityRunnerdCodexTransport({
     ...options,
     runnerStateDirectory: externallyOwnedRunnerStateDirectory,
     readRunnerState,
     resumeDynamicTools: dynamicTools,
-    prpIdentity: secondIdentity,
+    prpIdentity: externalIdentity,
   });
   restored.transport.setServerRequestHandler(async () => ({
     success: true,

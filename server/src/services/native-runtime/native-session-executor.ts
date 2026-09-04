@@ -1414,7 +1414,14 @@ async function migrateRunnerdStateRootForExecution(input: {
       throw new Error("runner_state_identity_mismatch");
     }
     if (durableIdentityMatchesExecution(identity, input.execution)) {
-      if (runnerdAuthorityLifecycle(scoped, identity) === "indeterminate") {
+      if (
+        runnerdAuthorityLifecycleWithVerifiedBackup({
+          root: scoped,
+          identity,
+          execution: input.execution,
+          allowVerifiedBackup: input.allowVerifiedBackup,
+        }) === "indeterminate"
+      ) {
         quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
         throw new Error("runner_state_identity_mismatch");
       }
@@ -5439,6 +5446,7 @@ async function createRunnerdBackendWithinSessionClaim(
         }
       : sourceRuntimeContext;
   let remotePrepared = false;
+  let remoteHarnessStatePrepared = false;
   let selectedRemoteMode: "dial_wss" | "listen_ws" | null = null;
   let remoteCaBundleMapping: { sourcePath: string; targetPath: string } | null =
     null;
@@ -5953,6 +5961,9 @@ async function createRunnerdBackendWithinSessionClaim(
     ) {
       throw new Error("runner_harness_state_mismatch");
     }
+    if (runnerState.lifecycle !== "suspended") {
+      return { complete: false, runnerState: null };
+    }
     const providerSessionIdentity =
       providerSessionIdentityFromRunnerState(runnerState);
     if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
@@ -6015,14 +6026,27 @@ async function createRunnerdBackendWithinSessionClaim(
       return;
     }
     const leaseRow = await input.db
-      .select({ metadata: environmentLeases.metadata })
+      .select({
+        metadata: environmentLeases.metadata,
+        providerLeaseId: environmentLeases.providerLeaseId,
+      })
       .from(environmentLeases)
       .where(eq(environmentLeases.id, remoteTarget.leaseId))
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (!leaseRow) throw new Error("runner_harness_backup_lease_missing");
+    if (!leaseRow?.providerLeaseId) {
+      throw new Error("runner_harness_backup_lease_missing");
+    }
+    if (
+      sandboxLeaseAcquisition?.providerLeaseId &&
+      sandboxLeaseAcquisition.providerLeaseId !== leaseRow.providerLeaseId
+    ) {
+      throw new Error("runner_harness_backup_lease_mismatch");
+    }
     const stamp = createNativeHarnessBackupStamp({
       manifestPath: resolve(backup.root, "manifest.json"),
+      sessionScopeId,
+      authorizedProviderLeaseId: leaseRow.providerLeaseId,
       normalizedSessionId: backup.manifest.normalizedSessionId,
       runnerInstanceId: backup.manifest.runnerInstanceId,
       completedAt: backup.manifest.completedAt,
@@ -6155,11 +6179,12 @@ async function createRunnerdBackendWithinSessionClaim(
           remotePrepared = false;
           await prepareRemoteRunner(selectedRemoteMode);
         }
-        await measureNativeRunnerSpan(input.trace, "stage.asset.home", () =>
-          measureNativeRunnerSpan(
-            input.trace,
-            "session.checkpoint.restore",
-            async () => {
+        if (!remoteHarnessStatePrepared) {
+          await measureNativeRunnerSpan(input.trace, "stage.asset.home", () =>
+            measureNativeRunnerSpan(
+              input.trace,
+              "session.checkpoint.restore",
+              async () => {
               if (
                 remoteTarget?.transport === "sandbox" &&
                 remoteCommandRunner
@@ -6299,15 +6324,17 @@ async function createRunnerdBackendWithinSessionClaim(
                   }
                 }
               }
-            },
-            {
-              attributes: {
-                mode: remoteTarget?.transport ?? "local",
-                lifecycleMode: input.execution.session.lifecyclePolicy.mode,
               },
-            },
-          ),
-        );
+              {
+                attributes: {
+                  mode: remoteTarget?.transport ?? "local",
+                  lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+                },
+              },
+            ),
+          );
+          remoteHarnessStatePrepared = true;
+        }
         if (
           remoteTarget &&
           remoteCommandRunner &&
@@ -6521,6 +6548,49 @@ async function createRunnerdBackendWithinSessionClaim(
     );
   };
 
+  const prepareExternalRunnerState =
+    remoteTarget && remoteCommandRunner
+      ? async () => {
+          selectedRemoteMode ??= resolveRemoteRunnerTransportMode({
+            target: remoteTarget,
+            runnerIngressAuthorized: input.runnerIngressAuthorized === true,
+          });
+          await ensureRemoteRunner();
+        }
+      : undefined;
+  const archiveExternalRunnerState =
+    remoteCommandRunner && remoteStateDirectory && remoteSessionRoot
+      ? async (archive: { archiveKey: string }) => {
+          if (!/^[0-9a-f]{24}$/.test(archive.archiveKey)) {
+            throw new Error("runner_remote_authority_archive_invalid");
+          }
+          const sourcePath = posix.join(
+            remoteStateDirectory,
+            "runner-state.json",
+          );
+          const archiveDirectory = posix.join(
+            remoteSessionRoot,
+            "authority-epochs",
+            `epoch-${archive.archiveKey}`,
+          );
+          const result = await remoteCommandRunner.execute({
+            command: "sh",
+            args: [
+              "-c",
+              'set -eu; test -f "$1"; test ! -e "$2/runner-state.json"; umask 077; install -d -m 0700 "$2"; mv -- "$1" "$2/runner-state.json"',
+              "paperclip-runner-authority-archive",
+              sourcePath,
+              archiveDirectory,
+            ],
+            bypassSession: true,
+            timeoutMs: 10_000,
+          });
+          if (result.exitCode !== 0 || result.timedOut) {
+            throw new Error("runner_remote_authority_archive_failed");
+          }
+        }
+      : undefined;
+
   const remoteProcessLauncher =
     remoteTarget && remoteCommandRunner && remoteBinary
       ? createRemoteRunnerProcessLauncher({
@@ -6717,6 +6787,8 @@ async function createRunnerdBackendWithinSessionClaim(
                   stateDirectory: remoteStateDirectory,
                 })
             : undefined,
+        prepareExternalRunnerState,
+        archiveExternalRunnerState,
         runnerBinary: controllerRunnerBinary,
         codexCommand: remoteCodexBinary ?? undefined,
         sourceCodexHome: remoteTarget
@@ -6905,10 +6977,8 @@ async function createRunnerdBackendWithinSessionClaim(
                     ...(caBundlePath ? { caBundlePath } : {}),
                   },
                   startupFailureCode: "runner_direct_wss_failed" as const,
-                  release: async () => {
-                    await inbound.release();
-                    await checkpointRemoteRunner();
-                  },
+                  checkpoint: checkpointRemoteRunner,
+                  release: () => inbound.release(),
                 };
               }
 
@@ -6970,10 +7040,10 @@ async function createRunnerdBackendWithinSessionClaim(
                   return outbound?.failure;
                 },
                 startupFailureCode: "runner_ingress_unavailable" as const,
+                checkpoint: checkpointRemoteRunner,
                 release: async () => {
                   if (outbound) await outbound.close();
                   else await transport.ingress.close();
-                  await checkpointRemoteRunner();
                 },
               };
             },

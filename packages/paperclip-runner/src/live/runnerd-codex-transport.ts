@@ -219,6 +219,8 @@ function rotateLocalAuthorityEpoch(
     runnerState.environmentLeaseId !== priorIdentity.environmentLeaseId ||
     runnerState.runId !== priorIdentity.runId ||
     runnerState.normalizedSessionId !== priorIdentity.normalizedSessionId ||
+    runnerState.turnId !== priorIdentity.turnId ||
+    runnerState.itemId !== priorIdentity.itemId ||
     runnerState.lifecycle !== "suspended"
   ) {
     throw new Error("native_runner_authority_rotation_requires_settled_state");
@@ -250,6 +252,68 @@ function rotateLocalAuthorityEpoch(
     renameSync(runnerStatePath, archivedRunnerState);
   }
   if (!existsSync(archivedControlPlane) || !existsSync(archivedRunnerState)) {
+    throw new Error("native_runner_authority_archive_incomplete");
+  }
+  return controlPlaneState;
+}
+
+async function rotateExternalAuthorityEpoch(
+  root: string,
+  controlPlaneState: Record<string, unknown>,
+  desired: DurableRecoveryIdentity,
+  readRunnerState: () => Promise<Record<string, unknown>>,
+  archiveRunnerState: (input: {
+    archiveKey: string;
+    priorIdentity: DurableRecoveryIdentity;
+  }) => Promise<void>,
+): Promise<Record<string, unknown>> {
+  const priorIdentity = controlPlaneIdentity(controlPlaneState);
+  if (
+    priorIdentity.runnerInstanceId !== desired.runnerInstanceId ||
+    priorIdentity.environmentLeaseId !== desired.environmentLeaseId ||
+    priorIdentity.normalizedSessionId !== desired.normalizedSessionId ||
+    priorIdentity.runId === desired.runId
+  ) {
+    throw new Error(
+      "PRP recovery identity does not match the durable session binding",
+    );
+  }
+  const runnerState = await readRunnerState();
+  if (
+    runnerState.schema !== "paperclip.runner.durable.state.v1" ||
+    runnerState.runnerInstanceId !== priorIdentity.runnerInstanceId ||
+    runnerState.environmentLeaseId !== priorIdentity.environmentLeaseId ||
+    runnerState.runId !== priorIdentity.runId ||
+    runnerState.normalizedSessionId !== priorIdentity.normalizedSessionId ||
+    runnerState.lifecycle !== "suspended"
+  ) {
+    throw new Error("native_runner_authority_rotation_requires_settled_state");
+  }
+  const archive = authorityArchiveDirectory(root, priorIdentity);
+  const archivedControlPlane = resolve(archive, "control-plane");
+  const archivesRoot = resolve(root, "authority-epochs");
+  if (existsSync(archivesRoot)) {
+    assertRealDirectory(archivesRoot);
+  } else {
+    mkdirSync(archivesRoot, { mode: 0o700 });
+  }
+  if (existsSync(archive)) {
+    assertRealDirectory(archive);
+  } else {
+    mkdirSync(archive, { mode: 0o700 });
+  }
+  assertRealDirectory(archive);
+  if (existsSync(archivedControlPlane)) {
+    throw new Error("native_runner_authority_archive_conflict");
+  }
+  await archiveRunnerState({
+    archiveKey: basename(archive).replace(/^epoch-/, ""),
+    priorIdentity,
+  });
+  const activeControlPlane = resolve(root, "control-plane");
+  assertRealDirectory(activeControlPlane);
+  renameSync(activeControlPlane, archivedControlPlane);
+  if (!existsSync(archivedControlPlane)) {
     throw new Error("native_runner_authority_archive_incomplete");
   }
   return controlPlaneState;
@@ -349,6 +413,32 @@ function providerDrainStateFromSnapshot(state: Record<string, unknown>): {
     providerSettled:
       activeProviderTurnId === null && state.ambiguousTurnStartPending !== true,
   };
+}
+
+async function releaseRunnerProcessOwnership(input: {
+  runnerSettled: boolean;
+  checkpoint: (() => Promise<void> | void) | null;
+  forceKill: () => void;
+  release: (() => Promise<void> | void) | null;
+}): Promise<void> {
+  let checkpointFailure: unknown;
+  try {
+    if (input.runnerSettled && input.checkpoint !== null) {
+      await input.checkpoint();
+    }
+  } catch (error) {
+    checkpointFailure = error;
+  } finally {
+    input.forceKill();
+  }
+  let releaseFailure: unknown;
+  try {
+    if (input.release !== null) await input.release();
+  } catch (error) {
+    releaseFailure = error;
+  }
+  if (checkpointFailure !== undefined) throw checkpointFailure;
+  if (releaseFailure !== undefined) throw releaseFailure;
 }
 
 function bridgedCodexQuestionParams(
@@ -657,6 +747,8 @@ export interface CapabilityRunnerdCodexTransportOptions {
       | "runner_local_connect_failed"
       | "runner_direct_wss_failed"
       | "runner_ingress_unavailable";
+    /** Persists suspended remote state before its process owner is released. */
+    checkpoint?: () => Promise<void> | void;
     release: () => Promise<void> | void;
   }>;
   /** Optional remote process owner used only by the new runner coordinator. */
@@ -667,6 +759,13 @@ export interface CapabilityRunnerdCodexTransportOptions {
   runnerStateDirectory?: string;
   /** Read the live durable runner state when runnerd owns a remote filesystem. */
   readRunnerState?: () => Promise<Record<string, unknown>>;
+  /** Materializes a verified external checkpoint before authority rotation. */
+  prepareExternalRunnerState?: () => Promise<void>;
+  /** Archives the verified suspended binding while retaining provider state. */
+  archiveExternalRunnerState?: (input: {
+    archiveKey: string;
+    priorIdentity: DurableRecoveryIdentity;
+  }) => Promise<void>;
   /** Active-connection recovery budget. Omitted for the existing local mode. */
   runnerReconnectGraceMs?: number;
 }
@@ -1599,6 +1698,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #runnerRecoveryInProgress = false;
   #startupComplete = false;
   #startupFailureCode = "native_runner_process_exited";
+  #controlPlaneCheckpoint: (() => Promise<void> | void) | null = null;
   #controlPlaneRelease: (() => Promise<void> | void) | null = null;
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
@@ -2052,6 +2152,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   async #closeOnce(): Promise<void> {
     this.#closed = true;
+    let runnerSettled = this.#handle === null;
     if (this.#core !== null && this.#handle !== null) {
       // A terminal provider frame can become visible one control loop before
       // its durable provider suffix is ACKed. Drain it before suspension so a
@@ -2086,6 +2187,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#evidence.runnerExited = true;
         this.#evidence.runnerExitCode = result.code;
         this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
+        runnerSettled = true;
         if (result.stderr.trim())
           this.#diagnostic(result.stderr.trim().slice(-4_096));
       } catch (error) {
@@ -2120,12 +2222,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#pump !== null) clearInterval(this.#pump);
     this.#pump = null;
     this.#queue.close();
-    // Ensure a runner that missed or could not finish the graceful lifecycle
-    // command cannot keep the control-plane server alive during teardown.
-    this.#handle?.child.kill("SIGKILL");
-    if (this.#controlPlaneRelease !== null) await this.#controlPlaneRelease();
-    await this.#core?.stop();
-    this.#controlPlaneRelease = null;
+    // A suspended remote runner still owns the only readable copy of its
+    // provider state. Persist that state before releasing its process owner;
+    // an unconfirmed runner is killed first and is never checkpointed.
+    try {
+      await releaseRunnerProcessOwnership({
+        runnerSettled,
+        checkpoint: this.#controlPlaneCheckpoint,
+        forceKill: () => {
+          this.#handle?.child.kill("SIGKILL");
+        },
+        release: this.#controlPlaneRelease,
+      });
+    } finally {
+      await this.#core?.stop();
+      this.#controlPlaneCheckpoint = null;
+      this.#controlPlaneRelease = null;
+    }
     if (this.#ownsRoot) rmSync(this.#root, { recursive: true, force: true });
     this.#publish();
   }
@@ -2488,7 +2601,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#startupFailureCode =
       registration?.startupFailureCode ?? "runner_local_connect_failed";
     if (registration === null) await core.start();
-    else this.#controlPlaneRelease = registration.release;
+    else {
+      this.#controlPlaneCheckpoint = registration.checkpoint ?? null;
+      this.#controlPlaneRelease = registration.release;
+    }
     const handle = spawnRunner({
       connection: registration?.connection ?? {
         mode: "connect",
@@ -2637,17 +2753,35 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       identity = desiredIdentity;
       rotatedAuthority = true;
     } else if (!exactAuthority) {
-      if (!localProvider || !localStateOwner || controlPlaneState === null) {
+      if (!localProvider || controlPlaneState === null) {
         throw new Error("native_runner_prp_run_rotation_unavailable");
       }
-      try {
-        controlPlaneState = rotateLocalAuthorityEpoch(
+      if (localStateOwner) {
+        try {
+          controlPlaneState = rotateLocalAuthorityEpoch(
+            this.#root,
+            controlPlaneState,
+            desiredIdentity,
+          );
+        } catch (error) {
+          quarantineLocalRuntimeState(this.#root, error);
+        }
+      } else {
+        if (
+          this.options.readRunnerState === undefined ||
+          this.options.prepareExternalRunnerState === undefined ||
+          this.options.archiveExternalRunnerState === undefined
+        ) {
+          throw new Error("native_runner_prp_run_rotation_unavailable");
+        }
+        await this.options.prepareExternalRunnerState();
+        controlPlaneState = await rotateExternalAuthorityEpoch(
           this.#root,
           controlPlaneState,
           desiredIdentity,
+          this.options.readRunnerState,
+          this.options.archiveExternalRunnerState,
         );
-      } catch (error) {
-        quarantineLocalRuntimeState(this.#root, error);
       }
       identity = desiredIdentity;
       rotatedAuthority = true;
@@ -2804,7 +2938,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#startupFailureCode =
       registration?.startupFailureCode ?? "runner_local_connect_failed";
     if (registration === null) await core.start();
-    else this.#controlPlaneRelease = registration.release;
+    else {
+      this.#controlPlaneCheckpoint = registration.checkpoint ?? null;
+      this.#controlPlaneRelease = registration.release;
+    }
     const handle = spawnRunner({
       connection: registration?.connection ?? {
         mode: "connect",
@@ -3581,4 +3718,5 @@ export const runnerdLaunchProfileInternals = Object.freeze({
 export const runnerdRecoveryInternals = Object.freeze({
   providerDrainStateFromSnapshot,
   recoveredRunAttachment,
+  releaseRunnerProcessOwnership,
 });

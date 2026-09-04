@@ -670,9 +670,10 @@ describe("verified native harness backups", () => {
     const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
     try {
+      const sessionScopeId = "native-session-scope-v2";
       const sessionRoot = join(
         stateBase,
-        createHash("sha256").update("native-session").digest("hex"),
+        createHash("sha256").update(sessionScopeId).digest("hex"),
       );
       const current = join(sessionRoot, "failover-backups", "current");
       await mkdir(join(current, "runner"), { recursive: true });
@@ -700,6 +701,8 @@ describe("verified native harness backups", () => {
       await writeFile(manifestPath, JSON.stringify(manifest));
       const stamp = createNativeHarnessBackupStamp({
         manifestPath,
+        sessionScopeId,
+        authorizedProviderLeaseId: "sandbox-1",
         normalizedSessionId: "native-session",
         runnerInstanceId: "runner-1",
         completedAt: manifest.completedAt,
@@ -707,6 +710,17 @@ describe("verified native harness backups", () => {
 
       expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(true);
       expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-2")).toBe(false);
+      const reboundStamp = createNativeHarnessBackupStamp({
+        manifestPath,
+        sessionScopeId,
+        authorizedProviderLeaseId: "sandbox-2",
+        normalizedSessionId: "native-session",
+        runnerInstanceId: "runner-1",
+        completedAt: manifest.completedAt,
+      });
+      expect(verifyNativeHarnessBackupStamp(reboundStamp, "sandbox-2")).toBe(
+        true,
+      );
       await writeFile(join(current, "runner", "runner-state.json"), "corrupt");
       expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-1")).toBe(false);
     } finally {
