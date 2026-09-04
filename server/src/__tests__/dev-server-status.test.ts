@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   getDevServerRestartRequestFilePath,
+  readDevServerRestartRequest,
   readPersistedDevServerStatus,
+  removeDevServerRestartRequest,
   toDevServerHealthStatus,
   writeDevServerRestartRequest,
 } from "../dev-server-status.js";
@@ -99,5 +101,34 @@ describe("dev server status helpers", () => {
       requestedAt: "2026-03-20T12:05:00.000Z",
       reason: "manual_restart_now",
     });
+  });
+
+  it("correlates restart request cleanup so stale consumers cannot remove a replacement", () => {
+    const filePath = createTempStatusFile({ dirty: true });
+    const env = { PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath };
+    expect(
+      writeDevServerRestartRequest(
+        {
+          requestedAt: "2026-09-04T12:00:00.000Z",
+          reason: "manual_restart_now",
+          requestId: "restart-new",
+          mode: "hot",
+          previousServerIdentity: "server-start-new",
+        },
+        env,
+      ),
+    ).toBe(true);
+
+    removeDevServerRestartRequest({ requestId: "restart-stale" }, env);
+    expect(readDevServerRestartRequest(env)).toEqual({
+      requestedAt: "2026-09-04T12:00:00.000Z",
+      reason: "manual_restart_now",
+      requestId: "restart-new",
+      mode: "hot",
+      previousServerIdentity: "server-start-new",
+    });
+
+    removeDevServerRestartRequest({ requestId: "restart-new" }, env);
+    expect(readDevServerRestartRequest(env)).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const MAX_PERSISTED_DEV_SERVER_STATUS_BYTES = 64 * 1024;
@@ -29,6 +29,9 @@ export type DevServerHealthStatus = {
 export type DevServerRestartRequest = {
   requestedAt: string;
   reason: "manual_restart_now";
+  requestId?: string;
+  mode?: "hot";
+  previousServerIdentity?: string;
 };
 
 export function getDevServerRestartRequestFilePath(
@@ -49,6 +52,53 @@ export function writeDevServerRestartRequest(
   mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, `${JSON.stringify(request, null, 2)}\n`, "utf8");
   return true;
+}
+
+export function readDevServerRestartRequest(
+  env: NodeJS.ProcessEnv = process.env,
+): DevServerRestartRequest | null {
+  const filePath = getDevServerRestartRequestFilePath(env);
+  if (!filePath || !existsSync(filePath)) return null;
+  try {
+    if (statSync(filePath).size > MAX_PERSISTED_DEV_SERVER_STATUS_BYTES)
+      return null;
+    const value = JSON.parse(readFileSync(filePath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    if (
+      typeof value.requestedAt !== "string" ||
+      value.reason !== "manual_restart_now"
+    ) {
+      return null;
+    }
+    return {
+      requestedAt: value.requestedAt,
+      reason: "manual_restart_now",
+      ...(typeof value.requestId === "string"
+        ? { requestId: value.requestId }
+        : {}),
+      ...(value.mode === "hot" ? { mode: "hot" as const } : {}),
+      ...(typeof value.previousServerIdentity === "string"
+        ? { previousServerIdentity: value.previousServerIdentity }
+        : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function removeDevServerRestartRequest(
+  expected?: Pick<DevServerRestartRequest, "requestId">,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const filePath = getDevServerRestartRequestFilePath(env);
+  if (!filePath) return;
+  if (expected?.requestId) {
+    const current = readDevServerRestartRequest(env);
+    if (current?.requestId !== expected.requestId) return;
+  }
+  rmSync(filePath, { force: true });
 }
 
 function normalizeStringArray(value: unknown): string[] {

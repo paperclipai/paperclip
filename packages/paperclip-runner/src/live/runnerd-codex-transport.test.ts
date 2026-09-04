@@ -9,11 +9,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import type { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -1981,6 +1983,122 @@ it("cold-restores a suspended provider session under its durable run binding", a
     await releaseMaterializedNativeRuntimeSkills(
       join(stateDirectory, "codex-home", "skills"),
     );
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("adopts a live runner on the same durable authority without spawning a duplicate", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
+  const server = createServer();
+  let authority: DurablePrpControlPlane | null = null;
+  server.on("upgrade", (request, socket, head) => {
+    if (!authority) {
+      socket.destroy();
+      return;
+    }
+    authority.handleUpgrade(request, socket, "/runner", head);
+  });
+  await new Promise<void>((resolveListen) =>
+    server.listen(0, "127.0.0.1", resolveListen),
+  );
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("Expected adoption test listener");
+  const registration = async (next: DurablePrpControlPlane) => {
+    authority = next;
+    return {
+      connectUrl: `ws://127.0.0.1:${address.port}/runner`,
+      release: async () => {
+        if (authority === next) authority = null;
+      },
+    };
+  };
+  const identity = {
+    runnerInstanceId: "runner-live-adopt",
+    environmentLeaseId: "lease-live-adopt",
+    runId: "run-live-adopt",
+    normalizedSessionId: "session-live-adopt",
+    turnId: "turn-live-adopt",
+    itemId: "item-live-adopt",
+  };
+  const sharedOptions = {
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    prpIdentity: identity,
+    lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
+    controlPlaneRegistration: registration,
+  };
+  const first = createCapabilityRunnerdCodexTransport(sharedOptions);
+  let runnerPid: number | null = null;
+  let adopted: ReturnType<typeof createCapabilityRunnerdCodexTransport> | null =
+    null;
+  try {
+    try {
+      await first.transport.request("thread/start", {
+        cwd: tmpdir(),
+        dynamicTools: codexSemanticToolSpecs(),
+      });
+    } catch (error) {
+      const stderr = await readFile(
+        join(stateDirectory, "diagnostics", "runnerd.stderr.log"),
+        "utf8",
+      ).catch(() => "");
+      throw new Error(
+        `${String(error)}\n${JSON.stringify(first.evidence())}${stderr ? `\n${stderr}` : ""}`,
+      );
+    }
+    runnerPid = first.evidence().runnerPid;
+    expect(runnerPid).toEqual(expect.any(Number));
+
+    await first.detachControllerForRestart();
+    expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+
+    const duplicateLauncher = vi.fn(() => {
+      throw new Error("duplicate runner spawn attempted");
+    });
+    adopted = createCapabilityRunnerdCodexTransport({
+      ...sharedOptions,
+      resumeDynamicTools: [],
+      runnerProcessLauncher: duplicateLauncher,
+      adoptExistingRunner: {
+        pid: runnerPid!,
+        processGroupId: runnerPid,
+        startedAt: new Date().toISOString(),
+        isAlive: () => {
+          try {
+            process.kill(runnerPid!, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      },
+    });
+    await expect(adopted.transport.request("thread/read", {})).resolves.toEqual(
+      expect.objectContaining({
+        thread: expect.objectContaining({ id: "codex-thread-1" }),
+      }),
+    );
+    expect(adopted.evidence().runnerPid).toBe(runnerPid);
+    expect(duplicateLauncher).not.toHaveBeenCalled();
+    expect(adopted.evidence().diagnostics).toContain(
+      `adopted runner ${runnerPid} authenticated to its durable PRP authority`,
+    );
+  } finally {
+    await adopted?.transport.close().catch(() => undefined);
+    if (runnerPid) {
+      try {
+        process.kill(-runnerPid, "SIGKILL");
+      } catch {
+        // The adopted runner normally exits after its durable suspend command.
+      }
+    }
+    server.closeAllConnections();
+    if (server.listening) {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);

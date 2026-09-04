@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
   coordinateHeartbeatSchedulerShutdown,
+  drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
@@ -142,6 +143,43 @@ describe("finalizeServerShutdown", () => {
     expect(shutdownAppServices).toHaveBeenCalledOnce();
     expect(shutdownInstrumentation).toHaveBeenCalledOnce();
     expect(log.info).not.toHaveBeenCalled();
+  });
+});
+
+describe("drainRunExecutionFinalizersForShutdown", () => {
+  it("awaits bounded execution finalizers", async () => {
+    const release = deferred();
+    const drain = vi.fn(() => release.promise);
+    const pending = drainRunExecutionFinalizersForShutdown({
+      signal: "SIGTERM",
+      drain,
+      timeoutMs: 1_000,
+      log: stubLogger(),
+    });
+    await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
+    release.resolve();
+    await expect(pending).resolves.toBe("drained");
+  });
+
+  it("returns after the bounded timeout when an adopted run remains active", async () => {
+    vi.useFakeTimers();
+    try {
+      const log = stubLogger();
+      const pending = drainRunExecutionFinalizersForShutdown({
+        signal: "SIGINT",
+        drain: () => new Promise<void>(() => undefined),
+        timeoutMs: 250,
+        log,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(pending).resolves.toBe("timed_out");
+      expect(log.info).toHaveBeenCalledWith(
+        expect.objectContaining({ timeoutMs: 250 }),
+        expect.stringContaining("timed out"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

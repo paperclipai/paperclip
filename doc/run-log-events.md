@@ -23,6 +23,25 @@ credential material are never written to the run log.
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
 
+## Native Restart Recovery Run-Log Event
+
+Paperclip writes a `native.recovery.transition` event for every native restart
+classification and for graceful restart suspension. This immutable run-log
+record lets operators reconstruct recovery decisions without exporting data to
+Paperclip Telemetry or OpenTelemetry.
+
+The payload contains the restart kind, recovery request id when one exists,
+runner disposition, and the controller generation and provider attempt for a
+claimed recovery. Live-runner adoption also records the runner PID, process
+group, and process-start fingerprint. A non-claim disposition records a bounded
+reason instead. Graceful suspension records the signal and confirms that it did
+not create a retry run.
+
+The event never includes bootstrap tickets, reconnect leases, authentication
+proofs, encryption keys, environment variables, provider credentials, command
+arguments, or an unsanitized stderr stream. Detailed failed-attempt diagnostics
+remain in the bounded `native_run_finalizations.recovery_history` ledger.
+
 ## Sandbox Startup Run-Log Event
 
 Paperclip writes one `run.startup.step` event to the run log for each bring-up

@@ -226,6 +226,8 @@ export interface RunnerProcessHandle {
     kill(signal?: NodeJS.Signals | number): boolean;
   };
   completion: Promise<RunnerProcessResult>;
+  processGroupId?: number | null;
+  startedAt?: string;
   /** Relaunches the same immutable process specification with a fresh ticket. */
   restart?(ticket: string): RunnerProcessHandle;
 }
@@ -1993,6 +1995,7 @@ export function spawnRunner(options: {
   };
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
+  diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
   const connection =
     options.connection ??
@@ -2109,28 +2112,66 @@ export function spawnRunner(options: {
     );
   }
 
+  const detached = process.platform !== "win32";
+  const diagnosticsDirectory = options.diagnosticsDirectory;
+  let stdoutPath: string | null = null;
+  let stderrPath: string | null = null;
+  let stdoutFd: number | null = null;
+  let stderrFd: number | null = null;
+  if (diagnosticsDirectory) {
+    mkdirSync(diagnosticsDirectory, { recursive: true, mode: 0o700 });
+    stdoutPath = resolve(diagnosticsDirectory, "runnerd.stdout.log");
+    stderrPath = resolve(diagnosticsDirectory, "runnerd.stderr.log");
+    stdoutFd = openSync(stdoutPath, "a", 0o600);
+    stderrFd = openSync(stderrPath, "a", 0o600);
+  }
   const child = spawn(command, args, {
     cwd: packageRoot,
     env: environment,
-    stdio: "pipe",
+    detached,
+    stdio:
+      stdoutFd !== null && stderrFd !== null
+        ? ["ignore", stdoutFd, stderrFd]
+        : "pipe",
   });
+  if (stdoutFd !== null) closeSync(stdoutFd);
+  if (stderrFd !== null) closeSync(stderrFd);
+  child.unref();
   let stdout = "";
   let stderr = "";
-  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+  child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
     stdout = `${stdout}${chunk}`.slice(-16_384);
   });
-  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+  child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
     stderr = `${stderr}${chunk}`.slice(-16_384);
   });
+  const boundedDiagnostic = (filePath: string | null): string => {
+    if (!filePath) return "";
+    try {
+      return readFileSync(filePath, "utf8").slice(-16_384);
+    } catch {
+      return "";
+    }
+  };
   const completion = new Promise<RunnerProcessResult>(
     (resolveCompletion, rejectCompletion) => {
       child.once("error", rejectCompletion);
       child.once("exit", (code, signal) =>
-        resolveCompletion({ code, signal, stdout, stderr }),
+        resolveCompletion({
+          code,
+          signal,
+          stdout: stdout || boundedDiagnostic(stdoutPath),
+          stderr: stderr || boundedDiagnostic(stderrPath),
+        }),
       );
     },
   );
-  return withRestart({ child, completion });
+  return withRestart({
+    child,
+    completion,
+    processGroupId: detached ? (child.pid ?? null) : null,
+    startedAt: new Date().toISOString(),
+  });
 }
 
 export async function waitForProcess(
@@ -2143,7 +2184,19 @@ export async function waitForProcess(
       handle.completion,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
-          handle.child.kill("SIGKILL");
+          if (
+            process.platform !== "win32" &&
+            handle.processGroupId &&
+            handle.processGroupId > 0
+          ) {
+            try {
+              process.kill(-handle.processGroupId, "SIGKILL");
+            } catch {
+              handle.child.kill("SIGKILL");
+            }
+          } else {
+            handle.child.kill("SIGKILL");
+          }
           reject(new Error("Durable recovery runner timed out."));
         }, timeoutMs);
       }),
