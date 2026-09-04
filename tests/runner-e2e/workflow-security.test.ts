@@ -238,6 +238,12 @@ describe("public repository paid workflow security", () => {
     expect(paidJob).toMatch(
       /Reauthorize paid execution before provider access[\s\S]*actions\/checkout@[0-9a-f]{40}[\s\S]*persist-credentials: false[\s\S]*Download resolved target lockfile/,
     );
+    expect(paidJob).toContain(
+      "pnpm exec playwright install --with-deps --only-shell chromium",
+    );
+    expect(paidJob).not.toContain(
+      "pnpm exec playwright install --with-deps chromium",
+    );
     const paidInstall = paidJob.indexOf(
       "pnpm install --frozen-lockfile --ignore-scripts",
     );

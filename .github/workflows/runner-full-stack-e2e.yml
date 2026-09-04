@@ -910,15 +910,15 @@ jobs:
         if: matrix.profileId == 'legacy-claude'
         run: npm install --global --omit=dev @anthropic-ai/claude-code@2.1.19
 
-      - name: Install Chromium
+      - name: Install Chromium headless shell
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
-            if pnpm exec playwright install --with-deps chromium; then
+            if pnpm exec playwright install --with-deps --only-shell chromium; then
               exit 0
             fi
             if [ "$attempt" -eq 3 ]; then
-              echo "Chromium installation failed after $attempt attempts." >&2
+              echo "Chromium headless shell installation failed after $attempt attempts." >&2
               exit 1
             fi
             sleep "$((attempt * 10))"
