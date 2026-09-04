@@ -1,5 +1,6 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -153,36 +154,32 @@ describe("dev server status helpers", () => {
     expect(readDevServerRestartRequest(env)).toBeNull();
   });
 
-  it("does not consume a newer request written after an older request is claimed", () => {
+  it("recovers a lock abandoned by a dead restart-request writer", () => {
     const filePath = createTempStatusFile({ dirty: true });
     const env = { PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath };
+    const requestPath = getDevServerRestartRequestFilePath(env)!;
+    const lockPath = `${requestPath}.lock`;
+    mkdirSync(lockPath);
+    writeFileSync(
+      path.join(lockPath, "owner.json"),
+      JSON.stringify({ pid: 2_000_000_000, acquiredAt: new Date().toISOString() }),
+      "utf8",
+    );
+
     writeDevServerRestartRequest(
       {
-        requestedAt: "2026-09-04T12:00:00.000Z",
+        requestedAt: "2026-09-04T12:00:01.000Z",
         reason: "manual_restart_now",
-        requestId: "restart-old",
+        requestId: "restart-after-crash",
         mode: "hot",
       },
       env,
     );
 
-    removeDevServerRestartRequest({ requestId: "restart-old" }, env, {
-      afterClaim: () => {
-        writeDevServerRestartRequest(
-          {
-            requestedAt: "2026-09-04T12:00:01.000Z",
-            reason: "manual_restart_now",
-            requestId: "restart-new",
-            mode: "hot",
-          },
-          env,
-        );
-      },
-    });
-
     expect(readDevServerRestartRequest(env)).toMatchObject({
-      requestId: "restart-new",
+      requestId: "restart-after-crash",
       requestedAt: "2026-09-04T12:00:01.000Z",
     });
+    expect(existsSync(lockPath)).toBe(false);
   });
 });

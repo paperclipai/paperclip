@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
-  linkSync,
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -12,6 +12,10 @@ import {
 import path from "node:path";
 
 const MAX_PERSISTED_DEV_SERVER_STATUS_BYTES = 64 * 1024;
+const DEV_RESTART_REQUEST_LOCK_STALE_MS = 30_000;
+const DEV_RESTART_REQUEST_LOCK_RETRY_COUNT = 50;
+const DEV_RESTART_REQUEST_LOCK_RETRY_MS = 2;
+const lockWaitBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 export type PersistedDevServerStatus = {
   dirty: boolean;
@@ -48,6 +52,88 @@ export type DevServerRestartRequest = {
   previousServerIdentity?: string;
 };
 
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
+  }
+}
+
+function tryRecoverDevRestartRequestLock(lockPath: string): boolean {
+  let stale = false;
+  try {
+    const lockAgeMs = Date.now() - statSync(lockPath).mtimeMs;
+    const owner = JSON.parse(
+      readFileSync(path.join(lockPath, "owner.json"), "utf8"),
+    ) as Record<string, unknown>;
+    stale =
+      lockAgeMs >= DEV_RESTART_REQUEST_LOCK_STALE_MS ||
+      (typeof owner.pid === "number" && !processIsAlive(owner.pid));
+  } catch {
+    try {
+      stale =
+        Date.now() - statSync(lockPath).mtimeMs >=
+        DEV_RESTART_REQUEST_LOCK_STALE_MS;
+    } catch {
+      return true;
+    }
+  }
+  if (!stale) return false;
+
+  const stalePath = `${lockPath}.${process.pid}.${randomUUID()}.stale`;
+  try {
+    renameSync(lockPath, stalePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+      return true;
+    }
+    return false;
+  }
+  rmSync(stalePath, { recursive: true, force: true });
+  return true;
+}
+
+function withDevRestartRequestLock<T>(filePath: string, action: () => T): T {
+  const lockPath = `${filePath}.lock`;
+  for (
+    let attempt = 0;
+    attempt <= DEV_RESTART_REQUEST_LOCK_RETRY_COUNT;
+    attempt += 1
+  ) {
+    try {
+      mkdirSync(lockPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") {
+        throw error;
+      }
+      if (tryRecoverDevRestartRequestLock(lockPath)) continue;
+      if (attempt === DEV_RESTART_REQUEST_LOCK_RETRY_COUNT) {
+        throw new Error("dev_server_restart_request_lock_busy");
+      }
+      Atomics.wait(
+        lockWaitBuffer,
+        0,
+        0,
+        DEV_RESTART_REQUEST_LOCK_RETRY_MS,
+      );
+      continue;
+    }
+    try {
+      writeFileSync(
+        path.join(lockPath, "owner.json"),
+        `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
+        "utf8",
+      );
+      return action();
+    } finally {
+      rmSync(lockPath, { recursive: true, force: true });
+    }
+  }
+  throw new Error("dev_server_restart_request_lock_busy");
+}
+
 export function getDevServerRestartRequestFilePath(
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
@@ -67,19 +153,21 @@ export function writeDevServerRestartRequest(
   if (!filePath) return false;
 
   mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    writeFileSync(tempPath, `${JSON.stringify(request, null, 2)}\n`, "utf8");
-    renameSync(tempPath, filePath);
-  } finally {
+  withDevRestartRequestLock(filePath, () => {
+    const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
     try {
-      unlinkSync(tempPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
-        throw error;
+      writeFileSync(tempPath, `${JSON.stringify(request, null, 2)}\n`, "utf8");
+      renameSync(tempPath, filePath);
+    } finally {
+      try {
+        unlinkSync(tempPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+          throw error;
+        }
       }
     }
-  }
+  });
   return true;
 }
 
@@ -126,34 +214,14 @@ export function readDevServerRestartRequest(
 export function removeDevServerRestartRequest(
   expected?: Pick<DevServerRestartRequest, "requestId">,
   env: NodeJS.ProcessEnv = process.env,
-  hooks: { afterClaim?: () => void } = {},
 ): void {
   const filePath = getDevServerRestartRequestFilePath(env);
   if (!filePath) return;
-  const claimedPath = `${filePath}.${process.pid}.${randomUUID()}.claim`;
-  try {
-    renameSync(filePath, claimedPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return;
-    throw error;
-  }
-  hooks.afterClaim?.();
-
-  const claimed = readDevServerRestartRequestAtPath(claimedPath);
-  const shouldRemove =
-    !expected?.requestId || claimed?.requestId === expected.requestId;
-  if (!shouldRemove) {
-    try {
-      // A hard link is an atomic no-clobber restore. If a newer writer already
-      // recreated the shared path, leave that newer request untouched.
-      linkSync(claimedPath, filePath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") {
-        throw error;
-      }
-    }
-  }
-  unlinkSync(claimedPath);
+  withDevRestartRequestLock(filePath, () => {
+    const current = readDevServerRestartRequestAtPath(filePath);
+    if (expected?.requestId && current?.requestId !== expected.requestId) return;
+    rmSync(filePath, { force: true });
+  });
 }
 
 function normalizeStringArray(value: unknown): string[] {
