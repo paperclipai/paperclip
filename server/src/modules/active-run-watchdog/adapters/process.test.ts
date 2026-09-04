@@ -117,27 +117,62 @@ describe("adapters", () => {
       });
     });
 
-    it.each([
-      { fallbackPid: 0 },
-      { fallbackPid: -7 },
-      { fallbackPid: 4.5 },
-    ])("returns a typed no-op for an invalid process identifier ($fallbackPid)", async ({ fallbackPid }) => {
-      mockedIsPidAlive.mockReturnValue(true);
-      mockedIsProcessGroupAlive.mockReturnValue(false);
+    it("uses a valid process group when no pid is available", async () => {
+      mockedIsProcessGroupAlive.mockReturnValueOnce(true).mockReturnValueOnce(false);
       mockedTerminateLocalService.mockResolvedValue(undefined);
       const adapter = createProcessAdapter();
 
-      await adapter.cleanupRunProcess({
+      const outcome = await adapter.cleanupRunProcess({
         runId: "run-1",
         adapterType: "codex_local",
-        fallbackPid,
-        fallbackProcessGroupId: null,
+        fallbackPid: null,
+        fallbackProcessGroupId: 4242,
       });
 
+      expect(outcome).toEqual({
+        attempted: true,
+        outcome: "terminated",
+        adapterType: "codex_local",
+        pid: null,
+        processGroupId: 4242,
+      });
       expect(mockedTerminateLocalService).toHaveBeenCalledWith(
-        expect.objectContaining({ pid: 0, processGroupId: null }),
+        { pid: 4242, processGroupId: 4242 },
         undefined,
       );
     });
+
+    it.each([
+      { fallbackPid: 0, fallbackProcessGroupId: null },
+      { fallbackPid: -7, fallbackProcessGroupId: null },
+      { fallbackPid: 4.5, fallbackProcessGroupId: null },
+      { fallbackPid: null, fallbackProcessGroupId: 0 },
+      { fallbackPid: null, fallbackProcessGroupId: -7 },
+      { fallbackPid: null, fallbackProcessGroupId: 4.5 },
+    ])(
+      "reports no_process_metadata for invalid identifiers ($fallbackPid, $fallbackProcessGroupId)",
+      async ({ fallbackPid, fallbackProcessGroupId }) => {
+        mockedIsPidAlive.mockReturnValue(true);
+        mockedIsProcessGroupAlive.mockReturnValue(false);
+        mockedTerminateLocalService.mockResolvedValue(undefined);
+        const adapter = createProcessAdapter();
+
+        const outcome = await adapter.cleanupRunProcess({
+          runId: "run-1",
+          adapterType: "codex_local",
+          fallbackPid,
+          fallbackProcessGroupId,
+        });
+
+        expect(outcome).toEqual({
+          attempted: false,
+          outcome: "no_process_metadata",
+          adapterType: "codex_local",
+        });
+        expect(mockedIsPidAlive).not.toHaveBeenCalled();
+        expect(mockedIsProcessGroupAlive).not.toHaveBeenCalled();
+        expect(mockedTerminateLocalService).not.toHaveBeenCalled();
+      },
+    );
   });
 });

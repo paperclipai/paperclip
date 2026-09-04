@@ -26,15 +26,26 @@ export function createProcessAdapter(): RunProcessController {
       }
 
       const running = runningProcesses.get(input.runId);
-      const pid = running?.child.pid ?? input.fallbackPid ?? null;
-      const processGroupId = running?.processGroupId ?? input.fallbackProcessGroupId ?? null;
-      if (typeof pid !== "number" && typeof processGroupId !== "number") {
+      const registeredPid = running?.child.pid ?? null;
+      const registeredProcessGroupId = running?.processGroupId ?? null;
+      const pid = isValidPositivePid(registeredPid)
+        ? registeredPid
+        : isValidPositivePid(input.fallbackPid)
+          ? input.fallbackPid
+          : null;
+      const processGroupId = isValidPositivePid(registeredProcessGroupId)
+        ? registeredProcessGroupId
+        : isValidPositivePid(input.fallbackProcessGroupId)
+          ? input.fallbackProcessGroupId
+          : null;
+      const terminationPid = pid ?? processGroupId;
+      if (terminationPid === null) {
         return { attempted: false, outcome: "no_process_metadata", adapterType: input.adapterType };
       }
 
       const wasAlive =
-        (typeof pid === "number" && isPidAlive(pid)) ||
-        (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
+        (pid !== null && isPidAlive(pid)) ||
+        (processGroupId !== null && isProcessGroupAlive(processGroupId));
       if (!wasAlive) {
         runningProcesses.delete(input.runId);
         return { attempted: false, outcome: "not_running", adapterType: input.adapterType, pid, processGroupId };
@@ -43,15 +54,15 @@ export function createProcessAdapter(): RunProcessController {
       try {
         await terminateLocalService(
           {
-            pid: isValidPositivePid(pid) ? pid : (processGroupId ?? 0),
-            processGroupId: isValidPositivePid(processGroupId) ? processGroupId : null,
+            pid: terminationPid,
+            processGroupId,
           },
           running ? { forceAfterMs: Math.max(1, running.graceSec) * 1000 } : undefined,
         );
         runningProcesses.delete(input.runId);
         const stillAlive =
-          (typeof pid === "number" && isPidAlive(pid)) ||
-          (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
+          (pid !== null && isPidAlive(pid)) ||
+          (processGroupId !== null && isProcessGroupAlive(processGroupId));
         return {
           attempted: true,
           outcome: stillAlive ? "termination_sent_still_running" : "terminated",

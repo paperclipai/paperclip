@@ -26,5 +26,5 @@ and the use cases behind a factory function. Code outside the module imports
 only that entry point, never a file inside `domain/`, `application/`, or
 `adapters/` directly.
 
-Code review and the TypeScript compiler enforce this layer rule. There is
-no automated test for it.
+`pnpm check:module-boundaries` enforces these rules for production source
+files. It also rejects imports that bypass another module's `index.ts`.
