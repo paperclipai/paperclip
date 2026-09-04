@@ -22814,6 +22814,7 @@ export function heartbeatService(
       const issueNeedsImmediateRecovery =
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
+        !issue.hiddenAt &&
         issue.assigneeAgentId === run.agentId &&
         (run.status === "failed" ||
           run.status === "timed_out" ||

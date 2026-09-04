@@ -446,6 +446,32 @@
 }
 
 @layer base {
+  /*
+    Autofill, in the app's own colours.
+
+    Chrome paints an autofilled field with a fixed blue-tinted fill of its own —
+    it ignores `background-color` entirely, which is why nothing in the token
+    layer reached it and a filled email field came out blue on an otherwise
+    monochrome screen. `box-shadow` is the one property that does reach it: an
+    inset shadow thick enough to cover the field repaints the surface, and
+    `-webkit-text-fill-color` does the same job for the text.
+
+    The transition delay is the standard trick for keeping it: Chrome re-applies
+    its own fill on interaction, and a delay long enough to outlast the frame is
+    what stops it flashing back.
+  */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    -webkit-text-fill-color: var(--foreground);
+    caret-color: var(--foreground);
+    box-shadow: inset 0 0 0 1000px var(--muted);
+    transition: background-color 100000s ease-in-out 0s;
+  }
+
   * {
     @apply border-border outline-ring/50;
   }
@@ -2373,7 +2399,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-13: calc(0.75rem + 0.5rem); /* Extracted from ui/src/components/IssueRow.tsx (ml-[calc(theme(spacing.3)+theme(spacing.2))]). */
   --sz-140px: 140px; /* Extracted from ui/src/components/JsonSchemaForm.tsx (min-h-[140px]). */
   --sz-52px: 52px; /* Extracted from ui/src/components/KanbanBoard.tsx (w-[52px]). */
-  --sz-68px: 68px; /* The onboarding arc's side inset — 560px frame, 424px column. */
   --sz-48px: 48px; /* Extracted from ui/src/components/KanbanBoard.tsx (min-w-[48px]). */
   --sz-260px: 260px; /* Extracted from ui/src/components/KanbanBoard.tsx (min-w-[260px]). */
   --sz-120px: 120px; /* Extracted from ui/src/components/KanbanBoard.tsx (min-h-[120px]). */
