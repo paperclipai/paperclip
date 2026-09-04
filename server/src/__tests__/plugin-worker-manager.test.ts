@@ -29,6 +29,7 @@ vi.mock("../middleware/logger.js", () => {
 import { logger } from "../middleware/logger.js";
 import {
   appendStderrExcerpt,
+  createDuplexRouteSlotController,
   createPluginWorkerHandle,
   formatWorkerFailureMessage,
   resolveRpcCallTimeoutMs,
@@ -1609,6 +1610,132 @@ describe("plugin worker manager login pseudo-terminal concurrency", () => {
         .map((arg) => JSON.stringify(arg))
         .join("\n");
       expect(loggedText).not.toContain(secretMarker);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The process-wide login pseudo-terminal route ceiling (board-approved
+// deviation, PAP-6021 card 45cc663c)
+// ---------------------------------------------------------------------------
+// Every login pseudo-terminal route reserves one slot from the same
+// process-wide aggregate route-slot controller the duplex channel route
+// uses (`createDuplexRouteSlotController`), so the two route types share one
+// ceiling. This is a host-process safety ceiling across every worker in the
+// process, not a per-user or a per-worker quota.
+
+describe("plugin worker manager login pseudo-terminal route ceiling", () => {
+  it("rejects the second open with the fixed capacity error before the worker call, when the process-wide ceiling is full", async () => {
+    // A process-scoped ceiling of one slot. The manager injects one shared
+    // controller into every worker; the test injects a small one directly —
+    // the same controller shape the duplex channel route shares.
+    const handle = makeLoginPtyHandle({
+      duplexRouteSlots: createDuplexRouteSlotController(1),
+      loginPtyLimits: { openTimeoutMs: 300 },
+    });
+    try {
+      await handle.start();
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const startedAt = Date.now();
+      // The refused open scripts `no-open-reply`: if it wrongly reached the
+      // worker, the promise would only settle after the 300ms open timeout,
+      // and with a different, timeout-shaped error — not the capacity error.
+      // A fast rejection with the exact capacity error proves the worker
+      // never received this open's request.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({ workerSessionId: "ws-B", mode: "no-open-reply" }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_ROUTES_AT_CAPACITY");
+      expect(Date.now() - startedAt).toBeLessThan(150);
+      await first.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("admits a later open after the first route closes and releases its slot", async () => {
+    const handle = makeLoginPtyHandle({
+      duplexRouteSlots: createDuplexRouteSlotController(1),
+    });
+    try {
+      await handle.start();
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ workerSessionId: "ws-B" })),
+      ).rejects.toThrow("LOGIN_PTY_ROUTES_AT_CAPACITY");
+      // Closing the first route releases its slot, so a later open is admitted.
+      await first.close();
+      const second = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-C" }),
+      );
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("admits a later open on a different worker after a worker exit releases the shared slot", async () => {
+    // One shared controller instance, the same shape the manager injects into
+    // every worker handle, so both handles below draw from the SAME ceiling.
+    const sharedSlots = createDuplexRouteSlotController(1);
+    const handle = makeLoginPtyHandle({ duplexRouteSlots: sharedSlots });
+    const secondHandle = makeLoginPtyHandle({ duplexRouteSlots: sharedSlots });
+    try {
+      await handle.start();
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const waitResult = first.wait();
+      await handle.stop();
+      // The worker exit settles the route and releases its slot.
+      await expect(waitResult).resolves.toEqual({ exitCode: null });
+      // Before the release, a second worker's open against the same shared
+      // ceiling would have rejected with the capacity error. After the
+      // release, the shared ceiling of one admits a fresh open on a
+      // different worker.
+      await secondHandle.start();
+      const second = await secondHandle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B" }),
+      );
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+      await secondHandle.stop().catch(() => undefined);
+    }
+  });
+
+  it("releases exactly one slot when a route's terminal exit is followed by an explicit close", async () => {
+    // A double release (once on the terminal exit, once on the later close)
+    // would let a third open through a ceiling of one before its true
+    // capacity. This test proves the ceiling still holds after both events.
+    const handle = makeLoginPtyHandle({
+      duplexRouteSlots: createDuplexRouteSlotController(1),
+    });
+    try {
+      await handle.start();
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A", exitCode: 0 }),
+      );
+      await expect(first.wait()).resolves.toEqual({ exitCode: 0 });
+      // The terminal exit already released the one slot. A second open now
+      // succeeds, consuming that same slot.
+      const second = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B" }),
+      );
+      // The explicit close on the first (already-exited) route must not
+      // release a second slot it no longer holds.
+      await first.close();
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ workerSessionId: "ws-C" })),
+      ).rejects.toThrow("LOGIN_PTY_ROUTES_AT_CAPACITY");
+      await second.close();
     } finally {
       await handle.stop().catch(() => undefined);
     }

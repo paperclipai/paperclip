@@ -165,6 +165,16 @@ const LOGIN_PTY_CLOSE_TIMEOUT_MS = 10_000;
 const LOGIN_PTY_COMMAND_NOT_ALLOWED = "LOGIN_PTY_COMMAND_NOT_ALLOWED";
 /** The fixed non-secret error a failed open returns. */
 const LOGIN_PTY_OPEN_FAILED = "LOGIN_PTY_OPEN_FAILED";
+/**
+ * The fixed non-secret error a login pseudo-terminal open returns when the
+ * process-wide aggregate route-slot ceiling is full. This is a distinct
+ * condition from the removed per-worker single-route gate: it means the whole
+ * process is at capacity, across every worker, not that one worker already
+ * holds a terminal. It is also distinct from {@link DUPLEX_CHANNEL_ROUTE_BUSY}:
+ * `packages/adapter-utils/src/execution-target.ts` matches that exact text as
+ * a marker for the duplex path, and a login failure must never enter it.
+ */
+const LOGIN_PTY_ROUTES_AT_CAPACITY = "LOGIN_PTY_ROUTES_AT_CAPACITY";
 
 // Bounds and timeouts for the generic duplex channel route. The route mirrors the
 // login pseudo-terminal route, but it carries no command allowlist and adds seven
@@ -1417,6 +1427,30 @@ export function createPluginWorkerHandle(
   // session id can never bind to two live routes at once.
   const loginPtyRoutesByWorkerSessionId = new Map<string, LoginPtyRoute>();
 
+  // The routes that currently hold one process-wide aggregate route slot. The
+  // host releases a slot one time per route, so a double terminalize, or a
+  // terminal exit followed by a later close, never releases two slots.
+  const loginPtyRouteSlotHolders = new Set<LoginPtyRoute>();
+
+  // Try to reserve one aggregate route slot for a route. Return true when the
+  // route holds a slot after the call. When no controller is present, the
+  // route always holds a slot. This calls the SAME shared controller instance
+  // the duplex channel route uses (`duplexRouteSlots`), so the two route types
+  // share one process-wide ceiling.
+  function acquireLoginPtyRouteSlot(route: LoginPtyRoute): boolean {
+    if (!duplexRouteSlots) return true;
+    if (!duplexRouteSlots.tryAcquire()) return false;
+    loginPtyRouteSlotHolders.add(route);
+    return true;
+  }
+
+  // Release the aggregate route slot a route holds, one time. A route that
+  // never held a slot, or already released it, releases nothing.
+  function releaseLoginPtyRouteSlot(route: LoginPtyRoute): void {
+    if (!loginPtyRouteSlotHolders.delete(route)) return;
+    duplexRouteSlots?.release();
+  }
+
   // Close the worker terminal by the host route identifier and verify the bound
   // acknowledgement. Return true only when the worker returns an acknowledgement
   // that carries the exact host route identifier. An absent, malformed,
@@ -1455,6 +1489,7 @@ export function createPluginWorkerHandle(
     if (route.workerSessionId !== null) {
       loginPtyRoutesByWorkerSessionId.delete(route.workerSessionId);
     }
+    releaseLoginPtyRouteSlot(route);
     // A terminalized route reports a null exit code, which the runner treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
@@ -1536,6 +1571,9 @@ export function createPluginWorkerHandle(
     if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
     route.state = "closed";
+    // A terminal exit is its own slot-release path, distinct from the later
+    // explicit close, so a route that already exited returns its slot at once.
+    releaseLoginPtyRouteSlot(route);
     settleRouteWait(route, { exitCode });
   }
 
@@ -1653,14 +1691,16 @@ export function createPluginWorkerHandle(
       route.buffered = [];
       route.preBind = [];
       route.preBindChars = 0;
+      releaseLoginPtyRouteSlot(route);
       settleRouteWait(route, { exitCode: null });
     }
   }
 
-  // Open one live login pseudo-terminal route. Reserve the route
-  // before the open call, bind the worker session identifier one time on the
-  // first successful open reply, and return a session the login transport drives.
-  // Terminalize the route on every open failure path.
+  // Open one live login pseudo-terminal route. Reserve one process-wide
+  // aggregate route slot before the open call, bind the worker session
+  // identifier one time on the first successful open reply, and return a
+  // session the login transport drives. Terminalize the route on every open
+  // failure path. One worker can hold more than one concurrent route.
   async function openLoginPtySession(
     input: LoginPtyOpenInput,
   ): Promise<LoginPtyHostSession> {
@@ -1692,6 +1732,14 @@ export function createPluginWorkerHandle(
       preBind: [],
       preBindChars: 0,
     };
+    // Reserve one process-wide aggregate route slot before any work. When the
+    // ceiling is full, reject with the fixed capacity error and open nothing,
+    // so an active login route never downgrades and the ceiling never
+    // overcommits. This never reveals the live count, the ceiling, or any
+    // other tenant.
+    if (!acquireLoginPtyRouteSlot(route)) {
+      throw new Error(LOGIN_PTY_ROUTES_AT_CAPACITY);
+    }
     // Reserve the route by its host route identifier before the open call, so
     // a notification that echoes this identifier can queue against it even
     // before the worker replies.
