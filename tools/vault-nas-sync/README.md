@@ -20,11 +20,42 @@ davon. Aufgefallen ist das erst am 22.08.2026, drei Monate später.
 
 rsync zieht Löschungen nach: was im Vault verschwindet, verschwindet beim
 nächsten Lauf auch auf der NAS. Deshalb wandert alles, was **ersetzt oder
-gelöscht** wird, in einen datierten Auffangordner `_geloescht/<datum>/`, statt
-zu verschwinden. Erst das macht den Spiegel gegen Fehlgriffe und
-Verschlüsselung brauchbar.
+gelöscht** wird, in einen datierten Auffangordner
+`_vault-geloescht/<datum>/` **neben** dem Spiegel, statt zu verschwinden. Erst
+das macht den Spiegel gegen Fehlgriffe und Verschlüsselung brauchbar.
 
 Zusätzlich hat die NAS-Freigabe einen eigenen Papierkorb (`#recycle`).
+
+### Aufbewahrung im Auffangordner
+
+Der Auffangordner wächst sonst unbegrenzt — bis zum 04.09.2026 hat ihn nie
+jemand geräumt: 15 Tagesstände, 1,1 GB, seit dem 22.08.2026. Läuft die NAS
+darüber voll, fällt nicht der Auffangordner aus, sondern der Spiegel selbst.
+
+`aufraeumen.sh` hält deshalb ein **7/4/3**-Schema (Großvater-Vater-Sohn):
+
+| Stufe | Anzahl | was bleibt |
+|---|---|---|
+| täglich | 7 | die jüngsten sieben Tagesstände |
+| wöchentlich | 4 | je ISO-Woche der jüngste, für vier Wochen |
+| monatlich | 3 | je Kalendermonat der jüngste, für drei Monate |
+
+Die Stufen **überlagern** sich, sie addieren sich nicht — ein Stand, den schon
+die Tagesstufe hält, verbraucht keinen Wochenplatz. Das ist die Semantik von
+`restic forget`, mit der die Auswärts-Sicherung nach Hetzner rechnet; zwei
+verschiedene Bedeutungen von „7/4/3" im selben System wären eine Falle.
+
+Drei Sicherungen, weil dieses Skript als einziges im Spiegel **löscht** — und
+zwar ausgerechnet das, wovon es sonst keine Kopie mehr gibt:
+
+- Es läuft **erst nach** einem erfolgreichen Spiegel. An einem Tag, an dem die
+  Spiegelung scheitert, wird auch nichts weggeräumt.
+- Es fasst **ausschließlich** das exakte Namensmuster `YYYY-MM-DD` an. Der
+  Sonderstand `2026-08-22-erstlauf` und alles Fremde bleiben liegen.
+- `0/0/0` ist ein **Fehler**, kein Auftrag zum Leerräumen.
+
+Ein Fehlschlag beim Aufräumen ist eine Warnung, kein Abbruch: der Spiegel
+steht dann trotzdem, es liegt nur mehr herum als vorgesehen.
 
 ## Schutz vor dem gefährlichsten Fall
 
@@ -37,6 +68,24 @@ Ein `rsync --delete` mit nicht eingehängter oder leerer Quelle würde das Ziel
 `--mindest` senkt die Schwelle nur für Tests; im Betrieb bleibt es bei 100.
 
 ## Fallstricke, teuer gelernt
+
+### Die Statusdatei gehört dem Betrieb, nicht den Tests
+
+`conftest.py` sperrt über `SYNC_STILL` das Produktivlog — die **Statusdatei**
+`vault-nas-sync-last.json` fiel bis zum 04.09.2026 durch diese Bremse. Das
+wiegt schwerer als ein verschmutztes Log: der Wächter entscheidet anhand
+genau dieser Datei, ob der Spiegel frisch ist. Und `deploy.sh` fährt die Suite
+im **Live-Verzeichnis**, also hat seit dem 22.08.2026 jeder Deploy den Stand
+verfälscht.
+
+Gefunden am 04.09.2026: dort stand `11:31` mit 4 übertragenen Dateien, während
+der echte Lauf um `04:31` mit 4.324 Dateien gelaufen war. Ein Test des
+Fehlerpfads setzte sie sogar auf `"stand":"fehler"` — das hätte am nächsten
+Morgen einen Fehlalarm ausgelöst.
+
+Beide Schreibwege gehen deshalb über `schreibe_status()`, das unter
+`SYNC_STILL` nichts tut. Zwei Tests halten das fest, einer je Weg.
+
 
 **`/usr/bin/rsync` ist openrsync, kein GNU rsync.** macOS liefert dort Apples
 Nachbau aus („rsync version 2.6.9 compatible"). Der ignoriert `--delete`
@@ -97,8 +146,9 @@ scheiterte derselbe Vorgang dreimal hintereinander.
 ```bash
 ./deploy.sh                                    # Repo -> Live, Diff-Prüfung, Tests
 bash vault-nas-sync.sh --kein-versand          # Lauf ohne Fehlermail
-bash vault-nas-sync.sh --probe                 # Trockenlauf
-python3 -m pytest -q                           # 10 Tests
+bash vault-nas-sync.sh --probe                 # Trockenlauf (räumt nichts weg)
+bash aufraeumen.sh <ordner> [7] [4] [3]        # Aufbewahrung einzeln
+python3 -m pytest -q                           # 33 Tests
 ```
 
 Log: `~/.paperclip/logs/vault-nas-sync.log`,

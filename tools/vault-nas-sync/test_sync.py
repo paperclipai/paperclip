@@ -296,3 +296,100 @@ def test_zweiter_lauf_uebertraegt_nichts_obwohl_die_zeitstempel_abweichen(tmp_pa
         f"zweiter Lauf hat uebertragen:\n{r.stdout[-600:]}"
     assert nachher == vorher, \
         f"Auffangordner gewachsen: {vorher} -> {nachher}"
+
+
+# --- Aufbewahrung im Auffangordner -----------------------------------------
+# Die Auswahl selbst ist in test_aufraeumen.py geprueft; hier geht es nur um
+# die Verdrahtung: greift der Spiegel ueberhaupt zum Aufraeumer, und laesst er
+# ihn an einem gescheiterten Tag in Ruhe?
+
+def _alte_staende(nas: Path, *daten):
+    """Auffang-Ordner vergangener Tage vortaeuschen."""
+    wurzel = nas / "_vault-geloescht"
+    for d in daten:
+        (wurzel / d).mkdir(parents=True, exist_ok=True)
+        (wurzel / d / "alt.md").write_text(f"Stand {d}")
+    return wurzel
+
+
+def test_lauf_raeumt_alte_auffangstaende_weg(tmp_path):
+    q = baue_vault(tmp_path / "vault"); z = tmp_path / "nas" / "Vault"
+    z.parent.mkdir(parents=True)
+    wurzel = _alte_staende(tmp_path / "nas",
+                           *[f"2026-0{m}-{t:02d}"
+                             for m in (5, 6, 7) for t in (1, 15, 28)])
+    r = lauf(q, z)
+    assert r.returncode == 0, r.stdout
+    uebrig = sorted(p.name for p in wurzel.iterdir() if p.is_dir())
+    # 3 Monatsstaende (je der juengste) plus der heutige Lauf; die 7-Tage- und
+    # 4-Wochen-Stufe greift bei so weit auseinanderliegenden Staenden nicht.
+    assert "2026-05-01" not in uebrig, f"alter Stand blieb liegen: {uebrig}"
+    assert "2026-07-28" in uebrig, f"juengster Monatsstand fehlt: {uebrig}"
+    assert "Auffang-Aufbewahrung" in r.stdout
+
+
+def test_gescheiterter_lauf_raeumt_nichts_weg(tmp_path):
+    """Der gefaehrlichste Fall: an einem Tag, an dem die Spiegelung scheitert,
+    darf nicht auch noch die Historie beschnitten werden."""
+    q = baue_vault(tmp_path / "vault"); z = tmp_path / "nas" / "Vault"
+    z.parent.mkdir(parents=True)
+    wurzel = _alte_staende(tmp_path / "nas",
+                           *[f"2026-0{m}-{t:02d}"
+                             for m in (5, 6, 7) for t in (1, 15, 28)])
+    vorher = sorted(p.name for p in wurzel.iterdir())
+    r = subprocess.run(["/bin/bash", str(SKRIPT), "--quelle", str(q),
+                        "--ziel", str(z), "--kein-versand", "--mindest", "2",
+                        "--pause", "0"],
+                       capture_output=True, text=True,
+                       env={**os.environ, "RSYNC_BIN": "/gibt/es/nicht/rsync"})
+    assert r.returncode != 0
+    assert sorted(p.name for p in wurzel.iterdir()) == vorher
+
+
+def test_probelauf_raeumt_nichts_weg(tmp_path):
+    q = baue_vault(tmp_path / "vault"); z = tmp_path / "nas" / "Vault"
+    z.parent.mkdir(parents=True)
+    wurzel = _alte_staende(tmp_path / "nas",
+                           *[f"2026-0{m}-{t:02d}"
+                             for m in (5, 6, 7) for t in (1, 15, 28)])
+    vorher = sorted(p.name for p in wurzel.iterdir())
+    lauf(q, z, extra=("--probe",))
+    assert sorted(p.name for p in wurzel.iterdir()) == vorher
+
+
+def test_tests_fassen_die_produktiv_statusdatei_nicht_an(tmp_path):
+    """Der Waechter liest `vault-nas-sync-last.json`, um zu entscheiden, ob
+    der Spiegel frisch ist. Ueberschreibt ein TESTLAUF diese Datei, meldet der
+    Waechter einen Spiegel, den es nie gab — und genau dagegen gibt es ihn.
+
+    Am 04.09.2026 aufgefallen: `deploy.sh` faehrt die Suite im Live-Verzeichnis,
+    seit dem 22.08. hat also JEDER Deploy den Stand verfaelscht. Zuletzt stand
+    dort 11:31 mit 4 uebertragenen Dateien, waehrend der echte Lauf um 04:31
+    gelaufen war. `conftest.py` sperrt nur das Log; die Statusdatei fiel durch.
+    """
+    echt = Path.home() / ".paperclip" / "logs" / "vault-nas-sync-last.json"
+    vorher = echt.read_bytes() if echt.exists() else None
+
+    q = baue_vault(tmp_path / "vault"); z = tmp_path / "nas"; z.mkdir()
+    lauf(q, z)
+
+    nachher = echt.read_bytes() if echt.exists() else None
+    assert nachher == vorher, \
+        "Testlauf hat die Produktiv-Statusdatei ueberschrieben"
+
+
+def test_auch_ein_fehlschlag_fasst_die_statusdatei_nicht_an(tmp_path):
+    """melde_fehler schreibt dieselbe Datei — der zweite Weg hinein."""
+    echt = Path.home() / ".paperclip" / "logs" / "vault-nas-sync-last.json"
+    vorher = echt.read_bytes() if echt.exists() else None
+
+    q = baue_vault(tmp_path / "vault"); z = tmp_path / "nas"; z.mkdir()
+    subprocess.run(["/bin/bash", str(SKRIPT), "--quelle", str(q),
+                    "--ziel", str(z), "--kein-versand", "--mindest", "2",
+                    "--pause", "0"],
+                   capture_output=True, text=True,
+                   env={**os.environ, "RSYNC_BIN": "/gibt/es/nicht/rsync"})
+
+    nachher = echt.read_bytes() if echt.exists() else None
+    assert nachher == vorher, \
+        "gescheiterter Testlauf hat die Produktiv-Statusdatei ueberschrieben"

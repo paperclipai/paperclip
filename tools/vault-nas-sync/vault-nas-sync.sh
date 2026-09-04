@@ -37,6 +37,13 @@ LOCK="$HOME/.paperclip/backups/vault-nas-sync.lock"
 MINDEST_DATEIEN=100
 PAUSE=20   # Sekunden zwischen zwei Anlaeufen; `--pause` senkt sie fuer Tests
 
+# Aufbewahrung im Auffangordner `_vault-geloescht/` (siehe aufraeumen.sh).
+# Grossvater-Vater-Sohn 7/4/3, abgestimmt am 04.09.2026. Die Stufen
+# ueberlagern sich, wie bei `restic forget` in der Auswaerts-Sicherung.
+BEHALTE_TAGE=7
+BEHALTE_WOCHEN=4
+BEHALTE_MONATE=3
+
 # ECHTES GNU rsync, nicht /usr/bin/rsync. macOS liefert dort openrsync aus
 # ("rsync version 2.6.9 compatible"), das `--delete` zusammen mit
 # `--backup-dir` STILLSCHWEIGEND ignoriert: kein Fehler, kein Hinweis, es
@@ -70,11 +77,26 @@ log() {
   echo "$(ts)  $*" | tee -a "$LOG"
 }
 
+# Dieselbe Bremse fuer die Statusdatei — und die ist noch wichtiger als beim
+# Log. Der WAECHTER entscheidet anhand dieser Datei, ob der Spiegel frisch
+# ist. Schreibt ein Testlauf hinein, meldet der Waechter einen Spiegel, den es
+# nie gegeben hat: genau die stille Fehlmeldung, gegen die es ihn gibt.
+#
+# Am 04.09.2026 aufgefallen: `deploy.sh` faehrt die Suite im LIVE-Verzeichnis,
+# seit dem 22.08. hat also jeder Deploy den Stand verfaelscht. Zuletzt stand
+# dort 11:31 mit 4 uebertragenen Dateien, waehrend der echte Lauf um 04:31
+# gelaufen war — und ein Test des Fehlerpfads setzte ihn sogar auf "fehler",
+# was am naechsten Morgen einen Fehlalarm ausgeloest haette.
+schreibe_status() {
+  [ -n "${SYNC_STILL:-}" ] && return 0
+  printf '%s\n' "$1" > "$STATUS"
+}
+
 melde_fehler() {
   local grund="$1"
   log "ABBRUCH: $grund"
-  printf '{"stand":"fehler","zeit":"%s","grund":"%s"}\n' \
-    "$(ts)" "${grund//\"/\'}" > "$STATUS"
+  schreibe_status "$(printf '{"stand":"fehler","zeit":"%s","grund":"%s"}' \
+    "$(ts)" "${grund//\"/\'}")"
   if [ "$VERSAND" -eq 1 ] && [ -f "$MAILHUB_ENV" ]; then
     local secret
     secret="$(grep '^MAILHUB_SECRET=' "$MAILHUB_ENV" | cut -d= -f2- | tr -d '"' | tr -d '\n')"
@@ -303,6 +325,31 @@ if [ -d "$AUFFANG" ]; then
   log "Aufgefangen in $AUFFANG: $(find "$AUFFANG" -type f | wc -l | tr -d ' ') Dateien"
 fi
 
-printf '{"stand":"ok","zeit":"%s","uebertragen":%s,"entfernt":%s}\n' \
-  "$(ts)" "${UEBERTRAGEN:-0}" "${GELOESCHT:-0}" > "$STATUS"
+# --- Aufbewahrung im Auffangordner ----------------------------------------
+# ERST HIER, nachdem der Spiegel nachweislich durchgelaufen ist. Ein Abbruch
+# oben springt per melde_fehler heraus und kommt gar nicht bis hierher — genau
+# so soll es sein: an einem Tag, an dem die Spiegelung scheiterte, wird auch
+# nichts weggeraeumt.
+#
+# Ein Fehlschlag hier ist eine WARNUNG, kein Abbruch: der Spiegel steht dann
+# trotzdem, es liegt nur mehr herum als vorgesehen. Das ist die harmlose
+# Richtung.
+if [ "$PROBE" -eq 0 ]; then
+  AUFFANG_WURZEL="$(dirname "$AUFFANG")"
+  if [ -d "$AUFFANG_WURZEL" ]; then
+    if WEG="$(bash "$(dirname "$0")/aufraeumen.sh" "$AUFFANG_WURZEL" \
+                "$BEHALTE_TAGE" "$BEHALTE_WOCHEN" "$BEHALTE_MONATE" 2>&1)"; then
+      if [ -n "$WEG" ]; then
+        log "Auffang-Aufbewahrung: $(echo "$WEG" | tr '\n' ' ')"
+      else
+        log "Auffang-Aufbewahrung: nichts zu loeschen."
+      fi
+    else
+      log "WARNUNG: Auffang-Aufbewahrung fehlgeschlagen ($WEG) — Spiegel steht."
+    fi
+  fi
+fi
+
+schreibe_status "$(printf '{"stand":"ok","zeit":"%s","uebertragen":%s,"entfernt":%s}' \
+  "$(ts)" "${UEBERTRAGEN:-0}" "${GELOESCHT:-0}")"
 log "===== Fertig."
