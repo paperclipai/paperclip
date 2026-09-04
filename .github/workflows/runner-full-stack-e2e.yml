@@ -923,6 +923,21 @@ jobs:
           test -x "$chrome_path"
           google-chrome --version
 
+      - name: Install Playwright FFmpeg on AWS runner
+        if: needs.authorize.outputs.playwright_channel == 'chrome'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if pnpm exec playwright install ffmpeg; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Playwright FFmpeg installation failed after $attempt attempts." >&2
+              exit 1
+            fi
+            sleep "$((attempt * 10))"
+          done
+
       - name: Install Chromium headless shell on GitHub-hosted fallback
         if: needs.authorize.outputs.playwright_channel != 'chrome'
         run: |

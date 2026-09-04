@@ -251,6 +251,9 @@ describe("public repository paid workflow security", () => {
       "if: needs.authorize.outputs.playwright_channel == 'chrome'",
     );
     expect(paidJob).toContain("google-chrome --version");
+    expect(paidJob).toMatch(
+      /- name: Install Playwright FFmpeg on AWS runner\n\s+if: needs\.authorize\.outputs\.playwright_channel == 'chrome'[\s\S]*pnpm exec playwright install ffmpeg/,
+    );
     expect(paidJob).toContain(
       "if: needs.authorize.outputs.playwright_channel != 'chrome'",
     );
@@ -266,9 +269,14 @@ describe("public repository paid workflow security", () => {
     const daytonaPluginPreparation = paidJob.indexOf(
       "Prepare bundled Daytona plugin without dependency lifecycle scripts",
     );
+    const awsFfmpegInstall = paidJob.indexOf(
+      "- name: Install Playwright FFmpeg on AWS runner",
+    );
     const paidExecution = paidJob.indexOf("- name: Run paid cell");
     expect(paidInstall).toBeGreaterThan(0);
     expect(daytonaPluginPreparation).toBeGreaterThan(paidInstall);
+    expect(awsFfmpegInstall).toBeGreaterThan(daytonaPluginPreparation);
+    expect(paidExecution).toBeGreaterThan(awsFfmpegInstall);
     expect(paidExecution).toBeGreaterThan(daytonaPluginPreparation);
     const preparedBeforeProviderAccess = paidJob.slice(
       daytonaPluginPreparation,
