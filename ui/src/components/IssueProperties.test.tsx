@@ -2198,6 +2198,67 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("keeps Astra-only task efforts when the task inherits the agent model", async () => {
+    const onUpdate = vi.fn();
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "Senior Product Engineer",
+        role: "engineer",
+        title: null,
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-6-astra" },
+        icon: null,
+      },
+    ]);
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+      { id: "gpt-5.4", label: "GPT-5.4" },
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        assigneeAgentId: "agent-1",
+        assigneeAdapterOverrides: {
+          adapterConfig: { modelReasoningEffort: "ultra" },
+        },
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+    await flush();
+
+    expect(container.textContent).toContain("Ultra");
+    expect(container.textContent).toContain("Max");
+    expect(container.textContent).not.toContain("Minimal");
+
+    const defaultModelButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Default model"));
+    expect(defaultModelButton).not.toBeUndefined();
+    await act(async () => {
+      defaultModelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const defaultModelOption = Array.from(document.body.querySelectorAll("button"))
+      .filter((button) => button.textContent?.trim() === "Default model")
+      .at(-1);
+    expect(defaultModelOption).not.toBeUndefined();
+    await act(async () => {
+      defaultModelOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      assigneeAdapterOverrides: {
+        adapterConfig: { modelReasoningEffort: "ultra" },
+      },
+    });
+
+    act(() => root.unmount());
+  });
+
   it("clears existing assignee adapter overrides from the properties pane", async () => {
     const onUpdate = vi.fn();
     mockAgentsApi.list.mockResolvedValue([

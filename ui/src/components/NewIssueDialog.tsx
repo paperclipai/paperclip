@@ -587,6 +587,11 @@ export function NewIssueDialog() {
     [agents, selectedAssigneeAgentId],
   );
   const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
+  const assigneePrimaryModel = isRecord(selectedAssigneeAgent?.adapterConfig)
+    && typeof selectedAssigneeAgent.adapterConfig.model === "string"
+    ? selectedAssigneeAgent.adapterConfig.model
+    : "";
+  const effectiveAssigneeModel = assigneeModelOverride || assigneePrimaryModel;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
@@ -931,7 +936,7 @@ export function NewIssueDialog() {
     }
     const validThinkingValues =
       assigneeAdapterType === "codex_local"
-        ? codexReasoningEffortOptions(assigneeModelOverride)
+        ? codexReasoningEffortOptions(effectiveAssigneeModel)
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
           : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
@@ -941,7 +946,7 @@ export function NewIssueDialog() {
   }, [
     supportsAssigneeOverrides,
     assigneeAdapterType,
-    assigneeModelOverride,
+    effectiveAssigneeModel,
     assigneeThinkingEffort,
   ]);
 
@@ -1188,7 +1193,7 @@ export function NewIssueDialog() {
         : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
-      ? codexReasoningEffortOptions(assigneeModelOverride)
+      ? codexReasoningEffortOptions(effectiveAssigneeModel)
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
