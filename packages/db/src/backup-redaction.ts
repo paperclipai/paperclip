@@ -31,21 +31,33 @@ function escapeRegExp(value: string): string {
 
 /**
  * Build the redaction regex for a list of secret env-var names. Matches
- * `NAME=<value>` for each name, where `<value>` is the run of secret-token
- * characters (base64 / hex / url-safe alphabet) following the `=`. pg_dump plain
- * COPY escapes real newlines, tabs and backslashes, so a secret value never
- * spans a physical line and always terminates at a column separator, whitespace,
- * or any character outside the token alphabet. The value alphabet excludes `[`
- * and `]`, so re-running redaction over `NAME=[REDACTED]` is a no-op (redaction
- * is idempotent). Throws on an empty list rather than compiling a regex that
- * would match nothing (or, worse, everything).
+ * `NAME=<value>` for each name.
+ *
+ * - **Value grammar (`[^\s"']+`).** The value is the run of characters up to the
+ *   next whitespace or quote — the real field delimiters in the serialised forms
+ *   a secret assignment appears in (a `KEY=VALUE` pair ends at whitespace; a
+ *   JSON/array-quoted `"KEY=VALUE"` ends at the quote). The value is matched in
+ *   full rather than to a restricted token alphabet, so an operator-supplied
+ *   secret containing punctuation (e.g. `abc.def!`) is redacted completely
+ *   instead of leaving the suffix in the dump. In pg_dump plain COPY a real
+ *   newline or tab is escaped (`\n`, `\t`), so a value never contains an
+ *   unescaped whitespace/quote and never spans a physical line — the grammar
+ *   stops exactly at the true boundary and cannot swallow the next column.
+ * - **Left name boundary (`(?<![A-Za-z0-9_])`).** The name must not be preceded
+ *   by another env-name character, so `NOT_PAPERCLIP_AGENT_JWT_SECRET=...` does
+ *   not match on the embedded suffix and corrupt an unrelated variable.
+ * - **Idempotent.** The placeholder `[REDACTED]` contains no whitespace or quote,
+ *   so re-running redaction over `NAME=[REDACTED]` matches and re-writes it to
+ *   the same `NAME=[REDACTED]`.
+ *
+ * Throws on an empty list rather than compiling a regex that would match nothing.
  */
 export function buildSecretAssignmentRegex(secretEnvVars: SecretEnvVars): RegExp {
   if (secretEnvVars.length === 0) {
     throw new Error("buildSecretAssignmentRegex: secretEnvVars must not be empty");
   }
   return new RegExp(
-    `(${secretEnvVars.map(escapeRegExp).join("|")})=[A-Za-z0-9+/=_-]+`,
+    `(?<![A-Za-z0-9_])(${secretEnvVars.map(escapeRegExp).join("|")})=[^\\s"']+`,
     "g",
   );
 }
@@ -67,10 +79,10 @@ function redactWithRegex(text: string, regex: RegExp): string {
 }
 
 /**
- * Redact known secret env-assignments within text. The value alphabet excludes
- * `\n`, so matches never cross a line boundary; callers that stream bytes MUST
- * still redact on whole lines (see {@link createLineRedactor}) so a value split
- * across two chunks is not partially matched.
+ * Redact known secret env-assignments within text. The value grammar excludes
+ * whitespace, so a match never crosses a line boundary; callers that stream bytes
+ * MUST still redact on whole lines (see {@link createLineRedactor}) so a value
+ * split across two chunks is not partially matched.
  *
  * @param secretEnvVars names to redact; defaults to {@link REDACTED_SECRET_ENV_VARS}.
  */
@@ -82,12 +94,53 @@ export function redactSecretAssignments(
 }
 
 /**
+ * Force-flush threshold for a single line with no newline. PostgreSQL COPY
+ * escapes newlines inside text and JSON values, so one very large row stays on
+ * one physical line; without a cap the carry would grow to the full row size in
+ * memory. Once the carry passes this size we emit a redacted prefix instead of
+ * holding the whole row.
+ */
+const MAX_CARRY_BYTES = 1 << 20; // 1 MiB
+
+/**
+ * Bytes retained after a forced flush. Any realistic `NAME=value` secret
+ * assignment is far shorter than this, so retaining this much guarantees a
+ * forced-flush cut lands between assignments (see {@link lastValueBoundary}) and
+ * never bisects one — which would half-redact and leak a fragment.
+ */
+const CARRY_SAFE_TAIL_BYTES = 64 * 1024; // 64 KiB
+
+/**
+ * Index (inclusive) of the last whitespace or quote at or before `limit`, or -1
+ * if none. A whitespace/quote is a value delimiter (the value grammar excludes
+ * both), so a cut immediately after such a character cannot fall inside a
+ * `NAME=value` match.
+ */
+function lastValueBoundary(text: string, limit: number): number {
+  for (let i = Math.min(limit, text.length - 1); i >= 0; i--) {
+    const c = text.charCodeAt(i);
+    // space, tab, LF, CR, FF, VT, or a quote (" ')
+    if (c === 32 || c === 9 || c === 10 || c === 13 || c === 12 || c === 11 || c === 34 || c === 39) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
  * Stateful, line-buffered redactor for streamed dump bytes. Only complete lines
  * (terminated by `\n`) are redacted and returned; a trailing partial line is held
  * as carry until the next chunk or {@link flush} completes it. This guarantees the
  * full secret value is present before the regex runs, so a value straddling a
  * chunk boundary can never be half-redacted (which would both leak a fragment and
  * corrupt the dump). The regex is compiled once per redactor, not per chunk.
+ *
+ * To bound memory on a pathologically long single line (a COPY row can escape its
+ * newlines and stay physically unbroken), once the carry exceeds
+ * {@link MAX_CARRY_BYTES} the redactor emits the redacted prefix up to the last
+ * value delimiter that leaves a {@link CARRY_SAFE_TAIL_BYTES} tail, so no secret
+ * assignment is bisected. If no delimiter is found in that window the line is a
+ * single delimiter-free token; it is kept whole (correctness over the bound).
  *
  * @param secretEnvVars names to redact; defaults to {@link REDACTED_SECRET_ENV_VARS}.
  */
@@ -100,6 +153,13 @@ export function createLineRedactor(secretEnvVars: SecretEnvVars = REDACTED_SECRE
       const text = carry + (typeof chunk === "string" ? chunk : decoder.write(chunk));
       const lastNewline = text.lastIndexOf("\n");
       if (lastNewline === -1) {
+        if (text.length > MAX_CARRY_BYTES) {
+          const boundary = lastValueBoundary(text, text.length - CARRY_SAFE_TAIL_BYTES);
+          if (boundary >= 0) {
+            carry = text.slice(boundary + 1);
+            return redactWithRegex(text.slice(0, boundary + 1), regex);
+          }
+        }
         carry = text;
         return "";
       }

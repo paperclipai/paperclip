@@ -138,3 +138,72 @@ describe("injectable secret list", () => {
     expect(() => buildSecretAssignmentRegex([])).toThrow();
   });
 });
+
+describe("value grammar hardening", () => {
+  it("redacts the whole value even when it contains punctuation outside a token alphabet", () => {
+    // A secret value with '.', '!' and other punctuation must not leave a suffix.
+    const line = `PAPERCLIP_AGENT_JWT_SECRET=abc.def!ghi$%^&*()-_=+`;
+    const out = redactSecretAssignments(line);
+    expect(out).toBe(`PAPERCLIP_AGENT_JWT_SECRET=${SECRET_REDACTION_PLACEHOLDER}`);
+    expect(out).not.toContain("abc");
+    expect(out).not.toContain("def");
+    expect(out).not.toContain("ghi");
+  });
+
+  it("stops the value at whitespace so it never swallows the next COPY column", () => {
+    const line = `12\tPAPERCLIP_AGENT_JWT_SECRET=abc.def\tcol3`;
+    const out = redactSecretAssignments(line);
+    expect(out).toBe(`12\tPAPERCLIP_AGENT_JWT_SECRET=${SECRET_REDACTION_PLACEHOLDER}\tcol3`);
+  });
+
+  it("stops the value at a quote so it never swallows the next quoted field", () => {
+    const line = `["PAPERCLIP_AGENT_JWT_SECRET=abc.def","OTHER=keepme"]`;
+    const out = redactSecretAssignments(line);
+    expect(out).toContain(`PAPERCLIP_AGENT_JWT_SECRET=${SECRET_REDACTION_PLACEHOLDER}`);
+    expect(out).toContain(`"OTHER=keepme"`);
+    expect(out).not.toContain("abc.def");
+  });
+
+  it("does not match on an embedded name (left boundary), leaving unrelated variables intact", () => {
+    const line = `NOT_PAPERCLIP_AGENT_JWT_SECRET=value123 X_BETTER_AUTH_SECRET=value456`;
+    const out = redactSecretAssignments(line);
+    expect(out).toBe(line); // neither is one of our variables
+  });
+
+  it("still matches the real variable at a start or after a non-name character", () => {
+    expect(redactSecretAssignments(`PAPERCLIP_AGENT_JWT_SECRET=abc.def`)).toBe(
+      `PAPERCLIP_AGENT_JWT_SECRET=${SECRET_REDACTION_PLACEHOLDER}`,
+    );
+    expect(redactSecretAssignments(`env: PAPERCLIP_AGENT_JWT_SECRET=abc.def`)).toBe(
+      `env: PAPERCLIP_AGENT_JWT_SECRET=${SECRET_REDACTION_PLACEHOLDER}`,
+    );
+  });
+
+  it("is idempotent under the punctuation grammar", () => {
+    const once = redactSecretAssignments(`PAPERCLIP_AGENT_JWT_SECRET=abc.def!ghi`);
+    const twice = redactSecretAssignments(once);
+    expect(twice).toBe(once);
+  });
+});
+
+describe("bounded buffering on a very long unbroken line", () => {
+  it("force-flushes a redacted prefix and never bisects a secret near the tail", () => {
+    const r = createLineRedactor();
+    // One physical line, no newline, > 1 MiB: a secret at the start, ~1.2 MiB of
+    // space-delimited filler, then a second secret in the final bytes (the tail).
+    const filler = "x ".repeat(650_000); // ~1.3 MiB, whitespace boundaries throughout
+    const line =
+      `PAPERCLIP_AGENT_JWT_SECRET=earlysecret.value ${filler} PAPERCLIP_AGENT_JWT_SECRET=latesecret.value`;
+    const emitted = r.push(line);
+    // The bound engaged: a redacted prefix was emitted rather than buffering it all.
+    expect(emitted.length).toBeGreaterThan(0);
+    const tail = r.flush();
+    const combined = emitted + tail;
+    // Neither secret survived, and neither was half-redacted (no fragment left).
+    expect(combined).not.toContain("earlysecret");
+    expect(combined).not.toContain("latesecret");
+    expect(combined).not.toContain("earlysecret.value");
+    expect(combined).not.toContain("latesecret.value");
+    expect(combined).toContain(`PAPERCLIP_AGENT_JWT_SECRET=${SECRET_REDACTION_PLACEHOLDER}`);
+  });
+});

@@ -33,6 +33,14 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /**
+   * Env-var names whose `NAME=value` assignments are redacted from the dump
+   * (RES-2769). Forwarded to every backup path (pg_dump stream, JS `emit`, raw
+   * COPY). Defaults to `REDACTED_SECRET_ENV_VARS` when omitted; a consumer that
+   * owns a broader secret list (e.g. the server's `RUNTIME_SECRET_ENV_VARS`) can
+   * pass it here so `@paperclip/db` needs no dependency on that package.
+   */
+  secretEnvVars?: readonly string[];
 };
 
 export type RunDatabaseBackupResult = {
@@ -326,6 +334,7 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  secretEnvVars?: readonly string[];
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -354,7 +363,7 @@ async function runPgDumpBackup(opts: {
   await Promise.all([
     // RES-2769: scrub known signing secrets out of the dump stream at generation,
     // before it is gzipped to disk and swept offsite by the backup set.
-    pipeline(child.stdout, createSecretRedactionTransform(), createGzip(), createWriteStream(opts.backupFile)),
+    pipeline(child.stdout, createSecretRedactionTransform(opts.secretEnvVars), createGzip(), createWriteStream(opts.backupFile)),
     waitForChildExit(child, pgDumpBin),
   ]);
 }
@@ -561,6 +570,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectionString: opts.connectionString,
           backupFile,
           connectTimeout,
+          secretEnvVars: opts.secretEnvVars,
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
@@ -588,7 +598,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     // RES-2769: mirror the pg_dump-path redaction on the JS engine's emitted
     // lines (schema DDL never contains a secret assignment; the INSERT-fallback
     // data path does). Idempotent and cheap.
-    const emit = (line: string) => writer.emit(redactSecretAssignments(line));
+    const emit = (line: string) => writer.emit(redactSecretAssignments(line, opts.secretEnvVars));
     const emitStatement = (statement: string) => {
       emit(statement);
       emit(STATEMENT_BREAKPOINT);
@@ -954,7 +964,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
             .readable();
           // RES-2769: the raw COPY sub-path bypasses `emit`, so redact its bytes
           // on line boundaries as they stream (secret rows live here).
-          const copyRedactor = createLineRedactor();
+          const copyRedactor = createLineRedactor(opts.secretEnvVars);
           for await (const chunk of copyStream) {
             const redacted = copyRedactor.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
             if (redacted.length > 0) {

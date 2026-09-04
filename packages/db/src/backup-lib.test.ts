@@ -172,6 +172,63 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   );
 
   it(
+    "forwards an injected secretEnvVars list through the pg_dump path and redacts a punctuation value (RES-2769)",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_redaction_injected",
+      );
+      const backupDir = createTempDir("paperclip-db-backup-injected-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+      cleanups.push(() => sourceSql.end());
+      cleanups.push(() => restoreSql.end());
+
+      // An operator-defined secret that is NOT in the built-in default list, and
+      // whose value carries punctuation outside a token alphabet.
+      const envBlob = `NODE_ENV=production MY_OPERATOR_SECRET=abc.def!ghi-secret PORT=3000`;
+
+      try {
+        await sourceSql.unsafe(`CREATE TABLE run_events (id int PRIMARY KEY, payload text)`);
+        await sourceSql.unsafe(`INSERT INTO run_events (id, payload) VALUES (1, $1)`, [envBlob]);
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          filenamePrefix: "paperclip-injected",
+          secretEnvVars: ["MY_OPERATOR_SECRET"],
+        });
+
+        const dump = gunzipSync(await fs.promises.readFile(result.backupFile)).toString("utf8");
+        // The injected var is redacted in full (no punctuation suffix survives).
+        expect(dump).not.toContain("abc.def");
+        expect(dump).not.toContain("ghi-secret");
+        expect(dump).toContain("MY_OPERATOR_SECRET=[REDACTED]");
+        // Surrounding non-secret content is preserved.
+        expect(dump).toContain("NODE_ENV=production");
+        expect(dump).toContain("PORT=3000");
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+        const [row] = await restoreSql.unsafe<{ payload: string }[]>(
+          `SELECT payload FROM run_events WHERE id = 1`,
+        );
+        expect(row?.payload).toBe(
+          `NODE_ENV=production MY_OPERATOR_SECRET=[REDACTED] PORT=3000`,
+        );
+      } finally {
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
     "backs up and restores large table payloads without materializing one giant string",
     async () => {
       const sourceConnectionString = await createTempDatabase();
