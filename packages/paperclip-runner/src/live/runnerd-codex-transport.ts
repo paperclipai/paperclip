@@ -1685,6 +1685,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #threadId = "";
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
+  #providerIdentityEventType:
+    "harness.ready" | "session.started" | "session.resumed" | null = null;
   #turnId = "";
   #turnStartResponsePending = false;
   #turnStartResponseEpoch = 0;
@@ -2922,6 +2924,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const committedEvents = core.store.state.committedEvents;
     const runAttachment = recoveredRunAttachment(core.store.state);
+    // Reconnecting the exact run authority has no run.attach command to wake
+    // provider restoration. Queue a unique, side-effect-free barrier before
+    // runnerd starts so every provider backend restores its durable session
+    // and emits a fresh session.resumed event while executing the probe.
+    const recoveryProbeCommandId =
+      exactAuthority && runAttachment === null
+        ? `command_resume_probe_${randomUUID().replaceAll("-", "")}`
+        : null;
+    if (recoveryProbeCommandId !== null) {
+      core.queueCommand("runner.drain", {}, recoveryProbeCommandId);
+    }
     // A controller retry can open the exact authority after run.attach has
     // already reached a durable outcome. Re-observe that command instead of
     // silently waiting for an identity that a failed command can never emit.
@@ -2996,7 +3009,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (runAttachment) {
       await this.#waitCommand("run.attach", runAttachment.commandId);
     }
-    await this.#waitForProviderIdentity();
+    if (recoveryProbeCommandId !== null) {
+      await this.#waitCommand("runner.drain", recoveryProbeCommandId);
+    }
+    await this.#waitForProviderIdentity(
+      recoveryProbeCommandId === null ? undefined : "session.resumed",
+    );
     this.#startupComplete = true;
     this.#diagnostic(
       rotatedAuthority
@@ -3104,7 +3122,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return record(record(command.result).result);
   }
 
-  async #waitForProviderIdentity(): Promise<void> {
+  async #waitForProviderIdentity(
+    expectedEventType?: "harness.ready" | "session.started" | "session.resumed",
+  ): Promise<void> {
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       this.#throwIfFailed();
@@ -3112,7 +3132,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (
         this.#threadId.length > 0 &&
         (this.#evidence.providerExecutionKind === "remote_service" ||
-          this.#evidence.providerPid !== null)
+          this.#evidence.providerPid !== null) &&
+        (expectedEventType === undefined ||
+          this.#providerIdentityEventType === expectedEventType)
       )
         return;
       if (this.#handle?.child.exitCode !== null)
@@ -3171,6 +3193,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         event.eventType === "session.started" ||
         event.eventType === "session.resumed"
       ) {
+        this.#providerIdentityEventType = event.eventType;
         const started = record(record(event.envelope.payload).payload);
         const runtimeIdentity = record(started.runtimeIdentity);
         const descriptor = record(started.providerDescriptor);

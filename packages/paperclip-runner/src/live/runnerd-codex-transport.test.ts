@@ -1770,6 +1770,95 @@ it.each([
   },
 );
 
+it("probes an exact-authority resume and requires a fresh provider identity", async () => {
+  const stateDirectory = await mkdtemp(
+    join(tmpdir(), "runnerd-exact-authority-resume-"),
+  );
+  const identity = {
+    runnerInstanceId: "runner-exact-resume",
+    environmentLeaseId: "lease-exact-resume",
+    runId: "run-exact-resume",
+    normalizedSessionId: "session-exact-resume",
+    turnId: "turn-exact-resume",
+    itemId: "item-exact-resume",
+  };
+  const options = {
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--durable-turn-ids"),
+    stateDirectory,
+    lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
+    prpIdentity: identity,
+  };
+  const first = createCapabilityRunnerdCodexTransport(options);
+  first.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  let providerThread: { id: string; sessionId: string } | null = null;
+  try {
+    const opened = await first.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: [],
+    });
+    const thread = opened.thread as Record<string, unknown>;
+    providerThread = {
+      id: String(thread.id),
+      sessionId: String(thread.sessionId),
+    };
+  } finally {
+    await first.transport.close();
+  }
+  if (providerThread === null) {
+    throw new Error("exact-authority fixture did not return a provider thread");
+  }
+
+  const statePath = join(
+    stateDirectory,
+    "control-plane",
+    "control-plane-state.json",
+  );
+  const beforeResume = JSON.parse(await readFile(statePath, "utf8")) as {
+    commands: Array<{ type: string }>;
+    committedEvents: Array<{ eventType: string }>;
+  };
+  expect(
+    beforeResume.commands.some((command) => command.type === "run.attach"),
+  ).toBe(false);
+  const priorResumeEvents = beforeResume.committedEvents.filter(
+    (event) => event.eventType === "session.resumed",
+  ).length;
+
+  const resumed = createCapabilityRunnerdCodexTransport(options);
+  resumed.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    const read = await resumed.transport.request("thread/read", {});
+    expect(read.thread).toMatchObject(providerThread);
+    const afterResume = JSON.parse(await readFile(statePath, "utf8")) as {
+      commands: Array<{ commandId: string; type: string; status: string }>;
+      committedEvents: Array<{ eventType: string }>;
+    };
+    expect(afterResume.commands).toContainEqual(
+      expect.objectContaining({
+        commandId: expect.stringMatching(/^command_resume_probe_/),
+        type: "runner.drain",
+        status: "completed",
+      }),
+    );
+    expect(
+      afterResume.committedEvents.filter(
+        (event) => event.eventType === "session.resumed",
+      ),
+    ).toHaveLength(priorResumeEvents + 1);
+  } finally {
+    await resumed.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("cold-restores a suspended provider session under its durable run binding", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));
   const tracePath = join(stateDirectory, "provider-trace.ndjson");
