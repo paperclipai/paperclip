@@ -127,15 +127,18 @@ import {
   buildNativeExecutionInput,
   buildNativeRuntimeContext,
   cancelNativeSession,
+  claimNativeRestartRecoveries,
   dispatchNativeSessionResumptions,
   ensureNativeCompletionContract,
   executePaperclipNativeSession,
   finalizeNativeRun,
   isNativeSessionId,
+  isUnusedLegacyNativeRetryReplacement,
   isRunnerIngressAuthorized,
   materializeLegacyQuestionResponseWakeProjection,
   materializeNativeInteractionResponses,
   NativeCancellationPendingRecoveryError,
+  type NativeRestartRecoveryClaim,
   rebindNativeSessionCheckpoint,
   reconcileNativeFinalizations,
   resolveHeartbeatNativeRuntimeMode,
@@ -421,6 +424,7 @@ import {
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
+  readProcessStartedAt,
   removeHotRestartIntent,
   shouldHonorHotRestartIntentForProcess,
   writeHotRestartReport,
@@ -7669,7 +7673,10 @@ export async function persistHeartbeatRunProcessMetadata(
   runId: string,
   meta: { pid: number; processGroupId: number | null; startedAt: string },
 ) {
-  const startedAt = new Date(meta.startedAt);
+  const observedStartedAt = await readProcessStartedAt(meta.pid).catch(
+    () => null,
+  );
+  const startedAt = new Date(observedStartedAt ?? meta.startedAt);
   return db
     .update(heartbeatRuns)
     .set({
@@ -8173,6 +8180,7 @@ export function heartbeatService(
   db: Db,
   options: HeartbeatServiceOptions = {},
 ) {
+  let shutdownInProgress = false;
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -12383,6 +12391,10 @@ export function heartbeatService(
       processPid: input.run.processPid ?? null,
       processGroupId: input.run.processGroupId ?? null,
       issueId: readNonEmptyString(context.issueId),
+      runtimeMode: input.run.runtimeMode,
+      nativeSessionId: input.run.nativeSessionId,
+      runnerInstanceId: input.run.runnerInstanceId,
+      processStartedAt: input.run.processStartedAt?.toISOString() ?? null,
     };
   }
 
@@ -12420,6 +12432,7 @@ export function heartbeatService(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
   ) {
+    shutdownInProgress = true;
     let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
     try {
       intent = await readHotRestartIntent();
@@ -12706,6 +12719,14 @@ export function heartbeatService(
         continue;
       }
 
+      if (
+        run.runtimeMode === "native" &&
+        adapterType === "paperclip_runner"
+      ) {
+        classify(candidate, "skipped", "native_restart_recovery_owned", patch);
+        continue;
+      }
+
       if (!isTrackedLocalChildProcessAdapter(adapterType)) {
         classify(
           candidate,
@@ -12844,6 +12865,145 @@ export function heartbeatService(
     };
   }
 
+  async function recoverNativeRunsAfterRestart(now = new Date()) {
+    // A result committed before the old controller stopped outranks process
+    // recovery. Finish its durable workspace/status suffix before deciding
+    // whether any provider authority needs to be reopened.
+    await reconcileNativeFinalizations(db);
+    const intent = await readHotRestartIntent().catch((error) => {
+      logger.warn(
+        { err: error },
+        "failed to read hot-restart intent before native startup recovery",
+      );
+      return null;
+    });
+    const restartKind = intent ? ("hot" as const) : ("hard" as const);
+    const previousStartedAt = intent?.previousServerStartedAt
+      ? new Date(intent.previousServerStartedAt)
+      : null;
+    const scheduledNativeRetries = await db
+      .select({
+        runId: nativeRunFinalizations.runId,
+        nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
+      })
+      .from(nativeRunFinalizations)
+      .innerJoin(
+        heartbeatRuns,
+        eq(heartbeatRuns.id, nativeRunFinalizations.runId),
+      )
+      .where(
+        and(
+          eq(heartbeatRuns.runtimeMode, "native"),
+          inArray(heartbeatRuns.status, ["running", "failed"]),
+          isNull(nativeRunFinalizations.resultId),
+          eq(nativeRunFinalizations.phase, "retryable_failure"),
+          gt(nativeRunFinalizations.nextAttemptAt, now),
+        ),
+      );
+    for (const scheduled of scheduledNativeRetries) {
+      if (scheduled.nextAttemptAt) {
+        scheduleNativeSessionResumeDispatch(
+          scheduled.runId,
+          scheduled.nextAttemptAt,
+        );
+      }
+    }
+    const dispositions = await claimNativeRestartRecoveries({
+      db,
+      restartKind,
+      recoveryRequestId: intent?.recoveryRequestId ?? null,
+      coordinatedPreviousController: intent
+        ? {
+            pid: intent.previousServerPid,
+            processStartedAt:
+              previousStartedAt && !Number.isNaN(previousStartedAt.getTime())
+                ? previousStartedAt
+                : null,
+          }
+        : null,
+      now,
+    });
+
+    const claims = dispositions.filter(
+      (disposition): disposition is NativeRestartRecoveryClaim =>
+        disposition.kind === "reattach_existing_runner" ||
+        disposition.kind === "resume_dead_runner" ||
+        disposition.kind === "bootstrap_incomplete",
+    );
+    for (const disposition of dispositions) {
+      const run = await getRun(disposition.runId);
+      if (run) {
+        const isClaim =
+          disposition.kind === "reattach_existing_runner" ||
+          disposition.kind === "resume_dead_runner" ||
+          disposition.kind === "bootstrap_incomplete";
+        await appendRunEvent(run, {
+          eventType: "native.recovery.transition",
+          stream: "system",
+          level: disposition.kind === "blocked" ? "warn" : "info",
+          message:
+            disposition.kind === "reattach_existing_runner"
+              ? "Recovering the existing native runner process after server restart"
+              : disposition.kind === "resume_dead_runner"
+                ? "Resuming the durable native provider session after runner process loss"
+                : disposition.kind === "bootstrap_incomplete"
+                  ? "Restarting an incomplete native runner bootstrap on the same heartbeat run"
+                  : disposition.kind === "awaiting_evidence"
+                    ? "Native restart recovery is waiting for safe ownership evidence"
+                    : disposition.kind === "already_finalized"
+                      ? "Native restart recovery found an already-finalized result"
+                      : "Native restart recovery blocked ambiguous or conflicting ownership",
+          payload: {
+            restartKind: isClaim ? disposition.restartKind : restartKind,
+            recoveryRequestId: isClaim
+              ? disposition.recoveryRequestId
+              : (intent?.recoveryRequestId ?? null),
+            runnerDisposition: disposition.kind,
+            ...(isClaim
+              ? {
+                  controllerGeneration: disposition.controllerGeneration,
+                  providerAttempt: disposition.providerAttempt,
+                }
+              : { reason: disposition.reason }),
+            ...(disposition.kind === "reattach_existing_runner"
+              ? {
+                  processPid: disposition.process.pid,
+                  processGroupId: disposition.process.processGroupId,
+                  processStartedAt: disposition.process.startedAt,
+                }
+              : {}),
+          },
+        });
+      }
+    }
+    for (const claim of claims) {
+      const execution = executeRun(claim.runId, {
+        nativeLeaseOwner: claim.leaseOwner,
+        nativeRestartRecovery: claim,
+      }).catch((error) => {
+        logger.error(
+          { err: error, runId: claim.runId, disposition: claim.kind },
+          "native restart recovery execution failed",
+        );
+      });
+      activeRunExecutionPromises.add(execution);
+      void execution.finally(() => activeRunExecutionPromises.delete(execution));
+    }
+
+    return {
+      restartKind,
+      claims,
+      dispositions,
+      scheduledRetryRunIds: scheduledNativeRetries.map((entry) => entry.runId),
+      awaitingEvidenceRunIds: dispositions
+        .filter((entry) => entry.kind === "awaiting_evidence")
+        .map((entry) => entry.runId),
+      blockedRunIds: dispositions
+        .filter((entry) => entry.kind === "blocked")
+        .map((entry) => entry.runId),
+    };
+  }
+
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
@@ -12851,7 +13011,12 @@ export function heartbeatService(
   ) {
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
-      return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
+      return {
+        interrupted: 0,
+        interruptedRunIds: [],
+        retryRunIds: [],
+        restartSuspendedRunIds: [],
+      };
     }
     const activeRuns = await db
       .select({
@@ -12871,8 +13036,66 @@ export function heartbeatService(
 
     const interruptedRunIds: string[] = [];
     const retryRunIds: string[] = [];
+    const restartSuspendedRunIds: string[] = [];
 
     for (const { run, agent } of activeRuns) {
+      if (
+        run.runtimeMode === "native" &&
+        agent.adapterType === "paperclip_runner"
+      ) {
+        const recoveryHistoryEntry = JSON.stringify({
+          at: now.toISOString(),
+          restartKind: "graceful",
+          disposition: "restart_suspended",
+          reason: signal,
+          processPid: run.processPid,
+          processStartedAt: run.processStartedAt?.toISOString() ?? null,
+        });
+        await db
+          .update(nativeRunFinalizations)
+          .set({
+            recoveryState: "awaiting_runner_reattach",
+            recoveryHistory: sql`(
+              select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
+              from jsonb_array_elements(
+                coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+                || jsonb_build_array(${recoveryHistoryEntry}::jsonb)
+              ) with ordinality as history(item, ordinal)
+              where ordinal > greatest(
+                jsonb_array_length(
+                  coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+                  || jsonb_build_array(${recoveryHistoryEntry}::jsonb)
+                ) - 20,
+                0
+              )
+            )`,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(nativeRunFinalizations.runId, run.id),
+              isNull(nativeRunFinalizations.resultId),
+            ),
+          );
+        await appendRunEvent(run, {
+          eventType: "native.recovery.transition",
+          stream: "system",
+          level: "info",
+          message:
+            "Server shutdown suspended native controller ownership without cancelling provider work",
+          payload: {
+            restartKind: "graceful",
+            signal,
+            runnerDisposition: "awaiting_runner_reattach",
+            processPid: run.processPid,
+            processGroupId: run.processGroupId,
+            processStartedAt: run.processStartedAt?.toISOString() ?? null,
+            retryRunCreated: false,
+          },
+        });
+        restartSuspendedRunIds.push(run.id);
+        continue;
+      }
       const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
       const running = runningProcesses.get(run.id);
       try {
@@ -12979,6 +13202,7 @@ export function heartbeatService(
       interrupted: interruptedRunIds.length,
       interruptedRunIds,
       retryRunIds,
+      restartSuspendedRunIds,
     };
   }
 
@@ -16740,6 +16964,7 @@ export function heartbeatService(
         adapterType: agents.adapterType,
         adapterConfig: agents.adapterConfig,
         nativeCoordinatorPhase: nativeRunFinalizations.phase,
+        nativeRecoveryState: nativeRunFinalizations.recoveryState,
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -16785,6 +17010,7 @@ export function heartbeatService(
       adapterType,
       adapterConfig,
       nativeCoordinatorPhase,
+      nativeRecoveryState,
     } of activeRuns) {
       const nativeRun = run.runtimeMode === "native";
       const nativeProcessPidAlive =
@@ -16795,6 +17021,20 @@ export function heartbeatService(
         isProcessGroupAlive(run.processGroupId);
       const locallyTracked =
         runningProcesses.has(run.id) || activeRunExecutions.has(run.id);
+      if (
+        nativeRun &&
+        (
+          [
+            "awaiting_evidence",
+            "awaiting_runner_reattach",
+            "resuming_session",
+            "bootstrap_incomplete",
+          ].includes(nativeRecoveryState ?? "") ||
+          nativeCoordinatorPhase === "retryable_failure"
+        )
+      ) {
+        continue;
+      }
       const observedOwnerUnverified =
         nativeRun &&
         (nativeCoordinatorPhase === "observed" ||
@@ -17426,7 +17666,10 @@ export function heartbeatService(
 
   async function executeRun(
     runId: string,
-    runOptions: { nativeLeaseOwner?: string } = {},
+    runOptions: {
+      nativeLeaseOwner?: string;
+      nativeRestartRecovery?: NativeRestartRecoveryClaim;
+    } = {},
   ) {
     if ((await getSchedulingSuppression()).suppressed) {
       try {
@@ -17453,7 +17696,11 @@ export function heartbeatService(
       run = claimed;
     }
 
-    if (runOptions.nativeLeaseOwner && run.runtimeMode === "native") {
+    if (
+      runOptions.nativeLeaseOwner &&
+      run.runtimeMode === "native" &&
+      runOptions.nativeRestartRecovery?.kind !== "reattach_existing_runner"
+    ) {
       // A numeric PID or process-group ID is a liveness signal, never an
       // ownership capability: the OS may have recycled it after the service
       // restart. A still-active in-memory child handle is also insufficient to
@@ -19929,14 +20176,79 @@ export function heartbeatService(
           const taskNativeSessionId = readNonEmptyString(
             taskSessionDecodedParams?.sessionId,
           );
-          const resumableTaskSessionId =
+          // Compatibility for native retry rows created before same-run restart
+          // recovery existed. Only an entirely unused replacement row may
+          // inherit its source checkpoint; any process/provider evidence on the
+          // replacement makes the ownership ambiguous and therefore ineligible.
+          const legacyRetrySource =
+            run.retryOfRunId
+              ? await db
+                  .select({
+                    id: heartbeatRuns.id,
+                    companyId: heartbeatRuns.companyId,
+                    agentId: heartbeatRuns.agentId,
+                    runnerInstanceId: heartbeatRuns.runnerInstanceId,
+                    nativeSessionId: heartbeatRuns.nativeSessionId,
+                    runnerProfileJson: heartbeatRuns.runnerProfileJson,
+                    runtimeMode: heartbeatRuns.runtimeMode,
+                    status: heartbeatRuns.status,
+                  })
+                  .from(heartbeatRuns)
+                  .where(
+                    and(
+                      eq(heartbeatRuns.id, run.retryOfRunId),
+                      eq(heartbeatRuns.companyId, agent.companyId),
+                      eq(heartbeatRuns.agentId, agent.id),
+                    ),
+                  )
+                  .limit(1)
+                  .then((rows) => rows[0] ?? null)
+              : null;
+          const legacyRetryHasProviderEvidence = legacyRetrySource
+            ? await db
+                .select({ id: heartbeatRunEvents.id })
+                .from(heartbeatRunEvents)
+                .where(
+                  and(
+                    eq(heartbeatRunEvents.runId, run.id),
+                    inArray(heartbeatRunEvents.eventType, [
+                      "harness.ready",
+                      "session.started",
+                      "session.resumed",
+                      "session.updated",
+                      "turn.started",
+                      "provider.event",
+                      "provider.rpc_result",
+                    ]),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows.length > 0)
+            : false;
+          const compatibleLegacyRetrySource =
+            isUnusedLegacyNativeRetryReplacement({
+              replacement: run,
+              source: legacyRetrySource,
+              hasProviderEvents: legacyRetryHasProviderEvidence,
+            })
+              ? legacyRetrySource
+              : null;
+          const legacyRetrySessionId = compatibleLegacyRetrySource
+            ?.nativeSessionId;
+          const taskResumeRunId =
             taskSessionForRun?.lastRunId &&
             taskSessionForRun.lastRunId !== run.id &&
             isNativeSessionId(taskNativeSessionId)
-              ? taskNativeSessionId
+              ? taskSessionForRun.lastRunId
               : null;
+          const resumableTaskSessionId =
+            taskResumeRunId
+              ? taskNativeSessionId
+              : legacyRetrySessionId ?? null;
+          const priorNativeRunId =
+            taskResumeRunId ?? compatibleLegacyRetrySource?.id ?? null;
           const previousNativeRun =
-            resumableTaskSessionId && taskSessionForRun?.lastRunId
+            resumableTaskSessionId && priorNativeRunId
               ? await db
                   .select({
                     id: heartbeatRuns.id,
@@ -19949,7 +20261,7 @@ export function heartbeatService(
                   .from(heartbeatRuns)
                   .where(
                     and(
-                      eq(heartbeatRuns.id, taskSessionForRun.lastRunId),
+                      eq(heartbeatRuns.id, priorNativeRunId),
                       eq(heartbeatRuns.companyId, agent.companyId),
                       eq(heartbeatRuns.agentId, agent.id),
                       eq(heartbeatRuns.nativeSessionId, resumableTaskSessionId),
@@ -20697,6 +21009,7 @@ export function heartbeatService(
                     execution: nativeExecution,
                     runnerInstanceId: nativeRunnerInstanceId,
                     leaseOwner: runOptions.nativeLeaseOwner,
+                    restartRecovery: runOptions.nativeRestartRecovery,
                     backend:
                       options.nativeSessionBackendFactory?.(nativeExecution),
                     useRunnerd: agent.adapterType === "paperclip_runner",
@@ -22119,7 +22432,7 @@ export function heartbeatService(
         }
       }
       activeRunExecutions.delete(run.id);
-      if (!nativeSessionResumeScheduled) {
+      if (!nativeSessionResumeScheduled && !shutdownInProgress) {
         await startNextQueuedRunForAgent(run.agentId);
       }
     }
@@ -25592,6 +25905,7 @@ export function heartbeatService(
 
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
+    recoverNativeRunsAfterRestart,
     reapOrphanedRuns,
     sweepPendingCleanupLeases,
     // Override-aware scheduling-suppression check (honors the worktree

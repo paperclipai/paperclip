@@ -28,6 +28,11 @@ pub const BOOTSTRAP_TICKET_ENV: &str = "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET";
 const MAX_OUTBOX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
+/// Redacts and bounds a diagnostic before a process boundary may persist it.
+pub fn redact_diagnostic_text(input: &str) -> String {
+    state::redact_text(input)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerError(String);
 

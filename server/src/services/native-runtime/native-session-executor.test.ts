@@ -166,6 +166,7 @@ import {
   runtimeQuestionFallbackFromEvent,
   resolveNativeRuntimeRequest,
   resolveNativeHarnessPersistenceProfile,
+  runnerdStateProvesIncompleteBootstrap,
   semanticProviderPlanMarkdown,
   sha256DirectoryTree,
   stageRemoteRunnerDirectory,
@@ -174,6 +175,46 @@ import {
   verifyNativeHarnessBackup,
   shouldRestoreNativeHarnessBackupIntoSandbox,
 } from "./native-session-executor.js";
+
+describe("native incomplete-bootstrap evidence", () => {
+  it("requires zero connections, zero events, and only untouched bootstrap commands", async () => {
+    const root = await mkdtemp(join(tmpdir(), "native-bootstrap-evidence-"));
+    const controlPlaneRoot = join(root, "control-plane");
+    await mkdir(controlPlaneRoot, { recursive: true });
+    const statePath = join(controlPlaneRoot, "control-plane-state.json");
+    const base = {
+      schema: "paperclip.runner.durable.control-plane-state.v1",
+      connectionCount: 0,
+      committedEvents: [],
+      commands: [
+        { type: "run.prepare", status: "pending" },
+        { type: "session.open", status: "pending" },
+      ],
+    };
+    try {
+      await writeFile(statePath, JSON.stringify(base));
+      expect(runnerdStateProvesIncompleteBootstrap(root)).toBe(true);
+
+      for (const ambiguous of [
+        { ...base, connectionCount: 1 },
+        { ...base, committedEvents: [{ eventType: "harness.ready" }] },
+        {
+          ...base,
+          commands: [{ type: "session.open", status: "completed" }],
+        },
+        {
+          ...base,
+          commands: [{ type: "turn.start", status: "pending" }],
+        },
+      ]) {
+        await writeFile(statePath, JSON.stringify(ambiguous));
+        expect(runnerdStateProvesIncompleteBootstrap(root)).toBe(false);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("native provider usage normalization", () => {
   it("reads remote runner run-delta tokens and provider cost", () => {

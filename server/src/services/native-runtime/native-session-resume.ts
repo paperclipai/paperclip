@@ -15,6 +15,48 @@ export function isNativeSessionId(value: unknown): value is string {
     && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
+const LEGACY_RETRY_SOURCE_TERMINAL_STATUSES = new Set([
+  "succeeded",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "timed_out",
+]);
+
+/**
+ * Legacy compatibility is deliberately narrower than ordinary task-session
+ * continuation: only a replacement row that never acquired any native process
+ * or provider authority may be rebound to a terminal native source. The exact
+ * checkpoint/session/workspace/provider binding is validated separately by
+ * rebindNativeSessionCheckpoint.
+ */
+export function isUnusedLegacyNativeRetryReplacement(input: {
+  replacement: {
+    processPid: number | null;
+    processGroupId: number | null;
+    processStartedAt: Date | null;
+    runnerProfileJson: unknown;
+  };
+  source: {
+    runtimeMode: string | null;
+    status: string;
+    nativeSessionId: string | null;
+  } | null;
+  hasProviderEvents: boolean;
+}): boolean {
+  const replacementProfile = record(input.replacement.runnerProfileJson);
+  return Boolean(
+    input.source?.runtimeMode === "native" &&
+      LEGACY_RETRY_SOURCE_TERMINAL_STATUSES.has(input.source.status) &&
+      isNativeSessionId(input.source.nativeSessionId) &&
+      input.replacement.processPid === null &&
+      input.replacement.processGroupId === null &&
+      input.replacement.processStartedAt === null &&
+      replacementProfile.sessionCheckpoint == null &&
+      !input.hasProviderEvents,
+  );
+}
+
 function sameProvider(
   previous: NativeExecutionInput["provider"],
   current: NativeExecutionInput["provider"],

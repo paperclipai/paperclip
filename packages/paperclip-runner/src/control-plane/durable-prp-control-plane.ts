@@ -226,6 +226,8 @@ export interface RunnerProcessHandle {
     kill(signal?: NodeJS.Signals | number): boolean;
   };
   completion: Promise<RunnerProcessResult>;
+  processGroupId?: number | null;
+  startedAt?: string;
   /** Relaunches the same immutable process specification with a fresh ticket. */
   restart?(ticket: string): RunnerProcessHandle;
 }
@@ -1993,6 +1995,7 @@ export function spawnRunner(options: {
   };
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
+  diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
   const connection =
     options.connection ??
@@ -2096,6 +2099,9 @@ export function spawnRunner(options: {
       );
     }
   }
+  if (options.diagnosticsDirectory !== undefined) {
+    args.push("--diagnostics-directory", options.diagnosticsDirectory);
+  }
 
   const command = options.runnerBinaryPath ?? runnerBinary;
   const environment = runnerEnvironment(options.ticket, options.environment);
@@ -2109,28 +2115,75 @@ export function spawnRunner(options: {
     );
   }
 
+  const detached = process.platform !== "win32";
+  const diagnosticsDirectory = options.diagnosticsDirectory;
+  let stdoutPath: string | null = null;
+  let stderrPath: string | null = null;
+  if (diagnosticsDirectory) {
+    try {
+      const metadata = lstatSync(diagnosticsDirectory);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+        throw new Error(
+          `Private state directory is not a real directory: ${diagnosticsDirectory}`,
+        );
+      }
+    } catch (error) {
+      if (!isNodeError(error, "ENOENT")) throw error;
+      mkdirSync(diagnosticsDirectory, { recursive: true, mode: 0o700 });
+    }
+    if (process.platform !== "win32") chmodSync(diagnosticsDirectory, 0o700);
+    verifyPrivateDirectory(diagnosticsDirectory);
+    stdoutPath = resolve(diagnosticsDirectory, "runnerd.stdout.log");
+    stderrPath = resolve(diagnosticsDirectory, "runnerd.stderr.log");
+    // runnerd owns every durable diagnostic write so it can redact and bound
+    // the complete value before a byte reaches disk. Raw process output is
+    // intentionally discarded below; these files are only the runner-owned
+    // restart-survivable diagnostic channel.
+    atomicPrivateWrite(stdoutPath, "");
+    atomicPrivateWrite(stderrPath, "");
+  }
   const child = spawn(command, args, {
     cwd: packageRoot,
     env: environment,
-    stdio: "pipe",
+    detached,
+    stdio: diagnosticsDirectory ? "ignore" : "pipe",
   });
+  child.unref();
   let stdout = "";
   let stderr = "";
-  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+  child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
     stdout = `${stdout}${chunk}`.slice(-16_384);
   });
-  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+  child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
     stderr = `${stderr}${chunk}`.slice(-16_384);
   });
-  const completion = new Promise<RunnerProcessResult>(
+  const boundedDiagnostic = (filePath: string | null): string => {
+    if (!filePath) return "";
+    try {
+      return (readPrivateFile(filePath) ?? "").slice(-16_384);
+    } catch {
+      return "";
+    }
+  };
+  const processCompletion = new Promise<RunnerProcessResult>(
     (resolveCompletion, rejectCompletion) => {
       child.once("error", rejectCompletion);
       child.once("exit", (code, signal) =>
-        resolveCompletion({ code, signal, stdout, stderr }),
+        resolveCompletion({
+          code,
+          signal,
+          stdout: stdout || boundedDiagnostic(stdoutPath),
+          stderr: stderr || boundedDiagnostic(stderrPath),
+        }),
       );
     },
   );
-  return withRestart({ child, completion });
+  return withRestart({
+    child,
+    completion: processCompletion,
+    processGroupId: detached ? (child.pid ?? null) : null,
+    startedAt: new Date().toISOString(),
+  });
 }
 
 export async function waitForProcess(
@@ -2143,7 +2196,19 @@ export async function waitForProcess(
       handle.completion,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
-          handle.child.kill("SIGKILL");
+          if (
+            process.platform !== "win32" &&
+            handle.processGroupId &&
+            handle.processGroupId > 0
+          ) {
+            try {
+              process.kill(-handle.processGroupId, "SIGKILL");
+            } catch {
+              handle.child.kill("SIGKILL");
+            }
+          } else {
+            handle.child.kill("SIGKILL");
+          }
           reject(new Error("Durable recovery runner timed out."));
         }, timeoutMs);
       }),

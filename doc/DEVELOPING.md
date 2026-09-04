@@ -763,6 +763,47 @@ agent workspace. The host `HOME` itself, a directory that contains it, a
 filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
 assigned workspace is rejected before provider startup.
 
+### Native runner restart recovery
+
+Paperclip Runner keeps its heartbeat run, native session, logical runner, and
+provider session identities across server restarts. A coordinated hot restart
+registers a correlated recovery request before it signals the dev supervisor.
+An uncoordinated server restart uses the same durable recovery classifier
+without trusting a handoff marker.
+
+Startup binds the HTTP and PRP listener before it classifies native runs. Public
+health reports a startup state until every candidate is reattached, dispatched
+for same-run resume, finalized from durable evidence, or held for explicit
+ownership evidence. Scheduling and generic orphan recovery start only after
+that classification finishes.
+
+- A verified live runner re-registers its existing PRP authority and reconnects
+  with the same operating-system PID. Paperclip does not spawn a competing
+  runner.
+- A verified dead runner starts a replacement from the same durable root and
+  resumes the same provider checkpoint. Only the operating-system PID changes.
+- A runner that died before its first authenticated connection can restart on
+  the same run only when its durable root proves that no provider authority or
+  checkpoint exists. Paperclip quarantines the incomplete root first.
+- A live but mismatched or unverifiable process fails closed. Paperclip does not
+  signal it or spawn a replacement.
+- A persisted proposed or terminal result is reconciled before any runner or
+  provider work starts, so restart recovery cannot submit a duplicate turn.
+
+Run the credential-free real-process restart suite with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport.test.ts -t 'adopts a live runner'
+```
+
+The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
+`runnerd` processes, and a deterministic fake Codex app server. It covers hot
+and hard restarts with live and dead runners, the result-finalization race,
+incomplete bootstrap, repeated crashes with steering, and fail-closed process
+identity mismatches.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The

@@ -7,6 +7,35 @@ type ShutdownLogger = {
   error(obj: object, msg: string): void;
 };
 
+export async function drainRunExecutionFinalizersForShutdown(input: {
+  signal: "SIGINT" | "SIGTERM";
+  drain: (() => Promise<void>) | null;
+  timeoutMs?: number;
+  log: ShutdownLogger;
+}): Promise<"drained" | "timed_out" | "unavailable"> {
+  if (!input.drain) return "unavailable";
+  const timeoutMs = input.timeoutMs ?? 5_000;
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    const result = await Promise.race([
+      input.drain().then(() => "drained" as const),
+      new Promise<"timed_out">((resolve) => {
+        timer = setTimeout(() => resolve("timed_out"), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (result === "timed_out") {
+      input.log.info(
+        { signal: input.signal, timeoutMs },
+        "bounded heartbeat execution finalizer drain timed out",
+      );
+    }
+    return result;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Runs the final, ordered teardown of the server. It awaits the application
  * service cleanup first, so a live setup-token login session stops and releases
