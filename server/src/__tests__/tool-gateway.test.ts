@@ -2388,7 +2388,7 @@ rl.on("line", (line) => {
     }
   });
 
-  it("requires an explicit named-agent delegation for autonomous personal-identity runs", async () => {
+  it("uses the responsible user's identity directly and requires delegation only without one", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
@@ -2426,14 +2426,21 @@ rl.on("line", (line) => {
       const tool = (await gateway.listToolsForSession(session.token)).find((item) => item.providerType === "mcp_remote_http")!;
 
       await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
-        .rejects.toMatchObject({ status: 409, reasonCode: "standing_delegation_required" });
-      expect(fake.requests).toHaveLength(0);
+        .resolves.toMatchObject({ status: "completed", result: { content: "delegated" } });
+      expect(fake.requests).toHaveLength(1);
       expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id)))
-        .toEqual([expect.objectContaining({
-          status: "pending",
-          addresseeUserId: "alice",
-          idempotencyKey: `connection-delegation:${connection.id}:alice:${agent.id}`,
-        })]);
+        .toEqual([]);
+
+      await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, run.id));
+      const unattendedSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const unattendedTool = (await gateway.listToolsForSession(unattendedSession.token))
+        .find((item) => item.providerType === "mcp_remote_http")!;
+      await expect(gateway.executeTool({
+        sessionToken: unattendedSession.token,
+        tool: unattendedTool.name,
+        parameters: {},
+      })).rejects.toMatchObject({ status: 409, reasonCode: "user_authorization_required" });
+      expect(fake.requests).toHaveLength(1);
 
       await db.insert(connectionGrantDelegations).values({
         companyId: company.id,
@@ -2441,17 +2448,25 @@ rl.on("line", (line) => {
         agentId: agent.id,
         createdByUserId: "alice",
       });
-      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      await expect(gateway.executeTool({
+        sessionToken: unattendedSession.token,
+        tool: unattendedTool.name,
+        parameters: {},
+      }))
         .resolves.toMatchObject({ status: "completed", result: { content: "delegated" } });
-      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests).toHaveLength(2);
 
       await db.update(companyMemberships).set({ status: "suspended" }).where(and(
         eq(companyMemberships.companyId, company.id),
         eq(companyMemberships.principalId, "alice"),
       ));
-      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      await expect(gateway.executeTool({
+        sessionToken: unattendedSession.token,
+        tool: unattendedTool.name,
+        parameters: {},
+      }))
         .rejects.toMatchObject({ status: 403, reasonCode: "grant_owner_membership_inactive" });
-      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests).toHaveLength(2);
     } finally {
       await fake.close();
     }

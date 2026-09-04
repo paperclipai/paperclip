@@ -1387,7 +1387,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .toHaveLength(0);
   });
 
-  it("fails autonomous token minting closed until the named agent has a standing delegation", async () => {
+  it("uses the responsible user's personal grant for autonomous token minting", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
@@ -1400,26 +1400,29 @@ describeEmbeddedPostgres("tool access service", () => {
       connectionId: connection.id,
       kind: "user",
       subjectUserId: "user-for-run",
+      credentialSecretRefs: connection.credentialSecretRefs,
       status: "active",
       isDefault: false,
     }).returning().then((rows) => rows[0]!);
     const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        token: "responsible-user-child-token",
+        expires_in: 600,
+        scope: "pages:publish:ns/dotta",
+      }),
+    } as Response);
 
-    const denied = await request(app)
+    const allowed = await request(app)
       .post(`/api/agents/me/connections/${connection.id}/token`)
-      .send({});
-    expect(denied.status).toBe(409);
-    expect(denied.body).toMatchObject({
-      code: "standing_delegation_required",
-      grantId: grant.id,
-      remediation: { action: "delegate_personal_grant", grantId: grant.id, agentId: agent.id },
-    });
+      .send({ scope: "pages:publish:ns/dotta" });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body).toMatchObject({ token: "responsible-user-child-token" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id)))
-      .toEqual([expect.objectContaining({
-        status: "pending",
-        addresseeUserId: "user-for-run",
-        idempotencyKey: `connection-delegation:${connection.id}:user-for-run:${agent.id}`,
-      })]);
+      .toEqual([]);
 
     await db.update(companyMemberships).set({ status: "suspended" }).where(and(
       eq(companyMemberships.companyId, company.id),
@@ -1430,6 +1433,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .send({});
     expect(inactiveOwner.status).toBe(403);
     expect(inactiveOwner.body.error).toContain("no longer authorized");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("enforces organization grant audiences at token mint time", async () => {

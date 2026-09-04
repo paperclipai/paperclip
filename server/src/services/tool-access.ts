@@ -2936,72 +2936,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     });
   }
 
-  async function createStandingDelegationAsk(input: {
-    connection: typeof toolConnections.$inferSelect;
-    issueId: string | null;
-    runId: string;
-    agentId: string;
-    ownerUserId: string;
-  }) {
-    if (!input.issueId) return;
-    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
-      .where(eq(companies.id, input.connection.companyId)).limit(1);
-    const idempotencyKey = `connection-delegation:${input.connection.id}:${input.ownerUserId}:${input.agentId}`;
-    const payload = {
-      version: 1 as const,
-      prompt: `Allow this agent to use your ${input.connection.name} account for autonomous runs`,
-      acceptLabel: "Review delegation",
-      rejectLabel: "Not now",
-      detailsMarkdown: "This autonomous run is paused. Paperclip will not use your personal identity until you explicitly delegate it to this named agent.",
-      target: {
-        type: "custom" as const,
-        key: `connection:${input.connection.uid}:delegation:${input.ownerUserId}:${input.agentId}`,
-        revisionId: input.connection.updatedAt.toISOString(),
-        label: `Delegate ${input.connection.name}`,
-        href: `/${company?.issuePrefix ?? ""}/apps/${input.connection.id}/permissions#personal-identity`,
-      },
-    };
-    const [existing] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
-      eq(issueThreadInteractions.companyId, input.connection.companyId),
-      eq(issueThreadInteractions.issueId, input.issueId),
-      eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
-    )).limit(1);
-    if (existing) {
-      await db.update(issueThreadInteractions).set({
-        status: "pending",
-        continuationPolicy: "wake_assignee",
-        requestedResolverPolicy: "human_only",
-        effectiveResolverPolicy: "human_only",
-        resolverPolicyProvenance: "explicit",
-        effectiveResolverPolicySource: "requested",
-        addresseeUserId: input.ownerUserId,
-        payload,
-        result: null,
-        resolvedAt: null,
-        updatedAt: new Date(),
-      }).where(eq(issueThreadInteractions.id, existing.id));
-      return;
-    }
-    await db.insert(issueThreadInteractions).values({
-      companyId: input.connection.companyId,
-      issueId: input.issueId,
-      kind: "request_confirmation",
-      status: "pending",
-      continuationPolicy: "wake_assignee",
-      requestedResolverPolicy: "human_only",
-      effectiveResolverPolicy: "human_only",
-      resolverPolicyProvenance: "explicit",
-      effectiveResolverPolicySource: "requested",
-      idempotencyKey,
-      sourceRunId: input.runId,
-      title: `Delegate your ${input.connection.name}`,
-      summary: "An explicit standing delegation is required for this autonomous run.",
-      createdByAgentId: input.agentId,
-      addresseeUserId: input.ownerUserId,
-      payload,
-    });
-  }
-
   async function enforceDefaultConnectionTokenRateLimit(input: {
     connection: typeof toolConnections.$inferSelect;
     agentId: string;
@@ -13816,32 +13750,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             connection: { id: connection.id, uid: connection.uid, name: connection.name },
             subject,
             remediation: { action: "restore_membership_or_reconnect" },
-          });
-        }
-      }
-
-      if (grant.kind === "user" && autonomous) {
-        const [delegation] = await db.select({ id: connectionGrantDelegations.id }).from(connectionGrantDelegations).where(and(
-          eq(connectionGrantDelegations.companyId, connection.companyId),
-          eq(connectionGrantDelegations.grantId, grant.id),
-          eq(connectionGrantDelegations.agentId, input.agentId),
-        )).limit(1);
-        if (!delegation) {
-          if (actingUserId) {
-            await createStandingDelegationAsk({
-              connection,
-              issueId: runContext.issueId,
-              runId: input.runId,
-              agentId: input.agentId,
-              ownerUserId: actingUserId,
-            });
-          }
-          await fail(409, "Standing delegation is required for this autonomous run", "denied", "standing_delegation_required", {
-            connection: { id: connection.id, uid: connection.uid, name: connection.name },
-            grantId: grant.id,
-            subject: actingUserId ? { type: "user", userId: actingUserId } : { type: "app" },
-            agentId: input.agentId,
-            remediation: { action: "delegate_personal_grant", grantId: grant.id, agentId: input.agentId },
           });
         }
       }
