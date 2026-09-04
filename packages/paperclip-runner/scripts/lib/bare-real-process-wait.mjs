@@ -62,6 +62,20 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
   "yield", "case", "throw", "do", "else", "await",
 ]);
 
+// A word that reads as one of `REGEX_PRECEDING_KEYWORDS` is a property
+// name, not the keyword, when a `.` (a plain member access or the last
+// character of an optional-chain `?.`) sits directly before it, with only
+// space allowed in between. `obj.await` is a value, so the `/` right after
+// it divides; only a standalone `await` puts the `/` in an expression
+// position.
+function isKeywordShapedPropertyName(source, wordStartIndex) {
+  let beforeWordIndex = wordStartIndex - 1;
+  while (beforeWordIndex >= 0 && /\s/.test(source[beforeWordIndex])) {
+    beforeWordIndex -= 1;
+  }
+  return beforeWordIndex >= 0 && source[beforeWordIndex] === ".";
+}
+
 function isRegexLiteralStart(source, index) {
   let previousIndex = index - 1;
   while (previousIndex >= 0 && /\s/.test(source[previousIndex])) {
@@ -72,7 +86,10 @@ function isRegexLiteralStart(source, index) {
   if (!/[\w$)\]]/.test(previousCharacter)) return true;
   const wordMatch = source.slice(0, previousIndex + 1).match(/[A-Za-z_$][\w$]*$/);
   const word = wordMatch?.[0] ?? "";
-  return REGEX_PRECEDING_KEYWORDS.has(word);
+  if (!REGEX_PRECEDING_KEYWORDS.has(word)) return false;
+  const wordStartIndex = previousIndex + 1 - word.length;
+  if (isKeywordShapedPropertyName(source, wordStartIndex)) return false;
+  return true;
 }
 
 // Mask a `/pattern/flags` regex literal, starting at the opening `/` in

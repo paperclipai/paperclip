@@ -216,6 +216,18 @@ test("ignores a vi.waitFor( written inside a regex literal's own text, inside a 
   assert.deepEqual(findBareRealProcessWaits(source), []);
 });
 
+test("rejects a vi.waitFor( that follows division after an await-named property, inside a template literal interpolation", () => {
+  const source = [
+    "async function example() {",
+    "  const message = `status: ${obj.await / divisor + (await vi.waitFor(() => expect(x).toBe(1)))}`;",
+    "}",
+  ].join("\n");
+
+  assert.deepEqual(findBareRealProcessWaits(source), [
+    { line: 2, pattern: "vi.waitFor(" },
+  ]);
+});
+
 test("still flags a real bare vi.waitFor( on the line after a comment mentioning the pattern", () => {
   const source = [
     "async function example() {",
