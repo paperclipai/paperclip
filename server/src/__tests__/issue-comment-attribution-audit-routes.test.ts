@@ -26,9 +26,40 @@ vi.hoisted(() => {
   process.env.PAPERCLIP_IN_WORKTREE = "false";
 });
 
+const postCommitFailures = vi.hoisted(() => ({
+  issueReferenceCommentSync: false,
+}));
+
 vi.mock("../services/issue-assignment-wakeup.js", () => ({
   queueIssueAssignmentWakeup: vi.fn(),
 }));
+
+vi.mock("../services/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/index.js")>("../services/index.js");
+  return {
+    ...actual,
+    issueReferenceService: (db: Parameters<typeof actual.issueReferenceService>[0]) => {
+      const service = actual.issueReferenceService(db);
+      const syncComment = async (...args: Parameters<typeof service.syncComment>) => {
+        if (postCommitFailures.issueReferenceCommentSync) {
+          throw new Error("reference index unavailable");
+        }
+        return service.syncComment(...args);
+      };
+      return {
+        ...service,
+        syncComment,
+        syncCommentSafely: async (...args: Parameters<typeof service.syncComment>) => {
+          try {
+            await syncComment(...args);
+          } catch {
+            // Mirrors the service contract while allowing this route test to inject a failure.
+          }
+        },
+      };
+    },
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -63,6 +94,7 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
   }, 20_000);
 
   afterEach(async () => {
+    postCommitFailures.issueReferenceCommentSync = false;
     await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(heartbeatRuns);
@@ -276,5 +308,20 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
         derivedFrom: "authenticated_actor",
       },
     });
+  }, 30_000);
+
+  it("returns the committed comment when reference indexing fails", async () => {
+    const fixture = await seed();
+    postCommitFailures.issueReferenceCommentSync = true;
+
+    const response = await request(await createApp(db, agentActor(fixture)))
+      .post(`/api/issues/${fixture.issue.id}/comments`)
+      .send({ body: "Comment survives reference indexing failure" });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.body).toBe("Comment survives reference indexing failure");
+    expect(await db.select().from(issueComments)).toEqual([
+      expect.objectContaining({ id: response.body.id, body: response.body.body }),
+    ]);
   }, 30_000);
 });

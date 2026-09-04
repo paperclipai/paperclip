@@ -17,6 +17,7 @@ import type {
 } from "@paperclipai/shared";
 import { extractIssueReferenceMatches } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 
 const SOURCE_KIND_ORDER: Record<IssueReferenceSourceKind, number> = {
   title: 0,
@@ -215,27 +216,39 @@ export function issueReferenceService(db: Db) {
   }
 
   async function syncComment(commentId: string, dbOrTx: any = db) {
-    const comment = await dbOrTx
-      .select({
-        id: issueComments.id,
-        companyId: issueComments.companyId,
-        issueId: issueComments.issueId,
-        body: issueComments.body,
-        deletedAt: issueComments.deletedAt,
-      })
-      .from(issueComments)
-      .where(eq(issueComments.id, commentId))
-      .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string; deletedAt: Date | null }>) => rows[0] ?? null);
-    if (!comment) throw notFound("Issue comment not found");
+    const runSync = async (tx: any) => {
+      const comment = await tx
+        .select({
+          id: issueComments.id,
+          companyId: issueComments.companyId,
+          issueId: issueComments.issueId,
+          body: issueComments.body,
+          deletedAt: issueComments.deletedAt,
+        })
+        .from(issueComments)
+        .where(eq(issueComments.id, commentId))
+        .then((rows: Array<{ id: string; companyId: string; issueId: string; body: string; deletedAt: Date | null }>) => rows[0] ?? null);
+      if (!comment) throw notFound("Issue comment not found");
 
-    await replaceSourceMentions({
-      companyId: comment.companyId,
-      sourceIssueId: comment.issueId,
-      sourceKind: "comment",
-      sourceRecordId: comment.id,
-      documentKey: null,
-      text: comment.deletedAt ? null : comment.body,
-    }, dbOrTx);
+      await replaceSourceMentions({
+        companyId: comment.companyId,
+        sourceIssueId: comment.issueId,
+        sourceKind: "comment",
+        sourceRecordId: comment.id,
+        documentKey: null,
+        text: comment.deletedAt ? null : comment.body,
+      }, tx);
+    };
+
+    return dbOrTx === db ? db.transaction(runSync) : runSync(dbOrTx);
+  }
+
+  async function syncCommentSafely(commentId: string, dbOrTx: any = db) {
+    try {
+      await syncComment(commentId, dbOrTx);
+    } catch (err) {
+      logger.warn({ err, commentId }, "issue reference comment sync failed");
+    }
   }
 
   async function syncAnnotationComment(commentId: string, dbOrTx: any = db) {
@@ -433,6 +446,7 @@ export function issueReferenceService(db: Db) {
   return {
     syncIssue,
     syncComment,
+    syncCommentSafely,
     syncAnnotationComment,
     syncDocument,
     deleteDocumentSource,

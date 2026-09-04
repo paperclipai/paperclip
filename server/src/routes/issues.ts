@@ -13606,7 +13606,7 @@ export function issueRoutes(
       });
     }
 
-    await issueReferencesSvc.syncComment(comment.id);
+    await issueReferencesSvc.syncCommentSafely(comment.id);
     await externalObjectsSvc.syncCommentSafely(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
