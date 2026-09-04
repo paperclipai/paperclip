@@ -76,6 +76,9 @@ import {
   dispositionRepairDelayMs,
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
 } from "./disposition-repair.js";
+import { classifySilenceLevel, silenceAgeMs as domainSilenceAgeMs, silenceStartedAt as domainSilenceStartedAt } from "../../modules/active-run-watchdog/domain/silence.js";
+import { evaluateSuppression } from "../../modules/active-run-watchdog/domain/suppression.js";
+import { isTerminalIssueStatus as domainIsTerminalIssueStatus, shouldFoldTerminalSource } from "../../modules/active-run-watchdog/domain/terminal.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -1245,16 +1248,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   function isTerminalIssueStatus(status: string | null | undefined) {
-    return status === "done" || status === "cancelled";
+    return domainIsTerminalIssueStatus(status);
   }
 
   function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">) {
-    return run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+    return domainSilenceStartedAt(run);
   }
 
   function silenceAgeMsForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">, now = new Date()) {
-    const startedAt = silenceStartedAtForRun(run);
-    return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
+    return domainSilenceAgeMs(run, now);
   }
 
   async function activeOutputDecisionState(companyId: string, runId: string, now = new Date()) {
@@ -1329,17 +1331,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const { dismissedFalsePositive, quietUntilDecision } = decisionState;
     const silenceStartedAt = silenceStartedAtForRun(run);
     const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
-    const level = run.status !== "running"
-      ? "not_applicable"
-      : dismissedFalsePositive
-        ? "not_applicable"
-        : quietUntilDecision
-          ? "snoozed"
-          : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS
-            ? "critical"
-            : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS
-              ? "suspicious"
-              : "ok";
+    const level = classifySilenceLevel({
+      isRunningRun: run.status === "running",
+      silenceAgeMs,
+      dismissedFalsePositive,
+      snoozed: Boolean(quietUntilDecision),
+      suspicionThresholdMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+      criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+    });
     return {
       lastOutputAt: run.lastOutputAt ?? null,
       lastOutputSeq: run.lastOutputSeq ?? 0,
@@ -1675,27 +1674,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!runningAgent || runningAgent.companyId !== input.run.companyId) return { kind: "skipped" as const };
     const sourceIssue = await resolveStaleRunSourceIssue(input.run);
     const existing = await findOpenStaleRunEvaluation(input.run.companyId, input.run.id);
-    if (
+    const isRecoveryOriginSource = Boolean(
       sourceIssue &&
       Object.values(RECOVERY_ORIGIN_KINDS).includes(
         sourceIssue.originKind as typeof RECOVERY_ORIGIN_KINDS[keyof typeof RECOVERY_ORIGIN_KINDS],
-      )
-    ) {
+      ),
+    );
+    if (evaluateSuppression({ recoveryOriginSource: isRecoveryOriginSource }).suppressed) {
       return { kind: "skipped" as const };
     }
     const silenceStartedAt = silenceStartedAtForRun(input.run);
-    if (sourceIssue && isTerminalIssueStatus(sourceIssue.status)) {
-      const terminalEvidence = await latestSameRunSourceTerminalEvidence({
-        run: input.run,
-        sourceIssue,
-        evidenceAfter: silenceStartedAt,
-      });
-      if (terminalEvidence) {
+    if (sourceIssue) {
+      const terminalEvidence = isTerminalIssueStatus(sourceIssue.status)
+        ? await latestSameRunSourceTerminalEvidence({
+            run: input.run,
+            sourceIssue,
+            evidenceAfter: silenceStartedAt,
+          })
+        : null;
+      if (shouldFoldTerminalSource({
+        sourceIssueStatus: sourceIssue.status,
+        hasSameRunTerminalEvidence: terminalEvidence !== null,
+      })) {
         return foldSourceResolvedStaleRun({
           run: input.run,
           runningAgent,
           sourceIssue,
-          evidence: terminalEvidence,
+          evidence: terminalEvidence!,
           existingEvaluation: existing,
           silenceStartedAt,
           silenceAgeMs: silenceAgeMsForRun(input.run, input.now),
@@ -1706,9 +1711,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     // Blocked source work can be intentionally quiet. The issue state already carries
     // the durable waiting signal, so the cleanup scan has nothing to do.
-    if (sourceIssue?.status === "blocked") return { kind: "skipped" as const };
+    if (evaluateSuppression({ blockedSource: sourceIssue?.status === "blocked" }).suppressed) {
+      return { kind: "skipped" as const };
+    }
 
-    if (input.dismissedFalsePositive) {
+    if (evaluateSuppression({ dismissedFalsePositive: input.dismissedFalsePositive }).suppressed) {
       return { kind: "skipped" as const };
     }
 
@@ -1767,7 +1774,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     for (const run of candidates) {
       const decisionState = await activeOutputDecisionState(run.companyId, run.id, now);
-      if (decisionState.quietUntilDecision) {
+      if (evaluateSuppression({ snoozedOrContinued: Boolean(decisionState.quietUntilDecision) }).suppressed) {
         result.snoozed += 1;
         continue;
       }
