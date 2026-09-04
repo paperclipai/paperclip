@@ -117,7 +117,7 @@ test.describe("Onboarding wizard", () => {
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
 
-  test("adapter step shows the login panel from the cheap auth signal, and blocks the hire on a failed test", async ({
+  test("connect step starts the sign-in on Connect, rather than hiring, when the signal reports no credential", async ({
     page,
   }) => {
     const pageErrors: string[] = [];
@@ -191,6 +191,39 @@ test.describe("Onboarding wizard", () => {
       }),
     );
 
+    // The sign-in Connect now starts. Stubbed so the card is deterministic:
+    // the session start answers, and the guarded prompt read hands back an
+    // authorization URL for the card's link row.
+    await page.route("**/setup-token-login-sessions", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessionId: "e2e-setup-token-session",
+          status: "pending",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        }),
+      }),
+    );
+    await page.route("**/setup-token-login-sessions/*/prompt", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          authorizationUrl: "https://claude.ai/oauth/authorize?code=true&client=e2e",
+          transportAdvisory: null,
+        }),
+      }),
+    );
+    await page.route("**/setup-token-login-sessions/e2e-setup-token-session", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessionId: "e2e-setup-token-session",
+          status: "pending",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        }),
+      }),
+    );
+
     // Fail the adapter test the "Connect" button runs, so the hire gate
     // blocks the create and this test can prove no agent is hired.
     await page.route("**/test-environment", (route) =>
@@ -240,35 +273,107 @@ test.describe("Onboarding wizard", () => {
     await page.locator("#onboarding-agent-name").fill("Ada");
     await page.getByRole("button", { name: "Next" }).click();
 
-    // Step 4 (Connect a model): pick a source. The step arrives with nothing
-    // selected — the tile row is a question, not a confirmation — and the login
-    // panel is what the answer opens, so there is nothing to assert until one
-    // is pressed. By role rather than by label, because which adapters the row
-    // offers depends on the registry this environment reports.
+    // Step 4 (Connect a model): pick a source. Nothing to assert yet — the card
+    // *is* the sign-in now, so it does not exist until Connect is pressed. By
+    // role rather than by label, because which adapters the row offers depends
+    // on the registry this environment reports.
     const source = page.getByRole("radio").first();
     await source.waitFor({ timeout: 30_000 });
     await source.click();
 
-    // The signal above reports no ready credential, so the login panel must now
-    // show, with no button to reuse a saved login.
-    //
-    // The panel names the provider rather than the plumbing it runs on, so this
-    // title is per-adapter. "Sign in to the environment" is now only the fallback
-    // for an adapter with no known provider name, which claude_local is not.
-    await expect(page.getByText("Sign in to Anthropic")).toBeVisible({
-      timeout: 15_000,
-    });
+    const cardInstruction = page.getByText("Open Claude link then come back and enter code");
+    await expect(cardInstruction).toHaveCount(0);
+
+    // Connect starts the sign-in instead of hiring, which is the ordering the
+    // step exists to enforce: a hire here would file an agent with no
+    // credential to run on. Waited on for *enabled* rather than for visible —
+    // it is already on screen, and clicking a disabled button does nothing.
+    const connect = page.getByRole("button", { name: "Connect", exact: true });
+    await expect(connect).toBeEnabled({ timeout: 30_000 });
+    await connect.click();
+
+    await expect(cardInstruction).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("link", { name: /claude\.ai\/oauth\/authorize/ }),
+    ).toBeVisible({ timeout: 15_000 });
+    // No "Use saved login" here: the hire step applies a stored login itself.
     await expect(page.getByRole("button", { name: "Use saved login" })).toHaveCount(0);
+    expect(hireCalled).toBe(false);
 
-    // The CTA reads "Next" on this step as on the one before it. Waited on for
-    // *enabled* rather than for visible: it is already on screen and disabled
-    // until the environment probe settles, and clicking a disabled button
-    // raises nothing and does nothing.
-    const connectNext = page.getByRole("button", { name: "Next", exact: true });
-    await expect(connectNext).toBeEnabled({ timeout: 30_000 });
-    await connectNext.click();
+    expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
+  });
+  test("connect step blocks the hire when the environment probe fails and no sign-in is needed", async ({
+    page,
+  }) => {
+    // The other half of what the test above used to cover. The two claims are
+    // different situations now: there, an absent credential makes Connect start
+    // a sign-in; here there is no sandbox to sign in against — this throwaway
+    // instance only auto-creates the local environment, and nothing below adds
+    // one — so Connect goes straight to the probe, and the probe is the gate.
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
 
-    // The failed test blocks the hire and shows its own checks.
+    const flagRes = await page.request.patch("/api/instance/settings/experimental", {
+      data: { enableConferenceRoomChat: true },
+    });
+    expect(flagRes.ok()).toBe(true);
+
+    await page.route("**/test-environment", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          adapterType: "claude_local",
+          status: "fail",
+          checks: [
+            {
+              code: "claude_cli_not_found",
+              level: "fail",
+              message: "The claude CLI was not found on this host.",
+            },
+          ],
+          testedAt: new Date().toISOString(),
+        }),
+      }),
+    );
+
+    let hireCalled = false;
+    await page.route("**/agent-hires", (route) => {
+      hireCalled = true;
+      return route.continue();
+    });
+
+    await page.goto("/onboarding");
+
+    const startBtn = page.getByRole("button", {
+      name: /Start Onboarding|New Organization|Add Agent/,
+    });
+    if (await startBtn.count()) {
+      await startBtn.first().click();
+    }
+    const createCard = page.getByRole("button", { name: /Build a new organization/ });
+    if (await createCard.count()) {
+      await createCard.first().click();
+    }
+
+    await expect(
+      page.getByRole("heading", { name: "What is the name of your organization?" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(`${COMPANY_NAME}-probe-gate`);
+    await page.getByRole("button", { name: /^Continue/ }).click();
+
+    await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+    await page.locator("#onboarding-agent-name").fill("Ada");
+    await page.getByRole("button", { name: "Next" }).click();
+
+    const source = page.getByRole("radio").first();
+    await source.waitFor({ timeout: 30_000 });
+    await source.click();
+
+    const connect = page.getByRole("button", { name: "Connect", exact: true });
+    await expect(connect).toBeEnabled({ timeout: 30_000 });
+    await connect.click();
+
+    // The failed probe blocks the hire and shows its own checks.
     await expect(page.getByText("The claude CLI was not found on this host.")).toBeVisible({
       timeout: 15_000,
     });

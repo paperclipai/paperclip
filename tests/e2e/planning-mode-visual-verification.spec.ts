@@ -69,14 +69,17 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   await page.getByRole("button", { name: /^Next$/ }).click();
 
   // The connect step arrives with no source selected — the tile row is a
-  // question, not a confirmation — so its CTA, which reads "Next" here too,
-  // stays disabled until one is pressed. Waited on for enabled rather than
-  // visible: it is already on screen, and clicking a disabled button raises
-  // nothing and does nothing.
+  // question, not a confirmation — so its CTA stays disabled until one is
+  // pressed. It reads "Connect", not "Next": the button starts the sign-in
+  // where there is one to start. This instance has no sandbox environment, so
+  // there is none, and Connect goes straight to the hire.
+  //
+  // Waited on for enabled rather than visible: it is already on screen, and
+  // clicking a disabled button raises nothing and does nothing.
   const source = page.getByRole("radio").first();
   await source.waitFor({ timeout: 30_000 });
   await source.click();
-  const connectNext = page.getByRole("button", { name: /^Next$/ });
+  const connectNext = page.getByRole("button", { name: /^Connect$/ });
   await expect(connectNext).toBeEnabled({ timeout: 30_000 });
   await connectNext.click();
 
