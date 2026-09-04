@@ -10703,7 +10703,7 @@ export function heartbeatService(
     if (!isHeartbeatRunTerminalStatus(updated.status)) return;
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
-    void emitAgentTaskRun(db, updated).catch(() => {});
+    void emitAgentTaskRun(db, updated);
   }
 
   async function setRunStatus(
@@ -13292,7 +13292,7 @@ export function heartbeatService(
     // Telemetry is best-effort background work. Fire it in the background
     // instead of awaiting it, so a slow telemetry lookup never delays the
     // wake cancel, the issue lock clear, or this function's return.
-    void emitAgentTaskRun(db, cancelled).catch(() => {});
+    void emitAgentTaskRun(db, cancelled);
 
     if (cancelled.wakeupRequestId) {
       await db
@@ -15397,7 +15397,7 @@ export function heartbeatService(
       publishRunLifecyclePluginEvent(queuedCommentClaim.run);
       // Fire-and-forget: nothing else in this path depends on the emission,
       // so it must not delay the return.
-      void emitAgentTaskRun(db, queuedCommentClaim.run).catch(() => {});
+      void emitAgentTaskRun(db, queuedCommentClaim.run);
       return null;
     }
     const claimed = queuedCommentClaim
@@ -24394,7 +24394,7 @@ export function heartbeatService(
       // nor this function's return, depends on it, so a slow telemetry
       // lookup must not delay them.
       for (const cancelledRun of cancelledRunsToEmit) {
-        void emitAgentTaskRun(db, cancelledRun).catch(() => {});
+        void emitAgentTaskRun(db, cancelledRun);
       }
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") {

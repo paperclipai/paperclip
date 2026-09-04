@@ -365,7 +365,7 @@ export async function claimNativeSessionResumptions(input: {
     // Telemetry is best-effort background work; it must not delay claiming
     // the remaining candidates in this loop, so fire it and do not await it.
     if (terminalRunToEmit) {
-      void emitAgentTaskRun(input.db, terminalRunToEmit).catch(() => {});
+      void emitAgentTaskRun(input.db, terminalRunToEmit);
     }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
   }

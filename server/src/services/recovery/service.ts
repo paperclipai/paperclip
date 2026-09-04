@@ -1571,7 +1571,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!finalizedRun) return { kind: "skipped" as const };
     // Telemetry is best-effort background work; it must not delay the
     // watchdog fold below, so fire it and do not await it.
-    void emitAgentTaskRun(db, finalizedRun).catch(() => {});
+    void emitAgentTaskRun(db, finalizedRun);
 
     if (input.existingEvaluation && !isTerminalIssueStatus(input.existingEvaluation.status)) {
       await issuesSvc.update(input.existingEvaluation.id, { status: "done" });
@@ -4634,7 +4634,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     // Telemetry is best-effort background work; it must not delay clearing
     // the stale lock below, so fire it and do not await it.
-    void emitAgentTaskRun(db, updated).catch(() => {});
+    void emitAgentTaskRun(db, updated);
     runningProcesses.delete(run.id);
     // The run update above already committed the terminal status. The audit
     // event is best-effort: if the insert fails, the caller must still treat
