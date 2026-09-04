@@ -34,7 +34,9 @@ packages/paperclip-runner/scripts/*-smoke.mjs
 # survive the slimming above. 2026-09-04: the *.md rule stripped the
 # committed capability contract out of the context and every image build
 # on master failed its drift check — .github/docker-context-checks.Dockerfile
-# now guards this in PR CI.
+# now guards this in PR CI. The workflow-traceability build check also reads
+# each regression test named by its manifest, so retain the eight runner-local
+# test files below without restoring the other runner test suites.
 !packages/paperclip-runner/generated/**
 !packages/paperclip-runner/docs/capability-contract.md
 !packages/paperclip-runner/src/backends/harness-driver-backend.test.ts
