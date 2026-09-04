@@ -6,7 +6,7 @@
   "categories": ["content"],
   "featured": false,
   "branding": { "logoUrl": "/brands/apps/api-key-generic.svg" },
-  "urlPatterns": [],
+  "urlPatterns": ["https://*/wp-json/*"],
   "docsUrl": "https://developer.wordpress.org/rest-api/using-the-rest-api/authentication/",
   "methods": [
     {
