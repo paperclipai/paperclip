@@ -293,8 +293,11 @@ function recommendedSetupConnectionMethod(
   const recommended = getRecommendedConnectionMethod(methods);
   // Capability choices (for example Google Workspace read versus write) have
   // an intentional default. Unrelated region/authentication variants should
-  // still ask the operator to choose unless only one is available.
-  return methods.length === 1 || recommended?.capabilityProfile
+  // still ask the operator to choose unless only one is available. A method
+  // that supports an agent-owned identity must also be selected before the
+  // Access step: that ownership decision cannot be represented by a legacy
+  // compatibility method such as GitHub's advanced PAT option.
+  return methods.length === 1 || recommended?.capabilityProfile || recommended?.grantKinds?.includes("agent")
     ? recommended
     : null;
 }
