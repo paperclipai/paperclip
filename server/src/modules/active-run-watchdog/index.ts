@@ -55,3 +55,4 @@ export type {
   WatchdogDecisionActor,
   WatchdogDecisionRecord,
 } from "./application/types.js";
+export { WatchdogDecisionApplicationError } from "./application/types.js";

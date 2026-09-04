@@ -38,6 +38,7 @@ test("scanModuleBoundaries rejects outward dependencies and module-internal impo
       "modules/watchdog/application/run.ts",
       [
         'import { adapter } from "../adapters/postgres.js";',
+        'import { forbidden } from "../../../errors.js";',
         'import db = require("@paperclipai/db");',
       ].join("\n"),
     );
@@ -50,6 +51,7 @@ test("scanModuleBoundaries rejects outward dependencies and module-internal impo
       violations.map(({ specifier, reason }) => ({ specifier, reason })),
       [
         { specifier: "../adapters/postgres.js", reason: "application cannot import concrete adapters" },
+        { specifier: "../../../errors.js", reason: "application cannot import HTTP error helpers" },
         { specifier: "@paperclipai/db", reason: "application cannot import database packages" },
         { specifier: "drizzle-orm", reason: "domain cannot import database packages" },
         { specifier: "../../../services/example.js", reason: "domain cannot import server services or routes" },

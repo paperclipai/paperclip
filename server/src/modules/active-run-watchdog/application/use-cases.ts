@@ -1,4 +1,3 @@
-import { forbidden, notFound } from "../../../errors.js";
 import {
   classifySilenceLevel,
   evaluateSuppression,
@@ -7,6 +6,7 @@ import {
   silenceAgeMs,
   silenceStartedAt,
 } from "../domain/policy.js";
+import { WatchdogDecisionApplicationError } from "./types.js";
 import type { RunProcessController, WatchdogRunReader, WatchdogWriter } from "./ports.js";
 import type {
   RunOutputSilenceSummary,
@@ -134,12 +134,20 @@ export function createRecordWatchdogDecision(deps: RecordWatchdogDecisionDeps) {
     input: RecordWatchdogDecisionUseCaseInput,
   ): Promise<WatchdogDecisionRecord> {
     const run = await deps.reader.findRunForCompany(input.companyId, input.runId);
-    if (!run) throw notFound("Heartbeat run not found");
+    if (!run) throw new WatchdogDecisionApplicationError("run_not_found", "Heartbeat run not found");
 
     const evaluationIssue = input.evaluationIssueId
       ? await deps.reader.findEvaluationIssueById(input.companyId, input.evaluationIssueId)
       : null;
-    if (input.evaluationIssueId && !evaluationIssue) throw notFound("Evaluation issue not found");
+    if (input.evaluationIssueId && !evaluationIssue) {
+      throw new WatchdogDecisionApplicationError("evaluation_issue_not_found", "Evaluation issue not found");
+    }
+    if (input.actor.type === "agent" && !evaluationIssue) {
+      throw new WatchdogDecisionApplicationError(
+        "evaluation_issue_required",
+        "Agent watchdog decisions require the target evaluation issue",
+      );
+    }
 
     const boardActor = input.actor.type === "board";
     const assignedRecoveryOwner =
@@ -152,18 +160,20 @@ export function createRecordWatchdogDecision(deps: RecordWatchdogDecisionDeps) {
       !["done", "cancelled"].includes(evaluationIssue.status) &&
       evaluationIssue.assigneeAgentId === input.actor.agentId;
     if (!boardActor && !assignedRecoveryOwner) {
-      throw forbidden("Only the board or the assigned recovery owner can record watchdog decisions");
+      throw new WatchdogDecisionApplicationError(
+        "not_authorized",
+        "Only the board or the assigned recovery owner can record watchdog decisions",
+      );
     }
 
     if (evaluationIssue && (
       evaluationIssue.originKind !== STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND ||
       evaluationIssue.originId !== run.id
     )) {
-      throw forbidden("Watchdog decision evaluation issue is not bound to the target run");
-    }
-
-    if (input.actor.type === "agent" && !evaluationIssue) {
-      throw forbidden("Agent watchdog decisions require the target evaluation issue");
+      throw new WatchdogDecisionApplicationError(
+        "evaluation_issue_mismatch",
+        "Watchdog decision evaluation issue is not bound to the target run",
+      );
     }
 
     const createdByRunId = input.actor.type === "agent"
@@ -175,7 +185,10 @@ export function createRecordWatchdogDecision(deps: RecordWatchdogDecisionDeps) {
       const creatorRun = await deps.reader.findRunForCompany(input.companyId, createdByRunId);
       const sameAgent = input.actor.type !== "agent" || creatorRun?.agentId === input.actor.agentId;
       if (!creatorRun || !sameAgent) {
-        throw forbidden("createdByRunId is not valid for this watchdog decision actor");
+        throw new WatchdogDecisionApplicationError(
+          "creator_run_invalid",
+          "createdByRunId is not valid for this watchdog decision actor",
+        );
       }
     }
 
@@ -214,14 +227,6 @@ export type ScanSilentActiveRunsOptions = {
   issueCreatedAtGte?: Date | null;
 };
 
-function readRunContextIssueId(contextSnapshot: unknown): string | null {
-  const context = contextSnapshot && typeof contextSnapshot === "object"
-    ? (contextSnapshot as Record<string, unknown>)
-    : {};
-  const issueId = context.issueId ?? context.taskId;
-  return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
-}
-
 type InspectOutcome =
   | { kind: "skipped" }
   | { kind: "existing"; evaluationIssueId: string }
@@ -229,9 +234,8 @@ type InspectOutcome =
 
 export function createScanSilentActiveRuns(deps: ScanSilentActiveRunsDeps) {
   async function resolveSourceIssue(run: RunSnapshot): Promise<SourceIssueSnapshot | null> {
-    const issueId = readRunContextIssueId(run.contextSnapshot);
-    if (!issueId) return null;
-    return deps.reader.findSourceIssue(run.companyId, issueId);
+    if (!run.sourceIssueId) return null;
+    return deps.reader.findSourceIssue(run.companyId, run.sourceIssueId);
   }
 
   async function inspectSilentActiveRun(input: {

@@ -25,7 +25,7 @@ describe("application", () => {
       processStartedAt: new Date("2026-01-01T00:00:00.000Z"),
       startedAt: new Date("2026-01-01T00:00:00.000Z"),
       createdAt: new Date("2026-01-01T00:00:00.000Z"),
-      contextSnapshot: {},
+      sourceIssueId: null,
       resultJson: null,
       wakeupRequestId: null,
       processPid: null,
@@ -278,7 +278,7 @@ describe("application", () => {
         actor: { type: "agent", agentId: "agent-9" },
         decision: "continue",
         now: new Date("2026-01-01T05:00:00.000Z"),
-      })).rejects.toMatchObject({ status: 403 });
+      })).rejects.toMatchObject({ code: "evaluation_issue_required" });
     });
 
     it("rejects an agent decision when the agent is not the evaluation issue's assignee", async () => {
@@ -308,7 +308,7 @@ describe("application", () => {
         decision: "continue",
         evaluationIssueId: "eval-1",
         now: new Date("2026-01-01T05:00:00.000Z"),
-      })).rejects.toMatchObject({ status: 403 });
+      })).rejects.toMatchObject({ code: "not_authorized" });
     });
 
     it("accepts an agent decision when the agent is the assigned recovery owner", async () => {
@@ -343,7 +343,7 @@ describe("application", () => {
       expect(decision).toMatchObject({ evaluationIssueId: "eval-1", createdByAgentId: "agent-1" });
     });
 
-    it("throws not found when the run does not exist in the company", async () => {
+    it("reports run_not_found when the run does not exist in the company", async () => {
       const recordWatchdogDecision = createRecordWatchdogDecision({
         reader: makeReader({ findRunForCompany: async () => null }),
         writer: makeDecisionWriter(),
@@ -357,7 +357,27 @@ describe("application", () => {
         decision: "snooze",
         snoozedUntil: new Date("2026-01-01T06:00:00.000Z"),
         now: new Date("2026-01-01T05:00:00.000Z"),
-      })).rejects.toMatchObject({ status: 404 });
+      })).rejects.toMatchObject({ code: "run_not_found" });
+    });
+
+    it("reports evaluation_issue_not_found without encoding an HTTP status", async () => {
+      const recordWatchdogDecision = createRecordWatchdogDecision({
+        reader: makeReader({ findRunForCompany: async () => makeRun() }),
+        writer: makeDecisionWriter(),
+        continueRearmMs: CONTINUE_REARM_MS,
+      });
+
+      const error = await recordWatchdogDecision({
+        companyId: "company-1",
+        runId: "run-1",
+        actor: { type: "board" },
+        decision: "continue",
+        evaluationIssueId: "missing-evaluation",
+        now: new Date("2026-01-01T05:00:00.000Z"),
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toMatchObject({ code: "evaluation_issue_not_found" });
+      expect(error).not.toHaveProperty("status");
     });
   });
 
@@ -381,7 +401,7 @@ describe("application", () => {
 
   describe("createScanSilentActiveRuns", () => {
     it("skips suppressed runs and keeps the created and escalated counters at zero", async () => {
-      const run = makeRun({ contextSnapshot: { issueId: "issue-1" } });
+      const run = makeRun({ sourceIssueId: "issue-1" });
       const reader = makeReader({
         findCandidateSilentRuns: async () => [run],
         findLatestDecision: async () => ({
@@ -426,7 +446,7 @@ describe("application", () => {
     });
 
     it("skips a run whose running agent belongs to a different company", async () => {
-      const run = makeRun({ contextSnapshot: { issueId: "issue-1" } });
+      const run = makeRun({ sourceIssueId: "issue-1" });
       const reader = makeReader({
         findCandidateSilentRuns: async () => [run],
         findRunningAgent: async () => ({ id: "agent-1", companyId: "other-company", adapterType: "codex_local" }),
@@ -443,7 +463,7 @@ describe("application", () => {
     });
 
     it("folds a run whose source issue has same-run terminal evidence", async () => {
-      const run = makeRun({ contextSnapshot: { issueId: "issue-1" } });
+      const run = makeRun({ sourceIssueId: "issue-1" });
       const reader = makeReader({
         findCandidateSilentRuns: async () => [run],
         findRunningAgent: async () => ({ id: "agent-1", companyId: "company-1", adapterType: "codex_local" }),

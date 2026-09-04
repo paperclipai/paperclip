@@ -13,7 +13,11 @@ import { visibleIssueCondition } from "../../../services/issue-visibility.js";
 import { logActivity } from "../../../services/activity-log.js";
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
-import { issueService } from "../../../services/issues.js";
+import {
+  executeIssuePostCommitActions,
+  issueService,
+  type IssuePostCommitAction,
+} from "../../../services/issues.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { RECOVERY_ORIGIN_KINDS } from "../../../services/recovery/origins.js";
 import { isTerminalIssueStatus } from "../domain/policy.js";
@@ -35,6 +39,12 @@ function isRecoveryOriginKind(originKind: string | null): boolean {
   return originKind !== null && RECOVERY_ORIGIN_KIND_VALUES.has(originKind);
 }
 
+function issueContextId(contextSnapshot: unknown): string | null {
+  const context = parseObject(contextSnapshot);
+  const issueId = context.issueId ?? context.taskId;
+  return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
+}
+
 function toRunSnapshot(row: typeof heartbeatRuns.$inferSelect): RunSnapshot {
   return {
     id: row.id,
@@ -47,18 +57,12 @@ function toRunSnapshot(row: typeof heartbeatRuns.$inferSelect): RunSnapshot {
     processStartedAt: row.processStartedAt,
     startedAt: row.startedAt,
     createdAt: row.createdAt,
-    contextSnapshot: row.contextSnapshot,
+    sourceIssueId: issueContextId(row.contextSnapshot),
     resultJson: row.resultJson,
     wakeupRequestId: row.wakeupRequestId,
     processPid: row.processPid,
     processGroupId: row.processGroupId,
   };
-}
-
-function issueContextId(contextSnapshot: unknown): string | null {
-  const context = parseObject(contextSnapshot);
-  const issueId = context.issueId ?? context.taskId;
-  return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
 }
 
 export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & WatchdogWriter {
@@ -88,8 +92,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
     if (input.issueCreatedAtGte) {
       const issueCreatedAtGte = input.issueCreatedAtGte;
       const issueIds = [...new Set(candidates.flatMap((run) => {
-        const issueId = issueContextId(run.contextSnapshot);
-        return issueId ? [issueId] : [];
+        return run.sourceIssueId ? [run.sourceIssueId] : [];
       }))];
       const eligibleIssueIds = new Set(
         issueIds.length > 0
@@ -100,8 +103,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           : [],
       );
       candidates = candidates.filter((run) => {
-        const issueId = issueContextId(run.contextSnapshot);
-        return issueId !== null && eligibleIssueIds.has(issueId);
+        return run.sourceIssueId !== null && eligibleIssueIds.has(run.sourceIssueId);
       });
     }
 
@@ -286,6 +288,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
 
   async function foldSourceResolvedRun(companyId: string, input: FoldSourceResolvedRunInput): Promise<FoldOutcome> {
     const finalRunStatus = input.sourceIssue.status === "cancelled" ? "cancelled" : "succeeded";
+    const postCommitIssueActions: IssuePostCommitAction[] = [];
     const resultJson = {
       ...parseObject(input.run.resultJson),
       sourceResolvedWatchdogFold: {
@@ -350,6 +353,43 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           eq(issues.companyId, companyId),
           eq(issues.executionRunId, input.run.id),
         ));
+
+      if (input.existingEvaluation && !isTerminalIssueStatus(input.existingEvaluation.status)) {
+        const updatedEvaluation = await issuesSvc.update(
+          input.existingEvaluation.id,
+          { status: "done" },
+          tx,
+          undefined,
+          postCommitIssueActions,
+        );
+        if (!updatedEvaluation) {
+          throw new Error("Evaluation issue disappeared during source-resolved watchdog fold");
+        }
+        await issuesSvc.addComment(input.existingEvaluation.id, [
+          "Source-resolved watchdog fold.",
+          "",
+          `- Source issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id}`,
+          `- Run: \`${input.run.id}\``,
+          `- Same-run evidence: \`${input.evidence.kind}:${input.evidence.id}\` at ${input.evidence.createdAt.toISOString()}`,
+          "- Outcome: false positive; the source issue already reached a terminal disposition from this run.",
+        ].join("\n"), { runId: input.run.id }, undefined, tx);
+      }
+
+      const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+        companyId,
+        input.sourceIssue.id,
+        tx,
+      );
+      if (activeRecoveryAction?.kind === "active_run_watchdog") {
+        await recoveryActionsSvc.resolveActiveForIssue({
+          companyId,
+          sourceIssueId: input.sourceIssue.id,
+          actionId: activeRecoveryAction.id,
+          status: "resolved",
+          outcome: "false_positive",
+          resolutionNote: "Source issue reached a terminal disposition through durable same-run activity; watchdog folded as source-resolved.",
+        }, tx);
+      }
 
       const [decision] = await tx
         .insert(heartbeatRunWatchdogDecisions)
@@ -422,33 +462,11 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
     if (!transactionResult) return { kind: "stale" };
     const finalizedRun = transactionResult;
 
+    await executeIssuePostCommitActions(db, postCommitIssueActions);
+
     // Telemetry is best-effort background work; it must not delay the
     // watchdog fold's caller, so fire it and do not await it.
     void emitAgentTaskRun(db, finalizedRun);
-
-    if (input.existingEvaluation && !isTerminalIssueStatus(input.existingEvaluation.status)) {
-      await issuesSvc.update(input.existingEvaluation.id, { status: "done" });
-      await issuesSvc.addComment(input.existingEvaluation.id, [
-        "Source-resolved watchdog fold.",
-        "",
-        `- Source issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id}`,
-        `- Run: \`${input.run.id}\``,
-        `- Same-run evidence: \`${input.evidence.kind}:${input.evidence.id}\` at ${input.evidence.createdAt.toISOString()}`,
-        "- Outcome: false positive; the source issue already reached a terminal disposition from this run.",
-      ].join("\n"), { runId: input.run.id });
-    }
-
-    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(companyId, input.sourceIssue.id);
-    if (activeRecoveryAction?.kind === "active_run_watchdog") {
-      await recoveryActionsSvc.resolveActiveForIssue({
-        companyId,
-        sourceIssueId: input.sourceIssue.id,
-        actionId: activeRecoveryAction.id,
-        status: "resolved",
-        outcome: "false_positive",
-        resolutionNote: "Source issue reached a terminal disposition through durable same-run activity; watchdog folded as source-resolved.",
-      });
-    }
 
     return { kind: "folded", evaluationIssueId: input.existingEvaluation?.id ?? null };
   }

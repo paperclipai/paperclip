@@ -78,6 +78,7 @@ import {
 } from "./disposition-repair.js";
 import {
   createActiveRunWatchdog,
+  WatchdogDecisionApplicationError,
   type RunOutputSilenceSummary,
   type WatchdogDecisionActor,
 } from "../../modules/active-run-watchdog/index.js";
@@ -1276,7 +1277,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(eq(heartbeatRuns.id, input.runId))
       .limit(1);
     if (!run) throw notFound("Heartbeat run not found");
-    return watchdog.recordWatchdogDecision({ ...input, companyId: run.companyId });
+    try {
+      return await watchdog.recordWatchdogDecision({ ...input, companyId: run.companyId });
+    } catch (error) {
+      if (!(error instanceof WatchdogDecisionApplicationError)) throw error;
+      if (error.code === "run_not_found" || error.code === "evaluation_issue_not_found") {
+        throw notFound(error.message);
+      }
+      throw forbidden(error.message);
+    }
   }
 
   function isStrandedIssueRecoveryIssue(issue: typeof issues.$inferSelect) {

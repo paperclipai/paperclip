@@ -11,7 +11,7 @@ export type RunSnapshot = {
   processStartedAt: Date | null;
   startedAt: Date | null;
   createdAt: Date | null;
-  contextSnapshot: unknown;
+  sourceIssueId: string | null;
   resultJson: unknown;
   wakeupRequestId: string | null;
   processPid: number | null;
@@ -146,3 +146,21 @@ export type WatchdogDecisionRecord = {
   createdByRunId: string | null;
   createdAt: Date;
 };
+
+export type WatchdogDecisionApplicationErrorCode =
+  | "run_not_found"
+  | "evaluation_issue_not_found"
+  | "not_authorized"
+  | "evaluation_issue_mismatch"
+  | "evaluation_issue_required"
+  | "creator_run_invalid";
+
+export class WatchdogDecisionApplicationError extends Error {
+  constructor(
+    readonly code: WatchdogDecisionApplicationErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WatchdogDecisionApplicationError";
+  }
+}

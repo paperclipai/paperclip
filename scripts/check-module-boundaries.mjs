@@ -116,6 +116,8 @@ export function scanModuleBoundaries({
           addViolation(violations, sourceLabel, "application", specifier, "application cannot import database packages");
         } else if (targetLocation?.layer === "adapters") {
           addViolation(violations, sourceLabel, "application", specifier, "application cannot import concrete adapters");
+        } else if (targetSegments.join("/") === "errors.js" || targetSegments.join("/") === "errors.ts") {
+          addViolation(violations, sourceLabel, "application", specifier, "application cannot import HTTP error helpers");
         }
       }
 

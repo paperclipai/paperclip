@@ -67,8 +67,9 @@ export interface WatchdogRunReader {
 /**
  * Writes active-run watchdog state. `foldSourceResolvedRun` is one
  * semantic operation: it owns the `running` compare-and-set, the cleared
- * issue execution fields, the decision, the run event, the activity
- * record, and the agent-status update inside one transaction.
+ * source-issue execution fields, evaluation closure and comment, recovery
+ * action resolution, decision, run event, activity record, and agent-status
+ * update inside one transaction.
  */
 export interface WatchdogWriter {
   recordDecision(companyId: string, input: RecordDecisionInput): Promise<WatchdogDecisionRecord>;

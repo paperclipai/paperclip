@@ -16,7 +16,8 @@ adapters  →  application  →  domain
 - **`application/`** holds use cases and the ports they need. A use case
   takes its ports as constructor arguments and calls domain functions for
   policy decisions. An application file must not import `drizzle-orm`, a SQL
-  client, or a concrete adapter.
+  client, a concrete adapter, or the server's HTTP error helpers. The outer
+  service or route translates application errors into transport responses.
 - **`adapters/`** holds the concrete implementations of the ports:
   Postgres queries, transactions, and process control. An adapter file may
   import `drizzle-orm`, `@paperclipai/db`, and Node.js I/O modules.

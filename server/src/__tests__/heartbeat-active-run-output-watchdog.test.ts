@@ -330,6 +330,34 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       sourceStatus: "done",
       sameRunTerminalEvidence: true,
     });
+    const evaluationIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: evaluationIssueId,
+      companyId: seeded.companyId,
+      title: "Existing stale evaluation",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: seeded.managerId,
+      issueNumber: 2,
+      identifier: `${seeded.issuePrefix}-2`,
+      originKind: "stale_active_run_evaluation",
+      originId: seeded.runId,
+      originRunId: seeded.runId,
+      originFingerprint: `stale_active_run:${seeded.companyId}:${seeded.runId}`,
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId: seeded.companyId,
+      sourceIssueId: seeded.issueId,
+      recoveryIssueId: evaluationIssueId,
+      kind: "active_run_watchdog",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: seeded.managerId,
+      cause: "active_run_watchdog",
+      fingerprint: `active-run-watchdog:${seeded.companyId}:${seeded.runId}:${seeded.issueId}`,
+      evidence: { runId: seeded.runId },
+      nextAction: "Review stale active run",
+    });
     const { recovery } = createRecovery();
     mockedAppendHeartbeatRunEvent.mockRejectedValueOnce(new Error("injected fold transaction fault"));
 
@@ -346,6 +374,16 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     // The seed itself planted one activity-log row as the fake same-run
     // terminal evidence; the fold must not add a second one.
     expect(await db.select().from(activityLog).where(eq(activityLog.runId, seeded.runId))).toHaveLength(1);
+    const [source] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    const [evaluation] = await db.select().from(issues).where(eq(issues.id, evaluationIssueId));
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
+    expect(source?.executionRunId).toBe(seeded.runId);
+    expect(evaluation?.status).toBe("todo");
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, evaluationIssueId))).toHaveLength(0);
+    expect(action).toMatchObject({ status: "active", outcome: null });
     const [agent] = await db.select().from(agents).where(eq(agents.id, seeded.coderId));
     expect(agent?.status).toBe("running");
   });
