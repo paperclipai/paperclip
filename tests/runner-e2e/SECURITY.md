@@ -38,6 +38,15 @@ history publication explicitly use the trusted workflow commit and do not
 consume the target lockfile. Never run the workflow definition from the target
 branch.
 
+Reusable executable build outputs are keyed by the trusted workflow blob, the
+resolved target lockfile, a conservative source closure, requested output
+shape, target branch scope, and the build environment. The environment identity
+includes the literal runner selector, OS and architecture, the sorted installed
+Debian package set, and the resolved path, digest, and version output of the C,
+C++, linker, archiver, ranlib, CMake, and pkg-config tools. This is intentionally
+conservative: a runner image or native build-package update must produce a cold
+cache miss rather than reusing binaries from an under-specified toolchain.
+
 The workflows verify both the original actor and triggering actor for every
 scheduled or manual attempt, including human reruns. Every
 secret-bearing job repeats this check as its first step so GitHub's partial-job

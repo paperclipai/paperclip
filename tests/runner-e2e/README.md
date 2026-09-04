@@ -341,6 +341,14 @@ default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports
 are retained for 30 days.
 
+The campaign builds shared TypeScript and native runner outputs once and then
+fans that verified bundle out to selected cells. A later campaign on the same
+target branch may reuse the bundle only when the trusted workflow, target
+source closure and lockfile, requested output shape, runner image package set,
+and native toolchain identity are exact matches. Changes to native build tools
+such as CMake, pkg-config, the compiler, archiver, or ranlib deliberately force
+a cold rebuild.
+
 Restrict the RunsOn fleet to this repository and independently trusted
 workflows. Do not let untrusted pull-request or fork-triggered workflows target
 it, and require a fresh ephemeral instance for each job so one paid cell cannot

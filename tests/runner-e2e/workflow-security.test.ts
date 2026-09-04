@@ -549,10 +549,10 @@ describe("public repository paid workflow security", () => {
     );
     expect(runnerBuildJob).not.toContain("restore-keys:");
     expect(runnerBuildJob).toContain(
-      "cache_key=runner-e2e-build-v1-$ref_scope-$content_id",
+      "cache_key=runner-e2e-build-v2-$ref_scope-$content_id",
     );
     expect(runnerBuildJob).not.toContain(
-      "cache_key=runner-e2e-build-v1-$TARGET_SHA",
+      "cache_key=runner-e2e-build-v2-$TARGET_SHA",
     );
     expect(runnerBuildJob).toContain(
       '"repos/$REPOSITORY/contents/.github/workflows/runner-full-stack-e2e.yml"',
@@ -593,21 +593,38 @@ describe("public repository paid workflow security", () => {
       "@paperclipai/paperclip-eval-kernel",
     ]);
     for (const toolchainInput of [
+      "paperclip-runner/e2e-build-toolchain/v2",
+      "paperclip-runner/e2e-build-inputs/v2",
+      "AR CC CFLAGS",
       "CARGO_ENCODED_RUSTFLAGS",
+      "CMAKE",
+      "CXX",
       "NODE_OPTIONS",
+      "PKG_CONFIG",
+      "RANLIB",
       "RUSTFLAGS",
       "uname -srm",
-      'sha256sum /etc/os-release "$(command -v cc)"',
+      "runner-image-os=",
+      "runner-image-version=",
+      "dpkg-query --show --showformat=",
+      "package-set=%s",
+      'for tool in cc c++ ld ldd ar ranlib cmake pkg-config; do',
+      'tool_path="$(command -v "$tool")"',
+      'sha256sum "$tool_path"',
       "node --version",
       "pnpm --version",
       "rustc -vV",
       "cargo -Vv",
-      "cc --version",
-      "ld --version",
-      "ldd --version",
+      '"$tool" --version',
     ]) {
       expect(runnerBuildJob).toContain(toolchainInput);
     }
+    expect(runnerBuildJob).not.toContain(
+      "paperclip-runner/e2e-build-toolchain/v1",
+    );
+    expect(runnerBuildJob).not.toContain(
+      "paperclip-runner/e2e-build-inputs/v1",
+    );
     expect(
       runnerBuildJob.match(
         /if: steps\.restore_build_cache\.outputs\.cache-hit != 'true'/gu,

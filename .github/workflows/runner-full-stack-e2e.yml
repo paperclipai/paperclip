@@ -553,33 +553,48 @@ jobs:
             -f "ref=$GITHUB_WORKFLOW_SHA" --jq .sha)"
           [[ "$workflow_blob" =~ ^[0-9a-f]{40}$ ]]
 
+          package_set_manifest="$RUNNER_TEMP/runner-e2e-build-packages"
+          dpkg-query --show --showformat='${binary:Package}=${Version}\n' \
+            | LC_ALL=C sort > "$package_set_manifest"
+          test -s "$package_set_manifest"
+          package_set_id="$(sha256sum "$package_set_manifest" | cut -d ' ' -f 1)"
+          [[ "$package_set_id" =~ ^[0-9a-f]{64}$ ]]
+
           toolchain_id="$({
-            printf '%s\n' 'paperclip-runner/e2e-build-toolchain/v1'
+            printf '%s\n' 'paperclip-runner/e2e-build-toolchain/v2'
             printf 'runner=%s\n' "$TEST_RUNNER"
             printf 'runner-os=%s\n' "$RUNNER_OS"
             printf 'runner-arch=%s\n' "$RUNNER_ARCH"
+            printf 'runner-image-os=%s\n' "${ImageOS-}"
+            printf 'runner-image-version=%s\n' "${ImageVersion-}"
+            printf 'package-set=%s\n' "$package_set_id"
             for variable in \
-              CC CFLAGS CI CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS \
+              AR CC CFLAGS CI CMAKE CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS \
               CARGO_TARGET_DIR LANG LC_ALL LDFLAGS NODE_ENV NODE_OPTIONS \
-              RUSTC RUSTC_WRAPPER RUSTFLAGS SOURCE_DATE_EPOCH TZ
+              CXX PKG_CONFIG RANLIB RUSTC RUSTC_WRAPPER RUSTFLAGS \
+              SOURCE_DATE_EPOCH TZ
             do
               printf '%s=%s\n' "$variable" "${!variable-}"
             done
             uname -srm
-            sha256sum /etc/os-release "$(command -v cc)" "$(command -v ld)" "$(command -v ldd)"
+            sha256sum /etc/os-release
             node --version
             pnpm --version
             (cd packages/paperclip-runner && rustc -vV)
             (cd packages/paperclip-runner && cargo -Vv)
-            cc --version
-            ld --version
-            ldd --version
+            for tool in cc c++ ld ldd ar ranlib cmake pkg-config; do
+              tool_path="$(command -v "$tool")"
+              test -f "$tool_path"
+              printf 'tool=%s path=%s\n' "$tool" "$tool_path"
+              sha256sum "$tool_path"
+              "$tool" --version
+            done
           } | sha256sum | cut -d ' ' -f 1)"
           [[ "$toolchain_id" =~ ^[0-9a-f]{64}$ ]]
 
           manifest="$RUNNER_TEMP/runner-e2e-build-inputs"
           {
-            printf '%s\n' 'paperclip-runner/e2e-build-inputs/v1'
+            printf '%s\n' 'paperclip-runner/e2e-build-inputs/v2'
             printf 'workflow=%s\n' "$workflow_blob"
             printf 'lock=%s\n' "$EXPECTED_LOCK_SHA256"
             printf 'toolchain=%s\n' "$toolchain_id"
@@ -612,7 +627,7 @@ jobs:
           {
             echo "content_id=$content_id"
             echo "toolchain_id=$toolchain_id"
-            echo "cache_key=runner-e2e-build-v1-$ref_scope-$content_id"
+            echo "cache_key=runner-e2e-build-v2-$ref_scope-$content_id"
           } >> "$GITHUB_OUTPUT"
 
       - name: Restore exact reusable build outputs
