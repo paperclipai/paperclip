@@ -16,7 +16,7 @@ import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js"
 import { issueService } from "../../../services/issues.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { RECOVERY_ORIGIN_KINDS } from "../../../services/recovery/origins.js";
-import { isTerminalIssueStatus } from "../domain/terminal.js";
+import { isTerminalIssueStatus } from "../domain/policy.js";
 import type { WatchdogRunReader, WatchdogWriter } from "../application/ports.js";
 import type {
   EvaluationIssueSnapshot,

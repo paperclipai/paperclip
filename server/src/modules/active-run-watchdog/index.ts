@@ -1,10 +1,12 @@
 import type { Db } from "@paperclipai/db";
 import { createPostgresWatchdogAdapter } from "./adapters/postgres.js";
 import { createProcessAdapter } from "./adapters/process.js";
-import { createBuildRunOutputSilence } from "./application/build-run-output-silence.js";
-import { createFoldSourceResolvedRun } from "./application/fold-source-resolved-run.js";
-import { createRecordWatchdogDecision } from "./application/record-watchdog-decision.js";
-import { createScanSilentActiveRuns } from "./application/scan-silent-active-runs.js";
+import {
+  createBuildRunOutputSilence,
+  createFoldSourceResolvedRun,
+  createRecordWatchdogDecision,
+  createScanSilentActiveRuns,
+} from "./application/use-cases.js";
 
 export type ActiveRunWatchdogConfig = {
   suspicionThresholdMs: number;
