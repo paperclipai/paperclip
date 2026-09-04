@@ -227,20 +227,20 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
    EOL
    ```
 
-4. Create the data directory and start:
+4. Create the data and certs directories, then start. The certs directory backs the unit's
+   `/certs` bind mount and must exist even if you don't use self-hosted GitLab:
 
    ```sh
-   mkdir -p ~/.local/share/paperclip
+   mkdir -p ~/.local/share/paperclip ~/.config/containers/systemd/paperclip-certs
    systemctl --user daemon-reload
    systemctl --user start paperclip-pod
    ```
 
-   For self-hosted GitLab on a private/internal CA, also create the certs directory, drop the
-   PEM bundle in it, and set `PAPERCLIP_GITLAB_HOSTS`/`PAPERCLIP_GITLAB_CA_CERT_PATH` in
+   For self-hosted GitLab on a private/internal CA, drop the PEM bundle into that certs
+   directory and set `PAPERCLIP_GITLAB_HOSTS`/`PAPERCLIP_GITLAB_CA_CERT_PATH` in
    `paperclip.env` (see `docker/certs/README.md`):
 
    ```sh
-   mkdir -p ~/.config/containers/systemd/paperclip-certs
    cp /path/to/lab-ca.pem ~/.config/containers/systemd/paperclip-certs/
    ```
 

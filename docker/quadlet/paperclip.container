@@ -8,10 +8,12 @@ Image=paperclip-local
 ContainerName=paperclip
 Pod=paperclip.pod
 Volume=%h/.local/share/paperclip:/paperclip:Z
-# Optional: for a self-hosted GitLab instance on a private/internal CA, drop the PEM bundle
-# into this directory and set PAPERCLIP_GITLAB_CA_CERT_PATH=/certs/<file> (and PAPERCLIP_GITLAB_HOSTS)
-# in paperclip.env below -- see docker/certs/README.md. Deliberately not under /paperclip: the
-# entrypoint recursively chowns that whole tree, which fails outright on a read-only mount.
+# Backs the /certs mount below; the setup docs create this directory unconditionally (empty is
+# fine) since Quadlet does not create bind-mount sources for you. For a self-hosted GitLab
+# instance on a private/internal CA, drop the PEM bundle in and set
+# PAPERCLIP_GITLAB_CA_CERT_PATH=/certs/<file> (and PAPERCLIP_GITLAB_HOSTS) in paperclip.env below
+# -- see docker/certs/README.md. Deliberately not under /paperclip: the entrypoint recursively
+# chowns that whole tree, which fails outright on a read-only mount.
 Volume=%h/.config/containers/systemd/paperclip-certs:/certs:ro,Z
 Environment=HOST=0.0.0.0
 Environment=PAPERCLIP_HOME=/paperclip
