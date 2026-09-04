@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -34,7 +34,8 @@ export function crossIssueInfluenceRunContextError() {
   return forbidden(body.error, body.details);
 }
 
-function readRunSourceIssueId(contextSnapshot: unknown) {
+function readRunSourceIssueId(nativeIssueId: string | null, contextSnapshot: unknown) {
+  if (nativeIssueId) return nativeIssueId;
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
   const context = contextSnapshot as Record<string, unknown>;
   for (const candidate of [context.issueId, context.taskId]) {
@@ -91,6 +92,7 @@ export async function observeCrossIssueInfluence(
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
+        nativeIssueId: heartbeatRuns.nativeIssueId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -109,8 +111,24 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    const sourceIssueId = readRunSourceIssueId(run.nativeIssueId, run.contextSnapshot);
+    if (!sourceIssueId) {
+      // Timer wakes legitimately start without an issue source. Once such a run
+      // checks out an issue, the checkout row is the narrow persisted proof that
+      // writes to that exact issue are same-issue writes. Do not infer a source
+      // from assignee/company visibility: a different target must still fail
+      // closed when the run did not start with an issue.
+      const targetCheckout = await tx
+        .select({ checkoutRunId: issues.checkoutRunId })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.targetIssueId),
+          eq(issues.companyId, input.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (targetCheckout?.checkoutRunId === run.id) return null;
+      throw crossIssueInfluenceRunContextError();
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
