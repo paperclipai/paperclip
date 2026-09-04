@@ -545,6 +545,52 @@ describe("public repository paid workflow security", () => {
     expect(testJob).not.toContain("build-provider-pack.mjs");
   });
 
+  it("binds rerun evidence and Pages artifacts to the exact workflow attempt", async () => {
+    const workflow = await readFile(
+      path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"),
+      "utf8",
+    );
+    const reportStart = workflow.indexOf("  report:");
+    const publisherStart = workflow.indexOf("  publish_history:", reportStart);
+    const report = workflow.slice(reportStart, publisherStart);
+    const publisher = workflow.slice(publisherStart);
+
+    expect(report).toContain("actions: read");
+    expect(report).toContain(
+      '"repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?filter=all&per_page=100"',
+    );
+    expect(report).toContain("gh api --paginate --slurp");
+    expect(report).toContain(
+      '"repos/$REPOSITORY/actions/runs/$RUN_ID/attempts/$attempt"',
+    );
+    expect(report).toContain("--jq '{run_attempt, run_started_at}'");
+    expect(report).toContain("pattern: runner-e2e-${{ github.run_id }}-*-*");
+    expect(report).not.toContain(
+      "pattern: runner-e2e-${{ github.run_id }}-${{ github.run_attempt }}-*",
+    );
+    expect(report.match(/merge-multiple: false/g)).toHaveLength(2);
+    expect(report).toContain("Select latest workflow attempt per cell");
+    expect(report).toContain("tests/runner-e2e/select-rerun-artifacts.ts");
+    expect(report).toContain(
+      "PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e",
+    );
+    expect(
+      report.indexOf("Select latest workflow attempt per cell"),
+    ).toBeLessThan(report.indexOf("Collect blob reports"));
+    expect(publisher).toContain(
+      'echo "name=github-pages-${{ github.run_id }}-${{ github.run_attempt }}"',
+    );
+    expect(publisher).toContain(
+      "pages_artifact_name: ${{ steps.pages_artifact_name.outputs.name }}",
+    );
+    expect(publisher).toContain(
+      "name: ${{ steps.pages_artifact_name.outputs.name }}",
+    );
+    expect(publisher).toContain(
+      "artifact_name: ${{ needs.publish_history.outputs.pages_artifact_name }}",
+    );
+  });
+
   it("uses environment-scoped OIDC for a no-delete history publisher", async () => {
     const workflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"),

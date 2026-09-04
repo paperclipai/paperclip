@@ -410,9 +410,11 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$NEEDS_DAYTONA" != true ]; then
-            echo "image=" >> "$GITHUB_OUTPUT"
-            echo "source_revision=" >> "$GITHUB_OUTPUT"
-            echo "content_id=" >> "$GITHUB_OUTPUT"
+            {
+              echo "image="
+              echo "source_revision="
+              echo "content_id="
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           [[ "$IMAGE_CONTENT_ID" =~ ^[0-9a-f]{64}$ ]]
@@ -456,9 +458,11 @@ jobs:
              .config.User == "daytona" and
              (.config.Env | any(startswith("PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=")))' \
             <<< "$image_config" >/dev/null
-          echo "image=$immutable" >> "$GITHUB_OUTPUT"
-          echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
-          echo "content_id=$published_content_id" >> "$GITHUB_OUTPUT"
+          {
+            echo "image=$immutable"
+            echo "source_revision=$source_revision"
+            echo "content_id=$published_content_id"
+          } >> "$GITHUB_OUTPUT"
 
   build_runner_artifacts:
     name: Build reusable runner campaign artifacts
@@ -951,6 +955,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      actions: read
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -978,22 +983,52 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Resolve workflow job attempts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp \
+            "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?filter=all&per_page=100" \
+            > runner-e2e-job-pages.json
+          for attempt in $(seq 1 "${{ github.run_attempt }}"); do
+            gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/attempts/$attempt" \
+              --jq '{run_attempt, run_started_at}'
+          done > runner-e2e-attempts.jsonl
+          jq -s '.' runner-e2e-attempts.jsonl > runner-e2e-attempts.json
+          jq --slurpfile attempts runner-e2e-attempts.json \
+            '{jobs: [.[].jobs[]], attempts: $attempts[0]}' \
+            runner-e2e-job-pages.json > runner-e2e-jobs.json
+
       - name: Download cell evidence
         id: download_evidence
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: runner-e2e-${{ github.run_id }}-${{ github.run_attempt }}-*
+          pattern: runner-e2e-${{ github.run_id }}-*-*
           path: downloaded-runner-e2e
-          merge-multiple: true
+          merge-multiple: false
 
       - name: Retry cell evidence download after transport failure
         if: steps.download_evidence.outcome == 'failure'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: runner-e2e-${{ github.run_id }}-${{ github.run_attempt }}-*
+          pattern: runner-e2e-${{ github.run_id }}-*-*
           path: downloaded-runner-e2e
-          merge-multiple: true
+          merge-multiple: false
+
+      - name: Select latest workflow attempt per cell
+        if: always()
+        env:
+          PAPERCLIP_RUNNER_E2E_ARTIFACT_ROOT: ${{ github.workspace }}/downloaded-runner-e2e
+          PAPERCLIP_RUNNER_E2E_SELECTED_ROOT: ${{ github.workspace }}/selected-runner-e2e
+          PAPERCLIP_RUNNER_E2E_JOBS_JSON: ${{ github.workspace }}/runner-e2e-jobs.json
+          PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: ${{ needs.catalog.outputs.execution_ids }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
+        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/select-rerun-artifacts.ts
 
       - name: Collect blob reports
         run: |
@@ -1005,7 +1040,7 @@ jobs:
             if [ ! -e "$target" ]; then
               cp "$report" "$target"
             fi
-          done < <(find downloaded-runner-e2e -path '*/blob-report/*.zip' -print0)
+          done < <(find selected-runner-e2e -path '*/blob-report/*.zip' -print0)
 
       - name: Merge Playwright HTML and JUnit
         if: always()
@@ -1016,7 +1051,7 @@ jobs:
       - name: Aggregate normalized campaign results
         if: always()
         env:
-          PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/downloaded-runner-e2e
+          PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e
           PAPERCLIP_RUNNER_E2E_REPORT_OUT: ${{ github.workspace }}/runner-e2e-merged-report/normalized
           PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: ${{ needs.catalog.outputs.execution_ids }}
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1058,6 +1093,8 @@ jobs:
     if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      pages_artifact_name: ${{ steps.pages_artifact_name.outputs.name }}
     concurrency:
       group: runner-e2e-history-publish
       cancel-in-progress: false
@@ -1107,10 +1144,16 @@ jobs:
           RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}
         run: pnpm test:e2e:runner:history:publish
 
+      - name: Resolve Pages artifact name
+        id: pages_artifact_name
+        if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
+        run: echo "name=github-pages-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+
       - name: Package pruned structured dashboard for GitHub Pages
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
+          name: ${{ steps.pages_artifact_name.outputs.name }}
           path: runner-e2e-merged-report/normalized
 
   pages:
@@ -1128,3 +1171,7 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        with:
+          # If only this failed job is rerun, GitHub retains the successful
+          # publisher job's output from the earlier workflow attempt.
+          artifact_name: ${{ needs.publish_history.outputs.pages_artifact_name }}
