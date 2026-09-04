@@ -1169,24 +1169,21 @@ describe("plugin worker manager setup-token pty route gate", () => {
     }
   });
 
-  it("permits one active credential pseudo-terminal per worker", async () => {
+  it("permits two concurrent credential pseudo-terminals on one worker", async () => {
     const handle = makeLoginPtyHandle();
     try {
       await handle.start();
+      // Neither open waits on the other. Both return a live route on the same
+      // worker, so a second owner is never blocked by a first owner's session.
       const first = await handle.openLoginPtySession(
-        ptyOpenInput({ mode: "normal" }),
+        ptyOpenInput({ mode: "normal", workerSessionId: "ws-A" }),
       );
-      // A second open while the first route is not closed rejects with one fixed
-      // non-secret error before it reaches the worker.
-      await expect(
-        handle.openLoginPtySession(ptyOpenInput({ mode: "normal" })),
-      ).rejects.toThrow("LOGIN_PTY_ROUTE_BUSY");
-      await first.close();
-      // After the first route closes and the worker acknowledges the close, a new
-      // open is admitted.
       const second = await handle.openLoginPtySession(
-        ptyOpenInput({ mode: "normal" }),
+        ptyOpenInput({ mode: "normal", workerSessionId: "ws-B" }),
       );
+      expect(first).toBeDefined();
+      expect(second).toBeDefined();
+      await first.close();
       await second.close();
     } finally {
       await handle.stop().catch(() => undefined);
@@ -1358,6 +1355,260 @@ describe("plugin worker manager setup-token pty route gate", () => {
       await expect(
         handle.openLoginPtySession(ptyOpenInput({ mode: "normal" })),
       ).rejects.toThrow();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Login pseudo-terminal concurrency (PAP-6026)
+// ---------------------------------------------------------------------------
+// One shared plugin worker now holds more than one live login pseudo-terminal
+// route at once, so a second owner is never blocked by a first owner's
+// session. The host resolves an output or an exit notification by the host
+// route identifier first, then checks the bound worker session identifier,
+// so each route receives only its own data even while another route on the
+// same worker is live.
+
+describe("plugin worker manager login pseudo-terminal concurrency", () => {
+  it("delivers output to each concurrent route only, with no cross-talk", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "a-1" }],
+          exitCode: 0,
+        }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-B",
+          outputs: [{ chunk: "b-1" }],
+          exitCode: 0,
+        }),
+      );
+      const aChunks: string[] = [];
+      const bChunks: string[] = [];
+      routeA.onData((chunk) => aChunks.push(chunk));
+      routeB.onData((chunk) => bChunks.push(chunk));
+      await expect(routeA.wait()).resolves.toEqual({ exitCode: 0 });
+      await expect(routeB.wait()).resolves.toEqual({ exitCode: 0 });
+      // The host resolves each notification by its own host route identifier, so
+      // neither route ever sees the other's chunk.
+      expect(aChunks).toEqual(["a-1"]);
+      expect(bChunks).toEqual(["b-1"]);
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles the exit of one route only, while a second concurrent route stays live", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B", exitCode: 0 }),
+      );
+      await expect(routeB.wait()).resolves.toEqual({ exitCode: 0 });
+      // Route A never received an exit, so its wait is still pending. Race it
+      // against a short delay to prove it has not settled.
+      const stillPending = await Promise.race([
+        routeA.wait().then(() => "settled"),
+        new Promise((resolve) => setTimeout(() => resolve("pending"), 50)),
+      ]);
+      expect(stillPending).toBe("pending");
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a swapped (hostRouteId, workerSessionId) notification and delivers it to neither route", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      // Route B emits one output that carries route A's host route identifier
+      // but route B's own worker session identifier — a swapped pair. The host
+      // resolves route A by the host route identifier, then finds route B's
+      // worker session identifier does not match route A's bound identifier,
+      // so it drops the notification. It never reaches route A, and route B
+      // never sent it under its own host route identifier, so it never
+      // reaches route B either.
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-B",
+          outputs: [{ chunk: "swapped", crossRoute: true }],
+        }),
+      );
+      const aChunks: string[] = [];
+      const bChunks: string[] = [];
+      routeA.onData((chunk) => aChunks.push(chunk));
+      routeB.onData((chunk) => bChunks.push(chunk));
+      // Give the swapped notification time to arrive and be dropped.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(aChunks).toEqual([]);
+      expect(bChunks).toEqual([]);
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops an output notification for an unknown host route identifier", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          sequence: [
+            { type: "output", chunk: "ghost", hostRouteId: "totally-unknown-route" },
+            { type: "output", chunk: "good" },
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await vi.waitFor(() => expect(chunks).toContain("good"));
+      // The unknown host route identifier resolves to no route on this worker,
+      // so the host drops it before it can reach any listener.
+      expect(chunks).toEqual(["good"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("replays a pre-bind output record to its own route while a second route is already open", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      // Route B's fixture writes its open reply and its output notification in
+      // one stdout write, so the host reads both before route B's bind, while
+      // route A is already open. The bind replays the held record into route
+      // B's own queue; it never reaches route A.
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-B",
+          outputs: [{ chunk: "b-batched" }],
+        }),
+      );
+      const aChunks: string[] = [];
+      const bChunks: string[] = [];
+      routeA.onData((chunk) => aChunks.push(chunk));
+      routeB.onData((chunk) => bChunks.push(chunk));
+      expect(aChunks).toEqual([]);
+      expect(bChunks).toEqual(["b-batched"]);
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("closes one route without affecting a second concurrent route on the same worker", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B" }),
+      );
+      await routeA.close();
+      // Route B is still live: writing to it still round-trips through the
+      // worker and back to the listener.
+      const bChunks: string[] = [];
+      routeB.onData((chunk) => bChunks.push(chunk));
+      routeB.write("still-here");
+      await vi.waitFor(() => expect(bChunks).toContain("echo:still-here"));
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles both concurrent routes exactly once when the worker exits", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B" }),
+      );
+      const waitA = routeA.wait();
+      const waitB = routeB.wait();
+      await handle.stop();
+      // The worker exit closes every route it still holds and resolves each
+      // login wait with the fixed non-secret exit, in one sweep.
+      await expect(waitA).resolves.toEqual({ exitCode: null });
+      await expect(waitB).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("retires the worker on an unconfirmed close, settling every concurrent route and logging no raw output", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { closeTimeoutMs: 200 },
+    });
+    const secretMarker = "super-secret-login-code-must-never-reach-a-log-line";
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
+    vi.mocked(logger.info).mockClear();
+    vi.mocked(logger.debug).mockClear();
+    try {
+      await handle.start();
+      const exited = new Promise<void>((resolve) => {
+        handle.on("exit", () => resolve());
+      });
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A", closeMode: "bad-ack" }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B", outputs: [{ chunk: secretMarker }] }),
+      );
+      const waitB = routeB.wait();
+      await routeA.close();
+      // Route A's close acknowledgement carried a mismatched host route id, so
+      // the host fails closed and retires the whole worker before any reuse.
+      // That retirement settles route B too, even though B's own close was
+      // never called.
+      await exited;
+      await expect(waitB).resolves.toEqual({ exitCode: null });
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ mode: "normal" })),
+      ).rejects.toThrow();
+      const loggedText = [
+        ...vi.mocked(logger.warn).mock.calls,
+        ...vi.mocked(logger.error).mock.calls,
+        ...vi.mocked(logger.info).mock.calls,
+        ...vi.mocked(logger.debug).mock.calls,
+      ]
+        .flat()
+        .map((arg) => JSON.stringify(arg))
+        .join("\n");
+      expect(loggedText).not.toContain(secretMarker);
     } finally {
       await handle.stop().catch(() => undefined);
     }

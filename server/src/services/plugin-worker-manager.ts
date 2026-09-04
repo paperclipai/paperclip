@@ -163,8 +163,6 @@ const LOGIN_PTY_CLOSE_TIMEOUT_MS = 10_000;
  * select an arbitrary command in the sandbox.
  */
 const LOGIN_PTY_COMMAND_NOT_ALLOWED = "LOGIN_PTY_COMMAND_NOT_ALLOWED";
-/** The fixed non-secret error a rejected second credential open returns. */
-const LOGIN_PTY_ROUTE_BUSY = "LOGIN_PTY_ROUTE_BUSY";
 /** The fixed non-secret error a failed open returns. */
 const LOGIN_PTY_OPEN_FAILED = "LOGIN_PTY_OPEN_FAILED";
 
@@ -1317,18 +1315,26 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
   // Host-owned login pseudo-terminal route gate
   // -----------------------------------------------------------------------
-  // The manager owns one live login pseudo-terminal route per worker. It mints a
-  // host-owned opaque route identifier, carries it in the open call, and keys the
-  // close on it, so it closes a worker-created terminal even when the open reply
-  // was lost and no worker session identifier arrived. It binds the worker
-  // session identifier one time while the route is `opening`, for output only. It
-  // never trusts a worker-supplied identifier as proof of origin: it delivers
-  // output only while the route is `open` and the notification carries the exact
-  // bound identifier and valid bounded bytes, and it never logs the raw bytes. It
-  // terminalizes the route exactly once on every open failure path, closes the
-  // terminal by the host route identifier, and admits a new open only after it
-  // verifies a close acknowledgement bound to that identifier; it retires the
-  // worker on an unconfirmed close.
+  // The manager owns every live login pseudo-terminal route on a worker. One
+  // worker admits more than one concurrent route, so more than one owner can
+  // hold an active credential login on the same shared worker at once. The
+  // manager mints a host-owned opaque route identifier for each open, carries
+  // it in the open call, and keys the close on it, so it closes a
+  // worker-created terminal even when the open reply was lost and no worker
+  // session identifier arrived. It binds the worker session identifier one
+  // time while a route is `opening`, for output only. It never trusts a
+  // worker-supplied identifier as proof of origin: for each output or exit
+  // notification, it resolves the route by the host route identifier first,
+  // then delivers only while that route is `open` and the notification
+  // carries the exact bound worker session identifier and valid bounded
+  // bytes; it drops an unknown, a stale, a duplicate, a malformed, or a
+  // mismatched notification, and it never logs the raw bytes. It terminalizes
+  // one route exactly once on every open failure path, closes the terminal by
+  // its host route identifier, and admits a new open on that same identifier
+  // only after it verifies a close acknowledgement bound to it. On an
+  // unconfirmed close it retires the whole worker, which settles and clears
+  // every route the worker still holds — a possibly live terminal must never
+  // reach reuse or a wrong delivery.
 
   // A single-consumer route state. The login pseudo-terminal route and the
   // generic duplex channel route share it.
@@ -1399,9 +1405,17 @@ export function createPluginWorkerHandle(
     // record.
     preBindChars: number;
   }
-  // At most one active credential pseudo-terminal per worker. A non-null route
-  // blocks a second open until the manager confirms the first route's close.
-  let loginPtyRoute: LoginPtyRoute | null = null;
+  // The live login pseudo-terminal routes on this worker, keyed by the host
+  // route id. A route lives here from reservation — before the open call —
+  // until it terminalizes. An output or an exit notification resolves its
+  // route through this map first, so more than one route can be `reserved`,
+  // `opening`, or `open` on one worker at once.
+  const loginPtyRoutesByHostRouteId = new Map<string, LoginPtyRoute>();
+  // The bound routes on this worker, keyed by the worker session id. A route
+  // enters this map once its worker session id binds and leaves it when the
+  // route terminalizes. The host checks this map at bind time, so one worker
+  // session id can never bind to two live routes at once.
+  const loginPtyRoutesByWorkerSessionId = new Map<string, LoginPtyRoute>();
 
   // Close the worker terminal by the host route identifier and verify the bound
   // acknowledgement. Return true only when the worker returns an acknowledgement
@@ -1421,9 +1435,13 @@ export function createPluginWorkerHandle(
     }
   }
 
-  // Terminalize the route exactly once. Resolve the login wait, close the worker
-  // terminal by the host route identifier, and free the per-worker slot only
-  // after the close resolves. Retire the worker when the close is unconfirmed.
+  // Terminalize one route exactly once. Remove it from both maps at once,
+  // before the worker close call, so no later notification for its host route
+  // identifier or its worker session identifier can still resolve to it.
+  // Resolve the login wait, close the worker terminal by the host route
+  // identifier, and retire the whole worker when the close is unconfirmed —
+  // every other route this worker still holds settles through the worker-exit
+  // path that follows.
   async function terminalizeLoginPtyRoute(route: LoginPtyRoute): Promise<void> {
     if (route.terminalized) return;
     route.terminalized = true;
@@ -1433,14 +1451,18 @@ export function createPluginWorkerHandle(
     // A terminalized route never replays a queued pre-bind record.
     route.preBind = [];
     route.preBindChars = 0;
+    loginPtyRoutesByHostRouteId.delete(route.hostRouteId);
+    if (route.workerSessionId !== null) {
+      loginPtyRoutesByWorkerSessionId.delete(route.workerSessionId);
+    }
     // A terminalized route reports a null exit code, which the runner treats as a
     // failure.
     settleRouteWait(route, { exitCode: null });
     const confirmed = await closeLoginPtyTerminal(route.hostRouteId);
-    if (loginPtyRoute === route) loginPtyRoute = null;
     if (!confirmed) {
       // The worker did not acknowledge the close, so the host cannot prove the
-      // terminal is gone. Fail closed: retire the worker before any reuse.
+      // terminal is gone. Fail closed: retire the worker before any reuse. This
+      // also settles and clears every other route the worker still holds.
       log.error(
         { pluginId },
         "login pseudo-terminal close not acknowledged; retiring worker",
@@ -1449,20 +1471,32 @@ export function createPluginWorkerHandle(
     }
   }
 
+  // Resolve one login pseudo-terminal notification to its route by the host
+  // route identifier. Return null for a missing identifier or for an unknown
+  // or a stale (already terminalized) identifier, so the caller drops the
+  // notification.
+  function resolveLoginPtyRouteByHostRouteId(params: Record<string, unknown>): LoginPtyRoute | null {
+    const hostRouteId = readNonEmptyString(params.hostRouteId);
+    if (!hostRouteId) return null;
+    return loginPtyRoutesByHostRouteId.get(hostRouteId) ?? null;
+  }
+
   // Route one login pseudo-terminal output notification to the per-session
-  // listener. Deliver only while the route is `open` and the notification carries
-  // the exact bound worker session identifier and valid bounded bytes. Queue the
-  // notification while the route is still `opening`. Drop an unknown, late,
-  // malformed, or mismatched notification. Never log the raw bytes.
+  // listener. Resolve the route by the host route identifier first. Deliver
+  // only while that route is `open` and the notification carries the exact
+  // bound worker session identifier and valid bounded bytes. Queue the
+  // notification while the route is still `opening`. Drop an unknown, a stale,
+  // a duplicate, a malformed, or a mismatched notification. Never log the raw
+  // bytes.
   function routeLoginPtyOutput(notification: JsonRpcNotification): void {
-    const route = loginPtyRoute;
+    const params = isRecord(notification.params) ? notification.params : {};
+    const route = resolveLoginPtyRouteByHostRouteId(params);
     if (!route) return;
     if (route.state === "opening") {
       queuePreBindLoginPtyOutput(route, notification);
       return;
     }
     if (route.state !== "open") return;
-    const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
     const chunk = params.chunk;
@@ -1483,20 +1517,21 @@ export function createPluginWorkerHandle(
     else route.buffered.push(chunk);
   }
 
-  // Route one login pseudo-terminal exit notification to the login wait. Resolve
-  // only while the route is `open` and the notification carries the exact bound
-  // worker session identifier. Queue the notification while the route is still
-  // `opening`. A resolved exit moves the state off `open`, so a later record —
-  // live or replayed — finds a closed route and drops there.
+  // Route one login pseudo-terminal exit notification to the login wait.
+  // Resolve the route by the host route identifier first. Settle the wait
+  // only while that route is `open` and the notification carries the exact
+  // bound worker session identifier. Queue the notification while the route
+  // is still `opening`. A resolved exit moves the state off `open`, so a
+  // later record — live or replayed — finds a closed route and drops there.
   function routeLoginPtyExit(notification: JsonRpcNotification): void {
-    const route = loginPtyRoute;
+    const params = isRecord(notification.params) ? notification.params : {};
+    const route = resolveLoginPtyRouteByHostRouteId(params);
     if (!route) return;
     if (route.state === "opening") {
       queuePreBindLoginPtyExit(route, notification);
       return;
     }
     if (route.state !== "open") return;
-    const params = isRecord(notification.params) ? notification.params : {};
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId || workerSessionId !== route.workerSessionId) return;
     const exitCode = typeof params.exitCode === "number" ? params.exitCode : null;
@@ -1583,32 +1618,43 @@ export function createPluginWorkerHandle(
         routeLoginPtyOutput({
           jsonrpc: "2.0",
           method: LOGIN_PTY_OUTPUT_NOTIFICATION,
-          params: { workerSessionId: record.workerSessionId, chunk: record.chunk },
+          params: {
+            hostRouteId: route.hostRouteId,
+            workerSessionId: record.workerSessionId,
+            chunk: record.chunk,
+          },
         });
       } else {
         routeLoginPtyExit({
           jsonrpc: "2.0",
           method: LOGIN_PTY_EXIT_NOTIFICATION,
-          params: { workerSessionId: record.workerSessionId, exitCode: record.exitCode },
+          params: {
+            hostRouteId: route.hostRouteId,
+            workerSessionId: record.workerSessionId,
+            exitCode: record.exitCode,
+          },
         });
       }
     }
   }
 
-  // Close the one route on a worker exit. The worker is gone, so the manager
-  // resolves the login wait with the fixed non-secret exit and clears the route
-  // one time. The pending pseudo-terminal calls reject through `rejectAllPending`.
+  // Close every route on a worker exit. The worker is gone, so the manager
+  // resolves each login wait with the fixed non-secret exit and clears both
+  // maps one time. The pending pseudo-terminal calls reject through
+  // `rejectAllPending`.
   function closeLoginPtyRouteOnWorkerExit(): void {
-    const route = loginPtyRoute;
-    if (!route) return;
-    loginPtyRoute = null;
-    route.terminalized = true;
-    route.state = "closed";
-    route.listener = null;
-    route.buffered = [];
-    route.preBind = [];
-    route.preBindChars = 0;
-    settleRouteWait(route, { exitCode: null });
+    const routes = [...loginPtyRoutesByHostRouteId.values()];
+    loginPtyRoutesByHostRouteId.clear();
+    loginPtyRoutesByWorkerSessionId.clear();
+    for (const route of routes) {
+      route.terminalized = true;
+      route.state = "closed";
+      route.listener = null;
+      route.buffered = [];
+      route.preBind = [];
+      route.preBindChars = 0;
+      settleRouteWait(route, { exitCode: null });
+    }
   }
 
   // Open one live login pseudo-terminal route. Reserve the route
@@ -1629,11 +1675,6 @@ export function createPluginWorkerHandle(
     // The binding validated it at the service boundary; this is the last host gate
     // before the worker call, so a malformed home fails closed here too.
     validateLoginSessionHome(input.sessionHome);
-    if (loginPtyRoute) {
-      // A route for this worker is not yet closed and confirmed. Reject the
-      // second open with one fixed non-secret error before it reaches the worker.
-      throw new Error(LOGIN_PTY_ROUTE_BUSY);
-    }
     const hostRouteId = randomUUID();
     let settleWait: (value: { exitCode: number | null }) => void = () => {};
     const waitPromise = new Promise<{ exitCode: number | null }>((resolve) => {
@@ -1651,7 +1692,10 @@ export function createPluginWorkerHandle(
       preBind: [],
       preBindChars: 0,
     };
-    loginPtyRoute = route;
+    // Reserve the route by its host route identifier before the open call, so
+    // a notification that echoes this identifier can queue against it even
+    // before the worker replies.
+    loginPtyRoutesByHostRouteId.set(hostRouteId, route);
 
     route.state = "opening";
     let openResult: HostToWorkerMethods["loginPtyOpen"][1];
@@ -1683,9 +1727,16 @@ export function createPluginWorkerHandle(
       await terminalizeLoginPtyRoute(route);
       throw new Error(LOGIN_PTY_OPEN_FAILED);
     }
+    if (loginPtyRoutesByWorkerSessionId.has(workerSessionId)) {
+      // A live route already owns this worker session identifier. Fail closed
+      // instead of binding a second route to it.
+      await terminalizeLoginPtyRoute(route);
+      throw new Error(LOGIN_PTY_OPEN_FAILED);
+    }
     // Bind the worker session identifier one time and move the route to `open`.
     route.workerSessionId = workerSessionId;
     route.state = "open";
+    loginPtyRoutesByWorkerSessionId.set(workerSessionId, route);
     // Replay every record the route queued before the bind, in arrival order.
     replayPreBindLoginPtyRecords(route);
 

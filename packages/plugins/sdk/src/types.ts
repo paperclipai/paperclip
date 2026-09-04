@@ -2025,28 +2025,32 @@ export interface PluginExecutionClient {
  * from a sandbox provider worker to the host.
  *
  * The worker opener registers the output listener on the session and forwards
- * each raw chunk through `output(workerSessionId, chunk)`. It forwards the child
- * exit through `exit(workerSessionId, exitCode)`. Each call carries the worker
- * session identifier the open reply returned, so the host binds the output to
- * the open route by that identifier while the route is open. The host drops a
- * chunk or an exit that carries an unknown or a mismatched identifier, and it
- * never logs the raw bytes. The default is a no-op that never throws.
+ * each raw chunk through `output(hostRouteId, workerSessionId, chunk)`. It
+ * forwards the child exit through `exit(hostRouteId, workerSessionId,
+ * exitCode)`. Each call carries the host route identifier the open request
+ * carried and the worker session identifier the open reply returned, so the
+ * host can hold more than one concurrent login pseudo-terminal per worker and
+ * bind each chunk to its own route. The host drops a chunk or an exit that
+ * carries an unknown, a stale, or a mismatched identifier, and it never logs
+ * the raw bytes. The default is a no-op that never throws.
  */
 export interface PluginLoginPtyClient {
   /**
    * Deliver one raw output chunk of a live login pseudo-terminal.
    *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host routes the chunk to its own route.
    * @param workerSessionId - The worker session identifier the open reply returned.
    * @param chunk - The raw terminal output text.
    */
-  output(workerSessionId: string, chunk: string): void;
+  output(hostRouteId: string, workerSessionId: string, chunk: string): void;
   /**
    * Deliver the child exit of a live login pseudo-terminal.
    *
+   * @param hostRouteId - The host route identifier the open request carried. The worker echoes it, so the host resolves the exit against its own route.
    * @param workerSessionId - The worker session identifier the open reply returned.
    * @param exitCode - The child exit code, or null when the child ended with no code.
    */
-  exit(workerSessionId: string, exitCode: number | null): void;
+  exit(hostRouteId: string, workerSessionId: string, exitCode: number | null): void;
 }
 
 /**

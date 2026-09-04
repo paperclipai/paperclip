@@ -2870,15 +2870,16 @@ const plugin = definePlugin({
     daytonaLoginPtyByRoute.set(params.hostRouteId, entry);
     daytonaLoginPtyBySession.set(workerSessionId, entry);
     // Register the output listener before the first input, so no early output
-    // chunk is lost. The client stamps the worker session id, so the host binds
-    // the output to the open route.
+    // chunk is lost. The client stamps the host route identifier and the worker
+    // session identifier, so the host can hold more than one concurrent login
+    // pseudo-terminal on this worker and binds the output to its own route.
     session.onData((chunk) => {
-      pluginContext?.loginPty.output(workerSessionId, chunk);
+      pluginContext?.loginPty.output(params.hostRouteId, workerSessionId, chunk);
     });
     // Forward the child exit one time. The host resolves the login run on it.
     void session.wait().then(
-      (result) => pluginContext?.loginPty.exit(workerSessionId, result.exitCode),
-      () => pluginContext?.loginPty.exit(workerSessionId, null),
+      (result) => pluginContext?.loginPty.exit(params.hostRouteId, workerSessionId, result.exitCode),
+      () => pluginContext?.loginPty.exit(params.hostRouteId, workerSessionId, null),
     );
     return { workerSessionId };
   },
