@@ -41,11 +41,15 @@ services:
       PAPERCLIP_GITLAB_HOSTS: "${PAPERCLIP_GITLAB_HOSTS}"
       # Points at a PEM CA bundle for a self-hosted GitLab instance on a private/internal CA.
       # Drop the bundle file into ./certs (mounted read-only below) and set this to its
-      # in-container path, e.g. PAPERCLIP_GITLAB_CA_CERT_PATH=/paperclip/ca/lab-ca.pem.
+      # in-container path, e.g. PAPERCLIP_GITLAB_CA_CERT_PATH=/certs/lab-ca.pem.
       PAPERCLIP_GITLAB_CA_CERT_PATH: "${PAPERCLIP_GITLAB_CA_CERT_PATH}"
     volumes:
       - paperclip-data:/paperclip
-      - ./certs:/paperclip/ca:ro
+      # Deliberately NOT under /paperclip: scripts/docker-entrypoint.sh recursively
+      # chowns the whole $PAPERCLIP_HOME tree to the node user before dropping
+      # privileges, and that chown fails outright on a read-only mount, so a cert
+      # mounted at e.g. /paperclip/ca would crash the container on every boot.
+      - ./certs:/certs:ro
     depends_on:
       db:
         condition: service_healthy
