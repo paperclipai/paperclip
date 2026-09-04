@@ -14,7 +14,11 @@ type RegistryEntry = {
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null
     ? value as Record<string, unknown>
     : null;
 }
@@ -42,9 +46,6 @@ function redactText(input: string, values: string[]) {
 export function redactRegisteredSecretValues<T>(input: T, values: string[]): T {
   if (typeof input === "string") return redactText(input, values) as T;
   if (Array.isArray(input)) return input.map((value) => redactRegisteredSecretValues(value, values)) as T;
-  // Dates carry no redactable text; rebuilding them via Object.entries would
-  // collapse them to `{}` and break every timestamp in redacted responses.
-  if (input instanceof Date) return input;
   const record = asRecord(input);
   if (!record) return input;
   return Object.fromEntries(
