@@ -131,6 +131,10 @@ import {
 } from "../services/recovery/index.ts";
 import { collectDispositionRepairSourceState } from "../services/recovery/disposition-repair.ts";
 import {
+  getRememberedResponsibleUserDenialForRun,
+  rememberResponsibleUserDenialForRun,
+} from "../services/responsible-user-denial-run-outcomes.ts";
+import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -1323,6 +1327,176 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     expect(missingCommentWakeups).toHaveLength(0);
     expect(agent).toEqual({ status: "running", errorReason: null });
+  });
+
+  it.each([
+    "RESPONSIBLE_USER_UNAUTHORIZED",
+    "RESPONSIBLE_USER_UNAVAILABLE",
+  ] as const)(
+    "fails closed on a recorded %s denial, completes teardown, and creates one recovery action without a continuation retry",
+    async (errorCode) => {
+      const { companyId, agentId, issueId, runId, wakeupRequestId } =
+        await seedQueuedIssueRunFixture();
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        await db
+          .update(heartbeatRuns)
+          .set({ errorCode, updatedAt: new Date() })
+          .where(eq(heartbeatRuns.id, runId));
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Stopped after the responsible-user authorization denial.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+      const heartbeat = heartbeatService(db);
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.waitForRunExecutionDrain(runId);
+
+      const settledRun = await heartbeat.getRun(runId);
+      expect(settledRun).toMatchObject({ status: "failed", errorCode });
+
+      const recoveryActions = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ));
+      expect(recoveryActions).toHaveLength(1);
+      expect(recoveryActions[0]).toMatchObject({
+        status: "active",
+        cause: "stranded_assigned_issue",
+      });
+
+      const sourceIssue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(sourceIssue).toMatchObject({
+        status: "blocked",
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      });
+
+      const runWakeup = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(runWakeup).toMatchObject({
+        status: "failed",
+        finishedAt: expect.any(Date),
+      });
+
+      const settledAgent = await db
+        .select({ status: agents.status })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+      expect(settledAgent?.status).toBe("error");
+
+      const comments = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+      const denialNotices = comments.filter((comment) =>
+        String(comment.body).includes("stopped automatic retries")
+      );
+      expect(denialNotices).toHaveLength(1);
+      expect(denialNotices[0]?.body).toContain(`\`${errorCode}\``);
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+      expect(runs.some((candidate) =>
+        (candidate.contextSnapshot as Record<string, unknown> | null)?.retryReason ===
+          "issue_continuation_needed"
+      )).toBe(false);
+    },
+  );
+
+  it("fails closed on a process-local denial when both durable marker writes fail", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } =
+      await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      rememberResponsibleUserDenialForRun(
+        runId,
+        "RESPONSIBLE_USER_UNAUTHORIZED",
+      );
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Stopped after both durable denial marker writes failed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const settledRun = await heartbeat.getRun(runId);
+    expect(settledRun).toMatchObject({
+      status: "failed",
+      errorCode: "RESPONSIBLE_USER_UNAUTHORIZED",
+    });
+    expect(getRememberedResponsibleUserDenialForRun(runId)).toBeNull();
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue).toMatchObject({
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const runWakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(runWakeup).toMatchObject({
+      status: "failed",
+      finishedAt: expect.any(Date),
+    });
+
+    const settledAgent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(settledAgent?.status).toBe("error");
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      );
+    expect(recoveryActions).toHaveLength(1);
   });
 
   it("keeps a local run active when the recorded pid is still alive", async () => {
@@ -6926,6 +7100,128 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       interactionResolvedAt: resolvedAt.toISOString(),
     });
   });
+
+  it.each([
+    "RESPONSIBLE_USER_UNAUTHORIZED",
+    "RESPONSIBLE_USER_UNAVAILABLE",
+  ] as const)(
+    "blocks instead of requeueing an accepted interaction whose post-resolution run recorded %s",
+    async (errorCode) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const interactionId = randomUUID();
+      const deniedRunId = randomUUID();
+      const resolvedAt = new Date("2026-03-19T00:05:00.000Z");
+      const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        defaultResponsibleUserId: "responsible-user",
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "OpenCodeCoder",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+        },
+        permissions: {},
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Accepted plan denied by the responsible user",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        createdByAgentId: agentId,
+        resolvedByUserId: "responsible-user",
+        resolvedAt,
+        updatedAt: resolvedAt,
+        payload: {
+          version: 1,
+          prompt: "Approve the plan?",
+          target: {
+            type: "issue_document",
+            issueId,
+            key: "plan",
+            revisionId: randomUUID(),
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      });
+      await db.insert(heartbeatRuns).values({
+        id: deniedRunId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "failed",
+        errorCode,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId,
+        },
+        startedAt: new Date("2026-03-19T00:10:00.000Z"),
+        finishedAt: new Date("2026-03-19T00:11:00.000Z"),
+        createdAt: new Date("2026-03-19T00:10:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:11:00.000Z"),
+      });
+
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(1);
+      expect(result.issueIds).toEqual([issueId]);
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.id).toBe(deniedRunId);
+
+      const issue = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue?.status).toBe("blocked");
+
+      const comments = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+      const denialNotices = comments.filter((comment) =>
+        String(comment.body).includes("stopped automatic retries")
+      );
+      expect(denialNotices).toHaveLength(1);
+      expect(denialNotices[0]?.body).toContain(`\`${errorCode}\``);
+    },
+  );
 
   it("recovers an answered question with its interaction-specific continuation context", async () => {
     const companyId = randomUUID();

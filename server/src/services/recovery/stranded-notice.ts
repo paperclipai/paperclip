@@ -61,6 +61,19 @@ export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   };
 }
 
+export function buildResponsibleUserDenialRecoveryNoticeSeed(
+  errorCode: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE",
+): StrandedRecoveryNoticeSeed {
+  return {
+    body:
+      `Paperclip stopped automatic retries because this run recorded a non-retryable responsible-user ` +
+      `authorization denial (\`${errorCode}\`). Moving the issue to \`blocked\` so the board can select ` +
+      "an active responsible user or repair that user's company access before retrying.",
+    title: "Responsible-user authorization failed",
+    tone: "danger",
+  };
+}
+
 export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
   return {
     body:

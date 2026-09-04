@@ -20,6 +20,18 @@ const deliberateWaitRun = {
 };
 
 describe("owner-sticky disposition repair", () => {
+  it.each([
+    "RESPONSIBLE_USER_UNAUTHORIZED",
+    "RESPONSIBLE_USER_UNAVAILABLE",
+  ] as const)("classifies %s as non-retryable", (errorCode) => {
+    expect(classifyContinuationFailure({ ...deliberateWaitRun, errorCode })).toEqual({
+      kind: "non_retryable",
+      maxAttempts: 0,
+      baseBackoffMs: 0,
+      errorCode,
+    });
+  });
+
   it("classifies a deliberate wait without a target into its dedicated bounded lane", () => {
     expect(ISSUE_RECOVERY_ACTION_KINDS).toContain("deliberate_wait_without_target");
     expect(classifyContinuationFailure(deliberateWaitRun)).toEqual({

@@ -28,6 +28,7 @@ import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+  isResponsibleUserDenialCode,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   isToolConnectionAttentionHealth,
@@ -151,7 +152,11 @@ import {
   type NativeExecutionInput,
   type NativeSessionBackend,
 } from "../vendor/paperclip-runner/index.js";
-import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
+import {
+  clearRememberedResponsibleUserDenialForRun,
+  getRememberedResponsibleUserDenialForRun,
+  normalizeResponsibleUserDenialCode,
+} from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import {
   providerTraceStore,
@@ -345,6 +350,7 @@ import {
   buildConfigurationIncompleteRecoveryNoticeSeed,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildImmediateExecutionPathRecoveryNoticeSeed,
+  buildResponsibleUserDenialRecoveryNoticeSeed,
   buildWorkspaceValidationRecoveryNoticeSeed,
 } from "./recovery/stranded-notice.js";
 import { withRecoveryContext } from "./recovery/status-only-context.js";
@@ -10703,6 +10709,7 @@ export function heartbeatService(
     if (updated) {
       if (isHeartbeatRunTerminalStatus(updated.status)) {
         clearHeartbeatRunRuntimeStatus(updated.id);
+        clearRememberedResponsibleUserDenialForRun(updated.id);
       }
       publishLiveEvent({
         companyId: updated.companyId,
@@ -10749,6 +10756,7 @@ export function heartbeatService(
     if (updated) {
       if (isHeartbeatRunTerminalStatus(updated.status)) {
         clearHeartbeatRunRuntimeStatus(updated.id);
+        clearRememberedResponsibleUserDenialForRun(updated.id);
       }
       publishLiveEvent({
         companyId: updated.companyId,
@@ -10764,6 +10772,10 @@ export function heartbeatService(
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
+
+    if (current && isHeartbeatRunTerminalStatus(current.status)) {
+      clearRememberedResponsibleUserDenialForRun(current.id);
+    }
 
     return { run: current, updated: false as const };
   }
@@ -12057,7 +12069,8 @@ export function heartbeatService(
     // and queue nothing.
     if (
       run.errorCode != null &&
-      PRE_ADAPTER_SETUP_FAILURE_CODES.has(run.errorCode)
+      (PRE_ADAPTER_SETUP_FAILURE_CODES.has(run.errorCode) ||
+        isResponsibleUserDenialCode(run.errorCode))
     ) {
       if (run.issueCommentStatus !== "not_applicable") {
         await patchRunIssueCommentStatus(run.id, {
@@ -21041,8 +21054,13 @@ export function heartbeatService(
         }
         let outcome: RunSessionOutcome;
         const latestRun = await getRun(run.id);
+        const recordedResponsibleUserDenialCode =
+          normalizeResponsibleUserDenialCode(latestRun?.errorCode) ??
+          getRememberedResponsibleUserDenialForRun(run.id);
         if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
           outcome = latestRun.status;
+        } else if (recordedResponsibleUserDenialCode) {
+          outcome = "failed";
         } else if (adapterResult.nativeFinalization) {
           const nativeTerminal =
             adapterResult.nativeFinalization.terminal.runTerminalState;
@@ -21092,8 +21110,6 @@ export function heartbeatService(
                     (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                   currentUserRedactionOptions,
                 );
-        const recordedResponsibleUserDenialCode =
-          normalizeResponsibleUserDenialCode(latestRun?.errorCode);
         const runErrorCode =
           outcome === "timed_out"
             ? "timeout"
@@ -21622,7 +21638,7 @@ export function heartbeatService(
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(
             (await getRun(run.id).catch(() => null))?.errorCode,
-          );
+          ) ?? getRememberedResponsibleUserDenialForRun(run.id);
         // The runtime resolution is scoped to the adapter try block. The
         // durable coordinator is also the stronger authority here: legacy
         // runs simply have no row, while native result-less exhaustion keeps
@@ -21832,7 +21848,7 @@ export function heartbeatService(
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(
             (await getRun(runId).catch(() => null))?.errorCode,
-          );
+          ) ?? getRememberedResponsibleUserDenialForRun(runId);
         const setupFailureErrorCode =
           workspaceValidationSetupFailure?.code ??
           configurationIncompleteSetupFailure?.code ??
@@ -22864,6 +22880,7 @@ export function heartbeatService(
       const shouldBlockImmediately =
         !recoveryAgentInvokable ||
         !recoveryAgent ||
+        isResponsibleUserDenialCode(run.errorCode) ||
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
         didAutomaticRecoveryFail(
@@ -22876,13 +22893,20 @@ export function heartbeatService(
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
         const configurationIncompleteFailure =
           isConfigurationIncompleteFailedRun(run);
+        const responsibleUserDenialCode = normalizeResponsibleUserDenialCode(
+          run.errorCode,
+        );
         const notice = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryNoticeSeed()
           : configurationIncompleteFailure
             ? buildConfigurationIncompleteRecoveryNoticeSeed()
-            : buildImmediateExecutionPathRecoveryNoticeSeed({
-                status: issue.status as "todo" | "in_progress",
-              });
+            : responsibleUserDenialCode
+              ? buildResponsibleUserDenialRecoveryNoticeSeed(
+                  responsibleUserDenialCode,
+                )
+              : buildImmediateExecutionPathRecoveryNoticeSeed({
+                  status: issue.status as "todo" | "in_progress",
+                });
         return {
           kind: "blocked" as const,
           issue,
