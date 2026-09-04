@@ -156,6 +156,10 @@ jobs:
           ref: ${{ needs.authorize.outputs.target_sha }}
           persist-credentials: false
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -163,10 +167,6 @@ jobs:
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
 
       - name: Resolve target lockfile without lifecycle scripts
         id: lock
@@ -233,6 +233,10 @@ jobs:
           test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
           cp "$lock" pnpm-lock.yaml
           test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
@@ -488,6 +492,10 @@ jobs:
           cp "$lock" pnpm-lock.yaml
           test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -610,6 +618,11 @@ jobs:
           test "$(sha256sum "$lock" | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
           cp "$lock" pnpm-lock.yaml
           test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
+
+      - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
 
       - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -763,6 +776,10 @@ jobs:
           cp "$lock" pnpm-lock.yaml
           test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -770,10 +787,6 @@ jobs:
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
 
       # This job receives provider credentials only in the final paid-test
       # step. Keep target-selected dependency lifecycle code from running in
@@ -923,6 +936,10 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1031,6 +1048,10 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1038,10 +1059,6 @@ jobs:
           NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
 
       - run: pnpm install --frozen-lockfile
 
