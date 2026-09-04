@@ -10689,11 +10689,34 @@ export function heartbeatService(
     return ensured;
   }
 
+  // Emits agent.task_run for a run write that just reached a terminal
+  // status, unless the write only re-set a status the run already had (a
+  // status-preserving patch, such as a livenessReason update on a run that
+  // finished earlier). Only a genuine transition into a terminal status
+  // emits. The emission runs in the background: it never blocks the
+  // caller's remaining lifecycle work, because emitAgentTaskRun never
+  // throws (it logs and swallows its own failures).
+  function emitTerminalAgentTaskRun(
+    updated: typeof heartbeatRuns.$inferSelect,
+    previousStatus: string | null,
+  ) {
+    if (!isHeartbeatRunTerminalStatus(updated.status)) return;
+    if (previousStatus === updated.status) return;
+    clearHeartbeatRunRuntimeStatus(updated.id);
+    void emitAgentTaskRun(db, updated).catch(() => {});
+  }
+
   async function setRunStatus(
     runId: string,
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    const previousStatus = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]?.status ?? null);
+
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
@@ -10702,16 +10725,13 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
-      if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearHeartbeatRunRuntimeStatus(updated.id);
-        await emitAgentTaskRun(db, updated);
-      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
         payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
       publishRunLifecyclePluginEvent(updated);
+      emitTerminalAgentTaskRun(updated, previousStatus);
     }
 
     return updated;
@@ -10736,6 +10756,15 @@ export function heartbeatService(
     fromStatuses: string[],
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    // fromStatuses can name a terminal status as its own source (for example,
+    // an idempotent "still failed" patch), so the write below is not always a
+    // genuine transition. Read the pre-write status to tell the two apart.
+    const previousStatus = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]?.status ?? null);
+
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
@@ -10749,16 +10778,13 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
-      if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearHeartbeatRunRuntimeStatus(updated.id);
-        await emitAgentTaskRun(db, updated);
-      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
         payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
       publishRunLifecyclePluginEvent(updated);
+      emitTerminalAgentTaskRun(updated, previousStatus);
       return { run: updated, updated: true as const };
     }
 
@@ -13263,37 +13289,43 @@ export function heartbeatService(
 
     if (!cancelled) return null;
 
-    await emitAgentTaskRun(db, cancelled);
+    // Run the telemetry emission alongside the wake cancel and the issue
+    // lock clear instead of in front of them, so a slow telemetry lookup
+    // never delays this required lifecycle work.
+    await Promise.all([
+      emitAgentTaskRun(db, cancelled),
+      (async () => {
+        if (cancelled.wakeupRequestId) {
+          await db
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: gate.reason,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
+        }
 
-    if (cancelled.wakeupRequestId) {
-      await db
-        .update(agentWakeupRequests)
-        .set({
-          status: "cancelled",
-          finishedAt: now,
-          error: gate.reason,
-          updatedAt: now,
-        })
-        .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
-    }
-
-    if (gate.issueId) {
-      await db
-        .update(issues)
-        .set({
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.companyId, cancelled.companyId),
-            eq(issues.id, gate.issueId),
-            eq(issues.executionRunId, cancelled.id),
-          ),
-        );
-    }
+        if (gate.issueId) {
+          await db
+            .update(issues)
+            .set({
+              executionRunId: null,
+              executionAgentNameKey: null,
+              executionLockedAt: null,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(issues.companyId, cancelled.companyId),
+                eq(issues.id, gate.issueId),
+                eq(issues.executionRunId, cancelled.id),
+              ),
+            );
+        }
+      })(),
+    ]);
 
     await appendRunEvent(cancelled, {
       eventType: "lifecycle",
@@ -15366,7 +15398,9 @@ export function heartbeatService(
         },
       });
       publishRunLifecyclePluginEvent(queuedCommentClaim.run);
-      await emitAgentTaskRun(db, queuedCommentClaim.run);
+      // Fire-and-forget: nothing else in this path depends on the emission,
+      // so it must not delay the return.
+      void emitAgentTaskRun(db, queuedCommentClaim.run).catch(() => {});
       return null;
     }
     const claimed = queuedCommentClaim
@@ -24358,14 +24392,26 @@ export function heartbeatService(
         return { kind: "queued" as const, run: newRun };
       });
 
-      for (const cancelledRun of cancelledRunsToEmit) {
-        await emitAgentTaskRun(db, cancelledRun);
-      }
+      // Start the telemetry emissions for the cancelled runs, but do not wait
+      // on them here: the code below still needs to run whichever lifecycle
+      // work the new outcome requires, and a slow telemetry lookup must not
+      // delay that work. Each return path awaits this alongside its own
+      // remaining work instead of in front of it.
+      const cancelledRunsEmitted = Promise.all(
+        cancelledRunsToEmit.map((cancelledRun) =>
+          emitAgentTaskRun(db, cancelledRun),
+        ),
+      );
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped")
+      if (outcome.kind === "deferred" || outcome.kind === "skipped") {
+        await cancelledRunsEmitted;
         return null;
+      }
       if (outcome.kind === "coalesced") {
-        await startNextQueuedRunForAgent(agent.id);
+        await Promise.all([
+          cancelledRunsEmitted,
+          startNextQueuedRunForAgent(agent.id),
+        ]);
         return outcome.run;
       }
 
@@ -24382,7 +24428,10 @@ export function heartbeatService(
         },
       });
 
-      await startNextQueuedRunForAgent(agent.id);
+      await Promise.all([
+        cancelledRunsEmitted,
+        startNextQueuedRunForAgent(agent.id),
+      ]);
       return newRun;
     }
 

@@ -138,7 +138,10 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     });
   }
 
-  async function driveToCompleteResult(fixture: Awaited<ReturnType<typeof seedNativeRun>>) {
+  async function driveToCompleteResult(
+    fixture: Awaited<ReturnType<typeof seedNativeRun>>,
+    terminal: typeof CONTROL_PLANE_CONFORMANCE_TERMINAL = CONTROL_PLANE_CONFORMANCE_TERMINAL,
+  ) {
     const port = newPort(fixture);
     await port.openRun({
       identity: {
@@ -153,7 +156,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     });
     await port.completeRun({
       result: CONTROL_PLANE_CONFORMANCE_RESULT,
-      terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
+      terminal,
       callerResultId: `${fixture.runId}:result`,
     });
   }
@@ -197,6 +200,45 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     // projectCommittedRun short-circuit. The run's status is already terminal
     // ("succeeded"), which sits outside projectCommittedRun's WHERE
     // (queued/running/failed), so the write matches no row.
+    await finalizeNativeRun({
+      db,
+      runId: fixture.runId,
+      workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true,
+    });
+    expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
+  });
+
+  it("emits zero events when a reconciliation replay commits the same failed terminal result again", async () => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture, {
+      ...CONTROL_PLANE_CONFORMANCE_TERMINAL,
+      turnTerminalState: "failed",
+      runTerminalState: "failed",
+    });
+    // workspaceFinalizeStatus reports whether the workspace finalization
+    // step itself succeeded, independent of the run's own terminal state
+    // (runTerminalState below), which is what actually failed here.
+    await finalizeNativeRun({
+      db,
+      runId: fixture.runId,
+      workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true,
+    });
+    const run = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.runId))
+      .then((rows) => rows[0]);
+    expect(run?.status).toBe("failed");
+
+    const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    // The coordinator is already "committed" with a "failed" terminal
+    // result, and the run row is already "failed" — unlike the "succeeded"
+    // case above, "failed" sits INSIDE projectCommittedRun's WHERE clause
+    // (queued/running/failed), so a reconciliation replay's write still
+    // matches the row. The write changes nothing (failed -> failed), so it
+    // must not emit a second event for the same committed result.
     await finalizeNativeRun({
       db,
       runId: fixture.runId,

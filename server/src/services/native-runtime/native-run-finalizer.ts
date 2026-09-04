@@ -377,7 +377,16 @@ async function projectCommittedRun(input: {
     eq(heartbeatRuns.runtimeMode, "native"),
     inArray(heartbeatRuns.status, ["queued", "running", "failed"]),
   )).returning();
-  if (updatedRun) await emitAgentTaskRun(input.db, updatedRun);
+  // The WHERE clause above allows "failed" as a source status, so a run that
+  // failed before its coordinator committed can still pick up the committed
+  // terminal state. A later reconciliation replay can enter this same path
+  // and match that clause again even when the committed state is still
+  // "failed" — the write changes nothing. Emit only when the status
+  // genuinely changed, so a reconciliation replay never emits twice for one
+  // committed terminal result.
+  if (updatedRun && updatedRun.status !== input.run.status) {
+    await emitAgentTaskRun(input.db, updatedRun);
+  }
 }
 
 export async function finalizeNativeRun(input: {
