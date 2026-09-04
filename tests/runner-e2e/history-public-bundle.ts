@@ -481,7 +481,9 @@ export async function preparePublicHistoryBundle(input: {
 }
 
 async function main() {
-  const [source, destination] = process.argv.slice(2);
+  const [source, destination] = process.argv
+    .slice(2)
+    .filter((argument) => argument !== "--");
   if (!source || !destination) {
     throw new Error(
       "Usage: history-public-bundle.ts <private-report-directory> <public-report-directory>",
