@@ -4,6 +4,7 @@ export const WORDPRESS_APPLICATION_PASSWORD_ALLOWLIST_KEY = "wordpress.applicati
 export const WORDPRESS_USERNAME_CONFIG_PATH = "credentials.username" as const;
 export const WORDPRESS_APPLICATION_PASSWORD_CONFIG_PATH = "credentials.application_password" as const;
 export const WORDPRESS_AUTH_CHECK_PATH = "/wp-json/wp/v2/users/me?context=edit" as const;
+export const WORDPRESS_MAX_RESPONSE_BYTES = 16 * 1024;
 
 export const WORDPRESS_AUTH_CHECK_TOOL = {
   name: "wordpress_authentication_check",
@@ -29,6 +30,62 @@ export interface WordPressConnectionBinding {
   companyId: string;
   projectId: string;
   allowedAgentIds: readonly string[];
+}
+
+type WordPressStoredConfig = {
+  sourceTemplateKey?: unknown;
+  connectionMethodKey?: unknown;
+  methodConfig?: unknown;
+};
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function normalizedAgentIds(value: unknown): string[] {
+  return Array.from(new Set(String(value ?? "").split(/[\s,]+/g).map((entry) => entry.trim()).filter(Boolean))).sort();
+}
+
+export function assertWordPressConnectionConfigUnchanged(
+  existing: WordPressStoredConfig,
+  proposed: WordPressStoredConfig,
+): void {
+  if (proposed.sourceTemplateKey !== "wordpress" || proposed.connectionMethodKey !== "application-password-readonly") {
+    throw new Error("WordPress connection type cannot be changed while credentials are bound");
+  }
+  const current = record(existing.methodConfig);
+  const next = record(proposed.methodConfig);
+  const currentAgents = normalizedAgentIds(current.allowedAgentIds);
+  const nextAgents = normalizedAgentIds(next.allowedAgentIds);
+  if (
+    validateWordPressBaseUrl(String(next.baseUrl ?? "")) !== validateWordPressBaseUrl(String(current.baseUrl ?? ""))
+    || String(next.projectId ?? "") !== String(current.projectId ?? "")
+    || nextAgents.length !== currentAgents.length
+    || nextAgents.some((agentId, index) => agentId !== currentAgents[index])
+  ) {
+    throw new Error("WordPress credential recipient and scope cannot be changed in place");
+  }
+}
+
+export function assertWordPressCredentialRefs(refs: readonly {
+  configPath: string;
+  projectionClass?: string | null;
+  projectionAllowlistKey?: string | null;
+}[]): void {
+  const usernameRefs = refs.filter((ref) => ref.configPath === WORDPRESS_USERNAME_CONFIG_PATH);
+  const passwordRefs = refs.filter((ref) => ref.configPath === WORDPRESS_APPLICATION_PASSWORD_CONFIG_PATH);
+  if (refs.length !== 2 || usernameRefs.length !== 1 || passwordRefs.length !== 1) {
+    throw new Error("WordPress requires exactly one username and one Application Password secret");
+  }
+  const passwordRef = passwordRefs[0]!;
+  if (
+    passwordRef.projectionClass !== "class_3_static_lease"
+    || passwordRef.projectionAllowlistKey !== WORDPRESS_APPLICATION_PASSWORD_ALLOWLIST_KEY
+  ) {
+    throw new Error("WordPress Application Password must retain its class-3 allowlist binding");
+  }
 }
 
 export function validateWordPressBaseUrl(value: string): string {
@@ -93,7 +150,25 @@ export async function executeWordPressAuthenticationCheck(input: {
   if (!response.ok) throw new Error("WordPress authentication check was rejected");
   let payload: unknown;
   try {
-    payload = await response.json();
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > WORDPRESS_MAX_RESPONSE_BYTES) {
+      throw new Error("response too large");
+    }
+    if (!response.body) throw new Error("empty response");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > WORDPRESS_MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error("response too large");
+      }
+      chunks.push(value);
+    }
+    payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     throw new Error("WordPress authentication check returned an invalid response");
   }

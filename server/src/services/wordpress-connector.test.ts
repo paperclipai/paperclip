@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   WORDPRESS_APPLICATION_PASSWORD_ALLOWLIST_KEY,
   WORDPRESS_AUTH_CHECK_TOOL,
+  WORDPRESS_MAX_RESPONSE_BYTES,
+  assertWordPressConnectionConfigUnchanged,
+  assertWordPressCredentialRefs,
   assertWordPressConnectionScope,
   executeWordPressAuthenticationCheck,
   validateWordPressBaseUrl,
@@ -53,6 +56,34 @@ describe("read-only WordPress connector", () => {
     })).toThrow(/scope/i);
   });
 
+  it("keeps the credential recipient, scope, and class-3 binding immutable", () => {
+    const config = {
+      sourceTemplateKey: "wordpress",
+      connectionMethodKey: "application-password-readonly",
+      methodConfig: { baseUrl: "https://example.test/blog", projectId: "project-a", allowedAgentIds: "agent-a,agent-b" },
+    };
+    expect(() => assertWordPressConnectionConfigUnchanged(config, {
+      ...config,
+      methodConfig: { ...config.methodConfig, baseUrl: "https://evil.test" },
+    })).toThrow(/cannot be changed/i);
+    expect(() => assertWordPressConnectionConfigUnchanged(config, {
+      ...config,
+      methodConfig: { ...config.methodConfig, allowedAgentIds: "agent-a,agent-c" },
+    })).toThrow(/cannot be changed/i);
+    expect(() => assertWordPressCredentialRefs([
+      { configPath: "credentials.username" },
+      {
+        configPath: "credentials.application_password",
+        projectionClass: "class_3_static_lease",
+        projectionAllowlistKey: "wordpress.application_password",
+      },
+    ])).not.toThrow();
+    expect(() => assertWordPressCredentialRefs([
+      { configPath: "credentials.username" },
+      { configPath: "credentials.application_password" },
+    ])).toThrow(/class-3/i);
+  });
+
   it("calls only users/me, rejects cross-origin redirects, and returns a masked result", async () => {
     const request = vi.fn(async () => new Response(JSON.stringify({
       id: 42,
@@ -92,6 +123,12 @@ describe("read-only WordPress connector", () => {
       applicationPassword: SENTINEL,
       request: vi.fn(async () => new Response(SENTINEL, { status: 401 })),
     })).rejects.not.toThrow(SENTINEL);
+    await expect(executeWordPressAuthenticationCheck({
+      baseUrl: "https://example.test",
+      username: "synthetic-user",
+      applicationPassword: SENTINEL,
+      request: vi.fn(async () => new Response("x".repeat(WORDPRESS_MAX_RESPONSE_BYTES + 1))),
+    })).rejects.toThrow(/invalid response/i);
   });
 
   it("keeps the synthetic credential out of API, config, prompt, audit, log, and error projections", () => {

@@ -170,6 +170,8 @@ import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-
 import { listConnectionLifecycleEvents } from "./tool-connection-activity.js";
 import { ComposioApiError, createComposioClient, type ComposioClient } from "./composio.js";
 import {
+  assertWordPressConnectionConfigUnchanged,
+  assertWordPressCredentialRefs,
   executeWordPressAuthenticationCheck,
   validateWordPressBaseUrl,
   WORDPRESS_APPLICATION_PASSWORD_CONFIG_PATH,
@@ -5329,9 +5331,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           baseUrl: String(asRecord(connection.config.methodConfig).baseUrl ?? ""),
           username,
           applicationPassword,
-          request: (url, init) => options.remoteHttpRequest
-            ? options.remoteHttpRequest(url, init)
-            : fetchRemoteHttpUrl(url, init),
+          // WordPress credentials must never cross a redirect boundary. The
+          // generic remote helper follows reviewed GET redirects and reuses the
+          // request headers, which is appropriate for discovery but would leak
+          // Basic auth if a compromised site redirected this health check.
+          request: (url, init) => requestRemoteHttpEndpoint(new URL(url), init),
         });
       } else if (connection.transport === "mcp_remote") {
         await assertComposioConnectedAccountActive(connection);
@@ -12424,11 +12428,20 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     updateConnection: async (connectionId: string, input: UpdateToolConnection): Promise<ToolConnection> => {
       const existing = await getConnectionRow(connectionId);
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? existing.config);
+      const credentialSecretRefs = input.credentialSecretRefs ?? existing.credentialSecretRefs;
+      if (existing.config.sourceTemplateKey === "wordpress") {
+        try {
+          assertWordPressConnectionConfigUnchanged(existing.config, config);
+          assertWordPressCredentialRefs(credentialSecretRefs);
+        } catch (error) {
+          throw badRequest(error instanceof Error ? error.message : "Invalid WordPress connection update");
+        }
+      }
       if (existing.transport === "mcp_remote") await assertRemoteConnectionEndpointsAllowed(config);
       if (existing.transport === "local_stdio") await stdioTemplateId(existing.companyId, config);
       assertLocalStdioCanBeEnabled(existing.transport, input.enabled ?? existing.enabled);
       await assertGoogleSheetsSpreadsheetOwnership(existing.companyId, config, { excludeConnectionId: existing.id });
-      await assertSecretRefs(existing.companyId, [...(input.credentialRefs ?? existing.credentialRefs), ...(input.credentialSecretRefs ?? existing.credentialSecretRefs)]);
+      await assertSecretRefs(existing.companyId, [...(input.credentialRefs ?? existing.credentialRefs), ...credentialSecretRefs]);
       const [row] = await db
         .update(toolConnections)
         .set({
@@ -12438,7 +12451,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           config,
           transportConfig: isGoogleSheetsConnectionConfig(config) ? config : input.transportConfig ?? config,
           credentialRefs: input.credentialRefs ?? existing.credentialRefs,
-          credentialSecretRefs: input.credentialSecretRefs ?? existing.credentialSecretRefs,
+          credentialSecretRefs,
           credentialPolicy: input.credentialPolicy ?? existing.credentialPolicy,
           updatedAt: new Date(),
         })
