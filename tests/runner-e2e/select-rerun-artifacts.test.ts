@@ -57,7 +57,9 @@ async function addArtifact(input: {
   workflowAttempt: number;
   status: "passed" | "failed";
   sourceSha?: string;
+  resultExecutionId?: string;
   campaignName?: string;
+  flattened?: boolean;
 }) {
   const artifactName = `runner-e2e-${RUN_ID}-${input.workflowAttempt}-${input.executionId}`;
   const campaignName =
@@ -65,13 +67,16 @@ async function addArtifact(input: {
     `gha-${RUN_ID}-${input.workflowAttempt}-${input.executionId}`;
   const directory = path.join(
     input.root,
-    artifactName,
+    ...(input.flattened ? [] : [artifactName]),
     campaignName,
     "results",
     "attempt-1",
   );
   await mkdir(directory, { recursive: true });
-  const value = result(input.executionId, input.status);
+  const value = result(
+    input.resultExecutionId ?? input.executionId,
+    input.status,
+  );
   await writeFile(
     path.join(directory, "result.json"),
     JSON.stringify({
@@ -142,7 +147,148 @@ function selectionInput(paths: Awaited<ReturnType<typeof fixture>>) {
   };
 }
 
+function singletonSelectionInput(paths: Awaited<ReturnType<typeof fixture>>) {
+  const input = selectionInput(paths);
+  return {
+    ...input,
+    jobs: {
+      ...input.jobs,
+      jobs: input.jobs.jobs.filter((job) => job.name === RERUN),
+    },
+    expectedExecutionIds: [RERUN],
+  };
+}
+
 describe("runner E2E workflow rerun artifact selection", () => {
+  it("accepts the v8 flattened layout for one expected artifact", async () => {
+    const paths = await fixture();
+    const latest = await addArtifact({
+      root: paths.artifactRoot,
+      executionId: RERUN,
+      workflowAttempt: 2,
+      status: "passed",
+      flattened: true,
+    });
+
+    const selected = await selectRerunArtifacts(singletonSelectionInput(paths));
+
+    expect(selected).toEqual([
+      {
+        executionId: RERUN,
+        workflowAttempt: 2,
+        artifactName: latest.artifactName,
+      },
+    ]);
+    const selectedResult = JSON.parse(
+      await readFile(
+        path.join(
+          paths.selectedRoot,
+          latest.artifactName,
+          latest.campaignName,
+          "results",
+          "attempt-1",
+          "result.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(selectedResult.status).toBe("passed");
+  });
+
+  it("does not let an older flattened campaign mask a latest missing artifact", async () => {
+    const paths = await fixture();
+    await addArtifact({
+      root: paths.artifactRoot,
+      executionId: RERUN,
+      workflowAttempt: 1,
+      status: "passed",
+      flattened: true,
+    });
+
+    const selected = await selectRerunArtifacts(singletonSelectionInput(paths));
+
+    expect(selected).toEqual([]);
+  });
+
+  it("rejects a flattened campaign when multiple artifacts are expected", async () => {
+    const paths = await fixture();
+    await addArtifact({
+      root: paths.artifactRoot,
+      executionId: RERUN,
+      workflowAttempt: 2,
+      status: "passed",
+      flattened: true,
+    });
+
+    await expect(selectRerunArtifacts(selectionInput(paths))).rejects.toThrow(
+      /downloaded unexpected runner artifact/u,
+    );
+  });
+
+  it("rejects a flattened campaign beside another root entry", async () => {
+    const paths = await fixture();
+    await addArtifact({
+      root: paths.artifactRoot,
+      executionId: RERUN,
+      workflowAttempt: 2,
+      status: "passed",
+      flattened: true,
+    });
+    await writeFile(path.join(paths.artifactRoot, "unexpected.txt"), "no");
+
+    await expect(
+      selectRerunArtifacts(singletonSelectionInput(paths)),
+    ).rejects.toThrow(/downloaded unexpected runner artifact/u);
+  });
+
+  it("rejects an unrecognized flattened campaign", async () => {
+    const paths = await fixture();
+    await addArtifact({
+      root: paths.artifactRoot,
+      executionId: RERUN,
+      workflowAttempt: 2,
+      status: "passed",
+      campaignName: `gha-another-run-2-${RERUN}`,
+      flattened: true,
+    });
+
+    await expect(
+      selectRerunArtifacts(singletonSelectionInput(paths)),
+    ).rejects.toThrow(/downloaded unexpected runner artifact/u);
+  });
+
+  it("applies source validation to a flattened campaign", async () => {
+    const paths = await fixture();
+    await addArtifact({
+      root: paths.artifactRoot,
+      executionId: RERUN,
+      workflowAttempt: 2,
+      status: "passed",
+      sourceSha: "ffffffffffffffffffffffffffffffffffffffff",
+      flattened: true,
+    });
+
+    await expect(
+      selectRerunArtifacts(singletonSelectionInput(paths)),
+    ).rejects.toThrow("contains result from another source");
+  });
+
+  it("applies execution validation to a flattened campaign", async () => {
+    const paths = await fixture();
+    await addArtifact({
+      root: paths.artifactRoot,
+      executionId: RERUN,
+      resultExecutionId: RETAINED,
+      workflowAttempt: 2,
+      status: "passed",
+      flattened: true,
+    });
+
+    await expect(
+      selectRerunArtifacts(singletonSelectionInput(paths)),
+    ).rejects.toThrow(`contains result for ${RETAINED}`);
+  });
+
   it("combines retained successes with the latest rerun artifact", async () => {
     const paths = await fixture();
     await addArtifact({

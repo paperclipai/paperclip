@@ -154,14 +154,27 @@ export async function selectRerunArtifacts(input: SelectRerunArtifactsInput) {
     string,
     { executionId: string; workflowAttempt: number }
   >();
+  const recognizedCampaignNames = new Map<
+    string,
+    Array<{
+      artifactName: string;
+      executionId: string;
+      workflowAttempt: number;
+    }>
+  >();
   for (const executionId of expected) {
     for (const workflowAttempt of attemptsByExecution
       .get(executionId)!
       .keys()) {
-      recognizedArtifactNames.set(
-        `runner-e2e-${runId}-${workflowAttempt}-${executionId}`,
-        { executionId, workflowAttempt },
-      );
+      const artifactName = `runner-e2e-${runId}-${workflowAttempt}-${executionId}`;
+      recognizedArtifactNames.set(artifactName, {
+        executionId,
+        workflowAttempt,
+      });
+      const campaignName = `gha-${runId}-${workflowAttempt}-${executionId}`;
+      const identities = recognizedCampaignNames.get(campaignName) ?? [];
+      identities.push({ artifactName, executionId, workflowAttempt });
+      recognizedCampaignNames.set(campaignName, identities);
     }
   }
 
@@ -171,16 +184,41 @@ export async function selectRerunArtifacts(input: SelectRerunArtifactsInput) {
     if (error.code === "ENOENT") return [];
     throw error;
   });
-  const artifactDirectories = new Map<string, string>();
-  for (const entry of artifactEntries) {
-    const identity = recognizedArtifactNames.get(entry.name);
-    if (!identity || !entry.isDirectory()) {
-      throw new Error(`downloaded unexpected runner artifact ${entry.name}`);
+  const artifactDirectories = new Map<
+    string,
+    | { layout: "wrapped"; directory: string }
+    | { layout: "flattened"; directory: string; campaignName: string }
+  >();
+  const singletonEntry = artifactEntries[0];
+  const singletonCampaignIdentities = singletonEntry
+    ? recognizedCampaignNames.get(singletonEntry.name)
+    : undefined;
+  // download-artifact v8 flattens a single pattern match into the requested
+  // path. Accept that shape only when the expected set and campaign identity
+  // make the missing artifact-name wrapper unambiguous.
+  if (
+    expected.length === 1 &&
+    artifactEntries.length === 1 &&
+    singletonEntry?.isDirectory() &&
+    singletonCampaignIdentities?.length === 1
+  ) {
+    const identity = singletonCampaignIdentities[0]!;
+    artifactDirectories.set(identity.artifactName, {
+      layout: "flattened",
+      directory: path.join(input.artifactRoot, singletonEntry.name),
+      campaignName: singletonEntry.name,
+    });
+  } else {
+    for (const entry of artifactEntries) {
+      const identity = recognizedArtifactNames.get(entry.name);
+      if (!identity || !entry.isDirectory()) {
+        throw new Error(`downloaded unexpected runner artifact ${entry.name}`);
+      }
+      artifactDirectories.set(entry.name, {
+        layout: "wrapped",
+        directory: path.join(input.artifactRoot, entry.name),
+      });
     }
-    artifactDirectories.set(
-      entry.name,
-      path.join(input.artifactRoot, entry.name),
-    );
   }
 
   const selections: Array<{
@@ -197,19 +235,29 @@ export async function selectRerunArtifacts(input: SelectRerunArtifactsInput) {
     if (!artifactDirectory) continue;
 
     const campaignName = `gha-${runId}-${workflowAttempt}-${executionId}`;
-    const topLevelEntries = await readdir(artifactDirectory, {
-      withFileTypes: true,
-    });
-    if (
-      topLevelEntries.length !== 1 ||
-      topLevelEntries[0]?.name !== campaignName ||
-      !topLevelEntries[0].isDirectory()
-    ) {
-      throw new Error(
-        `${artifactName} must contain only its exact campaign ${campaignName}`,
-      );
+    let campaignDirectory: string;
+    if (artifactDirectory.layout === "flattened") {
+      if (artifactDirectory.campaignName !== campaignName) {
+        throw new Error(
+          `${artifactName} must contain only its exact campaign ${campaignName}`,
+        );
+      }
+      campaignDirectory = artifactDirectory.directory;
+    } else {
+      const topLevelEntries = await readdir(artifactDirectory.directory, {
+        withFileTypes: true,
+      });
+      if (
+        topLevelEntries.length !== 1 ||
+        topLevelEntries[0]?.name !== campaignName ||
+        !topLevelEntries[0].isDirectory()
+      ) {
+        throw new Error(
+          `${artifactName} must contain only its exact campaign ${campaignName}`,
+        );
+      }
+      campaignDirectory = path.join(artifactDirectory.directory, campaignName);
     }
-    const campaignDirectory = path.join(artifactDirectory, campaignName);
     const resultFiles = (await walk(campaignDirectory)).filter(
       (file) => path.basename(file) === "result.json",
     );
