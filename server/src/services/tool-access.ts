@@ -8878,6 +8878,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         if (retainedClientSecretRef) credentialSecretRefs.push(retainedClientSecretRef);
       }
 
+      if (galleryEntry?.slug === "wordpress") {
+        try {
+          assertWordPressCredentialRefs(credentialSecretRefs);
+        } catch (error) {
+          throw badRequest(error instanceof Error ? error.message : "Invalid WordPress credentials");
+        }
+      }
+
       const safeApplicationDescription = galleryEntry?.description
         ?? `Connected app at ${remoteUrlCredential?.publicUrl ?? input.link}`;
       if (existingApplication) {
@@ -11805,6 +11813,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const transport = input.transport;
       if (!transport) throw badRequest("Tool connection transport is required");
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? {});
+      if (config.sourceTemplateKey === "wordpress") {
+        throw badRequest("WordPress connections must be created through the curated Connect flow");
+      }
       // Validate company-scoped references before touching a caller-supplied
       // network endpoint. Besides failing fast, this keeps cross-company
       // authorization errors from being masked by DNS or SSRF validation.
@@ -12429,6 +12440,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const existing = await getConnectionRow(connectionId);
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? existing.config);
       const credentialSecretRefs = input.credentialSecretRefs ?? existing.credentialSecretRefs;
+      if (config.sourceTemplateKey === "wordpress" && existing.config.sourceTemplateKey !== "wordpress") {
+        throw badRequest("Connections cannot be migrated to WordPress; use the curated Connect flow");
+      }
       if (existing.config.sourceTemplateKey === "wordpress") {
         try {
           assertWordPressConnectionConfigUnchanged(existing.config, config);

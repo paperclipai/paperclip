@@ -2182,4 +2182,51 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     expect(response.body.redirect_uris).toEqual([REDIRECT_URI]);
   });
+
+  it("rejects caller-supplied WordPress config through the generic connection service", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    await expect(service.createConnection(company.id, {
+      name: "Forged WordPress connection",
+      transport: "mcp_remote",
+      config: {
+        url: "https://example.test/wp-json/wp/v2/users/me?context=edit",
+        sourceTemplateKey: "wordpress",
+        connectionMethodKey: "application-password-readonly",
+      },
+      credentialSecretRefs: [],
+    })).rejects.toThrow(/curated Connect flow/i);
+
+    await expect(db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id)))
+      .resolves.toHaveLength(0);
+  });
+
+  it("rejects generic API migration from a non-WordPress connection to WordPress", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    const created = await request(app)
+      .post(`/api/companies/${company.id}/tools/connections`)
+      .send({
+        name: "Generic MCP",
+        transport: "mcp_remote",
+        config: { url: MCP_URL },
+      })
+      .expect(201);
+
+    const response = await request(app)
+      .patch(`/api/tool-connections/${created.body.id}`)
+      .send({
+        config: {
+          url: "https://example.test/wp-json/wp/v2/users/me?context=edit",
+          sourceTemplateKey: "wordpress",
+          connectionMethodKey: "application-password-readonly",
+        },
+      })
+      .expect(400);
+
+    expect(response.body.error).toMatch(/cannot be migrated to WordPress/i);
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.body.id));
+    expect(stored!.config).not.toHaveProperty("sourceTemplateKey");
+  });
 });
