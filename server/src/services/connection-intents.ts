@@ -25,6 +25,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { toolAccessService } from "./tool-access.js";
+import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -201,20 +202,47 @@ export function connectionIntentService(db: Db) {
       && connection.enabled
     );
     if (matching.length === 0) return null;
+    if (input.serviceSlug === "github") {
+      const selection = await resolveManagedGitHubIdentitySelection(db, input.companyId, {
+        agentId: input.agentId,
+        responsibleUserId: input.responsibleUserId,
+      });
+      return selection.grant
+        ? matching.find((connection) => connection.id === selection.grant!.connectionId) ?? null
+        : null;
+    }
     const effective = await access.getEffectiveProfilesForAgent(input.companyId, input.agentId);
     const installedIds = new Set(effective.installedConnections.map((connection) => connection.id));
-    for (const connection of matching) {
-      if (!installedIds.has(connection.id)) continue;
-      const { grants } = await access.listConnectionGrants(connection.id, input.companyId);
-      const usable = grants.some((grant) => {
-        if (grant.status !== "active") return false;
-        if (grant.kind === "organization") return true;
-        return grant.subjectUserId === input.responsibleUserId
-          && grant.delegations.some((delegation) => delegation.agentId === input.agentId);
-      });
-      if (usable) return connection;
+    const installed = matching.filter((connection) => installedIds.has(connection.id));
+    const grantsByConnection = await Promise.all(installed.map(async (connection) => ({
+      connection,
+      grants: (await access.listConnectionGrants(connection.id, input.companyId)).grants,
+    })));
+
+    // Keep readiness aligned with runtime identity resolution. A dedicated
+    // agent identity wins over the responsible person's personal identity,
+    // while an inactive or ambiguous higher-priority identity fails closed.
+    const dedicated = grantsByConnection.flatMap(({ connection, grants }) => grants
+      .filter((grant) => grant.kind === "agent" && grant.subjectAgentId === input.agentId)
+      .map((grant) => ({ connection, grant })));
+    if (dedicated.length > 0) {
+      const active = dedicated.filter(({ grant }) => grant.status === "active");
+      return active.length === 1 ? active[0]!.connection : null;
     }
-    return null;
+
+    const personal = grantsByConnection.flatMap(({ connection, grants }) => grants
+      .filter((grant) => grant.kind === "user" && grant.subjectUserId === input.responsibleUserId)
+      .map((grant) => ({ connection, grant })));
+    if (personal.length > 0) {
+      const active = personal.filter(({ grant }) => grant.status === "active");
+      return active.length === 1 ? active[0]!.connection : null;
+    }
+
+    const organization = grantsByConnection.flatMap(({ connection, grants }) => grants
+      .filter((grant) => grant.kind === "organization")
+      .map((grant) => ({ connection, grant })));
+    const activeOrganization = organization.filter(({ grant }) => grant.status === "active");
+    return activeOrganization.length === 1 ? activeOrganization[0]!.connection : null;
   }
 
   async function search(claims: RuntimeToolsTokenClaims, query: string): Promise<ConnectionsSearchResult> {

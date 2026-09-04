@@ -1660,6 +1660,13 @@
       "when": 1788542862021,
       "tag": "0238_graceful_infant_terrible",
       "breakpoints": true
+    },
+    {
+      "idx": 239,
+      "version": "7",
+      "when": 1788557575279,
+      "tag": "0239_sturdy_santa_claus",
+      "breakpoints": true
     }
   ]
 }

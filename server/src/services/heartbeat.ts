@@ -102,6 +102,8 @@ import { logger } from "../middleware/logger.js";
 import {
   createGitRemoteAuthProvider,
   describeGitAuthFailure,
+  filterResolvedGitHubConnectionsForRun,
+  GIT_CREDENTIAL_TOKEN_ENV_KEY,
   scrubGitCredentialText,
   type GitRemoteAuthProvider,
 } from "./git-credentials.js";
@@ -1275,6 +1277,9 @@ export async function resolveExecutionRunAdapterConfig(input: {
     reason: string;
     remediation: string;
   };
+  /** Audited class-3 values resolved by an internal credential broker. */
+  trustedEnvProjection?: Record<string, string>;
+  trustedEnvSecretKeys?: string[];
 }) {
   const executionRunConfig = stripForbiddenEnvFromAdapterConfig(
     input.executionRunConfig,
@@ -1287,6 +1292,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     input.trustPreset?.kind === "low_trust_review"
       ? (input.trustPreset.boundary.allowedSecretBindingIds ?? [])
       : undefined;
+  const allowTrustedEnvProjection = input.trustPreset?.kind !== "low_trust_review";
   if (input.trustPreset?.kind === "low_trust_review") {
     assertLowTrustEnvConfigAllowed(environmentEnv, "environment.env");
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
@@ -1297,6 +1303,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   const requiredScopedBindingsConfigured = requiredScopedEnvBinding
     ? requiredScopedEnvBinding.keys.some(
         (key) =>
+          (allowTrustedEnvProjection && typeof input.trustedEnvProjection?.[key] === "string") ||
           (requiredScopedEnvBinding.consumerScopes.includes("agent") &&
             isConfiguredEnvBindingValue(agentEnv[key])) ||
           (requiredScopedEnvBinding.consumerScopes.includes("project") &&
@@ -1555,6 +1562,17 @@ export async function resolveExecutionRunAdapterConfig(input: {
     for (const key of routineEnvResolution.secretKeys) {
       secretKeys.add(key);
     }
+  }
+  if (
+    allowTrustedEnvProjection
+    && input.trustedEnvProjection
+    && Object.keys(input.trustedEnvProjection).length > 0
+  ) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...input.trustedEnvProjection,
+    };
+    for (const key of input.trustedEnvSecretKeys ?? []) secretKeys.add(key);
   }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no
   // usable auth.json and an empty OPENAI_API_KEY would dispatch a run that
@@ -2236,6 +2254,7 @@ export interface ResolveAdditionalProjectWorkspaceDeps {
 /** Build the real dependencies for {@link resolveAdditionalProjectWorkspace}. */
 function defaultAdditionalProjectWorkspaceDeps(
   db: Db,
+  resolveGitAuth?: GitRemoteAuthProvider,
 ): ResolveAdditionalProjectWorkspaceDeps {
   return {
     loadProjectWorkspaceRows: (companyId, projectId) =>
@@ -2254,6 +2273,7 @@ function defaultAdditionalProjectWorkspaceDeps(
         ...input,
         resolveGitAuth:
           input.resolveGitAuth ??
+          resolveGitAuth ??
           createGitRemoteAuthProvider(db, input.companyId),
       }),
     ensureManagedProjectWorkspace: (input) =>
@@ -2261,6 +2281,7 @@ function defaultAdditionalProjectWorkspaceDeps(
         ...input,
         resolveGitAuth:
           input.resolveGitAuth ??
+          resolveGitAuth ??
           createGitRemoteAuthProvider(db, input.companyId),
       }),
     // A realized workspace must hold real content. An empty directory gives the agent an empty
@@ -4036,13 +4057,29 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     input.agent.companyId,
     input.agent.id,
   );
+  const [runIdentity] = await input.db
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.agent.companyId),
+      eq(heartbeatRuns.agentId, input.agent.id),
+    ))
+    .limit(1);
+  const resolvedInstalledConnections = await filterResolvedGitHubConnectionsForRun({
+    db: input.db,
+    companyId: input.agent.companyId,
+    agentId: input.agent.id,
+    responsibleUserId: runIdentity?.responsibleUserId ?? null,
+    connections: effective.installedConnections,
+  });
   const permittedConnectionIds = new Set([
     ...effective.entries
       .filter((entry) => entry.effect === "include" && entry.connectionId)
       .map((entry) => entry.connectionId!),
     ...effective.allowedTools.map((tool) => tool.connectionId),
   ]);
-  const installedConnectionIds = new Set(
+  const allInstalledConnectionIds = new Set(
     effective.installedConnections.map((connection) => connection.id),
   );
   const permittedConnections =
@@ -4066,11 +4103,11 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       (connection) =>
         (connection.transport === "mcp_remote" ||
           connection.transport === "local_stdio") &&
-        !installedConnectionIds.has(connection.id),
+        !allInstalledConnectionIds.has(connection.id),
     )
     .map(({ id, name }) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const assignedConnections = effective.installedConnections.filter(
+  const assignedConnections = resolvedInstalledConnections.filter(
     (connection) =>
       permittedConnectionIds.has(connection.id) &&
       connection.status === "active" &&
@@ -4079,7 +4116,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       (connection.transport === "mcp_remote" ||
         connection.transport === "local_stdio"),
   );
-  const unhealthyConnections = effective.installedConnections.filter(
+  const unhealthyConnections = resolvedInstalledConnections.filter(
     (connection) =>
       permittedConnectionIds.has(connection.id) &&
       (connection.transport === "mcp_remote" ||
@@ -4486,6 +4523,8 @@ export async function createManagedMcpRunConfig(input: {
       enabled: toolConnections.enabled,
       status: toolConnections.status,
       healthStatus: toolConnections.healthStatus,
+      config: toolConnections.config,
+      transportConfig: toolConnections.transportConfig,
     })
     .from(toolConnectionInstalls)
     .innerJoin(
@@ -4501,17 +4540,35 @@ export async function createManagedMcpRunConfig(input: {
         sql`((${toolConnectionInstalls.targetType} = 'company' and ${toolConnectionInstalls.targetId} = ${input.agent.companyId}) or (${toolConnectionInstalls.targetType} = 'agent' and ${toolConnectionInstalls.targetId} = ${input.agent.id}))`,
       ),
     );
+  const [runIdentity] = await input.db
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.agent.companyId),
+      eq(heartbeatRuns.agentId, input.agent.id),
+    ))
+    .limit(1);
+  const resolvedAvailableInstalls = await filterResolvedGitHubConnectionsForRun({
+    db: input.db,
+    companyId: input.agent.companyId,
+    agentId: input.agent.id,
+    responsibleUserId: runIdentity?.responsibleUserId ?? null,
+    connections: installRows.filter(
+      (install) =>
+        install.enabled &&
+        install.status === "active" &&
+        !["degraded", "failed", "error", "missing_secret"].includes(
+          install.healthStatus,
+        ),
+    ).map((install) => ({
+      id: install.connectionId,
+      config: install.config,
+      transportConfig: install.transportConfig,
+    })),
+  });
   const availableInstalledConnectionIds = new Set(
-    installRows
-      .filter(
-        (install) =>
-          install.enabled &&
-          install.status === "active" &&
-          !["degraded", "failed", "error", "missing_secret"].includes(
-            install.healthStatus,
-          ),
-      )
-      .map((install) => install.connectionId),
+    resolvedAvailableInstalls.map((install) => install.id),
   );
 
   const applicableGateways = rows.filter((gateway) =>
@@ -10308,6 +10365,12 @@ export function heartbeatService(
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
+      issueId,
+      responsibleUserId: readNonEmptyString(context.responsibleUserId)
+        ?? readNonEmptyString(context.responsible_user_id),
+      agentId: agent.id,
+    });
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(
       context.projectWorkspaceId,
@@ -10368,9 +10431,6 @@ export function heartbeatService(
       if (preferredProjectWorkspaceId && !preferredWorkspace) {
         preferredWorkspaceWarning = `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
       }
-      const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
-        issueId,
-      });
       for (const workspace of projectWorkspaceRows) {
         let projectCwd: string;
         let managedWorkspaceWarning: string | null = null;
@@ -10565,6 +10625,12 @@ export function heartbeatService(
     const executionEnvironmentDriver = opts?.executionEnvironmentDriver ?? null;
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
+      issueId,
+      responsibleUserId: readNonEmptyString(context.responsibleUserId)
+        ?? readNonEmptyString(context.responsible_user_id),
+      agentId: agent.id,
+    });
     const { additionalWorkspaces, warnings, failures } =
       await resolveAdditionalRunWorkspaces(issueId, anchor.projectId, {
         enabled: true,
@@ -10588,7 +10654,7 @@ export function heartbeatService(
         resolveProjectWorkspace: (project) =>
           resolveAdditionalProjectWorkspace(
             { companyId: agent.companyId, project },
-            defaultAdditionalProjectWorkspaceDeps(db),
+            defaultAdditionalProjectWorkspaceDeps(db, resolveGitAuth),
           ),
       });
 
@@ -18608,6 +18674,12 @@ export function heartbeatService(
         issueId,
         explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
       });
+      const githubRunAuth = await createGitRemoteAuthProvider(db, agent.companyId, {
+        issueId,
+        heartbeatRunId: run.id,
+        responsibleUserId,
+        agentId: agent.id,
+      })("https://github.com/paperclipai/credential-probe.git");
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           companyId: agent.companyId,
@@ -18626,6 +18698,10 @@ export function heartbeatService(
           routineEnv: routineEnvContext.env,
           secretsSvc,
           trustPreset,
+          ...(githubRunAuth ? {
+            trustedEnvProjection: githubRunAuth.env,
+            trustedEnvSecretKeys: ["GH_TOKEN", "GITHUB_TOKEN", GIT_CREDENTIAL_TOKEN_ENV_KEY],
+          } : {}),
           requiredScopedEnvBinding: pushCapabilityPreflightRequired
             ? {
                 keys: [...PUSH_CAPABILITY_ENV_KEYS],
@@ -18947,6 +19023,8 @@ export function heartbeatService(
         {
           issueId,
           heartbeatRunId: run.id,
+          responsibleUserId: run.responsibleUserId,
+          agentId: agent.id,
         },
       );
       const {

@@ -274,7 +274,7 @@ function SeededAccessStep({
   },
 }: {
   authKind: "oauth" | "api_key" | "none";
-  initialGrantKind: "user" | "organization";
+  initialGrantKind: "user" | "organization" | "agent";
   initialChoice: "specific" | "all";
   initialAgentIds: Set<string>;
   capabilities?: {

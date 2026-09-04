@@ -64,6 +64,37 @@ describe("tool profile binding precedence", () => {
     )).toEqual([agentBinding, appBinding]);
   });
 
+  it("does not carry wizard-managed app assignments into a gateway-only profile", () => {
+    const appBinding = {
+      profileId: "app-profile",
+      targetType: "company" as const,
+      targetId: "company-1",
+      priority: 100,
+      createdAt,
+    };
+    const gatewayBinding = {
+      profileId: "gateway-profile",
+      targetType: "gateway" as const,
+      targetId: "gateway-1",
+      priority: 10,
+      createdAt,
+    };
+
+    expect(effectiveToolProfileBindings(
+      [appBinding, gatewayBinding],
+      [
+        {
+          id: "app-profile",
+          profileKey: "app:connection-1",
+          metadata: { source: "app_gallery_finish", connectionId: "connection-1" },
+        },
+        { id: "gateway-profile", profileKey: "runtime-gateway", metadata: {} },
+      ],
+      "connection-1",
+      { includeAdditiveAppProfiles: false },
+    )).toEqual([gatewayBinding]);
+  });
+
   it("does not overlay a wizard profile onto another connection", () => {
     const appBinding = {
       profileId: "app-profile",

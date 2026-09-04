@@ -1,5 +1,6 @@
 import {
   createCipheriv,
+  createHash,
   diffieHellman,
   generateKeyPairSync,
   hkdfSync,
@@ -92,6 +93,47 @@ describe("Paperclip Cloud connector", () => {
     });
   });
 
+  it("binds active GitHub installations to proof from the current user token", async () => {
+    const keys = config();
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { request: string; binding: string };
+      const claims = JSON.parse(Buffer.from(body.request.split(".")[1]!, "base64url").toString("utf8"));
+      const binding = JSON.parse(body.binding);
+      expect(binding).toEqual({
+        id: "binding-1",
+        installationId: "42",
+        connectionId: "connection-1",
+        grantId: "grant-1",
+        active: true,
+        accessToken: "ghu-user-token",
+      });
+      expect(claims.sh).toBe(createHash("sha256").update(body.binding).digest("base64url"));
+      return Response.json({ active: true, installationId: "42" });
+    });
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+
+    await expect(connector.setWebhookBinding({
+      subject,
+      companyId,
+      id: "binding-1",
+      installationId: "42",
+      connectionId: "connection-1",
+      grantId: "grant-1",
+      active: true,
+      accessToken: "ghu-user-token",
+    })).resolves.toBeUndefined();
+    await expect(connector.setWebhookBinding({
+      subject,
+      companyId,
+      id: "binding-2",
+      installationId: "43",
+      connectionId: "connection-1",
+      grantId: "grant-1",
+      active: true,
+    })).rejects.toMatchObject({ code: "CONNECTOR_CONFIG_INVALID" });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps legacy session responses compatible and rejects malformed handoff descriptors", async () => {
     const keys = config();
     const legacy = createPaperclipCloudConnector({
@@ -132,6 +174,7 @@ describe("Paperclip Cloud connector", () => {
       refreshToken: "refresh-secret",
       tokenType: "Bearer",
       accessTokenExpiresAt: "2026-08-21T20:00:00.000Z",
+      refreshTokenExpiresAt: null,
       scopes: [...GMAIL_CONNECTOR_SCOPES],
       subject,
       companyId,
@@ -165,6 +208,7 @@ describe("Paperclip Cloud connector", () => {
       refreshToken: "drive-refresh-secret",
       tokenType: "Bearer",
       accessTokenExpiresAt: "2026-08-21T20:00:00.000Z",
+      refreshTokenExpiresAt: null,
       scopes: [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes],
       subject,
       companyId,

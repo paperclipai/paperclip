@@ -731,6 +731,104 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("keeps additive app-gallery assignments out of gateway-only runtimes", async () => {
+    const company = await createCompany(db);
+    const assigned = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "gateway-assigned-app",
+      connectionName: "Dedicated GitHub identity",
+      toolName: "get_me",
+      riskLevel: "read",
+    });
+    const unassigned = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "gateway-unassigned-app",
+      connectionName: "Personal GitHub identity",
+      toolName: "get_me",
+      riskLevel: "read",
+    });
+    const assignedToolName = expectedConnectedToolName({
+      applicationKey: assigned.application.applicationKey,
+      connectionId: assigned.connection.id,
+      toolName: assigned.catalogEntry.toolName,
+    });
+    const unassignedToolName = expectedConnectedToolName({
+      applicationKey: unassigned.application.applicationKey,
+      connectionId: unassigned.connection.id,
+      toolName: unassigned.catalogEntry.toolName,
+    });
+    const [gatewayProfile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `runtime-gateway-${randomUUID()}`,
+      name: "Resolved runtime identity",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: gatewayProfile.id,
+      selectorType: "connection",
+      effect: "include",
+      connectionId: assigned.connection.id,
+    });
+    const [appProfile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `app:${unassigned.connection.id}`,
+      name: "Personal GitHub",
+      defaultAction: "deny",
+      metadata: { source: "app_gallery_finish", connectionId: unassigned.connection.id },
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: appProfile.id,
+      selectorType: "connection",
+      effect: "include",
+      connectionId: unassigned.connection.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: appProfile.id,
+      targetType: "company",
+      targetId: company.id,
+      priority: 100,
+      metadata: { source: "app_gallery_finish" },
+    });
+
+    const gateway = createTestToolGatewayService(db);
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: {
+        name: "Resolved runtime GitHub",
+        profileId: gatewayProfile.id,
+        defaultProfileMode: "gateway_only",
+      },
+    });
+    const token = await gateway.createNamedGatewayToken({
+      companyId: company.id,
+      gatewayId: created.id,
+      body: { name: "Runtime token" },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+
+    const listed = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(200);
+    const visibleToolNames = listed.body.result.tools.map((tool: { name: string }) => tool.name);
+    expect(visibleToolNames).toContain(assignedToolName);
+    expect(visibleToolNames).not.toContain(unassignedToolName);
+
+    const denied = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: unassignedToolName, arguments: {} },
+      })
+      .expect(403);
+    expect(denied.body.error.data.reasonCode).toBe("deny_default");
+  });
+
   it("proxies namespaced resources and prompts only for fully assigned MCP connections", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(async ({ body }) => {
@@ -2290,7 +2388,7 @@ rl.on("line", (line) => {
     }
   });
 
-  it("requires an explicit named-agent delegation for autonomous personal-identity runs", async () => {
+  it("uses the responsible user's identity directly and requires delegation only without one", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
@@ -2328,14 +2426,21 @@ rl.on("line", (line) => {
       const tool = (await gateway.listToolsForSession(session.token)).find((item) => item.providerType === "mcp_remote_http")!;
 
       await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
-        .rejects.toMatchObject({ status: 409, reasonCode: "standing_delegation_required" });
-      expect(fake.requests).toHaveLength(0);
+        .resolves.toMatchObject({ status: "completed", result: { content: "delegated" } });
+      expect(fake.requests).toHaveLength(1);
       expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id)))
-        .toEqual([expect.objectContaining({
-          status: "pending",
-          addresseeUserId: "alice",
-          idempotencyKey: `connection-delegation:${connection.id}:alice:${agent.id}`,
-        })]);
+        .toEqual([]);
+
+      await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, run.id));
+      const unattendedSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const unattendedTool = (await gateway.listToolsForSession(unattendedSession.token))
+        .find((item) => item.providerType === "mcp_remote_http")!;
+      await expect(gateway.executeTool({
+        sessionToken: unattendedSession.token,
+        tool: unattendedTool.name,
+        parameters: {},
+      })).rejects.toMatchObject({ status: 409, reasonCode: "user_authorization_required" });
+      expect(fake.requests).toHaveLength(1);
 
       await db.insert(connectionGrantDelegations).values({
         companyId: company.id,
@@ -2343,17 +2448,25 @@ rl.on("line", (line) => {
         agentId: agent.id,
         createdByUserId: "alice",
       });
-      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      await expect(gateway.executeTool({
+        sessionToken: unattendedSession.token,
+        tool: unattendedTool.name,
+        parameters: {},
+      }))
         .resolves.toMatchObject({ status: "completed", result: { content: "delegated" } });
-      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests).toHaveLength(2);
 
       await db.update(companyMemberships).set({ status: "suspended" }).where(and(
         eq(companyMemberships.companyId, company.id),
         eq(companyMemberships.principalId, "alice"),
       ));
-      await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      await expect(gateway.executeTool({
+        sessionToken: unattendedSession.token,
+        tool: unattendedTool.name,
+        parameters: {},
+      }))
         .rejects.toMatchObject({ status: 403, reasonCode: "grant_owner_membership_inactive" });
-      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests).toHaveLength(2);
     } finally {
       await fake.close();
     }
