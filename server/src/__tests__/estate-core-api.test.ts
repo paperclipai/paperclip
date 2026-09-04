@@ -459,6 +459,26 @@ describe("POST /estates/:estateId/beneficiaries", () => {
   });
 });
 
+describe("GET /estate/beneficiaries/:beneficiaryId", () => {
+  it("returns a beneficiary by id", async () => {
+    const ben = makeBeneficiary();
+    const db = selectOnce([ben]) as unknown as Db;
+
+    const res = await request(createApp(db)).get("/estate/beneficiaries/ben-1");
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("ben-1");
+    expect(res.body.name).toBe("Jane Smith");
+    expect(res.body.companyId).toBe("company-1");
+  });
+
+  it("returns 404 for unknown beneficiary", async () => {
+    const db = selectOnce([]) as unknown as Db;
+
+    const res = await request(createApp(db)).get("/estate/beneficiaries/unknown");
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("PATCH /estate/beneficiaries/:beneficiaryId", () => {
   it("updates a beneficiary", async () => {
     const existing = makeBeneficiary();
