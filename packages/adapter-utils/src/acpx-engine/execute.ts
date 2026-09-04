@@ -97,6 +97,7 @@ import {
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
+  DEFAULT_ACP_ENGINE_STALE_TURN_TIMEOUT_MS,
 } from "./constants.js";
 import type {
   AcpRunContext,
@@ -153,6 +154,48 @@ import {
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
+
+/**
+ * Resolve the stale-turn watchdog timeout (ms) from adapter config.
+ *
+ * - `acpStaleTurnTimeoutMs`: explicit value. 0 disables the watchdog.
+ * - unset/undefined → default (120s).
+ * - values are honored as configured (no floor clamp); 0 is the escape hatch.
+ */
+function resolveAcpEngineStaleTurnTimeoutMs(config: Record<string, unknown>): number {
+  const candidate = config.acpStaleTurnTimeoutMs ?? config.staleTurnTimeoutMs;
+  if (typeof candidate !== "number" || !Number.isFinite(candidate)) {
+    return DEFAULT_ACP_ENGINE_STALE_TURN_TIMEOUT_MS;
+  }
+  return Math.max(0, candidate);
+}
+
+/**
+ * True when an ACP event represents real forward progress on the turn. Purely
+ * administrative events (status "session updated" etc.) are excluded so that a
+ * codex session that is stuck reconnecting upstream (but still emitting
+ * session heartbeats) is detected as stalled instead of looking alive forever.
+ */
+function isAcpTurnProgressEvent(event: AcpRuntimeEvent): boolean {
+  switch (event.type) {
+    case "text_delta":
+    case "tool_call":
+    case "done":
+    case "error":
+      return true;
+    case "status":
+      // `usage_update` reflects real token/cost movement; other status tags
+      // (e.g. `session_info_update`, "session updated") are administrative.
+      return event.tag === "usage_update";
+    default:
+      return false;
+  }
+}
+
+function formatAcpEngineStaleTurnTimeoutMessage(timeoutMs: number): string {
+  const seconds = Math.max(0, Math.round(timeoutMs / 1000));
+  return `acp turn stalled: no real progress events for ${seconds}s (session heartbeats only); aborted by the stale-turn watchdog`;
+}
 
 function routeChildStderr(state: ChildStderrState, chunk: string) {
   if (state.logPath) {
@@ -4453,6 +4496,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
+      const staleTurnTimeoutMs = resolveAcpEngineStaleTurnTimeoutMs(ctx.config);
+      let staleTurnTimedOut = false;
       // The turn-local state the sequence steps share. `promptBuild` sets the
       // prompt, `preTurnUsage` sets the pre-turn status, `turnStart` sets the
       // active turn, and `turnFinalize` reads all three. `activeTurn` is the run-
@@ -4552,22 +4597,65 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       const stepEventRelay = async (): Promise<AcpRuntimeTurnResult> => {
         const turn = activeTurn as AcpRuntimeTurn;
         const toolTitles = new Map<string, string>();
-        for await (const event of turn.events) {
-          if (event.type === "text_delta" && event.stream !== "thought") {
-            currentOutputChunk.push(event.text);
-          } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
-            // ACP makes tool-call status optional. The normalized event tag is
-            // the reliable boundary between an initial call and its updates,
-            // so a statusless initial call must still end the preceding output
-            // segment while updates must not create extra boundaries.
-            flushOutputSegment();
+        let lastProgressAt = now();
+        let staleTimer: ReturnType<typeof setInterval> | null = null;
+        let releaseStaleWait: (() => void) | null = null;
+        const staleWait =
+          staleTurnTimeoutMs > 0
+            ? new Promise<void>((resolve) => {
+                releaseStaleWait = resolve;
+              })
+            : null;
+        // Independent stale-turn watchdog: polls lastProgressAt on an interval so
+        // it still fires when the client goes fully silent (no events at all),
+        // not just when it keeps emitting non-progress heartbeats. Real progress
+        // events refresh lastProgressAt; if the gap exceeds the threshold the
+        // turn is aborted even though wall-clock timeoutSec has not elapsed.
+        if (staleTurnTimeoutMs > 0) {
+          staleTimer = setInterval(() => {
+            if (staleTurnTimedOut) return;
+            if (now() - lastProgressAt < staleTurnTimeoutMs) return;
+            staleTurnTimedOut = true;
+            const message = formatAcpEngineStaleTurnTimeoutMessage(staleTurnTimeoutMs);
+            void turn.cancel({ reason: message }).catch(() => {});
+            releaseStaleWait?.();
+          }, Math.min(1_000, staleTurnTimeoutMs));
+          if (typeof (staleTimer as { unref?: () => void }).unref === "function") {
+            (staleTimer as { unref: () => void }).unref();
           }
-          if (event.type === "status" && event.tag === "usage_update") {
-            eventBreakdown = event.breakdown ?? eventBreakdown;
-            eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
-          }
-          await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
         }
+        let relayError: unknown;
+        const relayEvents = async () => {
+          for await (const event of turn.events) {
+            if (event.type === "text_delta" && event.stream !== "thought") {
+              currentOutputChunk.push(event.text);
+            } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
+              // ACP makes tool-call status optional. The normalized event tag is
+              // the reliable boundary between an initial call and its updates,
+              // so a statusless initial call must still end the preceding output
+              // segment while updates must not create extra boundaries.
+              flushOutputSegment();
+            }
+            if (event.type === "status" && event.tag === "usage_update") {
+              eventBreakdown = event.breakdown ?? eventBreakdown;
+              eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+            }
+            await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
+            if (isAcpTurnProgressEvent(event)) lastProgressAt = now();
+            if (staleTurnTimedOut) break;
+          }
+        };
+        const relayPromise = relayEvents().catch((err: unknown) => {
+          relayError = err;
+        });
+        try {
+          if (staleWait) await Promise.race([relayPromise, staleWait]);
+          else await relayPromise;
+        } finally {
+          if (staleTimer) clearInterval(staleTimer);
+          releaseStaleWait = null;
+        }
+        if (!staleTurnTimedOut && relayError !== undefined) throw relayError;
         flushOutputSegment();
         return await turn.result;
       };
@@ -4576,7 +4664,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       ): Promise<TurnCompletion> => {
         if (input.kind === "terminal") {
         const terminal = input.terminal;
-        const timedOut = input.timedOut;
+        const staleTurn = staleTurnTimedOut;
+        const timedOut = input.timedOut || staleTurn;
         // Read the sandbox duplex control-channel disposition at the ACP
         // terminal-finalization boundary, before the bridge teardown. A control
         // channel that died mid-turn latches a failure with a typed loss reason;
@@ -4653,11 +4742,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           skipRemoteClose: channelLost,
         };
 
-        const errorMessage = timedOut
-          ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-          : channelLost
-            ? channelLostMessage
-            : resultErrorMessage(terminal);
+        const errorMessage = staleTurn
+          ? formatAcpEngineStaleTurnTimeoutMessage(staleTurnTimeoutMs)
+          : input.timedOut
+            ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
+            : channelLost
+              ? channelLostMessage
+              : resultErrorMessage(terminal);
         const terminalStopReason = terminal.status === "failed" ? terminal.error.message : terminal.stopReason;
         await emitAcpxLog(ctx, {
           type: turnSucceeded ? "acpx.result" : "acpx.error",
@@ -4674,13 +4765,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
-          errorCode: terminal.status === "failed"
-            ? "acpx_turn_failed"
-            : timedOut
-              ? "acpx_timeout"
-              : channelLost
-                ? DUPLEX_CHANNEL_LOST_ERROR_CODE
-                : null,
+          errorCode: staleTurn
+            ? "acpx_stale_turn"
+            : terminal.status === "failed"
+              ? "acpx_turn_failed"
+              : input.timedOut
+                ? "acpx_timeout"
+                : channelLost
+                  ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+                  : null,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
@@ -4761,7 +4854,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         return { kind: "finalized" };
         }
         const err = input.error;
-        const timedOut = input.timedOut;
+        const staleTurn = staleTurnTimedOut;
+        const timedOut = input.timedOut || staleTurn;
         // The failure phase comes from the sequence: a failure before the turn
         // started is `prepare_turn`; a failure after it is `turn`. The teardown is
         // the same; only the reported phase differs.
@@ -4772,9 +4866,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         } else {
           await emitPhase("turn", turnPhaseStart, "failed");
         }
-        const messageOverride = timedOut
-          ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
-          : undefined;
+        const messageOverride = staleTurn
+          ? formatAcpEngineStaleTurnTimeoutMessage(staleTurnTimeoutMs)
+          : input.timedOut
+            ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
+            : undefined;
         const preEmitMessage =
           messageOverride ?? (err instanceof Error ? err.message : String(err));
         // Record a direct close for the settlement `endSession` step: cancel the
@@ -4807,7 +4903,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage: message,
-          errorCode: timedOut ? "acpx_timeout" : (emitted?.classified.errorCode ?? null),
+          errorCode: staleTurn ? "acpx_stale_turn" : input.timedOut ? "acpx_timeout" : (emitted?.classified.errorCode ?? null),
           errorMeta: emitted?.classified.errorMeta,
           ...billingFields,
           ...referencedProjectStagingFailuresField,

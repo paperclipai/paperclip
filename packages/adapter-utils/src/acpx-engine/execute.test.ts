@@ -2328,6 +2328,120 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(first.result.sessionParams?.configFingerprint).toBe(rotatedToken.result.sessionParams?.configFingerprint);
     expect(first.result.sessionParams?.configFingerprint).not.toBe(changedSet.result.sessionParams?.configFingerprint);
   });
+
+  it("aborts a turn that emits only session heartbeats past the stale-turn watchdog threshold", async () => {
+    const cancelReasons: string[] = [];
+    const statusEvents = 4;
+    let resolveTurnResult: ((value: unknown) => void) | null = null;
+    const turnResult = new Promise((resolve) => {
+      resolveTurnResult = resolve;
+    });
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          // Emit only non-progress "session updated" heartbeats, spaced well
+          // past the stale threshold — simulating codex stuck reconnecting
+          // upstream while its session still looks alive.
+          events: (async function* () {
+            for (let i = 0; i < statusEvents; i += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 100));
+              yield { type: "status", tag: "session_info_update", text: "session updated" };
+            }
+          })(),
+          result: turnResult,
+          cancel: async (input: { reason?: string }) => {
+            cancelReasons.push(input?.reason ?? "");
+            resolveTurnResult?.({ status: "cancelled", error: new Error(input?.reason ?? "cancelled") });
+          },
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-stale-turn",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        // Tiny threshold so the test completes fast; 0 would disable the watchdog.
+        acpStaleTurnTimeoutMs: 150,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_stale_turn");
+    expect(result.timedOut).toBe(true);
+    expect(result.signal).toBe("SIGTERM");
+    expect(cancelReasons.length).toBeGreaterThan(0);
+    expect(cancelReasons[0]).toContain("stale-turn watchdog");
+  }, 15_000);
+
+  it("aborts a turn whose event stream goes fully silent past the stale-turn watchdog threshold", async () => {
+    const cancelReasons: string[] = [];
+    let resolveTurnResult: ((value: unknown) => void) | null = null;
+    let releaseHang: (() => void) | null = null;
+    const turnResult = new Promise((resolve) => {
+      resolveTurnResult = resolve;
+    });
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          // A generator that never yields: the client went fully silent (no
+          // events, not even heartbeats). An in-loop stale check would never
+          // run here — only the independent timer can. Cancel unblocks the
+          // hang so the test does not wait on a leftover timer.
+          events: (async function* () {
+            await new Promise<void>((resolve) => {
+              releaseHang = resolve;
+            });
+          })(),
+          result: turnResult,
+          cancel: async (input: { reason?: string }) => {
+            cancelReasons.push(input?.reason ?? "");
+            releaseHang?.();
+            resolveTurnResult?.({ status: "cancelled", error: new Error(input?.reason ?? "cancelled") });
+          },
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-silent-turn",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        acpStaleTurnTimeoutMs: 100,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_stale_turn");
+    expect(result.timedOut).toBe(true);
+    expect(result.signal).toBe("SIGTERM");
+    expect(cancelReasons.length).toBeGreaterThan(0);
+    expect(cancelReasons[0]).toContain("stale-turn watchdog");
+  }, 15_000);
 });
 
 describe("findAncestorBin", () => {
