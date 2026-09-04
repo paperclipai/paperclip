@@ -143,7 +143,7 @@ function buildIndex({ vaultPfad, indexOrdner, ausgeschlosseneOrdner, minBegriffl
       addTerm(linkZiel, linkZiel, true);
       try {
         const content = readFileSync(path.join(dirPath, entry.name), 'utf8');
-        const fm = parseFM(content);
+        const { frontmatter: fm } = parseFM(content);
         if (fm.organisation) addTerm(fm.organisation, linkZiel);
         if (fm.name) addTerm(fm.name.split('\\').join(' ').replace(/  +/g, ' '), linkZiel);
       } catch (e) {}
@@ -250,7 +250,7 @@ function lintOrganisations({ vaultPfad, indexOrdner, ausgeschlosseneOrdner = [] 
       if (!entry.name.endsWith('.md')) continue;
       try {
         const content = readFileSync(path.join(dirPath, entry.name), 'utf8');
-        const fm = parseFM(content);
+        const { frontmatter: fm } = parseFM(content);
         if (fm.organisation) {
           const orgLower = String(fm.organisation).toLowerCase().trim();
           // Prüfen ob die Organisation exakt einem Stoppwort entspricht
