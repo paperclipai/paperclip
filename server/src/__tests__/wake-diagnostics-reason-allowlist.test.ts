@@ -164,10 +164,33 @@ function collectWakeupReasonLiterals(): { reason: string; files: string[] }[] {
       if (!callMatch || callMatch.index === undefined) continue;
       const openIdx = m.index + callMatch.index + callMatch[0].length - 1;
       const block = extractBalancedParens(text, openIdx);
-      const reasonMatch = block.match(/reason\s*:\s*("([^"]+)"|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/);
-      if (!reasonMatch) continue;
-
       const relFile = path.relative(REPO_ROOT, file);
+      const reasonMatch = block.match(/reason\s*:\s*("([^"]+)"|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/);
+      if (!reasonMatch) {
+        // No `reason:` key. Two shapes reach the column without one, and both
+        // must be resolved rather than skipped, or the guard fails open.
+        //   1. ES2015 shorthand -- `.values({ ..., reason, payload })`
+        //   2. a spread of a caller-supplied object -- `.set({ status, ...patch })`
+        // In both cases the value comes from the enclosing helper, so trace its
+        // call sites. Report the site when the helper cannot be identified.
+        const shorthand = /[{,]\s*reason\s*[,}]/.test(block);
+        const spread = /\.\.\.[A-Za-z_][A-Za-z0-9_]*/.test(block);
+        if (!shorthand && !spread) continue;
+        const traced = resolveReasonFromHelperCallSites(text, m.index, "reason");
+        if (traced) {
+          for (const literal of traced) {
+            if (!found.has(literal)) found.set(literal, new Set());
+            found.get(literal)!.add(relFile);
+          }
+        } else if (shorthand) {
+          // A shorthand write whose helper cannot be traced is a real unknown.
+          if (!unresolved.has("reason (shorthand)")) unresolved.set("reason (shorthand)", new Set());
+          unresolved.get("reason (shorthand)")!.add(relFile);
+        }
+        // A spread whose call sites never pass `reason` contributes nothing.
+        continue;
+      }
+
       if (reasonMatch[2]) {
         if (!found.has(reasonMatch[2])) found.set(reasonMatch[2], new Set());
         found.get(reasonMatch[2])!.add(relFile);
