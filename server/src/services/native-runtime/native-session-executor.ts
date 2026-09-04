@@ -118,6 +118,12 @@ const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
 const NATIVE_DURABLE_IDENTITY_MAX_BYTES = 2 * 1024 * 1024;
 const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
+const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
+  "tmp",
+  ".tmp",
+  "auth.json",
+  "config.toml",
+] as const;
 const RUNNERD_CONTROL_PLANE_STATE_SCHEMA =
   "paperclip.runner.durable.control-plane-state.v1";
 const RUNNERD_STATE_SCHEMA = "paperclip.runner.durable.state.v1";
@@ -1161,6 +1167,26 @@ function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
   );
 }
 
+function scrubRunnerdQuarantineLaunchState(root: string): void {
+  const codexHome = resolve(root, "codex-home");
+  const codexHomeStats = lstatSync(codexHome, { throwIfNoEntry: false });
+  if (!codexHomeStats) return;
+  if (!codexHomeStats.isDirectory() || codexHomeStats.isSymbolicLink()) {
+    throw new Error("runner_state_directory_unsafe");
+  }
+  for (const name of CODEX_HOME_NON_PERSISTENT_ENTRIES) {
+    const entry = resolve(codexHome, name);
+    const stats = lstatSync(entry, { throwIfNoEntry: false });
+    if (!stats) continue;
+    // Remove symlinks themselves, never their targets. Real temporary
+    // directories are safe to remove recursively inside the verified home.
+    rmSync(entry, {
+      recursive: stats.isDirectory() && !stats.isSymbolicLink(),
+      force: true,
+    });
+  }
+}
+
 function quarantineRunnerdStateRoot(
   root: string,
   reason: "identity_indeterminate" | "identity_mismatch",
@@ -1178,6 +1204,10 @@ function quarantineRunnerdStateRoot(
   ) {
     throw new Error("runner_state_directory_unsafe");
   }
+  // Quarantine retains durable session history for diagnosis and recovery, but
+  // launch credentials and transient files are re-materializable and must not
+  // survive after this state loses authority.
+  scrubRunnerdQuarantineLaunchState(resolvedRoot);
   const quarantineRoot = resolve(stateBase, "quarantine");
   mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
   if (!isSafeNativeStateDirectory(quarantineRoot)) {
@@ -1704,7 +1734,7 @@ export function resolveNativeHarnessPersistenceProfile(
           // credential source and config.toml can contain the native MCP
           // bearer token. Re-materialize both for a replacement sandbox
           // instead of putting credentials into the disaster-recovery copy.
-          excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+          excludeTopLevelEntries: CODEX_HOME_NON_PERSISTENT_ENTRIES,
         }
       : execution.provider.kind === "opencode"
         ? {

@@ -3963,6 +3963,33 @@ describe("runnerd provider runtime wiring", () => {
         join(scopedRoot, "runner", "runner-state.json"),
         JSON.stringify(durableRunnerState(identity, "ready")),
       );
+      await mkdir(join(scopedRoot, "codex-home", "sessions"), {
+        recursive: true,
+      });
+      await mkdir(join(scopedRoot, "codex-home", "tmp"), { recursive: true });
+      await mkdir(join(scopedRoot, "codex-home", ".tmp"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(scopedRoot, "codex-home", "auth.json"),
+        '{"OPENAI_API_KEY":"fixture-secret"}',
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", "config.toml"),
+        'bearer_token = "fixture-secret"',
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", "tmp", "transient"),
+        "transient",
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", ".tmp", "transient"),
+        "transient",
+      );
+      await writeFile(
+        join(scopedRoot, "codex-home", "sessions", "rollout.jsonl"),
+        "durable session history",
+      );
       state.createBackend.mockClear();
       state.createTransport.mockClear();
 
@@ -3977,6 +4004,26 @@ describe("runnerd provider runtime wiring", () => {
       const quarantineEntries = await readdir(join(stateBase, "quarantine"));
       expect(quarantineEntries).toHaveLength(1);
       expect(quarantineEntries[0]).toContain(".identity_indeterminate.");
+      const quarantinedRoot = join(
+        stateBase,
+        "quarantine",
+        quarantineEntries[0]!,
+      );
+      for (const entry of ["tmp", ".tmp", "auth.json", "config.toml"]) {
+        await expect(
+          access(join(quarantinedRoot, "codex-home", entry)),
+        ).rejects.toThrow();
+      }
+      await expect(
+        access(
+          join(quarantinedRoot, "codex-home", "sessions", "rollout.jsonl"),
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(
+          join(quarantinedRoot, "control-plane", "control-plane-state.json"),
+        ),
+      ).resolves.toBeUndefined();
       expect(state.createBackend).not.toHaveBeenCalled();
       expect(state.createTransport).not.toHaveBeenCalled();
     } finally {
