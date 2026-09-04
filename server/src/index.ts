@@ -5,6 +5,7 @@
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
+import { registerPostgresNullSocketGuard } from "./postgres-null-socket-guard.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -155,6 +156,12 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
+  // Registered before every other startup step, so it is the process's
+  // `uncaughtException` handler for the entire startup sequence, not just
+  // once the server is listening — see postgres-null-socket-guard.ts for
+  // how it owns that decision, Sentry reporting included.
+  registerPostgresNullSocketGuard();
+
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
 
   // Tracing must be active (or have failed and logged) before the first DB

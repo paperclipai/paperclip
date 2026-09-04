@@ -23,9 +23,11 @@ import * as sentryModule from "../sentry.js";
 const DSN_ENV = "SENTRY_DSN";
 const FRONTEND_DSN_ENV = "SENTRY_DSN_FRONTEND";
 const BACKEND_DSN_ENV = "SENTRY_DSN_BACKEND";
+const GUARD_ENABLED_ENV = "POSTGRES_NULL_SOCKET_GUARD_ENABLED";
 const originalDsn = process.env[DSN_ENV];
 const originalFrontendDsn = process.env[FRONTEND_DSN_ENV];
 const originalBackendDsn = process.env[BACKEND_DSN_ENV];
+const originalGuardEnabled = process.env[GUARD_ENABLED_ENV];
 
 async function importFreshSentry() {
   vi.resetModules();
@@ -96,6 +98,7 @@ beforeEach(() => {
   delete process.env[DSN_ENV];
   delete process.env[FRONTEND_DSN_ENV];
   delete process.env[BACKEND_DSN_ENV];
+  delete process.env[GUARD_ENABLED_ENV];
 });
 
 afterEach(() => {
@@ -105,6 +108,8 @@ afterEach(() => {
   else process.env[FRONTEND_DSN_ENV] = originalFrontendDsn;
   if (originalBackendDsn === undefined) delete process.env[BACKEND_DSN_ENV];
   else process.env[BACKEND_DSN_ENV] = originalBackendDsn;
+  if (originalGuardEnabled === undefined) delete process.env[GUARD_ENABLED_ENV];
+  else process.env[GUARD_ENABLED_ENV] = originalGuardEnabled;
   vi.restoreAllMocks();
   vi.doUnmock("@sentry/node");
   vi.doUnmock("../peer-version-check.js");
@@ -403,7 +408,7 @@ describe("buildSentryInitOptions", () => {
     expect(resolved.filter((i) => i.name === "OnUnhandledRejection")).toHaveLength(1);
   });
 
-  it("the resolved server integration list holds no Console integration and no ContextLines integration", async () => {
+  it("the resolved server integration list holds no Console, ContextLines, or OnUncaughtException integration", async () => {
     const { buildSentryInitOptions } = await importFreshSentry();
 
     const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
@@ -415,9 +420,34 @@ describe("buildSentryInitOptions", () => {
 
     expect(names).not.toContain("Console");
     expect(names).not.toContain("ContextLines");
+    // Removed so this default integration never registers its own
+    // `uncaughtException` listener — see the module comment in sentry.ts.
+    // `postgres-null-socket-guard.ts` is the sole owner of that decision,
+    // and it reports non-neutralized exceptions to Sentry itself.
+    expect(names).not.toContain("OnUncaughtException");
   });
 
-  it("the resolved server integration list keeps OnUncaughtException, OnUnhandledRejection, LinkedErrors, and RequestData", async () => {
+  it("keeps OnUncaughtException in the resolved list when the guard does not own it", async () => {
+    const { buildSentryInitOptions } = await importFreshSentry();
+
+    const options = buildSentryInitOptions(
+      "https://public@o0.ingest.sentry.io/1",
+      {
+        httpIntegration: () => ({ name: "Http" }),
+        onUnhandledRejectionIntegration: () => ({ name: "OnUnhandledRejection" }),
+      },
+      false,
+    );
+    const resolved = options.integrations(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+
+    // The postgres null-socket write guard registers no `uncaughtException`
+    // listener when an operator disables it, so Sentry's own default
+    // integration must stay active — otherwise an unrelated uncaught
+    // exception would reach no error reporter at all.
+    expect(resolved.map((i) => i.name)).toContain("OnUncaughtException");
+  });
+
+  it("the resolved server integration list keeps OnUnhandledRejection, LinkedErrors, and RequestData", async () => {
     const { buildSentryInitOptions } = await importFreshSentry();
 
     const options = buildSentryInitOptions("https://public@o0.ingest.sentry.io/1", {
@@ -427,11 +457,10 @@ describe("buildSentryInitOptions", () => {
     const resolved = options.integrations(DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
     const names = resolved.map((i) => i.name);
 
-    // The full error-capture set the plan requires, not just the four named
+    // The full error-capture set the plan requires, not just the three named
     // in this test's title.
     expect(names).toEqual(
       expect.arrayContaining([
-        "OnUncaughtException",
         "OnUnhandledRejection",
         "ChildProcess",
         "LinkedErrors",
@@ -475,6 +504,40 @@ describe("with @sentry/node mocked", () => {
 
     await shutdownSentry();
     expect(mocks.close).toHaveBeenCalledWith(5_000);
+  });
+
+  it("removes the default OnUncaughtException integration when the postgres null-socket write guard is on", async () => {
+    process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
+    const mocks = mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    const initOptions = mocks.init.mock.calls[0][0] as {
+      integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
+    };
+    const resolved = initOptions.integrations([{ name: "OnUncaughtException" }]);
+
+    expect(resolved.map((i) => i.name)).not.toContain("OnUncaughtException");
+  });
+
+  it("keeps the default OnUncaughtException integration when an operator disables the guard", async () => {
+    process.env[DSN_ENV] = "https://public@o0.ingest.sentry.io/1";
+    process.env[GUARD_ENABLED_ENV] = "false";
+    const mocks = mockSentryPackage();
+
+    const { sentryReady } = await importFreshSentry();
+    await sentryReady;
+
+    const initOptions = mocks.init.mock.calls[0][0] as {
+      integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
+    };
+    const resolved = initOptions.integrations([{ name: "OnUncaughtException" }]);
+
+    // The guard registers no `uncaughtException` listener when disabled, so
+    // Sentry's own default integration must stay active — otherwise an
+    // unrelated uncaught exception reaches no error reporter at all.
+    expect(resolved.map((i) => i.name)).toContain("OnUncaughtException");
   });
 });
 
@@ -564,6 +627,23 @@ describe.skipIf(!sentryPackage)("captured event shape against the real @sentry/n
     };
     Sentry.init(options);
   }
+
+  /**
+   * Proves the fix for the finding that this feature could keep a
+   * Sentry-enabled deployment from surviving the known, neutralized
+   * postgres driver crash: `Sentry.init` must add no `uncaughtException`
+   * listener of its own. `postgres-null-socket-guard.ts` is the sole owner
+   * of that event; a second, independent listener from Sentry's default
+   * `OnUncaughtException` integration would still end the process on the
+   * known fault, no matter which listener Node calls first.
+   */
+  it("adds no uncaughtException listener", async () => {
+    const before = process.listenerCount("uncaughtException");
+
+    await initRealSentryForTest(() => {});
+
+    expect(process.listenerCount("uncaughtException")).toBe(before);
+  });
 
   it("a server event captured after a console.error call carries no console breadcrumb", async () => {
     const Sentry = sentryPackage!;

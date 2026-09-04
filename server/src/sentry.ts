@@ -36,6 +36,28 @@
 // `mode: "strict"`: Sentry still captures the event, then exits the process,
 // so the existing crash-and-restart behavior stays.
 //
+// `OnUncaughtException` is a default integration too, and the initializer
+// removes it — but only while `postgres-null-socket-guard.ts` registers its
+// own `uncaughtException` listener (the default: see
+// `postgres-null-socket-guard-env.ts` for the shared opt-out this module
+// reads). That guard runs before the server does anything else, including
+// this Sentry gate, and the process must survive one known, neutralized
+// driver defect and end for every other uncaught exception. A second,
+// independent listener from this default integration would end the process
+// for that known defect too, regardless of registration order, because
+// Node calls every registered `uncaughtException` listener, not just the
+// first one. So while the guard is enabled, this repository gives one
+// module exclusive ownership of the decision: `postgres-null-socket-guard.ts`
+// calls this module's `captureException` itself for every uncaught
+// exception it does not neutralize, before it ends the process.
+//
+// When an operator disables that guard
+// (`POSTGRES_NULL_SOCKET_GUARD_ENABLED=false`), no module registers an
+// `uncaughtException` listener on its behalf, so this initializer keeps the
+// default `OnUncaughtException` integration active instead. Without that,
+// an unrelated uncaught exception would reach no error reporter at all —
+// Node's default handler exits the process without telling Sentry.
+//
 // Before it imports the package, the bootstrap checks the installed
 // `@sentry/node` version against the exact version this manifest's
 // `peerDependencies` declares — the same audited version documented in
@@ -46,6 +68,7 @@
 
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
+import { isGuardEnabled } from "./postgres-null-socket-guard-env.js";
 
 const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
 
@@ -138,10 +161,19 @@ export interface SentryInitOptions {
  * `bootstrapSentry` so a test can call it with a real `@sentry/node` module
  * and assert the resolved integration list and the captured-event shape
  * against the true SDK, not a stand-in.
+ *
+ * `guardOwnsUncaughtException` defaults to `true` — the common case, where
+ * `postgres-null-socket-guard.ts` registers its own listener and this
+ * initializer must remove the default `OnUncaughtException` integration so
+ * Node does not call two independent listeners for the same event. Pass
+ * `false` only when that guard is disabled
+ * (`POSTGRES_NULL_SOCKET_GUARD_ENABLED=false`), so the default integration
+ * stays active and an unrelated uncaught exception still reaches Sentry.
  */
 export function buildSentryInitOptions(
   dsn: string,
   Sentry: SentryModuleLike,
+  guardOwnsUncaughtException: boolean = true,
 ): SentryInitOptions {
   return {
     dsn,
@@ -149,13 +181,16 @@ export function buildSentryInitOptions(
     tracesSampleRate: 0,
     sendDefaultPii: false,
     integrations: (defaults: Array<{ name: string }>) => {
-      const kept = defaults.filter(
-        (integration) =>
-          integration.name !== "Console" &&
-          integration.name !== "ContextLines" &&
-          integration.name !== "Http" &&
-          integration.name !== "OnUnhandledRejection",
-      );
+      const kept = defaults.filter((integration) => {
+        if (integration.name === "Console") return false;
+        if (integration.name === "ContextLines") return false;
+        if (integration.name === "Http") return false;
+        if (integration.name === "OnUnhandledRejection") return false;
+        // Removed only while `postgres-null-socket-guard.ts` owns the
+        // `uncaughtException` decision. See the module comment above.
+        if (integration.name === "OnUncaughtException") return !guardOwnsUncaughtException;
+        return true;
+      });
       return [
         ...kept,
         // Keep the rest of the Http integration — RequestData and request
@@ -194,7 +229,13 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     // @ts-ignore optional peer dep
     const Sentry = await import("@sentry/node");
 
-    Sentry.init(buildSentryInitOptions(dsn, Sentry));
+    // Reads the same opt-out `postgres-null-socket-guard.ts` reads, so this
+    // module strips the default `OnUncaughtException` integration only when
+    // that guard actually owns the process's `uncaughtException` decision.
+    // `registerPostgresNullSocketGuard()` runs before this bootstrap
+    // settles and validates the same variable, so a startup with an
+    // unrecognized value never reaches this line.
+    Sentry.init(buildSentryInitOptions(dsn, Sentry, isGuardEnabled(process.env)));
 
     sentryHandle = {
       captureException: (error) => Sentry.captureException(error),
