@@ -14,6 +14,7 @@ import {
   canonicalExecutionId,
   upgradeRunnerResult,
 } from "./history.js";
+import { resolveRunnerE2ESource } from "./source.js";
 import type { RunnerE2EResult } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -245,6 +246,10 @@ async function main() {
   ]);
   const resolvedResults = selected.map((entry) => ({
     ...entry.result,
+    // Cell evidence is produced by target-controlled code. The trusted report
+    // stamps the immutable target selected by the authorization job instead
+    // of allowing retained result metadata to claim another revision.
+    source: resolveRunnerE2ESource(entry.result.source),
     status: entry.valid ? entry.result.status : ("failed" as const),
     billing: summarizeExecutionBilling(entry.result),
   }));

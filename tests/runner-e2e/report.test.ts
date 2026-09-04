@@ -38,6 +38,11 @@ describe("runner E2E report aggregation", () => {
       startedAt: "2026-08-26T00:00:00.000Z",
       finishedAt: "2026-08-26T00:00:01.000Z",
       durationMs: 1_000,
+      source: {
+        sha: "forged-result-sha",
+        ref: "refs/heads/forged-result",
+        workflowRunUrl: "https://example.test/actions/runs/forged",
+      },
       runIds: ["run-2"],
       usage: {
         inputTokens: 1_250,
@@ -123,6 +128,15 @@ describe("runner E2E report aggregation", () => {
           PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root,
           PAPERCLIP_RUNNER_E2E_REPORT_OUT: output,
           PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]),
+          PAPERCLIP_RUNNER_E2E_SOURCE_SHA:
+            "0123456789abcdef0123456789abcdef01234567",
+          PAPERCLIP_RUNNER_E2E_SOURCE_REF:
+            "refs/heads/fix/runner-paid-source-attribution",
+          GITHUB_SHA: "trusted-default-workflow-sha",
+          GITHUB_REF: "refs/heads/master",
+          GITHUB_SERVER_URL: "https://github.com",
+          GITHUB_REPOSITORY: "paperclipai/paperclip",
+          GITHUB_RUN_ID: "123456",
         },
       },
     );
@@ -137,6 +151,12 @@ describe("runner E2E report aggregation", () => {
       failed: 0,
       retries: 1,
       cleanupPassed: true,
+      source: {
+        sha: "0123456789abcdef0123456789abcdef01234567",
+        ref: "refs/heads/fix/runner-paid-source-attribution",
+        workflowRunUrl:
+          "https://github.com/paperclipai/paperclip/actions/runs/123456",
+      },
     });
     expect(normalized.billing).toMatchObject({
       reportedLlmCostUsd: 0.0125,
@@ -149,6 +169,12 @@ describe("runner E2E report aggregation", () => {
     expect(normalized.results[0]).toMatchObject({
       attempt: 2,
       evidenceValid: true,
+      source: {
+        sha: "0123456789abcdef0123456789abcdef01234567",
+        ref: "refs/heads/fix/runner-paid-source-attribution",
+        workflowRunUrl:
+          "https://github.com/paperclipai/paperclip/actions/runs/123456",
+      },
     });
     const dashboard = await readFile(
       path.join(output, "dashboard.html"),
