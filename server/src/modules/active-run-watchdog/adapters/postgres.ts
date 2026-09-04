@@ -400,13 +400,21 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
       const [runningCountRow] = await tx
         .select({ count: sql<number>`count(*)::int` })
         .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, input.run.agentId), eq(heartbeatRuns.status, "running")));
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, input.run.agentId),
+          eq(heartbeatRuns.status, "running"),
+        ));
       const runningCount = Number(runningCountRow?.count ?? 0);
       const nextAgentStatus = runningCount > 0 ? "running" : "idle";
       await tx
         .update(agents)
         .set({ status: nextAgentStatus, lastHeartbeatAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(agents.id, input.run.agentId), notInArray(agents.status, ["paused", "terminated"])));
+        .where(and(
+          eq(agents.id, input.run.agentId),
+          eq(agents.companyId, companyId),
+          notInArray(agents.status, ["paused", "terminated"]),
+        ));
 
       return updatedRun;
     });
