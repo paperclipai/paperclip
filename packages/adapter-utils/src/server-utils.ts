@@ -153,6 +153,9 @@ export interface RunScopedProcessCleanupEvidence {
   termSignalledPids: number[];
   killSignalledPids: number[];
   processGroupSignalled: boolean;
+  // True when persisted direct-child metadata points at a different live
+  // process. Callers must not use the legacy PID/process-group fallback then.
+  directPidStartMismatch: boolean;
 }
 
 interface LinuxProcessIdentity {
@@ -293,11 +296,22 @@ export async function terminateRunScopedProcesses(
     termSignalledPids: [],
     killSignalledPids: [],
     processGroupSignalled: false,
+    directPidStartMismatch: false,
   };
   if (process.platform === "win32") return evidence;
 
   const identities = await listRunScopedProcessIdentities(input.runId);
   const bootSeconds = await readLinuxBootTimeSeconds();
+  const directPidIdentity =
+    typeof input.pid === "number"
+      ? await readLinuxProcessIdentity(input.pid, input.runId)
+      : null;
+  const expectedStartMs = processStartedAtMs(input.processStartedAt);
+  evidence.directPidStartMismatch =
+    directPidIdentity !== null &&
+    expectedStartMs !== null &&
+    bootSeconds !== null &&
+    !matchesPersistedStart(directPidIdentity, input.processStartedAt, bootSeconds);
   // A persisted direct PID is the only identity vulnerable to PID reuse across
   // a Paperclip restart. Descendants are selected by the exact opaque run
   // marker; the direct PID must additionally match its persisted start time.
@@ -327,7 +341,7 @@ export async function terminateRunScopedProcesses(
     }
   }
 
-  for (const identity of identities) {
+  for (const identity of eligibleIdentities) {
     if (
       await signalScopedPid(
         identity.pid,
@@ -344,7 +358,12 @@ export async function terminateRunScopedProcesses(
   if (evidence.termSignalledPids.length > 0 || evidence.processGroupSignalled) {
     await new Promise((resolve) => setTimeout(resolve, graceMs));
   }
-  for (const identity of await listRunScopedProcessIdentities(input.runId)) {
+  const remainingEligibleIdentities = (await listRunScopedProcessIdentities(input.runId)).filter(
+    (identity) =>
+      identity.pid !== input.pid ||
+      matchesPersistedStart(identity, input.processStartedAt, bootSeconds),
+  );
+  for (const identity of remainingEligibleIdentities) {
     if (
       await signalScopedPid(
         identity.pid,

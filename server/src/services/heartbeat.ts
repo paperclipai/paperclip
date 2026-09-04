@@ -7719,7 +7719,7 @@ async function terminateHeartbeatRunProcess(input: {
     // environment marker. Keep the existing process-group fallback for that
     // compatibility case; newly tagged runs are cleaned through the exact
     // run scope above.
-    if (scoped.matchedPids.length > 0) return;
+    if (scoped.matchedPids.length > 0 || scoped.directPidStartMismatch) return;
   } else {
     await input.cleanup?.();
   }

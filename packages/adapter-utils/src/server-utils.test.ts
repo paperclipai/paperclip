@@ -595,6 +595,48 @@ describe("runChildProcess", () => {
     ).resolves.toMatchObject({ matchedPids: [] });
   });
 
+  it.skipIf(process.platform === "win32")(
+    "does not signal a recycled direct PID when the persisted start time mismatches",
+    async () => {
+      const runId = randomUUID();
+      const child = spawn(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000)"],
+        {
+          detached: true,
+          env: { ...process.env, PAPERCLIP_RUN_PROCESS_SCOPE: runId },
+          stdio: "ignore",
+        },
+      );
+      try {
+        expect(child.pid).toBeGreaterThan(0);
+        const evidence = await terminateRunScopedProcesses({
+          runId,
+          pid: child.pid,
+          processGroupId: child.pid,
+          processStartedAt: "1970-01-01T00:00:00.000Z",
+          graceMs: 10,
+        });
+
+        expect(evidence.directPidStartMismatch).toBe(true);
+        expect(evidence.matchedPids).toEqual([]);
+        expect(evidence.termSignalledPids).toEqual([]);
+        expect(evidence.killSignalledPids).toEqual([]);
+        expect(isPidAlive(child.pid!)).toBe(true);
+      } finally {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Ignore cleanup races.
+        }
+        await new Promise<void>((resolve) => {
+          child.once("close", () => resolve());
+          if (child.exitCode !== null || child.signalCode !== null) resolve();
+        });
+      }
+    },
+  );
+
   it("waits for onSpawn before sending stdin to the child", async () => {
     const spawnDelayMs = 150;
     const startedAt = Date.now();

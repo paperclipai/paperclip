@@ -1455,7 +1455,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       // Runs created before scoped tagging was introduced cannot be discovered
       // by the run marker. Preserve the old process-group cleanup only for that
       // compatibility case; newly tagged descendants are handled above.
-      if (scopedCleanup.matchedPids.length === 0) {
+      if (
+        scopedCleanup.matchedPids.length === 0 &&
+        !scopedCleanup.directPidStartMismatch
+      ) {
         await terminateLocalService(
           {
             pid: typeof pid === "number" && Number.isInteger(pid) && pid > 0
