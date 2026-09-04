@@ -2687,7 +2687,8 @@ describe("executeNativeSession recovery", () => {
         releaseClose = resolve;
       });
       const close = vi.fn(() => pendingClose);
-      let snapshotCount = 0;
+      let runCompleted = false;
+      let enrichmentFailureObserved = false;
       const session: NativeSession = {
         identity: () => identity,
         async capabilities() {
@@ -2709,8 +2710,10 @@ describe("executeNativeSession recovery", () => {
           return { result, terminal, turnId: "turn-recovery" };
         },
         async snapshot() {
-          snapshotCount += 1;
-          if (enrichmentFails && snapshotCount === 3) {
+          // Exercise only the best-effort enrichment snapshot after the
+          // control plane has durably committed the run result.
+          if (enrichmentFails && runCompleted) {
+            enrichmentFailureObserved = true;
             throw new Error("checkpoint enrichment failed");
           }
           return {
@@ -2760,7 +2763,9 @@ describe("executeNativeSession recovery", () => {
         async replayEvents() {
           return { events: [], highestContiguousSourceSeq: 0 };
         },
-        async completeRun() {},
+        async completeRun() {
+          runCompleted = true;
+        },
       };
 
       let resolved = false;
@@ -2781,6 +2786,7 @@ describe("executeNativeSession recovery", () => {
       releaseClose();
       await expect(execution).resolves.toMatchObject({ result, terminal });
       expect(resolved).toBe(true);
+      expect(enrichmentFailureObserved).toBe(enrichmentFails);
     },
   );
 
