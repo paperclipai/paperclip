@@ -18,6 +18,7 @@ import {
   type SealedConnectorEvents,
 } from "./paperclip-cloud-connector.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { logger } from "../middleware/logger.js";
 
 type LeasedEvent = SealedConnectorEvents["events"][number];
 type GitHubBinding = {
@@ -340,8 +341,8 @@ export function githubConnectionEventService(
         updatedAt: receiptAt,
       }).where(eq(connectionEventDeliveries.id, existing!.id));
     }
+    const postCommitPublications: ActivityPublication[] = [];
     try {
-      const postCommitPublications: ActivityPublication[] = [];
       const applyAndFinalize = async (database: Db) => {
         if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
         if (event.event === "installation" || event.event === "installation_repositories") {
@@ -393,8 +394,6 @@ export function githubConnectionEventService(
       } else {
         await applyAndFinalize(db);
       }
-      for (const publication of postCommitPublications) publishActivity(publication);
-      return "processed" as const;
     } catch (error) {
       await db.update(connectionEventDeliveries).set({
         status: "failed",
@@ -407,6 +406,21 @@ export function githubConnectionEventService(
       ));
       throw error;
     }
+    // Persistence is complete at this point (and installation deltas have
+    // committed). A synchronous live-event subscriber must not turn that
+    // durable success back into a retryable receipt and replay the delta.
+    for (const publication of postCommitPublications) {
+      try {
+        publishActivity(publication);
+      } catch (error) {
+        logger.warn({
+          err: error,
+          companyId,
+          providerDeliveryId: event.id,
+        }, "GitHub webhook activity publication failed after commit");
+      }
+    }
+    return "processed" as const;
   }
 
   return {

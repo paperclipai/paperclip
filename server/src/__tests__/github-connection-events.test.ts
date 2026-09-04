@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -285,7 +286,11 @@ describeEmbeddedPostgres.sequential("GitHub connection event delivery", () => {
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, now: () => currentTime });
 
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, () => {
+      throw new Error("fixture live subscriber failed");
+    });
     await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, duplicate: 0, failed: 0 });
+    unsubscribe();
     let [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId));
     expect(grant?.providerTenant?.github).toMatchObject({ repositoryCount: 4, webhookHealth: "healthy" });
 
