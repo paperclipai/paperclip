@@ -3522,6 +3522,12 @@ describe("runnerd provider runtime wiring", () => {
       accepted: false,
     },
     {
+      directLifecycle: "malformed",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: false,
+    },
+    {
       directLifecycle: null,
       backupLifecycle: "ready",
       corrupt: false,
@@ -3616,7 +3622,14 @@ describe("runnerd provider runtime wiring", () => {
           await mkdir(join(scopedRoot, "runner"), { recursive: true });
           await writeFile(
             join(scopedRoot, "runner", "runner-state.json"),
-            JSON.stringify(durableRunnerState(identity, directLifecycle)),
+            JSON.stringify(
+              directLifecycle === "malformed"
+                ? {
+                    ...durableRunnerState(identity, "suspended"),
+                    runId: "conflicting-direct-run",
+                  }
+                : durableRunnerState(identity, directLifecycle),
+            ),
           );
         }
         const backupRoot = join(scopedRoot, "failover-backups", "current");

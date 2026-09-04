@@ -1238,10 +1238,12 @@ function migrateLegacyRunnerdStateRoot(input: {
   if (
     exactRun &&
     legacyIdentity &&
-    runnerdAuthorityLifecycle(
-      input.legacy,
-      legacyIdentity as RunnerdDurableIdentity,
-    ) === "indeterminate"
+    ["absent", "indeterminate"].includes(
+      runnerdAuthorityLifecycle(
+        input.legacy,
+        legacyIdentity as RunnerdDurableIdentity,
+      ),
+    )
   ) {
     quarantineRunnerdStateRoot(input.legacy, "identity_indeterminate");
     throw new Error("runner_state_identity_mismatch");
@@ -1277,8 +1279,9 @@ function migrateLegacyRunnerdStateRoot(input: {
 function runnerdAuthorityLifecycle(
   root: string,
   identity: RunnerdDurableIdentity,
-): "suspended" | "not_suspended" | "indeterminate" {
+): "absent" | "suspended" | "not_suspended" | "indeterminate" {
   const runnerRoot = resolve(root, "runner");
+  if (!existsSync(runnerRoot)) return "absent";
   if (!isSafeNativeStateDirectory(runnerRoot)) return "indeterminate";
   const statePath = resolve(runnerRoot, "runner-state.json");
   if (!existsSync(statePath)) return "indeterminate";
@@ -1321,7 +1324,8 @@ function runnerdAuthorityLifecycleWithVerifiedBackup(input: {
   allowVerifiedBackup: boolean;
 }): "suspended" | "not_suspended" | "indeterminate" {
   const direct = runnerdAuthorityLifecycle(input.root, input.identity);
-  if (direct !== "indeterminate" || !input.allowVerifiedBackup) return direct;
+  if (direct !== "absent") return direct;
+  if (!input.allowVerifiedBackup) return "indeterminate";
   const backup = verifyNativeHarnessBackup({
     root: input.root,
     execution: input.execution,
