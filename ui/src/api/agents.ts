@@ -256,6 +256,14 @@ export const agentsApi = {
     api.get<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
     ),
+  // Reads the caller's active login session for one company and adapter, with
+  // no session id, so the browser rediscovers its own session after a reload
+  // with no local state. A 404 means no active session for the caller.
+  getActiveAdapterAuthLoginSession: (companyId: string, type: string) =>
+    api.get<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/active`,
+      { cache: "no-store" },
+    ),
   cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
     api.post<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}/cancel`,
@@ -286,6 +294,14 @@ export const agentsApi = {
   getClaudeSetupTokenLoginStatus: (companyId: string, sessionId: string) =>
     api.get<ClaudeSetupTokenSessionResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}`,
+    ),
+  // Reads the caller's active Claude setup-token login session, with no
+  // session id, so the browser rediscovers its own session after a reload with
+  // no local state. A 404 means no active session for the caller.
+  getActiveClaudeSetupTokenLoginSession: (companyId: string) =>
+    api.get<ClaudeSetupTokenSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/active`,
+      { cache: "no-store" },
     ),
   getClaudeSetupTokenLoginPrompt: (companyId: string, sessionId: string) =>
     api.get<ClaudeSetupTokenSessionPrompt>(

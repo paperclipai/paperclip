@@ -342,6 +342,17 @@ export interface AdapterAuthSessionStore {
     companyId: string,
     adapterType?: AgentAdapterType,
   ): Promise<AdapterAuthSessionRow | null>;
+  /**
+   * Read the active session for one company, owner, and adapter, with no
+   * session id. The predicate matches the same three columns as the active-slot
+   * partial unique index, so at most one row can match. It returns null when the
+   * owner holds no active session for the adapter.
+   */
+  getActiveByOwner(
+    companyId: string,
+    startedByUserId: string,
+    adapterType: AgentAdapterType,
+  ): Promise<AdapterAuthSessionRow | null>;
   /** Run `fn` while the process holds the promotion critical-section lock for the
    *  company, owner, and adapter slot. The reaper reclaims a stale `promoting`
    *  row inside this lock, so a reclaim never interleaves with a live credential
@@ -579,6 +590,24 @@ export function createDbAdapterAuthSessionStore(
             adapterType
               ? eq(adapterAuthSessions.adapterType, adapterType)
               : inArray(adapterAuthSessions.adapterType, DISPLAYED_CODE_ADAPTER_TYPES),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
+      return row ? toRow(row) : null;
+    },
+    async getActiveByOwner(companyId, startedByUserId, adapterType) {
+      // The predicate matches the same three columns as the active-slot partial
+      // unique index, plus the active-status set, so at most one row can match.
+      const rows = await db
+        .select()
+        .from(adapterAuthSessions)
+        .where(
+          and(
+            eq(adapterAuthSessions.companyId, companyId),
+            eq(adapterAuthSessions.startedByUserId, startedByUserId),
+            eq(adapterAuthSessions.adapterType, adapterType),
+            inArray(adapterAuthSessions.status, [...ADAPTER_AUTH_ACTIVE_STATUSES]),
           ),
         )
         .limit(1);
@@ -1159,6 +1188,9 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     activity: (phase: LoginSessionActivityPhase) => void;
   }): Promise<DeviceLoginOutcome> {
     const { sessionId, lease, activity } = ctx;
+    // The reaper already reclaimed the row, so this process no longer owns the
+    // slot. Delete a prompt this process may still hold for it.
+    promptsBySession.delete(sessionId);
     const observation = await observeSandboxDelete(() => lease.deleteSandbox());
     if (observation.confirmed) {
       activity("sandbox_deleted");
@@ -1192,6 +1224,11 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
   }): Promise<DeviceLoginOutcome> {
     const { sessionId, lease, terminal, reason, expectedStatuses, conditionalTransition, activity } =
       ctx;
+
+    // Delete the in-memory prompt on every terminal transition this function
+    // handles: an authenticated success, a failure, a timeout, and a
+    // cancellation. A terminal response then always carries a null prompt.
+    promptsBySession.delete(sessionId);
 
     // The cleanup-state handoff. The service owns and observes the provider
     // delete on every terminal path. The reaper path shares the same delete
@@ -1233,6 +1270,30 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     };
   }
 
+  // Build the owner response for a row. The prompt survives every read while
+  // the session holds an active public status: the read never deletes it. A
+  // terminal transition deletes the prompt at its own write site instead (see
+  // `terminate`, `abandonAfterLostClaim`, and `cancelOwnerSession`), so a
+  // terminal response always carries a null prompt.
+  function buildOwnerResponse(
+    row: AdapterAuthSessionRow,
+    requestingUserId: string,
+  ): AdapterAuthSessionOwnerResponse {
+    const isOwner = row.startedByUserId === requestingUserId;
+    const status = resolvePublicStatus(row);
+    // The prompt map keys on the internal id, so read it by `row.id`, not the
+    // public id. Only the owner principal ever reads the prompt.
+    const prompt = isOwner ? promptsBySession.get(row.id) ?? null : null;
+    return {
+      sessionId: row.publicSessionId,
+      environmentId: row.environmentId,
+      status,
+      expiresAt: row.expiresAt?.toISOString() ?? null,
+      failure: buildFailure(row, status),
+      prompt: prompt ? { url: prompt.url, code: prompt.code } : null,
+    };
+  }
+
   async function readOwnerSession(
     publicSessionId: string,
     companyId: string,
@@ -1242,26 +1303,21 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     // foreign-company caller reads nothing, and the internal id never matches.
     const row = await store.getByPublicId(publicSessionId, companyId);
     if (!row) return null;
-    const isOwner = row.startedByUserId === requestingUserId;
-    const status = resolvePublicStatus(row);
-    // Deliver the one-time prompt to the owner principal exactly once. The read
-    // and the delete run with no await between them, so the first authorized
-    // owner read consumes the prompt and every later read returns null. This
-    // keeps the short-lived device code out of a repeated response. The prompt
-    // map keys on the internal id, so read it by `row.id`, not the public id.
-    let prompt: DeviceLoginPrompt | null = null;
-    if (isOwner) {
-      prompt = promptsBySession.get(row.id) ?? null;
-      if (prompt) promptsBySession.delete(row.id);
-    }
-    return {
-      sessionId: row.publicSessionId,
-      environmentId: row.environmentId,
-      status,
-      expiresAt: row.expiresAt?.toISOString() ?? null,
-      failure: buildFailure(row, status),
-      prompt: prompt ? { url: prompt.url, code: prompt.code } : null,
-    };
+    return buildOwnerResponse(row, requestingUserId);
+  }
+
+  // Read the caller's active session for one company and adapter, with no
+  // session id. The browser rediscovers its own session after a reload with no
+  // local state. The store predicate matches only an active row for this exact
+  // owner, so this never surfaces a foreign owner's session.
+  async function readActiveOwnerSession(
+    companyId: string,
+    adapterType: AgentAdapterType,
+    requestingUserId: string,
+  ): Promise<AdapterAuthSessionOwnerResponse | null> {
+    const row = await store.getActiveByOwner(companyId, requestingUserId, adapterType);
+    if (!row) return null;
+    return buildOwnerResponse(row, requestingUserId);
   }
 
   // Cancel a login session for its owner. The write is durable, so a cancel
@@ -1296,10 +1352,14 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
       finishedAt: now(),
       promotionExpiresAt: null,
     });
+    // Delete the in-memory prompt on every cancel, whether or not the write
+    // above won. A lost write means the row already left the cancellable
+    // states, so no fresh prompt exists for it either.
+    promptsBySession.delete(row.id);
     return readOwnerSession(publicSessionId, companyId, requestingUserId);
   }
 
-  return { start, readOwnerSession, cancelOwnerSession };
+  return { start, readOwnerSession, readActiveOwnerSession, cancelOwnerSession };
 }
 
 export type DeviceLoginService = ReturnType<typeof createDeviceLoginService>;

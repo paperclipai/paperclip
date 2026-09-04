@@ -124,6 +124,9 @@ function createRecordingStore() {
     async consumeStoredClaim() {
       return null;
     },
+    async cancelDurable() {
+      return null;
+    },
   };
 
   return {

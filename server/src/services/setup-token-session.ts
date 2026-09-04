@@ -86,6 +86,18 @@ export function isTerminalSessionState(state: SetupTokenSessionState): boolean {
 }
 
 /**
+ * The cancellable pre-promotion states. A durable-only cancel (no live
+ * in-memory session) may transition a row only from one of these. `submitting`
+ * is the credential-write phase — the setup-token analogue of the device-login
+ * `promoting` claim — so it is excluded: a durable cancel never interrupts a
+ * write in progress. `stored` and every terminal state are excluded too.
+ */
+export const SETUP_TOKEN_CANCELLABLE_STATES: readonly SetupTokenSessionState[] = [
+  "starting",
+  "awaiting_code",
+];
+
+/**
  * The immutable owner scope of a session. The service builds the scope once at
  * start and never changes it. The session identity is the company, the owner,
  * and the adapter. Every operation verifies these three fields against the
@@ -264,6 +276,17 @@ export interface SetupTokenCleanupStore {
    * step. The agent-service transaction calls this method.
    */
   consumeStoredClaim(identity: SetupTokenCleanupIdentity): Promise<SetupTokenCleanupRecord | null>;
+  /**
+   * Cancels the exact durable row with one conditional write. The predicate
+   * matches the full owner scope, the session id, and one of
+   * `cancellableStates`. It returns the updated record only on a successful
+   * transition. It returns null for a missing row, a foreign-scope row, and a
+   * row outside the cancellable states — a caller cannot tell these apart.
+   */
+  cancelDurable(
+    identity: SetupTokenCleanupIdentity,
+    cancellableStates: readonly SetupTokenSessionState[],
+  ): Promise<SetupTokenCleanupRecord | null>;
 }
 
 /** The counts one reaper sweep produced over the durable cleanup store. */
@@ -1125,6 +1148,63 @@ export class SetupTokenSessionService {
   }
 
   /**
+   * Finds the caller's live active session for a scope, with no session id.
+   * The browser rediscovers its own session after a reload with no local
+   * state. It matches the company, the owner, and the adapter, and it returns
+   * only a non-terminal session, so a caller with no active login and a caller
+   * with a foreign scope both find nothing.
+   */
+  findActiveByScope(
+    key: Pick<SetupTokenSessionScope, "companyId" | "ownerUserId" | "adapterType">,
+  ): { sessionId: string; scope: SetupTokenSessionScope } | null {
+    for (const session of this.sessions.values()) {
+      if (isTerminalSessionState(session.state)) continue;
+      if (
+        session.scope.companyId === key.companyId &&
+        session.scope.ownerUserId === key.ownerUserId &&
+        session.scope.adapterType === key.adapterType
+      ) {
+        return { sessionId: session.id, scope: session.scope };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Cancels a session by its full scope, with a durable fallback when no live
+   * session exists. It first tries the live in-memory session that matches the
+   * scope and the session id, and cancels it the normal way. When no live
+   * session matches — for example, a restart dropped the in-memory session —
+   * it falls back to a durable-only cancel: a conditional transition of the
+   * exact row from a cancellable pre-promotion state to `cancelled`. This
+   * releases the company slot even though this process holds no live process
+   * to stop, so it aborts no local process. It throws the fixed not-found
+   * error for a missing row, a foreign owner, a foreign company, a foreign
+   * adapter, and a row outside the cancellable states — the caller cannot tell
+   * these apart.
+   */
+  async cancelByScope(
+    sessionId: string,
+    key: Pick<SetupTokenSessionScope, "companyId" | "ownerUserId" | "adapterType">,
+  ): Promise<{ state: SetupTokenSessionState }> {
+    const session = this.sessions.get(sessionId);
+    if (
+      session &&
+      session.scope.companyId === key.companyId &&
+      session.scope.ownerUserId === key.ownerUserId &&
+      session.scope.adapterType === key.adapterType
+    ) {
+      return this.cancel(sessionId, session.scope);
+    }
+    const identity: SetupTokenCleanupIdentity = { sessionId, ...key };
+    const cancelled = await this.store.cancelDurable(identity, SETUP_TOKEN_CANCELLABLE_STATES);
+    if (!cancelled) {
+      throw new SetupTokenSessionError(404, SETUP_TOKEN_SESSION_NOT_FOUND);
+    }
+    return { state: "cancelled" };
+  }
+
+  /**
    * Expires a session on a timeout. It stops the direct child before it releases
    * the lease. The harness can call it, and the deadline timer calls the same
    * path internally.
@@ -1496,6 +1576,23 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
             isNull(adapterAuthSessions.boundAt),
           ),
         )
+        .returning();
+      const row = changed[0];
+      return row ? toCleanupRecord(row) : null;
+    },
+
+    async cancelDurable(identity, cancellableStates): Promise<SetupTokenCleanupRecord | null> {
+      // One conditional write. The predicate carries the company, the owner, the
+      // adapter, the session id, and one of `cancellableStates`. It never
+      // interrupts a `submitting` write, a `stored` claim, or a terminal row.
+      const changed = await db
+        .update(adapterAuthSessions)
+        .set({
+          status: "cancelled",
+          finishedAt: sql`clock_timestamp()`,
+          updatedAt: sql`clock_timestamp()`,
+        })
+        .where(and(scopeMatch(identity), inArray(adapterAuthSessions.status, [...cancellableStates])))
         .returning();
       const row = changed[0];
       return row ? toCleanupRecord(row) : null;
