@@ -1,4 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { companies, createDb, issueWorkProducts, issues } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 import {
   enrichWorkProductMetadataWithDiff,
   refreshPullRequestWorkProductMetadata,
@@ -138,6 +145,7 @@ describe("workProductService", () => {
     const txInsert = vi.fn(() => ({ values: insertValues }));
 
     const tx = {
+      execute: vi.fn(async () => undefined),
       update: txUpdate,
       insert: txInsert,
     };
@@ -159,6 +167,32 @@ describe("workProductService", () => {
     expect(result?.id).toBe("work-product-1");
   });
 
+  it("retries a deadlocked create transaction", async () => {
+    const insertedRow = createWorkProductRow({ isPrimary: false });
+    const tx = {
+      execute: vi.fn(async () => undefined),
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({ returning: vi.fn(async () => [insertedRow]) })),
+      })),
+    };
+    const deadlock = Object.assign(new Error("deadlock detected"), { code: "40P01" });
+    const transaction = vi.fn()
+      .mockRejectedValueOnce(deadlock)
+      .mockImplementation(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
+
+    const product = await workProductService({ transaction } as any).createForIssue("issue-1", "company-1", {
+      type: "artifact",
+      provider: "paperclip",
+      title: "Artifact",
+      status: "active",
+      reviewState: "none",
+      isPrimary: false,
+    });
+
+    expect(product?.id).toBe("work-product-1");
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+
   it("uses a transaction when promoting an existing work product to primary", async () => {
     const existingRow = createWorkProductRow({ isPrimary: false });
 
@@ -174,6 +208,7 @@ describe("workProductService", () => {
     const txUpdate = vi.fn(() => ({ set: updateSet }));
 
     const tx = {
+      execute: vi.fn(async () => undefined),
       select: txSelect,
       update: txUpdate,
     };
@@ -189,5 +224,72 @@ describe("workProductService", () => {
     expect(txSelect).toHaveBeenCalledTimes(1);
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
+  });
+});
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("workProductService concurrent creates", () => {
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("serializes eight primary transitions and deduplicates an attachment retry", async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-work-product-concurrency-");
+    const db = createDb(tempDb.connectionString);
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Work product concurrency",
+      issuePrefix: "WPC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Concurrent artifacts",
+      status: "in_progress",
+      priority: "high",
+    });
+
+    const attachmentIds = Array.from({ length: 8 }, () => randomUUID());
+    const service = workProductService(db);
+    const products = await Promise.all(attachmentIds.map((attachmentId, index) => service.createForIssue(
+      issueId,
+      companyId,
+      {
+        type: "artifact",
+        provider: "paperclip",
+        title: `Artifact ${index}`,
+        status: "active",
+        reviewState: "none",
+        isPrimary: index % 2 === 0,
+        metadata: { attachmentId },
+      },
+    )));
+
+    expect(products).toHaveLength(8);
+    expect(products.every(Boolean)).toBe(true);
+    const rows = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+    expect(rows).toHaveLength(8);
+    expect(rows.filter((row) => row.isPrimary)).toHaveLength(1);
+
+    const repeated = await service.createForIssue(issueId, companyId, {
+      type: "artifact",
+      provider: "paperclip",
+      title: "Artifact retry",
+      status: "active",
+      reviewState: "none",
+      isPrimary: true,
+      metadata: { attachmentId: attachmentIds[0] },
+    });
+    const afterRetry = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.issueId, issueId));
+    expect(repeated?.id).toBe(products[0]?.id);
+    expect(afterRetry).toHaveLength(8);
+    expect(afterRetry.filter((row) => row.isPrimary)).toHaveLength(1);
   });
 });
