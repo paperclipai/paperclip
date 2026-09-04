@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, MoreHorizontal, Pencil, RefreshCw } from "lucide-react";
+import { agentsApi } from "@/api/agents";
 import { authApi } from "@/api/auth";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
@@ -90,6 +91,7 @@ function RecentTasksList({
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) }),
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) }),
     ]);
   };
 
@@ -150,10 +152,22 @@ function RecentTasksList({
     try {
       const state = await issuesApi.getTreeControlState(entry.id);
       if (state.activePauseHold?.isRoot) {
+        const restartIssue = await issuesApi.get(entry.id);
         await issuesApi.releaseTreeHold(entry.id, state.activePauseHold.holdId, {
           reason: "Restarted from Recent Tasks.",
-          metadata: { wakeAgents: true },
         });
+        if (restartIssue.assigneeAgentId) {
+          await agentsApi.wakeup(
+            restartIssue.assigneeAgentId,
+            {
+              source: "assignment",
+              triggerDetail: "manual",
+              reason: "recent_task_restart",
+              payload: { issueId: restartIssue.id },
+            },
+            restartIssue.companyId,
+          );
+        }
         toastActions?.pushToast({ title: "Task restarted", tone: "success" });
       } else if (state.activePauseHold) {
         throw new Error("This task is paused by a parent task. Restart it from the pause root.");

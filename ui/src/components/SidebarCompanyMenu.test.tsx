@@ -513,7 +513,11 @@ describe("SidebarCompanyMenu", () => {
     expect(document.body.textContent).toContain("Done");
     expect(document.body.textContent).not.toContain("PAP");
     expect(document.body.textContent).not.toContain("ANA");
-    expect(document.body.querySelector('button[aria-label="Reorder Strata"]')).toBeTruthy();
+    const reorderButton = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="Reorder Strata"]',
+    );
+    expect(reorderButton).toBeTruthy();
+    expect(reorderButton?.classList).toContain("size-8");
 
     const strataItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
       .find((element) => element.textContent?.includes("Strata"));

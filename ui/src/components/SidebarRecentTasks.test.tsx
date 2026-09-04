@@ -11,8 +11,10 @@ import {
   readRecentTasks,
   recordRecentTask,
 } from "@/lib/recent-tasks";
+import { queryKeys } from "@/lib/queryKeys";
 
 const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
+const mockAgentsApi = vi.hoisted(() => ({ wakeup: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
   update: vi.fn(),
@@ -22,6 +24,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   releaseTreeHold: vi.fn(),
 }));
 
+vi.mock("@/api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("@/api/auth", () => ({ authApi: mockAuthApi }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("@/lib/router", () => ({
@@ -57,6 +60,7 @@ describe("SidebarRecentTasks", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    Object.values(mockAgentsApi).forEach((mock) => mock.mockReset());
     Object.values(mockIssuesApi).forEach((mock) => mock.mockReset());
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -106,6 +110,12 @@ describe("SidebarRecentTasks", () => {
   function menuItem(label: string) {
     return Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
       .find((item) => item.textContent?.trim() === label);
+  }
+
+  function setInputValue(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
   it("hides the section when there are no recent tasks", async () => {
@@ -224,6 +234,47 @@ describe("SidebarRecentTasks", () => {
     )).toHaveLength(1);
   });
 
+  it("refreshes task activity after a rename", async () => {
+    const issue = {
+      id: "issue-1",
+      companyId: "company-1",
+      title: "Old title",
+      identifier: "PAP-1",
+      status: "todo" as const,
+      hiddenAt: null,
+      updatedAt: new Date(1),
+    };
+    const renamedIssue = { ...issue, title: "New title", updatedAt: new Date(2) };
+    recordRecentTask(issue, "user-1");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.update.mockResolvedValue(renamedIssue);
+
+    const queryClient = await render();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    await openActions("Old title");
+    await act(async () => {
+      menuItem("Rename")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const input = document.body.querySelector<HTMLInputElement>('input[aria-label="Task name"]');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      setInputValue(input!, "New title");
+      await Promise.resolve();
+    });
+    await act(async () => {
+      input?.closest("form")?.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(mockIssuesApi.update).toHaveBeenCalledWith("issue-1", { title: "New title" });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.issues.activity("issue-1"),
+    });
+  });
+
   it("pauses a running task or restarts its active pause hold", async () => {
     const issue = {
       id: "issue-1",
@@ -231,6 +282,7 @@ describe("SidebarRecentTasks", () => {
       title: "Toggle work",
       identifier: "PAP-1",
       status: "in_progress" as const,
+      assigneeAgentId: "agent-1",
       hiddenAt: null,
       updatedAt: new Date(1),
     };
@@ -251,6 +303,7 @@ describe("SidebarRecentTasks", () => {
       });
     mockIssuesApi.createTreeHold.mockResolvedValue({ hold: {}, preview: {} });
     mockIssuesApi.releaseTreeHold.mockResolvedValue({});
+    mockAgentsApi.wakeup.mockResolvedValue({ id: "run-1" });
 
     await render();
     await openActions("Toggle work");
@@ -273,8 +326,17 @@ describe("SidebarRecentTasks", () => {
     });
     expect(mockIssuesApi.releaseTreeHold).toHaveBeenCalledWith("issue-1", "hold-1", {
       reason: "Restarted from Recent Tasks.",
-      metadata: { wakeAgents: true },
     });
+    expect(mockAgentsApi.wakeup).toHaveBeenCalledWith(
+      "agent-1",
+      {
+        source: "assignment",
+        triggerDetail: "manual",
+        reason: "recent_task_restart",
+        payload: { issueId: "issue-1" },
+      },
+      "company-1",
+    );
   });
 
   it("synchronizes recent tasks written by another tab", async () => {
