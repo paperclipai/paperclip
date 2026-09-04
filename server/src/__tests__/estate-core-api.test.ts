@@ -704,6 +704,106 @@ describe("DELETE /estate/trusts/:trustId/assets/:assetId", () => {
   });
 });
 
+describe("GET /estate/trusts/:trustId", () => {
+  it("returns the trust by id", async () => {
+    const trust = makeTrust();
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        then: (fn: (r: unknown[]) => unknown) => Promise.resolve(fn([trust])),
+      }),
+    } as unknown as Db;
+
+    const res = await request(createApp(db)).get("/estate/trusts/trust-1");
+    expect(res.status).toBe(200);
+    expect(res.body.trustName).toBe("Smith Living Trust");
+    expect(res.body.trustType).toBe("revocable");
+  });
+
+  it("returns 404 for an unknown trust", async () => {
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        then: (fn: (r: unknown[]) => unknown) => Promise.resolve(fn([])),
+      }),
+    } as unknown as Db;
+
+    const res = await request(createApp(db)).get("/estate/trusts/no-such-trust");
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("GET /estate/trusts/:trustId/assets", () => {
+  it("returns assets linked to the trust with joined fields", async () => {
+    const trust = makeTrust();
+    const assetRow = {
+      trustId: "trust-1",
+      assetId: "asset-1",
+      transferDate: "2025-06-01",
+      transferDeedDocId: null,
+      createdAt: NOW,
+      assetName: "Family Home",
+      assetType: "real_estate",
+      currentValueCents: 50000000,
+    };
+    let callCount = 0;
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return { then: (fn: (r: unknown[]) => unknown) => Promise.resolve(fn([trust])) };
+        }
+        return Promise.resolve([assetRow]);
+      }),
+    } as unknown as Db;
+
+    const res = await request(createApp(db)).get("/estate/trusts/trust-1/assets");
+    expect(res.status).toBe(200);
+    expect(res.body.assets).toHaveLength(1);
+    expect(res.body.assets[0].assetName).toBe("Family Home");
+    expect(res.body.assets[0].currentValueCents).toBe(50000000);
+  });
+
+  it("returns empty assets list when trust has no linked assets", async () => {
+    const trust = makeTrust();
+    let callCount = 0;
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return { then: (fn: (r: unknown[]) => unknown) => Promise.resolve(fn([trust])) };
+        }
+        return Promise.resolve([]);
+      }),
+    } as unknown as Db;
+
+    const res = await request(createApp(db)).get("/estate/trusts/trust-1/assets");
+    expect(res.status).toBe(200);
+    expect(res.body.assets).toHaveLength(0);
+  });
+
+  it("returns 404 when trust is not found", async () => {
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        then: (fn: (r: unknown[]) => unknown) => Promise.resolve(fn([])),
+      }),
+    } as unknown as Db;
+
+    const res = await request(createApp(db)).get("/estate/trusts/no-such-trust/assets");
+    expect(res.status).toBe(404);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Collaborators
 // ---------------------------------------------------------------------------
