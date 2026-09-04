@@ -1707,7 +1707,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #runnerRecoveryInProgress = false;
   #startupComplete = false;
   #startupFailureCode = "native_runner_process_exited";
-  #controlPlaneCheckpoint: (() => Promise<void> | void) | null = null;
+  #controlPlaneCheckpoint:
+    ((settlement: "settled" | "unsettled") => Promise<void> | void) | null =
+    null;
   #controlPlaneRelease: (() => Promise<void> | void) | null = null;
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
