@@ -272,8 +272,16 @@ export const GIT_CREDENTIAL_TOKEN_ENV_KEY = "PAPERCLIP_GIT_TOKEN";
 // rewritten remote could otherwise request the token for an arbitrary host. The helper is
 // additionally installed URL-scoped per host (`credential.https://<host>.helper`) so git does
 // not consult it for other hosts in the first place — two independent gates.
+// A bracketed IPv6 host (from `normalizeConfiguredHost`, e.g. `[2001:db8::1]:8443`) would
+// otherwise land in the `case` pattern below unescaped, where `[`/`]` are glob character-class
+// metacharacters rather than literal brackets — the pattern would then fail to match the
+// literal host git requests, and the helper would never authenticate that self-hosted instance.
+function escapeCasePattern(value: string): string {
+  return value.replace(/[\\*?[\]]/g, "\\$&");
+}
+
 function buildCredentialHelperScript(tokenUsername: string, hosts: readonly string[]): string {
-  const hostMatch = hosts.map((host) => `host=${host}`).join("|");
+  const hostMatch = hosts.map((host) => `host=${escapeCasePattern(host)}`).join("|");
   return (
     `!f() { ok=; proto=; while IFS= read -r l && [ -n "$l" ]; do case "$l" in ` +
     `${hostMatch}) ok=1;; protocol=https) proto=1;; esac; done; ` +

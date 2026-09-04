@@ -685,6 +685,42 @@ describe("credential helper execution (real git, no network)", () => {
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it("answers a self-hosted request on a bracketed IPv6 host", async () => {
+    // A bracketed IPv6 host lands unescaped in the credential helper's shell `case` pattern
+    // unless `[`/`]` are escaped there -- the shell would otherwise read them as a glob
+    // character class instead of literal brackets, and the pattern would never match.
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-cred-fill-ipv6-"));
+    try {
+      const invocation = buildGitAuthInvocation(
+        {
+          token: "abc123",
+          source: "company_secret",
+          secretName: "GITLAB_TOKEN",
+          providerId: "gitlab",
+        },
+        ["[2001:db8::1]:8443"],
+      );
+      const result = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
+        const child = spawn("git", [...invocation.configArgs, "credential", "fill"], {
+          cwd,
+          env: { ...process.env, ...invocation.env },
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        let stdout = "";
+        child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+        child.on("error", reject);
+        child.on("close", (code) => resolve({ code, stdout }));
+        child.stdin.write("protocol=https\nhost=[2001:db8::1]:8443\n\n");
+        child.stdin.end();
+      });
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("username=oauth2");
+      expect(result.stdout).toContain("password=abc123");
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 // This module never sends real bytes over the wire on its own (`buildGitAuthInvocation` only
