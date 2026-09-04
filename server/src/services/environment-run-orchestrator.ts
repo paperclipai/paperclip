@@ -147,6 +147,18 @@ function formatProvisionFailureDetail(result: {
   return detail ? `${status}: ${detail}` : status;
 }
 
+const REALIZATION_LEASE_METADATA_KEYS = ["remoteCwd", "workspaceRealization"] as const;
+
+function selectRealizationLeaseMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const selected: Record<string, unknown> = {};
+  for (const key of REALIZATION_LEASE_METADATA_KEYS) {
+    if (Object.hasOwn(metadata, key)) {
+      selected[key] = metadata[key];
+    }
+  }
+  return selected;
+}
+
 // ---------------------------------------------------------------------------
 // Service factory
 // ---------------------------------------------------------------------------
@@ -383,7 +395,7 @@ export function environmentRunOrchestrator(
 
     // Step 2: Realize workspace in the environment via the runtime driver
     let workspaceRealization: Record<string, unknown> = {};
-    let realizationMetadata: Record<string, unknown> = {};
+    let leaseRealizationMetadata: Record<string, unknown> = {};
     let realizedWorkspaceCwd: string | null = null;
     if (ENVIRONMENT_DRIVER_TRAITS[environment.driver].realizesWorkspace) {
       try {
@@ -407,8 +419,9 @@ export function environmentRunOrchestrator(
           typeof workspaceRealizationResult.cwd === "string" && workspaceRealizationResult.cwd.trim().length > 0
             ? workspaceRealizationResult.cwd.trim()
             : null;
-        realizationMetadata = parseObject(workspaceRealizationResult.metadata);
-        workspaceRealization = parseObject(realizationMetadata.workspaceRealization);
+        const realizationMetadata = parseObject(workspaceRealizationResult.metadata);
+        leaseRealizationMetadata = selectRealizationLeaseMetadata(realizationMetadata);
+        workspaceRealization = parseObject(leaseRealizationMetadata.workspaceRealization);
       } catch (err) {
         throw new EnvironmentRunError(
           "workspace_realization_failed",
@@ -487,10 +500,10 @@ export function environmentRunOrchestrator(
     }
 
     // Step 3: Persist realization metadata on lease and execution workspace
-    if (Object.keys(realizationMetadata).length > 0) {
+    if (Object.keys(leaseRealizationMetadata).length > 0) {
       const nextLeaseMetadata = {
         ...(lease.metadata ?? {}),
-        ...realizationMetadata,
+        ...leaseRealizationMetadata,
       };
       const updatedLease = await environmentsSvc.updateLeaseMetadata(lease.id, nextLeaseMetadata);
       if (updatedLease) {

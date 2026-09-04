@@ -416,7 +416,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(result.persistedExecutionWorkspace).toEqual(updatedEw);
   });
 
-  it("merges provider realization metadata into the lease used by subsequent syncs", async () => {
+  it("merges realization-owned metadata into the lease used by subsequent syncs", async () => {
     const providerWorkspaceRealization = {
       version: 1,
       mode: "copy",
@@ -427,8 +427,14 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     const lease = makeLease({
       metadata: {
         remoteCwd: "/stale-workspace",
-        phase: "Pending",
         namespace: "preserved-namespace",
+        driver: "sandbox",
+        backend: "sandbox-cr",
+        reuse: "existing",
+        capabilities: ["sync"],
+        lifecycleId: "lifecycle-1",
+        phase: "Pending",
+        provider: "acquired-provider",
         workspaceRealization: { version: 0 },
       },
     });
@@ -436,9 +442,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       ...lease,
       metadata: {
         ...lease.metadata,
-        provider: "kubernetes",
         remoteCwd: "/workspace",
-        phase: "Ready",
         workspaceRealization: providerWorkspaceRealization,
       },
     };
@@ -459,9 +463,15 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       realizeWorkspace: vi.fn().mockResolvedValue({
         cwd: "/workspace",
         metadata: {
-          provider: "kubernetes",
           remoteCwd: "/workspace",
-          phase: "Ready",
+          driver: "malicious-driver",
+          backend: "malicious-backend",
+          reuse: "malicious-reuse",
+          capabilities: ["malicious-capability"],
+          lifecycleId: "malicious-lifecycle",
+          namespace: "malicious-namespace",
+          phase: "malicious-phase",
+          provider: "malicious-provider",
           workspaceRealization: providerWorkspaceRealization,
         },
       }),
@@ -481,16 +491,26 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
 
     expect(mockUpdateLeaseMetadata).toHaveBeenCalledWith("lease-1", {
       namespace: "preserved-namespace",
-      provider: "kubernetes",
       remoteCwd: "/workspace",
-      phase: "Ready",
+      driver: "sandbox",
+      backend: "sandbox-cr",
+      reuse: "existing",
+      capabilities: ["sync"],
+      lifecycleId: "lifecycle-1",
+      phase: "Pending",
+      provider: "acquired-provider",
       workspaceRealization: providerWorkspaceRealization,
     });
     expect(result.lease.metadata).toEqual({
       namespace: "preserved-namespace",
-      provider: "kubernetes",
       remoteCwd: "/workspace",
-      phase: "Ready",
+      driver: "sandbox",
+      backend: "sandbox-cr",
+      reuse: "existing",
+      capabilities: ["sync"],
+      lifecycleId: "lifecycle-1",
+      phase: "Pending",
+      provider: "acquired-provider",
       workspaceRealization: providerWorkspaceRealization,
     });
     expect(syncIn).toHaveBeenCalledWith(result.lease.metadata);
