@@ -2134,6 +2134,41 @@ function DisplayedCodeLoginPanel({
   const isActive = Boolean(sessionId) && !isTerminal;
   const startDisabled = startLogin.isPending || isActive;
 
+  // Release the server session at once, without a change to the panel state, the
+  // way the submitted-browser-code panel does. The server holds a per-owner
+  // reservation until the session reaches a terminal state, so an abandoned
+  // session locks the owner out until the server deadline. Fire-and-forget: a
+  // 404 means the server already removed a terminal session, and a cleanup path
+  // cannot surface any other error either, so it drops them all. The manual
+  // Cancel button keeps using the `cancelLogin` mutation, because that path also
+  // returns the panel to its idle start state.
+  const releaseServerSession = useCallback(
+    (id: string) => {
+      void agentsApi.cancelAdapterAuthLogin(companyId, adapterType, id).catch(() => {
+        // Drop the error, as above.
+      });
+    },
+    [companyId, adapterType],
+  );
+
+  // Hold the active session id for the unmount cleanup. Onboarding removes this
+  // panel as soon as Cancel is pressed — `handleCancel` fires the request and
+  // calls `onCancel` without waiting for it — so the panel can be gone before
+  // the cancel resolves. Without this, a failed cancel, or any other unmount
+  // (navigating away, the step advancing), would leave the reservation held
+  // until the server deadline and an immediate retry unable to start. The ref is
+  // null once the session leaves the active state, so the cleanup never cancels
+  // a session the server already removed.
+  const activeSessionRef = useRef<string | null>(null);
+  activeSessionRef.current = isActive ? sessionId : null;
+
+  useEffect(() => {
+    return () => {
+      const id = activeSessionRef.current;
+      if (id) releaseServerSession(id);
+    };
+  }, [releaseServerSession]);
+
   // Start once, on mount, when the caller has already taken the press. The ref
   // is the guard rather than the mutation's own pending flag: `startLogin`
   // settles, and without a latch a re-render after it settles would read "not
