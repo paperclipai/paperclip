@@ -9,7 +9,6 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { connect, type Socket } from "node:net";
@@ -22,7 +21,6 @@ import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   DurablePrpControlPlane,
-  RUNNER_DIAGNOSTIC_MAX_BYTES,
   spawnRunner,
   type RunnerProcessLaunchSpec,
 } from "./durable-prp-control-plane.js";
@@ -40,7 +38,7 @@ const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
 
 it.skipIf(process.platform === "win32")(
-  "keeps restart-survivable runner diagnostics bounded on disk",
+  "never persists raw child stdout or stderr as durable diagnostics",
   async () => {
     const root = mkdtempSync(resolve(tmpdir(), "runner-diagnostics-test-"));
     const executable = resolve(root, "noisy-runner");
@@ -49,8 +47,8 @@ it.skipIf(process.platform === "win32")(
       executable,
       [
         "#!/usr/bin/env node",
-        `process.stdout.write("o".repeat(${RUNNER_DIAGNOSTIC_MAX_BYTES * 4}));`,
-        `process.stderr.write("e".repeat(${RUNNER_DIAGNOSTIC_MAX_BYTES * 4}));`,
+        'process.stdout.write("token=raw-stdout-secret " + "o".repeat(256 * 1024));',
+        'process.stderr.write("Authorization: Bearer raw-stderr-secret " + "e".repeat(256 * 1024));',
       ].join("\n"),
       { mode: 0o700 },
     );
@@ -68,16 +66,13 @@ it.skipIf(process.platform === "win32")(
         runnerBinaryPath: executable,
         diagnosticsDirectory,
       });
-      await handle.completion;
+      const result = await handle.completion;
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
 
       for (const name of ["runnerd.stdout.log", "runnerd.stderr.log"]) {
         const filePath = resolve(diagnosticsDirectory, name);
-        expect(statSync(filePath).size).toBeLessThanOrEqual(
-          RUNNER_DIAGNOSTIC_MAX_BYTES,
-        );
-        expect(readFileSync(filePath, "utf8")).toHaveLength(
-          RUNNER_DIAGNOSTIC_MAX_BYTES,
-        );
+        expect(readFileSync(filePath, "utf8")).toBe("");
       }
     } finally {
       rmSync(root, { recursive: true, force: true });

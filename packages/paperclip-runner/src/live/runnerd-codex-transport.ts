@@ -39,7 +39,6 @@ import {
   DurablePrpControlPlane,
   durableRecoveryInternals,
   spawnRunner,
-  startRunnerDiagnosticMaintenance,
   waitForProcess,
   type RunnerProcessHandle,
   type RunnerProcessConnection,
@@ -1655,7 +1654,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #core: DurablePrpControlPlane | null = null;
   #handle: RunnerProcessHandle | null = null;
   #adoptedRunnerMonitor: NodeJS.Timeout | null = null;
-  #stopAdoptedDiagnosticMaintenance: (() => void) | null = null;
   #pump: NodeJS.Timeout | null = null;
   #eventIndex = 0;
   #threadId = "";
@@ -2138,8 +2136,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#adoptedRunnerMonitor !== null)
       clearInterval(this.#adoptedRunnerMonitor);
     this.#adoptedRunnerMonitor = null;
-    this.#stopAdoptedDiagnosticMaintenance?.();
-    this.#stopAdoptedDiagnosticMaintenance = null;
     this.#core?.disconnectActiveRunner();
     if (this.#controlPlaneRelease !== null) await this.#controlPlaneRelease();
     await this.#core?.stop();
@@ -2239,8 +2235,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#adoptedRunnerMonitor !== null)
       clearInterval(this.#adoptedRunnerMonitor);
     this.#adoptedRunnerMonitor = null;
-    this.#stopAdoptedDiagnosticMaintenance?.();
-    this.#stopAdoptedDiagnosticMaintenance = null;
     this.#queue.close();
     // Ensure a runner that missed or could not finish the graceful lifecycle
     // command cannot keep the control-plane server alive during teardown.
@@ -2940,11 +2934,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (registration === null) await core.start();
     else this.#controlPlaneRelease = registration.release;
     const adoptedRunner = this.options.adoptExistingRunner;
-    if (adoptedRunner) {
-      this.#stopAdoptedDiagnosticMaintenance = startRunnerDiagnosticMaintenance(
-        resolve(this.#root, "diagnostics"),
-      );
-    }
     const handle = adoptedRunner
       ? null
       : spawnRunner({
