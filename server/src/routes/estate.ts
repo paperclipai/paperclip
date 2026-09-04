@@ -3244,6 +3244,95 @@ export function estateRoutes(
     });
   });
 
+  // ---- Estate Plan Status --------------------------------------------------
+
+  /**
+   * GET /estates/:estateId/plan-status
+   *
+   * Returns a completeness score and checklist showing which key estate
+   * planning components are in place for the given estate.
+   *
+   * Checks (each worth 1 point toward score):
+   *   hasWill, hasTrust, hasPOA, hasHealthcareDirective, hasInsurance,
+   *   hasRetirementAccount, hasBeneficiaries, hasAnnualReview, hasDocumentVault
+   */
+  router.get("/estates/:estateId/plan-status", async (req, res) => {
+    assertBoard(req);
+
+    const estate = await db
+      .select()
+      .from(estates)
+      .where(eq(estates.id, req.params.estateId))
+      .then((r) => r[0] ?? null);
+    if (!estate) throw notFound("Estate not found");
+    assertCompanyAccess(req, estate.companyId);
+
+    const currentYear = new Date().getFullYear();
+
+    const [
+      documents,
+      trusts,
+      beneficiaries,
+      insurancePolicies,
+      retirementAccounts,
+      annualReviews,
+    ] = await Promise.all([
+      db.select({ documentType: estateDocuments.documentType })
+        .from(estateDocuments)
+        .where(and(eq(estateDocuments.estateId, estate.id), isNull(estateDocuments.deletedAt))),
+      db.select({ id: estateTrusts.id })
+        .from(estateTrusts)
+        .where(eq(estateTrusts.estateId, estate.id)),
+      db.select({ id: estateBeneficiaries.id })
+        .from(estateBeneficiaries)
+        .where(eq(estateBeneficiaries.estateId, estate.id)),
+      db.select({ id: estateInsurancePolicies.id })
+        .from(estateInsurancePolicies)
+        .where(eq(estateInsurancePolicies.companyId, estate.companyId)),
+      db.select({ id: estateRetirementAccounts.id })
+        .from(estateRetirementAccounts)
+        .where(eq(estateRetirementAccounts.companyId, estate.companyId)),
+      db.select({ status: estateReviews.status })
+        .from(estateReviews)
+        .where(and(
+          eq(estateReviews.companyId, estate.companyId),
+          eq(estateReviews.year, currentYear),
+        )),
+    ]);
+
+    const docTypes = new Set(documents.map((d) => d.documentType));
+
+    const checks = {
+      hasWill: docTypes.has("will"),
+      hasTrust: trusts.length > 0,
+      hasPOA: docTypes.has("poa"),
+      hasHealthcareDirective: docTypes.has("healthcare_directive"),
+      hasInsurance: insurancePolicies.length > 0,
+      hasRetirementAccount: retirementAccounts.length > 0,
+      hasBeneficiaries: beneficiaries.length > 0,
+      hasAnnualReview: annualReviews.some((r) => r.status === "complete"),
+      hasDocumentVault: documents.length > 0,
+    };
+
+    const checkKeys = Object.keys(checks) as (keyof typeof checks)[];
+    const completedCount = checkKeys.filter((k) => checks[k]).length;
+    const score = Math.round((completedCount / checkKeys.length) * 100);
+
+    const completedItems = checkKeys.filter((k) => checks[k]);
+    const missingItems = checkKeys.filter((k) => !checks[k]);
+
+    res.json({
+      estateId: estate.id,
+      estateName: estate.name,
+      score,
+      completedCount,
+      totalChecks: checkKeys.length,
+      checks,
+      completedItems,
+      missingItems,
+    });
+  });
+
   // ---- Plaid Link integration -----------------------------------------------
 
   /**
