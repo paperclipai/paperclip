@@ -189,6 +189,7 @@ function registerRouteMocks() {
   }));
 
   vi.doMock("../services/cross-issue-influence-limit.js", () => ({
+    attributeRunSourceIssueOnCheckout: vi.fn().mockResolvedValue(true),
     observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
     crossIssueInfluenceLimitError: vi.fn(),
     crossIssueInfluenceRunContextError: () => new HttpError(
