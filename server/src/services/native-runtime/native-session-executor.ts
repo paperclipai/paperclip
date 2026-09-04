@@ -83,6 +83,7 @@ import {
   type NativeStatusDecision,
 } from "./status-arbiter.js";
 import { HttpError } from "../../errors.js";
+import { redactSensitiveText } from "../../redaction.js";
 import { resolvePaperclipRunnerBinary } from "./native-codex-runner.js";
 import {
   createNativeRunTrace,
@@ -91,6 +92,13 @@ import {
   type NativeRunTrace,
 } from "./native-run-trace.js";
 import { createNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
+import { readProcessStartedAt } from "../hot-restart.js";
+import {
+  currentNativeControllerIdentity,
+  nextNativeProviderAttempt,
+  type NativeControllerIdentity,
+  type NativeRestartRecoveryClaim,
+} from "./native-restart-recovery.js";
 
 type ActiveNativeSession = {
   session: NativeSession;
@@ -153,6 +161,39 @@ const nativeRuntimeRequestResolutions = new Map<
   string,
   NativeRuntimeRequestResolution
 >();
+
+async function verifiedRecoveryProcessIsAlive(input: {
+  pid: number;
+  startedAt: string;
+}): Promise<boolean> {
+  try {
+    process.kill(input.pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code !== "EPERM")
+      return false;
+  }
+  try {
+    const observed = await readProcessStartedAt(input.pid);
+    return (
+      observed !== null &&
+      new Date(observed).getTime() === new Date(input.startedAt).getTime()
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function signalVerifiedRecoveryProcess(
+  input: { pid: number; startedAt: string },
+  signal: NodeJS.Signals,
+): Promise<boolean> {
+  if (!(await verifiedRecoveryProcessIsAlive(input))) return false;
+  try {
+    return process.kill(input.pid, signal);
+  } catch {
+    return false;
+  }
+}
 
 function pruneNativeRuntimeRequestResolutionCache(): void {
   const completed = [...nativeRuntimeRequestResolutions.entries()]
@@ -1378,6 +1419,7 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
 async function migrateRunnerdStateRootForExecution(input: {
   db: Db;
   execution: NativeExecutionInput;
+  restartRecovery?: NativeRestartRecoveryClaim;
 }): Promise<void> {
   const scoped = scopedRunnerdStateRoot(input.execution);
   if (existsSync(scoped)) {
@@ -1386,16 +1428,32 @@ async function migrateRunnerdStateRootForExecution(input: {
     }
     const identity = readRunnerdDurableIdentity(scoped);
     if (!identity) {
-      quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+      if (input.restartRecovery?.kind !== "reattach_existing_runner") {
+        quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+      }
       throw new Error("runner_state_identity_mismatch");
     }
     if (!durableIdentityMatchesSession(identity, input.execution)) {
-      quarantineRunnerdStateRoot(scoped, "identity_mismatch");
+      if (input.restartRecovery?.kind !== "reattach_existing_runner") {
+        quarantineRunnerdStateRoot(scoped, "identity_mismatch");
+      }
+      throw new Error("runner_state_identity_mismatch");
+    }
+    if (input.restartRecovery?.kind === "bootstrap_incomplete") {
+      if (runnerdStateProvesIncompleteBootstrap(scoped)) {
+        quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+        return;
+      }
+      // Database evidence alone cannot distinguish a never-connected runner
+      // from a partially-persisted provider bootstrap. Only the durable PRP
+      // root can authorize a fresh bootstrap; anything else stays fail-closed.
       throw new Error("runner_state_identity_mismatch");
     }
     if (durableIdentityMatchesExecution(identity, input.execution)) {
       if (runnerdAuthorityLifecycle(scoped, identity) === "indeterminate") {
-        quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+        if (input.restartRecovery?.kind !== "reattach_existing_runner") {
+          quarantineRunnerdStateRoot(scoped, "identity_indeterminate");
+        }
         throw new Error("runner_state_identity_mismatch");
       }
     } else {
@@ -1461,6 +1519,40 @@ async function migrateRunnerdStateRootForExecution(input: {
       ...(verifiedPriorRunId ? { verifiedPriorRunId } : {}),
     });
     return;
+  }
+}
+
+export function runnerdStateProvesIncompleteBootstrap(root: string): boolean {
+  try {
+    const statePath = resolve(root, "control-plane", "control-plane-state.json");
+    const state = record(
+      JSON.parse(
+        readBoundedNativeFile(
+          statePath,
+          NATIVE_DURABLE_IDENTITY_MAX_BYTES,
+          "runner_durable_identity_too_large",
+        ).toString("utf8"),
+      ),
+    );
+    const commands = Array.isArray(state.commands)
+      ? state.commands.map(record)
+      : [];
+    const committedEvents = Array.isArray(state.committedEvents)
+      ? state.committedEvents
+      : [];
+    const onlyUnconsumedBootstrapCommands = commands.every(
+      (command) =>
+        command.status === "pending" &&
+        (command.type === "run.prepare" || command.type === "session.open"),
+    );
+    return (
+      state.schema === RUNNERD_CONTROL_PLANE_STATE_SCHEMA &&
+      state.connectionCount === 0 &&
+      committedEvents.length === 0 &&
+      onlyUnconsumedBootstrapCommands
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -3079,8 +3171,10 @@ export async function renewNativeSessionExecutionLease(input: {
   issueId: string;
   leaseOwner: string;
   attempt: number;
+  controller?: NativeControllerIdentity;
   leaseTtlMs?: number;
 }): Promise<void> {
+  const controller = input.controller ?? (await currentNativeControllerIdentity());
   const leaseTtlMs = input.leaseTtlMs ?? NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
   if (
     !Number.isInteger(leaseTtlMs) ||
@@ -3102,6 +3196,12 @@ export async function renewNativeSessionExecutionLease(input: {
         eq(nativeRunFinalizations.issueId, input.issueId),
         eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
         eq(nativeRunFinalizations.attempt, input.attempt),
+        eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+        eq(nativeRunFinalizations.controllerPid, controller.pid),
+        eq(
+          nativeRunFinalizations.controllerProcessStartedAt,
+          controller.processStartedAt,
+        ),
         gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
       ),
     )
@@ -3116,6 +3216,7 @@ function startNativeSessionExecutionLeaseRenewal(input: {
   issueId: string;
   leaseOwner: string;
   attempt: number;
+  controller: NativeControllerIdentity;
 }): { stop: () => Promise<void> } {
   let leaseLost: Error | null = null;
   let renewal = Promise.resolve();
@@ -3154,6 +3255,7 @@ export async function executePaperclipNativeSession(input: {
   execution: NativeExecutionInput;
   runnerInstanceId: string;
   leaseOwner?: string;
+  restartRecovery?: NativeRestartRecoveryClaim;
   onSpawn?: (meta: {
     pid: number;
     processGroupId: number | null;
@@ -3286,6 +3388,7 @@ async function executePaperclipNativeSessionWithinScope(
     await migrateRunnerdStateRootForExecution({
       db: input.db,
       execution: input.execution,
+      restartRecovery: input.restartRecovery,
     });
   }
   const durableRunnerBinding = input.useRunnerd
@@ -3310,6 +3413,7 @@ async function executePaperclipNativeSessionWithinScope(
   }
   const leaseOwner =
     input.leaseOwner ?? `${effectiveRunnerInstanceId}:${randomUUID()}`;
+  const controller = await currentNativeControllerIdentity();
   const leaseNow = new Date();
   const leaseExpiresAt = new Date(leaseNow.getTime() + 20 * 60_000);
   let attempt: number;
@@ -3400,13 +3504,39 @@ async function executePaperclipNativeSessionWithinScope(
             coordinator.leaseExpiresAt > leaseNow
           )
             throw new Error("native_finalization_lease_busy");
+          const recovering = input.restartRecovery;
+          if (
+            recovering &&
+            (recovering.runId !== coordinator.runId ||
+              recovering.leaseOwner !== leaseOwner ||
+              coordinator.leaseOwner !== leaseOwner ||
+              coordinator.controllerBootId !== controller.bootId ||
+              coordinator.controllerPid !== controller.pid ||
+              coordinator.controllerGeneration !==
+                recovering.controllerGeneration)
+          ) {
+            throw new Error("native_restart_recovery_claim_changed");
+          }
+          const nextAttempt = nextNativeProviderAttempt(
+            coordinator.attempt,
+            recovering?.kind,
+          );
+          const nextControllerGeneration = recovering
+            ? recovering.controllerGeneration
+            : coordinator.controllerBootId === controller.bootId
+              ? Math.max(1, coordinator.controllerGeneration)
+              : coordinator.controllerGeneration + 1;
           const claimed = await tx
             .update(nativeRunFinalizations)
             .set({
               phase: "observed",
-              attempt: coordinator.attempt + 1,
+              attempt: nextAttempt,
               leaseOwner,
               leaseExpiresAt,
+              controllerBootId: controller.bootId,
+              controllerPid: controller.pid,
+              controllerProcessStartedAt: controller.processStartedAt,
+              controllerGeneration: nextControllerGeneration,
               failureCode: null,
               failureDetail: null,
               nextAttemptAt: null,
@@ -3438,7 +3568,7 @@ async function executePaperclipNativeSessionWithinScope(
               updatedAt: leaseNow,
             })
             .where(eq(heartbeatRuns.id, coordinator.runId));
-          return coordinator.attempt + 1;
+          return nextAttempt;
         }),
       { parentName: "task.prepare" },
     );
@@ -3859,6 +3989,7 @@ async function executePaperclipNativeSessionWithinScope(
     issueId: input.execution.binding.issueId,
     leaseOwner,
     attempt,
+    controller,
   });
   try {
     const runnerdBackend =
@@ -4085,6 +4216,7 @@ async function executePaperclipNativeSessionWithinScope(
       error instanceof Error
         ? error.message.slice(0, 2_000)
         : String(error).slice(0, 2_000);
+    const sanitizedStderrTail = redactSensitiveText(message).slice(-4_096);
     await input.db.transaction(async (tx) => {
       const updated = await tx
         .update(nativeRunFinalizations)
@@ -4092,6 +4224,8 @@ async function executePaperclipNativeSessionWithinScope(
           phase,
           leaseOwner: null,
           leaseExpiresAt: null,
+          recoveryState:
+            phase === "retryable_failure" ? "resuming_session" : "blocked",
           failureCode,
           failureDetail: {
             message,
@@ -4114,6 +4248,44 @@ async function executePaperclipNativeSessionWithinScope(
                       : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
           },
           nextAttemptAt,
+          recoveryHistory: sql`(
+            select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
+            from jsonb_array_elements(
+              coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+              || jsonb_build_array(${JSON.stringify({
+                at: now.toISOString(),
+                disposition: phase,
+                reason: sourceFailureCode,
+                controllerBootId: controller.bootId,
+                controllerGeneration:
+                  input.restartRecovery?.controllerGeneration ?? null,
+                providerAttempt: attempt,
+                stderrTail: sanitizedStderrTail,
+                providerSessionEstablished:
+                  recoveryEvidence.providerSessionEstablished,
+                checkpointExists: recoveryEvidence.checkpointExists,
+              })}::jsonb)
+            ) with ordinality as history(item, ordinal)
+            where ordinal > greatest(
+              jsonb_array_length(
+                coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+                || jsonb_build_array(${JSON.stringify({
+                  at: now.toISOString(),
+                  disposition: phase,
+                  reason: sourceFailureCode,
+                  controllerBootId: controller.bootId,
+                  controllerGeneration:
+                    input.restartRecovery?.controllerGeneration ?? null,
+                  providerAttempt: attempt,
+                  stderrTail: sanitizedStderrTail,
+                  providerSessionEstablished:
+                    recoveryEvidence.providerSessionEstablished,
+                  checkpointExists: recoveryEvidence.checkpointExists,
+                })}::jsonb)
+              ) - 20,
+              0
+            )
+          )`,
           updatedAt: now,
         })
         .where(
@@ -4126,6 +4298,12 @@ async function executePaperclipNativeSessionWithinScope(
             eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
             eq(nativeRunFinalizations.leaseOwner, leaseOwner),
             eq(nativeRunFinalizations.attempt, attempt),
+            eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+            eq(nativeRunFinalizations.controllerPid, controller.pid),
+            eq(
+              nativeRunFinalizations.controllerProcessStartedAt,
+              controller.processStartedAt,
+            ),
             gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
           ),
         )
@@ -4227,6 +4405,8 @@ async function executePaperclipNativeSessionWithinScope(
     .set({
       leaseOwner: null,
       leaseExpiresAt: null,
+      recoveryState: null,
+      recoveryRequestId: null,
       updatedAt: releaseNow,
     })
     .where(
@@ -4236,6 +4416,12 @@ async function executePaperclipNativeSessionWithinScope(
         eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
         eq(nativeRunFinalizations.leaseOwner, leaseOwner),
         eq(nativeRunFinalizations.attempt, attempt),
+        eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+        eq(nativeRunFinalizations.controllerPid, controller.pid),
+        eq(
+          nativeRunFinalizations.controllerProcessStartedAt,
+          controller.processStartedAt,
+        ),
         gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
       ),
     )
@@ -5184,6 +5370,7 @@ export async function createRunnerdBackend(input: {
   db: Db;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
+  restartRecovery?: NativeRestartRecoveryClaim;
   durableEnvironmentLeaseId?: string;
   onSpawn?: (meta: {
     pid: number;
@@ -5225,6 +5412,7 @@ export async function createRunnerdBackend(input: {
     await migrateRunnerdStateRootForExecution({
       db: input.db,
       execution: input.execution,
+      restartRecovery: input.restartRecovery,
     });
     return await createRunnerdBackendWithinSessionClaim(input, sessionScopeId);
   } finally {
@@ -6557,6 +6745,11 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     remotePrepared = false;
   };
+  const adoptedProcess =
+    target.kind === "local" &&
+    input.restartRecovery?.kind === "reattach_existing_runner"
+      ? input.restartRecovery.process
+      : null;
   const backend = createNativeSessionBackend(runnerExecution, {
     runnerInstanceId: input.runnerInstanceId,
     environment: effectiveRunnerEnvironment,
@@ -6693,6 +6886,14 @@ async function createRunnerdBackendWithinSessionClaim(
           : undefined,
         runnerProcessLauncher: remoteProcessLauncher,
         runnerReconnectGraceMs: remoteTarget ? 120_000 : undefined,
+        adoptExistingRunner: adoptedProcess
+            ? {
+                ...adoptedProcess,
+                isAlive: () => verifiedRecoveryProcessIsAlive(adoptedProcess),
+                signal: (signal) =>
+                  signalVerifiedRecoveryProcess(adoptedProcess, signal),
+              }
+            : undefined,
         environment: effectiveRunnerEnvironment,
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
         runtimeContext:

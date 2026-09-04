@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   findMissingHotRestartSnapshotRunIds,
   isObservedHotRestartTargetAlive,
+  parseHotRestartIntent,
   readHotRestartIntent,
   readProcessStartedAt,
   removeHotRestartIntent,
@@ -30,6 +31,64 @@ async function withTempHome<T>(fn: (homeDir: string) => Promise<T>) {
 }
 
 describe("hot-restart path compatibility", () => {
+  it("reads version-1 native recovery fields without making them mandatory", () => {
+    expect(
+      parseHotRestartIntent({
+        version: 1,
+        requestedAt: "2026-09-04T10:00:00.000Z",
+        recoveryRequestId: "restart-request-1",
+        previousServerPid: 123,
+        drainRequired: false,
+        requestedByRunId: null,
+        preflightActiveRunIds: ["run-1"],
+        shutdownSnapshot: {
+          capturedAt: "2026-09-04T10:00:01.000Z",
+          signal: "SIGTERM",
+          activeRuns: [
+            {
+              runId: "run-1",
+              companyId: "company-1",
+              agentId: "agent-1",
+              adapterType: "paperclip_runner",
+              status: "running",
+              processPid: 456,
+              processGroupId: 456,
+              issueId: "issue-1",
+              runtimeMode: "native",
+              nativeSessionId: "session-1",
+              runnerInstanceId: "runner-1",
+              processStartedAt: "2026-09-04T09:59:00.000Z",
+            },
+          ],
+        },
+      }),
+    ).toMatchObject({
+      version: 1,
+      recoveryRequestId: "restart-request-1",
+      shutdownSnapshot: {
+        activeRuns: [
+          {
+            runtimeMode: "native",
+            nativeSessionId: "session-1",
+            runnerInstanceId: "runner-1",
+            processStartedAt: "2026-09-04T09:59:00.000Z",
+          },
+        ],
+      },
+    });
+
+    expect(
+      parseHotRestartIntent({
+        version: 1,
+        requestedAt: "2026-09-04T10:00:00.000Z",
+        previousServerPid: 123,
+        drainRequired: false,
+        requestedByRunId: null,
+        preflightActiveRunIds: [],
+      }),
+    ).not.toBeNull();
+  });
+
   it("reads Linux process start time from proc metadata", async () => {
     await expect(
       readProcessStartedAt(123, {

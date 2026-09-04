@@ -1,5 +1,5 @@
 {
-  "id": "a08a0a26-0a72-4a5e-80ce-211c62733d1f",
+  "id": "cc2ff211-808d-41ff-ba78-afcf0a945864",
   "prevId": "03fb5599-6390-4497-ad7c-d43e02a7be47",
   "version": "7",
   "dialect": "postgresql",
@@ -18714,12 +18714,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "subject_agent_id": {
-          "name": "subject_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "provider_tenant": {
           "name": "provider_tenant",
           "type": "jsonb",
@@ -18847,27 +18841,6 @@
           "method": "btree",
           "with": {}
         },
-        "connection_grants_subject_agent_idx": {
-          "name": "connection_grants_subject_agent_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "connection_grants_user_uq": {
           "name": "connection_grants_user_uq",
           "columns": [
@@ -18879,27 +18852,6 @@
             },
             {
               "expression": "subject_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "connection_grants_agent_uq": {
-          "name": "connection_grants_agent_uq",
-          "columns": [
-            {
-              "expression": "connection_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_agent_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -18934,19 +18886,6 @@
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "connection_grants_subject_agent_id_agents_id_fk": {
-          "name": "connection_grants_subject_agent_id_agents_id_fk",
-          "tableFrom": "connection_grants",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "subject_agent_id"
           ],
           "columnsTo": [
             "id"
@@ -19011,7 +18950,7 @@
       "checkConstraints": {
         "connection_grants_kind_check": {
           "name": "connection_grants_kind_check",
-          "value": "\"connection_grants\".\"kind\" in ('organization', 'user', 'agent')"
+          "value": "\"connection_grants\".\"kind\" in ('organization', 'user')"
         },
         "connection_grants_status_check": {
           "name": "connection_grants_status_check",
@@ -19023,7 +18962,7 @@
         },
         "connection_grants_subject_check": {
           "name": "connection_grants_subject_check",
-          "value": "(\"connection_grants\".\"kind\" = 'user' and \"connection_grants\".\"subject_user_id\" is not null and \"connection_grants\".\"subject_agent_id\" is null) or (\"connection_grants\".\"kind\" = 'agent' and \"connection_grants\".\"subject_agent_id\" is not null and \"connection_grants\".\"subject_user_id\" is null) or (\"connection_grants\".\"kind\" = 'organization' and \"connection_grants\".\"subject_user_id\" is null and \"connection_grants\".\"subject_agent_id\" is null)"
+          "value": "(\"connection_grants\".\"kind\" = 'user' and \"connection_grants\".\"subject_user_id\" is not null) or (\"connection_grants\".\"kind\" = 'organization' and \"connection_grants\".\"subject_user_id\" is null)"
         },
         "connection_grants_default_check": {
           "name": "connection_grants_default_check",
@@ -26208,6 +26147,50 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "controller_boot_id": {
+          "name": "controller_boot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_pid": {
+          "name": "controller_pid",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_process_started_at": {
+          "name": "controller_process_started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_generation": {
+          "name": "controller_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "recovery_state": {
+          "name": "recovery_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recovery_request_id": {
+          "name": "recovery_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recovery_history": {
+          "name": "recovery_history",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
         "result_id": {
           "name": "result_id",
@@ -37368,7 +37351,7 @@
         },
         "tool_connections_credential_policy_check": {
           "name": "tool_connections_credential_policy_check",
-          "value": "\"tool_connections\".\"credential_policy\" in ('shared', 'per_user', 'per_user_with_fallback', 'per_agent')"
+          "value": "\"tool_connections\".\"credential_policy\" in ('shared', 'per_user', 'per_user_with_fallback')"
         }
       },
       "isRLSEnabled": false
@@ -39108,12 +39091,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "subject_agent_id": {
-          "name": "subject_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "requested_scopes": {
           "name": "requested_scopes",
           "type": "jsonb",
@@ -39204,27 +39181,6 @@
           "method": "btree",
           "with": {}
         },
-        "tool_oauth_states_subject_agent_idx": {
-          "name": "tool_oauth_states_subject_agent_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "tool_oauth_states_expires_at_idx": {
           "name": "tool_oauth_states_expires_at_idx",
           "columns": [
@@ -39261,19 +39217,6 @@
           "tableTo": "tool_connections",
           "columnsFrom": [
             "connection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "tool_oauth_states_subject_agent_id_agents_id_fk": {
-          "name": "tool_oauth_states_subject_agent_id_agents_id_fk",
-          "tableFrom": "tool_oauth_states",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "subject_agent_id"
           ],
           "columnsTo": [
             "id"

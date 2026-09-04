@@ -30,6 +30,7 @@ import {
   coalesceSettledTurns,
   isTerminalRunStatus,
   embedPlanDocumentAtWriteBoundary,
+  omitProgressRepeatedByResponseAcrossSegments,
   paperclipRunnerFinalResponse,
   paperclipRunnerTimelineItems,
   prependIssueBrief,
@@ -217,11 +218,12 @@ const EMPTY_LIVE_ISSUE_IDS: ReadonlySet<string> = new Set<string>();
 const LONG_THREAD_BLOCKER_REPEAT_COUNT = 4;
 
 export function shouldRepeatTaskChatBlockers(items: TaskChatItem[]): boolean {
-  const conversationItems = items.filter((item) => (
-    item.kind === "brief"
-    || item.kind === "interaction"
-    || (item.kind === "message" && !item.interstitial)
-  ));
+  const conversationItems = items.filter(
+    (item) =>
+      item.kind === "brief" ||
+      item.kind === "interaction" ||
+      (item.kind === "message" && !item.interstitial),
+  );
   return conversationItems.length >= LONG_THREAD_BLOCKER_REPEAT_COUNT;
 }
 
@@ -492,6 +494,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onVote,
     draftKey,
     onInterruptQueued,
+    onCancelQueued,
     interruptingQueuedRunId,
     onTryAgainNoLiveExecutionPath,
     tryAgainNoLiveExecutionPathPending = false,
@@ -509,14 +512,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     resumeAssigneePending = false,
   } = props;
 
-  const paperclipQueue =
-    queuedCommentQueue?.protocol === "paperclip_runner_v1"
+  const queuedMessageQueue =
+    queuedCommentQueue && queuedCommentQueue.entries.length > 0
       ? queuedCommentQueue
       : null;
   const queuedCommentIds = useMemo(
     () =>
-      new Set(paperclipQueue?.entries.map((entry) => entry.comment.id) ?? []),
-    [paperclipQueue],
+      new Set(
+        queuedMessageQueue?.entries.map((entry) => entry.comment.id) ?? [],
+      ),
+    [queuedMessageQueue],
   );
   const [queuedEdit, setQueuedEdit] = useState<{
     commentId: string;
@@ -527,17 +532,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   const beginQueuedEdit = useCallback(
     (commentId: string) => {
-      const entry = paperclipQueue?.entries.find(
+      const entry = queuedMessageQueue?.entries.find(
         (candidate) => candidate.comment.id === commentId,
       );
-      if (!entry?.canEdit || !paperclipQueue) return;
+      if (!entry?.canEdit || !queuedMessageQueue) return;
       setQueuedEdit({
         commentId,
         body: entry.comment.body,
-        revision: paperclipQueue.revision,
+        revision: queuedMessageQueue.revision,
       });
     },
-    [paperclipQueue],
+    [queuedMessageQueue],
   );
 
   const saveQueuedEdit = useCallback(
@@ -592,7 +597,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   useEffect(() => {
     if (!queuedEdit || queuedEdit.stale) return;
-    const targetStillQueued = paperclipQueue?.entries.some(
+    const targetStillQueued = queuedMessageQueue?.entries.some(
       (entry) => entry.comment.id === queuedEdit.commentId,
     );
     if (!targetStillQueued) {
@@ -600,16 +605,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         current ? { ...current, stale: true } : current,
       );
     } else if (
-      paperclipQueue &&
-      queuedEdit.revision !== paperclipQueue.revision
+      queuedMessageQueue &&
+      queuedEdit.revision !== queuedMessageQueue.revision
     ) {
       // A concurrent reorder/edit refreshes the optimistic-lock token without
       // replacing the Markdown currently in the editor.
       setQueuedEdit((current) =>
-        current ? { ...current, revision: paperclipQueue.revision } : current,
+        current
+          ? { ...current, revision: queuedMessageQueue.revision }
+          : current,
       );
     }
-  }, [paperclipQueue, queuedEdit]);
+  }, [queuedEdit, queuedMessageQueue]);
 
   const liveWorkLinks = useMemo(
     () =>
@@ -1316,6 +1323,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? decidedCommentId
             : null;
       const sourceHasPresentationComment = sourcePresentationCommentId !== null;
+      const sourcePresentationText = sourcePresentationCommentId
+        ? (comments.find(
+            (comment) => comment.id === sourcePresentationCommentId,
+          )?.body ?? null)
+        : null;
       const sourceHasNativeResponse =
         sourceIsPaperclipRunner &&
         !sourceYielded &&
@@ -1524,8 +1536,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         startSlotMs,
         timelineAnchors,
       );
-      for (const [segmentIndex, segment] of segments.entries()) {
-        if (segment.entries.length === 0) continue;
+      const projectedSegments = segments.map((segment) => {
         const parsedTranscript = transcriptToTaskChatItems(segment.entries, {
           runId: source.id,
           agentName: meta?.agentName,
@@ -1535,11 +1546,46 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           source.id === planDocumentSourceRunId && planTurnItem
             ? embedPlanDocumentAtWriteBoundary(parsedTranscript, planTurnItem)
             : parsedTranscript;
-        const children = settledRunChildren(
-          sourceIsPaperclipRunner
+        return {
+          segment,
+          parsed,
+          timelineItems: sourceIsPaperclipRunner
             ? paperclipRunnerTimelineItems(parsed)
             : parsed,
-        );
+        };
+      });
+      const sourceResponseText =
+        sourceIsPaperclipRunner && !sourceYielded
+          ? (sourcePresentationText ??
+            paperclipRunnerFinalResponse(
+              transcriptToTaskChatItems(entries, {
+                runId: source.id,
+                agentName: meta?.agentName,
+                running: false,
+              }),
+              {
+                runId: source.id,
+                agentName: meta?.agentName,
+                fallbackSummary: acceptedSummary,
+              },
+            )?.text)
+          : undefined;
+      const timelineItemsBySegment = sourceIsPaperclipRunner
+        ? omitProgressRepeatedByResponseAcrossSegments(
+            projectedSegments.map(({ timelineItems }) => timelineItems),
+            sourceResponseText,
+          )
+        : projectedSegments.map(({ timelineItems }) => timelineItems);
+      let lastPopulatedSegmentIndex = -1;
+      for (let index = projectedSegments.length - 1; index >= 0; index -= 1) {
+        if ((projectedSegments[index]?.segment.entries.length ?? 0) > 0) {
+          lastPopulatedSegmentIndex = index;
+          break;
+        }
+      }
+      for (const [segmentIndex, projected] of projectedSegments.entries()) {
+        const { segment, parsed } = projected;
+        if (segment.entries.length === 0) continue;
         const finalResponse =
           sourceIsPaperclipRunner &&
           !sourceYielded &&
@@ -1547,9 +1593,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? paperclipRunnerFinalResponse(parsed, {
                 runId: source.id,
                 agentName: meta?.agentName,
-                fallbackSummary: acceptedSummary,
+                fallbackSummary:
+                  segmentIndex === lastPopulatedSegmentIndex
+                    ? acceptedSummary
+                    : undefined,
               })
             : undefined;
+        const children = settledRunChildren(
+          timelineItemsBySegment[segmentIndex] ?? [],
+        );
         if (children.length === 0 && !finalResponse && !sourceIsPaperclipRunner)
           continue;
         settledRunIds.add(source.id);
@@ -1583,6 +1635,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               ? agentMap?.get(meta.agentId)?.icon
               : undefined,
             standaloneHeader: sourceIsPaperclipRunner,
+            continuedAfterSteering: sourceIsPaperclipRunner && segmentIndex > 0,
             animateFold: liveSeenRef.current.has(source.id),
             items: children,
             finalResponse,
@@ -1672,6 +1725,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 ? agentMap?.get(liveRun.agentId)?.icon
                 : undefined,
               standaloneHeader: isNativePaperclipRunnerRun(liveRun),
+              continuedAfterSteering:
+                isNativePaperclipRunnerRun(liveRun) && segmentIndex > 0,
               items: children,
               summary: buildTurnSummary(segment.entries, {
                 durationMs: segmentDurationMs,
@@ -1870,18 +1925,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ? `${tailPlanItem.id}:${tailPlanItem.document.body.length}`
     : "";
   const threadContentKey = `${taskChatContentKey(items)}:${tailContentKey}:${tailPlanContentKey}:${blockerContentKey}`;
-  const repeatBlockersAtBottom = !streamlinedUiEnabled || shouldRepeatTaskChatBlockers(items);
-  const bottomBlockerLinks = repeatBlockersAtBottom
-    ? liveWorkLinks ? (
-        <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="bottom" />
-      ) : blockerLinks ? (
-        <TaskChatBlockerLinks
-          directBlocker={blockerLinks.directBlocker}
-          ultimateBlocker={blockerLinks.ultimateBlocker}
-          placement="bottom"
-        />
-      ) : null
-    : null;
+  const repeatBlockersAtBottom =
+    !streamlinedUiEnabled || shouldRepeatTaskChatBlockers(items);
+  const bottomBlockerLinks = repeatBlockersAtBottom ? (
+    liveWorkLinks ? (
+      <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="bottom" />
+    ) : blockerLinks ? (
+      <TaskChatBlockerLinks
+        directBlocker={blockerLinks.directBlocker}
+        ultimateBlocker={blockerLinks.ultimateBlocker}
+        placement="bottom"
+      />
+    ) : null
+  ) : null;
 
   // Status-pill inputs for the tail (PAP-461, A1): the run's start, its finish
   // (once terminal), and the "called N tools" summary. Memoized on the
@@ -1895,11 +1951,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const tailStatus = liveRun
     ? liveRun.status
     : (runs.find((run) => run.id === settlingRun?.id)?.status ?? "succeeded");
-  const tailStartedAtMs = liveRun
-    ? (tailSegmentStartMs ??
-      (liveRun.startedAt ? toMs(liveRun.startedAt) : null) ??
-      toMs(liveRun.createdAt))
-    : (settlingRun?.startedAtMs ?? null);
+  const tailStartedAtMs =
+    tailSegmentStartMs ??
+    (liveRun
+      ? ((liveRun.startedAt ? toMs(liveRun.startedAt) : null) ??
+        toMs(liveRun.createdAt))
+      : (settlingRun?.startedAtMs ?? null));
   const tailFinishedAtMs = liveRun
     ? liveRun.finishedAt
       ? toMs(liveRun.finishedAt)
@@ -2182,7 +2239,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   const renderQueuedAction = useCallback(
     (item: TaskChatMessageItem) => {
-      if (paperclipQueue) return null;
       const runId = item.queueTargetRunId;
       if (item.optimistic !== "queued" || !runId || !onInterruptQueued)
         return null;
@@ -2200,7 +2256,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </Button>
       );
     },
-    [interruptingQueuedRunId, onInterruptQueued, paperclipQueue],
+    [interruptingQueuedRunId, onInterruptQueued],
   );
 
   const renderInteraction = useCallback(
@@ -2326,221 +2382,247 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   useWindowAutoFollow(isMobile ? autoFollowContentKey : 0, isMobile);
 
   return (
-    <TaskChatPresentationProvider mode={streamlinedUiEnabled ? "streamlined" : "production"}>
-    <div
-      className={cn(
-        "flex flex-col",
-        !isMobile && "h-(--tc-thread-max-h) min-h-0 flex-1",
-      )}
-      data-testid="task-chat-thread"
+    <TaskChatPresentationProvider
+      mode={streamlinedUiEnabled ? "streamlined" : "production"}
     >
-      <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
-        {items.length === 0 && !tailRunId ? (
-          <div
-            className={isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"}
-          >
-            {threadHeaderWithBlockers ? (
-              <div
-                className={cn(
-                  "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4",
-                  isMobile ? "pt-4" : "pt-3",
-                  streamlinedUiEnabled && "md:px-0",
-                )}
-                data-testid="task-chat-thread-header"
-              >
-                {threadHeaderWithBlockers}
+      <div
+        className={cn(
+          "flex flex-col",
+          !isMobile && "h-(--tc-thread-max-h) min-h-0 flex-1",
+        )}
+        data-testid="task-chat-thread"
+      >
+        <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
+          {items.length === 0 && !tailRunId ? (
+            <div
+              className={
+                isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
+              }
+            >
+              {threadHeaderWithBlockers ? (
+                <div
+                  className={cn(
+                    "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4",
+                    isMobile ? "pt-4" : "pt-3",
+                    streamlinedUiEnabled && "md:px-0",
+                  )}
+                  data-testid="task-chat-thread-header"
+                >
+                  {threadHeaderWithBlockers}
+                </div>
+              ) : null}
+              <div className="px-3 py-10 text-center text-sm text-muted-foreground">
+                {emptyMessage}
               </div>
-            ) : null}
-            <div className="px-3 py-10 text-center text-sm text-muted-foreground">
-              {emptyMessage}
+              {bottomBlockerLinks ? (
+                <div
+                  className={cn(
+                    "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4",
+                    streamlinedUiEnabled && "md:px-0",
+                  )}
+                >
+                  {bottomBlockerLinks}
+                </div>
+              ) : null}
             </div>
-            {bottomBlockerLinks ? (
-              <div className={cn(
-                "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4",
-                streamlinedUiEnabled && "md:px-0",
-              )}>
-                {bottomBlockerLinks}
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <TaskChatThreadView
-            items={items}
-            attachments={attachments}
-            header={threadHeaderWithBlockers}
-            renderInteraction={renderInteraction}
-            renderBrief={
-              issueBrief
-                ? () => <TaskChatDescriptionBubble brief={issueBrief} />
-                : undefined
-            }
-            renderMessageActions={renderMessageActions}
-            renderQueuedAction={renderQueuedAction}
-            onTryAgainNoLiveExecutionPath={
-              issueStatus === "blocked"
-                ? onTryAgainNoLiveExecutionPath
-                : undefined
-            }
-            tryAgainNoLiveExecutionPathPending={
-              tryAgainNoLiveExecutionPathPending
-            }
-            onRetryFailedRun={onRetryFailedRun}
-            retryFailedRunId={retryFailedRunId}
-            tail={
-              tailRunId || optimisticRunnerStartup || bottomBlockerLinks ? (
-                <>
-                  {tailRunId || optimisticRunnerStartup ? (
-                    <div data-testid="task-chat-live-transcript">
-                      {paperclipRunnerTail || optimisticRunnerStartup ? (
-                        <TaskChatRunnerTurn
-                          runId={tailRunId}
-                          agentName={visibleTailAgentName}
-                          agentIcon={visibleTailAgentIcon}
-                          items={tailItems}
-                          status={
-                            optimisticRunnerStartup ? "queued" : tailStatus
-                          }
-                          startedAtMs={tailStartedAtMs}
-                          finishedAtMs={tailFinishedAtMs}
-                          activityUnavailable={tailActivityUnavailable}
-                          suppressFinal={suppressPaperclipRunnerTailFinal}
-                          onRuntimeRequestDecision={
-                            handleRuntimeRequestDecision
-                          }
-                        />
-                      ) : (
-                        <>
-                          <TaskChatLiveRunPill
-                            status={tailStatus}
+          ) : (
+            <TaskChatThreadView
+              items={items}
+              attachments={attachments}
+              header={threadHeaderWithBlockers}
+              renderInteraction={renderInteraction}
+              renderBrief={
+                issueBrief
+                  ? () => <TaskChatDescriptionBubble brief={issueBrief} />
+                  : undefined
+              }
+              renderMessageActions={renderMessageActions}
+              renderQueuedAction={renderQueuedAction}
+              onTryAgainNoLiveExecutionPath={
+                issueStatus === "blocked"
+                  ? onTryAgainNoLiveExecutionPath
+                  : undefined
+              }
+              tryAgainNoLiveExecutionPathPending={
+                tryAgainNoLiveExecutionPathPending
+              }
+              onRetryFailedRun={onRetryFailedRun}
+              retryFailedRunId={retryFailedRunId}
+              tail={
+                tailRunId || optimisticRunnerStartup || bottomBlockerLinks ? (
+                  <>
+                    {tailRunId || optimisticRunnerStartup ? (
+                      <div data-testid="task-chat-live-transcript">
+                        {paperclipRunnerTail || optimisticRunnerStartup ? (
+                          <TaskChatRunnerTurn
+                            runId={tailRunId}
+                            agentName={visibleTailAgentName}
+                            agentIcon={visibleTailAgentIcon}
+                            items={tailItems}
+                            status={
+                              optimisticRunnerStartup ? "queued" : tailStatus
+                            }
                             startedAtMs={tailStartedAtMs}
                             finishedAtMs={tailFinishedAtMs}
-                            toolSummary={tailToolSummary}
-                          />
-                          <TaskChatLiveTail
-                            items={tailItems}
-                            emptyMessage={
-                              tailStatus === "queued"
-                                ? "Waiting to start..."
-                                : (liveRun && liveRun.id === tailRunId
-                                    ? liveRun.currentStatusMessage
-                                    : null) || "Waiting for transcript..."
+                            activityUnavailable={tailActivityUnavailable}
+                            suppressFinal={suppressPaperclipRunnerTailFinal}
+                            continuedAfterSteering={
+                              paperclipRunnerTail &&
+                              tailTimelineAnchors.length > 0
+                            }
+                            onRuntimeRequestDecision={
+                              handleRuntimeRequestDecision
                             }
                           />
-                        </>
-                      )}
-                    </div>
-                  ) : null}
-                  {bottomBlockerLinks}
-                </>
-              ) : null
-            }
-            contentKey={autoFollowContentKey}
-            className={isMobile ? undefined : "pt-3"}
-            scroll={!isMobile}
-          />
-        )}
-      </div>
-      {assignedAgentForNotice?.status === "paused" ? (
-        <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
-          <IssueAssigneePausedNotice
-            agent={assignedAgentForNotice}
-            onResume={onResumeAssignee}
-            resuming={resumeAssigneePending}
-          />
-        </div>
-      ) : null}
-      {showComposer ? (
-        <div
-          data-testid="task-chat-composer-dock"
-          className={cn(
-            "sticky",
-            // Mobile mirrors the flag-off thread's dock: lifted above the
-            // safe-area inset and clear of the auto-hiding bottom nav, above
-            // page content in the document-flow stacking context. The bottom
-            // offset (--tc-composer-bottom) tracks the nav: Layout raises it to
-            // the nav height while the nav is visible so the composer's action
-            // row is never occluded, and drops it back to the safe-area dock
-            // when the nav auto-hides (PAP-495). transition-[bottom] rides the
-            // nav's own 200ms slide; the offset only changes on nav toggles, so
-            // it never animates mid-scroll.
-            isMobile
-              ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
-              : "bottom-0 z-10",
-            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-4 pb-2",
-            streamlinedUiEnabled && "md:px-0 md:pb-4",
-            streamlinedUiEnabled && !isMobile
-              ? "-mt-(--radius-task-composer)"
-              : "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+                        ) : (
+                          <>
+                            <TaskChatLiveRunPill
+                              status={tailStatus}
+                              startedAtMs={tailStartedAtMs}
+                              finishedAtMs={tailFinishedAtMs}
+                              toolSummary={tailToolSummary}
+                            />
+                            <TaskChatLiveTail
+                              items={tailItems}
+                              emptyMessage={
+                                tailStatus === "queued"
+                                  ? "Waiting to start..."
+                                  : (liveRun && liveRun.id === tailRunId
+                                      ? liveRun.currentStatusMessage
+                                      : null) || "Waiting for transcript..."
+                              }
+                            />
+                          </>
+                        )}
+                      </div>
+                    ) : null}
+                    {bottomBlockerLinks}
+                  </>
+                ) : null
+              }
+              contentKey={autoFollowContentKey}
+              className={isMobile ? undefined : "pt-3"}
+              scroll={!isMobile}
+            />
           )}
-        >
-          {composerAccessory}
-          {tailTurnStatus ? (
-            <TaskChatTurnStatusIsland model={tailTurnStatus} />
-          ) : null}
-          <div
-            className="relative isolate flex flex-col"
-            data-testid="task-chat-composer-stack"
-          >
-            {paperclipQueue && paperclipQueue.entries.length > 0 ? (
-              <TaskChatQueuedMessages
-                queue={paperclipQueue}
-                onEdit={beginQueuedEdit}
-                onReorder={async (orderedCommentIds, revision) => {
-                  if (!onReorderQueuedComments)
-                    throw new Error("Queue reordering is unavailable.");
-                  await onReorderQueuedComments(orderedCommentIds, revision);
-                }}
-                onSteer={async (commentId, revision) => {
-                  if (!onSteerQueuedComment)
-                    throw new Error("Steering is unavailable.");
-                  await onSteerQueuedComment(commentId, revision);
-                }}
-                onDiscard={async (commentId, revision) => {
-                  if (!onDiscardQueuedComment)
-                    throw new Error("Discard is unavailable.");
-                  await onDiscardQueuedComment(commentId, revision);
-                  if (queuedEdit?.commentId === commentId) setQueuedEdit(null);
-                }}
-              />
-            ) : null}
-            <div className="relative z-10">
-              <TaskChatComposer
-                onAdd={handleThreadAdd}
-                workMode={issueWorkMode}
-                onWorkModeChange={onWorkModeChange}
-                disabled={Boolean(runtimeComposerDisabledReason)}
-                disabledReason={runtimeComposerDisabledReason}
-                onAttachImage={onAttachImage}
-                onImageUpload={imageUploadHandler}
-                mentions={mentions}
-                enableReassign={enableReassign}
-                reassignOptions={reassignOptions}
-                agentMap={agentMap}
-                userProfileMap={userProfileMap}
-                currentAssigneeValue={currentAssigneeValue}
-                issueStatus={issueStatus}
-                mobile={isMobile}
-                draftKey={draftKey}
-                queuedEdit={queuedEdit}
-                onSaveQueuedEdit={saveQueuedEdit}
-                onCancelQueuedEdit={() => setQueuedEdit(null)}
-                takeover={composerTakeover}
-                pendingTakeover={
-                  pendingComposerInputs.length > 0
-                    ? {
-                        count: pendingComposerInputs.length,
-                        label: `${pendingComposerInputs.length} pending input${pendingComposerInputs.length === 1 ? "" : "s"}`,
-                        onOpen: openPendingTakeover,
-                      }
-                    : null
-                }
-              />
-            </div>
-          </div>
-          {footer}
         </div>
-      ) : null}
-    </div>
+        {assignedAgentForNotice?.status === "paused" ? (
+          <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
+            <IssueAssigneePausedNotice
+              agent={assignedAgentForNotice}
+              onResume={onResumeAssignee}
+              resuming={resumeAssigneePending}
+            />
+          </div>
+        ) : null}
+        {showComposer ? (
+          <div
+            data-testid="task-chat-composer-dock"
+            className={cn(
+              "sticky",
+              // Mobile mirrors the flag-off thread's dock: lifted above the
+              // safe-area inset and clear of the auto-hiding bottom nav, above
+              // page content in the document-flow stacking context. The bottom
+              // offset (--tc-composer-bottom) tracks the nav: Layout raises it to
+              // the nav height while the nav is visible so the composer's action
+              // row is never occluded, and drops it back to the safe-area dock
+              // when the nav auto-hides (PAP-495). transition-[bottom] rides the
+              // nav's own 200ms slide; the offset only changes on nav toggles, so
+              // it never animates mid-scroll.
+              isMobile
+                ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
+                : "bottom-0 z-10",
+              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-4 pb-2",
+              streamlinedUiEnabled && "md:px-0 md:pb-4",
+              streamlinedUiEnabled && !isMobile
+                ? "-mt-(--radius-task-composer)"
+                : "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+            )}
+          >
+            {composerAccessory}
+            {tailTurnStatus ? (
+              <TaskChatTurnStatusIsland model={tailTurnStatus} />
+            ) : null}
+            <div
+              className="relative isolate flex flex-col"
+              data-testid="task-chat-composer-stack"
+            >
+              {queuedMessageQueue ? (
+                <TaskChatQueuedMessages
+                  queue={queuedMessageQueue}
+                  onEdit={beginQueuedEdit}
+                  onReorder={async (orderedCommentIds, revision) => {
+                    if (!onReorderQueuedComments)
+                      throw new Error("Queue reordering is unavailable.");
+                    await onReorderQueuedComments(orderedCommentIds, revision);
+                  }}
+                  onSteer={async (commentId, revision) => {
+                    if (!onSteerQueuedComment)
+                      throw new Error("Steering is unavailable.");
+                    await onSteerQueuedComment(commentId, revision);
+                  }}
+                  onInterrupt={
+                    onInterruptQueued && queuedMessageQueue.targetRunId
+                      ? async () => {
+                          await onInterruptQueued(
+                            queuedMessageQueue.targetRunId!,
+                          );
+                        }
+                      : undefined
+                  }
+                  onDiscard={async (commentId, revision) => {
+                    if (commentId.startsWith("optimistic-")) {
+                      if (!onCancelQueued)
+                        throw new Error("Discard is unavailable.");
+                      onCancelQueued(commentId);
+                      return;
+                    }
+                    if (!onDiscardQueuedComment)
+                      throw new Error("Discard is unavailable.");
+                    await onDiscardQueuedComment(commentId, revision);
+                    if (queuedEdit?.commentId === commentId)
+                      setQueuedEdit(null);
+                  }}
+                />
+              ) : null}
+              <div className="relative z-10">
+                <TaskChatComposer
+                  onAdd={handleThreadAdd}
+                  workMode={issueWorkMode}
+                  onWorkModeChange={onWorkModeChange}
+                  disabled={Boolean(runtimeComposerDisabledReason)}
+                  disabledReason={runtimeComposerDisabledReason}
+                  onAttachImage={onAttachImage}
+                  onImageUpload={imageUploadHandler}
+                  mentions={mentions}
+                  enableReassign={enableReassign}
+                  reassignOptions={reassignOptions}
+                  agentMap={agentMap}
+                  userProfileMap={userProfileMap}
+                  currentAssigneeValue={currentAssigneeValue}
+                  issueStatus={issueStatus}
+                  mobile={isMobile}
+                  draftKey={draftKey}
+                  queuedEdit={queuedEdit}
+                  onSaveQueuedEdit={saveQueuedEdit}
+                  onCancelQueuedEdit={() => setQueuedEdit(null)}
+                  takeover={composerTakeover}
+                  pendingTakeover={
+                    pendingComposerInputs.length > 0
+                      ? {
+                          count: pendingComposerInputs.length,
+                          label: `${pendingComposerInputs.length} pending input${pendingComposerInputs.length === 1 ? "" : "s"}`,
+                          onOpen: openPendingTakeover,
+                        }
+                      : null
+                  }
+                />
+              </div>
+            </div>
+            {footer}
+          </div>
+        ) : null}
+      </div>
     </TaskChatPresentationProvider>
   );
 }

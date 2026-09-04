@@ -1055,6 +1055,65 @@ export function settledRunChildren(
 }
 
 /**
+ * A provider can emit the same user-facing text first as progress and then as
+ * its durable response. Keep the chronological progress item while the answer
+ * is still unknown, but once that response exists let its dedicated bubble own
+ * the text. Only the last exact match is removed so intentional earlier
+ * repetition remains visible.
+ */
+export function omitProgressRepeatedByResponse(
+  items: readonly TaskChatItem[],
+  responseText: string | null | undefined,
+): readonly TaskChatItem[] {
+  return (
+    omitProgressRepeatedByResponseAcrossSegments([items], responseText)[0] ??
+    items
+  );
+}
+
+/**
+ * Run-wide form of omitProgressRepeatedByResponse for steered transcripts.
+ * Segmentation is a presentation concern, so it must not turn one dedupe into
+ * one removal per segment. Preserve all intentional earlier repetitions and
+ * remove only the final progress item matching the durable response.
+ */
+export function omitProgressRepeatedByResponseAcrossSegments(
+  segments: readonly (readonly TaskChatItem[])[],
+  responseText: string | null | undefined,
+): readonly (readonly TaskChatItem[])[] {
+  const normalizedResponse = responseText?.trim();
+  if (!normalizedResponse) return segments;
+  let redundantSegmentIndex = -1;
+  let redundantIndex = -1;
+  findRedundant: for (
+    let segmentIndex = segments.length - 1;
+    segmentIndex >= 0;
+    segmentIndex -= 1
+  ) {
+    const items = segments[segmentIndex];
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+      if (
+        item.kind === "message" &&
+        item.interstitial &&
+        item.channel === "progress" &&
+        item.text.trim() === normalizedResponse
+      ) {
+        redundantSegmentIndex = segmentIndex;
+        redundantIndex = index;
+        break findRedundant;
+      }
+    }
+  }
+  if (redundantSegmentIndex < 0) return segments;
+  return segments.map((items, segmentIndex) =>
+    segmentIndex === redundantSegmentIndex
+      ? items.filter((_, index) => index !== redundantIndex)
+      : items,
+  );
+}
+
+/**
  * Keep the paperclip runner's expanded activity history focused on work the
  * user can act on. The normalized transcript remains lossless; this is only a
  * presentation filter for the new-runner turn surface. Legacy adapters keep

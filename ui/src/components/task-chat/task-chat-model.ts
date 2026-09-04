@@ -505,6 +505,8 @@ export interface TaskChatTurnItem {
   animateFold?: boolean;
   /** New-runner turns keep Worked/Stopped fixed above their ordered timeline. */
   standaloneHeader?: boolean;
+  /** This segment resumes the same native run after a steering input. */
+  continuedAfterSteering?: boolean;
   /** Durable response shown after the ordered Paperclip Runner timeline. */
   finalResponse?: TaskChatMessageItem;
   summary: {

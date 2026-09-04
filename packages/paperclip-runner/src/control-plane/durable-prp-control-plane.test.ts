@@ -4,7 +4,13 @@ import {
   createHash,
   createHmac,
 } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -30,6 +36,49 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it.skipIf(process.platform === "win32")(
+  "never persists raw child stdout or stderr as durable diagnostics",
+  async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-diagnostics-test-"));
+    const executable = resolve(root, "noisy-runner");
+    const diagnosticsDirectory = resolve(root, "diagnostics");
+    writeFileSync(
+      executable,
+      [
+        "#!/usr/bin/env node",
+        'process.stdout.write("token=raw-stdout-secret " + "o".repeat(256 * 1024));',
+        'process.stderr.write("Authorization: Bearer raw-stderr-secret " + "e".repeat(256 * 1024));',
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    chmodSync(executable, 0o700);
+    try {
+      const handle = spawnRunner({
+        connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+        stateDirectory: resolve(root, "state"),
+        identity,
+        ticket: "bootstrap-ticket",
+        maxOutboxBytes: 256 * 1024,
+        p0ReserveBytes: 64 * 1024,
+        runnerVersion: expectedRunnerVersion,
+        runnerDigest: expectedRunnerDigest,
+        runnerBinaryPath: executable,
+        diagnosticsDirectory,
+      });
+      const result = await handle.completion;
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+
+      for (const name of ["runnerd.stdout.log", "runnerd.stderr.log"]) {
+        const filePath = resolve(diagnosticsDirectory, name);
+        expect(readFileSync(filePath, "utf8")).toBe("");
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
 
 it("pins the ACPX launch profile in runner startup arguments and restarts", () => {
   const launches: RunnerProcessLaunchSpec[] = [];

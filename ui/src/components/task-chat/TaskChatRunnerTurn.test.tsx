@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
 import { TaskChatRunnerTurn } from "./TaskChatRunnerTurn";
+import { transcriptToTaskChatItems } from "./transcript-adapter";
 import type {
   TaskChatItem,
   TaskChatProviderActivityFamily,
@@ -38,6 +39,7 @@ describe("TaskChatRunnerTurn", () => {
       decision: TaskChatRuntimeRequestDecision,
     ) => void,
     suppressFinal = false,
+    continuedAfterSteering = false,
   ) =>
     act(() =>
       root.render(
@@ -50,6 +52,7 @@ describe("TaskChatRunnerTurn", () => {
               status={status}
               startedAtMs={Date.now() - 2_000}
               suppressFinal={suppressFinal}
+              continuedAfterSteering={continuedAfterSteering}
               onRuntimeRequestDecision={onRuntimeRequestDecision}
             />
           </ThemeProvider>
@@ -136,6 +139,63 @@ describe("TaskChatRunnerTurn", () => {
     expect(activity?.firstElementChild?.hasAttribute("aria-hidden")).toBe(
       false,
     );
+  });
+
+  it("labels the streaming tail as a continuation after steering", () => {
+    render([], "running", "run-1", undefined, false, true);
+
+    expect(
+      container.querySelector('[data-testid="task-chat-turn-status-header"]')
+        ?.textContent,
+    ).toContain("Continued after steering · Working for");
+  });
+
+  it("renders completed progress exactly once when the live run returns to Thinking", () => {
+    const text = "Understood—I’ll use a two-second wait instead.";
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "thinking",
+          ts: "2026-09-04T13:39:20.000Z",
+          text: "",
+          lifecycle: "started",
+          channel: "summary",
+          itemId: "reasoning-1",
+        },
+        {
+          kind: "thinking",
+          ts: "2026-09-04T13:39:20.100Z",
+          text: "",
+          lifecycle: "completed",
+          channel: "summary",
+          itemId: "reasoning-1",
+        },
+        {
+          kind: "assistant",
+          ts: "2026-09-04T13:39:21.100Z",
+          text,
+          channel: "progress",
+          itemId: "message-1",
+        },
+      ],
+      { runId: "run-1", agentName: "Runner", running: true },
+    );
+
+    render(items);
+
+    expect(container.textContent?.split(text)).toHaveLength(2);
+    expect(
+      container.querySelector('[data-testid="task-chat-phase-interstitial"]')
+        ?.textContent,
+    ).toContain(text);
+    expect(
+      container.querySelector('[data-testid="task-chat-live-narration"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-current-activity-label"]',
+      )?.textContent,
+    ).toBe("Thinking");
   });
 
   it("keeps progress mounted above its grouped current command", () => {
@@ -932,6 +992,45 @@ describe("TaskChatRunnerTurn", () => {
       container.querySelector('[data-testid="task-chat-phase-interstitial"]')
         ?.textContent,
     ).toContain("Checking.");
+  });
+
+  it("collapses progress text repeated verbatim by the final response", () => {
+    const repeated = "BASELINE-DONE";
+    render(
+      [
+        {
+          id: "progress",
+          kind: "message",
+          author: "agent",
+          text: repeated,
+          interstitial: true,
+          channel: "progress",
+        },
+        {
+          id: "tool",
+          kind: "tool",
+          name: "Command",
+          status: "completed",
+        },
+        {
+          id: "final",
+          kind: "message",
+          author: "agent",
+          text: repeated,
+          channel: "final",
+        },
+      ],
+      "succeeded",
+    );
+
+    expect(container.textContent?.split(repeated)).toHaveLength(2);
+    expect(
+      container.querySelector('[data-testid="task-chat-phase-interstitial"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="task-chat-final-response"]')
+        ?.textContent,
+    ).toContain(repeated);
   });
 
   it("clears provider wait prose when the run is accepted as yielded", () => {
