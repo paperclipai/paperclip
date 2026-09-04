@@ -1331,9 +1331,12 @@ function runnerdAuthorityLifecycleWithVerifiedBackup(input: {
     execution: input.execution,
     runnerInstanceId: input.identity.runnerInstanceId,
   });
-  return backup
-    ? runnerdAuthorityLifecycle(backup.root, input.identity)
-    : "indeterminate";
+  if (!backup) return "indeterminate";
+  const backupLifecycle = runnerdAuthorityLifecycle(
+    backup.root,
+    input.identity,
+  );
+  return backupLifecycle === "absent" ? "indeterminate" : backupLifecycle;
 }
 
 type PriorRunnerdStateVerification =
