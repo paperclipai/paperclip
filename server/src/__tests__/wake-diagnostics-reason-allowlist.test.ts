@@ -134,20 +134,30 @@ function literalsFromReasonExpression(
   const questionIdx = expression.indexOf("?");
   const valueExpr = questionIdx === -1 ? expression : expression.slice(questionIdx + 1);
 
-  const quoted = [...valueExpr.matchAll(/"([^"]+)"/g)].map((q) => q[1]);
-  if (quoted.length > 0) return quoted;
+  // Resolve *every* branch. A mixed ternary such as
+  // `cond ? "known_reason" : SOME_REASON_CONSTANT` must contribute both sides;
+  // returning as soon as one quoted branch is found would let the other through.
+  const literals: string[] = [...valueExpr.matchAll(/"([^"]+)"/g)].map((q) => q[1]);
 
-  const resolved: string[] = [];
-  let sawIdentifier = false;
-  for (const idMatch of valueExpr.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/g)) {
+  // Blank out the quoted spans, then every identifier that remains has to resolve.
+  const remainder = valueExpr.replace(/"[^"]*"/g, " ");
+  const ignorable = new Set(["true", "false", "null", "undefined"]);
+  let sawToken = literals.length > 0;
+  for (const idMatch of remainder.matchAll(/[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/g)) {
     const identifier = idMatch[0];
-    sawIdentifier = true;
-    if (constMap.has(identifier)) resolved.push(constMap.get(identifier)!);
-    else if (KNOWN_DYNAMIC_REASON_SOURCES.has(identifier)) continue;
-    else return null;
+    if (ignorable.has(identifier)) continue;
+    sawToken = true;
+    if (constMap.has(identifier)) {
+      literals.push(constMap.get(identifier)!);
+      continue;
+    }
+    // A documented dynamic source resolves to nothing new, which is a valid
+    // outcome -- it is not the same as failing to resolve the expression.
+    if (KNOWN_DYNAMIC_REASON_SOURCES.has(identifier)) continue;
+    return null;
   }
-  if (!sawIdentifier) return null;
-  return resolved;
+  // Null means "could not resolve". An empty list means "resolved, adds nothing".
+  return sawToken ? literals : null;
 }
 
 /** Splits an argument list on top-level commas, ignoring nested brackets and strings. */
