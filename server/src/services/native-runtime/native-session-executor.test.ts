@@ -3073,6 +3073,7 @@ describe("runnerd provider runtime wiring", () => {
         executionWorkspaceId: "run-projectless-next",
       },
     } as NativeExecutionInputV1;
+    const remoteCwd = "/home/daytona/paperclip-workspace";
     try {
       state.createBackend.mockClear();
       state.createTransport.mockClear();
@@ -3135,7 +3136,37 @@ describe("runnerd provider runtime wiring", () => {
         execution: continuation,
         runnerInstanceId: "runner-new-heartbeat",
         useRunnerd: true,
+        runnerExecutionTarget: {
+          kind: "remote",
+          transport: "ssh",
+          remoteCwd,
+          spec: {
+            host: "runner.internal",
+            port: 22,
+            username: "runner",
+            remoteWorkspacePath: remoteCwd,
+            remoteCwd,
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
       });
+      expect(state.createBackend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspace: expect.objectContaining({ cwd: remoteCwd }),
+        }),
+        expect.objectContaining({
+          workingDirectoryAuthority: "remote_runner",
+        }),
+      );
+      expect(state.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({
+            workspace: expect.objectContaining({ cwd: remoteCwd }),
+          }),
+        }),
+      );
       const backendOptions = state.createBackend.mock.calls[0]![1];
       backendOptions.codexTransportFactory!();
       expect(state.createTransport).toHaveBeenCalledWith(

@@ -42,9 +42,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: runner-full-stack-e2e-${{ inputs.target_branch || github.event.repository.default_branch }}
+  group: runner-full-stack-e2e-${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch && format('development-{0}', inputs.target_branch) || format('protected-{0}', github.run_id) }}
   # Development branch campaigns supersede older runs for the same target.
-  # Preserve every default-branch campaign for its paid audit trail.
+  # Give protected/default-branch campaigns unique groups because GitHub also
+  # replaces pending runs when cancel-in-progress is false.
   cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch }}
 
 jobs:

@@ -282,7 +282,7 @@ describe("public repository paid workflow security", () => {
       '[ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]',
     );
     expect(fullStack).toContain(
-      "group: runner-full-stack-e2e-${{ inputs.target_branch || github.event.repository.default_branch }}",
+      "group: runner-full-stack-e2e-${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch && format('development-{0}', inputs.target_branch) || format('protected-{0}', github.run_id) }}",
     );
     expect(fullStack).toContain(
       "cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch }}",

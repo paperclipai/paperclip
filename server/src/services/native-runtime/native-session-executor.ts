@@ -3865,7 +3865,10 @@ async function executePaperclipNativeSessionWithinScope(
       input.useRunnerd && input.backend === undefined
         ? await createRunnerdBackend({
             ...input,
-            execution: runnerExecution,
+            // Durable scope and prior-run verification use the controller's
+            // canonical workspace identity. createRunnerdBackend separately
+            // projects remoteCwd into the provider execution boundary.
+            execution: input.execution,
             runnerInstanceId: effectiveRunnerInstanceId,
             durableEnvironmentLeaseId: durableRunnerBinding?.environmentLeaseId,
             trace,
