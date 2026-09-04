@@ -2670,7 +2670,7 @@ export function IssueDetail() {
     ? "mx-auto w-full max-w-(--tc-shell-max-w)"
     : undefined;
   const { openNewIssue } = useDialogActions();
-  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
+  const { openPanel, closePanel, panelVisible, setPanelVisible, requestPanelMaximize } = usePanel();
   const {
     setBreadcrumbs,
     setBreadcrumbToolbar,
@@ -5421,6 +5421,10 @@ export function IssueDetail() {
           setPanelBeforePlanOverrideIssueId(issue.id);
         }
         setPanelVisible(true);
+        // `viewer=full` (LOOA-2181): external links (Slack approval cards)
+        // land with the pane maximized. Mobile uses the sheet, which is
+        // already full-screen, so the request is desktop-only.
+        if (route.maximize) requestPanelMaximize();
       }
       const targetIssueId = issue?.id ?? issueId ?? "";
       setDocumentDeepLink((current) => ({
@@ -5438,6 +5442,7 @@ export function IssueDetail() {
       issue?.id,
       issueId,
       setPanelVisible,
+      requestPanelMaximize,
       suppressPanelUntilPlan,
       taskChatShellEnabled,
     ],
