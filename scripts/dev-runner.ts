@@ -802,7 +802,19 @@ async function maybeAutoRestartChild() {
       exitOnDecline: false,
     });
     await stopChildForRestart();
-    if (manualRestartRequest) {
+    const restartRequestConsumed = manualRestartRequest
+      ? removeDevServerRestartRequest(
+        manualRestartRequest.requestId
+          ? { requestId: manualRestartRequest.requestId }
+          : undefined,
+        env,
+      )
+      : true;
+    await startServerChild();
+    if (manualRestartRequest && !restartRequestConsumed) {
+      // A live writer may briefly hold the request lock. Starting the child is
+      // still correct because the requested restart already happened; retry
+      // correlated cleanup afterward without terminating the supervisor.
       removeDevServerRestartRequest(
         manualRestartRequest.requestId
           ? { requestId: manualRestartRequest.requestId }
@@ -810,7 +822,6 @@ async function maybeAutoRestartChild() {
         env,
       );
     }
-    await startServerChild();
   } catch (error) {
     const err = toError(error, "Auto-restart failed");
     process.stderr.write(`${err.stack ?? err.message}\n`);

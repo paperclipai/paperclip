@@ -177,4 +177,33 @@ describe("dev server status helpers", () => {
     });
     expect(existsSync(lockPath)).toBe(false);
   });
+
+  it("preserves the request instead of throwing when a live writer holds the lock", () => {
+    const filePath = createTempStatusFile({ dirty: true });
+    const env = { PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath };
+    writeDevServerRestartRequest(
+      {
+        requestedAt: "2026-09-04T12:00:02.000Z",
+        reason: "manual_restart_now",
+        requestId: "restart-contended",
+        mode: "hot",
+      },
+      env,
+    );
+    const requestPath = getDevServerRestartRequestFilePath(env)!;
+    const lockPath = `${requestPath}.lock`;
+    mkdirSync(lockPath);
+    writeFileSync(
+      path.join(lockPath, "owner.json"),
+      JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }),
+      "utf8",
+    );
+
+    expect(
+      removeDevServerRestartRequest({ requestId: "restart-contended" }, env),
+    ).toBe(false);
+    expect(readDevServerRestartRequest(env)).toMatchObject({
+      requestId: "restart-contended",
+    });
+  });
 });

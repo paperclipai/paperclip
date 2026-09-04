@@ -222,14 +222,25 @@ export function readDevServerRestartRequest(
 export function removeDevServerRestartRequest(
   expected?: Pick<DevServerRestartRequest, "requestId">,
   env: NodeJS.ProcessEnv = process.env,
-): void {
+): boolean {
   const filePath = getDevServerRestartRequestFilePath(env);
-  if (!filePath) return;
-  withDevRestartRequestLock(filePath, () => {
-    const current = readDevServerRestartRequestAtPath(filePath);
-    if (expected?.requestId && current?.requestId !== expected.requestId) return;
-    rmSync(filePath, { force: true });
-  });
+  if (!filePath) return false;
+  try {
+    withDevRestartRequestLock(filePath, () => {
+      const current = readDevServerRestartRequestAtPath(filePath);
+      if (expected?.requestId && current?.requestId !== expected.requestId) return;
+      rmSync(filePath, { force: true });
+    });
+    return true;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "dev_server_restart_request_lock_busy"
+    ) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function normalizeStringArray(value: unknown): string[] {
