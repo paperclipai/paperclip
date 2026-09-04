@@ -13289,43 +13289,40 @@ export function heartbeatService(
 
     if (!cancelled) return null;
 
-    // Run the telemetry emission alongside the wake cancel and the issue
-    // lock clear instead of in front of them, so a slow telemetry lookup
-    // never delays this required lifecycle work.
-    await Promise.all([
-      emitAgentTaskRun(db, cancelled),
-      (async () => {
-        if (cancelled.wakeupRequestId) {
-          await db
-            .update(agentWakeupRequests)
-            .set({
-              status: "cancelled",
-              finishedAt: now,
-              error: gate.reason,
-              updatedAt: now,
-            })
-            .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
-        }
+    // Telemetry is best-effort background work. Fire it in the background
+    // instead of awaiting it, so a slow telemetry lookup never delays the
+    // wake cancel, the issue lock clear, or this function's return.
+    void emitAgentTaskRun(db, cancelled).catch(() => {});
 
-        if (gate.issueId) {
-          await db
-            .update(issues)
-            .set({
-              executionRunId: null,
-              executionAgentNameKey: null,
-              executionLockedAt: null,
-              updatedAt: now,
-            })
-            .where(
-              and(
-                eq(issues.companyId, cancelled.companyId),
-                eq(issues.id, gate.issueId),
-                eq(issues.executionRunId, cancelled.id),
-              ),
-            );
-        }
-      })(),
-    ]);
+    if (cancelled.wakeupRequestId) {
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: gate.reason,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
+    }
+
+    if (gate.issueId) {
+      await db
+        .update(issues)
+        .set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.companyId, cancelled.companyId),
+            eq(issues.id, gate.issueId),
+            eq(issues.executionRunId, cancelled.id),
+          ),
+        );
+    }
 
     await appendRunEvent(cancelled, {
       eventType: "lifecycle",
@@ -24392,26 +24389,19 @@ export function heartbeatService(
         return { kind: "queued" as const, run: newRun };
       });
 
-      // Start the telemetry emissions for the cancelled runs, but do not wait
-      // on them here: the code below still needs to run whichever lifecycle
-      // work the new outcome requires, and a slow telemetry lookup must not
-      // delay that work. Each return path awaits this alongside its own
-      // remaining work instead of in front of it.
-      const cancelledRunsEmitted = Promise.all(
-        cancelledRunsToEmit.map((cancelledRun) =>
-          emitAgentTaskRun(db, cancelledRun),
-        ),
-      );
+      // Telemetry for the cancelled runs is best-effort background work.
+      // Fire it here and never await it: none of the lifecycle work below,
+      // nor this function's return, depends on it, so a slow telemetry
+      // lookup must not delay them.
+      for (const cancelledRun of cancelledRunsToEmit) {
+        void emitAgentTaskRun(db, cancelledRun).catch(() => {});
+      }
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") {
-        await cancelledRunsEmitted;
         return null;
       }
       if (outcome.kind === "coalesced") {
-        await Promise.all([
-          cancelledRunsEmitted,
-          startNextQueuedRunForAgent(agent.id),
-        ]);
+        await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
       }
 
@@ -24428,10 +24418,7 @@ export function heartbeatService(
         },
       });
 
-      await Promise.all([
-        cancelledRunsEmitted,
-        startNextQueuedRunForAgent(agent.id),
-      ]);
+      await startNextQueuedRunForAgent(agent.id);
       return newRun;
     }
 

@@ -281,8 +281,12 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(event?.message).toContain("process and sandbox gone");
 
     // The recovery sweep's own terminal write must emit exactly one
-    // agent.task_run event for the run it just terminalized.
-    expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    // agent.task_run event for the run it just terminalized. The write
+    // never awaits the emission, so wait for it here instead of asserting
+    // it fired synchronously.
+    await vi.waitFor(() => {
+      expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    });
     expect(mockTelemetryClient.track).toHaveBeenCalledWith(
       "agent.task_run",
       expect.objectContaining({ agent_id: agentId, state: "interrupted" }),
@@ -389,7 +393,11 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .then((rows) => rows[0]);
     expect(event?.message).toContain("issue reached a terminal status");
 
-    expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    // The terminal write never awaits the telemetry emission, so wait for
+    // it here instead of asserting it fired synchronously.
+    await vi.waitFor(() => {
+      expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    });
     expect(mockTelemetryClient.track).toHaveBeenCalledWith(
       "agent.task_run",
       expect.objectContaining({ agent_id: agentId, state: "succeeded" }),
@@ -427,7 +435,11 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .then((rows) => rows[0]?.status);
     expect(runStatus).toBe("cancelled");
 
-    expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    // The terminal write never awaits the telemetry emission, so wait for
+    // it here instead of asserting it fired synchronously.
+    await vi.waitFor(() => {
+      expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    });
     expect(mockTelemetryClient.track).toHaveBeenCalledWith(
       "agent.task_run",
       expect.objectContaining({ agent_id: agentId, state: "cancelled" }),

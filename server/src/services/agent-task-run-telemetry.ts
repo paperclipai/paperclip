@@ -46,10 +46,11 @@ function resolveDurationSeconds(
  * Telemetry enrichment does an awaited database lookup, so treat this call
  * as best-effort background work: do not let a caller's own required
  * lifecycle work (publishing a live event, cancelling a wake, clearing an
- * issue lock, returning a response) wait behind it. A caller that has no
- * further required work of its own may call this without awaiting it at
- * all; a caller with further required work should run this call alongside
- * that work (for example with `Promise.all`) instead of in front of it.
+ * issue lock, returning a response) wait behind it. Fire this call with
+ * `void emitAgentTaskRun(...).catch(() => {})` and never await it, even
+ * alongside other required work with `Promise.all` — an awaited
+ * `Promise.all` still blocks the caller's return on the slower of the two
+ * promises, so it does not remove the delay.
  */
 export async function emitAgentTaskRun(db: Db, run: HeartbeatRun): Promise<void> {
   try {

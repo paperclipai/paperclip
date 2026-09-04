@@ -362,7 +362,11 @@ export async function claimNativeSessionResumptions(input: {
       }).where(eq(heartbeatRuns.id, row.run.id));
       return true;
     });
-    if (terminalRunToEmit) await emitAgentTaskRun(input.db, terminalRunToEmit);
+    // Telemetry is best-effort background work; it must not delay claiming
+    // the remaining candidates in this loop, so fire it and do not await it.
+    if (terminalRunToEmit) {
+      void emitAgentTaskRun(input.db, terminalRunToEmit).catch(() => {});
+    }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
   }
   return claims;

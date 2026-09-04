@@ -5865,7 +5865,11 @@ export function issueRoutes(
         }),
       };
     });
-    if (cancelledRunToEmit) await emitAgentTaskRun(db, cancelledRunToEmit);
+    // Telemetry is best-effort background work; it must not delay the
+    // response with a slow lookup, so fire it and do not await it.
+    if (cancelledRunToEmit) {
+      void emitAgentTaskRun(db, cancelledRunToEmit).catch(() => {});
+    }
     return result;
   }
 

@@ -1690,16 +1690,19 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .then((rows) => rows[0]?.count ?? 0);
     expect(deferredWakeups).toBe(0);
 
-    // The stale-retry cancel runs inside enqueueWakeup's transaction. The
-    // event must reach the wire only after that transaction commits, so a
-    // call here proves the emit fired for the cancelled run, not before it.
-    expect(mockTrackAgentTaskRun).toHaveBeenCalledWith(
-      mockTelemetryClient,
-      expect.objectContaining({
-        agentId: oldAgentId,
-        state: "cancelled",
-      }),
-    );
+    // The stale-retry cancel runs inside enqueueWakeup's transaction, and
+    // the run's own required lifecycle work never awaits the telemetry
+    // emission, so wait for it here instead of asserting it fired
+    // synchronously.
+    await vi.waitFor(() => {
+      expect(mockTrackAgentTaskRun).toHaveBeenCalledWith(
+        mockTelemetryClient,
+        expect.objectContaining({
+          agentId: oldAgentId,
+          state: "cancelled",
+        }),
+      );
+    });
   });
 
   it("does not promote a scheduled retry after issue ownership changes", async () => {

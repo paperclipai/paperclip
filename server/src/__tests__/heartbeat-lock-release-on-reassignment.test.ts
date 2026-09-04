@@ -346,14 +346,17 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
       errorCode: "lock_released_on_reassignment",
     });
 
-    // The cancel runs inside enqueueWakeup's transaction. This call proves
-    // the event reached the wire only after that transaction committed.
-    expect(mockTrackAgentTaskRun).toHaveBeenCalledWith(
-      mockTelemetryClient,
-      expect.objectContaining({
-        agentId: coderAgentId,
-        state: "cancelled",
-      }),
-    );
+    // The cancel runs inside enqueueWakeup's transaction, and the run's own
+    // required lifecycle work never awaits the telemetry emission, so wait
+    // for it here instead of asserting it fired synchronously.
+    await vi.waitFor(() => {
+      expect(mockTrackAgentTaskRun).toHaveBeenCalledWith(
+        mockTelemetryClient,
+        expect.objectContaining({
+          agentId: coderAgentId,
+          state: "cancelled",
+        }),
+      );
+    });
   });
 });
