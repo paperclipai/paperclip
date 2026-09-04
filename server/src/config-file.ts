@@ -1,5 +1,9 @@
 import fs from "node:fs";
-import { paperclipConfigSchema, type PaperclipConfig } from "@paperclipai/shared";
+import {
+  findPaperclipConfigKeyWarnings,
+  paperclipConfigSchema,
+  type PaperclipConfig,
+} from "@paperclipai/shared";
 import { ZodError } from "zod";
 import { resolvePaperclipConfigPath } from "./paths.js";
 
@@ -26,7 +30,13 @@ export function readConfigFile(): PaperclipConfig | null {
   }
 
   try {
-    return paperclipConfigSchema.parse(raw);
+    const config = paperclipConfigSchema.parse(raw);
+    for (const warning of findPaperclipConfigKeyWarnings(config)) {
+      console.warn(
+        `Unknown config key ${warning.path}; did you mean ${warning.suggestion}? It will be preserved.`,
+      );
+    }
+    return config;
   } catch (error) {
     if (error instanceof ZodError) {
       throw new Error(`Invalid Paperclip config at ${configPath}: ${formatConfigValidationError(error)}`);

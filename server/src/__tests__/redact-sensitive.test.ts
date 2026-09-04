@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactSensitive } from "../middleware/redact-sensitive.js";
+import { redactSensitive, stripSecretBearingUrlParts } from "../middleware/redact-sensitive.js";
 
 describe("redactSensitive", () => {
   it("redacts a plaintext password field on a sign-in body", () => {
@@ -32,11 +32,37 @@ describe("redactSensitive", () => {
     }
   });
 
-  it("does not redact a bare `token` field — pagination cursors and CSRF tokens are not credentials", () => {
-    const out = redactSensitive({ token: "next-page-cursor", limit: 20 }) as Record<string, unknown>;
+  it("redacts an OAuth provider's error_description and error_uri from a callback query", () => {
+    const out = redactSensitive({
+      state: "paperclip-state",
+      error: "access_denied",
+      error_description: "\u001b[31mPaste your recovery key\u001b[0m sk-live-canary",
+      error_uri: "https://attacker.example/explain?leak=sk-live-canary",
+    }) as Record<string, unknown>;
 
-    expect(out.token).toBe("next-page-cursor");
+    // The `error` code is Paperclip's one allowlisted label, so it stays legible
+    // in logs; the provider's prose does not.
+    expect(out.error).toBe("access_denied");
+    expect(out.state).toBe("paperclip-state");
+    expect(out.error_description).toBe("[REDACTED]");
+    expect(out.error_uri).toBe("[REDACTED]");
+    expect(JSON.stringify(out)).not.toContain("sk-live-canary");
+    expect(JSON.stringify(out)).not.toContain("\\u001b");
+  });
+
+  it("redacts bare value and token fields recursively", () => {
+    const out = redactSensitive({
+      token: "secret-token",
+      nested: { value: "secret-value" },
+      entries: [{ value: "array-secret" }],
+      limit: 20,
+    }) as Record<string, unknown>;
+
+    expect(out.token).toBe("[REDACTED]");
+    expect((out.nested as Record<string, unknown>).value).toBe("[REDACTED]");
+    expect((out.entries as Array<Record<string, unknown>>)[0].value).toBe("[REDACTED]");
     expect(out.limit).toBe(20);
+    expect(JSON.stringify(out)).not.toMatch(/secret-token|secret-value|array-secret/);
   });
 
   it("strips secret-bearing query and fragment values from source URLs", () => {
@@ -96,5 +122,13 @@ describe("redactSensitive", () => {
     const json = JSON.stringify(out);
     expect(json).not.toContain("null");
     expect(json).not.toContain("[1,2,3]");
+  });
+});
+
+describe("stripSecretBearingUrlParts", () => {
+  it("keeps a request path legible while dropping its complete query and fragment", () => {
+    expect(stripSecretBearingUrlParts(
+      "/api/tools/oauth/callback?code=authorization-code&error_description=provider-prose#fragment",
+    )).toBe("/api/tools/oauth/callback");
   });
 });

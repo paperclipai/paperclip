@@ -656,7 +656,12 @@ const TimelineList = memo(function TimelineList({
                   {run.environment ? (
                     <span>
                       Environment <span className="text-foreground">{run.environment.name}</span>
-                      <span> · {run.environment.driver}</span>
+                      {/* The raw "sandbox" driver key stays off run details — the
+                          environment's name and the Provider entry below already
+                          identify it; other drivers (ssh, local) remain useful. */}
+                      {run.environment.driver !== "sandbox" ? (
+                        <span> · {run.environment.driver}</span>
+                      ) : null}
                     </span>
                   ) : null}
                   {run.environmentLease?.provider ? (

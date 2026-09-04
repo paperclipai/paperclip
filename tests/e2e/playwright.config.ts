@@ -19,6 +19,10 @@ const PLAYWRIGHT_CHANNEL = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
 
 process.env.PAPERCLIP_HOME = PAPERCLIP_HOME;
 process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
+// Specs that mint agent JWTs in-process (via createLocalAgentJwt) must derive
+// the same per-instance signing key as the webServer, or verification fails
+// with a 401 instead of authenticating as the agent.
+process.env.PAPERCLIP_INSTANCE_ID = PAPERCLIP_INSTANCE_ID;
 process.env.PAPERCLIP_AGENT_JWT_SECRET = PAPERCLIP_AGENT_JWT_SECRET;
 process.env.PAPERCLIP_DECISION_SIGNING_SECRET = PAPERCLIP_DECISION_SIGNING_SECRET;
 process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
@@ -66,6 +70,8 @@ export default defineConfig({
       ...process.env,
       NODE_ENV: "test",
       PORT: String(PORT),
+      PAPERCLIP_OPEN_ON_LISTEN: "false",
+      PAPERCLIP_API_URL: BASE_URL,
       PAPERCLIP_HOME,
       PAPERCLIP_INSTANCE_ID,
       PAPERCLIP_CONFIG,

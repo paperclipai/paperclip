@@ -10,7 +10,7 @@
 import type { Agent } from "@paperclipai/shared";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { resolveCommentAttribution } from "@/lib/comment-attribution";
-import type { TaskChatAuthorKind, TaskChatItem } from "./task-chat-model";
+import type { TaskChatAuthorKind, TaskChatItem, TaskChatMessageItem } from "./task-chat-model";
 
 export interface TaskChatAdapterContext {
   agentMap?: Map<string, Agent>;
@@ -21,12 +21,7 @@ export interface TaskChatAdapterContext {
    * writes and get a "for {user}" attribution chip (the open cross-task write design (attribution)).
    */
   issueAssigneeAgentId?: string | null;
-  /**
-   * Capitalized mode chip for agent-authored bubbles ("Agent mode" / "Plan
-   * mode" / "Ask mode") — resolved per comment, so each reply is tagged with
-   * the mode its request actually ran under (not the issue's current mode).
-   */
-  agentModeLabelFor?: (comment: IssueChatComment) => string | undefined;
+  verificationCaveatsByRunId?: ReadonlyMap<string, TaskChatMessageItem["verificationCaveats"]>;
 }
 
 function effectiveAgentId(comment: IssueChatComment): string | null {
@@ -34,10 +29,13 @@ function effectiveAgentId(comment: IssueChatComment): string | null {
 }
 
 function authorKind(comment: IssueChatComment): TaskChatAuthorKind {
+  // System authorship wins over any derivable run→agent linkage (PAP-443):
+  // recovery notices carry a derivedAuthorAgentId but must not render as
+  // agent bubbles.
+  if (comment.authorType === "system") return "system";
   if (effectiveAgentId(comment)) return "agent";
   if (comment.authorType === "user") return "human";
-  if (comment.authorType === "agent") return "agent";
-  return "system";
+  return "agent";
 }
 
 /** Shared bubble-footer time format ("2:34 PM") — also used by the description bubble (PAP-375). */
@@ -73,12 +71,28 @@ export function commentsToTaskChatItems(
       authorName =
         (comment.authorUserId && ctx.userLabelMap?.get(comment.authorUserId)) || undefined;
     }
+    const queued = comment.queueState === "queued" || comment.clientStatus === "queued";
     const optimistic =
-      comment.clientStatus === "queued"
+      queued
         ? "queued"
         : comment.clientStatus === "pending"
           ? "pending"
           : undefined;
+    const createdAtIso =
+      comment.createdAt instanceof Date
+        ? comment.createdAt.toISOString()
+        : comment.createdAt
+          ? String(comment.createdAt)
+          : undefined;
+    // Durable run-authored comments already carry their source run directly.
+    // Activity-derived `runId` is a useful fallback for older rows, but it may
+    // arrive later (or be omitted entirely for server-materialized final
+    // replies). Prefer the stored provenance so settled-response decorations
+    // such as verification caveats are never lost.
+    const sourceRunId = comment.createdByRunId
+      ?? comment.runId
+      ?? comment.derivedCreatedByRunId
+      ?? null;
     items.push({
       id: comment.id || comment.clientId || `${comment.createdAt}`,
       kind: "message",
@@ -87,9 +101,18 @@ export function commentsToTaskChatItems(
       text: comment.body,
       timestamp: formatTaskChatTimestamp(comment.createdAt),
       optimistic,
+      queueTargetRunId: queued ? comment.queueTargetRunId ?? null : null,
+      verificationCaveats: sourceRunId
+        ? ctx.verificationCaveatsByRunId?.get(sourceRunId)
+        : undefined,
       agentIcon,
       onBehalfOfUserName,
-      modeLabel: kind === "agent" ? ctx.agentModeLabelFor?.(comment) : undefined,
+      // System notices carry their structured hints through to the render
+      // layer (PAP-443); other authors keep the item lean.
+      presentation: kind === "system" ? comment.presentation ?? null : undefined,
+      metadata: kind === "system" ? comment.metadata ?? null : undefined,
+      runAgentId: kind === "system" ? comment.runAgentId ?? null : undefined,
+      createdAtIso: kind === "system" ? createdAtIso : undefined,
     });
   }
   return items;

@@ -124,8 +124,8 @@ export function SidebarStarredProjects() {
               "flex min-w-0 flex-1 items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 pr-8 text-(length:--text-compact) font-medium transition-colors",
               !rail && "pl-6",
               isActive
-                ? "bg-accent text-foreground"
-                : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
+                ? "bg-background text-foreground"
+                : "text-foreground/80 hover:bg-background hover:text-foreground",
             )}
           >
             <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />

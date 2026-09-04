@@ -35,6 +35,7 @@ function createFakeDb(args: {
   const issueTouches: Array<Record<string, unknown>> = [];
   const interactionUpdates: Array<Record<string, unknown>> = [];
   const toolActionRequestUpdates: Array<Record<string, unknown>> = [];
+  const inserts: Array<{ table: string; values: Record<string, unknown> }> = [];
   let selectCallCount = 0;
 
   const db: any = {
@@ -66,7 +67,11 @@ function createFakeDb(args: {
         };
       },
     })),
-    insert: vi.fn(),
+    insert: vi.fn((table: unknown) => ({
+      values: async (values: Record<string, unknown>) => {
+        inserts.push({ table: getTableName(table as never), values });
+      },
+    })),
     transaction: async (callback: (tx: typeof db) => Promise<void>) => callback(db),
   };
 
@@ -76,6 +81,7 @@ function createFakeDb(args: {
     issueTouches,
     interactionUpdates,
     toolActionRequestUpdates,
+    inserts,
   };
 }
 
@@ -86,14 +92,15 @@ describe("issueThreadInteractionService", () => {
   });
 
   it.each([
-    ["ask_user_questions", undefined, {}, "board_or_agents", "board_or_agents"],
-    ["suggest_tasks", undefined, {}, "board_only", "board_only"],
-    ["request_confirmation", "board_or_agents", {}, "board_or_agents", "board_or_agents"],
-    ["request_checkbox_confirmation", undefined, { request_checkbox_confirmation: { defaultPolicy: "board_or_agents" } }, "board_or_agents", "board_or_agents"],
-    ["request_item_verdicts", "board_or_agents", { request_item_verdicts: { cap: "board_only" } }, "board_or_agents", "board_only"],
+    ["ask_user_questions", undefined, {}, "anyone", "anyone", "inherited", "requested"],
+    ["suggest_tasks", undefined, {}, "anyone", "anyone", "inherited", "requested"],
+    ["request_confirmation", "board_or_agents", {}, "anyone", "anyone", "explicit", "requested"],
+    ["request_confirmation", "board_only", {}, "human_only", "human_only", "explicit", "requested"],
+    ["request_checkbox_confirmation", undefined, { request_checkbox_confirmation: { defaultPolicy: "not_creator" } }, "not_creator", "not_creator", "inherited", "requested"],
+    ["request_item_verdicts", "anyone", { request_item_verdicts: { cap: "not_creator" } }, "anyone", "not_creator", "explicit", "company_cap"],
   ] as const)(
     "resolves %s requested/default/cap policy snapshots",
-    async (kind, requested, governance, expectedRequested, expectedEffective) => {
+    async (kind, requested, governance, expectedRequested, expectedEffective, expectedProvenance, expectedSource) => {
       const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
       expect(resolveInteractionPolicy({
         kind,
@@ -103,11 +110,13 @@ describe("issueThreadInteractionService", () => {
       })).toEqual({
         requestedResolverPolicy: expectedRequested,
         effectiveResolverPolicy: expectedEffective,
+        resolverPolicyProvenance: expectedProvenance,
+        effectiveResolverPolicySource: expectedSource,
       });
     },
   );
 
-  it("always clamps tool-action confirmations to board-only", async () => {
+  it("always clamps tool-action confirmations to human-only", async () => {
     const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
     expect(resolveInteractionPolicy({
       kind: "request_confirmation",
@@ -115,8 +124,10 @@ describe("issueThreadInteractionService", () => {
       governance: { request_confirmation: { defaultPolicy: "board_or_agents", cap: "board_or_agents" } },
       hasToolAction: true,
     })).toEqual({
-      requestedResolverPolicy: "board_or_agents",
-      effectiveResolverPolicy: "board_only",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "governed_action",
     });
   });
 
@@ -130,8 +141,10 @@ describe("issueThreadInteractionService", () => {
       kind: "suggest_tasks",
       status: "pending",
       continuationPolicy: "wake_assignee",
-      requestedResolverPolicy: "board_only",
-      effectiveResolverPolicy: "board_only",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "inherited",
+      effectiveResolverPolicySource: "requested",
       idempotencyKey: "run-1:suggest",
       sourceCommentId: null,
       sourceRunId: "22222222-2222-4222-8222-222222222222",
@@ -255,6 +268,16 @@ describe("issueThreadInteractionService", () => {
     });
     expect(state.interactionUpdates).toHaveLength(1);
     expect(state.issueTouches).toHaveLength(1);
+    expect(state.inserts).toEqual([
+      expect.objectContaining({
+        table: "issue_question_response_deliveries",
+        values: expect.objectContaining({
+          interactionId: "interaction-2",
+          correlationId: "question-response:interaction-2",
+          payloadSha256: expect.any(String),
+        }),
+      }),
+    ]);
   });
 
   it("withdraws a pending interaction with attribution and rejects repeats", async () => {

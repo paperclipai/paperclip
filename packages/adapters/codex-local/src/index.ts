@@ -1,4 +1,6 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
+import {
+  PAPERCLIP_RUNNER_DEFAULT_MODELS,
+} from "@paperclipai/adapter-utils";
 
 export const type = "codex_local";
 export const label = "Codex";
@@ -8,7 +10,7 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 // Use the concrete `gpt-5.6-sol` slug (Codex's own default for the 5.6 family) rather than the
 // bare `gpt-5.6` alias: OpenAI ships no model metadata for the bare slug, so passing it makes the
 // Codex CLI warn ("Model metadata for `gpt-5.6` not found") and fall back to generic context limits.
-export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-sol";
+export const DEFAULT_CODEX_LOCAL_MODEL = PAPERCLIP_RUNNER_DEFAULT_MODELS.codex;
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
   "gpt-5.6-sol",
@@ -74,16 +76,6 @@ export const models = [
   { id: "codex-mini-latest", label: "Codex Mini" },
 ];
 
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
-    adapterConfig: {},
-    source: "adapter_default",
-  },
-];
-
 export const agentConfigurationDoc = `# codex_local agent configuration
 
 Adapter: codex_local
@@ -129,5 +121,5 @@ Notes:
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - Fast mode is supported on GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
-- Codex ACP is the preferred auto lane when Node >=22.13.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Auto selection falls back to CLI when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
+- Codex ACP is the preferred auto lane when Node >=24.11.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Auto selection falls back to CLI when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
 `;

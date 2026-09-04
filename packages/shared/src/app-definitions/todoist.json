@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "todoist",
+  "name": "Todoist",
+  "description": "Connect Todoist's provider-hosted MCP server.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/todoist.svg"
+  },
+  "urlPatterns": [
+    "https://ai.todoist.net/*"
+  ],
+  "docsUrl": "https://developer.todoist.com/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://ai.todoist.net/mcp"
+      },
+      "guidanceMd": "Connect Todoist in the browser. A Todoist account.",
+      "riskTier": "S3",
+      "label": "Sign in with Todoist",
+      "consoleLinks": {
+        "docs": "https://developer.todoist.com/"
+      },
+      "warnings": [
+        "A Todoist account."
+      ]
+    }
+  ]
+}

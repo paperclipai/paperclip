@@ -12,14 +12,49 @@ import {
   heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
+import {
+  MAX_ISSUE_PREFIX_ATTEMPTS,
+  deriveIssuePrefixBase,
+  isIssuePrefixConflict,
+  issuePrefixSuffixForAttempt,
+  pickAvailableIssuePrefix,
+  rekeyCompanyIssueIdentifiers,
+} from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+
+const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
+const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
+const cloudTenantWriteDebounces = new WeakMap<Db, Map<string, { fingerprint: string; syncedAt: number }>>();
+
+function cloudTenantWriteDebounceFor(db: Db) {
+  let debounce = cloudTenantWriteDebounces.get(db);
+  if (!debounce) {
+    debounce = new Map();
+    cloudTenantWriteDebounces.set(db, debounce);
+  }
+  return debounce;
+}
+
+function pruneCloudTenantWriteDebounce(
+  debounce: Map<string, { fingerprint: string; syncedAt: number }>,
+  nowMs: number,
+) {
+  for (const [subject, entry] of debounce) {
+    if (entry.syncedAt <= nowMs - CLOUD_TENANT_WRITE_DEBOUNCE_MS) debounce.delete(subject);
+  }
+  while (debounce.size > CLOUD_TENANT_WRITE_DEBOUNCE_MAX) {
+    const oldestSubject = debounce.keys().next().value;
+    if (!oldestSubject) break;
+    debounce.delete(oldestSubject);
+  }
+}
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unprocessable } from "../errors.js";
+import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
@@ -29,6 +64,20 @@ function hashToken(token: string) {
 
 function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
+}
+
+function invalidAgentTokenMessage(token: string) {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as {
+      exp?: unknown;
+    };
+    if (typeof payload.exp === "number" && payload.exp <= Math.floor(Date.now() / 1000)) {
+      return "Expired agent token; obtain fresh credentials and retry";
+    }
+  } catch {
+    // Malformed and incorrectly signed tokens share the generic failure below.
+  }
+  return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
 async function resolveLegacyRunResponsibleUserId(
@@ -162,6 +211,8 @@ interface ActorMiddlewareOptions {
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
+const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
@@ -180,7 +231,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const runIdHeader = req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
-    if (!authHeader?.toLowerCase().startsWith("bearer ")) {
+    const hasBearerCredentials = /^bearer(?:\s|$)/i.test(authHeader ?? "");
+
+    // Public MCP gateway protocol requests carry a pcgw_* bearer that is
+    // validated by the gateway service itself. Do not interpret that bearer as
+    // a board key or agent JWT here: doing so rejects the MCP handshake before
+    // the protocol route can verify its run-scoped credential. Keep this bypass
+    // restricted to the unguessable public gateway path; all /api routes retain
+    // the normal actor authentication path below.
+    if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
+      if (runIdHeader) req.actor.runId = runIdHeader;
+      next();
+      return;
+    }
+
+    if (!hasBearerCredentials) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
@@ -232,9 +297,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const token = authHeader.slice("bearer ".length).trim();
+    const token = authHeader!.slice("bearer".length).trim();
     if (!token) {
-      next();
+      next(unauthorized("Empty bearer token; provide valid agent credentials and retry"));
       return;
     }
 
@@ -270,7 +335,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
-        next();
+        next(unauthorized(invalidAgentTokenMessage(token)));
         return;
       }
 
@@ -281,12 +346,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
+        next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
         return;
       }
 
-      if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
+      if (agentRecord.status === "terminated") {
+        next(unauthorized("Agent is terminated and cannot authenticate"));
+        return;
+      }
+      if (agentRecord.status === "pending_approval") {
+        next(unauthorized("Agent is pending approval and cannot authenticate"));
         return;
       }
 
@@ -348,8 +417,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .where(eq(agents.id, key.agentId))
       .then((rows) => rows[0] ?? null);
 
-    if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-      next();
+    if (!agentRecord || agentRecord.companyId !== key.companyId) {
+      next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
+      return;
+    }
+    if (agentRecord.status === "terminated") {
+      next(unauthorized("Agent is terminated and cannot authenticate"));
+      return;
+    }
+    if (agentRecord.status === "pending_approval") {
+      next(unauthorized("Agent is pending approval and cannot authenticate"));
       return;
     }
 
@@ -412,7 +489,86 @@ async function resolveOwnerInstanceAdmin(
   }
 }
 
-export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+/**
+ * Minimal header accessor `resolveCloudTenantActor` needs. Express `Request`
+ * satisfies it directly; websocket upgrade paths adapt a raw
+ * `IncomingMessage` with {@link cloudActorHeaderSourceFromHeaders} since
+ * trusted-header authentication must work identically for upgrades — a
+ * cloud-proxied browser has no local Better Auth session to fall back on.
+ */
+export interface CloudActorHeaderSource {
+  header(name: string): string | undefined;
+}
+
+/** Adapts a raw header map (e.g. `IncomingMessage.headers`) to {@link CloudActorHeaderSource}. */
+export function cloudActorHeaderSourceFromHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): CloudActorHeaderSource {
+  return {
+    header(name: string) {
+      const value = headers[name.toLowerCase()];
+      return Array.isArray(value) ? value[0] : value;
+    },
+  };
+}
+
+/**
+ * postgres.js codes for a connection the server side closed out from under
+ * an in-flight query — a pooled Postgres endpoint recycling or suspending
+ * (observed 2026-09-03 with a managed pooler closing the socket mid-INSERT).
+ * The driver reconnects transparently on the next query; only the statement
+ * that was on the wire is lost.
+ */
+const transientDbConnectionCodes = new Set([
+  "CONNECTION_CLOSED",
+  "CONNECTION_ENDED",
+  "CONNECTION_DESTROYED",
+]);
+
+/**
+ * True when the error chain (drizzle wraps the driver error as `cause`)
+ * carries a postgres.js closed-connection code. Exported for tests.
+ */
+export function isTransientDbConnectionError(error: unknown): boolean {
+  for (let current: unknown = error; current instanceof Error; current = current.cause) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && transientDbConnectionCodes.has(code)) return true;
+  }
+  return false;
+}
+
+/**
+ * Runs `run` and retries it exactly once when it fails on a transient
+ * closed-connection error. Callers must pass an idempotent operation.
+ * Exported for tests.
+ */
+export async function retryOnTransientDbConnectionError<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isTransientDbConnectionError(error)) throw error;
+    return run();
+  }
+}
+
+/**
+ * Trusted-header actor resolution with a single transient-connection retry.
+ * The tenant sync inside is idempotent end to end — every write is an
+ * upsert/on-conflict/delete and the write debounce records only after the
+ * whole sync succeeds — so replaying it after a dropped connection is safe,
+ * and turns a golden-path authentication 500 into a served request.
+ */
+export async function resolveCloudTenantActor(
+  db: Db,
+  req: CloudActorHeaderSource,
+): Promise<Express.Request["actor"] | null> {
+  return retryOnTransientDbConnectionError(() => resolveCloudTenantActorOnce(db, req));
+}
+
+async function resolveCloudTenantActorOnce(
+  db: Db,
+  req: CloudActorHeaderSource,
+): Promise<Express.Request["actor"] | null> {
   const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;
 
@@ -431,8 +587,20 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const companyId = cloudTenantCompanyId(stackId);
   const companyName = paperclipCompanyName || humanizeCloudStackSlug(stackId);
   const now = new Date();
+  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
+  const syncFingerprint = [userEmail, userName, stackId, stackRole, paperclipCompanyId ?? ""].join(":");
+  const cloudTenantWriteDebounce = cloudTenantWriteDebounceFor(db);
+  pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, now.getTime());
+  const previousSync = cloudTenantWriteDebounce.get(userId);
+  const shouldSync = previousSync?.fingerprint !== syncFingerprint
+    || previousSync.syncedAt <= now.getTime() - CLOUD_TENANT_WRITE_DEBOUNCE_MS;
+  let effectiveMembership: { companyId: string; membershipRole: string | null; status: string } = {
+    companyId,
+    membershipRole,
+    status: "active",
+  };
 
-  await db
+  if (shouldSync) await db
     .insert(authUsers)
     .values({
       id: userId,
@@ -462,21 +630,9 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  await db
-    .insert(companies)
-    .values({
-      id: companyId,
-      name: companyName,
-      description: `Provisioned by Paperclip Cloud for stack ${stackId}.`,
-      status: "active",
-      issuePrefix: issuePrefixForCloudStack(stackId),
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: companies.id,
-    });
+  if (shouldSync) await insertCloudTenantCompany(db, { companyId, companyName, now });
 
-  if (paperclipCompanyName) {
+  if (shouldSync && paperclipCompanyName) {
     await repairCloudTenantCompanyName(db, {
       companyId,
       paperclipCompanyId,
@@ -485,8 +641,14 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     });
   }
 
-  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-  const membership = await db
+  // Runs after the name repair so the prefix derives from the repaired name.
+  // The helper self-gates on the legacy markers, so it is a no-op once the
+  // company has been repaired or was claimed by a current build.
+  if (shouldSync) {
+    await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
+  }
+
+  effectiveMembership = shouldSync ? await db
     .insert(companyMemberships)
     .values({
       companyId,
@@ -513,17 +675,22 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       companyId,
       membershipRole,
       status: "active",
-    });
+    }) : { companyId, membershipRole, status: "active" as const };
 
   // Without instance-admin elevation, cloud tenant users are authorized purely
   // through company-scoped permission grants — seed the same role defaults the
   // regular membership flows create.
-  await ensureHumanRoleDefaultGrants(db, {
+  if (shouldSync) await ensureHumanRoleDefaultGrants(db, {
     companyId,
     principalId: userId,
-    membershipRole: membership.membershipRole,
+    membershipRole: effectiveMembership.membershipRole ?? membershipRole,
     grantedByUserId: null,
   });
+  if (shouldSync) {
+    cloudTenantWriteDebounce.delete(userId);
+    cloudTenantWriteDebounce.set(userId, { fingerprint: syncFingerprint, syncedAt: Date.now() });
+    pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, Date.now());
+  }
 
   // The stack's seeded company is only where Cloud provisioned this user.
   // Companies created afterwards on the instance (imports, in-app company
@@ -556,8 +723,8 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     memberships: [
       {
         companyId,
-        membershipRole: membership.membershipRole,
-        status: membership.status,
+        membershipRole: effectiveMembership.membershipRole ?? membershipRole,
+        status: effectiveMembership.status,
       },
       ...additionalMemberships,
     ],
@@ -571,7 +738,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   };
 }
 
-function requiredCloudHeader(req: Request, name: string): string {
+function requiredCloudHeader(req: CloudActorHeaderSource, name: string): string {
   const value = req.header(name)?.trim();
   if (!value) {
     throw new Error(`Missing trusted Cloud tenant header ${name}`);
@@ -690,9 +857,151 @@ async function repairCloudTenantCompanyName(
   }
 }
 
-function issuePrefixForCloudStack(stackId: string): string {
+/**
+ * Claims the tenant company row for this stack.
+ *
+ * The prefix derives from the company name, exactly as it does for a
+ * self-hosted company. Each attempt is a standalone INSERT, so a failed
+ * attempt is its own implicit transaction and cannot poison a surrounding
+ * one. `onConflictDoNothing` only absorbs the `companies.id` conflict — a
+ * prefix that another company already holds still raises `23505`, so the loop
+ * moves on to the next suffix.
+ */
+async function insertCloudTenantCompany(
+  db: Db,
+  input: { companyId: string; companyName: string; now: Date },
+): Promise<void> {
+  const base = deriveIssuePrefixBase(input.companyName);
+  for (let attempt = 1; attempt <= MAX_ISSUE_PREFIX_ATTEMPTS; attempt += 1) {
+    try {
+      await db
+        .insert(companies)
+        .values({
+          id: input.companyId,
+          name: input.companyName,
+          description: null,
+          status: "active",
+          issuePrefix: `${base}${issuePrefixSuffixForAttempt(attempt)}`,
+          updatedAt: input.now,
+        })
+        .onConflictDoNothing({
+          target: companies.id,
+        });
+      return;
+    } catch (error) {
+      if (!isIssuePrefixConflict(error)) throw error;
+    }
+  }
+  throw new Error("Unable to allocate a unique issue prefix for the tenant company");
+}
+
+/**
+ * The issue prefix that pre-name-derivation builds gave a tenant company.
+ *
+ * This derivation survives only as the detector for the one-time repair
+ * below. Nothing mints a prefix this way any more.
+ */
+function legacyProvisionedIssuePrefix(stackId: string): string {
   const hash = createHash("sha256").update(stackId).digest("hex").slice(0, 4).toUpperCase();
   return `PC${hash}`;
+}
+
+/** The placeholder description that pre-name-derivation builds wrote. */
+const LEGACY_PROVISIONED_DESCRIPTION_PREFIX = "Provisioned by Paperclip Cloud for stack ";
+
+/**
+ * One-time repair for companies claimed by a pre-name-derivation build.
+ *
+ * Those companies carry an opaque hash prefix and a placeholder description
+ * that the operator never chose. Re-derive the prefix from the company's
+ * current name, re-key the stored issue and case identifiers onto it, and drop
+ * the placeholder. Both guards stop matching once the repair lands, so a later
+ * pass is a no-op.
+ */
+async function repairCloudTenantCompanyProvisionDefaults(
+  db: Db,
+  input: { companyId: string; stackId: string; now: Date },
+): Promise<void> {
+  try {
+    const existing = await db
+      .select({
+        name: companies.name,
+        issuePrefix: companies.issuePrefix,
+        description: companies.description,
+      })
+      .from(companies)
+      .where(eq(companies.id, input.companyId))
+      .then((rows) => rows[0]);
+    if (!existing) return;
+
+    const legacyPrefix = legacyProvisionedIssuePrefix(input.stackId);
+    const legacyDescription = existing.description?.startsWith(LEGACY_PROVISIONED_DESCRIPTION_PREFIX)
+      ? existing.description
+      : null;
+    if (existing.issuePrefix !== legacyPrefix) {
+      if (!legacyDescription) return;
+      // The prefix was already re-derived, so only the placeholder is left.
+      await db
+        .update(companies)
+        .set({ description: null, updatedAt: input.now })
+        .where(and(
+          eq(companies.id, input.companyId),
+          eq(companies.description, legacyDescription),
+        ));
+      return;
+    }
+
+    await db.transaction(async (tx) => {
+      const candidate = await pickAvailableIssuePrefix(tx, deriveIssuePrefixBase(existing.name));
+      if (!candidate || candidate === legacyPrefix) return;
+
+      const [updated] = await tx
+        .update(companies)
+        .set({
+          issuePrefix: candidate,
+          ...(legacyDescription ? { description: null } : {}),
+          updatedAt: input.now,
+        })
+        .where(and(
+          eq(companies.id, input.companyId),
+          // A user may rename the company between the read above and this
+          // repair. Match the exact observed legacy prefix so that concurrent
+          // genuine renames always win.
+          eq(companies.issuePrefix, legacyPrefix),
+        ))
+        .returning({ id: companies.id });
+      if (!updated) return;
+
+      const rekeyed = await rekeyCompanyIssueIdentifiers(tx, {
+        companyId: input.companyId,
+        fromPrefix: legacyPrefix,
+        toPrefix: candidate,
+      });
+
+      await tx.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "cloud-tenant-auth",
+        action: "company.updated",
+        entityType: "company",
+        entityId: input.companyId,
+        details: {
+          source: "cloud_tenant_auth",
+          reason: "legacy_provision_defaults_repair",
+          previousIssuePrefix: legacyPrefix,
+          issuePrefix: candidate,
+          descriptionCleared: legacyDescription !== null,
+          issuesRekeyed: rekeyed.issues,
+          casesRekeyed: rekeyed.cases,
+        },
+      });
+    });
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId },
+      "Failed to repair legacy tenant company provisioning defaults",
+    );
+  }
 }
 
 export function requireBoard(req: Express.Request) {

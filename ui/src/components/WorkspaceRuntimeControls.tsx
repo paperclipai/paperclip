@@ -1,5 +1,6 @@
 import type {
   WorkspaceCommandDefinition,
+  RuntimeExposureStatus,
   WorkspaceRuntimeControlTarget,
   WorkspaceRuntimeService,
 } from "@paperclipai/shared";
@@ -9,6 +10,7 @@ import {
 } from "@paperclipai/shared";
 import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useManagedSandboxOnly } from "@/hooks/useManagedSandboxOnly";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { timeAgo } from "@/lib/timeAgo";
@@ -30,6 +32,7 @@ export type WorkspaceRuntimeControlItem = {
   statusLabel: string;
   lifecycle: "shared" | "ephemeral" | null;
   healthStatus: "unknown" | "healthy" | "unhealthy" | null;
+  exposure: RuntimeExposureStatus | null;
   command: string | null;
   cwd: string | null;
   port: number | null;
@@ -96,6 +99,7 @@ function buildServiceItem(
     statusLabel: runtimeService?.status ?? "stopped",
     lifecycle: runtimeService?.lifecycle ?? command.lifecycle,
     healthStatus: runtimeService?.healthStatus ?? "unknown",
+    exposure: runtimeService?.exposure ?? null,
     command: runtimeService?.command ?? command.command,
     cwd: runtimeService?.cwd ?? command.cwd,
     port: runtimeService?.port ?? null,
@@ -120,6 +124,7 @@ function buildJobItem(
     statusLabel: "run once",
     lifecycle: null,
     healthStatus: null,
+    exposure: null,
     command: command.command,
     cwd: command.cwd,
     port: null,
@@ -169,6 +174,7 @@ export function buildWorkspaceRuntimeControlSections(input: {
       statusLabel: runtimeService.status,
       lifecycle: runtimeService.lifecycle,
       healthStatus: runtimeService.healthStatus,
+      exposure: runtimeService.exposure ?? null,
       command: runtimeService.command ?? null,
       cwd: runtimeService.cwd ?? null,
       port: runtimeService.port ?? null,
@@ -211,6 +217,39 @@ export function getRunningRuntimeServiceUrl(
 
 function isActiveStatusLabel(statusLabel: string) {
   return statusLabel === "running" || statusLabel === "starting" || statusLabel === "provisioning";
+}
+
+function exposureFailureCopy(exposure: RuntimeExposureStatus | null) {
+  if (exposure?.state === "failed") {
+    return {
+      label: "HTTPS unavailable",
+      remediation: "Check the Tailscale broker and node HTTPS configuration.",
+    };
+  }
+  if (exposure?.state === "cleanup_pending") {
+    return {
+      label: "HTTPS cleanup pending",
+      remediation: "Restart the host broker before reusing this port.",
+    };
+  }
+  return null;
+}
+
+function ExposureFailureDetail({ exposure }: { exposure: RuntimeExposureStatus | null }) {
+  const copy = exposureFailureCopy(exposure);
+  if (!copy) return null;
+  return (
+    <div className="space-y-1 break-words text-xs text-destructive" role="alert">
+      <div
+        className="line-clamp-3 font-medium"
+        title={exposure?.lastError ?? undefined}
+      >
+        {copy.label}
+        {exposure?.lastError ? ` · ${exposure.lastError}` : ""}
+      </div>
+      <div>{copy.remediation}</div>
+    </div>
+  );
 }
 
 /**
@@ -260,6 +299,15 @@ export function buildWorkspaceServiceControlEntries(input: {
     const failureDetail = state === "failed"
       ? `Service failed${runtimeService?.stoppedAt ? ` · ${timeAgo(runtimeService.stoppedAt)}` : ""}`
       : null;
+    const exposure = runtimeService?.exposure ?? item.exposure;
+    const exposureFailure = exposureFailureCopy(exposure);
+    const exposureDetail = exposure?.state === "pending"
+      ? "Provisioning HTTPS…"
+      : exposure?.state === "ready"
+        ? "HTTPS ready"
+        : exposureFailure
+          ? `${exposureFailure.label} · ${exposureFailure.remediation}`
+          : null;
 
     return {
       key: item.key,
@@ -269,6 +317,8 @@ export function buildWorkspaceServiceControlEntries(input: {
       url: item.url,
       port: item.port,
       failureDetail,
+      exposureState: exposure?.state ?? null,
+      exposureDetail,
       canStart: item.canStart,
     };
   });
@@ -411,6 +461,11 @@ function CommandSection({
   square?: boolean;
   iconOnly?: boolean;
 }) {
+  // Managed-sandbox-only policy: the working directory is a path on the
+  // execution host, so the command rows drop it, and keep dropping it until the
+  // policy is known. The URL, the port, and the command itself stay — they
+  // describe the service, not the host filesystem.
+  const { hideHostPaths } = useManagedSandboxOnly();
   return (
     <div className="space-y-3">
       <div className="space-y-1">
@@ -453,9 +508,10 @@ function CommandSection({
                   ) : null}
                   {item.port ? <div>Port {item.port}</div> : null}
                   {item.command ? <div className="break-all font-mono">{item.command}</div> : null}
-                  {item.cwd ? <div className="break-all font-mono">{item.cwd}</div> : null}
+                  {item.cwd && !hideHostPaths ? <div className="break-all font-mono">{item.cwd}</div> : null}
                   {item.disabledReason ? <div>{item.disabledReason}</div> : null}
                 </div>
+                <ExposureFailureDetail exposure={item.exposure} />
                 {item.healthStatus && item.statusLabel !== "stopped" ? (
                   <div className="flex items-center gap-2">
                     <Badge variant="outline" className={cn(

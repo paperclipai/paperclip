@@ -54,4 +54,25 @@ describe("registered run secret redaction", () => {
     expect(redactRegisteredSecretValues("token-extended token", ["token-extended", "token"]))
       .toBe(`${REDACTED_EVENT_VALUE} ${REDACTED_EVENT_VALUE}`);
   });
+
+  it("preserves Date instances instead of collapsing them to empty objects (PAP-16607)", () => {
+    const createdAt = new Date("2026-08-06T12:00:00.000Z");
+    const result = redactRegisteredSecretValues({
+      comment: { body: `agent pasted ${secret}`, createdAt, updatedAt: createdAt },
+      nested: [{ finishedAt: createdAt }],
+    }, [secret]);
+
+    expect(result.comment.createdAt).toBeInstanceOf(Date);
+    expect(result.comment.createdAt.toISOString()).toBe("2026-08-06T12:00:00.000Z");
+    expect(result.comment.updatedAt).toBeInstanceOf(Date);
+    expect(result.nested[0]?.finishedAt).toBeInstanceOf(Date);
+    expect(result.comment.body).toBe(`agent pasted ${REDACTED_EVENT_VALUE}`);
+  });
+
+  it("preserves Date instances when no secret values are registered", () => {
+    const createdAt = new Date("2026-08-06T12:00:00.000Z");
+    const result = redactRegisteredSecretValues({ createdAt }, []);
+    expect(result.createdAt).toBeInstanceOf(Date);
+    expect(result.createdAt.toISOString()).toBe("2026-08-06T12:00:00.000Z");
+  });
 });

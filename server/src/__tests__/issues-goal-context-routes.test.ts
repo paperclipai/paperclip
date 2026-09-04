@@ -102,7 +102,7 @@ const mockDb = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
@@ -137,6 +137,7 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
+  STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
 }));
 
 function createApp() {

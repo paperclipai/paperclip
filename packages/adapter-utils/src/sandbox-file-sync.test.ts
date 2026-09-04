@@ -257,7 +257,11 @@ describe("sandbox native file sync", () => {
       adapterKey: "test-adapter",
       client,
       workspaceLocalDir: localWorkspaceDir,
-      additionalSources: projects.map((project) => ({ localPath: project.localDir, projectId: project.projectId })),
+      additionalSources: projects.map((project) => ({
+        localPath: project.localDir,
+        projectId: project.projectId,
+        ignoreResolution: { kind: "other" },
+      })),
     });
 
     // Each project lands in its OWN `project-<projectId>` directory under the
@@ -320,9 +324,9 @@ describe("sandbox native file sync", () => {
       client,
       workspaceLocalDir: localWorkspaceDir,
       additionalSources: [
-        { localPath: goodDir, projectId: "good-a" },
-        { localPath: path.join(rootDir, "does-not-exist"), projectId: "broken" },
-        { localPath: goodDir, projectId: "good-b" },
+        { localPath: goodDir, projectId: "good-a", ignoreResolution: { kind: "other" } },
+        { localPath: path.join(rootDir, "does-not-exist"), projectId: "broken", ignoreResolution: { kind: "other" } },
+        { localPath: goodDir, projectId: "good-b", ignoreResolution: { kind: "other" } },
       ],
     });
 

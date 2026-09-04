@@ -33,15 +33,21 @@ function trustedOriginsForRequest(req: Request) {
   return origins;
 }
 
-function isTrustedBoardMutationRequest(req: Request) {
+/**
+ * Return the browser origin only when it is the same origin Paperclip's CSRF
+ * guard accepts for this request. Callers may use this as browser-reachability
+ * evidence, but must still apply any protocol-specific constraints (for
+ * example OAuth requiring HTTPS outside loopback).
+ */
+export function trustedBoardMutationOrigin(req: Request): string | null {
   const allowedOrigins = trustedOriginsForRequest(req);
   const origin = parseOrigin(req.header("origin"));
-  if (origin && allowedOrigins.has(origin)) return true;
+  if (origin && allowedOrigins.has(origin)) return origin;
 
   const refererOrigin = parseOrigin(req.header("referer"));
-  if (refererOrigin && allowedOrigins.has(refererOrigin)) return true;
+  if (refererOrigin && allowedOrigins.has(refererOrigin)) return refererOrigin;
 
-  return false;
+  return null;
 }
 
 export function boardMutationGuard(): RequestHandler {
@@ -68,7 +74,7 @@ export function boardMutationGuard(): RequestHandler {
       return;
     }
 
-    if (!isTrustedBoardMutationRequest(req)) {
+    if (!trustedBoardMutationOrigin(req)) {
       res.status(403).json({ error: "Board mutation requires trusted browser origin" });
       return;
     }

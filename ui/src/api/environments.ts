@@ -2,6 +2,7 @@ import type {
   CancelEnvironmentCustomImageSetupSession,
   Environment,
   EnvironmentCapabilities,
+  EnvironmentDeleteBlastRadius,
   EnvironmentLease,
   EnvironmentProbeResult,
   EnvironmentCustomImageSetupSession,
@@ -20,8 +21,20 @@ export interface EnvironmentCustomImageOverview {
    * back to the base image until a new image is captured. `null` when unknown.
    */
   activeTemplateMatchesConfig?: boolean | null;
+  /**
+   * Boot-relevant drift attribution for the active template. It names the
+   * classification and the drifted paths with their `from`/`to` values, so the
+   * banner can name the changed field. `null` or absent when there is no active
+   * template or the driver is not `sandbox`.
+   */
+  activeTemplateDrift?: EnvironmentCustomImageActiveTemplateDrift | null;
   activeSession: EnvironmentCustomImageSetupSession | null;
   latestSession: EnvironmentCustomImageSetupSession | null;
+}
+
+export interface EnvironmentCustomImageActiveTemplateDrift {
+  classification: EnvironmentCustomImageRelinkClassification;
+  driftedPaths: EnvironmentCustomImageDriftedPath[];
 }
 
 export type EnvironmentCustomImageReconciliation =
@@ -54,7 +67,33 @@ export interface EnvironmentCustomImageRollbackResult {
   supersededTemplate: EnvironmentCustomImageTemplate;
 }
 
-function customImageCompanyQuery(companyId: string): string {
+export type EnvironmentCustomImageRelinkClassification =
+  | "knob_only"
+  | "boot_source_drift"
+  | "unclassified";
+
+export interface EnvironmentCustomImageRelinkResult {
+  template: EnvironmentCustomImageTemplate;
+  classification: EnvironmentCustomImageRelinkClassification;
+}
+
+export interface EnvironmentCustomImageDriftedPath {
+  path: string;
+  from?: unknown;
+  to?: unknown;
+}
+
+/**
+ * The 409 conflict body a relink returns when the server cannot re-stamp without
+ * an operator confirmation. `driftedPaths` carries `from`/`to` only for paths
+ * that passed the secret containment check; excluded paths carry the name only.
+ */
+export interface EnvironmentCustomImageRelinkConflict {
+  classification: Exclude<EnvironmentCustomImageRelinkClassification, "knob_only">;
+  driftedPaths: EnvironmentCustomImageDriftedPath[];
+}
+
+function companyIdQuery(companyId: string): string {
   return `companyId=${encodeURIComponent(companyId)}`;
 }
 
@@ -74,6 +113,17 @@ export const environmentsApi = {
   lease: (leaseId: string) => api.get<EnvironmentLease>(`/environment-leases/${leaseId}`),
   secretRefs: (environmentId: string) =>
     api.get<{ refs: EnvironmentSecretRefDescriptor[] }>(`/environments/${environmentId}/secret-refs`),
+  deleteBlastRadius: (environmentId: string) =>
+    api.get<EnvironmentDeleteBlastRadius>(`/environments/${environmentId}/delete-blast-radius`),
+  // The flag consents to destroying the environment's reusable sandbox leases
+  // inline so the delete can proceed; without it the server rejects with 409
+  // while such leases exist.
+  remove: (environmentId: string, options: { destroyReusableSandboxLeases?: boolean } = {}) =>
+    api.delete<Environment & { destroyedReusableSandboxLeaseCount?: number }>(
+      options.destroyReusableSandboxLeases
+        ? `/environments/${environmentId}?destroyReusableSandboxLeases=true`
+        : `/environments/${environmentId}`,
+    ),
   create: (companyId: string, body: {
     name: string;
     description?: string | null;
@@ -87,12 +137,25 @@ export const environmentsApi = {
     driver?: "local" | "ssh" | "sandbox" | "plugin";
     status?: "active" | "archived";
     config?: Record<string, unknown>;
+    // The only field accepted on platform-managed environments (the server
+    // write floor admits envVars-only patches there).
+    envVars?: Environment["envVars"];
     metadata?: Record<string, unknown> | null;
-  }) => api.patch<EnvironmentUpdateResult>(`/environments/${environmentId}`, body),
+    // Secret-context company for env var / config writes. Without it the
+    // server can only infer a company from existing bindings or a
+    // single-membership actor, and fails closed otherwise — a fresh
+    // environment with no bindings needs the explicit context.
+  }, companyId?: string | null) =>
+    api.patch<EnvironmentUpdateResult>(
+      companyId
+        ? `/environments/${environmentId}?${companyIdQuery(companyId)}`
+        : `/environments/${environmentId}`,
+      body,
+    ),
   probe: (environmentId: string, companyId?: string | null) =>
     api.post<EnvironmentProbeResult>(
       companyId
-        ? `/environments/${environmentId}/probe?${customImageCompanyQuery(companyId)}`
+        ? `/environments/${environmentId}/probe?${companyIdQuery(companyId)}`
         : `/environments/${environmentId}/probe`,
       {},
     ),
@@ -105,7 +168,7 @@ export const environmentsApi = {
   }) => api.post<EnvironmentProbeResult>(`/companies/${companyId}/environments/probe-config`, body),
   customImageTemplate: (environmentId: string, companyId: string) =>
     api.get<EnvironmentCustomImageOverview>(
-      `/environments/${environmentId}/custom-image-template?${customImageCompanyQuery(companyId)}`,
+      `/environments/${environmentId}/custom-image-template?${companyIdQuery(companyId)}`,
     ),
   startCustomImageSetupSession: (
     environmentId: string,
@@ -113,7 +176,7 @@ export const environmentsApi = {
     body: StartEnvironmentCustomImageSetupSession = {},
   ) =>
     api.post<EnvironmentCustomImageSetupSessionResult>(
-      `/environments/${environmentId}/custom-image-setup-sessions?${customImageCompanyQuery(companyId)}`,
+      `/environments/${environmentId}/custom-image-setup-sessions?${companyIdQuery(companyId)}`,
       body,
     ),
   customImageSetupSession: (sessionId: string) =>
@@ -146,8 +209,17 @@ export const environmentsApi = {
     ),
   rollbackCustomImageTemplate: (environmentId: string, companyId: string) =>
     api.post<EnvironmentCustomImageRollbackResult>(
-      `/environments/${environmentId}/custom-image-template/rollback?${customImageCompanyQuery(companyId)}`,
+      `/environments/${environmentId}/custom-image-template/rollback?${companyIdQuery(companyId)}`,
       {},
+    ),
+  relinkCustomImageTemplate: (
+    environmentId: string,
+    companyId: string,
+    options: { confirmBootSourceDrift?: boolean } = {},
+  ) =>
+    api.post<EnvironmentCustomImageRelinkResult>(
+      `/environments/${environmentId}/custom-image-template/relink?${companyIdQuery(companyId)}`,
+      { confirmBootSourceDrift: options.confirmBootSourceDrift === true },
     ),
   disableCustomImageTemplate: (
     environmentId: string,
@@ -155,6 +227,6 @@ export const environmentsApi = {
     options: { deleteProviderTemplate?: boolean } = {},
   ) =>
     api.delete<EnvironmentCustomImageTemplate>(
-      `/environments/${environmentId}/custom-image-template?${customImageCompanyQuery(companyId)}&deleteProviderTemplate=${options.deleteProviderTemplate === true ? "true" : "false"}`,
+      `/environments/${environmentId}/custom-image-template?${companyIdQuery(companyId)}&deleteProviderTemplate=${options.deleteProviderTemplate === true ? "true" : "false"}`,
     ),
 };

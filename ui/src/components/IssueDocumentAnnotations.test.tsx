@@ -100,7 +100,8 @@ vi.mock("./DocumentAnnotationLayer", () => ({
   DocumentAnnotationLayer: (props: {
     newCommentDisabled?: boolean;
     onPendingAnchorChange: (anchor: typeof mockPendingAnchor | null) => void;
-    onRequestComment: (anchor: typeof mockPendingAnchor) => void;
+    onRequestComment: (anchor: typeof mockPendingAnchor, rect: { top: number; left: number; width: number; height: number }) => void;
+    onThreadFocus: (threadId: string, rect: { top: number; left: number; width: number; height: number }) => void;
   }) => (
     <>
       <button
@@ -109,11 +110,18 @@ vi.mock("./DocumentAnnotationLayer", () => ({
         disabled={props.newCommentDisabled}
         onClick={() => {
           props.onPendingAnchorChange(mockPendingAnchor);
-          props.onRequestComment(mockPendingAnchor);
+          props.onRequestComment(mockPendingAnchor, { top: 24, left: 32, width: 80, height: 18 });
           props.onPendingAnchorChange(null);
         }}
       >
         Mock selection
+      </button>
+      <button
+        type="button"
+        data-testid="mock-annotation-thread"
+        onClick={() => props.onThreadFocus("thread-1", { top: 42, left: 48, width: 90, height: 18 })}
+      >
+        Mock thread
       </button>
       <button
         type="button"
@@ -294,7 +302,7 @@ function Harness({
   historicalPreview?: boolean;
   locationHash?: string;
   initialPanelOpen?: boolean;
-  panelPlacement?: "floating" | "inline";
+  panelPlacement?: "floating" | "inline" | "popover";
 }) {
   const [open, setOpen] = useState(initialPanelOpen);
   return (
@@ -366,8 +374,11 @@ describe("IssueDocumentAnnotations", () => {
     expect(panel).not.toBeNull();
     const anchor = container.querySelector('[data-testid="document-annotation-panel-anchor"]');
     expect(anchor).not.toBeNull();
-    expect(anchor?.className).toContain("fixed");
-    expect(anchor?.className).toContain("z-(--z-60)");
+    // The desktop panel docks into an in-flow gutter column beside the doc; it no
+    // longer floats over the viewport with position: fixed (PAP-504).
+    expect(anchor?.className).not.toContain("fixed");
+    expect(anchor?.className).toContain("lg:block");
+    expect(anchor?.querySelector(".sticky")).not.toBeNull();
   });
 
   it("stacks an inline panel below the document instead of floating over its host", async () => {
@@ -394,114 +405,62 @@ describe("IssueDocumentAnnotations", () => {
     expect(panel?.className).toContain("w-full");
   });
 
-  it("keeps the desktop annotation panel inside the issue content area when properties are visible", async () => {
+  it("opens anchored compose and thread popovers in popover placement", async () => {
     mockAnnotationsApi.list.mockResolvedValue([makeThread()]);
-    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
-    const rectFor = (left: number, top: number, right: number, bottom: number) => ({
-      x: left,
-      y: top,
-      left,
-      top,
-      right,
-      bottom,
-      width: right - left,
-      height: bottom - top,
-      toJSON: () => ({}),
-    });
-    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-      if (this instanceof HTMLElement && this.id === "main-content") {
-        return rectFor(0, 0, 900, 800);
-      }
-      if (
-        this instanceof HTMLElement
-        && this.getAttribute("data-testid") === "document-annotation-body-plan"
-      ) {
-        return rectFor(80, 120, 640, 620);
-      }
-      return originalGetBoundingClientRect.call(this);
-    });
-
     const root = createRoot(container);
     const queryClient = makeQueryClient();
-    const doc = makeDoc();
-
-    try {
-      await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <main id="main-content">
-              <Harness doc={doc} initialPanelOpen />
-            </main>
-          </QueryClientProvider>,
-        );
-      });
-      await waitFor(() => {
-        const anchor = container.querySelector('[data-testid="document-annotation-panel-anchor"]') as HTMLElement | null;
-        const panel = container.querySelector('[data-testid="document-annotation-panel"]') as HTMLElement | null;
-        expect(anchor).not.toBeNull();
-        expect(panel).not.toBeNull();
-        expect(anchor!.style.left).toBe("524px");
-        expect(anchor!.style.width).toBe("360px");
-        expect(panel!.style.width).toBe("360px");
-        expect(parseFloat(anchor!.style.left) + parseFloat(anchor!.style.width)).toBeLessThanOrEqual(884);
-      });
-    } finally {
-      rectSpy.mockRestore();
-    }
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Harness doc={makeDoc()} panelPlacement="popover" />
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(() => expect(container.querySelector('[data-testid="mock-annotation-selection"]')).not.toBeNull());
+    await act(async () => (container.querySelector('[data-testid="mock-annotation-selection"]') as HTMLButtonElement).click());
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="document-annotation-popover"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="document-annotation-popover-composer"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="document-annotation-panel-inline"]')).toBeNull();
+    });
+    await act(async () => (container.querySelector('[aria-label="Add annotation comment"] button') as HTMLButtonElement).click());
+    await act(async () => (container.querySelector('[data-testid="mock-annotation-thread"]') as HTMLButtonElement).click());
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="document-annotation-popover"] [data-thread-id="thread-1"]')).not.toBeNull();
+    });
   });
 
-  it("offsets the desktop annotation panel from the document with a left margin when there is room", async () => {
+  it("docks the desktop annotation panel into an in-flow gutter column beside the document", async () => {
     mockAnnotationsApi.list.mockResolvedValue([makeThread()]);
-    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
-    const rectFor = (left: number, top: number, right: number, bottom: number) => ({
-      x: left,
-      y: top,
-      left,
-      top,
-      right,
-      bottom,
-      width: right - left,
-      height: bottom - top,
-      toJSON: () => ({}),
-    });
-    const rectSpy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-      if (this instanceof HTMLElement && this.id === "main-content") {
-        return rectFor(0, 0, 1400, 800);
-      }
-      if (
-        this instanceof HTMLElement
-        && this.getAttribute("data-testid") === "document-annotation-body-plan"
-      ) {
-        return rectFor(80, 120, 640, 620);
-      }
-      return originalGetBoundingClientRect.call(this);
-    });
-
     const root = createRoot(container);
     const queryClient = makeQueryClient();
     const doc = makeDoc();
 
-    try {
-      await act(async () => {
-        root.render(
-          <QueryClientProvider client={queryClient}>
-            <main id="main-content">
-              <Harness doc={doc} initialPanelOpen />
-            </main>
-          </QueryClientProvider>,
-        );
-      });
-      await waitFor(() => {
-        const anchor = container.querySelector('[data-testid="document-annotation-panel-anchor"]') as HTMLElement | null;
-        expect(anchor).not.toBeNull();
-        // The document body ends at 640; the panel should clear it with a margin
-        // rather than sitting flush against the document's right edge.
-        expect(parseFloat(anchor!.style.left)).toBeGreaterThan(640);
-        expect(anchor!.style.left).toBe("664px");
-      });
-    } finally {
-      rectSpy.mockRestore();
-    }
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <main id="main-content">
+            <Harness doc={doc} initialPanelOpen />
+          </main>
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(() => {
+      const anchor = container.querySelector('[data-testid="document-annotation-panel-anchor"]') as HTMLElement | null;
+      const panel = container.querySelector('[data-testid="document-annotation-panel"]') as HTMLElement | null;
+      expect(anchor).not.toBeNull();
+      expect(panel).not.toBeNull();
+      // Gutter column: fixed width, in normal flow (no absolute/fixed positioning),
+      // and its host row is a flex layout so the doc sits to its left.
+      expect(anchor!.style.width).toBe("360px");
+      expect(anchor!.className).not.toContain("fixed");
+      expect(anchor!.style.left).toBe("");
+      const host = container.querySelector(".paperclip-doc-annotation-host") as HTMLElement | null;
+      expect(host!.className).toContain("lg:flex");
+      // The panel is sticky inside the gutter so it stays beside the doc while scrolling.
+      expect(anchor!.querySelector(".sticky")).not.toBeNull();
+      expect(panel!.style.width).toBe("360px");
+    });
   });
 
   it("auto-opens the panel and focuses the thread when deep-linked", async () => {

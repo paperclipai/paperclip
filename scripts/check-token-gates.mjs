@@ -49,6 +49,11 @@
  *     `fontSize: "..."` / `font-size:` string-literal declarations in
  *     inline styles or css-in-js.
  *
+ *   Gate 4 — zero legacy hsl(var(--token)) wrappers in the token layer.
+ *     Semantic colors are complete color values (currently OKLCH), not bare
+ *     HSL channels. Wrapping one in hsl() creates an invalid declaration and
+ *     can void an entire composed box-shadow.
+ *
  * The ALLOWLIST is parsed from the machine-readable block in
  * ui/src/index.css (search for "── ALLOWLIST" below it), one entry per
  * line in the form:
@@ -240,6 +245,17 @@ function findFontSizeIssues(content) {
   return issues;
 }
 
+// Semantic color custom properties hold complete color values. Legacy
+// Tailwind-v3-era hsl(var(--token) / alpha) composition is therefore invalid.
+const LEGACY_HSL_VAR_WRAPPER_RE = /\bhsla?\(\s*var\(--[^)]+\)[^)]*\)/g;
+
+function findLegacyHslVarWrapperIssues(content) {
+  return Array.from(content.matchAll(LEGACY_HSL_VAR_WRAPPER_RE), (match) => ({
+    index: match.index,
+    snippet: match[0],
+  }));
+}
+
 function lineNumberAt(content, index) {
   return content.slice(0, index).split("\n").length;
 }
@@ -248,7 +264,7 @@ function main() {
   const allowlist = loadAllowlist(CSS_PATH);
   const files = listFiles();
 
-  const violations = { gate1: [], gate2: [], gate3: [] };
+  const violations = { gate1: [], gate2: [], gate3: [], gate4: [] };
   let allowlistedSkips = 0;
 
   for (const filePath of files) {
@@ -277,7 +293,16 @@ function main() {
     }
   }
 
-  const totalViolations = violations.gate1.length + violations.gate2.length + violations.gate3.length;
+  const tokenLayer = readFileSync(CSS_PATH, "utf8");
+  for (const issue of findLegacyHslVarWrapperIssues(tokenLayer)) {
+    violations.gate4.push({
+      file: relPathToPosix(CSS_PATH),
+      line: lineNumberAt(tokenLayer, issue.index),
+      snippet: issue.snippet,
+    });
+  }
+
+  const totalViolations = Object.values(violations).reduce((total, gate) => total + gate.length, 0);
 
   console.log("check-token-gates summary");
   console.log(`  Files scanned:                 ${files.length}`);
@@ -287,6 +312,7 @@ function main() {
   console.log(`  Gate 1 (color literals):       ${violations.gate1.length === 0 ? "CLEAN" : `${violations.gate1.length} violation(s)`}`);
   console.log(`  Gate 2 (arbitrary bracket vals): ${violations.gate2.length === 0 ? "CLEAN" : `${violations.gate2.length} violation(s)`}`);
   console.log(`  Gate 3 (raw font-size):        ${violations.gate3.length === 0 ? "CLEAN" : `${violations.gate3.length} violation(s)`}`);
+  console.log(`  Gate 4 (legacy hsl(var())):    ${violations.gate4.length === 0 ? "CLEAN" : `${violations.gate4.length} violation(s)`}`);
 
   if (totalViolations > 0) {
     console.log("\nViolations:\n");

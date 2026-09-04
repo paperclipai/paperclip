@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, Repeat, Sparkles } from "lucide-react";
+import { AlertCircle, History, Pencil, Repeat, Sparkles, X } from "lucide-react";
 import { ApiError } from "../api/client";
 import {
   routinesApi,
@@ -18,6 +18,7 @@ import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildMarkdownMentionOptions } from "../lib/company-members";
@@ -34,14 +35,17 @@ import { RunButton } from "../components/AgentActionButtons";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { RoutineOverview } from "../components/RoutineOverview";
+import { RoutineSectionPicker, RoutineSubSidebar } from "../components/RoutineSubSidebar";
 import {
-  RoutineSubSidebar,
-  RoutineSectionPicker,
-} from "../components/RoutineSubSidebar";
+  isRoutineDetailView,
+  resolveRoutineDetailDestination,
+  routineDetailHref,
+} from "../components/RoutineContextualSidebar";
 import { RoutineSaveBar } from "../components/RoutineSaveBar";
 import {
   EDITABLE_SECTIONS,
-  ROUTINE_SECTION_KEYS,
   SECTION_FIELD_KEYS,
   RoutineDetailContext,
   createDefaultNewTrigger,
@@ -58,17 +62,15 @@ import {
   DeliverySection,
 } from "../components/routine-sections/editable-sections";
 import {
-  RunsSection,
   ActivitySection,
   HistorySection,
+  RunsSection,
 } from "../components/routine-sections/operate-sections";
 import type {
   RoutineDetail as RoutineDetailType,
   RoutineEnvConfig,
   RoutineVariable,
 } from "@paperclipai/shared";
-
-const LAST_SECTION_STORAGE_KEY = "paperclip.routineLastSection";
 
 export function buildRoutineProjectOptions(
   projects: ReadonlyArray<{ id: string; name: string; description?: string | null; archivedAt?: Date | string | null }>,
@@ -84,49 +86,13 @@ export function buildRoutineProjectOptions(
 
 const SECTION_TITLES: Record<RoutineSectionKey, string> = {
   overview: "Overview",
-  triggers: "Triggers",
+  triggers: "Schedule",
   variables: "Variables",
   secrets: "Secrets",
   delivery: "Delivery",
   runs: "Runs",
   activity: "Activity",
-  history: "History",
-};
-
-function isRoutineSection(value: string | undefined | null): value is RoutineSectionKey {
-  return value != null && ROUTINE_SECTION_KEYS.includes(value as RoutineSectionKey);
-}
-
-function readLastSection(routineId: string): RoutineSectionKey | null {
-  try {
-    const raw = localStorage.getItem(LAST_SECTION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    const stored = parsed[routineId];
-    return isRoutineSection(stored) ? stored : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeLastSection(routineId: string, section: RoutineSectionKey) {
-  try {
-    const raw = localStorage.getItem(LAST_SECTION_STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-    parsed[routineId] = section;
-    localStorage.setItem(LAST_SECTION_STORAGE_KEY, JSON.stringify(parsed));
-  } catch {
-    /* ignore storage failures */
-  }
-}
-
-/** Back-compat: `?tab=x` query param maps to the new section sub-routes. */
-const LEGACY_TAB_TO_SECTION: Record<string, RoutineSectionKey> = {
-  triggers: "triggers",
-  runs: "runs",
-  activity: "activity",
-  secrets: "secrets",
-  history: "history",
+  history: "Version history",
 };
 
 function autoResizeTextarea(element: HTMLTextAreaElement | null) {
@@ -160,6 +126,7 @@ export function RoutineDetail() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { pushToast } = useToastActions();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const hydratedRoutineIdRef = useRef<string | null>(null);
   const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
@@ -168,6 +135,7 @@ export function RoutineDetail() {
   const [secretMessage, setSecretMessage] = useState<SecretMessage | null>(null);
   const [saveConflict, setSaveConflict] = useState(false);
   const [runVariablesOpen, setRunVariablesOpen] = useState(false);
+  const [overviewEditing, setOverviewEditing] = useState(false);
   const [newTrigger, setNewTrigger] = useState(createDefaultNewTrigger);
   const [editDraft, setEditDraft] = useState<RoutineEditDraft>({
     title: "",
@@ -183,15 +151,25 @@ export function RoutineDetail() {
     env: null,
   });
 
-  const section: RoutineSectionKey = isRoutineSection(sectionParam) ? sectionParam : "overview";
+  const legacyOperateSection = !streamlinedUiEnabled && (sectionParam === "runs" || sectionParam === "activity")
+    ? sectionParam
+    : null;
+  const section: RoutineSectionKey = legacyOperateSection
+    ?? (isRoutineDetailView(sectionParam) ? sectionParam : "overview");
 
   const navigateToSection = useCallback(
     (next: RoutineSectionKey, options?: { replace?: boolean }) => {
       if (!routineId) return;
-      writeLastSection(routineId, next);
-      navigate(`/routines/${routineId}/${next}`, { replace: options?.replace ?? true });
+      if (!streamlinedUiEnabled && (next === "runs" || next === "activity")) {
+        navigate(`/routines/${routineId}/${next}`, { replace: options?.replace ?? true });
+        return;
+      }
+      navigate(
+        resolveRoutineDetailDestination({ routineId, section: next }),
+        { replace: options?.replace ?? true },
+      );
     },
-    [navigate, routineId],
+    [navigate, routineId, streamlinedUiEnabled],
   );
 
   const { data: routine, isLoading, error } = useQuery({
@@ -251,7 +229,7 @@ export function RoutineDetail() {
   });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      if (!selectedCompanyId) throw new Error("Select an organization to create secrets");
       return secretsApi.create(selectedCompanyId, input);
     },
     onSuccess: () => {
@@ -360,12 +338,9 @@ export function RoutineDetail() {
     autoResizeTextarea(titleInputRef.current);
   }, [editDraft.title, routine?.id]);
 
-  // Persist the section the user lands on so a bare /routines/:id remembers it.
   useEffect(() => {
-    if (routineId && isRoutineSection(sectionParam)) {
-      writeLastSection(routineId, sectionParam);
-    }
-  }, [routineId, sectionParam]);
+    if (section !== "overview") setOverviewEditing(false);
+  }, [routineId, section]);
 
   const copySecretValue = useCallback(
     async (label: string, value: string) => {
@@ -674,23 +649,18 @@ export function RoutineDetail() {
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message="Select an organization to view routines." />;
   }
 
-  // Back-compat redirect: `?tab=x` → `/routines/:id/x`.
   const legacyTab = new URLSearchParams(window.location.search).get("tab");
-  if (routineId && legacyTab && LEGACY_TAB_TO_SECTION[legacyTab]) {
-    return <Navigate to={`/routines/${routineId}/${LEGACY_TAB_TO_SECTION[legacyTab]}`} replace />;
-  }
-
-  // Bare /routines/:id → remembered section or overview.
-  if (routineId && !sectionParam) {
-    const landing = readLastSection(routineId) ?? "overview";
-    return <Navigate to={`/routines/${routineId}/${landing}`} replace />;
-  }
-  // Unknown section → overview.
-  if (routineId && sectionParam && !isRoutineSection(sectionParam)) {
-    return <Navigate to={`/routines/${routineId}/overview`} replace />;
+  const validLegacySection = !streamlinedUiEnabled && (sectionParam === "runs" || sectionParam === "activity");
+  if (routineId && (legacyTab || !sectionParam || (!isRoutineDetailView(sectionParam) && !validLegacySection))) {
+    return (
+      <Navigate
+        to={resolveRoutineDetailDestination({ routineId, section: sectionParam, legacyTab })}
+        replace
+      />
+    );
   }
 
   if (isLoading) {
@@ -801,35 +771,52 @@ export function RoutineDetail() {
         Skip to section
       </a>
 
-      {/* Bounded to the main scroll area's height so the header + sub-nav stay
-          fixed and only the section content below scrolls (no page-level
-          scroll, no competing sticky points). */}
-      <div className="-m-4 flex h-full min-h-0 flex-col overflow-hidden md:-m-6">
-        {/* Slim page header — fixed at the top of the routine layout. */}
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-6">
+      {/* The global shell owns routine navigation. This surface keeps one
+          content scroll owner and a compact action header. */}
+      <div className="-m-4 flex h-full min-h-0 overflow-hidden md:-m-6">
+        {!streamlinedUiEnabled ? (
+          <RoutineSubSidebar
+            activeSection={section}
+            hrefFor={(next) => next === "runs" || next === "activity"
+              ? `/routines/${routine.id}/${next}`
+              : routineDetailHref(routine.id, next)}
+            isSectionDirty={isSectionDirty}
+            hasLiveRun={hasLiveRun}
+            onNavigate={navigateToSection}
+          />
+        ) : null}
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {!streamlinedUiEnabled ? (
+          <RoutineSectionPicker
+            activeSection={section}
+            onNavigate={navigateToSection}
+            isSectionDirty={isSectionDirty}
+          />
+        ) : null}
+        <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-3 border-b border-border bg-background px-4 py-2 md:px-6">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <textarea
-              ref={titleInputRef}
-              data-autosize-title
-              className="min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-base font-semibold leading-7 outline-none placeholder:text-muted-foreground/50"
-              placeholder="Routine title"
-              rows={1}
-              value={editDraft.title}
-              onChange={(event) => {
-                setEditDraft((current) => ({ ...current, title: event.target.value }));
-                autoResizeTextarea(event.target);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  if (section === "overview") {
+            {section === "overview" && overviewEditing ? (
+              <textarea
+                ref={titleInputRef}
+                data-autosize-title
+                className="min-w-0 flex-1 resize-none overflow-hidden bg-transparent text-base font-semibold leading-7 outline-none placeholder:text-muted-foreground/50"
+                placeholder="Routine title"
+                rows={1}
+                value={editDraft.title}
+                onChange={(event) => {
+                  setEditDraft((current) => ({ ...current, title: event.target.value }));
+                  autoResizeTextarea(event.target);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
                     descriptionEditorRef.current?.focus();
-                  } else {
-                    navigateToSection("overview");
                   }
-                }
-              }}
-            />
+                }}
+              />
+            ) : (
+              <h1 className="min-w-0 flex-1 truncate text-xl font-bold">{routine.title}</h1>
+            )}
             {routine.managedByPlugin ? (
               <Badge variant="outline" className="hidden shrink-0 gap-1.5 text-xs text-muted-foreground sm:inline-flex">
                 <Sparkles className="h-3 w-3" />
@@ -838,7 +825,45 @@ export function RoutineDetail() {
               </Badge>
             ) : null}
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-3">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {section === "history" ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => navigate(routineDetailHref(routine.id))}
+              >
+                Back to overview
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => navigate(routineDetailHref(routine.id, "history"))}
+              >
+                <History className="h-3.5 w-3.5" />
+                History
+              </Button>
+            )}
+            {section === "overview" ? (
+              overviewEditing ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    discardSection("overview");
+                    setOverviewEditing(false);
+                  }}
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Cancel editing
+                </Button>
+              ) : (
+                <Button variant="outline" size="sm" onClick={() => setOverviewEditing(true)}>
+                  <Pencil className="h-3.5 w-3.5" />
+                  Edit routine
+                </Button>
+              )
+            ) : null}
             <RunButton onClick={() => setRunVariablesOpen(true)} disabled={runRoutine.isPending} />
             <div className="flex items-center gap-2">
               <ToggleSwitch
@@ -853,58 +878,48 @@ export function RoutineDetail() {
           </div>
         </header>
 
-        {/* Mobile section picker */}
-        <RoutineSectionPicker
-          activeSection={section}
-          onNavigate={navigateToSection}
-          isSectionDirty={isSectionDirty}
-        />
-
-        <div className="flex min-h-0 flex-1">
-          <RoutineSubSidebar
-            activeSection={section}
-            hrefFor={(target) => `/routines/${routineId}/${target}`}
-            isSectionDirty={isSectionDirty}
-            hasLiveRun={hasLiveRun}
-            onNavigate={(target) => writeLastSection(routineId!, target)}
-          />
-
-          <main
-            id="routine-section"
-            role="main"
-            className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 pb-6 pt-10 md:px-8"
+        <main
+          id="routine-section"
+          role="main"
+          className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 pb-6 pt-8 md:px-8"
+        >
+          <section
+            aria-labelledby="routine-section-title"
+            className={
+              section === "overview" && !overviewEditing
+                ? "mx-auto w-full max-w-5xl"
+                : isEditableSection
+                  ? "mx-auto w-full max-w-3xl"
+                  : "w-full"
+            }
           >
-            <section
-              aria-labelledby="routine-section-title"
-              className={isEditableSection ? "mx-auto w-full max-w-3xl" : "w-full"}
-            >
-              <h2 id="routine-section-title" className="mb-4 text-lg font-semibold">
-                {SECTION_TITLES[section]}
-              </h2>
+            <h2 id="routine-section-title" className="mb-4 text-lg font-semibold">
+              {SECTION_TITLES[section]}
+            </h2>
 
-              {section === "overview" && <OverviewSection />}
-              {section === "triggers" && <TriggersSection />}
-              {section === "variables" && <VariablesSection />}
-              {section === "secrets" && <SecretsSection />}
-              {section === "delivery" && <DeliverySection />}
-              {section === "runs" && <RunsSection />}
-              {section === "activity" && <ActivitySection />}
-              {section === "history" && <HistorySection />}
+            {section === "overview" && (overviewEditing ? <OverviewSection /> : <RoutineOverview />)}
+            {section === "triggers" && <TriggersSection />}
+            {section === "variables" && <VariablesSection />}
+            {section === "secrets" && <SecretsSection />}
+            {section === "delivery" && <DeliverySection />}
+            {section === "runs" && <RunsSection />}
+            {section === "activity" && <ActivitySection />}
+            {section === "history" && <HistorySection />}
 
-              {isEditableSection ? (
-                <RoutineSaveBar
-                  dirtyFields={sectionDirtyFields(section)}
-                  isSaving={saveRoutine.isPending}
-                  saveConflict={saveConflict}
-                  onSave={() => {
-                    if (!saveRoutine.isPending && editDraft.title.trim()) saveRoutine.mutate();
-                  }}
-                  onDiscard={() => discardSection(section)}
-                  onReload={reloadLatest}
-                />
-              ) : null}
-            </section>
-          </main>
+            {isEditableSection && (section !== "overview" || overviewEditing) ? (
+              <RoutineSaveBar
+                dirtyFields={sectionDirtyFields(section)}
+                isSaving={saveRoutine.isPending}
+                saveConflict={saveConflict}
+                onSave={() => {
+                  if (!saveRoutine.isPending && editDraft.title.trim()) saveRoutine.mutate();
+                }}
+                onDiscard={() => discardSection(section)}
+                onReload={reloadLatest}
+              />
+            ) : null}
+          </section>
+        </main>
         </div>
       </div>
 

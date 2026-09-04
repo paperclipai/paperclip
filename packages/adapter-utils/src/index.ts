@@ -10,6 +10,8 @@ export type {
   AdapterRuntimeMcpServer,
   AdapterRuntimeMcpAccess,
   AdapterExecutionContext,
+  AdapterRuntimeToolAccess,
+  AdapterRuntimeToolDelivery,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,
@@ -23,8 +25,6 @@ export type {
   AdapterSkillContext,
   AdapterSessionCodec,
   AdapterModel,
-  AdapterModelProfileKey,
-  AdapterModelProfileDefinition,
   HireApprovedPayload,
   HireApprovedHookResult,
   ConfigFieldOption,
@@ -36,6 +36,10 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,
+  PaperclipQuestion,
+  PaperclipQuestionOption,
+  PaperclipQuestionResponse,
+  PaperclipQuestionSet,
   StdoutLineParser,
   CLIAdapterModule,
   CreateConfigValues,
@@ -63,6 +67,7 @@ export {
 export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
+  redactDiagnosticText,
 } from "./command-redaction.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export {
@@ -83,6 +88,61 @@ export type {
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export {
+  ADAPTER_LOGIN_PANEL_MODES,
+  ADAPTER_LOGIN_TIMEOUT_POLICIES,
+  ADAPTER_LOGIN_COMPLETION_CLAIMS,
+  assertValidAdapterLoginCapability,
+  validateAdapterLoginCapability,
+} from "./login-capability.js";
+export type {
+  AdapterLoginPanelMode,
+  AdapterLoginTimeoutPolicy,
+  AdapterLoginCompletionClaim,
+  AdapterLoginPrompt,
+  AdapterLoginCompletionContext,
+  AdapterLoginCapability,
+} from "./login-capability.js";
+export { raceLoginRunnerExit } from "./login-runner-lifecycle.js";
+export type {
+  LoginRunnerOutcome,
+  LoginRunnerResult,
+  LoginRunnerLog,
+  LoginRunnerLifecycleOptions,
+  LoginRunnerDisposable,
+  LoginRunnerRaceResult,
+} from "./login-runner-lifecycle.js";
+export {
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
+  PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
+  PAPERCLIP_RUNNER_DEFAULT_MODELS,
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  isPaperclipRunnerProvider,
+  resolvePaperclipRunnerIdleTimeoutMs,
+  resolvePaperclipRunnerModel,
+  resolvePaperclipRunnerPermissionMode,
+} from "./paperclip-runner-permissions.js";
+export {
+  PAPERCLIP_RUNNER_INGRESS_PORT,
+  PAPERCLIP_RUNNER_CONNECT_PATH_PREFIX,
+  PaperclipRunnerTransportError,
+  buildDirectRunnerConnectUrl,
+  resolvePaperclipRunnerTransport,
+} from "./runner-connectivity.js";
+export type {
+  SecretHeader,
+  RunnerIngressEndpoint,
+  PaperclipRunnerTransport,
+} from "./runner-connectivity.js";
+export type {
+  AcpxPermissionMode,
+  CodexPermissionMode,
+  OpenCodePermissionMode,
+  PaperclipRunnerPermissionCapability,
+  PaperclipRunnerPermissionMode,
+  PaperclipRunnerPermissionOption,
+  PaperclipRunnerProvider,
+} from "./paperclip-runner-permissions.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {

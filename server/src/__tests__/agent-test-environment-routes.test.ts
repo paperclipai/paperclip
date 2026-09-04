@@ -30,6 +30,8 @@ const mockSecretService = vi.hoisted(() => ({
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
   releaseLease: vi.fn(),
+  listBoundCompanyIds: vi.fn(async () => [] as string[]),
+  findManagedSandboxEnvironment: vi.fn(async () => null as Record<string, unknown> | null),
 }));
 
 const mockReleaseRunLease = vi.hoisted(() => vi.fn(async () => undefined));
@@ -44,6 +46,7 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
+  getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -140,6 +143,9 @@ describe("agent test-environment route", () => {
       driver: "sandbox",
       config: { provider: "fake-plugin" },
     });
+    // Default to an instance-global environment with no company binding, so the
+    // tenant-binding guard passes unless a test overrides it.
+    mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([]);
     mockEnvironmentRuntime.acquireRunLease.mockResolvedValue({
       lease: {
         id: "lease-1",
@@ -220,7 +226,10 @@ describe("agent test-environment route", () => {
   });
 
   it("returns a diagnostic result instead of probing the host when the requested environment is missing", async () => {
-    mockEnvironmentService.getById.mockResolvedValueOnce(null);
+    // The route reads the environment more than once: the tenant-binding guard
+    // loads it, then the execution-context resolver loads it. Return null for
+    // every read so the missing-environment path is stable.
+    mockEnvironmentService.getById.mockResolvedValue(null);
     const app = await createApp();
 
     const res = await request(app)
@@ -282,6 +291,9 @@ describe("agent test-environment route", () => {
     expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(
       expect.objectContaining({
         applyCustomImageTemplate: true,
+        // The Test lease re-checks the company binding, so a binding change
+        // between the route guard and the lease cannot open a foreign sandbox.
+        assertCompanyBinding: true,
         environment: expect.objectContaining({
           config: expect.objectContaining({
             reuseLease: false,
@@ -302,7 +314,7 @@ describe("agent test-environment route", () => {
       expect.objectContaining({
         code: "sandbox_test_identity",
         level: "info",
-        message: 'Sandbox test identity for "Sandbox QA".',
+        message: 'Environment test identity for "Sandbox QA".',
         detail: expect.stringContaining("paperclipLeaseId=lease-1"),
       }),
       expect.objectContaining({
@@ -505,6 +517,174 @@ describe("agent test-environment route", () => {
         expect.objectContaining({ code: "environment_target_unsupported", level: "warn" }),
         expect.objectContaining({ code: "environment_env_binding_missing", level: "error" }),
       ]);
+    });
+  });
+
+  describe("tenant-binding guard", () => {
+    async function postForeignEnvironmentTest() {
+      const app = await createApp();
+      return request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          adapterConfig: { env: { FOO: "bar" } },
+          environmentId: "11111111-1111-4111-8111-111111111111",
+        });
+    }
+
+    function expectCompanyMismatch(res: request.Response) {
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(JSON.stringify(res.body)).toContain("environment_company_mismatch");
+      // The guard rejects before any secret resolution, target resolution,
+      // sandbox lease, or adapter test runs.
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    }
+
+    it("rejects an active environment bound to another company", async () => {
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-2"]);
+      expectCompanyMismatch(await postForeignEnvironmentTest());
+    });
+
+    it("rejects an archived environment bound to another company without revealing its status", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-2",
+        name: "Sandbox QA",
+        driver: "sandbox",
+        status: "archived",
+        config: { provider: "fake-plugin" },
+      });
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-2"]);
+      expectCompanyMismatch(await postForeignEnvironmentTest());
+    });
+
+    it("rejects a disallowed-driver environment bound to another company without revealing its driver", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        id: "11111111-1111-4111-8111-111111111111",
+        companyId: "company-2",
+        name: "Plugin Env",
+        driver: "plugin",
+        status: "active",
+        config: {},
+      });
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-2"]);
+      expectCompanyMismatch(await postForeignEnvironmentTest());
+    });
+
+    it("allows an instance-global environment with no company binding", async () => {
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([]);
+      const res = await postForeignEnvironmentTest();
+      // The guard passes and the route proceeds to secret resolution.
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalled();
+    });
+
+    it("allows an environment bound to the caller company", async () => {
+      mockEnvironmentService.listBoundCompanyIds.mockResolvedValue(["company-1"]);
+      const res = await postForeignEnvironmentTest();
+      // The guard passes and the route proceeds to secret resolution.
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalled();
+    });
+  });
+
+  describe("managed-sandbox-only redirect", () => {
+    const localEnvironmentId = "33333333-3333-4333-8333-333333333333";
+    const managedSandboxEnvironment = {
+      id: "44444444-4444-4444-8444-444444444444",
+      companyId: null,
+      name: "Managed sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake-plugin" },
+    };
+    const localEnvironment = {
+      id: localEnvironmentId,
+      companyId: null,
+      name: "Local host",
+      driver: "local",
+      status: "active",
+      config: {},
+    };
+
+    it("redirects a local-environment Test onto the managed sandbox and never probes the host", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(localEnvironment);
+      mockInstanceSettingsService.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: true,
+      });
+      mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(
+        managedSandboxEnvironment,
+      );
+      mockResolveEnvironmentExecutionTarget.mockResolvedValueOnce({
+        kind: "remote",
+        transport: "sandbox",
+        remoteCwd: "/home/user/paperclip-workspace",
+        providerKey: "fake-plugin",
+        runner: { execute: vi.fn() },
+      });
+      const app = await createApp();
+
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({ adapterConfig: {}, environmentId: localEnvironmentId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      // The Test leases and probes the managed sandbox the real run uses, not
+      // the local host that the agent default still names.
+      expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(
+        expect.objectContaining({
+          environment: expect.objectContaining({ id: managedSandboxEnvironment.id }),
+        }),
+      );
+      expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+      expect(testEnvironmentSpy.mock.calls[0]?.[0]).toMatchObject({
+        executionTarget: expect.objectContaining({ kind: "remote", transport: "sandbox" }),
+        environmentName: "Managed sandbox",
+      });
+    });
+
+    it("fails closed when the policy is on and no managed sandbox environment exists", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(localEnvironment);
+      mockInstanceSettingsService.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: true,
+      });
+      mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
+      const app = await createApp();
+
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({ adapterConfig: {}, environmentId: localEnvironmentId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      // No fall back to a host probe: the Test reports fail-closed.
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(res.body.status).toBe("fail");
+      expect(res.body.checks).toEqual([
+        expect.objectContaining({ code: "managed_sandbox_unavailable", level: "error" }),
+      ]);
+    });
+
+    it("probes the local host when the managed-sandbox-only policy is off", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(localEnvironment);
+      mockInstanceSettingsService.getExperimental.mockResolvedValue({
+        enableManagedSandboxOnly: false,
+      });
+      const app = await createApp();
+
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({ adapterConfig: {}, environmentId: localEnvironmentId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      // Legacy behavior: a local environment probes the host with no redirect
+      // and no sandbox lease.
+      expect(mockEnvironmentService.findManagedSandboxEnvironment).not.toHaveBeenCalled();
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+      expect(testEnvironmentSpy.mock.calls[0]?.[0]?.executionTarget ?? null).toBeNull();
     });
   });
 });

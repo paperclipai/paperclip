@@ -42,7 +42,10 @@ import type {
 } from "@paperclipai/shared";
 import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
-import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
+import {
+  effectiveToolProfileBindings,
+  profileIdsInBindingOrder,
+} from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 
 type ToolAccessContext = {
@@ -1002,11 +1005,16 @@ export function toolAccessPolicyService(db: Db) {
 
   async function effectiveProfiles(ctx: ToolAccessContext) {
     const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, ctx.companyId));
-    const activeBindings = narrowestScopeBindings(bindings.filter((binding) => targetMatches(binding, ctx)));
-    if (activeBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
+    const matchingBindings = bindings.filter((binding) => targetMatches(binding, ctx));
+    if (matchingBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
+    const candidateProfileIds = profileIdsInBindingOrder(matchingBindings);
+    const candidateProfiles = await db.select().from(toolProfiles).where(and(
+      eq(toolProfiles.companyId, ctx.companyId),
+      inArray(toolProfiles.id, candidateProfileIds),
+    ));
+    const activeBindings = effectiveToolProfileBindings(matchingBindings, candidateProfiles, ctx.connectionId);
     const profileIds = profileIdsInBindingOrder(activeBindings);
-    const profiles = await db.select().from(toolProfiles).where(and(eq(toolProfiles.companyId, ctx.companyId), inArray(toolProfiles.id, profileIds)));
-    const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+    const profilesById = new Map(candidateProfiles.map((profile) => [profile.id, profile]));
     const activeProfiles = profileIds
       .map((profileId) => profilesById.get(profileId) ?? null)
       .filter((profile): profile is typeof toolProfiles.$inferSelect => Boolean(profile && profile.status === "active"));

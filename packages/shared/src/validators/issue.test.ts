@@ -277,7 +277,12 @@ describe("issue validators", () => {
             rows: [
               { type: "key_value", label: "Cause", value: "successful_run_missing_state" },
               { type: "issue_link", label: "Source issue", identifier: "PAP-3440" },
-              { type: "run_link", label: "Run", runId: "11111111-1111-4111-8111-111111111111" },
+              {
+                type: "run_link",
+                label: "Run",
+                runId: "11111111-1111-4111-8111-111111111111",
+                agentId: "22222222-2222-4222-8222-222222222222",
+              },
             ],
           },
         ],
@@ -288,6 +293,10 @@ describe("issue validators", () => {
     expect(parsed.presentation?.density).toBe("compact");
     expect(parsed.metadata?.sourceRunId).toBe("11111111-1111-4111-8111-111111111111");
     expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
+    expect(parsed.metadata?.sections[0]?.rows[2]).toMatchObject({
+      type: "run_link",
+      agentId: "22222222-2222-4222-8222-222222222222",
+    });
   });
 
   it("rejects unknown issue comment presentation densities", () => {
@@ -449,29 +458,19 @@ describe("issue validators", () => {
     expect(parsed.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
   });
 
-  it("accepts the cheap model profile in issue assignee adapter overrides", () => {
-    const parsed = createIssueSchema.parse({
-      title: "Run a cheap heartbeat",
+  it("rejects retired model profiles in issue assignee adapter overrides", () => {
+    const parsed = createIssueSchema.safeParse({
+      title: "Run a heartbeat",
       assigneeAdapterOverrides: {
         modelProfile: "cheap",
-      },
-    });
-
-    expect(parsed.assigneeAdapterOverrides?.modelProfile).toBe("cheap");
-  });
-
-  it("rejects unknown issue model profile keys", () => {
-    const parsed = updateIssueSchema.safeParse({
-      assigneeAdapterOverrides: {
-        modelProfile: "fast",
       },
     });
 
     expect(parsed.success).toBe(false);
   });
 
-  it("validates agent runtime cheap model profile config without rejecting other runtime fields", () => {
-    const parsed = createAgentSchema.parse({
+  it("rejects retired model profiles in agent runtime config", () => {
+    const parsed = createAgentSchema.safeParse({
       name: "Coder",
       adapterType: "codex_local",
       runtimeConfig: {
@@ -482,47 +481,6 @@ describe("issue validators", () => {
             label: "Cheap Codex",
             adapterConfig: {
               model: "gpt-5.3-codex-spark",
-            },
-          },
-        },
-      },
-    });
-
-    expect(parsed.runtimeConfig.modelProfiles?.cheap?.adapterConfig).toEqual({
-      model: "gpt-5.3-codex-spark",
-    });
-    expect(parsed.runtimeConfig.heartbeat).toEqual({ enabled: true });
-  });
-
-  it("validates cheap model profile env bindings like top-level adapter config", () => {
-    const parsed = createAgentSchema.safeParse({
-      name: "Coder",
-      adapterType: "codex_local",
-      runtimeConfig: {
-        modelProfiles: {
-          cheap: {
-            adapterConfig: {
-              env: {
-                API_TOKEN: 123,
-              },
-            },
-          },
-        },
-      },
-    });
-
-    expect(parsed.success).toBe(false);
-  });
-
-  it("rejects unknown agent runtime model profile keys", () => {
-    const parsed = createAgentSchema.safeParse({
-      name: "Coder",
-      adapterType: "codex_local",
-      runtimeConfig: {
-        modelProfiles: {
-          fast: {
-            adapterConfig: {
-              model: "gpt-5-mini",
             },
           },
         },

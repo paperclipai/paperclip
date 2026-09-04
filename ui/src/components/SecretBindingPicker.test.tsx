@@ -88,7 +88,7 @@ describe("SecretBindingPicker", () => {
     await render(readyContext("active"));
 
     expect(container.textContent).toContain("DAYTONA_API_KEY — Other Team");
-    expect(container.textContent).toContain("Owned by the Other Team company");
+    expect(container.textContent).toContain("Owned by the Other Team organization");
     expect(container.textContent).not.toContain("Missing secret");
     expect(container.querySelector("select")?.className).not.toContain("border-destructive");
   });

@@ -34,6 +34,9 @@ export function selectCurrentRuntimeServiceRows(rows: WorkspaceRuntimeServiceRow
 export function selectConfiguredRuntimeServiceRows(
   rows: WorkspaceRuntimeServiceRow[],
   workspaceRuntime: Record<string, unknown> | null | undefined,
+  options?: {
+    fallbackScopeTypes?: WorkspaceRuntimeServiceRow["scopeType"][];
+  },
 ) {
   const availableRows = selectCurrentRuntimeServiceRows(rows).map((row) => ({
     ...row,
@@ -52,9 +55,18 @@ export function selectConfiguredRuntimeServiceRows(
         : command.lifecycle === "shared"
           ? "project_workspace"
           : "run";
-    const matchedRow = matchWorkspaceRuntimeServiceToCommand(
-      command,
-      availableRows.filter((row) => row.scopeType === expectedScope),
+    const candidateScopes = [
+      expectedScope,
+      ...(options?.fallbackScopeTypes ?? []).filter((scopeType) => scopeType !== expectedScope),
+    ];
+    const matchedRow = candidateScopes.reduce<(typeof availableRows)[number] | null>(
+      (match, scopeType) =>
+        match
+        ?? matchWorkspaceRuntimeServiceToCommand(
+          command,
+          availableRows.filter((row) => row.scopeType === scopeType),
+        ),
+      null,
     );
     if (!matchedRow) continue;
     selectedRows.push({

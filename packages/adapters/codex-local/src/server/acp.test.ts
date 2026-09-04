@@ -1,9 +1,26 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+
+// Every test in this file needs a real teardown, so the mock below delegates
+// to the actual factory by default. Only the wiring test further down reads
+// the call arguments; it does not change this behavior.
+const mockCreateWorkspaceRestoreTeardown = vi.hoisted(() => vi.fn());
+
+vi.mock("@paperclipai/adapter-utils/workspace-restore-teardown", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  mockCreateWorkspaceRestoreTeardown.mockImplementation(
+    actual.createWorkspaceRestoreTeardown as (...args: unknown[]) => unknown,
+  );
+  return {
+    ...actual,
+    createWorkspaceRestoreTeardown: mockCreateWorkspaceRestoreTeardown,
+  };
+});
+
 import {
   buildCodexAcpConfig,
   createCodexAcpExecutor,
@@ -276,7 +293,7 @@ describe("codex_local ACP lane", () => {
     const commandPath = path.join(root, "bin", "codex-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
 
     expect(resolveCodexExecutionEngine({})).toEqual({ engine: "acp", explicit: false });
     await expect(
@@ -296,7 +313,7 @@ describe("codex_local ACP lane", () => {
       explicit: true,
     });
 
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.10.0");
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { agentCommand: commandPath },
@@ -375,7 +392,7 @@ describe("codex_local ACP lane", () => {
   });
 
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { agentCommand: "codex-acp" },
@@ -401,7 +418,7 @@ describe("codex_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
         config: {},
@@ -420,7 +437,7 @@ describe("codex_local ACP lane", () => {
   });
 
   it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
         config: {},
@@ -479,9 +496,9 @@ describe("codex_local ACP lane", () => {
   });
 
   it("checks the Node version required by the ACPX runtime", () => {
-    setNodeVersion("v22.12.0");
+    setNodeVersion("v24.10.0");
     expect(nodeVersionMeetsCodexAcpMinimum()).toBe(false);
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     expect(nodeVersionMeetsCodexAcpMinimum()).toBe(true);
   });
 
@@ -490,7 +507,7 @@ describe("codex_local ACP lane", () => {
     const commandPath = path.join(root, "bin", "codex-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
 
     const result = await testCodexAcpEnvironment({
       adapterType: "codex_local",
@@ -543,7 +560,7 @@ describe("codex_local ACP lane", () => {
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-shared"}', "utf8");
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     process.env.CODEX_HOME = sharedCodexHome;
     delete process.env.OPENAI_API_KEY;
 
@@ -591,7 +608,7 @@ describe("codex_local ACP lane", () => {
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
     await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     process.env.CODEX_HOME = sharedCodexHome;
     delete process.env.OPENAI_API_KEY;
 
@@ -613,6 +630,65 @@ describe("codex_local ACP lane", () => {
         level: "warn",
         message: expect.stringContaining("Paperclip server"),
         hint: expect.stringContaining("separate Codex/chat session"),
+      }),
+    );
+  });
+
+  it("emits the canonical adapter_auth_missing check for a missing-auth sandbox target", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-sandbox-missing-auth-");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const managedAgentHome = path.join(
+      root,
+      "paperclip-home",
+      "instances",
+      "test",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "codex-home",
+    );
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    setNodeVersion("v24.11.0");
+    process.env.CODEX_HOME = sharedCodexHome;
+    delete process.env.OPENAI_API_KEY;
+
+    const result = await testCodexAcpEnvironment({
+      adapterType: "codex_local",
+      companyId: "company-1",
+      config: {
+        engine: "acp",
+        cwd: root,
+        // A shell-style command resolves without a real binary in the sandbox.
+        agentCommand: "node ./fake-acp.js",
+        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd: "/work",
+        runner: {
+          execute: async () => ({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: "",
+            pid: null,
+            startedAt: new Date().toISOString(),
+          }),
+        },
+      } as never,
+    });
+
+    // A missing-auth sandbox is a warning, not a failure, and it carries the
+    // neutral canonical check code for the user interface.
+    expect(result.status).toBe("warn");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        code: "adapter_auth_missing",
+        level: "warn",
       }),
     );
   });
@@ -1076,8 +1152,61 @@ describe("codex_local ACP lane", () => {
     expect(hostAuth.tokens.refresh_token).toBe("ref-sandbox-newer");
   });
 
+  it("passes the Codex-specific teardown messages to the shared workspace-restore-teardown factory", async () => {
+    // Wiring test only: `createWorkspaceRestoreTeardown` owns the
+    // classify-and-redact contract, proven once for all three adapters by its
+    // own table-driven test in `packages/adapter-utils`. This test proves only
+    // that the Codex adapter passes its own two message strings to it.
+    // Clear the shared, hoisted mock first: earlier tests in this file also
+    // call through it, and a leftover call could hide a real wiring bug.
+    mockCreateWorkspaceRestoreTeardown.mockClear();
+    const root = await makeTempRoot("paperclip-codex-acp-teardown-wiring-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+      stagedRuntimes: new Map(),
+      stagingLocks: new Map(),
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          env: { CODEX_HOME: path.join(root, "codex-home") },
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(mockCreateWorkspaceRestoreTeardown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+        failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
+      }),
+    );
+  });
+
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
-    setNodeVersion("v22.13.0");
+    setNodeVersion("v24.11.0");
     // Isolate the missing bidirectional runner as the sole fallback cause:
     // provide a valid ACP command and Node version so the only difference from
     // the runner-backed ACP case is the absent `runner`.

@@ -37,7 +37,7 @@ Operational notes:
 - Reusable leases keep the VM alive between runs. exe.dev does not expose a documented "stop and later resume" command in the public CLI docs, so `reuseLease: true` means "retain the VM" rather than "suspend it."
 - The provisioning path uses `https://exe.dev/exec`, which exe.dev documents as a command-style HTTPS API with a 30-second request timeout. Typical `new` calls are expected to fit inside that limit; command execution itself does not use `/exec`.
 - Probes still create and delete a real exe.dev VM through `/exec`, and so do the `new`/`rm` calls inside the normal acquire/release lifecycle. Treat all of those as real provisioning cost, not just probes.
-- exe.dev runs `--setup-script` as the unprivileged `exedev` user, not as root. That user has passwordless `sudo`, so any system-level steps in a custom `setupScript` must invoke `sudo` explicitly (for example `sudo apt-get install -y …`). When you omit `setupScript`, the plugin supplies a default that installs Node 20 via the official nodesource script — Paperclip's sandbox callback bridge is a Node program, so the VM needs `node` on `PATH` before the bridge can launch.
+- exe.dev runs `--setup-script` as the unprivileged `exedev` user, not as root. That user has passwordless `sudo`, so any system-level steps in a custom `setupScript` must invoke `sudo` explicitly (for example `sudo apt-get install -y …`). When you omit `setupScript`, the plugin supplies a default that installs Node 24 via the official nodesource script — Paperclip's sandbox callback bridge is a Node program, so the VM needs `node` on `PATH` before the bridge can launch.
 
 ## Local development
 

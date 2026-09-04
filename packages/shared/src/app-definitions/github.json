@@ -8,7 +8,8 @@
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=github.com&sz=128"
+    "logoUrl": "/brands/apps/github.svg",
+    "darkLogoUrl": "/brands/apps/github-dark.svg"
   },
   "urlPatterns": [
     "https://api.githubcopilot.com/mcp/*"

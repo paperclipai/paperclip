@@ -15,6 +15,7 @@ export {
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
   trackErrorHandlerCrash,
+  trackInteractionCreated,
   trackInteractionResolved,
 } from "./events.js";
 export type {

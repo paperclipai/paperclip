@@ -6,6 +6,7 @@ import type {
   WorkspaceRealizationRequest,
 } from "@paperclipai/shared";
 import type { RealizedExecutionWorkspace } from "./workspace-runtime.js";
+import { ENVIRONMENT_DRIVER_TRAITS, getEnvironmentDriverTraits } from "./environment-driver-traits.js";
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -170,10 +171,9 @@ export function buildWorkspaceRealizationRecord(input: {
 }): WorkspaceRealizationRecord {
   const leaseMetadata = input.lease.metadata ?? {};
   const providerMetadata = input.providerMetadata ?? {};
-  const transport =
-    input.environment.driver === "ssh" || input.environment.driver === "sandbox" || input.environment.driver === "plugin"
-      ? input.environment.driver
-      : "local";
+  // An unknown or absent driver reads the "local" row, same as today's fallback.
+  const traits = getEnvironmentDriverTraits(input.environment.driver) ?? ENVIRONMENT_DRIVER_TRAITS.local;
+  const transport = traits.driver;
   const remotePath =
     readString(providerMetadata.remoteCwd) ??
     readString(leaseMetadata.remoteCwd) ??
@@ -198,35 +198,6 @@ export function buildWorkspaceRealizationRecord(input: {
   const pathAliases = readPathAliases(realizationMetadata.pathAliases ?? realizationMetadata.workspaceAliases);
   const outboundRestorePaths = readStringArray(realizationMetadata.outboundRestorePaths);
 
-  const sync = (() => {
-    if (mode === "in_place" || transport === "local") {
-      return {
-        strategy: "none" as const,
-        prepare: "Use the realized local execution workspace directly.",
-        syncBack: null,
-      };
-    }
-    if (transport === "ssh") {
-      return {
-        strategy: "ssh_git_import_export" as const,
-        prepare: "Import the local git workspace to the remote SSH workspace before adapter execution.",
-        syncBack: "Export remote SSH workspace changes back to the local execution workspace after adapter execution.",
-      };
-    }
-    if (transport === "sandbox") {
-      return {
-        strategy: "sandbox_archive_upload_download" as const,
-        prepare: "Upload a workspace archive into the sandbox filesystem before adapter execution.",
-        syncBack: "Download a workspace archive from the sandbox and mirror it back locally after adapter execution.",
-      };
-    }
-    return {
-      strategy: "provider_defined" as const,
-      prepare: "Delegate workspace materialization to the plugin environment driver.",
-      syncBack: "Delegate result synchronization to the plugin environment driver.",
-    };
-  })();
-
   const provider =
     input.lease.provider ??
     (transport === "ssh" ? "ssh" : transport === "local" ? "local" : null);
@@ -246,7 +217,6 @@ export function buildWorkspaceRealizationRecord(input: {
     authoritativeRoot,
     pathAliases,
     outboundRestorePaths,
-    transport,
     provider,
     environmentId: input.environment.id,
     leaseId: input.lease.id,
@@ -276,7 +246,6 @@ export function buildWorkspaceRealizationRecord(input: {
       ...(username ? { username } : {}),
       ...(sandboxId ? { sandboxId } : {}),
     },
-    sync,
     bootstrap: {
       command: input.request.runtimeOverlay.provisionCommand,
     },
@@ -344,6 +313,7 @@ export function buildWorkspaceRealizationRecordFromDriverInput(input: {
         worktreePath: null,
         warnings: [],
         created: false,
+        branchCreatedByRuntime: false,
       },
       workspaceConfig: null,
     });

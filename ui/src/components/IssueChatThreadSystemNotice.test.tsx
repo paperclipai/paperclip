@@ -150,6 +150,34 @@ describe("IssueChatThread system notice routing", () => {
     expect(container.querySelectorAll('[data-message-role="user"]').length).toBe(0);
   });
 
+  it("renders a system notice with a malformed createdAt without tripping the error boundary (PAP-16607)", () => {
+    const comment: IssueChatComment = {
+      id: "comment-system-bad-date",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      body: "Workspace ready.",
+      presentation: {
+        kind: "system_notice",
+        tone: "info",
+        title: "Workspace ready",
+        detailsDefaultOpen: false,
+      },
+      metadata: { version: 1, sections: [] },
+      // A server serialization bug (Dates collapsed to `{}` by secret
+      // redaction) shipped comments whose timestamps parse to Invalid Date.
+      createdAt: {} as unknown as Date,
+      updatedAt: {} as unknown as Date,
+    };
+
+    renderThread([comment]);
+
+    expect(container.textContent).not.toContain("Chat renderer hit an internal state error.");
+    expect(container.textContent).toContain("Workspace ready");
+  });
+
   it("expands metadata when detailsDefaultOpen is true", () => {
     const comment: IssueChatComment = {
       id: "comment-system-open",

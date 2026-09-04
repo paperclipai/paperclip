@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { Folder, Github } from "lucide-react";
+import { Folder } from "lucide-react";
+import { GithubIcon } from "@/components/icons/github-icon";
 import { AgentSkillRow, type AgentSkillRowData } from "@/pages/agent-skills/AgentSkillRow";
 
 const ENABLED: AgentSkillRowData = {
@@ -9,7 +10,7 @@ const ENABLED: AgentSkillRowData = {
   icon: { key: "agent-browser", name: "agent-browser", slug: "agent-browser", iconUrl: null, color: null },
   summary: "Drive a real browser to inspect and interact with web pages.",
   chip: "automation",
-  sourceMeta: { icon: Github, label: "GitHub · vercel-labs/agent-browser" },
+  sourceMeta: { icon: GithubIcon, label: "GitHub · vercel-labs/agent-browser" },
   linkTo: "/skills/agent-browser",
   slug: "agent-browser",
   tagline: "Drive a real browser to inspect and interact with web pages.",

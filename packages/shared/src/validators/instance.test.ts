@@ -5,10 +5,34 @@ import {
 } from "./instance.js";
 
 describe("instance experimental settings validators", () => {
+  it("defaults the streamlined UI on and accepts an explicit patch", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableStreamlinedUi).toBe(true);
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({ enableStreamlinedUi: false }),
+    ).toEqual({ enableStreamlinedUi: false });
+  });
+
   it("defaults the server info debug view off", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
     expect(settings.enableServerInfoDebugView).toBe(false);
+  });
+
+  it("defaults Paperclip developer mode off and accepts explicit patches", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enablePaperclipDeveloperMode).toBe(false);
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({ enablePaperclipDeveloperMode: true }),
+    ).toEqual({ enablePaperclipDeveloperMode: true });
+  });
+
+  it("strips retired watchdog and liveness auto-recovery settings", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableTaskWatchdogs: false,
+        enableIssueGraphLivenessAutoRecovery: true,
+        issueGraphLivenessAutoRecoveryLookbackHours: 24,
+      }),
+    ).toEqual({});
   });
 
   it("defaults workspace branch repair settings on", () => {
@@ -22,6 +46,29 @@ describe("instance experimental settings validators", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
     expect(settings.enableGoalsSidebarLink).toBe(false);
+  });
+
+  it("defaults the sandbox duplex bridge kill switch off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableSandboxDuplexBridge).toBe(false);
+  });
+
+  it("accepts an explicit sandbox duplex bridge kill switch value", () => {
+    expect(
+      instanceExperimentalSettingsSchema.parse({ enableSandboxDuplexBridge: true })
+        .enableSandboxDuplexBridge,
+    ).toBe(true);
+    expect(
+      instanceExperimentalSettingsSchema.parse({ enableSandboxDuplexBridge: false })
+        .enableSandboxDuplexBridge,
+    ).toBe(false);
+  });
+
+  it("accepts the sandbox duplex bridge kill switch in a patch", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({ enableSandboxDuplexBridge: true }),
+    ).toEqual({ enableSandboxDuplexBridge: true });
   });
 
   it("defaults worktree run execution off", () => {
@@ -56,10 +103,10 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableBetaSkills).toBe(false);
   });
 
-  it("defaults apps off", () => {
+  it("defaults the retired Apps compatibility key on", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 
-    expect(settings.enableApps).toBe(false);
+    expect(settings.enableApps).toBe(true);
   });
 
   it("accepts worktree run execution patches", () => {

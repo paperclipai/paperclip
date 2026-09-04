@@ -75,6 +75,10 @@ export function NewAgentDialog() {
     queryFn: () => adaptersApi.list(),
     staleTime: 5 * 60 * 1000,
   });
+  const nativeRunnerAvailable =
+    serverAdapters?.some(
+      (adapter) => adapter.type === "paperclip_runner" && !adapter.disabled,
+    ) === true;
 
   // Fetch existing agents for the "Ask CEO" flow
   const { data: agents } = useQuery({
@@ -92,6 +96,7 @@ export function NewAgentDialog() {
     const registered = listUIAdapters()
       .filter((a) =>
         isAgentAdapterType(a.type) &&
+        (a.type !== "paperclip_runner" || nativeRunnerAvailable) &&
         !disabledTypes.has(a.type) &&
         isVisualAdapterChoice(a.type)
       );
@@ -115,7 +120,7 @@ export function NewAgentDialog() {
         if (!a.recommended && b.recommended) return 1;
         return a.label.localeCompare(b.label);
       });
-  }, [disabledTypes, serverAdapters]);
+  }, [disabledTypes, nativeRunnerAvailable, serverAdapters]);
 
   function handleAskCeo() {
     closeNewAgent();
@@ -352,7 +357,7 @@ export function NewAgentDialog() {
               </label>
 
               <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-                Agent invites create a join request first. A company admin still approves the request before the agent can claim its API key.
+                Agent invites create a join request first. An organization admin still approves the request before the agent can claim its API key.
               </div>
 
               <div>
@@ -385,7 +390,7 @@ export function NewAgentDialog() {
                     ) : null}
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    Send this prompt to the external agent that should join this company.
+                    Send this prompt to the external agent that should join this organization.
                   </p>
                 </div>
               </div>

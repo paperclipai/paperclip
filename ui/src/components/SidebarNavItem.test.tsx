@@ -82,6 +82,36 @@ describe("SidebarNavItem", () => {
     expect(link().getAttribute("aria-label")).toBeNull();
   });
 
+  it("outlines icon alert badges with the streamlined sidebar surface", () => {
+    render(<SidebarNavItem to="/inbox" label="Inbox" icon={Inbox} alert />);
+
+    const alertBadge = container.querySelector('[data-slot="sidebar-icon-alert-badge"]');
+    expect(alertBadge).not.toBeNull();
+    expect(classTokens(alertBadge)).toContain("shadow-(--shadow-sidebar-icon-badge)");
+    expect(classTokens(alertBadge)).not.toContain("shadow-(--shadow-extract-12)");
+  });
+
+  it("omits the icon slot when an item has no icon", () => {
+    render(<SidebarNavItem to="/issues/one" label="Recent task" />);
+
+    expect(link().querySelector('[data-slot="sidebar-nav-icon"]')).toBeNull();
+    expect(link().firstElementChild?.textContent).toBe("Recent task");
+  });
+
+  it("uses the Paper nav surface for the active item", () => {
+    render(<SidebarNavItem to="/issues" label="Tasks" icon={Inbox} active />);
+
+    expect(classTokens(link())).toContain("bg-background");
+    expect(classTokens(link())).not.toContain("bg-accent");
+  });
+
+  it("uses the active nav surface for hover", () => {
+    render(<SidebarNavItem to="/issues" label="Tasks" icon={Inbox} />);
+
+    expect(classTokens(link())).toContain("hover:bg-background");
+    expect(classTokens(link())).not.toContain("hover:bg-accent/50");
+  });
+
   it("clips the label (kept in flow for 1:1 row height) and collapses the badge to a dot in the rail", () => {
     sidebarState.collapsed = true;
     render(<SidebarNavItem to="/inbox" label="Inbox" icon={Inbox} badge={28} badgeLabel="unread" />);
@@ -135,9 +165,9 @@ describe("SidebarNavItem", () => {
   });
 
   it("forces the full label inside an expanded contextual pane even when globally collapsed", () => {
-    // The takeover model collapses the global sidebar (collapsed=true) while the
-    // 240px SecondarySidebar still needs readable labels (PAP-10700). The
-    // provider must override the global rail collapse.
+    // The takeover preserves the user's saved global collapse preference while
+    // replacing its contents. The provider keeps the contextual navigation
+    // readable without changing that preference.
     sidebarState.collapsed = true;
     render(
       <SidebarNavExpandedProvider>

@@ -36,6 +36,13 @@ const mockAccessService = vi.hoisted(() => ({
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
   releaseLease: vi.fn(),
+  // The tenant-binding guard reads the environment's bound company ids before it
+  // reveals the driver or the status. An empty list marks an instance-global
+  // environment, so the guard lets the same-company Test through.
+  listBoundCompanyIds: vi.fn(async () => []),
+  // The managed-sandbox-only redirect looks up the managed sandbox for a local
+  // environment Test. These tests keep the policy off, so no managed row exists.
+  findManagedSandboxEnvironment: vi.fn(async () => null),
 }));
 
 const mockEnvironmentRuntime = vi.hoisted(() => ({
@@ -47,6 +54,7 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn(async () => null));
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
+  getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
 }));
 const mockRunClaudeLogin = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
 

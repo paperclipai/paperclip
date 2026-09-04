@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.modal-sandbox-provider";
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.1";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -31,11 +31,13 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             description:
               "Modal App name used as the parent for sandboxes. The plugin calls `modal.apps.fromName(appName, { createIfMissing: true })`, so the App is created on first acquire if it does not already exist.",
+            default: "paperclip",
           },
           image: {
             type: "string",
             description:
-              "Container image reference passed to `modal.images.fromRegistry()`, e.g. `python:3.13` or `node:20`.",
+              "Container image reference passed to `modal.images.fromRegistry()`, e.g. `python:3.13` or `node:24`. The default `node:24` satisfies the sandbox runtime contract (node, sh, and tar on PATH).",
+            default: "node:24",
           },
           tokenId: {
             type: "string",

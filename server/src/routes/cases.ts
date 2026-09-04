@@ -25,7 +25,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   isUuidLike,
 } from "@paperclipai/shared";
-import { normalizeContentType } from "../attachment-types.js";
+import { formatAttachmentSize, MAX_ATTACHMENT_BYTES, normalizeContentType } from "../attachment-types.js";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -48,29 +48,29 @@ const caseKeySchema = z.string().trim().min(1).max(512);
 const documentKeySchema = z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/);
 
 const createCaseSchema = z.object({
-  projectId: z.string().uuid().nullable().optional(),
+  projectId: z.string().guid().nullable().optional(),
   caseType: caseTypeSchema,
   key: caseKeySchema.nullable().optional(),
   title: z.string().trim().min(1).max(500),
   summary: z.string().max(8_000).nullable().optional(),
   status: caseStatusSchema.optional(),
   fields: jsonObjectSchema.optional(),
-  parentCaseId: z.string().uuid().nullable().optional(),
+  parentCaseId: z.string().guid().nullable().optional(),
 }).strict();
 
 const patchCaseSchema = z.object({
-  projectId: z.string().uuid().nullable().optional(),
+  projectId: z.string().guid().nullable().optional(),
   title: z.string().trim().min(1).max(500).optional(),
   summary: z.string().max(8_000).nullable().optional(),
   status: caseStatusSchema.optional(),
   fields: jsonObjectSchema.optional(),
-  parentCaseId: z.string().uuid().nullable().optional(),
-  labels: z.array(z.string().uuid()).max(100).optional(),
-  labelIds: z.array(z.string().uuid()).max(100).optional(),
+  parentCaseId: z.string().guid().nullable().optional(),
+  labels: z.array(z.string().guid()).max(100).optional(),
+  labelIds: z.array(z.string().guid()).max(100).optional(),
 }).strict();
 
 const createIssueLinkSchema = z.object({
-  issueId: z.string().uuid(),
+  issueId: z.string().guid(),
   role: z.enum(CASE_LINK_ROLES),
 }).strict();
 
@@ -79,7 +79,7 @@ const upsertCaseDocumentSchema = z.object({
   format: z.string().trim().min(1).max(80).optional().default("markdown"),
   body: z.string().max(200_000),
   changeSummary: z.string().trim().max(1_000).nullable().optional(),
-  baseRevisionId: z.string().uuid().nullable().optional(),
+  baseRevisionId: z.string().guid().nullable().optional(),
 }).strict();
 
 const queryListParamSchema = z.union([z.string(), z.array(z.string())]).optional();
@@ -89,13 +89,13 @@ const listCasesQuerySchema = z.object({
   types: queryListParamSchema,
   status: z.string().trim().min(1).max(120).optional(),
   statuses: queryListParamSchema,
-  project: z.string().uuid().optional(),
-  projectId: z.string().uuid().optional(),
+  project: z.string().guid().optional(),
+  projectId: z.string().guid().optional(),
   projectIds: queryListParamSchema,
   includeNoProject: z.enum(["true", "false", "1", "0"]).optional(),
-  label: z.string().uuid().optional(),
-  labelId: z.string().uuid().optional(),
-  parent: z.string().uuid().optional(),
+  label: z.string().guid().optional(),
+  labelId: z.string().guid().optional(),
+  parent: z.string().guid().optional(),
   q: z.string().trim().min(1).max(200).optional(),
   includeAncestors: z.enum(["true", "false", "1", "0"]).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(100),
@@ -1276,19 +1276,15 @@ export function caseRoutes(db: Db, storage: StorageService) {
     await assertCasesEnabled(db);
     const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const actor = getActorInfo(req);
-    const [company] = await db
-      .select({ attachmentMaxBytes: companies.attachmentMaxBytes })
-      .from(companies)
-      .where(eq(companies.id, caseRow.companyId))
-      .limit(1);
-    const maxBytes = company?.attachmentMaxBytes ?? 10 * 1024 * 1024;
 
     try {
-      await singleFileUpload(req, res, maxBytes);
+      await singleFileUpload(req, res, MAX_ATTACHMENT_BYTES);
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          throw unprocessable(`Attachment exceeds ${maxBytes} bytes`);
+          throw unprocessable(
+            `Attachment is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          );
         }
         throw badRequest(err.message);
       }

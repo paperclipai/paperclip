@@ -14,7 +14,7 @@ import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } fr
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
-import { conflict, forbidden } from "../errors.js";
+import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
@@ -52,6 +52,31 @@ export function projectRoutes(db: Db) {
   });
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const environmentsSvc = environmentService(db);
+
+  /**
+   * Managed-sandbox-only policy (`enableManagedSandboxOnly`): a project
+   * workspace `cwd` is an absolute path on the execution host. When the policy
+   * is on every agent runs in the platform-managed environment, so there is no
+   * host for a user to point at and a write that carries a path is refused
+   * rather than stored and silently ignored. This is the floor behind the
+   * hidden UI field, and it applies to every actor, mirroring how
+   * `assertNoAgentHostWorkspaceCommandMutation` floors host-executed commands
+   * on these same routes.
+   *
+   * `cwd: null` still passes: clearing a stale path is exactly what an instance
+   * that just turned the policy on needs to do. The settings read only happens
+   * when the payload actually carries a path.
+   */
+  async function assertNoManagedSandboxWorkspacePath(workspacePatch: unknown) {
+    if (typeof workspacePatch !== "object" || workspacePatch === null || Array.isArray(workspacePatch)) return;
+    const patch = workspacePatch as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(patch, "cwd")) return;
+    if (patch.cwd === null || patch.cwd === undefined) return;
+    if ((await instanceSettings.getExperimental()).enableManagedSandboxOnly !== true) return;
+    throw unprocessable(
+      "This instance runs agents only in the platform-managed environment; local folders are not configurable.",
+    );
+  }
 
   async function assertProjectEnvironmentSelection(companyId: string, environmentId: string | null | undefined) {
     if (environmentId === undefined || environmentId === null) return;
@@ -103,6 +128,17 @@ export function projectRoutes(db: Db) {
     });
     if (decision.allowed) return true;
     res.status(403).json({ error: "Project is outside this actor's authorization boundary" });
+    return false;
+  }
+
+  async function assertRuntimeManageAllowed(req: Request, res: Response, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "runtime:manage",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Runtime service control is outside this actor's authorization boundary" });
     return false;
   }
 
@@ -169,6 +205,7 @@ export function projectRoutes(db: Db) {
         ...collectProjectWorkspaceCommandPaths(workspace, "workspace"),
       ],
     );
+    await assertNoManagedSandboxWorkspacePath(workspace);
     if (projectData.env !== undefined) {
       projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(
         companyId,
@@ -290,6 +327,7 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectWorkspaceCommandPaths(req.body),
     );
+    await assertNoManagedSandboxWorkspacePath(req.body);
     const workspace = await svc.createWorkspace(id, req.body);
     if (!workspace) {
       res.status(422).json({ error: "Invalid project workspace payload" });
@@ -328,6 +366,7 @@ export function projectRoutes(db: Db) {
         req,
         collectProjectWorkspaceCommandPaths(req.body),
       );
+      await assertNoManagedSandboxWorkspacePath(req.body);
       const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
       if (!workspaceExists) {
         res.status(404).json({ error: "Project workspace not found" });
@@ -375,6 +414,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project workspace not found" });
       return;
     }
+    if (!(await assertRuntimeManageAllowed(req, res, project.companyId))) return;
 
     const isSharedWorkspace = Boolean(workspace.sharedWorkspaceKey);
     if (
@@ -489,6 +529,7 @@ export function projectRoutes(db: Db) {
               worktreePath: null,
               warnings: [],
               created: false,
+              branchCreatedByRuntime: false,
             },
             command: workspaceCommand.rawConfig,
             adapterEnv: {},
@@ -544,11 +585,13 @@ export function projectRoutes(db: Db) {
               worktreePath: null,
               warnings: [],
               created: false,
+              branchCreatedByRuntime: false,
             },
             config: { workspaceRuntime: runtimeConfig },
             adapterEnv: {},
             onLog,
             serviceIndex: selectedServiceIndex,
+            runtimeServiceId: selectedRuntimeServiceId,
           });
           runtimeServiceCount = startedServices.length;
         } else {

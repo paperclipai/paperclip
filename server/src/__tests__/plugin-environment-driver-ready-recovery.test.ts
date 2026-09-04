@@ -513,3 +513,80 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
     }
   });
 });
+
+describe("listReadyPluginEnvironmentDrivers reusable-lease method verification", () => {
+  beforeEach(() => {
+    mockRegistry.getById.mockReset();
+    mockRegistry.list.mockReset();
+    mockRegistry.listConfigs.mockReset();
+    mockRegistry.update.mockReset();
+  });
+
+  function createRunningWorker(supportedMethods: string[]) {
+    return {
+      isRunning: vi.fn(() => true),
+      getWorker: vi.fn(() => ({ supportedMethods })),
+    } as unknown as PluginWorkerManager;
+  }
+
+  it("verifies reusable-lease methods when the worker advertises all lifecycle methods", async () => {
+    mockRegistry.list.mockResolvedValue([createPlugin("ready")]);
+    const drivers = await listReadyPluginEnvironmentDrivers({
+      db: {} as never,
+      workerManager: createRunningWorker([
+        "environmentResumeLease",
+        "environmentReleaseLease",
+        "environmentDestroyLease",
+        "environmentExecute",
+      ]),
+    });
+
+    expect(drivers).toHaveLength(1);
+    expect(drivers[0]?.reusableLeaseMethodsVerified).toBe(true);
+  });
+
+  it("does not verify reusable-lease methods when the worker omits the resume method", async () => {
+    mockRegistry.list.mockResolvedValue([createPlugin("ready")]);
+    const drivers = await listReadyPluginEnvironmentDrivers({
+      db: {} as never,
+      workerManager: createRunningWorker([
+        "environmentReleaseLease",
+        "environmentDestroyLease",
+      ]),
+    });
+
+    expect(drivers).toHaveLength(1);
+    expect(drivers[0]?.reusableLeaseMethodsVerified).toBe(false);
+  });
+
+  it("does not verify reusable-lease methods when the worker omits the release method", async () => {
+    mockRegistry.list.mockResolvedValue([createPlugin("ready")]);
+    const drivers = await listReadyPluginEnvironmentDrivers({
+      db: {} as never,
+      workerManager: createRunningWorker([
+        "environmentResumeLease",
+        "environmentDestroyLease",
+      ]),
+    });
+
+    expect(drivers).toHaveLength(1);
+    expect(drivers[0]?.reusableLeaseMethodsVerified).toBe(false);
+  });
+
+  it("does not verify reusable-lease methods when the worker omits the destroy method", async () => {
+    // A provider that resumes and releases but cannot destroy a stale lease must
+    // not present as reusable. The reuse path destroys the stale lease when a
+    // resume fails, so without destroy the runtime would strand the lease.
+    mockRegistry.list.mockResolvedValue([createPlugin("ready")]);
+    const drivers = await listReadyPluginEnvironmentDrivers({
+      db: {} as never,
+      workerManager: createRunningWorker([
+        "environmentResumeLease",
+        "environmentReleaseLease",
+      ]),
+    });
+
+    expect(drivers).toHaveLength(1);
+    expect(drivers[0]?.reusableLeaseMethodsVerified).toBe(false);
+  });
+});

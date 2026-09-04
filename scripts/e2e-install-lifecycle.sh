@@ -6,7 +6,7 @@
 #   -> update --check -> update --rollback -> reinstall (payload reuse)
 #   -> bad-ref failure hygiene -> service lifecycle -> uninstall (data preserved)
 #
-# Machine requirements: bash, curl, tar, node >= 20 (with corepack), npm.
+# Machine requirements: bash, curl, tar, node >= 24.11 (with corepack), npm.
 # The machine's $HOME must not already contain a managed install.
 #
 # Env knobs:

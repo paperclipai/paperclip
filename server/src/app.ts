@@ -1,9 +1,10 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -11,7 +12,14 @@ import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
+import {
+  IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+  resolveDefaultImportTransferSpoolRoot,
+  sweepAbandonedImportTransferSpools,
+} from "./services/company-import-transfers.js";
+import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -23,6 +31,16 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import type { SetupTokenSessionService } from "./services/setup-token-session.js";
+import {
+  buildSetupTokenLoginTransport,
+  createProductionSetupTokenSandboxProvider,
+  createProductionSetupTokenCleanupStore,
+  createSetupTokenSecretWriter,
+  createWorkerBoundLoginPtyOpener,
+} from "./services/setup-token-transport-binding.js";
+import { environmentService } from "./services/environments.js";
+import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
@@ -33,6 +51,7 @@ import { pipelineRoutes } from "./routes/pipelines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
+import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -52,6 +71,7 @@ import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
+import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
   instanceDatabaseBackupRoutes,
@@ -63,9 +83,16 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gateway.js";
+import {
+  connectionIntentBoardRoutes,
+  runtimeConnectionIntentRoutes,
+} from "./routes/connection-intents.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { managedAgentProfileRoutes } from "./routes/managed-agent-profiles.js";
+import { remoteAgentProfileRoutes } from "./routes/remote-agent-profiles.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
+import { staticUiCacheControl } from "./static-ui-cache.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader, type PluginLoader } from "./services/plugin-loader.js";
@@ -80,6 +107,8 @@ import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { createToolGatewayService } from "./services/tool-gateway.js";
+import { toolAccessService } from "./services/tool-access.js";
+import { heartbeatService } from "./services/heartbeat.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
@@ -123,16 +152,41 @@ export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
 }
 
 export function resolveViteHmrPort(serverPort: number): number {
-  if (serverPort <= 55_535) {
-    return serverPort + 10_000;
-  }
-  return Math.max(1_024, serverPort - 10_000);
+  return derivePaperclipViteHmrPort(serverPort);
 }
 
 export function resolveViteHmrHost(bindHost: string): string | undefined {
   const normalized = bindHost.trim().toLowerCase();
-  if (normalized === "0.0.0.0" || normalized === "::") return undefined;
+  if (
+    normalized === "0.0.0.0"
+    || normalized === "::"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "localhost"
+  ) return undefined;
   return bindHost;
+}
+
+export function resolveViteHmrProtocol(value: string | undefined): "ws" | "wss" | undefined {
+  if (!value) return undefined;
+  if (value === "ws" || value === "wss") return value;
+  throw new Error("PAPERCLIP_VITE_HMR_PROTOCOL must be ws or wss");
+}
+
+export function listenViteHmrServer(server: HttpServer, port: number, bindHost: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, bindHost);
+  });
 }
 
 export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
@@ -253,6 +307,7 @@ export async function createApp(
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
     bindHost: string;
+    authPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
     instanceId?: string;
@@ -310,6 +365,11 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  app.use(cloudRuntimeIdentityMiddleware(db));
+  // Connection-intent tools carry their own short-lived, run-bound bearer and
+  // must be reachable by remote adapters that intentionally do not receive an
+  // agent API key. Every request revalidates the active heartbeat row.
+  app.use(runtimeConnectionIntentRoutes(db));
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
@@ -378,7 +438,84 @@ export async function createApp(
   api.use(summarySlotRoutes(db));
   api.use(statusCardRoutes(db));
   api.use(teamsCatalogRoutes(db));
-  api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
+  // The setup-token login session service. The router builds it and hands it
+  // back through the callback below, so the shutdown hook can cancel every live
+  // session (SR-4).
+  let setupTokenLoginService: SetupTokenSessionService | null = null;
+  // The dedicated proxy IP or CIDR allowlist for the confidential setup-token
+  // login responses (SR-7). The global `TRUST_PROXY` setting does not satisfy
+  // the guard; an operator sets this allowlist to the real TLS-terminating
+  // proxy addresses. An empty value keeps the confidential responses on direct
+  // TLS (or a `local_trusted` loopback peer) only.
+  const setupTokenLoginProxyAllowlist = (process.env.CLAUDE_LOGIN_TRUSTED_PROXIES ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  // The explicit operator declaration that a platform edge terminates TLS for
+  // every client request (SR-7). This complements the allowlist for managed
+  // platforms (Railway, Render, Fly, and the like) where the app socket is
+  // always plain HTTP and the edge-proxy peer addresses are not stable or
+  // documented, so `CLAUDE_LOGIN_TRUSTED_PROXIES` cannot express them. It is a
+  // dedicated, single-purpose setting; the guard still never reads the global
+  // `TRUST_PROXY` value.
+  const setupTokenLoginEdgeTlsTerminated = /^(1|true|yes|on)$/i.test(
+    (process.env.CLAUDE_LOGIN_EDGE_TLS_TERMINATED ?? "").trim(),
+  );
+  // Bind the production setup-token login transport. It carries the live lease
+  // manager, the login-process factory over the sandbox pseudo-terminal, and the
+  // durable cleanup store. The factory passes only the fixed command
+  // `CLAUDE_SETUP_TOKEN_COMMAND`; it never reads a command from a
+  // route, a request body, or an adapter configuration. The durable store and the
+  // startup reaper are live now, so a restart reaps a leftover lease.
+  //
+  // The live sandbox pseudo-terminal opener binds inside the sandbox provider
+  // worker, so the server process does not hold the raw sandbox process. The
+  // opener drives the worker through the plugin worker manager route gate.
+  // The manager mints a host-owned route identifier, permits one
+  // active credential pseudo-terminal per worker, binds the worker session
+  // identifier one time for output only, and terminalizes the route on every open
+  // failure path. With the opener supplied, the provider acquires a lease and the
+  // start route drives a live login instead of the fixed 503.
+  const setupTokenLoginTransport = buildSetupTokenLoginTransport({
+    sandbox: createProductionSetupTokenSandboxProvider({
+      environments: environmentService(db),
+      environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
+      openLivePtySession: createWorkerBoundLoginPtyOpener({
+        workerManager,
+        environments: environmentService(db),
+        log: (line) => logger.info(line),
+      }),
+      log: (line) => logger.info(line),
+    }),
+    store: createProductionSetupTokenCleanupStore(db),
+    // Bind the atomic credential-claim writer, so a completed login transitions
+    // the durable row to `stored` and stores the minted token in one control-plane
+    // transaction. The writer reads the company and the owner only from the
+    // immutable session scope. The confirm-replacement flow owns rotation. Without
+    // this writer the router falls back to the deferred, fail-closed 503 and never
+    // stores the token.
+    completeCredential: createSetupTokenSecretWriter({ db }),
+    // Forward the login runner diagnostic lines to the server logger. The
+    // runner is the sole producer, and every line is a fixed, non-secret
+    // literal. Without this sink the diagnostics fall back to a no-op in
+    // production, so a failed login leaves no log trail.
+    log: (line) => logger.info(line),
+  });
+  api.use(
+    agentRoutes(db, {
+      pluginWorkerManager: workerManager,
+      deploymentMode: opts.deploymentMode,
+      confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
+      confidentialEdgeTlsTerminated: setupTokenLoginEdgeTlsTerminated,
+      setupTokenLogin: setupTokenLoginTransport,
+      onSetupTokenLoginService: (service) => {
+        // Capture the service, so the graceful-shutdown hook cancels every live
+        // session and releases each lease. The standalone scheduled reaper owns
+        // the startup and interval lease cleanup now (SR-4).
+        setupTokenLoginService = service;
+      },
+    }),
+  );
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
@@ -397,9 +534,12 @@ export async function createApp(
   }));
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
+  api.use(onboardingSeedRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
+  api.use(managedAgentProfileRoutes(db));
+  api.use(remoteAgentProfileRoutes(db));
   const trustedLocalStdioRuntimeHost =
     process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
     ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
@@ -435,11 +575,17 @@ export async function createApp(
     lifecycleManager: lifecycle,
     db,
   });
+  const gatewayOAuthAccess = toolAccessService(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+  });
   const toolGateway = createToolGatewayService(db, {
     pluginToolDispatcher: toolDispatcher,
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
     trustedLocalStdioRuntimeHost,
+    oauthGrantRefresher: (input) => gatewayOAuthAccess.refreshOAuthGrantCredentials(input),
   });
   // Issue routes are intentionally mounted after the gateway is constructed because
   // issue approval endpoints delegate to it. The intervening routers use distinct
@@ -450,12 +596,18 @@ export async function createApp(
     approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
   }));
   app.use(mcpGatewayProtocolRoutes(toolGateway));
+  const connectionIntentHeartbeat = heartbeatService(db, {
+    pluginWorkerManager: workerManager,
+  });
   api.use(toolAccessRoutes(db, {
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
+    authPublicBaseUrl: opts.authPublicBaseUrl,
     trustedLocalStdioRuntimeHost,
     toolGateway,
+    connectionIntentHeartbeat,
   }));
+  api.use(connectionIntentBoardRoutes(db, connectionIntentHeartbeat));
   api.use(smokeLabRoutes(db, {
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -468,6 +620,8 @@ export async function createApp(
   });
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
+  let viteDevServer: { close(): Promise<void> } | null = null;
+  let viteHmrServer: HttpServer | null = null;
   const loader = pluginLoader(
     db,
     {
@@ -520,13 +674,17 @@ export async function createApp(
       { toolGateway },
     ),
   );
-  api.use(adapterRoutes());
+  api.use(adapterRoutes({
+    getNativeRunnerEnabled: async () =>
+      (await instanceSettingsService(db).getExperimental()).enableNativeRunner === true,
+  }));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       bindHost: opts.bindHost,
       allowedHostnames: opts.allowedHostnames,
+      authPublicBaseUrl: opts.authPublicBaseUrl,
     }),
   );
   app.use("/api", api);
@@ -557,15 +715,15 @@ export async function createApp(
       );
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
       // short cache so operators who swap them out see the new version
-      // reasonably fast. Override for `index.html` specifically — it is
-      // served by this middleware for `/` and `/index.html`, and it must
-      // never outlive the asset hashes it points at.
+      // reasonably fast, with must-revalidate overrides for index.html and
+      // sw.js (see staticUiCacheControl for why those two).
       app.use(
         express.static(uiDist, {
           maxAge: "1h",
           setHeaders(res, filePath) {
-            if (path.basename(filePath) === "index.html") {
-              res.set("Cache-Control", "no-cache");
+            const override = staticUiCacheControl(filePath);
+            if (override) {
+              res.set("Cache-Control", override);
             }
           },
         }),
@@ -590,6 +748,19 @@ export async function createApp(
     } else {
       console.warn("[paperclip] UI dist not found; running in API-only mode");
     }
+    if (process.env.PAPERCLIP_MANAGED_RUNTIME_EXPOSURE === "tailscale_https") {
+      // The managed-runtime supervisor waits for the app port AND its derived
+      // Vite HMR companion port to bind before publishing the service. Static
+      // mode has no Vite, so bind the same placeholder listener dev mode uses
+      // or the supervisor kills a healthy server at the readiness deadline
+      // (PAP-18043).
+      const hmrServer = createHttpServer((_req, res) => {
+        res.writeHead(426, { "Content-Type": "text/plain" });
+        res.end("Upgrade Required");
+      });
+      await listenViteHmrServer(hmrServer, resolveViteHmrPort(opts.serverPort), opts.bindHost);
+      viteHmrServer = hmrServer;
+    }
   }
 
   if (opts.uiMode === "vite-dev") {
@@ -597,20 +768,39 @@ export async function createApp(
     const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
     const hmrHost = resolveViteHmrHost(opts.bindHost);
+    const hmrProtocol = resolveViteHmrProtocol(process.env.PAPERCLIP_VITE_HMR_PROTOCOL);
+    const hmrServer = createHttpServer((_req, res) => {
+      res.writeHead(426, { "Content-Type": "text/plain" });
+      res.end("Upgrade Required");
+    });
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
       appType: "custom",
       server: {
+        // Listener binding and browser HMR hostname are deliberately separate:
+        // exposed branch runtimes stay loopback-only while the browser uses the
+        // current MagicDNS hostname through the broker's HTTPS listener.
+        host: opts.bindHost,
         middlewareMode: true,
         hmr: {
+          server: hmrServer,
           ...(hmrHost ? { host: hmrHost } : {}),
+          ...(hmrProtocol ? { protocol: hmrProtocol } : {}),
           port: hmrPort,
           clientPort: hmrPort,
         },
         allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
       },
     });
+    try {
+      await listenViteHmrServer(hmrServer, hmrPort, opts.bindHost);
+    } catch (error) {
+      await vite.close();
+      throw error;
+    }
+    viteDevServer = vite;
+    viteHmrServer = hmrServer;
     viteHtmlRenderer = createCachedViteHtmlRenderer({
       vite,
       uiRoot,
@@ -672,6 +862,48 @@ export async function createApp(
   if (opts.feedbackExportService) {
     void flushPendingFeedbackExports();
   }
+  // Abandoned chunked-import spool sweep: hourly (plus once at startup),
+  // deleting spool dirs whose transfer saw no activity for 24h and cancelling
+  // their still-open ledger runs. Same setInterval + unref + shutdown-clear
+  // shape as the feedback export flush above.
+  const importTransferSpoolRoot = resolveDefaultImportTransferSpoolRoot();
+  const sweepImportTransferSpools = () => {
+    sweepAbandonedImportTransferSpools(db, importTransferSpoolRoot)
+      .then((result) => {
+        if (result.swept > 0) {
+          logger.info(result, "swept abandoned company import transfer spools");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "abandoned company import transfer spool sweep failed");
+      });
+  };
+  let importTransferSweepTimer: ReturnType<typeof setInterval> | null = setInterval(
+    sweepImportTransferSpools,
+    IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+  );
+  importTransferSweepTimer.unref?.();
+  // Startup only (never on the hourly interval — that would kill live
+  // applies): apply jobs are in-memory in this single process, so any run
+  // still "applying" now was interrupted by the previous shutdown and would
+  // otherwise 409 every retry forever. Fail those stranded runs — their
+  // spooled parts stay reusable — then run the normal sweep once.
+  void companyTransferRunService
+    .recoverStrandedApplyingRuns(db)
+    .then((recovered) => {
+      if (recovered.length > 0) {
+        logger.warn(
+          { count: recovered.length, runIds: recovered },
+          "failed company transfer runs stranded in applying by a restart",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "stranded company transfer apply recovery failed");
+    })
+    .finally(() => {
+      sweepImportTransferSpools();
+    });
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
@@ -731,19 +963,40 @@ export async function createApp(
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
   app.locals.bundledPluginsStartup = bundledPluginsStartup;
-  let appServicesShutdown = false;
-  const shutdownAppServices = () => {
-    if (appServicesShutdown) return;
-    appServicesShutdown = true;
-    disableFeedbackExportFlushes();
-    devWatcher?.close();
-    viteHtmlRenderer?.dispose();
-    hostServiceCleanup.disposeAll();
-    hostServiceCleanup.teardown();
+  // The shutdown hook runs at most once. It caches the in-flight promise, so a
+  // second caller (for example the `exit` handler) awaits the same completion
+  // instead of starting a second teardown.
+  let appServicesShutdown: Promise<void> | null = null;
+  const shutdownAppServices = (): Promise<void> => {
+    if (appServicesShutdown) return appServicesShutdown;
+    appServicesShutdown = (async () => {
+      disableFeedbackExportFlushes();
+      if (importTransferSweepTimer) {
+        clearInterval(importTransferSweepTimer);
+        importTransferSweepTimer = null;
+      }
+      devWatcher?.close();
+      viteHtmlRenderer?.dispose();
+      void viteDevServer?.close().catch(() => undefined);
+      viteHmrServer?.close();
+      hostServiceCleanup.disposeAll();
+      hostServiceCleanup.teardown();
+      // Cancel every live setup-token login session and AWAIT the cancellation,
+      // so each direct child stops and the server releases each lease before the
+      // caller stops the database and the provider. A lease release that
+      // fails stays a durable record for the startup reaper.
+      await setupTokenLoginService?.shutdown();
+    })();
+    return appServicesShutdown;
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 
-  process.once("exit", shutdownAppServices);
+  // The `exit` event is synchronous. It cannot await the teardown, so it runs
+  // the best-effort cleanup and drops the returned promise. The orderly signal
+  // path awaits `shutdownAppServices` in full before the process exits.
+  process.once("exit", () => {
+    void shutdownAppServices();
+  });
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();
   });

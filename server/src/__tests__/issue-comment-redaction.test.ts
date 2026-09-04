@@ -187,6 +187,27 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     expect(JSON.stringify(wakePayload)).not.toContain("secret metadata");
   });
 
+  it("serializes comment timestamps as ISO strings through the redacted comments route (PAP-16607)", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "board-user-1",
+      body: "ordinary comment",
+    });
+
+    const response = await request(createApp(companyId)).get(`/api/issues/${issueId}/comments`);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toHaveLength(1);
+    // Secret redaction must not collapse Date instances to `{}` — the chat
+    // renderer needs parseable timestamps.
+    expect(typeof response.body[0].createdAt).toBe("string");
+    expect(Number.isNaN(new Date(response.body[0].createdAt).getTime())).toBe(false);
+    expect(typeof response.body[0].updatedAt).toBe("string");
+  });
+
   it("excludes deleted comment bodies from company search", async () => {
     const { companyId, issueId } = await seedIssue();
     await db.insert(issueComments).values({

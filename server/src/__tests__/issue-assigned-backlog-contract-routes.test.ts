@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
 
@@ -46,7 +46,7 @@ vi.mock("../services/index.js", () => ({
     completeTestRunForIssue: vi.fn(async () => null),
   }),
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({
@@ -168,6 +168,15 @@ function expectClearAssignedStatusValidation(res: request.Response) {
 }
 
 describe("assigned backlog creation contract", () => {
+  // Load the real route and middleware modules once before the tests run. The
+  // first import transforms a large module graph. Under the loaded serial shard
+  // (maxWorkers=1) that cold cost crossed the 5s testTimeout of the first test.
+  // The hook has a 30s budget, so it absorbs the cost and every createApp() call
+  // then hits the cached modules.
+  beforeAll(async () => {
+    await createApp();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue({

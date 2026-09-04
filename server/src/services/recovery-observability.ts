@@ -44,7 +44,7 @@ export type RecoveryCauseGroup = {
 };
 
 export type RecoveryHandoffSummary = {
-  /** Genuine manager takeovers (recovery owner != original assignee) that resolved. */
+  /** Historical agent takeovers (recovery owner != original assignee) that resolved. */
   resolvedTakeovers: number;
   handedBack: number;
   ownerCompleted: number;
@@ -309,7 +309,9 @@ export function recoveryObservabilityService(db: Db) {
       if (klass === "active") {
         routing.active += 1;
         if (row.status === "escalated") routing.escalated += 1;
-        if (row.ownerAgentId && row.ownerAgentId !== row.returnOwnerAgentId) {
+        if (!row.ownerAgentId) {
+          handoff.boardOwned += 1;
+        } else if (row.ownerAgentId !== row.returnOwnerAgentId) {
           handoff.activeTakeovers += 1;
         }
         continue;

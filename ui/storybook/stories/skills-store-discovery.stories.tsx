@@ -1,9 +1,14 @@
 import { useMemo, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { DiscoveryGrid, type DiscoveryCard, type DiscoveryCategory } from "@/pages/CompanySkills";
+import {
+  DiscoveryGrid,
+  type DiscoveryCard,
+  type DiscoveryCategory,
+  type DiscoveryTab,
+} from "@/pages/CompanySkills";
 
-type DiscoveryTab = "all" | "installed" | "catalog" | "bundled";
 type DiscoverySort = "agents" | "stars" | "forks" | "recent" | "alphabetical";
+const STORY_NOW = new Date("2026-08-31T12:00:00Z").getTime();
 
 const MOCK_CARDS: DiscoveryCard[] = [
   {
@@ -25,7 +30,7 @@ const MOCK_CARDS: DiscoveryCard[] = [
     installed: true,
     required: false,
     forkedFrom: false,
-    updatedAt: Date.now() - 2 * 86_400_000,
+    updatedAt: STORY_NOW - 2 * 86_400_000,
     sourceBadge: "github",
   },
   {
@@ -47,7 +52,7 @@ const MOCK_CARDS: DiscoveryCard[] = [
     installed: false,
     required: false,
     forkedFrom: false,
-    updatedAt: Date.now() - 5 * 86_400_000,
+    updatedAt: STORY_NOW - 5 * 86_400_000,
     sourceBadge: "skills_sh",
   },
   {
@@ -69,7 +74,7 @@ const MOCK_CARDS: DiscoveryCard[] = [
     installed: true,
     required: false,
     forkedFrom: false,
-    updatedAt: Date.now() - 9 * 86_400_000,
+    updatedAt: STORY_NOW - 9 * 86_400_000,
     sourceBadge: "local",
   },
   {
@@ -91,7 +96,7 @@ const MOCK_CARDS: DiscoveryCard[] = [
     installed: true,
     required: false,
     forkedFrom: true,
-    updatedAt: Date.now() - 1 * 86_400_000,
+    updatedAt: STORY_NOW - 1 * 86_400_000,
     sourceBadge: "paperclip",
   },
   {
@@ -135,7 +140,7 @@ const MOCK_CARDS: DiscoveryCard[] = [
     installed: true,
     required: false,
     forkedFrom: false,
-    updatedAt: Date.now() - 3 * 86_400_000,
+    updatedAt: STORY_NOW - 3 * 86_400_000,
     sourceBadge: "github",
   },
   {
@@ -179,7 +184,7 @@ const MOCK_CARDS: DiscoveryCard[] = [
     installed: true,
     required: false,
     forkedFrom: false,
-    updatedAt: Date.now() - 4 * 86_400_000,
+    updatedAt: STORY_NOW - 4 * 86_400_000,
     sourceBadge: "local",
   },
   {
@@ -201,7 +206,7 @@ const MOCK_CARDS: DiscoveryCard[] = [
     installed: true,
     required: true,
     forkedFrom: false,
-    updatedAt: Date.now() - 30 * 86_400_000,
+    updatedAt: STORY_NOW - 30 * 86_400_000,
     sourceBadge: "paperclip",
   },
   {
@@ -223,22 +228,17 @@ const MOCK_CARDS: DiscoveryCard[] = [
     installed: true,
     required: true,
     forkedFrom: false,
-    updatedAt: Date.now() - 28 * 86_400_000,
+    updatedAt: STORY_NOW - 28 * 86_400_000,
     sourceBadge: "url",
   },
 ];
 
-const DISCOVERY_TABS: DiscoveryTab[] = ["all", "installed", "catalog", "bundled"];
-
 function cardsForTab(cards: DiscoveryCard[], tab: DiscoveryTab): DiscoveryCard[] {
-  if (tab === "installed") return cards.filter((c) => c.installed);
-  if (tab === "catalog") return cards.filter((c) => c.catalogRef != null);
-  if (tab === "bundled") return cards.filter((c) => c.required);
-  return cards;
+  return tab === "installed" ? cards.filter((card) => card.installed) : cards;
 }
 
 function DiscoveryGridHarness({
-  initialTab = "all",
+  initialTab = "installed",
   cards = MOCK_CARDS,
 }: {
   initialTab?: DiscoveryTab;
@@ -264,7 +264,7 @@ function DiscoveryGridHarness({
       if (!q) return true;
       return `${card.name} ${card.author} ${card.categories.join(" ")}`.toLowerCase().includes(q);
     });
-    const demote = tab !== "bundled";
+    const demote = tab === "discover";
     return [...filtered].sort((a, b) => {
       if (demote && a.required !== b.required) return a.required ? 1 : -1;
       if (sort === "stars") return b.starCount - a.starCount;
@@ -275,24 +275,9 @@ function DiscoveryGridHarness({
     });
   }, [tabCards, category, search, sort, tab]);
 
-  const tabCounts = useMemo(
-    () => ({
-      all: cards.length,
-      installed: cards.filter((c) => c.installed).length,
-      catalog: cards.filter((c) => c.catalogRef != null).length,
-      bundled: cards.filter((c) => c.required).length,
-    }),
-    [cards],
-  ) as Record<DiscoveryTab, number>;
-
   return (
     <DiscoveryGrid
       tab={tab}
-      tabCounts={tabCounts}
-      onTabChange={(next) => {
-        setTab(next);
-        setCategory(null);
-      }}
       categories={categories}
       categoryTotal={tabCards.length}
       activeCategory={category}
@@ -309,7 +294,10 @@ function DiscoveryGridHarness({
       onCreate={() => {}}
       onImport={() => {}}
       onImportFromProject={() => {}}
-      onBrowseCatalog={() => setTab("catalog")}
+      onBrowseDiscover={() => {
+        setTab("discover");
+        setCategory(null);
+      }}
       onScan={() => {}}
       scanPending={false}
       scanStatus={null}
@@ -327,7 +315,6 @@ export default meta;
 
 type Story = StoryObj<typeof DiscoveryGridHarness>;
 
-export const AllSkills: Story = { args: { initialTab: "all" } };
-export const InstalledTab: Story = { args: { initialTab: "installed" } };
-export const BundledRequiredTab: Story = { args: { initialTab: "bundled" } };
-export const EmptyLibrary: Story = { args: { initialTab: "all", cards: [] } };
+export const Installed: Story = { args: { initialTab: "installed" } };
+export const Discover: Story = { args: { initialTab: "discover" } };
+export const EmptyInstalledLibrary: Story = { args: { initialTab: "installed", cards: [] } };

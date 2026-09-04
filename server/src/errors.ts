@@ -21,12 +21,20 @@ export function forbidden(message = "Forbidden", details?: unknown) {
   return new HttpError(403, message, details);
 }
 
-export function notFound(message = "Not found") {
-  return new HttpError(404, message);
+export function notFound(message = "Not found", details?: unknown) {
+  return new HttpError(404, message, details);
 }
 
 export function conflict(message: string, details?: unknown) {
   return new HttpError(409, message, details);
+}
+
+export function payloadTooLarge(message: string, details?: unknown) {
+  return new HttpError(413, message, details);
+}
+
+export function unsupportedMediaType(message: string, details?: unknown) {
+  return new HttpError(415, message, details);
 }
 
 export function unprocessable(message: string, details?: unknown) {

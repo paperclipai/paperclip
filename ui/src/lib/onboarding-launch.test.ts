@@ -121,6 +121,7 @@ describe("onboarding launch payloads", () => {
       projectId: "project-1",
       goalId: "goal-1",
       status: "todo",
+      onboardingFirstTask: true,
     });
   });
 
@@ -143,6 +144,7 @@ describe("onboarding launch payloads", () => {
       assigneeAgentId: "agent-1",
       projectId: "project-1",
       status: "todo",
+      onboardingFirstTask: true,
     });
   });
 });

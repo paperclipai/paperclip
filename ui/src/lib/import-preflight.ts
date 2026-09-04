@@ -2,7 +2,8 @@ import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
 
 // Inline imports post the whole parsed package as one JSON body, so oversized
 // packages must be blocked before the request is built. Packages past this
-// limit go through the CLI folder import today; a blob-store relay is planned.
+// limit go through the zip upload path (a far higher, operator-configurable
+// server cap); a blob-store relay is planned for arbitrarily large migrations.
 export const INLINE_IMPORT_MAX_BYTES = 56 * 1024 * 1024;
 
 export function isBlobStoreFilePath(filePath: string): boolean {
@@ -35,6 +36,9 @@ function fileEntryInlineBytes(entry: CompanyPortabilityFileEntry): number {
  * bytes, base64 payloads with their entry structure, the serialized file-path
  * keys (thousands of paths are real bytes), and an envelope allowance for the
  * rest of the request body.
+ *
+ * Mirrored by `estimateInlineImportBytes` in cli/src/commands/client/company.ts
+ * (the CLI cannot import from ui/) — keep the math on both sides in sync.
  */
 export function estimateInlineImportBytes(files: Record<string, CompanyPortabilityFileEntry>): number {
   let total = REQUEST_ENVELOPE_ALLOWANCE_BYTES;

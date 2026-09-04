@@ -1,0 +1,278 @@
+{
+  "schemaVersion": 1,
+  "slug": "posthog",
+  "name": "PostHog",
+  "description": "Analyze product usage, errors, feature flags, and experiments with PostHog's hosted MCP server.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "/brands/apps/posthog.svg",
+    "darkLogoUrl": "/brands/apps/posthog-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.posthog.com/*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer",
+        "dcr"
+      ],
+      "whenToUse": "Sign in with PostHog in the browser. Recommended for hosted PostHog accounts.",
+      "defaults": {
+        "serverUrl": "https://mcp.posthog.com/mcp"
+      },
+      "guidanceMd": "Connect with PostHog's recommended defaults. Project pinning, read-only access, and catalog filters are optional advanced controls.",
+      "riskTier": "S3",
+      "tenantFields": [
+        {
+          "key": "projectId",
+          "label": "Pin to project ID",
+          "type": "text",
+          "advanced": true,
+          "placeholder": "Optional numeric project ID",
+          "helperMd": "Optional. Pin this connection to one project and remove PostHog's project-switching tool.",
+          "validation": {
+            "pattern": "^[0-9]+$",
+            "maxLength": 32
+          },
+          "transport": {
+            "location": "header",
+            "name": "x-posthog-project-id"
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "advanced": true,
+          "defaultValue": false,
+          "helperMd": "Turn on to hide tools that can change PostHog data.",
+          "transport": {
+            "location": "query",
+            "name": "readonly",
+            "format": "boolean",
+            "omitFalse": true
+          }
+        },
+        {
+          "key": "features",
+          "label": "Feature groups",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated feature groups",
+          "helperMd": "Leave blank to expose every feature group, or enter a comma-separated list to narrow access.",
+          "validation": {
+            "maxLength": 500
+          },
+          "transport": {
+            "location": "query",
+            "name": "features",
+            "format": "csv"
+          }
+        },
+        {
+          "key": "tools",
+          "label": "Individual tools",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated tool names",
+          "helperMd": "Leave blank to expose all tools. Exact names here are combined with any feature groups.",
+          "validation": {
+            "maxLength": 2000
+          },
+          "transport": {
+            "location": "query",
+            "name": "tools",
+            "format": "csv"
+          }
+        },
+        {
+          "key": "mode",
+          "label": "Tool response mode",
+          "type": "select",
+          "hidden": true,
+          "required": true,
+          "placeholder": "Individual tools",
+          "defaultValue": "tools",
+          "options": [
+            {
+              "value": "tools",
+              "label": "Individual tools"
+            }
+          ],
+          "helperMd": "Paperclip uses individual tools so every action can be governed. CLI mode remains unavailable until nested execution is governed.",
+          "transport": {
+            "location": "query",
+            "name": "mode"
+          }
+        }
+      ],
+      "label": "Sign in with PostHog",
+      "consoleLinks": {
+        "docs": "https://posthog.com/docs/model-context-protocol"
+      },
+      "credentialSources": {
+        "vercelConnect": {
+          "services": [
+            "posthog",
+            "mcp.posthog.com/mcp"
+          ],
+          "principalModes": [
+            "user"
+          ],
+          "scopes": [
+            "*"
+          ],
+          "header": {
+            "name": "Authorization",
+            "prefix": "Bearer "
+          }
+        }
+      }
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a PostHog personal API key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.posthog.com/mcp"
+      },
+      "guidanceMd": "Connect with PostHog's recommended defaults. Project pinning, read-only access, and catalog filters are optional advanced controls.",
+      "riskTier": "S3",
+      "tenantFields": [
+        {
+          "key": "projectId",
+          "label": "Pin to project ID",
+          "type": "text",
+          "advanced": true,
+          "placeholder": "Optional numeric project ID",
+          "helperMd": "Optional. Pin this connection to one project and remove PostHog's project-switching tool.",
+          "validation": {
+            "pattern": "^[0-9]+$",
+            "maxLength": 32
+          },
+          "transport": {
+            "location": "header",
+            "name": "x-posthog-project-id"
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "advanced": true,
+          "defaultValue": false,
+          "helperMd": "Turn on to hide tools that can change PostHog data.",
+          "transport": {
+            "location": "query",
+            "name": "readonly",
+            "format": "boolean",
+            "omitFalse": true
+          }
+        },
+        {
+          "key": "features",
+          "label": "Feature groups",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated feature groups",
+          "helperMd": "Leave blank to expose every feature group, or enter a comma-separated list to narrow access.",
+          "validation": {
+            "maxLength": 500
+          },
+          "transport": {
+            "location": "query",
+            "name": "features",
+            "format": "csv"
+          }
+        },
+        {
+          "key": "tools",
+          "label": "Individual tools",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "Optional comma-separated tool names",
+          "helperMd": "Leave blank to expose all tools. Exact names here are combined with any feature groups.",
+          "validation": {
+            "maxLength": 2000
+          },
+          "transport": {
+            "location": "query",
+            "name": "tools",
+            "format": "csv"
+          }
+        },
+        {
+          "key": "mode",
+          "label": "Tool response mode",
+          "type": "select",
+          "hidden": true,
+          "required": true,
+          "placeholder": "Individual tools",
+          "defaultValue": "tools",
+          "options": [
+            {
+              "value": "tools",
+              "label": "Individual tools"
+            }
+          ],
+          "helperMd": "Paperclip uses individual tools so every action can be governed. CLI mode remains unavailable until nested execution is governed.",
+          "transport": {
+            "location": "query",
+            "name": "mode"
+          }
+        }
+      ],
+      "label": "Use a personal API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "PostHog personal API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "phx_...",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://posthog.com/docs/model-context-protocol/faq",
+        "docs": "https://posthog.com/docs/model-context-protocol/faq"
+      },
+      "credentialSources": {
+        "vercelConnect": {
+          "services": [
+            "posthog",
+            "mcp.posthog.com/mcp"
+          ],
+          "principalModes": [
+            "app"
+          ],
+          "scopes": [
+            "*"
+          ],
+          "header": {
+            "name": "Authorization",
+            "prefix": "Bearer "
+          }
+        }
+      }
+    }
+  ],
+  "docsUrl": "https://posthog.com/docs/model-context-protocol",
+  "redirectConstraints": "https-or-loopback-http"
+}

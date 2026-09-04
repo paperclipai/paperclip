@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolsAccess } from "./ToolsAccess";
@@ -29,28 +29,20 @@ vi.mock("./profiles/ProfilesIndex", () => ({
   ProfilesIndex: () => <section>Tool profiles</section>,
 }));
 
-vi.mock("./PoliciesTab", () => ({
-  PoliciesTab: () => <section>Policies tab</section>,
-}));
-
-vi.mock("./RuntimeTab", () => ({
-  RuntimeTab: () => <section>Runtime tab</section>,
-}));
-
-vi.mock("./AuditTab", () => ({
-  AuditTab: () => <section>Audit tab</section>,
-}));
-
 vi.mock("./PasteConfigTab", () => ({
   PasteConfigTab: () => <section>Paste tab</section>,
 }));
 
-vi.mock("./RunYourOwnTab", () => ({
-  RunYourOwnTab: () => <section>Run your own tab</section>,
-}));
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 async function flushReact() {
   await Promise.resolve();
@@ -82,8 +74,8 @@ describe("ToolsAccess", () => {
     });
   }
 
-  it.each(["applications", "connections", "overview", "examples"])(
-    "redirects retired %s tab links to All apps",
+  it.each(["applications", "connections", "overview", "examples", "audit"])(
+    "redirects retired %s tab links to Connectors",
     async (tab) => {
       mockParams.tab = tab;
       await render();
@@ -92,7 +84,26 @@ describe("ToolsAccess", () => {
     },
   );
 
-  it("uses Profiles as the developer surface entry point", async () => {
+  it.each([
+    ["runtime", "/apps"],
+    ["policies", "/apps/advanced/profiles"],
+    ["run-your-own", "/apps"],
+  ])("redirects the retired %s page to %s", async (tab, target) => {
+    mockParams.tab = tab;
+    await render();
+
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ to: target, replace: true }));
+  });
+
+  it("uses Paste a config as the only advanced setup page", async () => {
+    await render();
+
+    expect(container.textContent).toContain("Paste tab");
+    expect(container.textContent).not.toContain("Run your own");
+    expect(container.querySelector('a[href="/apps/advanced/paste-config"]')).toBeTruthy();
+  });
+
+  it("uses Profiles as the developer entry point without a second page shell", async () => {
     await render();
 
     expect(container.querySelector('a[href="/apps/advanced/profiles"]')?.textContent).toContain(
@@ -102,7 +113,8 @@ describe("ToolsAccess", () => {
     mockParams.tab = "profiles";
     await render();
 
-    expect(container.textContent).toContain("Developer tools");
+    expect(container.textContent).not.toContain("Developer tools");
     expect(container.textContent).toContain("Tool profiles");
+    expect(container.firstElementChild?.classList.contains("max-w-5xl")).toBe(true);
   });
 });

@@ -9,8 +9,10 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   activeTokenCount,
+  defaultGatewayTokenName,
   deriveGatewayApps,
   expiringTokenCount,
+  formatHydratedSnippetConfig,
   formatScope,
   isGatewayOn,
   maskedTokenLabel,
@@ -113,6 +115,32 @@ describe("maskedTokenLabel", () => {
   });
 });
 
+describe("gateway client snippets", () => {
+  it("autofills a stable token name from the gateway and current minute", () => {
+    expect(defaultGatewayTokenName(gateway(), new Date("2026-08-18T14:37:42.000Z"))).toBe(
+      "cto-agents-202608181437",
+    );
+  });
+
+  it("hydrates the full origin and bearer token into copied client configuration", () => {
+    expect(formatHydratedSnippetConfig(
+      {
+        mcpServers: {
+          Paperclip: {
+            url: "/mcp/gateways/public-id",
+            headers: { Authorization: "Bearer pcgw_..." },
+          },
+        },
+      },
+      {
+        endpointPath: "/mcp/gateways/public-id",
+        endpoint: "https://paperclip.example/mcp/gateways/public-id",
+        token: "pcgw_full_secret",
+      },
+    )).toContain('"Authorization": "Bearer pcgw_full_secret"');
+  });
+});
+
 describe("isGatewayOn", () => {
   it("is on only when status is active", () => {
     expect(isGatewayOn(gateway({ status: "active" }))).toBe(true);
@@ -121,8 +149,8 @@ describe("isGatewayOn", () => {
 });
 
 describe("formatScope", () => {
-  it("labels company, project, and agent scopes", () => {
-    expect(formatScope(gateway(), new Map(), new Map())).toBe("Company");
+  it("labels organization, project, and agent scopes", () => {
+    expect(formatScope(gateway(), new Map(), new Map())).toBe("Organization");
     expect(
       formatScope(
         gateway({ contextScopeType: "project", contextScopeId: "p1" }),

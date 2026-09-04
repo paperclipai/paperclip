@@ -42,7 +42,13 @@ function jwtConfig() {
 
   return {
     secret,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60),
+    // 48h default, matching DEFAULT_AGENT_JWT_TTL_SECONDS in cli/src/commands/env.ts
+    // and the agent-authentication design doc. Run tokens are minted once at
+    // adapter spawn and injected as env, so the TTL must cover the entire run —
+    // including host-suspension gaps: heartbeats scheduled while a laptop lid is
+    // closed fire during ~2s dark wakes, and the spawned session can then sit
+    // frozen for over an hour before it first executes.
+    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60 * 48),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
     // The control-plane instance this process belongs to. The live plane runs as
@@ -183,7 +189,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   // bounds the legacy window naturally).
   //
   // Operators should set `PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK=true`
-  // approximately one JWT TTL (~1h by default, see PAPERCLIP_AGENT_JWT_TTL_SECONDS)
+  // approximately one JWT TTL (~48h by default, see PAPERCLIP_AGENT_JWT_TTL_SECONDS)
   // after deploying per-company signing. Once set, the master-secret fallback
   // is disabled and only tokens validating under the per-instance/per-company
   // derived key are accepted — closing the window in which a leaked master

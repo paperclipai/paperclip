@@ -9,11 +9,9 @@ import {
 } from "../api/agents";
 import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtInAgents";
 import { companySkillsApi } from "../api/companySkills";
-import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
-import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
@@ -27,10 +25,10 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
-import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
@@ -39,17 +37,16 @@ import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
-import { EntityRow } from "../components/EntityRow";
+import { IssueRow } from "../components/IssueRow";
+import { StatusGlyph } from "../components/StatusGlyph";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
-import { AuditFeed } from "./audit/AuditFeed";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
-import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { TrustPresetSection } from "../components/TrustPresetSection";
 import { FileTree, buildFileTree } from "../components/FileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
@@ -57,12 +54,14 @@ import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallo
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
+import { PageTabBar } from "../components/PageTabBar";
+import { AuditFeed } from "./audit/AuditFeed";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   CheckCircle2,
@@ -100,10 +99,10 @@ import {
   isUuidLike,
   type Agent,
   type AgentDetail as AgentDetailRecord,
-  type BudgetPolicySummary,
   type HeartbeatRun,
   type HeartbeatRunEvent,
   type AgentRuntimeState,
+  type Issue,
   type LiveEvent,
   type WorkspaceOperation,
   isResponsibleUserDenialCode,
@@ -111,6 +110,12 @@ import {
 } from "@paperclipai/shared";
 import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
 import { RunWorkspaceRecoverySurface } from "../components/RunWorkspaceRecoverySurface";
+import { RunnerInspector } from "../components/RunnerInspector";
+import { HoneycombRunLink } from "../components/HoneycombRunLink";
+import {
+  ProviderTraceStatusBadge,
+  runRequestedProviderTrace,
+} from "../components/ProviderTraceStatusBadge";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
@@ -121,6 +126,14 @@ import {
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
+import {
+  AGENT_DETAIL_NAVIGATION,
+  agentDetailHref,
+  agentLegacyAuditSection,
+  agentScopedAuditHref,
+  parseAgentDetailView,
+  type AgentDetailView,
+} from "./agent-detail-navigation";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -273,18 +286,56 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "tools" | "runs" | "audit" | "budget";
+/** @deprecated Use AGENT_DETAIL_NAVIGATION for contextual navigation. */
+export const AGENT_DETAIL_TABS = AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items);
 
-function parseAgentDetailView(value: string | null): AgentDetailView {
-  if (value === "instructions" || value === "prompts") return "instructions";
-  if (value === "configure" || value === "configuration") return "configuration";
-  if (value === "skills") return "skills";
-  if (value === "tools") return "tools";
-  if (value === "budget") return "budget";
-  if (value === "audit") return "audit";
-  if (value === "runs") return value;
-  return "dashboard";
+const LEGACY_AGENT_DETAIL_TABS = [
+  { value: "dashboard", label: "Dashboard" },
+  { value: "instructions", label: "Instructions" },
+  { value: "skills", label: "Skills" },
+  { value: "configuration", label: "Configuration" },
+  { value: "secrets", label: "Secrets" },
+  { value: "tools", label: "Tools" },
+  { value: "runs", label: "Runs" },
+  { value: "audit", label: "Audit" },
+  { value: "budget", label: "Budget" },
+] as const;
+
+export const DISCARD_AGENT_CONFIG_CHANGES_MESSAGE = "Discard unsaved agent configuration changes?";
+
+export function confirmAgentConfigNavigation(
+  dirty: boolean,
+  confirm: (message: string) => boolean = (message) =>
+    typeof window === "undefined" || window.confirm(message),
+): boolean {
+  return !dirty || confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE);
 }
+
+export function agentConfigHistoryRestoreDelta(currentIndex: unknown, nextIndex: unknown): number | null {
+  if (typeof currentIndex !== "number" || typeof nextIndex !== "number") return null;
+  const delta = currentIndex - nextIndex;
+  return delta === 0 ? null : delta;
+}
+
+export function restoreAgentConfigHistoryEntry(
+  history: Pick<History, "go" | "pushState">,
+  currentEntry: { index: unknown; state: unknown; url: string },
+  nextIndex: unknown,
+): boolean {
+  const restoreDelta = agentConfigHistoryRestoreDelta(currentEntry.index, nextIndex);
+  if (restoreDelta === null) {
+    // Some legacy URL-cleanup paths erased React Router's history index. A
+    // fresh copy of the guarded entry is the only safe way to return without
+    // letting Router consume the unindexed destination and discard the form.
+    history.pushState(currentEntry.state, "", currentEntry.url);
+    return false;
+  }
+
+  history.go(restoreDelta);
+  return true;
+}
+
+export { agentDetailHref, agentScopedAuditHref, parseAgentDetailView };
 
 function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
   if (!usage) return 0;
@@ -360,6 +411,16 @@ export function buildHeartbeatProgressLogLine(
 
 export function heartbeatProgressLogLineKey(line: RunLogChunk): string {
   return `${line.ts}\u0000${line.stream}\u0000${line.chunk}`;
+}
+
+export function shouldPollRunShellLog(status: HeartbeatRun["status"]): boolean {
+  return status === "running";
+}
+
+export function runDetailRefetchIntervalMs(status: HeartbeatRun["status"]): 5000 | 15000 | false {
+  if (status === "queued") return 5000;
+  if (status === "running") return 15000;
+  return false;
 }
 
 export function RunInvocationCard({
@@ -699,12 +760,27 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
-  const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
-  const needsDashboardData = activeView === "dashboard";
-  const needsRunData = activeView === "runs" || Boolean(urlRunId);
-  const shouldLoadHeartbeats = needsDashboardData || needsRunData;
+  const activeView: AgentDetailView = urlRunId ? "run-detail" : parseAgentDetailView(urlTab ?? null);
+  const legacyAuditSection = !urlRunId ? agentLegacyAuditSection(urlTab ?? null) : null;
+  const legacyView = urlRunId
+    ? "runs"
+    : legacyAuditSection === "runs"
+      ? "runs"
+      : legacyAuditSection === "activity"
+        ? "audit"
+        : legacyAuditSection === "costs" || legacyAuditSection === "budgets"
+          ? "budget"
+          : activeView === "overview"
+            ? "dashboard"
+            : activeView === "runtime"
+              ? "configuration"
+              : activeView;
+  const needsOverviewData = activeView === "overview";
+  const needsRunData = activeView === "run-detail";
+  const shouldLoadHeartbeats = needsOverviewData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
@@ -720,7 +796,9 @@ export function AgentDetail() {
   const canFetchAgent = routeAgentRef.length > 0 && (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
-
+  const prepareAgentNavigation = useCallback(() => {
+    return confirmAgentConfigNavigation(configDirty);
+  }, [configDirty]);
   const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
@@ -728,8 +806,20 @@ export function AgentDetail() {
   });
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
+  const handleLegacyTabChange = useCallback((next: string) => {
+    if (!prepareAgentNavigation()) return;
+    navigate(`/agents/${canonicalAgentRef || routeAgentRef}/${next}`);
+  }, [canonicalAgentRef, navigate, prepareAgentNavigation, routeAgentRef]);
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
   const agentMembershipState = resolvedAgentId
@@ -813,7 +903,7 @@ export function AgentDetail() {
   const { data: runtimeState } = useQuery({
     queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
     queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
-    enabled: Boolean(resolvedAgentId) && needsDashboardData,
+    enabled: Boolean(resolvedAgentId) && needsOverviewData,
   });
 
   const { data: heartbeats } = useQuery({
@@ -825,58 +915,37 @@ export function AgentDetail() {
   const { data: allIssues } = useQuery({
     queryKey: [...queryKeys.issues.list(resolvedCompanyId!), "participant-agent", resolvedAgentId ?? "__none__"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { participantAgentId: resolvedAgentId! }),
-    enabled: !!resolvedCompanyId && !!resolvedAgentId && needsDashboardData,
+    enabled: !!resolvedCompanyId && !!resolvedAgentId && needsOverviewData,
   });
 
   const { data: allAgents } = useQuery({
     queryKey: queryKeys.agents.list(resolvedCompanyId!),
     queryFn: () => agentsApi.list(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId && needsDashboardData,
+    enabled: !!resolvedCompanyId && needsOverviewData,
   });
 
-  const { data: budgetOverview } = useQuery({
-    queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
-    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
-    enabled: !!resolvedCompanyId,
-    refetchInterval: 30_000,
-    staleTime: 5_000,
+  const { data: skillSnapshot } = useQuery({
+    queryKey: queryKeys.agents.skills(resolvedAgentId ?? "__none__"),
+    queryFn: () => agentsApi.skills(resolvedAgentId!, resolvedCompanyId ?? undefined),
+    enabled: Boolean(resolvedCompanyId && resolvedAgentId && needsOverviewData),
   });
 
-  const assignedIssues = (allIssues ?? [])
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  const { data: overviewCompanySkills } = useQuery({
+    queryKey: queryKeys.companySkills.list(resolvedCompanyId ?? "__none__"),
+    queryFn: () => companySkillsApi.list(resolvedCompanyId!),
+    enabled: Boolean(resolvedCompanyId && needsOverviewData),
+  });
+
+  const assignedIssues = useMemo(
+    () => [...(allIssues ?? [])].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [allIssues],
+  );
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
-  const agentBudgetSummary = useMemo(() => {
-    const matched = budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "agent" && policy.scopeId === (agent?.id ?? routeAgentRef),
-    );
-    if (matched) return matched;
-    const budgetMonthlyCents = agent?.budgetMonthlyCents ?? 0;
-    const spentMonthlyCents = agent?.spentMonthlyCents ?? 0;
-    return {
-      policyId: "",
-      companyId: resolvedCompanyId ?? "",
-      scopeType: "agent",
-      scopeId: agent?.id ?? routeAgentRef,
-      scopeName: agent?.name ?? "Agent",
-      metric: "billed_cents",
-      windowKind: "calendar_month_utc",
-      amount: budgetMonthlyCents,
-      observedAmount: spentMonthlyCents,
-      remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
-      utilizationPercent:
-        budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
-      warnPercent: 80,
-      hardStopEnabled: true,
-      notifyEnabled: true,
-      isActive: budgetMonthlyCents > 0,
-      status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
-      paused: agent?.status === "paused",
-      pauseReason: agent?.pauseReason ?? null,
-      windowStart: new Date(),
-      windowEnd: new Date(),
-    } satisfies BudgetPolicySummary;
-  }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
+  const overviewSkillNames = useMemo(() => {
+    const namesByKey = new Map((overviewCompanySkills ?? []).map((skill) => [skill.key, skill.name]));
+    return (skillSnapshot?.desiredSkills ?? []).map((key) => namesByKey.get(key) ?? key);
+  }, [overviewCompanySkills, skillSnapshot?.desiredSkills]);
   const mobileLiveRun = useMemo(
     () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
     [heartbeats],
@@ -890,27 +959,19 @@ export function AgentDetail() {
       }
       return;
     }
-    const canonicalTab =
-      activeView === "instructions"
-        ? "instructions"
-        : activeView === "configuration"
-          ? "configuration"
-          : activeView === "skills"
-            ? "skills"
-            : activeView === "tools"
-              ? "tools"
-              : activeView === "runs"
-                ? "runs"
-                : activeView === "audit"
-                  ? "audit"
-                  : activeView === "budget"
-                    ? "budget"
-              : "dashboard";
-    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
-      navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
+    if (!streamlinedUiEnabled) {
+      if (routeAgentRef !== canonicalAgentRef) {
+        navigate(`/agents/${canonicalAgentRef}/${urlTab ?? "dashboard"}`, { replace: true });
+      }
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate]);
+    if (legacyAuditSection) return;
+    const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
+    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
+      navigate(agentDetailHref(canonicalAgentRef, canonicalTab), { replace: true });
+      return;
+    }
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate, streamlinedUiEnabled]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -942,24 +1003,6 @@ export function AgentDetail() {
     },
     onError: (err) => {
       setActionError(err instanceof Error ? err.message : "Action failed");
-    },
-  });
-
-  const budgetMutation = useMutation({
-    mutationFn: (amount: number) =>
-      budgetsApi.upsertPolicy(resolvedCompanyId!, {
-        scopeType: "agent",
-        scopeId: agent?.id ?? routeAgentRef,
-        amount,
-        windowKind: "calendar_month_utc",
-      }),
-    onSuccess: () => {
-      if (!resolvedCompanyId) return;
-      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
     },
   });
 
@@ -995,27 +1038,18 @@ export function AgentDetail() {
       { label: "Agents", href: "/agents" },
     ];
     const agentName = agent?.name ?? routeAgentRef ?? "Agent";
-    if (activeView === "dashboard" && !urlRunId) {
+    if (activeView === "overview" && !urlRunId) {
       crumbs.push({ label: agentName });
     } else {
-      crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
+      crumbs.push({ label: agentName, href: agentDetailHref(canonicalAgentRef) });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
+        crumbs.push({ label: "Runs", href: agent?.id ? agentScopedAuditHref(agent.id, "runs") : undefined });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
-      } else if (activeView === "instructions") {
-        crumbs.push({ label: "Instructions" });
-      } else if (activeView === "configuration") {
-        crumbs.push({ label: "Configuration" });
-      // } else if (activeView === "skills") { // TODO: bring back later
-      //   crumbs.push({ label: "Skills" });
-      } else if (activeView === "tools") {
-        crumbs.push({ label: "Tools" });
-      } else if (activeView === "runs") {
-        crumbs.push({ label: "Runs" });
-      } else if (activeView === "budget") {
-        crumbs.push({ label: "Budget" });
       } else {
-        crumbs.push({ label: "Dashboard" });
+        const item = AGENT_DETAIL_NAVIGATION
+          .flatMap((section) => section.items)
+          .find((candidate) => candidate.value === activeView);
+        crumbs.push({ label: item?.label ?? "Overview" });
       }
     }
     setBreadcrumbs(crumbs);
@@ -1044,16 +1078,89 @@ export function AgentDetail() {
     }, [configDirty]),
   );
 
+  useEffect(() => {
+    if (!configDirty) return;
+
+    function handleDocumentClick(event: MouseEvent) {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest("a[href]");
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      if (anchor.target && anchor.target !== "_self") return;
+
+      const nextUrl = new URL(anchor.href, window.location.href);
+      const currentUrl = new URL(window.location.href);
+      if (nextUrl.origin !== currentUrl.origin) return;
+      if (
+        nextUrl.pathname === currentUrl.pathname &&
+        nextUrl.search === currentUrl.search &&
+        nextUrl.hash === currentUrl.hash
+      ) {
+        return;
+      }
+      if (prepareAgentNavigation()) return;
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    document.addEventListener("click", handleDocumentClick, true);
+    return () => document.removeEventListener("click", handleDocumentClick, true);
+  }, [configDirty, prepareAgentNavigation]);
+
+  useEffect(() => {
+    if (!configDirty) return;
+
+    // BrowserRouter updates after popstate. Run first in the capture phase so a
+    // rejected Back/Forward navigation can be restored before React Router
+    // consumes it and unmounts the route-backed form.
+    const currentEntry = {
+      index: window.history.state?.idx,
+      state: window.history.state,
+      url: window.location.href,
+    };
+    let restoring = false;
+
+    function handlePopState(event: PopStateEvent) {
+      if (restoring) {
+        restoring = false;
+        return;
+      }
+
+      if (prepareAgentNavigation()) return;
+
+      event.stopImmediatePropagation();
+      restoring = restoreAgentConfigHistoryEntry(window.history, currentEntry, event.state?.idx);
+    }
+
+    window.addEventListener("popstate", handlePopState, true);
+    return () => window.removeEventListener("popstate", handlePopState, true);
+  }, [configDirty, prepareAgentNavigation]);
+
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
+  if (streamlinedUiEnabled && !urlRunId && legacyAuditSection) {
+    return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
+  }
   if (!urlRunId && !urlTab) {
-    return <Navigate to={`/agents/${canonicalAgentRef}/dashboard`} replace />;
+    return <Navigate to={streamlinedUiEnabled ? agentDetailHref(canonicalAgentRef) : `/agents/${canonicalAgentRef}/dashboard`} replace />;
   }
   const isPendingApproval = agent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
-  const showConfigActionBar = (activeView === "configuration" || activeView === "instructions") && (configDirty || configSaving);
+  const showConfigActionBar = (
+    activeView === "runtime" || activeView === "instructions" || activeView === "secrets"
+  ) && (configDirty || configSaving);
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
     membershipMutation.isPending &&
@@ -1141,7 +1248,7 @@ export function AgentDetail() {
             </button>
           </AgentIconPicker>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
             </div>
             <p className="text-sm text-muted-foreground truncate">
@@ -1168,9 +1275,12 @@ export function AgentDetail() {
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             runLabel="Run Heartbeat"
+            canRunWithProviderTrace={canUseProviderTrace}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
+            hasPendingNavigationChanges={configDirty}
+            onBeforeNavigate={prepareAgentNavigation}
             onActionError={setActionError}
             onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
             hideTerminate={Boolean(builtInState)}
@@ -1253,27 +1363,15 @@ export function AgentDetail() {
         />
       )}
 
-      {!urlRunId && (
-        <Tabs
-          value={activeView}
-          onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
-        >
+      {!streamlinedUiEnabled && !urlRunId ? (
+        <Tabs value={legacyView} onValueChange={handleLegacyTabChange}>
           <PageTabBar
-            items={[
-              { value: "dashboard", label: "Dashboard" },
-              { value: "instructions", label: "Instructions" },
-              { value: "skills", label: "Skills" },
-              { value: "configuration", label: "Configuration" },
-              { value: "tools", label: "Tools" },
-              { value: "runs", label: "Runs" },
-              { value: "audit", label: "Audit" },
-              { value: "budget", label: "Budget" },
-            ]}
-            value={activeView}
-            onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+            items={LEGACY_AGENT_DETAIL_TABS}
+            value={legacyView}
+            onValueChange={handleLegacyTabChange}
           />
         </Tabs>
-      )}
+      ) : null}
 
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
@@ -1341,13 +1439,15 @@ export function AgentDetail() {
       )}
 
       {/* View content */}
-      {activeView === "dashboard" && (
+      {activeView === "overview" && (streamlinedUiEnabled || !legacyAuditSection) && (
         <AgentOverview
           agent={agent}
           runs={heartbeats ?? []}
           assignedIssues={assignedIssues}
           runtimeState={runtimeState}
-          agentId={agent.id}
+          reportsToAgent={reportsToAgent}
+          directReportCount={directReports.length}
+          skillNames={overviewSkillNames}
           agentRouteId={canonicalAgentRef}
         />
       )}
@@ -1363,17 +1463,37 @@ export function AgentDetail() {
         />
       )}
 
-      {activeView === "configuration" && (
-        <AgentConfigurePage
-          agent={agent}
-          agentId={agent.id}
-          companyId={resolvedCompanyId ?? undefined}
-          onDirtyChange={setConfigDirty}
-          onSaveActionChange={setSaveConfigAction}
-          onCancelActionChange={setCancelConfigAction}
-          onSavingChange={setConfigSaving}
-          updatePermissions={updatePermissions}
-        />
+      {activeView === "runtime" && (
+        <div className="max-w-3xl">
+          <ConfigurationTab
+            agent={agent}
+            companyId={resolvedCompanyId ?? undefined}
+            onDirtyChange={setConfigDirty}
+            onSaveActionChange={setSaveConfigAction}
+            onCancelActionChange={setCancelConfigAction}
+            onSavingChange={setConfigSaving}
+            updatePermissions={updatePermissions}
+            canConfigureProviderTrace={canUseProviderTrace}
+            content="runtime"
+            hidePromptTemplate
+            hideInstructionsFile
+          />
+        </div>
+      )}
+
+      {activeView === "secrets" && (
+        <div className="max-w-3xl">
+          <ConfigurationTab
+            agent={agent}
+            companyId={resolvedCompanyId ?? undefined}
+            onDirtyChange={setConfigDirty}
+            onSaveActionChange={setSaveConfigAction}
+            onCancelActionChange={setCancelConfigAction}
+            onSavingChange={setConfigSaving}
+            updatePermissions={updatePermissions}
+            content="secrets"
+          />
+        </div>
       )}
 
       {activeView === "skills" && (
@@ -1387,7 +1507,32 @@ export function AgentDetail() {
         <AgentToolsTab agent={agent} companyId={resolvedCompanyId} />
       )}
 
-      {activeView === "runs" && (
+      {activeView === "permissions" && (
+        <div className="max-w-3xl">
+          <ConfigurationTab
+            agent={agent}
+            companyId={resolvedCompanyId ?? undefined}
+            onDirtyChange={setConfigDirty}
+            onSaveActionChange={setSaveConfigAction}
+            onCancelActionChange={setCancelConfigAction}
+            onSavingChange={setConfigSaving}
+            updatePermissions={updatePermissions}
+            content="permissions"
+          />
+        </div>
+      )}
+
+      {activeView === "api-keys" && (
+        <div className="max-w-3xl">
+          <KeysTab agentId={agent.id} companyId={resolvedCompanyId ?? undefined} />
+        </div>
+      )}
+
+      {activeView === "revisions" && (
+        <AgentRevisionsTab agent={agent} companyId={resolvedCompanyId ?? undefined} />
+      )}
+
+      {activeView === "run-detail" && (
         <RunsTab
           runs={heartbeats ?? []}
           companyId={resolvedCompanyId!}
@@ -1399,18 +1544,31 @@ export function AgentDetail() {
         />
       )}
 
-      {activeView === "audit" && resolvedCompanyId ? (
-        <AuditFeed companyId={resolvedCompanyId} lockedAgentId={agent.id} hideHeader />
+      {!streamlinedUiEnabled && legacyAuditSection === "runs" && (
+        <RunsTab
+          runs={heartbeats ?? []}
+          companyId={resolvedCompanyId!}
+          agentId={agent.id}
+          agentRouteId={canonicalAgentRef}
+          selectedRunId={null}
+          adapterType={agent.adapterType}
+          adapterConfig={agent.adapterConfig}
+        />
+      )}
+
+      {!streamlinedUiEnabled && legacyAuditSection === "activity" && resolvedCompanyId ? (
+        <AuditFeed companyId={resolvedCompanyId} lockedAgentId={agent.id} />
       ) : null}
 
-      {activeView === "budget" && resolvedCompanyId ? (
-        <div className="max-w-3xl">
-          <BudgetPolicyCard
-            summary={agentBudgetSummary}
-            isSaving={budgetMutation.isPending}
-            onSave={(amount) => budgetMutation.mutate(amount)}
-            variant="plain"
-          />
+      {!streamlinedUiEnabled && (legacyAuditSection === "costs" || legacyAuditSection === "budgets") ? (
+        <div className="space-y-3">
+          <h3 className="text-lg font-semibold">Agent budget</h3>
+          <p className="text-sm text-muted-foreground">
+            Review this agent&apos;s budget policy and spend in the organization costs view.
+          </p>
+          <Button variant="outline" asChild>
+            <Link to="/costs">Open costs and budgets</Link>
+          </Button>
         </div>
       ) : null}
     </div>
@@ -1428,21 +1586,81 @@ function SummaryRow({ label, children }: { label: string; children: React.ReactN
   );
 }
 
-function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: string }) {
-  if (runs.length === 0) return null;
+export type LatestRunIssue = { id: string; title: string; status: string; identifier?: string | null };
 
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+/**
+ * The id of the issue a run works on, read from its context snapshot. Newer
+ * snapshots use `issueId`; older ones use `taskId`. Returns undefined for pure
+ * timer heartbeats that carry no task reference.
+ */
+export function getRunSnapshotIssueId(
+  run: Pick<HeartbeatRun, "contextSnapshot">,
+): string | undefined {
+  const ctx = run.contextSnapshot as Record<string, unknown> | null;
+  const issueId = ctx?.issueId ?? ctx?.taskId;
+  return issueId ? String(issueId) : undefined;
+}
+
+/**
+ * Resolve the Live Run section's two navigation destinations and the task (if
+ * any) the run works on. The run→task link lives in the run's context snapshot
+ * (`issueId`, falling back to `taskId` for older snapshots); the `HeartbeatRun`
+ * itself doesn't carry the issue id. The heading always links to the run detail
+ * page; the running row links to the task detail page when the snapshot resolves
+ * to a known issue, otherwise falls back to the run detail page (pure timer
+ * heartbeats or an issue that can't be resolved).
+ */
+export function resolveLatestRunNavigation(
+  run: Pick<HeartbeatRun, "id" | "contextSnapshot">,
+  agentId: string,
+  issuesById: Map<string, LatestRunIssue>,
+): { task: LatestRunIssue | undefined; runHref: string; rowHref: string } {
+  const issueId = getRunSnapshotIssueId(run);
+  const task = issueId ? issuesById.get(issueId) : undefined;
+  const runHref = `/agents/${agentId}/runs/${run.id}`;
+  const rowHref = task ? `/issues/${task.identifier ?? task.id}` : runHref;
+  return { task, runHref, rowHref };
+}
+
+function LatestRunCard({
+  runs,
+  agentId,
+  issuesById,
+}: {
+  runs: HeartbeatRun[];
+  agentId: string;
+  issuesById: Map<string, LatestRunIssue>;
+}) {
+  const sorted = useMemo(
+    () =>
+      [...runs].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      ),
+    [runs]
   );
 
   const liveRun = sorted.find((r) => r.status === "running" || r.status === "queued");
   const run = liveRun ?? sorted[0];
-  const isLive = run.status === "running" || run.status === "queued";
-  const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
-  const StatusIcon = statusInfo.icon;
-  const summaryRaw = run.resultJson
-    ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
-    : run.error ?? "";
+
+  // The assigned-issues list this card resolves against is bounded (server page
+  // limit), so a live run can reference a valid issue that isn't on the loaded
+  // page. When the snapshot points at an issue we don't already have, fetch it
+  // directly so the running row always links to the task rather than falling
+  // back to run metadata. `enabled` keeps this a no-op for the common case.
+  const snapshotIssueId = run ? getRunSnapshotIssueId(run) : undefined;
+  const needsFallbackFetch = !!snapshotIssueId && !issuesById.has(snapshotIssueId);
+  const { data: fallbackIssue } = useQuery({
+    queryKey: queryKeys.issues.detail(snapshotIssueId ?? "__none__"),
+    queryFn: () => issuesApi.get(snapshotIssueId as string),
+    enabled: needsFallbackFetch,
+    staleTime: 30_000,
+  });
+
+  const summaryRaw = run
+    ? run.resultJson
+      ? String((run.resultJson as Record<string, unknown>).summary ?? (run.resultJson as Record<string, unknown>).result ?? "")
+      : run.error ?? ""
+    : "";
 
   // Extract a clean 2-3 line excerpt: first non-empty, non-header, non-list-mark lines
   const summary = useMemo(() => {
@@ -1462,28 +1680,48 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
     return excerpt.join(" ");
   }, [summaryRaw]);
 
+  if (!run) return null;
+
+  const isLive = run.status === "running" || run.status === "queued";
+  // Fold any directly-fetched fallback issue into the lookup, keyed by the same
+  // snapshot id used to resolve the row so it hits regardless of id-vs-slug.
+  const effectiveIssuesById =
+    fallbackIssue && snapshotIssueId
+      ? new Map(issuesById).set(snapshotIssueId, {
+          id: fallbackIssue.id,
+          title: fallbackIssue.title,
+          status: fallbackIssue.status,
+          identifier: fallbackIssue.identifier,
+        })
+      : issuesById;
+  const { task, runHref, rowHref } = resolveLatestRunNavigation(run, agentId, effectiveIssuesById);
+  const statusInfo = runStatusIcons[run.status] ?? { icon: Clock, color: "text-neutral-400" };
+  const StatusIcon = statusInfo.icon;
+
   return (
     <div className="space-y-3">
       <div className="flex w-full items-center justify-between">
-        <h3 className="flex items-center gap-2 text-sm font-medium">
-          {isLive && (
-            <span className="relative flex h-2 w-2">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-            </span>
-          )}
-          {isLive ? "Live Run" : "Latest Run"}
-        </h3>
         <Link
-          to={`/agents/${agentId}/runs/${run.id}`}
-          className="shrink-0 text-xs text-muted-foreground hover:text-foreground transition-colors no-underline"
+          to={runHref}
+          className="no-underline"
         >
-          View details &rarr;
+          <h3 className="flex items-center gap-2 text-sm font-medium transition-colors hover:text-foreground">
+            {isLive && (
+              <span className="relative flex h-2 w-2">
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+              </span>
+            )}
+            <span>{isLive ? "Live Run" : "Latest Run"}</span>
+            <span className="font-mono text-xs font-normal text-muted-foreground">
+              &middot; {run.id.slice(0, 8)}
+            </span>
+          </h3>
         </Link>
       </div>
 
       <Link
-        to={`/agents/${agentId}/runs/${run.id}`}
+        to={rowHref}
         className={cn(
           "block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors hover:bg-muted/50 cursor-pointer",
           isLive ? "border-blue-500/30 shadow-(--shadow-extract-14)" : "border-border"
@@ -1492,16 +1730,28 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
         <div className="flex items-center gap-2">
           <StatusIcon className={cn("h-3.5 w-3.5", statusInfo.color, run.status === "running" && "animate-spin")} />
           <StatusBadge status={run.status} />
-          <span className="font-mono text-xs text-muted-foreground">{run.id.slice(0, 8)}</span>
-          <Badge variant="ghost" className={cn(
-            "px-1.5 text-(length:--text-nano)",
-            run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
-              : run.invocationSource === "assignment" ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
-              : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
-              : "bg-muted text-muted-foreground"
-          )}>
-            {sourceLabels[run.invocationSource] ?? run.invocationSource}
-          </Badge>
+          {task ? (
+            <>
+              <StatusGlyph status={task.status} size="sm" />
+              <span className="font-mono text-xs text-muted-foreground">
+                {task.identifier ?? task.id.slice(0, 8)}
+              </span>
+              <span className="truncate text-xs">{task.title}</span>
+            </>
+          ) : (
+            <>
+              <span className="font-mono text-xs text-muted-foreground">{run.id.slice(0, 8)}</span>
+              <Badge variant="ghost" className={cn(
+                "px-1.5 text-(length:--text-nano)",
+                run.invocationSource === "timer" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
+                  : run.invocationSource === "assignment" ? "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300"
+                  : run.invocationSource === "on_demand" ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300"
+                  : "bg-muted text-muted-foreground"
+              )}>
+                {sourceLabels[run.invocationSource] ?? run.invocationSource}
+              </Badge>
+            </>
+          )}
           <span className="ml-auto text-xs text-muted-foreground">{relativeTime(run.createdAt)}</span>
         </div>
 
@@ -1515,50 +1765,107 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
   );
 }
 
-/* ---- Agent Overview (main single-page view) ---- */
+/* ---- Agent Overview ---- */
 
-function AgentOverview({
+export function AgentOverview({
   agent,
   runs,
   assignedIssues,
   runtimeState,
-  agentId,
+  reportsToAgent,
+  directReportCount,
+  skillNames,
   agentRouteId,
 }: {
   agent: AgentDetailRecord;
   runs: HeartbeatRun[];
-  assignedIssues: { id: string; title: string; status: string; priority: string; identifier?: string | null; createdAt: Date }[];
+  assignedIssues: Issue[];
   runtimeState?: AgentRuntimeState;
-  agentId: string;
+  reportsToAgent?: Agent;
+  directReportCount: number;
+  skillNames: string[];
   agentRouteId: string;
 }) {
-  return (
-    <div className="space-y-8">
-      {/* Latest Run */}
-      <LatestRunCard runs={runs} agentId={agentRouteId} />
+  const issuesById = useMemo(() => {
+    const map = new Map<string, (typeof assignedIssues)[number]>();
+    for (const issue of assignedIssues) map.set(issue.id, issue);
+    return map;
+  }, [assignedIssues]);
+  const configuredModel = asNonEmptyString(agent.adapterConfig?.model)
+    ?? asNonEmptyString(agent.adapterConfig?.modelName)
+    ?? asNonEmptyString(agent.runtimeConfig?.model)
+    ?? "Adapter default";
+  const lastRun = runs[0] ?? null;
 
-      {/* Charts */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <ChartCard title="Run Activity" subtitle="Last 14 days">
-          <RunActivityChart runs={runs} />
-        </ChartCard>
-        <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
-          <PriorityChart issues={assignedIssues} />
-        </ChartCard>
-        <ChartCard title="Tasks by Status" subtitle="Last 14 days">
-          <IssueStatusChart issues={assignedIssues} />
-        </ChartCard>
-        <ChartCard title="Success Rate" subtitle="Last 14 days">
-          <SuccessRateChart runs={runs} />
-        </ChartCard>
+  return (
+    <div className="space-y-6">
+      <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-identity-heading">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h3 id="agent-identity-heading" className="text-sm font-medium">Identity</h3>
+            <StatusBadge status={agent.status} />
+          </div>
+          <div className="space-y-3">
+            <SummaryRow label="Role"><span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span></SummaryRow>
+            <SummaryRow label="Title"><span className="text-sm">{agent.title ?? "Not set"}</span></SummaryRow>
+            <SummaryRow label="Reports to">
+              {reportsToAgent ? (
+                <Link className="text-sm hover:underline" to={agentDetailHref(agentRouteRef(reportsToAgent))}>
+                  {reportsToAgent.name}
+                </Link>
+              ) : <span className="text-sm">Board</span>}
+            </SummaryRow>
+            <SummaryRow label="Direct reports"><span className="text-sm tabular-nums">{directReportCount}</span></SummaryRow>
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-runtime-heading">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h3 id="agent-runtime-heading" className="text-sm font-medium">Harness / Runtime</h3>
+            <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "runtime")}>Configure</Link>
+          </div>
+          <div className="space-y-3">
+            <SummaryRow label="Adapter"><span className="text-sm">{adapterLabels[agent.adapterType] ?? agent.adapterType}</span></SummaryRow>
+            <SummaryRow label="Model"><span className="max-w-64 truncate text-sm font-mono">{configuredModel}</span></SummaryRow>
+            <SummaryRow label="Session"><span className="max-w-64 truncate text-sm font-mono">{runtimeState?.sessionDisplayId ?? runtimeState?.sessionId ?? "No session"}</span></SummaryRow>
+            <SummaryRow label="Last run">
+              <span className="text-sm">{lastRun ? `${lastRun.status} · ${relativeTime(lastRun.createdAt)}` : "No runs"}</span>
+            </SummaryRow>
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-capabilities-heading">
+          <h3 id="agent-capabilities-heading" className="mb-3 text-sm font-medium">Capabilities</h3>
+          {agent.capabilities?.trim() ? (
+            <MarkdownBody className="text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">{agent.capabilities}</MarkdownBody>
+          ) : (
+            <p className="text-sm text-muted-foreground">No capability summary has been added.</p>
+          )}
+        </section>
+
+        <section className="rounded-lg border border-border p-4" aria-labelledby="agent-skills-heading">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 id="agent-skills-heading" className="text-sm font-medium">Skills</h3>
+            <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "skills")}>Manage</Link>
+          </div>
+          {skillNames.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {skillNames.slice(0, 8).map((skill) => <Badge key={skill} variant="secondary">{skill}</Badge>)}
+              {skillNames.length > 8 ? <Badge variant="outline">+{skillNames.length - 8} more</Badge> : null}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No skills enabled.</p>
+          )}
+        </section>
       </div>
 
-      {/* Recent Issues */}
-      <div className="space-y-3">
+      <section className="space-y-3" aria-labelledby="agent-recent-tasks-heading">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">Recent Tasks</h3>
+          <h3 id="agent-recent-tasks-heading" className="text-sm font-medium">Recent Tasks</h3>
           <Link
-            to={`/issues?participantAgentId=${agentId}`}
+            to={`/issues?participantAgentId=${agent.id}`}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             See All &rarr;
@@ -1567,108 +1874,39 @@ function AgentOverview({
         {assignedIssues.length === 0 ? (
           <p className="text-sm text-muted-foreground">No recent tasks.</p>
         ) : (
-          <div className="border border-border rounded-lg">
-            {assignedIssues.slice(0, 10).map((issue) => (
-              <EntityRow
+          <div className="overflow-hidden rounded-lg border border-border">
+            {assignedIssues.slice(0, 6).map((issue) => (
+              <IssueRow
                 key={issue.id}
-                identifier={issue.identifier ?? issue.id.slice(0, 8)}
-                title={issue.title}
-                to={`/issues/${issue.identifier ?? issue.id}`}
-                trailing={<StatusBadge status={issue.status} />}
+                issue={issue}
+                presentation="task"
+                metadata={<span className="text-xs text-muted-foreground">{relativeTime(issue.updatedAt)}</span>}
+                showDivider
               />
             ))}
-            {assignedIssues.length > 10 && (
-              <div className="px-3 py-2 text-xs text-muted-foreground text-center border-t border-border">
-                +{assignedIssues.length - 10} more tasks
+            {assignedIssues.length > 6 && (
+              <div className="border-t border-border px-3 py-2 text-center text-xs text-muted-foreground">
+                +{assignedIssues.length - 6} more tasks
               </div>
             )}
           </div>
         )}
-      </div>
+      </section>
 
-      {/* Costs */}
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
-        <CostsSection runtimeState={runtimeState} runs={runs} />
-      </div>
-    </div>
-  );
-}
-
-/* ---- Costs Section (inline) ---- */
-
-function CostsSection({
-  runtimeState,
-  runs,
-}: {
-  runtimeState?: AgentRuntimeState;
-  runs: HeartbeatRun[];
-}) {
-  const runsWithCost = runs
-    .filter((r) => {
-      const metrics = runMetrics(r);
-      return metrics.cost > 0 || metrics.input > 0 || metrics.output > 0 || metrics.cached > 0;
-    })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-  return (
-    <div className="space-y-4">
-      {runtimeState && (
-        <div className="border border-border rounded-lg p-4">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
-            <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">Output tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">Total cost</span>
-              <span className="text-lg font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
-            </div>
-          </div>
+      <section className="space-y-3" aria-labelledby="agent-audit-links-heading">
+        <h3 id="agent-audit-links-heading" className="text-sm font-medium">Audit</h3>
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {(["activity", "runs", "costs", "budgets"] as const).map((section) => (
+            <Link
+              key={section}
+              to={agentScopedAuditHref(agent.id, section)}
+              className="rounded-lg border border-border px-3 py-2 text-sm font-medium capitalize hover:bg-accent"
+            >
+              {section}
+            </Link>
+          ))}
         </div>
-      )}
-      {runsWithCost.length > 0 && (
-        <div className="border border-border rounded-lg overflow-hidden">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border bg-accent/20">
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runsWithCost.slice(0, 10).map((run) => {
-                const metrics = runMetrics(run);
-                return (
-                  <tr key={run.id} className="border-b border-border last:border-b-0">
-                    <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
-                    <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {metrics.cost > 0
-                        ? `$${metrics.cost.toFixed(4)}`
-                        : "-"
-                      }
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      </section>
     </div>
   );
 }
@@ -1698,29 +1936,15 @@ export function syncAgentRouteAfterRename(
   return true;
 }
 
-function AgentConfigurePage({
+function AgentRevisionsTab({
   agent,
-  agentId,
   companyId,
-  onDirtyChange,
-  onSaveActionChange,
-  onCancelActionChange,
-  onSavingChange,
-  updatePermissions,
 }: {
   agent: AgentDetailRecord;
-  agentId: string;
   companyId?: string;
-  onDirtyChange: (dirty: boolean) => void;
-  onSaveActionChange: (save: (() => void) | null) => void;
-  onCancelActionChange: (cancel: (() => void) | null) => void;
-  onSavingChange: (saving: boolean) => void;
-  updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { tab: urlTab } = useParams<{ tab?: string }>();
-  const [revisionsOpen, setRevisionsOpen] = useState(false);
 
   const { data: configRevisions } = useQuery({
     queryKey: queryKeys.agents.configRevisions(agent.id),
@@ -1732,80 +1956,48 @@ function AgentConfigurePage({
     onSuccess: (updated) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
-      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? "configuration")) {
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, "revisions")) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       }
     },
   });
 
   return (
-    <div className="max-w-3xl space-y-6">
-      <ConfigurationTab
-        agent={agent}
-        onDirtyChange={onDirtyChange}
-        onSaveActionChange={onSaveActionChange}
-        onCancelActionChange={onCancelActionChange}
-        onSavingChange={onSavingChange}
-        updatePermissions={updatePermissions}
-        companyId={companyId}
-        hidePromptTemplate
-        hideInstructionsFile
-      />
-      <div>
-        <h3 className="text-sm font-medium mb-3">API Keys</h3>
-        <KeysTab agentId={agentId} companyId={companyId} />
+    <div className="max-w-3xl space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="text-sm font-medium">Configuration Revisions</h3>
+        <span className="text-xs text-muted-foreground">{configRevisions?.length ?? 0} total</span>
       </div>
-
-      {/* Configuration Revisions — collapsible at the bottom */}
-      <div>
-        <button
-          className="flex items-center gap-2 text-sm font-medium hover:text-foreground transition-colors"
-          onClick={() => setRevisionsOpen((v) => !v)}
-        >
-          {revisionsOpen
-            ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-            : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-          }
-          Configuration Revisions
-          <span className="text-xs font-normal text-muted-foreground">{configRevisions?.length ?? 0}</span>
-        </button>
-        {revisionsOpen && (
-          <div className="mt-3">
-            {(configRevisions ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
-            ) : (
-              <div className="space-y-2">
-                {(configRevisions ?? []).slice(0, 10).map((revision) => (
-                  <div key={revision.id} className="border border-border/70 rounded-md p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-xs text-muted-foreground">
-                        <span className="font-mono">{revision.id.slice(0, 8)}</span>
-                        <span className="mx-1">·</span>
-                        <span>{formatDate(revision.createdAt)}</span>
-                        <span className="mx-1">·</span>
-                        <span>{revision.source}</span>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 px-2.5 text-xs"
-                        onClick={() => rollbackConfig.mutate(revision.id)}
-                        disabled={rollbackConfig.isPending}
-                      >
-                        Restore
-                      </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      Changed:{" "}
-                      {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
-                    </p>
-                  </div>
-                ))}
+      {(configRevisions ?? []).length === 0 ? (
+        <p className="text-sm text-muted-foreground">No configuration revisions yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {(configRevisions ?? []).map((revision) => (
+            <div key={revision.id} className="space-y-2 rounded-md border border-border p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs text-muted-foreground">
+                  <span className="font-mono">{revision.id.slice(0, 8)}</span>
+                  <span className="mx-1">·</span>
+                  <span>{formatDate(revision.createdAt)}</span>
+                  <span className="mx-1">·</span>
+                  <span>{revision.source}</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => rollbackConfig.mutate(revision.id)}
+                  disabled={rollbackConfig.isPending}
+                >
+                  Restore
+                </Button>
               </div>
-            )}
-          </div>
-        )}
-      </div>
+              <p className="text-xs text-muted-foreground">
+                Changed: {revision.changedKeys.length > 0 ? revision.changedKeys.join(", ") : "no tracked changes"}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1822,6 +2014,8 @@ function ConfigurationTab({
   updatePermissions,
   hidePromptTemplate,
   hideInstructionsFile,
+  content = "runtime",
+  canConfigureProviderTrace = false,
 }: {
   agent: AgentDetailRecord;
   companyId?: string;
@@ -1832,6 +2026,8 @@ function ConfigurationTab({
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
+  content?: "runtime" | "permissions" | "secrets";
+  canConfigureProviderTrace?: boolean;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1846,7 +2042,7 @@ function ConfigurationTab({
         ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
         : ["agents", "none", "adapter-models", agent.adapterType],
     queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
-    enabled: Boolean(companyId),
+    enabled: Boolean(companyId) && content === "runtime",
   });
 
   const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
@@ -1854,7 +2050,7 @@ function ConfigurationTab({
   const { data: boundaryProjects, isLoading: boundaryProjectsLoading } = useQuery({
     queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__low-trust-disabled"],
     queryFn: () => projectsApi.list(companyId!),
-    enabled: Boolean(companyId && lowTrustSelected),
+    enabled: Boolean(companyId && lowTrustSelected) && content === "permissions",
   });
 
   const { data: boundaryIssues, isLoading: boundaryIssuesLoading } = useQuery({
@@ -1862,7 +2058,7 @@ function ConfigurationTab({
       ? [...queryKeys.issues.list(companyId), "low-trust-boundary-candidates"]
       : ["issues", "__low-trust-disabled"],
     queryFn: () => issuesApi.list(companyId!, { limit: 100, sortField: "updated", sortDir: "desc" }),
-    enabled: Boolean(companyId && lowTrustSelected),
+    enabled: Boolean(companyId && lowTrustSelected) && content === "permissions",
   });
 
   const updateAgent = useMutation({
@@ -1874,7 +2070,7 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
-      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? "configuration")) {
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? content)) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       }
       pushToast({ title: "Agent saved", tone: "success" });
@@ -1897,11 +2093,18 @@ function ConfigurationTab({
     }
     lastAgentRef.current = agent;
   }, [agent, awaitingRefreshAfterSave]);
-  const isConfigSaving = updateAgent.isPending || awaitingRefreshAfterSave;
+  const isConfigSaving = content !== "permissions" && (updateAgent.isPending || awaitingRefreshAfterSave);
 
   useEffect(() => {
     onSavingChange(isConfigSaving);
   }, [onSavingChange, isConfigSaving]);
+
+  useEffect(() => {
+    if (content !== "permissions") return;
+    onDirtyChange(false);
+    onSaveActionChange(null);
+    onCancelActionChange(null);
+  }, [content, onCancelActionChange, onDirtyChange, onSaveActionChange]);
 
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
   const canCreateSkills = agent.permissions?.canCreateSkills !== false;
@@ -1914,14 +2117,14 @@ function ConfigurationTab({
       : taskAssignSource === "agent_creator"
         ? "Enabled automatically while this agent can create new agents."
         : taskAssignSource === "explicit_grant"
-          ? "Enabled via explicit company permission grant."
+          ? "Enabled via explicit organization permission grant."
           : taskAssignSource === "simple_default"
-            ? "Enabled by simple company-wide task assignment defaults."
+            ? "Enabled by simple organization-wide task assignment defaults."
             : "Disabled unless explicitly granted.";
 
   return (
     <div className="space-y-6">
-      <AgentConfigForm
+      {content !== "permissions" ? <AgentConfigForm
         mode="edit"
         agent={agent}
         onSave={(patch) => updateAgent.mutateAsync(patch)}
@@ -1933,13 +2136,17 @@ function ConfigurationTab({
         hideInlineSave
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}
+        content={content === "runtime" ? "configuration" : "secrets"}
         sectionLayout="cards"
-      />
-      <p className="text-xs text-muted-foreground">
-        Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
-      </p>
+        canConfigureProviderTrace={canConfigureProviderTrace}
+      /> : null}
+      {content === "runtime" ? (
+        <p className="text-xs text-muted-foreground">
+          Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
+        </p>
+      ) : null}
 
-      <TrustPresetSection
+      {content === "permissions" ? <TrustPresetSection
         permissions={agent.permissions}
         disabled={updatePermissions.isPending}
         companyId={companyId}
@@ -1960,9 +2167,9 @@ function ConfigurationTab({
             ...buildPermissionsForTrustPreset(nextPermissions, nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard"),
           })
         }
-      />
+      /> : null}
 
-      <div>
+      {content === "permissions" ? <div>
         <h3 className="text-sm font-medium mb-3">Permissions</h3>
         <div className="border border-border rounded-lg p-4 space-y-4">
           <div className="flex items-center justify-between gap-4 text-sm">
@@ -1988,7 +2195,7 @@ function ConfigurationTab({
             <div className="space-y-1">
               <div>Can create/import skills</div>
               <p className="text-xs text-muted-foreground">
-                Lets this agent install, import, create, and scan company skills without creating agents.
+                Lets this agent install, import, create, and scan organization skills without creating agents.
               </p>
             </div>
             <ToggleSwitch
@@ -2023,7 +2230,7 @@ function ConfigurationTab({
             />
           </div>
         </div>
-      </div>
+      </div> : null}
     </div>
   );
 }
@@ -2048,7 +2255,8 @@ export function PromptsTab({
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
-  const [selectedFile, setSelectedFile] = useState<string>("AGENTS.md");
+  const [selectedFile, setSelectedFileState] = useState<string>("AGENTS.md");
+  const [instructionMode, setInstructionMode] = useState<"read" | "edit" | "raw">("read");
   const [showFilePanel, setShowFilePanel] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [bundleDraft, setBundleDraft] = useState<{
@@ -2070,9 +2278,22 @@ export function PromptsTab({
     entryFile: string;
     selectedFile: string;
   } | null>(null);
+  // MDXEditor can normalize markdown and emit onChange while it mounts. Only
+  // treat editor output as a draft after a real interaction so merely opening
+  // an instructions file cannot mark the agent dirty.
+  const editorInteractedRef = useRef(false);
+  const markEditorInteracted = useCallback(() => {
+    editorInteractedRef.current = true;
+  }, []);
+  const setSelectedFile = useCallback((filePath: string) => {
+    editorInteractedRef.current = false;
+    setSelectedFileState(filePath);
+  }, []);
 
   useEffect(() => {
+    editorInteractedRef.current = false;
     setSelectedFile("AGENTS.md");
+    setInstructionMode("read");
     setShowFilePanel(false);
     setDraft(null);
     setBundleDraft(null);
@@ -2138,7 +2359,10 @@ export function PromptsTab({
       entryFile?: string;
       clearLegacyPromptTemplate?: boolean;
     }) => agentsApi.updateInstructionsBundle(agent.id, data, companyId),
-    onMutate: () => setAwaitingRefresh(true),
+    onMutate: () => {
+      editorInteractedRef.current = false;
+      setAwaitingRefresh(true);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
@@ -2150,7 +2374,10 @@ export function PromptsTab({
   const saveFile = useMutation({
     mutationFn: (data: { path: string; content: string; clearLegacyPromptTemplate?: boolean }) =>
       agentsApi.saveInstructionsFile(agent.id, data, companyId),
-    onMutate: () => setAwaitingRefresh(true),
+    onMutate: () => {
+      editorInteractedRef.current = false;
+      setAwaitingRefresh(true);
+    },
     onSuccess: (_, variables) => {
       setPendingFiles((prev) => prev.filter((f) => f !== variables.path));
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
@@ -2163,7 +2390,10 @@ export function PromptsTab({
 
   const deleteFile = useMutation({
     mutationFn: (relativePath: string) => agentsApi.deleteInstructionsFile(agent.id, relativePath, companyId),
-    onMutate: () => setAwaitingRefresh(true),
+    onMutate: () => {
+      editorInteractedRef.current = false;
+      setAwaitingRefresh(true);
+    },
     onSuccess: (_, relativePath) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.instructionsBundle(agent.id) });
       queryClient.removeQueries({ queryKey: queryKeys.agents.instructionsFile(agent.id, relativePath) });
@@ -2175,7 +2405,7 @@ export function PromptsTab({
 
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to upload images");
+      if (!selectedCompanyId) throw new Error("Select an organization to upload images");
       return assetsApi.uploadImage(selectedCompanyId, file, namespace);
     },
   });
@@ -2289,6 +2519,13 @@ export function PromptsTab({
 
   useEffect(() => { onSavingChange(isSaving); }, [onSavingChange, isSaving]);
   useEffect(() => { onDirtyChange(isDirty); }, [onDirtyChange, isDirty]);
+
+  useEffect(() => () => {
+    onSaveActionChange(null);
+    onCancelActionChange(null);
+    onDirtyChange(false);
+    onSavingChange(false);
+  }, [onCancelActionChange, onDirtyChange, onSaveActionChange, onSavingChange]);
 
   useEffect(() => {
     onSaveActionChange(isDirty ? () => {
@@ -2647,6 +2884,7 @@ export function PromptsTab({
             })}
             onSelectFile={(filePath) => {
               setSelectedFile(filePath);
+              setInstructionMode("read");
               if (!fileOptions.includes(filePath)) setDraft("");
               if (isMobile) setShowFilePanel(false);
             }}
@@ -2713,6 +2951,21 @@ export function PromptsTab({
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <div className="flex items-center rounded-md border border-border p-0.5" role="group" aria-label="Instruction file view">
+                {(["read", "edit", "raw"] as const).map((mode) => (
+                  <Button
+                    key={mode}
+                    type="button"
+                    size="sm"
+                    variant={instructionMode === mode ? "secondary" : "ghost"}
+                    className="capitalize"
+                    aria-pressed={instructionMode === mode}
+                    onClick={() => setInstructionMode(mode)}
+                  >
+                    {mode}
+                  </Button>
+                ))}
+              </div>
               {!fileLoading && (
                 <CopyText
                   text={displayValue}
@@ -2749,22 +3002,56 @@ export function PromptsTab({
 
           {selectedFileExists && fileLoading && !selectedFileDetail ? (
             <PromptEditorSkeleton />
+          ) : instructionMode === "read" ? (
+            <div className="min-h-(--sz-420px) rounded-md border border-border bg-background p-4">
+              {displayValue.trim() ? (
+                useMarkdownEditor ? (
+                  <MarkdownBody className="max-w-none text-sm leading-7 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+                    {displayValue}
+                  </MarkdownBody>
+                ) : (
+                  <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7">{displayValue}</pre>
+                )
+              ) : (
+                <p className="text-sm text-muted-foreground">This instruction file is empty.</p>
+              )}
+            </div>
+          ) : instructionMode === "raw" ? (
+            <pre
+              data-testid="instructions-raw-source"
+              className="min-h-(--sz-420px) overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted p-4 font-mono text-sm leading-7"
+            >
+              {displayValue}
+            </pre>
           ) : useMarkdownEditor ? (
-            <MarkdownEditor
-              key={selectedOrEntryFile}
-              value={displayValue}
-              onChange={(value) => setDraft(value ?? "")}
-              placeholder="# Agent instructions"
-              className="min-w-0 overflow-hidden"
-              contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm leading-7"
-              imageUploadHandler={async (file) => {
-                const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
-                const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                return asset.contentPath;
-              }}
-            />
+            <div
+              onBeforeInputCapture={markEditorInteracted}
+              onDropCapture={markEditorInteracted}
+              onInput={markEditorInteracted}
+              onKeyDownCapture={markEditorInteracted}
+              onPasteCapture={markEditorInteracted}
+              onPointerDownCapture={markEditorInteracted}
+            >
+              <MarkdownEditor
+                key={selectedOrEntryFile}
+                value={displayValue}
+                onChange={(value) => {
+                  if (!editorInteractedRef.current) return;
+                  setDraft(value ?? "");
+                }}
+                placeholder="# Agent instructions"
+                className="min-w-0 overflow-hidden"
+                contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm leading-7"
+                imageUploadHandler={async (file) => {
+                  const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
+                  const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+                  return asset.contentPath;
+                }}
+              />
+            </div>
           ) : (
             <textarea
+              aria-label="Instruction file editor"
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
               className="min-h-(--sz-420px) w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
@@ -2976,8 +3263,34 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     queryKey: queryKeys.runDetail(initialRun.id),
     queryFn: () => heartbeatsApi.get(initialRun.id),
     enabled: Boolean(initialRun.id),
+    refetchInterval: (query) => runDetailRefetchIntervalMs(
+      (query.state.data ?? initialRun).status,
+    ),
   });
   const run = hydratedRun ?? initialRun;
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const paperclipDeveloperMode =
+    experimentalSettings?.enablePaperclipDeveloperMode === true;
+  const { data: providerTraceRows } = useQuery({
+    queryKey: queryKeys.providerTraceMetadata(run.companyId, [run.id]),
+    queryFn: () => heartbeatsApi.providerTraceMetadata(run.companyId, [run.id]),
+    enabled: canUseProviderTrace,
+    retry: false,
+    refetchInterval:
+      run.status === "running" || run.status === "queued" ? 3000 : false,
+  });
+  const providerTraceMetadata = providerTraceRows?.[0] ?? null;
   const metrics = runMetrics(run);
   const { data: userDirectory } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(run.companyId),
@@ -2994,6 +3307,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.responsibleUserId, userDirectory]);
   const responsibleDenialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
   const [sessionOpen, setSessionOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
 
   useEffect(() => {
@@ -3074,6 +3388,27 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     },
   });
 
+  const rerunWithTrace = useMutation({
+    mutationFn: async () => {
+      const result = await agentsApi.wakeup(run.agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "rerun_with_provider_trace",
+        payload: retryPayload,
+        debug: { providerTrace: "raw" },
+      }, run.companyId);
+      if (!("id" in result)) {
+        throw new Error(result.message ?? "Trace re-run was skipped.");
+      }
+      return result;
+    },
+    onSuccess: (newRun) => {
+      setInspectorOpen(false);
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
+      navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
+    },
+  });
+
   const { data: touchedIssues } = useQuery({
     queryKey: queryKeys.runIssues(run.id),
     queryFn: () => activityApi.issuesForRun(run.id),
@@ -3144,8 +3479,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         <div className="flex flex-col sm:flex-row">
           {/* Left column: status + timing */}
           <div className="flex-1 p-4 space-y-3">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <StatusBadge status={run.status} />
+              <ProviderTraceStatusBadge
+                trace={providerTraceMetadata}
+                requested={runRequestedProviderTrace(run.contextSnapshot)}
+                showOff
+              />
               {(run.status === "running" || run.status === "queued") && (
                 <Button
                   variant="ghost"
@@ -3181,6 +3521,31 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   {retryRun.isPending ? "Retrying…" : "Retry"}
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs h-6 px-2"
+                onClick={() => setInspectorOpen(true)}
+              >
+                <Eye className="h-3.5 w-3.5 mr-1" />
+                Inspect run
+              </Button>
+              <HoneycombRunLink
+                runId={run.id}
+                enabled={paperclipDeveloperMode && canUseProviderTrace}
+              />
+              {canUseProviderTrace && !["queued", "running"].includes(run.status) ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs h-6 px-2"
+                  onClick={() => rerunWithTrace.mutate()}
+                  disabled={rerunWithTrace.isPending}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                  {rerunWithTrace.isPending ? "Starting…" : "Re-run with provider trace"}
+                </Button>
+              ) : null}
             </div>
             {/* Adapter type · provider · model */}
             {(() => {
@@ -3463,6 +3828,17 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
       {/* Log viewer */}
       <LogViewer run={run} adapterType={adapterType} />
       <ScrollToBottom />
+      <RunnerInspector
+        runId={run.id}
+        run={run}
+        open={inspectorOpen}
+        onOpenChange={setInspectorOpen}
+        onRerunWithTrace={
+          canUseProviderTrace && !["queued", "running"].includes(run.status)
+            ? () => rerunWithTrace.mutate()
+            : undefined
+        }
+      />
     </div>
   );
 }
@@ -3491,6 +3867,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     distanceFromBottom: Number.POSITIVE_INFINITY,
   });
   const isLive = run.status === "running" || run.status === "queued";
+  const shouldPollShellLog = shouldPollRunShellLog(run.status);
   const { data: workspaceOperations = [] } = useQuery({
     queryKey: queryKeys.runWorkspaceOperations(run.id),
     queryFn: () => heartbeatsApi.workspaceOperations(run.id),
@@ -3642,7 +4019,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setLoadingMoreLog(false);
     setLogError(null);
 
-    if (!run.logRef && !isLive) {
+    if (!run.logRef && !shouldPollShellLog) {
       setLogLoading(false);
       return () => {
         cancelled = true;
@@ -3657,10 +4034,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         appendLogContent(result.content, result.nextOffset === undefined);
         const next = result.nextOffset ?? result.content.length;
         setLogOffset(next);
-        setHasMoreLog(!isLive && result.nextOffset !== undefined);
+        setHasMoreLog(!shouldPollShellLog && result.nextOffset !== undefined);
       } catch (err) {
         if (!cancelled) {
-          if (isLive && isRunLogUnavailable(err)) {
+          if (shouldPollShellLog && isRunLogUnavailable(err)) {
             setLogLoading(false);
             return;
           }
@@ -3675,7 +4052,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return () => {
       cancelled = true;
     };
-  }, [run.id, run.logRef, run.logBytes, isLive]);
+  }, [run.id, run.logRef, run.logBytes, shouldPollShellLog]);
 
   async function loadMorePersistedLog() {
     if (loadingMoreLog || !hasMoreLog) return;
@@ -3713,7 +4090,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   // Poll shell log for running runs
   useEffect(() => {
-    if (!isLive || isStreamingConnected) return;
+    if (!shouldPollShellLog || isStreamingConnected) return;
     const interval = setInterval(async () => {
       try {
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
@@ -3731,7 +4108,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [run.id, isLive, isStreamingConnected, logOffset]);
+  }, [run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
 
   // Stream live updates from websocket (primary path for running runs).
   useEffect(() => {

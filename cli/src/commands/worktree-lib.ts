@@ -5,11 +5,51 @@ import { expandHomePrefix } from "../config/home.js";
 
 export const DEFAULT_WORKTREE_HOME = "~/.paperclip-worktrees";
 export const WORKTREE_SEED_MODES = ["minimal", "full"] as const;
+export const WORKTREE_SEED_MANIFEST = "seed-manifest.json";
 export const WORKTREE_SEED_PENDING_MARKER = "seed-pending";
 export const WORKTREE_SEED_COMPLETE_MARKER = "seed-complete";
 export const WORKTREE_SEED_LOCK_MARKER = "seed.lock";
 
 export type WorktreeSeedMode = (typeof WORKTREE_SEED_MODES)[number];
+
+export const WORKTREE_SEED_PHASES = [
+  "pending",
+  "source_validation",
+  "snapshot",
+  "restore",
+  "migrations",
+  "execution_quarantine",
+  "routine_pause",
+  "workspace_rebind",
+  "post_restore_validation",
+  "complete",
+] as const;
+
+export type WorktreeSeedPhase = (typeof WORKTREE_SEED_PHASES)[number];
+export type WorktreeSeedState = "pending" | "running" | "verified" | "failed";
+
+export type WorktreeSeedManifest = {
+  version: 2;
+  source: {
+    instanceId: string;
+    configPath: string;
+  };
+  snapshotAt: string | null;
+  seedMode: WorktreeSeedMode;
+  migrationRevision: string | null;
+  targetInstanceId: string;
+  phase: WorktreeSeedPhase;
+  state: WorktreeSeedState;
+  attemptId: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  diagnostics: Array<{
+    phase: WorktreeSeedPhase;
+    status: "started" | "succeeded" | "failed";
+    at: string;
+    message?: string;
+  }>;
+};
 
 export type WorktreeSeedPlan = {
   mode: WorktreeSeedMode;
@@ -54,6 +94,7 @@ export type WorktreeUiBranding = {
 };
 
 export type WorktreeSeedMarkerPaths = {
+  manifest: string;
   pending: string;
   complete: string;
   lock: string;
@@ -62,6 +103,7 @@ export type WorktreeSeedMarkerPaths = {
 export function resolveWorktreeSeedMarkerPaths(configPath: string): WorktreeSeedMarkerPaths {
   const configDir = path.dirname(path.resolve(configPath));
   return {
+    manifest: path.resolve(configDir, WORKTREE_SEED_MANIFEST),
     pending: path.resolve(configDir, WORKTREE_SEED_PENDING_MARKER),
     complete: path.resolve(configDir, WORKTREE_SEED_COMPLETE_MARKER),
     lock: path.resolve(configDir, WORKTREE_SEED_LOCK_MARKER),

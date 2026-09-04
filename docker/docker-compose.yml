@@ -19,6 +19,15 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    # No `init: true` here on purpose. The image makes tini PID 1 itself
+    # (Dockerfile ENTRYPOINT), which covers every launch path -- compose, plain
+    # `docker run`, the quadlet units and the ECS task definition -- instead of
+    # one lever per orchestrator. Setting it here too would nest docker-init
+    # around tini and make tini warn that it is not PID 1 on every boot.
+    # pids_limit is the backstop: if something ever does leak processes again,
+    # this container hits its own ceiling and dies visibly rather than starving
+    # the whole host of pids.
+    pids_limit: 2048
     ports:
       - "3100:3100"
     environment:

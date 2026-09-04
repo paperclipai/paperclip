@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAnsweredQuestionsDeliveryText,
   buildIssueThreadInteractionSummary,
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
@@ -8,14 +9,28 @@ import {
   getItemVerdictProgress,
   getRequestConfirmationTargetHref,
   getQuestionAnswerLabels,
+  interactionReplacesComposerSkip,
+  isDegenerateAskUserQuestions,
+  isSupersededByNewerSiblingInteraction,
+  shouldHideInteractionCard,
   normalizeRequestConfirmationTargetHref,
 } from "./issue-thread-interactions";
-import type { RequestItemVerdictsInteraction } from "./issue-thread-interactions";
+import type {
+  AskUserQuestionsInteraction,
+  AskUserQuestionsQuestion,
+  IssueThreadInteraction,
+  RequestItemVerdictsInteraction,
+} from "./issue-thread-interactions";
 
+// The open default every interaction now inherits when its creator omits
+// `resolverPolicy` (PAP-17277 contract).
 const resolverPolicyFields = {
-  resolverPolicy: "board_only",
-  requestedResolverPolicy: "board_only",
-  effectiveResolverPolicy: "board_only",
+  resolverPolicy: "anyone",
+  requestedResolverPolicy: "anyone",
+  effectiveResolverPolicy: "anyone",
+  resolverPolicyProvenance: "inherited",
+  effectiveResolverPolicySource: "requested",
+  legacyResolverPolicyAliases: { requested: "board_or_agents", effective: "board_or_agents" },
 } as const;
 
 describe("buildSuggestedTaskTree", () => {
@@ -46,6 +61,91 @@ describe("buildSuggestedTaskTree", () => {
 });
 
 describe("issue thread interaction helpers", () => {
+  it("replaces composer Skip only when the durable form has its own alternative path", () => {
+    const base = {
+      id: "interaction-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      result: null,
+    } as const;
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Proceed?" },
+    } as IssueThreadInteraction)).toBe(true);
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "request_checkbox_confirmation",
+      payload: { version: 1, prompt: "Select", options: [] },
+    } as IssueThreadInteraction)).toBe(true);
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "suggest_tasks",
+      payload: { version: 1, tasks: [] },
+    } as IssueThreadInteraction)).toBe(true);
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "ask_user_questions",
+      payload: { version: 1, questions: [] },
+    } as IssueThreadInteraction)).toBe(false);
+    expect(interactionReplacesComposerSkip({
+      ...base,
+      kind: "request_item_verdicts",
+      payload: { version: 1, prompt: "Review", items: [] },
+    } as IssueThreadInteraction)).toBe(false);
+  });
+
+  it("formats successor-turn answer delivery with canonical prompts and labels", () => {
+    const interaction = {
+      id: "interaction-answers",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "ask_user_questions",
+      status: "answered",
+      continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:01:00.000Z",
+      payload: {
+        version: 1,
+        questions: [
+          { id: "purpose", prompt: "What is it for?", selectionMode: "single", options: [] },
+          { id: "runtime", prompt: "Which runtime?", selectionMode: "single", options: [{ id: "node", label: "Node.js" }] },
+          { id: "features", prompt: "Which features?", selectionMode: "multi", options: [{ id: "logs", label: "Request logs" }] },
+        ],
+        questionSet: {
+          schema: "paperclip.question_set.v1",
+          questions: [
+            { id: "purpose", header: "Purpose", prompt: "What is it for?", required: true, answerMode: "text" },
+            { id: "runtime", header: "Runtime", prompt: "Which runtime?", required: true, answerMode: "single_select", options: [{ id: "node", label: "Node.js" }] },
+            { id: "features", header: "Features", prompt: "Which features?", required: false, answerMode: "multi_select", options: [{ id: "logs", label: "Request logs" }], customAnswer: { enabled: true, label: "Other" } },
+          ],
+        },
+      },
+      result: {
+        version: 1,
+        answers: [
+          { questionId: "purpose", optionIds: [], otherText: "Internal API" },
+          { questionId: "runtime", optionIds: ["node"] },
+          { questionId: "features", optionIds: ["logs"], otherText: "Metrics" },
+        ],
+      },
+    } satisfies AskUserQuestionsInteraction;
+
+    expect(buildAnsweredQuestionsDeliveryText(interaction)).toBe([
+      "Answered questions",
+      "",
+      "- Purpose — What is it for?: Internal API",
+      "- Runtime — Which runtime?: Node.js",
+      "- Features — Which features?: Request logs, Metrics",
+    ].join("\n"));
+  });
+
   it("summarizes task and question interactions", () => {
     expect(buildIssueThreadInteractionSummary({
       id: "interaction-1",
@@ -371,5 +471,213 @@ describe("per-item verdict helpers", () => {
         items: [],
       },
     }))).toBe("Verdicts expired after comment");
+  });
+});
+
+describe("isDegenerateAskUserQuestions", () => {
+  function askInteraction(
+    questions: AskUserQuestionsQuestion[],
+  ): AskUserQuestionsInteraction {
+    return {
+      id: "interaction-ask",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      payload: { version: 1, questions },
+    } as AskUserQuestionsInteraction;
+  }
+
+  it("flags a card with zero questions", () => {
+    expect(isDegenerateAskUserQuestions(askInteraction([]))).toBe(true);
+  });
+
+  it("flags a question with a blank / whitespace-only prompt", () => {
+    expect(isDegenerateAskUserQuestions(askInteraction([
+      {
+        id: "q1",
+        prompt: "   ",
+        selectionMode: "single",
+        options: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+        ],
+      },
+    ]))).toBe(true);
+  });
+
+  it("keeps a single fixed-option question: it is answerable (select + submit)", () => {
+    // A lone fixed option is still resolvable — the user selects it and submits —
+    // so it must render. Hiding it would strand a pending interaction the
+    // assignee is waiting on.
+    expect(isDegenerateAskUserQuestions(askInteraction([
+      {
+        id: "q1",
+        prompt: "Test",
+        selectionMode: "single",
+        options: [{ id: "a", label: "A" }],
+      },
+    ]))).toBe(false);
+  });
+
+  it("flags a question with no options at all", () => {
+    expect(isDegenerateAskUserQuestions(askInteraction([
+      { id: "q1", prompt: "Anything?", selectionMode: "single", options: [] },
+    ]))).toBe(true);
+  });
+
+  it("keeps a legitimate yes/no question (2 options)", () => {
+    expect(isDegenerateAskUserQuestions(askInteraction([
+      {
+        id: "q1",
+        prompt: "Ship it?",
+        selectionMode: "single",
+        options: [
+          { id: "yes", label: "Yes" },
+          { id: "no", label: "No" },
+        ],
+      },
+    ]))).toBe(false);
+  });
+
+  it("keeps a multi-select question (>= 2 options)", () => {
+    expect(isDegenerateAskUserQuestions(askInteraction([
+      {
+        id: "q1",
+        prompt: "Pick platforms",
+        selectionMode: "multi",
+        options: [
+          { id: "web", label: "Web" },
+          { id: "ios", label: "iOS" },
+          { id: "android", label: "Android" },
+        ],
+      },
+    ]))).toBe(false);
+  });
+
+  it("keeps a question whose only choice is a first-class free-text option (PAP-419)", () => {
+    expect(isDegenerateAskUserQuestions(askInteraction([
+      {
+        id: "q1",
+        prompt: "Describe your goal",
+        selectionMode: "single",
+        options: [{ id: "other", label: "I'll describe it", freeText: true }],
+      },
+    ]))).toBe(false);
+  });
+
+  it("is degenerate only when EVERY question is degenerate", () => {
+    // One real question keeps the whole card, even next to a degenerate one
+    // (here: a question with no options and no free-text).
+    expect(isDegenerateAskUserQuestions(askInteraction([
+      { id: "q1", prompt: "Anything?", selectionMode: "single", options: [] },
+      {
+        id: "q2",
+        prompt: "Ship it?",
+        selectionMode: "single",
+        options: [
+          { id: "yes", label: "Yes" },
+          { id: "no", label: "No" },
+        ],
+      },
+    ]))).toBe(false);
+  });
+
+  it("ignores non-ask_user_questions interactions", () => {
+    const confirmation = {
+      id: "interaction-confirm",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      payload: { version: 1 },
+    } as unknown as IssueThreadInteraction;
+    expect(isDegenerateAskUserQuestions(confirmation)).toBe(false);
+  });
+});
+
+describe("isSupersededByNewerSiblingInteraction", () => {
+  function askInteraction(overrides: Partial<AskUserQuestionsInteraction>): AskUserQuestionsInteraction {
+    return {
+      id: "interaction-ask",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "ask_user_questions",
+      status: "expired",
+      continuationPolicy: "wake_assignee",
+      ...resolverPolicyFields,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      payload: {
+        version: 1,
+        questions: [{ id: "q", prompt: "t", selectionMode: "single", options: [{ id: "L", label: "L" }] }],
+      },
+      ...overrides,
+    } as AskUserQuestionsInteraction;
+  }
+
+  it("hides an expired card superseded by a newer sibling question", () => {
+    const interaction = askInteraction({
+      status: "expired",
+      result: {
+        version: 1,
+        answers: [],
+        expirationReason: "superseded_by_newer_interaction",
+        supersededByInteractionId: "interaction-newer",
+        summaryMarkdown: null,
+      },
+    });
+    expect(isSupersededByNewerSiblingInteraction(interaction)).toBe(true);
+    expect(shouldHideInteractionCard(interaction)).toBe(true);
+  });
+
+  it("never hides a still-pending card (would strand the assignee)", () => {
+    // Guards the PAP-424 / 00b136f45 invariant: a pending question must always
+    // render even if the result somehow already names a superseding sibling.
+    const interaction = askInteraction({
+      status: "pending",
+      result: {
+        version: 1,
+        answers: [],
+        expirationReason: "superseded_by_newer_interaction",
+        supersededByInteractionId: "interaction-newer",
+        summaryMarkdown: null,
+      },
+    });
+    expect(isSupersededByNewerSiblingInteraction(interaction)).toBe(false);
+    expect(shouldHideInteractionCard(interaction)).toBe(false);
+  });
+
+  it("keeps the stale notice for a comment-superseded card (does not hide it)", () => {
+    const interaction = askInteraction({
+      status: "expired",
+      result: {
+        version: 1,
+        answers: [],
+        expirationReason: "superseded_by_comment",
+        commentId: "11111111-1111-1111-1111-111111111111",
+        summaryMarkdown: null,
+      },
+    });
+    expect(isSupersededByNewerSiblingInteraction(interaction)).toBe(false);
+    expect(shouldHideInteractionCard(interaction)).toBe(false);
+  });
+
+  it("still hides a degenerate card through the combined predicate", () => {
+    const degenerate = askInteraction({
+      status: "pending",
+      result: null,
+      payload: { version: 1, questions: [] },
+    });
+    expect(isSupersededByNewerSiblingInteraction(degenerate)).toBe(false);
+    expect(shouldHideInteractionCard(degenerate)).toBe(true);
   });
 });

@@ -50,6 +50,7 @@ import {
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
   isValidRoutineDateString,
+  normalizeAgentUrlKey,
   pluginOperationIssueOriginKind,
   routineRevisionSnapshotSchema,
   stringifyRoutineVariableValue,
@@ -76,12 +77,15 @@ import {
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
+const EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE = "execution_issue_status";
+const EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES = ["blocked", "cancelled"] as const;
 const ACTIVITY_GATE_IGNORED_ACTIONS = [
   "issue.read_marked",
   "issue.read_unmarked",
@@ -98,6 +102,43 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Fri: 5,
   Sat: 6,
 };
+
+export function routineWebhookUrl(publicId: string): string {
+  const baseUrl = runtimePublicOrigin() ?? process.env.PAPERCLIP_API_URL?.trim();
+  if (!baseUrl) throw new Error("PAPERCLIP_API_URL is required to create a routine webhook");
+  return `${baseUrl.replace(/\/+$/, "")}/api/routine-triggers/public/${publicId}/fire`;
+}
+
+type ExecutionIssueTransientFailureStatus = (typeof EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES)[number];
+
+function executionIssueTransientFailureReason(status: ExecutionIssueTransientFailureStatus) {
+  return `Execution issue moved to ${status}`;
+}
+
+function executionIssueTransientFailureStatusFromPayload(payload: unknown): ExecutionIssueTransientFailureStatus | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const transientFailure = (payload as Record<string, unknown>).transientFailure;
+  if (!transientFailure || typeof transientFailure !== "object" || Array.isArray(transientFailure)) return null;
+  const record = transientFailure as Record<string, unknown>;
+  if (record.code !== EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE) return null;
+  return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find((status) => record.status === status) ?? null;
+}
+
+function executionIssueTransientFailureClearedAtFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const transientFailure = (payload as Record<string, unknown>).transientFailure;
+  if (!transientFailure || typeof transientFailure !== "object" || Array.isArray(transientFailure)) return null;
+  const clearedAt = (transientFailure as Record<string, unknown>).clearedAt;
+  return typeof clearedAt === "string" ? clearedAt : null;
+}
+
+function legacyExecutionIssueTransientFailureStatus(
+  failureReason: string | null,
+): ExecutionIssueTransientFailureStatus | null {
+  return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find(
+    (status) => failureReason === executionIssueTransientFailureReason(status),
+  ) ?? null;
+}
 
 async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
   const company = await db
@@ -642,6 +683,25 @@ export function routineService(
       .from(routines)
       .where(eq(routines.id, id))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRoutineAgentSummary(
+    companyId: string,
+    agentId: string,
+  ): Promise<RoutineDetail["assignee"]> {
+    return db
+      .select({
+        id: agents.id,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+      })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
+      .then((rows) => {
+        const row = rows[0];
+        return row ? { ...row, urlKey: normalizeAgentUrlKey(row.name) ?? row.id } : null;
+      });
   }
 
   async function getManagedRoutineBinding(routine: typeof routines.$inferSelect) {
@@ -1339,10 +1399,40 @@ export function routineService(
     reason: string;
     nextRunAt?: Date | null;
     details?: Record<string, unknown> | null;
+    idempotencyKey?: string | null;
+    rejectIdempotencyReplay?: boolean;
   }) {
     const triggeredAt = new Date();
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      await tx.execute(
+        sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
+      );
+
+      if (input.idempotencyKey) {
+        const existing = await txDb
+          .select()
+          .from(routineRuns)
+          .where(
+            and(
+              eq(routineRuns.companyId, input.routine.companyId),
+              eq(routineRuns.routineId, input.routine.id),
+              eq(routineRuns.source, input.source),
+              eq(routineRuns.idempotencyKey, input.idempotencyKey),
+              eq(routineRuns.triggerId, input.trigger.id),
+            ),
+          )
+          .orderBy(desc(routineRuns.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          if (input.rejectIdempotencyReplay) {
+            throw conflict("Webhook replay detected");
+          }
+          return existing;
+        }
+      }
+
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
@@ -1358,6 +1448,7 @@ export function routineService(
           routineRevisionId: input.routine.latestRevisionId,
           responsibleUserId: input.routine.responsibleUserId ?? null,
           triggerPayload: input.details ?? null,
+          idempotencyKey: input.idempotencyKey ?? null,
         })
         .returning();
       await updateRoutineTouchedState({
@@ -1616,6 +1707,7 @@ export function routineService(
     projectWorkspaceId?: string | null;
     assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
+    rejectIdempotencyReplay?: boolean;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
@@ -1703,7 +1795,12 @@ export function routineService(
           .orderBy(desc(routineRuns.createdAt))
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (existing) return existing;
+        if (existing) {
+          if (input.rejectIdempotencyReplay) {
+            throw conflict("Webhook replay detected");
+          }
+          return existing;
+        }
       }
 
       const triggeredAt = new Date();
@@ -1979,7 +2076,7 @@ export function routineService(
           ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null)
           : null,
         row.assigneeAgentId
-          ? db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null)
+          ? getRoutineAgentSummary(row.companyId, row.assigneeAgentId)
           : null,
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
         getRoutineDescriptionDocument(row.id),
@@ -2348,7 +2445,7 @@ export function routineService(
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
         secretId = created.secret.id;
         secretMaterial = {
-          webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+          webhookUrl: routineWebhookUrl(publicId),
           webhookSecret: created.secretValue,
         };
       }
@@ -2531,7 +2628,7 @@ export function routineService(
       return {
         trigger: trigger as RoutineTrigger,
         secretMaterial: {
-          webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${existing.publicId}/fire`,
+          webhookUrl: routineWebhookUrl(existing.publicId),
           webhookSecret: secretValue,
         },
         revision,
@@ -2611,7 +2708,7 @@ export function routineService(
             secretId: created.secret.id,
             secretMaterial: {
               triggerId: trigger.id,
-              webhookUrl: `${process.env.PAPERCLIP_API_URL}/api/routine-triggers/public/${publicId}/fire`,
+              webhookUrl: routineWebhookUrl(publicId),
               webhookSecret: created.secretValue,
             },
           });
@@ -2794,6 +2891,7 @@ export function routineService(
       if (!routine) throw notFound("Routine not found");
       if (!trigger.enabled || routine.status !== "active") throw conflict("Routine trigger is not active");
 
+      let hmacReplayKey: string | null = null;
       if (trigger.signingMode === "none") {
         // No authentication — the publicId in the URL acts as a shared secret.
       } else if (trigger.signingMode === "github_hmac") {
@@ -2850,6 +2948,10 @@ export function routineService(
           normalizedSignature.length === expectedHmac.length &&
           crypto.timingSafeEqual(Buffer.from(normalizedSignature), Buffer.from(expectedHmac));
         if (!valid) throw unauthorized();
+        hmacReplayKey = `webhook-hmac:${crypto
+          .createHash("sha256")
+          .update(`${trigger.id}:${providedTimestamp}:${expectedHmac}`)
+          .digest("hex")}`;
       }
 
       const eligibility = await getAutomaticRoutineDispatchEligibility(routine);
@@ -2859,6 +2961,8 @@ export function routineService(
           trigger,
           source: "webhook",
           reason: "worktree_execution_cutoff",
+          idempotencyKey: hmacReplayKey ?? input.idempotencyKey,
+          rejectIdempotencyReplay: hmacReplayKey !== null,
         });
       }
 
@@ -2870,7 +2974,8 @@ export function routineService(
         variables: isPlainRecord(input.payload) && isPlainRecord(input.payload.variables)
           ? input.payload.variables
           : null,
-        idempotencyKey: input.idempotencyKey,
+        idempotencyKey: hmacReplayKey ?? input.idempotencyKey,
+        rejectIdempotencyReplay: hmacReplayKey !== null,
       });
     },
 
@@ -3079,17 +3184,73 @@ export function routineService(
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
+      const run = await db
+        .select({
+          id: routineRuns.id,
+          status: routineRuns.status,
+          failureReason: routineRuns.failureReason,
+          triggerPayload: routineRuns.triggerPayload,
+        })
+        .from(routineRuns)
+        .where(eq(routineRuns.id, issue.originRunId))
+        .then((rows) => rows[0] ?? null);
+      if (!run) return null;
       if (issue.status === "done") {
+        const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
+          ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
+        const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
         return finalizeRun(issue.originRunId, {
           status: "completed",
+          failureReason: null,
           completedAt: new Date(),
+          ...(transientFailureStatus
+            ? {
+              triggerPayload: {
+                ...(run.triggerPayload ?? {}),
+                transientFailure: {
+                  code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+                  status: transientFailureStatus,
+                  reason: executionIssueTransientFailureReason(transientFailureStatus),
+                  clearedAt: transientFailureClearedAt ?? new Date().toISOString(),
+                },
+              },
+            }
+            : {}),
         });
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
+        const failureReason = executionIssueTransientFailureReason(issue.status);
         return finalizeRun(issue.originRunId, {
           status: "failed",
-          failureReason: `Execution issue moved to ${issue.status}`,
+          failureReason,
           completedAt: new Date(),
+          triggerPayload: {
+            ...(run.triggerPayload ?? {}),
+            transientFailure: {
+              code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+              status: issue.status,
+              reason: failureReason,
+              recordedAt: new Date().toISOString(),
+            },
+          },
+        });
+      }
+      const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
+        ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
+      if (run.status === "failed" && transientFailureStatus) {
+        return finalizeRun(issue.originRunId, {
+          status: "issue_created",
+          failureReason: null,
+          completedAt: null,
+          triggerPayload: {
+            ...(run.triggerPayload ?? {}),
+            transientFailure: {
+              code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+              status: transientFailureStatus,
+              reason: executionIssueTransientFailureReason(transientFailureStatus),
+              clearedAt: new Date().toISOString(),
+            },
+          },
         });
       }
       return null;

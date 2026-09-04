@@ -63,7 +63,7 @@ describe("plugin provider span host handler", () => {
       parent: { traceId: string; spanId: string; traceFlags: number };
       attributes: Record<string, unknown>;
     };
-    expect(call.name).toBe("sandbox.provider.pack");
+    expect(call.name).toBe("sandbox.daytona.pack");
     expect(call.parent).toEqual({
       traceId: "0af7651916cd43dd8448eb211c80319c",
       spanId: "b7ad6b7169203331",
@@ -114,20 +114,26 @@ describe("plugin provider span host handler", () => {
     expect(call.status).not.toHaveProperty("message");
   });
 
-  it("clamps an unknown span name to sandbox.provider.other", async () => {
+  it("clamps an unknown span name to sandbox.daytona.other", async () => {
     const services = servicesFor();
     await services.tracer.record(
       { name: "rm -rf / --no-preserve-root" },
       { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
     );
     expect((mockRecordSpan.mock.calls[0]![0] as { name: string }).name).toBe(
-      "sandbox.provider.other",
+      "sandbox.daytona.other",
     );
   });
 
-  it("admits each per-round-trip span name to sandbox.provider.<name>", async () => {
+  it("admits each per-round-trip span name to sandbox.daytona.<name>", async () => {
     const services = servicesFor();
-    for (const name of ["mkdir", "guard", "rename", "extract", "provision"]) {
+    for (const name of [
+      "ensureDirectory",
+      "checkSymlinkEscape",
+      "promote",
+      "extractTarball",
+      "postUploadCommand",
+    ]) {
       await services.tracer.record(
         { name },
         { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
@@ -135,11 +141,26 @@ describe("plugin provider span host handler", () => {
     }
     const recorded = mockRecordSpan.mock.calls.map((c) => (c[0] as { name: string }).name);
     expect(recorded).toEqual([
-      "sandbox.provider.mkdir",
-      "sandbox.provider.guard",
-      "sandbox.provider.rename",
-      "sandbox.provider.extract",
-      "sandbox.provider.provision",
+      "sandbox.daytona.ensureDirectory",
+      "sandbox.daytona.checkSymlinkEscape",
+      "sandbox.daytona.promote",
+      "sandbox.daytona.extractTarball",
+      "sandbox.daytona.postUploadCommand",
+    ]);
+  });
+
+  it("admits the session open and close span names", async () => {
+    const services = servicesFor();
+    for (const name of ["session.open", "session.close"]) {
+      await services.tracer.record(
+        { name },
+        { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
+      );
+    }
+    const recorded = mockRecordSpan.mock.calls.map((c) => (c[0] as { name: string }).name);
+    expect(recorded).toEqual([
+      "sandbox.daytona.session.open",
+      "sandbox.daytona.session.close",
     ]);
   });
 
@@ -148,7 +169,7 @@ describe("plugin provider span host handler", () => {
     const startTimeMs = Date.now() - 4500;
     const endTimeMs = startTimeMs + 4500;
     await services.tracer.record(
-      { name: "mkdir", startTimeMs, endTimeMs },
+      { name: "ensureDirectory", startTimeMs, endTimeMs },
       { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
     );
     const call = mockRecordSpan.mock.calls[0]![0] as {
@@ -166,7 +187,7 @@ describe("plugin provider span host handler", () => {
     const startTimeMs = Date.now() + 5000;
     const endTimeMs = startTimeMs + 1000;
     await services.tracer.record(
-      { name: "mkdir", startTimeMs, endTimeMs },
+      { name: "ensureDirectory", startTimeMs, endTimeMs },
       { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
     );
     const call = mockRecordSpan.mock.calls[0]![0] as {
@@ -192,7 +213,7 @@ describe("plugin provider span host handler", () => {
     for (const pair of invalidPairs) {
       mockRecordSpan.mockReset();
       await services.tracer.record(
-        { name: "mkdir", startTimeMs: pair.startTimeMs, endTimeMs: pair.endTimeMs } as never,
+        { name: "ensureDirectory", startTimeMs: pair.startTimeMs, endTimeMs: pair.endTimeMs } as never,
         { traceparent: VALID_TRACEPARENT } as WorkerHostCallContext,
       );
       // The span still records (the synchronous path), but without a timestamp.
@@ -289,5 +310,22 @@ describe("clampProviderSpanAttributes", () => {
       [A.packWallMs]: 7,
       // A non-finite number yields no attribute; `exec.command` is not allowed.
     });
+  });
+
+  it("keeps the transfer direction for each closed-set value", () => {
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "inbound" })).toEqual({
+      [A.transferDirection]: "inbound",
+    });
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "outbound" })).toEqual({
+      [A.transferDirection]: "outbound",
+    });
+  });
+
+  it("drops a transfer direction outside the closed set or of the wrong type", () => {
+    // A free-form string, an empty string, and a non-string all yield no
+    // attribute, so the direction stays bounded and low-cardinality.
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "sideways" })).toEqual({});
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "" })).toEqual({});
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: 1 })).toEqual({});
   });
 });

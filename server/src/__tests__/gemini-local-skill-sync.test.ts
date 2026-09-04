@@ -20,7 +20,7 @@ describe("gemini local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("reports configured Paperclip skills and installs them into the Gemini skills home", async () => {
+  it("defaults and installs the operational Paperclip skill in the Gemini skills home", async () => {
     const home = await makeTempDir("paperclip-gemini-skill-sync-");
     cleanupDirs.add(home);
 
@@ -31,9 +31,6 @@ describe("gemini local skill sync", () => {
       config: {
         env: {
           HOME: home,
-        },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
         },
       },
     } as const;

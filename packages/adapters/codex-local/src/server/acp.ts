@@ -35,6 +35,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
@@ -44,10 +45,11 @@ import {
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
-const MIN_ACP_NODE_VERSION = "22.13.0";
+const MIN_ACP_NODE_VERSION = "24.11.0";
 
 export type CodexExecutionEngine = "cli" | "acp";
 
@@ -235,26 +237,16 @@ async function prepareCodexRemoteManagedHome(
     // without its staged home. Host staged-temp removal is deliberately NOT here
     // — see `disposeStaged` — so caching this runtime for reuse never destroys
     // resources the next resume needs.
-    teardown: async () => {
-      try {
-        await onLog(
-          "stdout",
-          "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
-        );
-        await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
-      } catch (err) {
-        // Fail-soft: a teardown copy-back miss loses this rotation and surfaces
-        // loudly as refresh_token_reused on the next host Codex use (re-auth
-        // recovers) — never silent host-credential corruption, so it must not
-        // mask the run result.
-        await onLog(
-          "stderr",
-          `[paperclip] Codex ACP teardown restore/copy-back failed: ${
-            err instanceof Error ? err.message : String(err)
-          }\n`,
-        );
-      }
-    },
+    // Fail-soft: a teardown copy-back miss loses this rotation and surfaces
+    // loudly as refresh_token_reused on the next host Codex use (re-auth
+    // recovers) — never silent host-credential corruption, so it must not
+    // mask the run result.
+    teardown: createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+      failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
+    }),
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
     // staged runtime is dropped (failed/cancelled/timed-out turn, incompatible
     // re-stage, idle eviction) — never on a clean turn that keeps the runtime
@@ -499,6 +491,7 @@ export async function testCodexAcpEnvironment(
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
 
   checks.push({
     code: "codex_engine_selected",
@@ -605,6 +598,29 @@ export async function testCodexAcpEnvironment(
         level: "warn",
         message: "No Codex ACP credentials visible to the Paperclip server were detected.",
         hint: "Set OPENAI_API_KEY in the agent adapter env, set it in the Paperclip server environment, or run `codex login` for the same OS user that runs the Paperclip server before starting a Codex ACP agent. A `/login` in a separate Codex/chat session does not authenticate the server.",
+      });
+    }
+  } else if (targetIsSandbox) {
+    // The ACP Test does not probe the sandbox, so it predicts readiness from the
+    // credentials the Paperclip server can seed into the sandbox. The host
+    // environment is not seeded, so only the adapter config key counts here.
+    const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
+    const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
+    const credentialReadiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId: ctx.companyId,
+      configuredCodexHome,
+      configuredApiKey: configApiKey,
+    });
+    if (!credentialReadiness.ready) {
+      // Emit the neutral canonical check so the user interface can decide login
+      // eligibility from a stable code. The user interface does not read the
+      // message text or the top-level status.
+      checks.push({
+        code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+        level: "warn",
+        message: "This environment has no ready authentication for this adapter.",
+        hint: "Provide credentials for this adapter, or start login in the environment.",
       });
     }
   }

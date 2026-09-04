@@ -1,9 +1,6 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
-export const DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
-export const MAX_COMPANY_ATTACHMENT_MAX_BYTES = 1024 * 1024 * 1024;
-
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 
@@ -32,11 +29,13 @@ export const AGENT_ADAPTER_TYPES = [
   "http",
   "claude_local",
   "codex_local",
+  "paperclip_runner",
   "cursor_cloud",
   "gemini_local",
   "grok_local",
   "hermes_gateway",
   "hermes_local",
+  "kimi_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -91,9 +90,6 @@ export const ADAPTER_AGNOSTIC_KEYS = [
   "paperclipSkillSync",
 ] as const;
 export type AdapterAgnosticKey = (typeof ADAPTER_AGNOSTIC_KEYS)[number];
-
-export const MODEL_PROFILE_KEYS = ["cheap"] as const;
-export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
 
 export const AGENT_ICON_NAMES = [
   "bot",
@@ -221,7 +217,12 @@ export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
-export const SUMMARY_SLOT_SCOPE_KINDS = ["project", "workspaces_overview", "project_workspace"] as const;
+export const SUMMARY_SLOT_SCOPE_KINDS = [
+  "project",
+  "workspaces_overview",
+  "project_workspace",
+  "execution_workspace",
+] as const;
 export type SummarySlotScopeKind = (typeof SUMMARY_SLOT_SCOPE_KINDS)[number];
 export const SUMMARY_SLOT_KEYS = ["header"] as const;
 export type SummarySlotKey = (typeof SUMMARY_SLOT_KEYS)[number];
@@ -261,15 +262,68 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "request_confirmation",
   "request_checkbox_confirmation",
   "request_item_verdicts",
+  "connection_intent",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
-export const ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES = [
-  "board_only",
+export const ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES = [
+  "anyone",
+  "not_creator",
+  "human_only",
+] as const;
+export type IssueThreadInteractionCanonicalResolverPolicy =
+  (typeof ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES)[number];
+
+export const ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES = [
   "board_or_agents",
+  "board_only",
+] as const;
+export type IssueThreadInteractionLegacyResolverPolicyAlias =
+  (typeof ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES)[number];
+
+/**
+ * Accepted resolver-policy input values. New product surfaces should use the
+ * canonical values; the two board-prefixed values remain write-compatible
+ * aliases for one migration window.
+ */
+export const ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES = [
+  ...ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
+  ...ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES,
 ] as const;
 export type IssueThreadInteractionResolverPolicy =
   (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)[number];
+
+export const ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES = [
+  "explicit",
+  "inherited",
+  "legacy_inherited_restriction",
+] as const;
+export type IssueThreadInteractionResolverPolicyProvenance =
+  (typeof ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES)[number];
+
+export const ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES = [
+  "requested",
+  "company_cap",
+  "governed_action",
+] as const;
+export type IssueThreadInteractionEffectiveResolverPolicySource =
+  (typeof ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES)[number];
+
+export function normalizeIssueThreadInteractionResolverPolicy(
+  policy: IssueThreadInteractionResolverPolicy,
+): IssueThreadInteractionCanonicalResolverPolicy {
+  if (policy === "board_or_agents") return "anyone";
+  if (policy === "board_only") return "human_only";
+  return policy;
+}
+
+export function legacyIssueThreadInteractionResolverPolicyAlias(
+  policy: IssueThreadInteractionCanonicalResolverPolicy,
+): IssueThreadInteractionLegacyResolverPolicyAlias | null {
+  if (policy === "anyone") return "board_or_agents";
+  if (policy === "human_only") return "board_only";
+  return null;
+}
 
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;
@@ -295,6 +349,10 @@ export type IssueThreadInteractionContinuationPolicy =
 
 export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug";
 
+// Marks the single onboarding "first task" so surfaces can special-case it
+// (e.g. suppress the seeded-description bubble and rely on a seeded greeting).
+export const ONBOARDING_FIRST_TASK_ORIGIN_KIND = "onboarding_first_task";
+
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
   "routine_execution",
@@ -304,6 +362,7 @@ export const ISSUE_ORIGIN_KINDS = [
   "stranded_issue_recovery",
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
@@ -315,6 +374,7 @@ export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number]
 
 export const ISSUE_RECOVERY_ACTION_KINDS = [
   "missing_disposition",
+  "deliberate_wait_without_target",
   "stranded_assigned_issue",
   "workspace_validation",
   "configuration_validation",
@@ -322,6 +382,8 @@ export const ISSUE_RECOVERY_ACTION_KINDS = [
   "issue_graph_liveness",
 ] as const;
 export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
+
+export const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
 
 export const ISSUE_RECOVERY_ACTION_STATUSES = [
   "active",
@@ -603,7 +665,10 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
-export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived"] as const;
+// "import" marks agents parked by a company import (safety default) so the UI
+// can explain the pause and offer a scoped bulk-resume; "system" remains the
+// reason for platform-managed pauses (plugins, built-ins).
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [
@@ -1047,7 +1112,14 @@ export type ToolMcpGatewayContextScopeType = (typeof TOOL_MCP_GATEWAY_CONTEXT_SC
 export const TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES = ["gateway_client", "heartbeat_run", "board_user", "agent"] as const;
 export type ToolMcpGatewayTokenSubjectType = (typeof TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES)[number];
 
-export const TOOL_MCP_GATEWAY_TOKEN_ACTIONS = ["tools/list", "tools/call"] as const;
+export const TOOL_MCP_GATEWAY_TOKEN_ACTIONS = [
+  "tools/list",
+  "tools/call",
+  "resources/list",
+  "resources/read",
+  "prompts/list",
+  "prompts/get",
+] as const;
 export type ToolMcpGatewayTokenAction = (typeof TOOL_MCP_GATEWAY_TOKEN_ACTIONS)[number];
 
 export const CONNECTION_TOKEN_ISSUANCE_PATHS = ["exchange", "oauth_access", "static"] as const;

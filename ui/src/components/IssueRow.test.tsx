@@ -104,7 +104,13 @@ describe("IssueRow", () => {
       root.render(<IssueRow issue={createIssue({ status: "in_progress" })} />);
     });
 
-    const glyphs = container.querySelectorAll('svg[viewBox="0 0 24 24"]');
+    // jsdom 30 does not value-match a CSS attribute selector against a
+    // mixed-case SVG attribute name, so `svg[viewBox="0 0 24 24"]` matches
+    // nothing. Select the glyph SVGs by attribute presence, then compare the
+    // viewBox value with getAttribute to keep the exact-value assertion.
+    const glyphs = Array.from(container.querySelectorAll("svg[viewBox]")).filter(
+      (svg) => svg.getAttribute("viewBox") === "0 0 24 24",
+    );
     expect(glyphs.length).toBeGreaterThan(0);
     glyphs.forEach((glyph) => {
       expect(glyph.getAttribute("width")).toBe("16");
@@ -114,6 +120,159 @@ describe("IssueRow", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("uses stable canonical identifier and timestamp columns at the trailing edge", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue({ identifier: "PAP-42", title: "Canonical task" })}
+          presentation="task"
+          metadata={<span>Live</span>}
+          actions={<button type="button">More</button>}
+          trailingMeta="Updated now"
+        />,
+      );
+    });
+
+    const row = container.querySelector('[data-slot="task-row"]');
+    const leading = row?.querySelector('[data-slot="task-row-leading"]');
+    const title = row?.querySelector('[data-slot="task-row-title"]');
+    const metadata = row?.querySelector('[data-slot="task-row-metadata"]');
+    const identifier = row?.querySelector('[data-slot="task-row-identifier"]');
+    const timestamp = row?.querySelector('[data-slot="task-row-timestamp"]');
+    const actions = row?.querySelector('[data-slot="task-row-actions"]');
+    const link = row?.querySelector('[data-inbox-issue-link]');
+
+    expect(leading?.querySelector("svg")).not.toBeNull();
+    expect(title?.textContent).toContain("Canonical task");
+    expect(metadata?.textContent).toBe("Live");
+    expect(identifier?.textContent).toBe("PAP-42");
+    expect(timestamp?.textContent).toBe("Updated now");
+    expect(actions?.textContent).toBe("More");
+    expect(identifier?.className).toContain("w-20");
+    expect(timestamp?.className).toContain("w-24");
+    if (!link || !metadata || !identifier || !timestamp || !actions) throw new Error("Expected canonical task row slots");
+    expect(link.contains(actions)).toBe(false);
+    expect(metadata.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(actions.compareDocumentPosition(identifier) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(timestamp.nextElementSibling).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the canonical archive action within the shared task-row height", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue()}
+          presentation="task"
+          onArchive={() => undefined}
+        />,
+      );
+    });
+
+    const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+    expect(archiveButton?.className).toContain("h-5");
+    expect(archiveButton?.className).toContain("py-0");
+    expect(archiveButton?.className).not.toContain("py-1");
+
+    act(() => root.unmount());
+  });
+
+  it("preserves the legacy archive action density", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} onArchive={() => undefined} />);
+    });
+
+    const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+    expect(archiveButton?.className).toContain("py-1");
+    expect(archiveButton?.className).not.toContain("h-5");
+
+    act(() => root.unmount());
+  });
+
+  it("emphasizes unread canonical titles and overlays the accessible mark-read control", () => {
+    const root = createRoot(container);
+    const onMarkRead = vi.fn();
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue()}
+          presentation="task"
+          unreadState="visible"
+          onMarkRead={onMarkRead}
+        />,
+      );
+    });
+
+    const row = container.querySelector('[data-slot="task-row"]');
+    const title = row?.querySelector('[data-slot="task-row-title"]');
+    const unreadSlot = row?.querySelector('[data-testid="issue-row-unread-slot"]');
+    const markReadButton = unreadSlot?.querySelector<HTMLButtonElement>('button[aria-label="Mark as read"]');
+    expect(row?.getAttribute("data-unread")).toBe("true");
+    expect(title?.className).toContain("font-semibold");
+    expect(unreadSlot).not.toBeNull();
+    expect(unreadSlot?.className).toContain("absolute");
+    expect(markReadButton).not.toBeNull();
+    expect(markReadButton?.closest("a")).toBeNull();
+
+    act(() => markReadButton?.click());
+    expect(onMarkRead).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+  });
+
+  it("keeps canonical leading geometry independent of unread state", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <>
+          <IssueRow issue={createIssue({ id: "read" })} presentation="task" unreadState="hidden" />
+          <IssueRow issue={createIssue({ id: "plain" })} presentation="task" />
+        </>,
+      );
+    });
+
+    const rows = Array.from(container.querySelectorAll('[data-slot="task-row"]'));
+    const unreadSlot = rows[0]?.querySelector('[data-testid="issue-row-unread-slot"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.className).toBe(rows[1]?.className);
+    expect(unreadSlot).not.toBeNull();
+    expect(unreadSlot?.className).toContain("absolute");
+    expect(unreadSlot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+    expect(rows[1]?.querySelector('[data-testid="issue-row-unread-slot"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("preserves task-tree indentation slots in the canonical layout", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue()}
+          presentation="task"
+          treeGuides={2}
+          chevronInGuide
+          leadingControl={<button type="button">Expand</button>}
+        />,
+      );
+    });
+
+    expect(container.querySelectorAll('[data-slot="task-row-tree-guide"]')).toHaveLength(2);
+    expect(container.querySelector('[data-slot="task-row-leading"]')?.textContent).toContain("Expand");
+    for (const connector of container.querySelectorAll('[data-slot="task-row-tree-connector"]')) {
+      expect(connector.className).toContain("left-7");
+    }
+    act(() => root.unmount());
   });
 
   it("keeps editable row controls keyboard-accessible and outside the navigation link", () => {
@@ -503,6 +662,19 @@ describe("IssueRow", () => {
     });
   });
 
+  it("never renders a horizontal divider in canonical task presentation", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} presentation="task" showDivider />);
+    });
+
+    const row = container.querySelector('[data-slot="task-row"]');
+    expect(row?.className).not.toContain("border-b");
+
+    act(() => root.unmount());
+  });
+
   it("keeps the hover wash on the row root while the overlay link stays a bare positioning layer", () => {
     const root = createRoot(container);
 
@@ -521,6 +693,142 @@ describe("IssueRow", () => {
 
     act(() => {
       root.unmount();
+    });
+  });
+
+  describe("recovery chip liveness", () => {
+    const NOW = new Date("2026-08-18T12:00:00.000Z");
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function at(offsetMs: number) {
+      return new Date(NOW.getTime() + offsetMs).toISOString();
+    }
+
+    function recoveryIssue(retryAt: string, scheduledRetry: Issue["scheduledRetry"] = null): Issue {
+      return createIssue({
+        status: "in_progress",
+        scheduledRetry,
+        activeRecoveryAction: {
+          id: "action-1",
+          companyId: "company-1",
+          sourceIssueId: "issue-1",
+          recoveryIssueId: null,
+          kind: "deliberate_wait_without_target",
+          status: "active",
+          ownerType: "agent",
+          ownerAgentId: "agent-owner",
+          ownerUserId: null,
+          previousOwnerAgentId: "agent-owner",
+          returnOwnerAgentId: "agent-owner",
+          cause: "deliberate_wait_without_target",
+          fingerprint: "fp",
+          evidence: {},
+          nextAction: "Record a real next step.",
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            retryAgentId: "agent-owner",
+            attempt: 1,
+            maxAttempts: 5,
+            retryAt,
+            scheduledRunId: "run-2",
+          },
+          monitorPolicy: null,
+          attemptCount: 1,
+          maxAttempts: 5,
+          timeoutAt: retryAt,
+          lastAttemptAt: retryAt,
+          outcome: null,
+          resolutionNote: null,
+          resolvedAt: null,
+          createdAt: at(-10 * 60_000),
+          updatedAt: at(-10 * 60_000),
+        },
+      });
+    }
+
+    function renderChip(issue: Issue): HTMLElement | null {
+      const root = createRoot(container);
+      act(() => {
+        root.render(<IssueRow issue={issue} />);
+      });
+      const chip = container.querySelector<HTMLElement>(
+        "[data-testid='issue-row-recovery-indicator']",
+      );
+      const snapshot = chip?.cloneNode(true) as HTMLElement | null;
+      act(() => {
+        root.unmount();
+      });
+      return snapshot;
+    }
+
+    it("stays calm while the next attempt is still ahead", () => {
+      const chip = renderChip(recoveryIssue(at(3 * 60_000)));
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.getAttribute("aria-label")).toContain("next try in 3m");
+    });
+
+    it("warns once the stored attempt came due and never ran", () => {
+      // The inbox chip must reach the same verdict as the source card, so a parent scanning
+      // the inbox is not told recovery is running when nothing is.
+      const chip = renderChip(recoveryIssue(at(-5 * 60_000)));
+      expect(chip?.getAttribute("data-recovery-state")).toBe("needed");
+      const label = chip?.getAttribute("aria-label") ?? "";
+      expect(label).toContain("Recovery needed");
+      expect(label).toContain("retry missed 5m ago");
+      expect(label).not.toContain("next try");
+    });
+
+    it.each(["task", "legacy"] as const)(
+      "places the recovery chip immediately after the title in %s list rows",
+      (presentation) => {
+        const root = createRoot(container);
+        act(() => {
+          root.render(
+            <IssueRow
+              issue={recoveryIssue(at(-5 * 60_000))}
+              presentation={presentation}
+            />,
+          );
+        });
+
+        const titleCluster = container.querySelector('[data-slot="task-row-title-cluster"]');
+        const title = titleCluster?.querySelector('[data-slot="task-row-title"]');
+        const chip = titleCluster?.querySelector('[data-testid="issue-row-recovery-indicator"]');
+        expect(titleCluster).not.toBeNull();
+        expect(title).not.toBeNull();
+        expect(chip).not.toBeNull();
+        if (!title || !chip) throw new Error("Expected the title and recovery chip");
+        expect(title.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+        act(() => {
+          root.unmount();
+        });
+      },
+    );
+
+    it("stays calm when the overdue attempt is a verified live run", () => {
+      const chip = renderChip(
+        recoveryIssue(at(-5 * 60_000), {
+          runId: "run-2",
+          status: "running",
+          agentId: "agent-owner",
+          agentName: "CodexCoder",
+          retryOfRunId: null,
+          scheduledRetryAt: at(-5 * 60_000),
+          scheduledRetryAttempt: 1,
+          scheduledRetryReason: null,
+        }),
+      );
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.getAttribute("aria-label")).toContain("attempt running now");
     });
   });
 });

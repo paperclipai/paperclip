@@ -288,15 +288,15 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     });
   });
 
-  it("shows the linked project workspace summary above tasks", async () => {
+  it("shows a summary scoped to the execution workspace above tasks", async () => {
     mockExecutionWorkspacesApi.get.mockResolvedValue(workspace({ projectWorkspaceId: "project-workspace-1" }));
 
     await render();
 
     expect(mockSummarySlotCard).toHaveBeenCalledWith(expect.objectContaining({
       companyId: "company-1",
-      scopeKind: "project_workspace",
-      scopeId: "project-workspace-1",
+      scopeKind: "execution_workspace",
+      scopeId: "workspace-1",
       title: "Workspace summary",
     }));
     const summary = container.querySelector('[data-testid="summary-slot-card"]');
@@ -307,11 +307,15 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     expect(summary.compareDocumentPosition(issues) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
-  it("does not show a project workspace summary for standalone execution workspaces", async () => {
+  it("shows an isolated summary for standalone execution workspaces", async () => {
     await render();
 
-    expect(mockSummarySlotCard).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="summary-slot-card"]')).toBeNull();
+    expect(mockSummarySlotCard).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      scopeKind: "execution_workspace",
+      scopeId: "workspace-1",
+    }));
+    expect(container.querySelector('[data-testid="summary-slot-card"]')).not.toBeNull();
   });
 
   it("does not mount plugin slots scoped to other entity types", async () => {

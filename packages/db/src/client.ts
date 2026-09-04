@@ -14,6 +14,81 @@ function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
 }
 
+type RegisteredPostgresClient = ReturnType<typeof postgres>;
+
+/**
+ * Derives a registry key from a connection URL's host and port only. We must
+ * not retain or log the full URL, because it carries credentials.
+ */
+function hostPortKey(url: string): string {
+  const parsed = new URL(url);
+  return `${parsed.hostname}:${parsed.port || "5432"}`;
+}
+
+/**
+ * Same as `hostPortKey`, but returns `null` instead of throwing when the URL
+ * does not parse. `postgres(url)` tolerates a value `new URL()` rejects (an
+ * empty string falls back to the `PG*` environment variables), so `createDb`
+ * must tolerate it too: skip the registry entry and let the driver decide
+ * the outcome, instead of throwing an error the driver itself would not.
+ */
+function hostPortKeyOrNull(url: string): string | null {
+  try {
+    return hostPortKey(url);
+  } catch (error) {
+    if (error instanceof TypeError && (error as NodeJS.ErrnoException).code === "ERR_INVALID_URL") return null;
+    throw error;
+  }
+}
+
+// Tracks every client `createDb` hands out, keyed by host and port, so a test
+// fixture can end them before it stops the Postgres cluster they point at. A
+// `WeakRef` plus `FinalizationRegistry` means a long-lived process (a real
+// server) retains nothing extra: an unreferenced client is pruned on its own.
+const clientsByHostPort = new Map<string, Set<WeakRef<RegisteredPostgresClient>>>();
+const clientFinalizer = new FinalizationRegistry<{ hostPortKey: string; ref: WeakRef<RegisteredPostgresClient> }>(
+  ({ hostPortKey, ref }) => {
+    const refs = clientsByHostPort.get(hostPortKey);
+    if (!refs) return;
+    refs.delete(ref);
+    if (refs.size === 0) clientsByHostPort.delete(hostPortKey);
+  },
+);
+
+function registerClient(key: string, client: RegisteredPostgresClient): void {
+  const ref = new WeakRef(client);
+  let refs = clientsByHostPort.get(key);
+  if (!refs) {
+    refs = new Set();
+    clientsByHostPort.set(key, refs);
+  }
+  refs.add(ref);
+  clientFinalizer.register(client, { hostPortKey: key, ref }, ref);
+}
+
+/**
+ * Ends every live client `createDb` handed out for the given URL's host and
+ * port, then forgets them. Call this before stopping a Postgres cluster: a
+ * client that outlives the cluster it points at can crash the process (a
+ * reserved connection's deferred write firing after the socket is gone).
+ * Swallows individual `end()` errors so one bad client cannot block the rest.
+ */
+export async function closeRegisteredClients(url: string): Promise<void> {
+  const key = hostPortKey(url);
+  const refs = clientsByHostPort.get(key);
+  if (!refs) return;
+
+  clientsByHostPort.delete(key);
+  const clients: RegisteredPostgresClient[] = [];
+  for (const ref of refs) {
+    clientFinalizer.unregister(ref);
+    const client = ref.deref();
+    if (client) clients.push(client);
+  }
+
+  await Promise.all(clients.map((client) => client.end({ timeout: 1 }).catch(() => {})));
+}
+
 function isSafeIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
@@ -35,13 +110,20 @@ function splitMigrationStatements(content: string): string[] {
 }
 
 export type MigrationState =
-  | { status: "upToDate"; tableCount: number; availableMigrations: string[]; appliedMigrations: string[] }
+  | {
+      status: "upToDate";
+      tableCount: number;
+      availableMigrations: string[];
+      appliedMigrations: string[];
+      journalEntryCount: number;
+    }
   | {
       status: "needsMigrations";
       tableCount: number;
       availableMigrations: string[];
       appliedMigrations: string[];
       pendingMigrations: string[];
+      journalEntryCount: number;
       reason: "no-migration-journal-empty-db" | "no-migration-journal-non-empty-db" | "pending-migrations";
     };
 
@@ -111,6 +193,8 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = options ?? databaseClientOptionsFromEnv();
   const sql = postgres(url, postgresJsOptions(resolved));
+  const key = hostPortKeyOrNull(url);
+  if (key) registerClient(key, sql);
   return drizzlePg(sql, { schema });
 }
 
@@ -404,6 +488,25 @@ async function columnExists(
   return rows[0]?.exists ?? false;
 }
 
+async function columnHasDataType(
+  sql: ReturnType<typeof postgres>,
+  tableName: string,
+  columnName: string,
+  dataType: string,
+): Promise<boolean> {
+  const rows = await sql<{ dataType: string; udtName: string }[]>`
+    SELECT data_type AS "dataType", udt_name AS "udtName"
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = ${tableName}
+      AND column_name = ${columnName}
+  `;
+  const expected = dataType.toLowerCase();
+  return rows.some((row) => (
+    row.dataType.toLowerCase() === expected || row.udtName.toLowerCase() === expected
+  ));
+}
+
 async function indexExists(
   sql: ReturnType<typeof postgres>,
   indexName: string,
@@ -437,11 +540,79 @@ async function constraintExists(
   return rows[0]?.exists ?? false;
 }
 
+async function functionExists(
+  sql: ReturnType<typeof postgres>,
+  functionName: string,
+): Promise<boolean> {
+  const rows = await sql<{ exists: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public'
+        AND p.proname = ${functionName}
+    ) AS exists
+  `;
+  return rows[0]?.exists ?? false;
+}
+
+async function triggerExists(
+  sql: ReturnType<typeof postgres>,
+  triggerName: string,
+): Promise<boolean> {
+  const rows = await sql<{ exists: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND t.tgname = ${triggerName}
+        AND NOT t.tgisinternal
+    ) AS exists
+  `;
+  return rows[0]?.exists ?? false;
+}
+
+async function heartbeatEventSequencesAreUnique(
+  sql: ReturnType<typeof postgres>,
+): Promise<boolean> {
+  const rows = await sql<{ unique: boolean }[]>`
+    SELECT NOT EXISTS (
+      SELECT 1
+      FROM heartbeat_run_events
+      GROUP BY run_id, seq
+      HAVING count(*) > 1
+    ) AS unique
+  `;
+  return rows[0]?.unique ?? false;
+}
+
+async function heartbeatNextEventSequencesAreCurrent(
+  sql: ReturnType<typeof postgres>,
+): Promise<boolean> {
+  const rows = await sql<{ current: boolean }[]>`
+    SELECT NOT EXISTS (
+      SELECT 1
+      FROM heartbeat_runs run
+      WHERE run.next_event_seq IS DISTINCT FROM COALESCE((
+        SELECT max(event.seq) + 1
+        FROM heartbeat_run_events event
+        WHERE event.run_id = run.id
+      ), 1)
+    ) AS current
+  `;
+  return rows[0]?.current ?? false;
+}
+
 async function migrationStatementAlreadyApplied(
   sql: ReturnType<typeof postgres>,
   statement: string,
 ): Promise<boolean> {
-  const normalized = statement.replace(/\s+/g, " ").trim();
+  const normalized = statement
+    .replace(/^\s*--.*$/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
   const createTableMatch = normalized.match(/^CREATE TABLE(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createTableMatch) {
@@ -455,6 +626,18 @@ async function migrationStatementAlreadyApplied(
     return columnExists(sql, addColumnMatch[1], addColumnMatch[2]);
   }
 
+  const alterColumnTypeMatch = normalized.match(
+    /^ALTER TABLE "([^"]+)" ALTER COLUMN "([^"]+)" SET DATA TYPE ([A-Za-z0-9_]+)/i,
+  );
+  if (alterColumnTypeMatch) {
+    return columnHasDataType(
+      sql,
+      alterColumnTypeMatch[1],
+      alterColumnTypeMatch[2],
+      alterColumnTypeMatch[3],
+    );
+  }
+
   const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createIndexMatch) {
     return indexExists(sql, createIndexMatch[1]);
@@ -463,6 +646,36 @@ async function migrationStatementAlreadyApplied(
   const addConstraintMatch = normalized.match(/^ALTER TABLE "([^"]+)" ADD CONSTRAINT "([^"]+)"/i);
   if (addConstraintMatch) {
     return constraintExists(sql, addConstraintMatch[2]);
+  }
+
+  const createFunctionMatch = normalized.match(
+    /^CREATE OR REPLACE FUNCTION "?([A-Za-z_][A-Za-z0-9_]*)"?\s*\(/i,
+  );
+  if (createFunctionMatch) {
+    return functionExists(sql, createFunctionMatch[1]);
+  }
+
+  const createTriggerMatch = normalized.match(
+    /^CREATE TRIGGER "?([A-Za-z_][A-Za-z0-9_]*)"?/i,
+  );
+  if (createTriggerMatch) {
+    return triggerExists(sql, createTriggerMatch[1]);
+  }
+
+  // These native-runner repairs have persistent postconditions. Verify them
+  // instead of replaying them when a restored database is missing only the
+  // migration-history row.
+  if (
+    normalized.startsWith("WITH ranked AS (")
+    && normalized.includes('UPDATE "heartbeat_run_events" AS event')
+  ) {
+    return heartbeatEventSequencesAreUnique(sql);
+  }
+  if (
+    normalized.startsWith('UPDATE "heartbeat_runs" AS run')
+    && normalized.includes('SET "next_event_seq" = COALESCE')
+  ) {
+    return heartbeatNextEventSequencesAreCurrent(sql);
   }
 
   // If we cannot reason about a statement safely, require manual migration.
@@ -683,6 +896,7 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
           availableMigrations,
           appliedMigrations: [],
           pendingMigrations: availableMigrations,
+          journalEntryCount: 0,
           reason: "no-migration-journal-non-empty-db",
         };
       }
@@ -693,10 +907,16 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
         availableMigrations,
         appliedMigrations: [],
         pendingMigrations: availableMigrations,
+        journalEntryCount: 0,
         reason: "no-migration-journal-empty-db",
       };
     }
 
+    const qualifiedMigrationTable = `${quoteIdentifier(migrationTableSchema)}.${quoteIdentifier(DRIZZLE_MIGRATIONS_TABLE)}`;
+    const journalCountRows = await sql.unsafe<{ count: number }[]>(
+      `SELECT count(*)::int AS count FROM ${qualifiedMigrationTable}`,
+    );
+    const journalEntryCount = journalCountRows[0]?.count ?? 0;
     const appliedMigrations = await loadAppliedMigrations(sql, migrationTableSchema, availableMigrations);
     const pendingMigrations = availableMigrations.filter((name) => !appliedMigrations.includes(name));
     if (pendingMigrations.length === 0) {
@@ -705,6 +925,7 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
         tableCount,
         availableMigrations,
         appliedMigrations,
+        journalEntryCount,
       };
     }
 
@@ -714,6 +935,7 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
       availableMigrations,
       appliedMigrations,
       pendingMigrations,
+      journalEntryCount,
       reason: "pending-migrations",
     };
   } finally {

@@ -149,10 +149,9 @@ describeEmbeddedPostgres("LOOA-700 recovery doomed-wake backoff", () => {
     expect(actionRows).toHaveLength(1);
     expect(actionRows[0]).toMatchObject({ cause: "workspace_validation_failed" });
 
-    // The only wake enqueued is the recovery-owner escalation wake, not a continuation retry.
-    expect(enqueueWakeup.mock.calls[0]?.[1]?.payload).toMatchObject({
-      recoveryCause: "workspace_validation_failed",
-    });
+    // Board-escalation policy (no takeover, #11961): the escalation must not wake
+    // any agent — neither a continuation retry nor a recovery-owner takeover.
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("Storm 1: leaves the issue alone once a newer non-terminal run supersedes the workspace failure", async () => {

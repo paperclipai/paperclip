@@ -21,6 +21,11 @@ const SENSITIVE_KEYS = new Set<string>([
   "password_confirm",
   "confirmpassword",
   "confirm_password",
+  // Secret creation/update bodies use a generic `value` field. Failure logs
+  // must prefer losing that diagnostic value over persisting credential
+  // material. `token` is likewise ambiguous but frequently credential-bearing.
+  "value",
+  "token",
   "secret",
   "client_secret",
   "clientsecret",
@@ -39,6 +44,26 @@ const SENSITIVE_KEYS = new Set<string>([
   "sessiontoken",
   "private_key",
   "privatekey",
+  "paperclip_capability",
+  // The Claude setup-token login fields. `browserCode` carries the one-time
+  // sign-in code and `authorization_code` carries the OAuth code; neither may
+  // reach a log line.
+  "browsercode",
+  "authorization_code",
+  "authorizationcode",
+  // The workspace login handoff ticket (PAP-17572). It is a signed bearer
+  // credential carried as a query parameter, so it must never reach a log line
+  // even though the exchange itself answers 302.
+  "ticket",
+  // Not secrets Paperclip holds, but attacker-authored prose: an OAuth provider
+  // controls `error_description` / `error_uri` on the callback query string, and
+  // `customProps` copies the whole query into 4xx log lines. Paperclip maps the
+  // `error` code to its own copy instead of reflecting these, so they have no
+  // debugging value here either (PAP-17108).
+  "error_description",
+  "errordescription",
+  "error_uri",
+  "erroruri",
 ]);
 
 const MAX_DEPTH = 6;
@@ -53,6 +78,11 @@ const URLISH_KEYS = new Set<string>([
   "sourceurl",
   "uri",
   "url",
+  // The Claude setup-token login URL. A structured `loginUrl` that reaches a log
+  // sink keeps its origin and path only; the OAuth query, fragment, and any
+  // credentials are stripped (SR-5 backstop).
+  "loginurl",
+  "login_url",
 ]);
 
 function isSensitiveKey(key: string): boolean {
@@ -63,17 +93,20 @@ function isUrlishKey(key: string): boolean {
   return URLISH_KEYS.has(key.toLowerCase());
 }
 
-function stripSecretBearingUrlParts(value: string): string {
+export function stripSecretBearingUrlParts(value: string): string {
+  const suffixStart = value.search(/[?#]/);
+  const withoutQueryOrFragment = suffixStart === -1 ? value : value.slice(0, suffixStart);
+
   try {
-    const url = new URL(value);
-    if (!url.username && !url.password && !url.search && !url.hash) return value;
+    const url = new URL(withoutQueryOrFragment);
+    if (!url.username && !url.password && suffixStart === -1) return value;
     url.username = "";
     url.password = "";
-    url.search = "";
-    url.hash = "";
     return url.toString();
   } catch {
-    return value;
+    // Request URLs are normally origin-form paths rather than absolute URLs.
+    // They still need the same query/fragment policy as URL-valued payloads.
+    return withoutQueryOrFragment;
   }
 }
 

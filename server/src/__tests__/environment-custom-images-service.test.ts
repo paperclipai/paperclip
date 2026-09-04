@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import {
+  activityLog,
   companies,
   createDb,
   environmentCustomImageSetupSessions,
@@ -65,7 +66,16 @@ function pluginManifest() {
   } as const;
 }
 
-function createWorkerManager() {
+const ALL_CUSTOM_IMAGE_WORKER_METHODS = [
+  "environmentStartInteractiveSetup",
+  "environmentGetInteractiveSetup",
+  "environmentCancelInteractiveSetup",
+  "environmentCaptureTemplate",
+  "environmentDeleteTemplate",
+] as const;
+
+function createWorkerManager(options?: { workerMethods?: readonly string[] }) {
+  const supportedMethods = options?.workerMethods ?? ALL_CUSTOM_IMAGE_WORKER_METHODS;
   const call = vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
     if (method === "environmentStartInteractiveSetup") {
       return {
@@ -133,6 +143,7 @@ function createWorkerManager() {
   return {
     call,
     isRunning: vi.fn(() => true),
+    getWorker: vi.fn(() => ({ supportedMethods: [...supportedMethods] })),
   } as unknown as PluginWorkerManager & { call: typeof call };
 }
 
@@ -388,6 +399,99 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(cleanup).toMatchObject({ scanned: 1, timedOut: 1, failed: 0 });
     const timedOut = await service.getSessionById(expired.session.id);
     expect(timedOut?.status).toBe("timed_out");
+  });
+
+  it("rejects interactive setup when the provider declares it but the worker omits a setup method", async () => {
+    const { environmentId } = await seed();
+    // The manifest declares supportsInteractiveSetup, but the worker reports
+    // none of the three setup methods. The gate must name the first missing one.
+    const workerManager = createWorkerManager({
+      workerMethods: ["environmentCaptureTemplate", "environmentDeleteTemplate"],
+    });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    await expect(service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    })).rejects.toThrow('does not report the "environmentStartInteractiveSetup" method');
+    expect(workerManager.call).not.toHaveBeenCalled();
+  });
+
+  it("rejects template capture when the provider declares it but the worker omits the capture method", async () => {
+    const { environmentId } = await seed();
+    // The worker reports every setup method, so the session starts and
+    // finishes the interactive part. It omits environmentCaptureTemplate, so
+    // finishing the session must fail at the capture gate.
+    const workerManager = createWorkerManager({
+      workerMethods: [
+        "environmentStartInteractiveSetup",
+        "environmentGetInteractiveSetup",
+        "environmentCancelInteractiveSetup",
+        "environmentDeleteTemplate",
+      ],
+    });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    await expect(service.finishSetupSession({ sessionId: started.session.id }))
+      .rejects.toThrow('does not report the "environmentCaptureTemplate" method');
+  });
+
+  it("rejects template deletion when the provider declares it but the worker omits the delete method", async () => {
+    const { environmentId } = await seed();
+    // The worker reports every setup and capture method but omits
+    // environmentDeleteTemplate, so a delete-on-disable request must fail at
+    // the delete gate after the template is already captured.
+    const workerManager = createWorkerManager({
+      workerMethods: [
+        "environmentStartInteractiveSetup",
+        "environmentGetInteractiveSetup",
+        "environmentCancelInteractiveSetup",
+        "environmentCaptureTemplate",
+      ],
+    });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    await service.finishSetupSession({ sessionId: started.session.id });
+
+    await expect(service.disableTemplate({
+      environmentId,
+      deleteProviderTemplate: true,
+    })).rejects.toThrow('does not report the "environmentDeleteTemplate" method');
+  });
+
+  it("passes every gate when the provider declares each flag and the worker reports every matching method", async () => {
+    const { environmentId } = await seed();
+    // The default worker manager reports all five methods, matching every
+    // flag the manifest declares. Every gate must pass.
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    expect(promoted.template.status).toBe("active");
+
+    const disabled = await service.disableTemplate({
+      environmentId,
+      deleteProviderTemplate: true,
+    });
+    expect(disabled.status).toBe("revoked");
+    expect(workerManager.call).toHaveBeenCalledWith(
+      expect.any(String),
+      "environmentDeleteTemplate",
+      expect.any(Object),
+      undefined,
+    );
   });
 
   it("rejects templates from another environment", async () => {
@@ -864,5 +968,588 @@ describeEmbeddedPostgres("environmentCustomImageService reconciliation", () => {
     const outOfSync = await service.getOverview({ environmentId });
     expect(outOfSync.activeTemplate).not.toBeNull();
     expect(outOfSync.activeTemplateMatchesConfig).toBe(false);
+    // A boot-source field changed, so the overview attributes the drift and
+    // names the field with its `from`/`to` values.
+    expect(outOfSync.activeTemplateDrift?.classification).toBe("boot_source_drift");
+    expect(outOfSync.activeTemplateDrift?.driftedPaths).toEqual(
+      expect.arrayContaining([{ path: "image", from: "fake:base", to: "fake:other" }]),
+    );
+  });
+
+  it("attributes a knob-only overview change without naming a boot-source field", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    await service.finishSetupSession({ sessionId: started.session.id });
+
+    // A non-boot-relevant field changes. The fingerprint no longer matches, but
+    // every boot-source value still matches, so the drift is knob-only.
+    await db.update(environments)
+      .set({ config: { provider: "fake-plugin", image: "fake:base", reuseLease: false, region: "eu" } })
+      .where(eq(environments.id, environmentId));
+    const overview = await service.getOverview({ environmentId });
+    expect(overview.activeTemplateMatchesConfig).toBe(false);
+    expect(overview.activeTemplateDrift?.classification).toBe("knob_only");
+    expect(overview.activeTemplateDrift?.driftedPaths).toEqual([]);
+  });
+
+  it("attributes an unclassified overview drift for a legacy template with no snapshot", async () => {
+    const { environmentId } = await seed();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    // A legacy template carries no boot-relevant snapshot. The overview must
+    // fail closed and give no false "safe to relink" signal.
+    await db.insert(environmentCustomImageTemplates).values({
+      environmentId,
+      provider: "fake-plugin",
+      templateKind: "snapshot",
+      templateRef: "snapshot-legacy",
+      sourceEnvironmentConfigFingerprint: "stale-fingerprint",
+      status: "active",
+      metadata: { runtimeConfigBinding: { field: "customTemplate", unsetFields: ["image"] } },
+    });
+
+    const overview = await service.getOverview({ environmentId });
+    expect(overview.activeTemplate).not.toBeNull();
+    expect(overview.activeTemplateDrift?.classification).toBe("unclassified");
+    expect(overview.activeTemplateDrift?.driftedPaths).toEqual([]);
+  });
+});
+
+function secretPluginManifest() {
+  return {
+    id: "paperclip.fake-secret-sandbox-provider",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Fake Secret Sandbox Provider",
+    categories: ["automation"],
+    capabilities: ["environment.drivers.register"],
+    entrypoints: { worker: "./dist/worker.js" },
+    environmentDrivers: [
+      {
+        driverKey: "fake-secret-plugin",
+        kind: "sandbox_provider",
+        displayName: "Fake Secret Sandbox Provider",
+        supportsInteractiveSetup: true,
+        interactiveSetupConnectionTypes: ["ssh"],
+        supportsTemplateCapture: true,
+        templateRefKind: "snapshot",
+        templateConfigBinding: { field: "customTemplate", unsetFields: ["image"] },
+        // apiUrl overlaps a secret exactly; auth.token is a child of secret
+        // `auth`; credentials is a parent of secret `credentials.secret`.
+        templateIdentityPaths: ["apiUrl", "auth.token", "credentials"],
+        supportsTemplateDelete: true,
+        configSchema: {
+          type: "object",
+          properties: {
+            apiUrl: { type: "string", format: "secret-ref" },
+            auth: { type: "string", format: "secret-ref" },
+            credentials: {
+              type: "object",
+              properties: { secret: { type: "string", format: "secret-ref" } },
+            },
+          },
+        },
+      },
+    ],
+  } as const;
+}
+
+function invalidIdentityPluginManifest() {
+  return {
+    id: "paperclip.fake-invalid-sandbox-provider",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Fake Invalid Identity Sandbox Provider",
+    categories: ["automation"],
+    capabilities: ["environment.drivers.register"],
+    entrypoints: { worker: "./dist/worker.js" },
+    environmentDrivers: [
+      {
+        driverKey: "fake-invalid-plugin",
+        kind: "sandbox_provider",
+        displayName: "Fake Invalid Identity Sandbox Provider",
+        supportsInteractiveSetup: true,
+        interactiveSetupConnectionTypes: ["ssh"],
+        supportsTemplateCapture: true,
+        templateRefKind: "snapshot",
+        templateConfigBinding: { field: "customTemplate", unsetFields: ["image"] },
+        // A valid path plus two that must fail canonicalization.
+        templateIdentityPaths: ["apiUrl", "bad path!", "a..b"],
+        supportsTemplateDelete: true,
+        configSchema: { type: "object" },
+      },
+    ],
+  } as const;
+}
+
+function prototypeKeyIdentityPluginManifest() {
+  return {
+    id: "paperclip.fake-prototype-key-sandbox-provider",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Fake Prototype Key Sandbox Provider",
+    categories: ["automation"],
+    capabilities: ["environment.drivers.register"],
+    entrypoints: { worker: "./dist/worker.js" },
+    environmentDrivers: [
+      {
+        driverKey: "fake-prototype-key-plugin",
+        kind: "sandbox_provider",
+        displayName: "Fake Prototype Key Sandbox Provider",
+        supportsInteractiveSetup: true,
+        interactiveSetupConnectionTypes: ["ssh"],
+        supportsTemplateCapture: true,
+        templateRefKind: "snapshot",
+        templateConfigBinding: { field: "customTemplate", unsetFields: ["image"] },
+        // Every prototype key has an identifier shape but names no own field.
+        // Each must fail canonicalization and record only the marker.
+        templateIdentityPaths: ["__proto__", "constructor", "prototype", "nested.__proto__"],
+        supportsTemplateDelete: true,
+        configSchema: { type: "object" },
+      },
+    ],
+  } as const;
+}
+
+describeEmbeddedPostgres("environmentCustomImageService relink", () => {
+  let stopDb: (() => Promise<void>) | null = null;
+  let db!: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    const started = await startEmbeddedPostgresTestDatabase("environment-custom-images-relink");
+    stopDb = started.stop;
+    db = createDb(started.connectionString);
+  });
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(environmentCustomImageSetupSessions);
+    await db.delete(environmentCustomImageTemplates);
+    await db.delete(plugins);
+    await db.delete(environments);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await stopDb?.();
+  });
+
+  async function seed(opts?: {
+    manifest?: ReturnType<typeof pluginManifest> | ReturnType<typeof secretPluginManifest> | ReturnType<typeof invalidIdentityPluginManifest> | ReturnType<typeof prototypeKeyIdentityPluginManifest>;
+    config?: Record<string, unknown>;
+  }) {
+    const manifest = opts?.manifest ?? pluginManifest();
+    const provider = manifest.environmentDrivers[0]!.driverKey;
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    await db.insert(companies).values(
+      { id: companyId, name: "Acme", issuePrefix: `A${companyId.slice(0, 4)}` },
+    );
+    await db.insert(environments).values({
+      id: environmentId,
+      name: `Fake ${environmentId.slice(0, 8)}`,
+      driver: "sandbox",
+      status: "active",
+      config: opts?.config ?? { provider, image: "fake:base", reuseLease: false },
+      envVars: {},
+    });
+    await db.insert(plugins).values({
+      pluginKey: manifest.id,
+      packageName: `paperclip-plugin-${provider}`,
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: manifest,
+      status: "ready",
+    });
+    return { companyId, environmentId, provider };
+  }
+
+  const relinkActor = {
+    actorType: "user" as const,
+    actorId: "user-1",
+    agentId: null,
+    runId: null,
+    agentApiKeyId: null,
+  };
+
+  async function activeTemplateRow(environmentId: string) {
+    return db
+      .select()
+      .from(environmentCustomImageTemplates)
+      .where(eq(environmentCustomImageTemplates.environmentId, environmentId))
+      .orderBy(desc(environmentCustomImageTemplates.createdAt))
+      .then((rows) => rows[0]!);
+  }
+
+  async function relinkActivityRows(environmentId: string) {
+    return db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, environmentId));
+  }
+
+  it("keeps secret-ref values out of metadata, the response, and activity, and relinks with the flag", async () => {
+    const config = {
+      provider: "fake-secret-plugin",
+      image: "fake:base",
+      apiUrl: "https://secret-endpoint.example",
+      auth: "auth-secret-value",
+      credentials: { secret: "cred-secret-value", region: "eu" },
+      reuseLease: false,
+    };
+    const { companyId, environmentId } = await seed({ manifest: secretPluginManifest(), config });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    // The public template response never carries the server-internal snapshot.
+    expect((promoted.template.metadata as Record<string, unknown>).bootRelevantConfig).toBeUndefined();
+
+    // The persisted snapshot lives in the row. Every secret-ref overlap is
+    // excluded with no value (exact, child, parent).
+    const persistedRow = await activeTemplateRow(environmentId);
+    const boot = (persistedRow.metadata as Record<string, unknown>).bootRelevantConfig as {
+      values: Record<string, unknown>;
+      excludedPaths: string[];
+    };
+    expect(boot.excludedPaths).toEqual(expect.arrayContaining(["apiUrl", "auth.token", "credentials"]));
+    expect(Object.keys(boot.values)).not.toContain("apiUrl");
+    expect(Object.keys(boot.values)).not.toContain("auth.token");
+    expect(Object.keys(boot.values)).not.toContain("credentials");
+    // Neither the persisted snapshot nor the response leaks a secret value.
+    for (const metadataJson of [
+      JSON.stringify(persistedRow.metadata),
+      JSON.stringify(promoted.template.metadata),
+    ]) {
+      expect(metadataJson).not.toContain("secret-endpoint.example");
+      expect(metadataJson).not.toContain("auth-secret-value");
+      expect(metadataJson).not.toContain("cred-secret-value");
+    }
+
+    // An excluded path forces the fail-closed unclassified result: the flag is required.
+    await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
+      .rejects.toMatchObject({ status: 409 });
+    const relinked = await service.relinkActiveTemplate({
+      environmentId,
+      confirmBootSourceDrift: true,
+      actor: relinkActor,
+      companyId,
+    });
+    expect(relinked.classification).toBe("unclassified");
+    const responseJson = JSON.stringify(relinked);
+    expect(responseJson).not.toContain("secret-endpoint.example");
+    expect(responseJson).not.toContain("auth-secret-value");
+    expect(responseJson).not.toContain("cred-secret-value");
+
+    const activities = await relinkActivityRows(environmentId);
+    const relinkActivity = activities.find((row) => row.action === "environment.custom_image_template.relinked");
+    expect(relinkActivity).toBeDefined();
+    const activityJson = JSON.stringify(relinkActivity!.details);
+    expect(activityJson).not.toContain("secret-endpoint.example");
+    expect(activityJson).not.toContain("auth-secret-value");
+    expect(activityJson).not.toContain("cred-secret-value");
+    // Drift detail carries path names only, never a fingerprint value.
+    expect(activityJson).not.toContain(promoted.template.sourceEnvironmentConfigFingerprint);
+  });
+
+  it("keeps secret values and the fingerprint out of the overview payload", async () => {
+    const config = {
+      provider: "fake-secret-plugin",
+      image: "fake:base",
+      apiUrl: "https://secret-endpoint.example",
+      auth: "auth-secret-value",
+      credentials: { secret: "cred-secret-value", region: "eu" },
+      reuseLease: false,
+    };
+    const { environmentId } = await seed({ manifest: secretPluginManifest(), config });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    // A boot-source field changes, so the overview reports drift and carries the
+    // drifted paths. The payload must never leak a secret value or a fingerprint.
+    await db.update(environments)
+      .set({ config: { ...config, image: "fake:other" } })
+      .where(eq(environments.id, environmentId));
+    const overview = await service.getOverview({ environmentId });
+    // An excluded secret-ref path forces the fail-closed unclassified result.
+    expect(overview.activeTemplateDrift?.classification).toBe("unclassified");
+    // The full overview never leaks a secret value, and the server-internal
+    // snapshot never reaches the template response.
+    const overviewJson = JSON.stringify(overview);
+    expect(overviewJson).not.toContain("secret-endpoint.example");
+    expect(overviewJson).not.toContain("auth-secret-value");
+    expect(overviewJson).not.toContain("cred-secret-value");
+    expect(overviewJson).not.toContain("bootRelevantConfig");
+    // The drift attribution carries path names and non-secret values only, never
+    // a fingerprint value.
+    const driftJson = JSON.stringify(overview.activeTemplateDrift);
+    expect(driftJson).not.toContain(promoted.template.sourceEnvironmentConfigFingerprint);
+    expect(driftJson).not.toContain("secret-endpoint.example");
+    expect(driftJson).not.toContain("auth-secret-value");
+    expect(driftJson).not.toContain("cred-secret-value");
+  });
+
+  it("fails closed for legacy templates without a boot-relevant snapshot", async () => {
+    const { companyId, environmentId } = await seed();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    await db.insert(environmentCustomImageTemplates).values({
+      environmentId,
+      provider: "fake-plugin",
+      templateKind: "snapshot",
+      templateRef: "snapshot-legacy",
+      sourceEnvironmentConfigFingerprint: "stale-fingerprint",
+      status: "active",
+      metadata: { runtimeConfigBinding: { field: "customTemplate", unsetFields: ["image"] } },
+    });
+
+    await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
+      .rejects.toMatchObject({ status: 409 });
+    const beforeRow = await activeTemplateRow(environmentId);
+    expect(beforeRow.sourceEnvironmentConfigFingerprint).toBe("stale-fingerprint");
+
+    const relinked = await service.relinkActiveTemplate({
+      environmentId,
+      confirmBootSourceDrift: true,
+      actor: relinkActor,
+      companyId,
+    });
+    expect(relinked.classification).toBe("unclassified");
+    const afterRow = await activeTemplateRow(environmentId);
+    expect(afterRow.sourceEnvironmentConfigFingerprint).not.toBe("stale-fingerprint");
+  });
+
+  it("relinks a knob-only change without a flag and keeps the fail-closed runtime gate", async () => {
+    const { companyId, environmentId } = await seed();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    // A non-boot field changes the fingerprint and detaches the template.
+    await db.update(environments)
+      .set({ config: { provider: "fake-plugin", image: "fake:base", reuseLease: false, region: "eu" } })
+      .where(eq(environments.id, environmentId));
+    const detached = await service.getOverview({ environmentId });
+    expect(detached.activeTemplateMatchesConfig).toBe(false);
+
+    const relinked = await service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId });
+    expect(relinked.classification).toBe("knob_only");
+    const afterRelink = await service.getOverview({ environmentId });
+    expect(afterRelink.activeTemplateMatchesConfig).toBe(true);
+    const resolved = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: environmentId,
+      driver: "sandbox",
+      config: { provider: "fake-plugin", image: "fake:base", reuseLease: false, region: "eu" },
+    }, { heartbeatRunId: randomUUID() });
+    expect(resolved.config).toMatchObject({ customTemplate: promoted.template.templateRef });
+
+    // The gate stays fail-closed: a base image change detaches again.
+    await db.update(environments)
+      .set({ config: { provider: "fake-plugin", image: "fake:other", reuseLease: false, region: "eu" } })
+      .where(eq(environments.id, environmentId));
+    const afterImageChange = await service.getOverview({ environmentId });
+    expect(afterImageChange.activeTemplateMatchesConfig).toBe(false);
+  });
+
+  it("requires the flag for boot-source drift and re-stamps only after confirmation", async () => {
+    const { companyId, environmentId } = await seed();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    await service.finishSetupSession({ sessionId: started.session.id });
+
+    await db.update(environments)
+      .set({ config: { provider: "fake-plugin", image: "fake:other", reuseLease: false } })
+      .where(eq(environments.id, environmentId));
+
+    await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
+      .rejects.toMatchObject({
+        status: 409,
+        details: {
+          classification: "boot_source_drift",
+          driftedPaths: expect.arrayContaining([
+            expect.objectContaining({ path: "image", from: "fake:base", to: "fake:other" }),
+          ]),
+        },
+      });
+
+    const relinked = await service.relinkActiveTemplate({
+      environmentId,
+      confirmBootSourceDrift: true,
+      actor: relinkActor,
+      companyId,
+    });
+    expect(relinked.classification).toBe("boot_source_drift");
+    const afterRelink = await service.getOverview({ environmentId });
+    expect(afterRelink.activeTemplateMatchesConfig).toBe(true);
+  });
+
+  it("re-stamps only the active template and never a superseded one", async () => {
+    const { companyId, environmentId } = await seed();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    const first = await service.finishSetupSession({
+      sessionId: (await service.startSetupSession({ environmentId, actor: { userId: "user-1" } })).session.id,
+    });
+    const second = await service.finishSetupSession({
+      sessionId: (await service.startSetupSession({ environmentId, actor: { userId: "user-1" } })).session.id,
+    });
+    // The first template is now superseded; the second is active.
+    const supersededBefore = await db
+      .select()
+      .from(environmentCustomImageTemplates)
+      .where(eq(environmentCustomImageTemplates.id, first.template.id))
+      .then((rows) => rows[0]!);
+
+    await db.update(environments)
+      .set({ config: { provider: "fake-plugin", image: "fake:base", reuseLease: false, region: "eu" } })
+      .where(eq(environments.id, environmentId));
+    const relinked = await service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId });
+    expect(relinked.template.id).toBe(second.template.id);
+
+    const supersededAfter = await db
+      .select()
+      .from(environmentCustomImageTemplates)
+      .where(eq(environmentCustomImageTemplates.id, first.template.id))
+      .then((rows) => rows[0]!);
+    expect(supersededAfter.status).toBe("superseded");
+    expect(supersededAfter.sourceEnvironmentConfigFingerprint)
+      .toBe(supersededBefore.sourceEnvironmentConfigFingerprint);
+  });
+
+  it("aborts with a conflict and writes no active template when none exists", async () => {
+    const { companyId, environmentId } = await seed();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
+      .rejects.toMatchObject({ status: 404 });
+    const activities = await relinkActivityRows(environmentId);
+    expect(activities.filter((row) => row.action === "environment.custom_image_template.relinked")).toHaveLength(0);
+  });
+
+  it("classifies an invalid driver identity path as unclassified without treating it as value-bearing", async () => {
+    const { companyId, environmentId } = await seed({ manifest: invalidIdentityPluginManifest(), config: {
+      provider: "fake-invalid-plugin",
+      image: "fake:base",
+      reuseLease: false,
+    } });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    expect((promoted.template.metadata as Record<string, unknown>).bootRelevantConfig).toBeUndefined();
+    const persistedRow = await activeTemplateRow(environmentId);
+    const boot = (persistedRow.metadata as Record<string, unknown>).bootRelevantConfig as {
+      values: Record<string, unknown>;
+      excludedPaths: string[];
+    };
+    expect(boot.excludedPaths).toContain("[unresolved-identity-path]");
+    // The raw invalid paths are never persisted and never value-bearing.
+    const metadataJson = JSON.stringify(persistedRow.metadata);
+    expect(metadataJson).not.toContain("bad path!");
+    expect(metadataJson).not.toContain("a..b");
+    expect(Object.keys(boot.values)).not.toContain("bad path!");
+    expect(Object.keys(boot.values)).not.toContain("a..b");
+
+    await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
+      .rejects.toMatchObject({ status: 409 });
+    const relinked = await service.relinkActiveTemplate({
+      environmentId,
+      confirmBootSourceDrift: true,
+      actor: relinkActor,
+      companyId,
+    });
+    expect(relinked.classification).toBe("unclassified");
+  });
+
+  it("fails closed for prototype-key driver identity paths and never persists them", async () => {
+    const { companyId, environmentId } = await seed({ manifest: prototypeKeyIdentityPluginManifest(), config: {
+      provider: "fake-prototype-key-plugin",
+      image: "fake:base",
+      reuseLease: false,
+    } });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    expect((promoted.template.metadata as Record<string, unknown>).bootRelevantConfig).toBeUndefined();
+    const persistedRow = await activeTemplateRow(environmentId);
+    const boot = (persistedRow.metadata as Record<string, unknown>).bootRelevantConfig as {
+      values: Record<string, unknown>;
+      excludedPaths: string[];
+    };
+    // Every prototype key fails canonicalization and records only the marker.
+    expect(boot.excludedPaths).toContain("[unresolved-identity-path]");
+    // No raw prototype-key path and no value for one persists in the snapshot.
+    expect(boot.excludedPaths).not.toContain("__proto__");
+    expect(boot.excludedPaths).not.toContain("constructor");
+    expect(boot.excludedPaths).not.toContain("prototype");
+    expect(Object.keys(boot.values)).not.toContain("__proto__");
+    expect(Object.keys(boot.values)).not.toContain("constructor");
+    expect(Object.keys(boot.values)).not.toContain("prototype");
+    // The prototype of the values map stays clean; no key leaked onto it.
+    expect(Object.getPrototypeOf(boot.values)).toBe(Object.prototype);
+    const metadataJson = JSON.stringify(persistedRow.metadata);
+    expect(metadataJson).not.toContain("__proto__");
+    expect(metadataJson).not.toContain("nested.__proto__");
+
+    // An unflagged relink fails closed with 409 and the unclassified class.
+    await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
+      .rejects.toMatchObject({ status: 409, details: { classification: "unclassified" } });
+    // A confirmed relink succeeds and writes the relinked activity entry.
+    const relinked = await service.relinkActiveTemplate({
+      environmentId,
+      confirmBootSourceDrift: true,
+      actor: relinkActor,
+      companyId,
+    });
+    expect(relinked.classification).toBe("unclassified");
+    const activities = await relinkActivityRows(environmentId);
+    const relinkActivity = activities.find((row) => row.action === "environment.custom_image_template.relinked");
+    expect(relinkActivity).toBeDefined();
+  });
+
+  it("fails closed when the provider adds a boot-relevant identity path after capture", async () => {
+    const { companyId, environmentId } = await seed({ config: {
+      provider: "fake-plugin",
+      image: "fake:base",
+      region: "us",
+      reuseLease: false,
+    } });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    await service.finishSetupSession({ sessionId: started.session.id });
+
+    // A knob-only region change detaches the template. On its own it would
+    // relink without confirmation.
+    await db.update(environments)
+      .set({ config: { provider: "fake-plugin", image: "fake:base", region: "eu", reuseLease: false } })
+      .where(eq(environments.id, environmentId));
+
+    // The provider now declares `region` a boot-relevant identity path. The
+    // capture snapshot never covered it, so the server cannot verify the boot
+    // source and must not classify the drift as knob-only.
+    const manifest = pluginManifest();
+    const nextManifest = {
+      ...manifest,
+      environmentDrivers: [
+        { ...manifest.environmentDrivers[0], templateIdentityPaths: ["apiUrl", "region"] },
+      ],
+    };
+    await db.update(plugins)
+      .set({ manifestJson: nextManifest })
+      .where(eq(plugins.pluginKey, manifest.id));
+
+    await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
+      .rejects.toMatchObject({ status: 409, details: { classification: "unclassified" } });
+    const relinked = await service.relinkActiveTemplate({
+      environmentId,
+      confirmBootSourceDrift: true,
+      actor: relinkActor,
+      companyId,
+    });
+    expect(relinked.classification).toBe("unclassified");
   });
 });

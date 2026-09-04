@@ -8,9 +8,103 @@ import type {
   WakeupRequestStatus,
 } from "../constants.js";
 
-export type GitWorktreeBranchAncestryVerdict = "ancestor" | "diverged" | "unknown";
+export interface ProviderTraceDebugRequest {
+  providerTrace: "raw";
+}
 
-export type GitWorktreeInProgressOperation = "rebase" | "merge" | "cherry_pick" | "revert" | "bisect";
+export type ProviderTraceDirection =
+  "client_to_provider" | "provider_to_client" | "provider_stderr";
+export type ProviderTraceDisposition =
+  "mapped" | "generic" | "ignored" | "rejected" | "operator_only";
+
+export type ProviderTraceFieldMappingAction =
+  | "copied"
+  | "renamed"
+  | "normalized"
+  | "derived"
+  | "dropped"
+  | "redacted";
+
+export interface ProviderTraceFieldMapping {
+  inputPath?: string;
+  outputPath?: string;
+  action: ProviderTraceFieldMappingAction;
+  reason?: string;
+}
+
+export interface ProviderTraceFrame {
+  kind?: "frame";
+  schema: "paperclip.provider_trace_frame.v1";
+  debugChannel: string;
+  debugSequence: number;
+  frameId: number;
+  timestamp: string;
+  direction: ProviderTraceDirection;
+  transport: string;
+  provider: string;
+  byteLength: number;
+  digest: `sha256:${string}`;
+  rawBase64: string;
+}
+
+export interface ProviderTraceInterpretation {
+  kind?: "interpretation";
+  schema: "paperclip.provider_trace_interpretation.v1";
+  debugChannel: string;
+  debugSequence: number;
+  frameId: number;
+  stage: string;
+  ruleId: string;
+  disposition: ProviderTraceDisposition;
+  emittedEventIds: string[];
+  droppedFields: string[];
+  fieldMappings?: ProviderTraceFieldMapping[];
+  reason: string;
+}
+
+export type ProviderTraceStatus =
+  "capturing" | "complete" | "incomplete" | "truncated" | "deleted" | "expired";
+
+export interface ProviderTraceMetadata {
+  schema: "paperclip.provider_trace_metadata.v1";
+  id: string;
+  runId: string;
+  companyId: string;
+  status: ProviderTraceStatus;
+  provider: string;
+  frameCount: number;
+  byteCount: number;
+  digest: `sha256:${string}` | null;
+  reason: string | null;
+  requestedBy: string;
+  createdAt: string | Date;
+  expiresAt: string | Date;
+  deletedAt: string | Date | null;
+}
+
+export type RunPresentationSource =
+  | "existing_issue_comment"
+  | "final_agent_message"
+  | "semantic_result_summary"
+  | "adapter_final_response"
+  | "none";
+
+export interface RunPresentationDecision {
+  schema: "paperclip.run_presentation_decision.v1";
+  resolverVersion: string;
+  chosenSource: RunPresentationSource;
+  sourceEventId: string | null;
+  commentAction: "reuse" | "create" | "none";
+  commentId: string | null;
+  activityDisposition: "collapse";
+  reasonCodes: string[];
+}
+
+export type GitWorktreeBranchAncestryVerdict =
+  "ancestor" | "diverged" | "unknown";
+
+export type GitWorktreeInProgressOperation =
+  "rebase" | "merge" | "cherry_pick" | "revert" | "bisect";
 
 export interface GitWorktreeBranchIncoherenceEvidence {
   reason: "git_worktree_branch_incoherence";
@@ -141,11 +235,7 @@ export type HeartbeatRunStatusPhase =
   | "run_activity";
 
 export type HeartbeatRunOutputSilenceLevel =
-  | "not_applicable"
-  | "ok"
-  | "suspicious"
-  | "critical"
-  | "snoozed";
+  "not_applicable" | "ok" | "suspicious" | "critical" | "snoozed";
 
 export interface HeartbeatRunOutputSilence {
   lastOutputAt: Date | string | null;

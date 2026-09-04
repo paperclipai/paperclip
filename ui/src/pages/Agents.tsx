@@ -6,11 +6,14 @@ import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
+import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
@@ -19,11 +22,12 @@ import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
+import { AlertTriangle, Bot, Plus, List, Network } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
   isStarred,
@@ -129,11 +133,13 @@ function describeEnvironment(
   environment: Environment,
   capabilities?: EnvironmentCapabilities | null,
 ): EnvironmentDescriptor {
-  const detail = environment.driver === "sandbox"
-    ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
-    : environment.driver === "local"
-      ? "Paperclip host"
-      : formatEnvironmentDriver(environment.driver);
+  const detail = isPlatformManagedEnvironment(environment)
+    ? "Managed by Paperclip"
+    : environment.driver === "sandbox"
+      ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
+      : environment.driver === "local"
+        ? "Paperclip host"
+        : formatEnvironmentDriver(environment.driver);
 
   return {
     label: environment.name,
@@ -185,18 +191,34 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function Agents() {
+export type AgentsView = "list" | "org";
+
+export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
   const { isMobile } = useSidebar();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const requestedTab: FilterTab = isFilterTab(pathSegment) ? pathSegment : "all";
-  const [view, setView] = useState<"list" | "org">("org");
-  const forceListView = isMobile;
-  const effectiveView: "list" | "org" = forceListView ? "list" : view;
+  const [view, setView] = useState<AgentsView>(() => streamlinedUiEnabled ? initialView : "org");
+  const forceListView = !streamlinedUiEnabled && isMobile;
+  const effectiveView: AgentsView = forceListView ? "list" : view;
+
+  useEffect(() => {
+    setView(streamlinedUiEnabled ? initialView : "org");
+  }, [initialView, streamlinedUiEnabled]);
+
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
+  const canUseProviderTrace =
+    boardAccess?.source === "local_implicit" ||
+    boardAccess?.isInstanceAdmin === true;
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
@@ -286,12 +308,6 @@ export function Agents() {
     return map;
   }, [runs]);
 
-  const agentMap = useMemo(() => {
-    const map = new Map<string, Agent>();
-    for (const a of agents ?? []) map.set(a.id, a);
-    return map;
-  }, [agents]);
-
   const environmentsById = useMemo(() => {
     const map = new Map<string, Environment>();
     for (const environment of environments ?? []) map.set(environment.id, environment);
@@ -325,7 +341,7 @@ export function Agents() {
   }, [builtInAgentsEnabled, instanceSettings, navigate, requestedTab, selectedCompanyId]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message="Select an organization to view agents." />;
   }
 
   if (isLoading) {
@@ -453,6 +469,7 @@ export function Agents() {
                   companyId={selectedCompanyId}
                   runLabel="Run Heartbeat"
                   showStatus={false}
+                  canRunWithProviderTrace={canUseProviderTrace}
                 />
               </div>
               <StarToggle
@@ -493,7 +510,11 @@ export function Agents() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className={cn(
+      effectiveView === "org"
+        ? "flex h-full min-h-0 flex-col gap-4"
+        : "space-y-4",
+    )}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
@@ -503,35 +524,32 @@ export function Agents() {
           />
         </Tabs>
         <div className="flex items-center gap-2">
-          {/* View toggle */}
-          {!forceListView && (
-            <div className="flex items-center border border-border" role="group" aria-label="View mode">
-              <button
-                className={cn(
-                  "p-1.5 transition-colors",
-                  effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
-                )}
+          {!forceListView ? <div className="flex items-center overflow-hidden rounded-md border border-border" role="group" aria-label="Agent view">
+              <Button
+                type="button"
+                size="icon-sm"
+                variant={effectiveView === "list" ? "secondary" : "ghost"}
+                className="rounded-none"
                 onClick={() => setView("list")}
                 title="List view"
                 aria-label="List view"
                 aria-pressed={effectiveView === "list"}
               >
                 <List className="h-3.5 w-3.5" />
-              </button>
-              <button
-                className={cn(
-                  "p-1.5 transition-colors",
-                  effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
-                )}
+              </Button>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant={effectiveView === "org" ? "secondary" : "ghost"}
+                className="rounded-none border-l border-border"
                 onClick={() => setView("org")}
                 title="Org chart view"
                 aria-label="Org chart view"
                 aria-pressed={effectiveView === "org"}
               >
-                <GitBranch className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
+                <Network className="h-3.5 w-3.5" />
+              </Button>
+          </div> : null}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Agent
@@ -569,25 +587,7 @@ export function Agents() {
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
-        <div className="py-1">
-          {filteredOrg.map((node) => (
-            <OrgTreeNode
-              key={node.id}
-              node={node}
-              depth={0}
-              agentMap={agentMap}
-              liveRunByAgent={liveRunByAgent}
-              environmentByAgentId={environmentByAgentId}
-              environmentDataLoading={environmentDataLoading}
-              showEnvironment={showEnvironmentColumn}
-              tab={tab}
-              memberships={membershipsQuery.data}
-              membershipMutation={membershipMutation}
-              builtInByAgentId={builtInByAgentId}
-              onConfigureBuiltIn={setConfigureState}
-            />
-          ))}
-        </div>
+        <OrgChart embedded orgTree={filteredOrg} agents={agents ?? []} />
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (

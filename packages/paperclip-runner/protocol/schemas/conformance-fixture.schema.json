@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/conformance-fixture.schema.json",
+  "title": "Paperclip Runner cross-language conformance fixture",
+  "type": "object",
+  "required": ["schemaVersion", "run", "events", "result"],
+  "properties": {
+    "schemaVersion": { "const": "paperclip.runner.conformance.fixture.v1" },
+    "run": {
+      "type": "object",
+      "required": ["runId", "sessionId", "companyId", "issueId", "agentId"],
+      "properties": {
+        "runId": { "$ref": "#/$defs/id" },
+        "sessionId": { "$ref": "#/$defs/id" },
+        "companyId": { "$ref": "#/$defs/id" },
+        "issueId": { "$ref": "#/$defs/id" },
+        "agentId": { "$ref": "#/$defs/id" }
+      },
+      "additionalProperties": true
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["eventId", "runId", "sequence", "type"],
+        "properties": {
+          "eventId": { "$ref": "#/$defs/id" },
+          "runId": { "$ref": "#/$defs/id" },
+          "sequence": { "type": "integer", "minimum": 1 },
+          "type": { "enum": ["run.started", "run.completed"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": ["runId", "status", "summary"],
+      "properties": {
+        "runId": { "$ref": "#/$defs/id" },
+        "status": { "enum": ["succeeded", "failed", "interrupted"] },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 4000 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160 }
+  },
+  "additionalProperties": true
+}

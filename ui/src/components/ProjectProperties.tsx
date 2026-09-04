@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } from "@/lib/managed-sandbox-environment";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
@@ -16,7 +17,8 @@ import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Github, Loader2, Plus, Trash2, X } from "lucide-react";
+import { AlertCircle, Archive, ArchiveRestore, Check, ExternalLink, Loader2, Plus, Trash2, X } from "lucide-react";
+import { GithubIcon } from "@/components/icons/github-icon";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
@@ -67,7 +69,7 @@ const SHARED_WORKSPACE_CONCURRENCY_OPTIONS: {
   {
     value: "auto",
     label: "Auto",
-    help: "Concurrent runs on local/SSH runners; runs take turns in cloud sandboxes.",
+    help: "Concurrent runs on local/SSH runners; runs take turns in cloud environments.",
   },
   {
     value: "serialize",
@@ -291,7 +293,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
   });
   const createSecret = useMutation({
     mutationFn: (input: { name: string; value: string }) => {
-      if (!selectedCompanyId) throw new Error("Select a company to create secrets");
+      if (!selectedCompanyId) throw new Error("Select an organization to create secrets");
       return secretsApi.create(selectedCompanyId, input);
     },
     onSuccess: () => {
@@ -338,7 +340,18 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     branchTemplate: "",
     worktreeParentDir: "",
   };
-  const runSelectableEnvironments = (environments ?? []).filter((environment) => {
+  // Defense in depth alongside the server's managed-sandbox-only read
+  // filter: a cached environments list may still carry the local row.
+  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
+  // The gate for the host-path surfaces below. It fails closed whenever the
+  // policy is unknown — in flight and also on a failed read: an unresolved
+  // policy reads as "not managed", which would show the local folder the policy
+  // exists to hide.
+  const hideHostPaths = experimentalSettings === undefined || managedSandboxOnly;
+  const runSelectableEnvironments = filterManagedSandboxSelectableEnvironments(
+    environments ?? [],
+    managedSandboxOnly,
+  ).filter((environment) => {
     if (environment.driver === "local" || environment.driver === "ssh") return true;
     if (environment.driver !== "sandbox") return false;
     const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
@@ -704,7 +717,9 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                 </button>
               </TooltipTrigger>
               <TooltipContent side="top">
-                Repo identifies the source of truth. Local folder is the default place agents write code.
+                {hideHostPaths
+                  ? "Repo identifies the source of truth. Agents check it out in the platform-managed environment."
+                  : "Repo identifies the source of truth. Local folder is the default place agents write code."}
               </TooltipContent>
             </Tooltip>
           </div>
@@ -720,13 +735,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                       rel="noreferrer"
                       className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground hover:underline"
                     >
-                      <Github className="h-3 w-3 shrink-0" />
+                      <GithubIcon className="h-3 w-3 shrink-0" />
                       <span className="break-all min-w-0">{formatRepoUrl(codebase.repoUrl)}</span>
                       <ExternalLink className="h-3 w-3 shrink-0" />
                     </a>
                   ) : (
                     <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                      <Github className="h-3 w-3 shrink-0" />
+                      <GithubIcon className="h-3 w-3 shrink-0" />
                       <span className="break-all min-w-0">{codebase.repoUrl}</span>
                     </div>
                   )}
@@ -772,43 +787,57 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               )}
             </div>
 
-            <div className="space-y-1">
-              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Local folder</div>
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0 space-y-1">
-                  <div className="min-w-0 break-all font-mono text-xs text-muted-foreground">
-                    {codebase.effectiveLocalFolder}
+            {/*
+              The local folder is an absolute path on the execution host. Under
+              the managed-sandbox-only policy every agent runs in the
+              platform-managed environment, so the path, the folder controls,
+              and the edit panel below all disappear. A managed checkout keeps
+              its one-line label so the codebase still reads as accounted for,
+              but never renders the path itself.
+            */}
+            {hideHostPaths ? (
+              codebase.origin === "managed_checkout" ? (
+                <div className="text-(length:--text-micro) text-muted-foreground">Paperclip-managed folder.</div>
+              ) : null
+            ) : (
+              <div className="space-y-1">
+                <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Local folder</div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 space-y-1">
+                    <div className="min-w-0 break-all font-mono text-xs text-muted-foreground">
+                      {codebase.effectiveLocalFolder}
+                    </div>
+                    {codebase.origin === "managed_checkout" && (
+                      <div className="text-(length:--text-micro) text-muted-foreground">Paperclip-managed folder.</div>
+                    )}
                   </div>
-                  {codebase.origin === "managed_checkout" && (
-                    <div className="text-(length:--text-micro) text-muted-foreground">Paperclip-managed folder.</div>
-                  )}
-                </div>
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="h-6 px-2"
-                    onClick={() => {
-                      setWorkspaceMode("local");
-                      setWorkspaceCwd(codebase.localFolder ?? "");
-                      setWorkspaceError(null);
-                    }}
-                  >
-                    {codebase.localFolder ? "Change local folder" : "Set local folder"}
-                  </Button>
-                  {codebase.localFolder ? (
+                  <div className="flex items-center gap-1">
                     <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      onClick={clearLocalWorkspace}
-                      aria-label="Clear local folder"
+                      variant="outline"
+                      size="xs"
+                      className="h-6 px-2"
+                      onClick={() => {
+                        setWorkspaceMode("local");
+                        setWorkspaceCwd(codebase.localFolder ?? "");
+                        setWorkspaceError(null);
+                      }}
                     >
-                      <Trash2 className="h-3 w-3" />
+                      {codebase.localFolder ? "Change local folder" : "Set local folder"}
                     </Button>
-                  ) : null}
+                    {codebase.localFolder ? (
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={clearLocalWorkspace}
+                        aria-label="Clear local folder"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
 
             {hasAdditionalLegacyWorkspaces && (
               <div className="text-(length:--text-micro) text-muted-foreground">
@@ -853,6 +882,18 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           service.command ?? "No URL"
                         )}
                       </div>
+                      {service.exposure && service.exposure.state !== "removed" ? (
+                        <div
+                          className={cn(
+                            "text-(length:--text-nano)",
+                            service.exposure.state === "failed" || service.exposure.state === "cleanup_pending"
+                              ? "text-destructive"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          HTTPS {service.exposure.state.replace("_", " ")}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="text-(length:--text-nano) text-muted-foreground whitespace-nowrap">
                       {service.lifecycle}
@@ -862,7 +903,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               </div>
             ) : null}
           </div>
-          {workspaceMode === "local" && (
+          {!hideHostPaths && workspaceMode === "local" && (
             <div className="space-y-1.5 rounded-md border border-border p-2">
               <div className="flex items-center gap-2">
                 <input
@@ -1100,7 +1141,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                               <option value="">No environment</option>
                               {runSelectableEnvironments.map((environment) => (
                                 <option key={environment.id} value={environment.id}>
-                                  {environment.name} · {environment.driver}
+                                  {environmentDisplayLabel(environment)}
                                 </option>
                               ))}
                             </select>

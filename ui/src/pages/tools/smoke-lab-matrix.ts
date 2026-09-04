@@ -92,6 +92,7 @@ export function runHealth(run: SmokeRun | undefined, steps: SmokeRunStep[]): Smo
   if (!run) return "unknown";
   if (run.status === "failed") return "red";
   if (steps.some((s) => s.status === "fail")) return "red";
+  if (run.summary.partial === true) return "amber";
   if (run.status === "cancelled") return "amber";
   if (run.status === "running") return "amber";
   if (steps.length === 0) return "amber";

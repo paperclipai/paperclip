@@ -1019,17 +1019,18 @@ describe("buildReferencedProjectRunObservability", () => {
       failures: [
         { projectId: "project-b", reason: "authorization" },
         { projectId: "project-c", reason: "resolution" },
-        { projectId: "project-d", reason: "staging" },
+        { projectId: "project-d", reason: "staging", error: "extract failed: boom" },
       ],
     });
 
     // Requested is the synced count plus every dropped project, so the counts reconcile.
     expect(observability.referenced_projects_requested).toBe(4);
     expect(observability.referenced_projects_synced).toBe(1);
+    // A staging failure carries its error message; a failure without one omits the field.
     expect(observability.referenced_project_failures).toEqual([
       { project_id: "project-b", reason: "authorization" },
       { project_id: "project-c", reason: "resolution" },
-      { project_id: "project-d", reason: "staging" },
+      { project_id: "project-d", reason: "staging", error: "extract failed: boom" },
     ]);
   });
 

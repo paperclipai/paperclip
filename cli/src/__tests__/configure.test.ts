@@ -96,4 +96,29 @@ describe("configure command", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("backs up invalid config bytes and refuses non-interactive replacement", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-configure-invalid-"));
+    const configPath = path.join(root, "config.json");
+    const invalidBytes = Buffer.from('{"server": invalid}\n', "utf8");
+    const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+    fs.writeFileSync(configPath, invalidBytes);
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+
+    try {
+      await configure({ config: configPath, section: "server" });
+
+      expect(process.exitCode).toBe(1);
+      expect(fs.readFileSync(configPath)).toEqual(invalidBytes);
+      expect(fs.readFileSync(`${configPath}.invalid-1`)).toEqual(invalidBytes);
+      expect(fs.existsSync(`${configPath}.backup`)).toBe(false);
+    } finally {
+      if (stdinDescriptor) {
+        Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+      } else {
+        delete (process.stdin as { isTTY?: boolean }).isTTY;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

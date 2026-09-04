@@ -30,6 +30,50 @@ import {
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
+/**
+ * The worker methods a sandbox provider must advertise before the host reuses
+ * a provider lease across runs. The host resumes a lease through
+ * `environmentResumeLease`, ends it through `environmentReleaseLease`, and tears
+ * down a stale lease through `environmentDestroyLease`. The reuse path destroys
+ * the stale lease when a resume fails and then acquires a fresh lease, so a
+ * provider that omits any of the three methods can strand the stale lease and
+ * can never complete the reuse path.
+ *
+ * The runtime capability normalizer maps `reusableLeases` to these same methods,
+ * so the acquisition guard, the effective-capability snapshot, and the published
+ * provider-capabilities value all read one source and cannot drift.
+ */
+export const REUSABLE_LEASE_WORKER_METHODS = [
+  "environmentResumeLease",
+  "environmentReleaseLease",
+  "environmentDestroyLease",
+] as const;
+
+/**
+ * The worker methods a sandbox provider must advertise before the customImage
+ * setup gate in `environment-custom-images.ts` allows an interactive setup
+ * session. The setup lifecycle starts a session through
+ * `environmentStartInteractiveSetup`, polls it through
+ * `environmentGetInteractiveSetup`, and cancels it through
+ * `environmentCancelInteractiveSetup`. A provider that omits any of the three
+ * can strand a setup session partway through the lifecycle.
+ */
+export const INTERACTIVE_SETUP_WORKER_METHODS = [
+  "environmentStartInteractiveSetup",
+  "environmentGetInteractiveSetup",
+  "environmentCancelInteractiveSetup",
+] as const;
+
+/** The worker method the customImage template-capture gate in `environment-custom-images.ts` requires. */
+export const TEMPLATE_CAPTURE_WORKER_METHODS = [
+  "environmentCaptureTemplate",
+] as const;
+
+/** The worker method the customImage template-delete gate in `environment-custom-images.ts` requires. */
+export const TEMPLATE_DELETE_WORKER_METHODS = [
+  "environmentDeleteTemplate",
+] as const;
+
 export interface ReadyPluginWorkerRecovery {
   pluginKeys: readonly string[];
   startWorker(plugin: { id: string; pluginKey: string }): Promise<boolean>;
@@ -44,12 +88,22 @@ export interface ReadyPluginEnvironmentDriver {
   description?: string;
   configSchema: PluginEnvironmentDriverDeclaration["configSchema"];
   supportsReusableLeases?: PluginEnvironmentDriverDeclaration["supportsReusableLeases"];
+  sandboxCapabilities?: PluginEnvironmentDriverDeclaration["sandboxCapabilities"];
+  /**
+   * The running worker for this exact plugin advertises ALL reusable-lease
+   * lifecycle methods (`REUSABLE_LEASE_WORKER_METHODS`: resume, release, and
+   * destroy). The published provider-capabilities value grants reusable leases
+   * only when the declaration allows them AND this flag is true, so presentation
+   * matches the acquisition guard, which also verifies the same methods live.
+   */
+  reusableLeaseMethodsVerified: boolean;
   supportsInteractiveSetup?: PluginEnvironmentDriverDeclaration["supportsInteractiveSetup"];
   interactiveSetupConnectionTypes?: PluginEnvironmentDriverDeclaration["interactiveSetupConnectionTypes"];
   supportsTemplateCapture?: PluginEnvironmentDriverDeclaration["supportsTemplateCapture"];
   templateRefKind?: PluginEnvironmentDriverDeclaration["templateRefKind"];
   templateConfigBinding?: PluginEnvironmentDriverDeclaration["templateConfigBinding"];
   supportsTemplateDelete?: PluginEnvironmentDriverDeclaration["supportsTemplateDelete"];
+  supportsLoginPty?: PluginEnvironmentDriverDeclaration["supportsLoginPty"];
 }
 
 export function pluginDriverProviderKey(config: Pick<PluginEnvironmentConfig, "pluginKey" | "driverKey">): string {
@@ -130,6 +184,35 @@ export async function resolvePluginSandboxProviderDriverByKey(input: {
   return null;
 }
 
+/**
+ * Resolve the sandbox-provider driver declaration from one exact plugin id.
+ *
+ * A driver key is only unique inside a single manifest. Two installed plugins
+ * can declare the same driver key. A lease pins the plugin that acquired it
+ * through `metadata.pluginId`. Use this resolver, not the by-key resolver, when
+ * the caller must read the declaration from that exact plugin. The by-key
+ * resolver returns the first installed plugin with the key, which can be a
+ * different, even disabled, plugin.
+ *
+ * This resolver fails closed. It returns `null` when the plugin id is unknown,
+ * or when that plugin no longer declares a `sandbox_provider` driver with the
+ * given key.
+ */
+export async function resolvePluginSandboxProviderDriverById(input: {
+  db: Db;
+  pluginId: string;
+  driverKey: string;
+}): Promise<{ plugin: Awaited<ReturnType<ReturnType<typeof pluginRegistryService>["getById"]>>; driver: PluginEnvironmentDriverDeclaration } | null> {
+  const pluginRegistry = pluginRegistryService(input.db);
+  const plugin = await pluginRegistry.getById(input.pluginId);
+  if (!plugin) return null;
+  const driver = plugin.manifestJson.environmentDrivers?.find(
+    (candidate) => candidate.driverKey === input.driverKey && candidate.kind === "sandbox_provider",
+  ) as PluginEnvironmentDriverDeclaration | undefined;
+  if (!driver) return null;
+  return { plugin, driver };
+}
+
 export async function listReadyPluginEnvironmentDrivers(input: {
   db: Db;
   workerManager?: PluginWorkerManager;
@@ -173,6 +256,13 @@ export async function listReadyPluginEnvironmentDrivers(input: {
     if (!input.workerManager.isRunning(plugin.id)) {
       continue;
     }
+    // The plugin is running, so read the live worker's verified methods once per
+    // plugin. A provider advertises reusable leases only when its worker carries
+    // all reuse lifecycle methods; the declaration alone never grants them.
+    const workerMethods = new Set(input.workerManager.getWorker(plugin.id)?.supportedMethods ?? []);
+    const reusableLeaseMethodsVerified = REUSABLE_LEASE_WORKER_METHODS.every(
+      (method) => workerMethods.has(method),
+    );
     rows.push(
       ...(plugin.manifestJson.environmentDrivers ?? [])
         .filter((driver) => driver.kind === "sandbox_provider")
@@ -184,12 +274,15 @@ export async function listReadyPluginEnvironmentDrivers(input: {
           description: driver.description,
           configSchema: driver.configSchema,
           supportsReusableLeases: driver.supportsReusableLeases,
+          sandboxCapabilities: driver.sandboxCapabilities,
+          reusableLeaseMethodsVerified,
           supportsInteractiveSetup: driver.supportsInteractiveSetup,
           interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
           supportsTemplateCapture: driver.supportsTemplateCapture,
           templateRefKind: driver.templateRefKind,
           templateConfigBinding: driver.templateConfigBinding,
           supportsTemplateDelete: driver.supportsTemplateDelete,
+          supportsLoginPty: driver.supportsLoginPty,
         })),
     );
   }
