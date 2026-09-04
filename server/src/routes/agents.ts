@@ -4733,7 +4733,16 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
+    if (requestedRuntimeConfig) {
+      // runtimeConfig is one JSONB column. Writing the requested object directly
+      // drops every top-level key the caller did not send. A caller that means to
+      // change one key -- for example a UI that built its patch from a snapshot it
+      // read before a concurrent change landed -- silently loses sibling keys such
+      // as `heartbeat`. adapterConfig above already merges onto the stored value.
+      // runtimeConfig now does the same.
+      const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
+      patchData.runtimeConfig = { ...existingRuntimeConfig, ...requestedRuntimeConfig };
+    }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,
