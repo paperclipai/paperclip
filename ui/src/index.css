@@ -104,7 +104,7 @@
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent: oklch(0.88 0 0);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
@@ -295,6 +295,23 @@
   --radius-task-composer: 16px;
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
+  --profile-popover-width: 248px;
+  --profile-popover-min-height: 304px;
+  --profile-popover-header-height: 76px;
+  --profile-popover-row-height: 38px;
+  --profile-popover-row-gap: 9px;
+  --profile-popover-label-line-height: 18px;
+  --profile-popover-meta-line-height: 15px;
+  --shadow-profile-popover: 0 18px 45px oklch(0 0 0 / 18%);
+  --organization-popover-width: 248px;
+  --organization-popover-header-height: 48px;
+  --organization-popover-company-row-height: 44px;
+  --organization-popover-action-row-height: 38px;
+  --organization-popover-avatar-size: 30px;
+  --organization-popover-row-gap: 9px;
+  --organization-popover-name-line-height: 17px;
+  --organization-popover-prefix-line-height: 13px;
+  --organization-popover-action-line-height: 18px;
 
   /* Composer mode-chip hues (v5–v7 decisions): agent + plan reuse the task
      status hues; ask is the v5 blue. Consumed as `--sc` seeds through the
@@ -368,7 +385,7 @@
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent: oklch(0.32 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
