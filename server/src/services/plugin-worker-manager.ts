@@ -1421,6 +1421,12 @@ export function createPluginWorkerHandle(
   // route through this map first, so more than one route can be `reserved`,
   // `opening`, or `open` on one worker at once.
   const loginPtyRoutesByHostRouteId = new Map<string, LoginPtyRoute>();
+  // True once this worker has logged the missing-`hostRouteId` warning below.
+  // A plugin build old enough to omit the field would otherwise log one line
+  // for every dropped message, and a login pseudo-terminal can carry a high
+  // volume of output notifications. One warning per worker is enough for an
+  // operator to see the cause.
+  let loggedMissingLoginPtyHostRouteId = false;
   // The bound routes on this worker, keyed by the worker session id. A route
   // enters this map once its worker session id binds and leaves it when the
   // route terminalizes. The host checks this map at bind time, so one worker
@@ -1510,9 +1516,26 @@ export function createPluginWorkerHandle(
   // route identifier. Return null for a missing identifier or for an unknown
   // or a stale (already terminalized) identifier, so the caller drops the
   // notification.
+  //
+  // `hostRouteId` is a required field on this notification. A plugin build
+  // old enough to not send it loses its login pseudo-terminal output, so the
+  // host warns once for this worker — never once for each dropped message,
+  // since a live pseudo-terminal can send many. The warning carries no
+  // session identifier, no route identifier, and no login code: only the
+  // fact that the build is too old. This never falls back to resolving the
+  // route by the worker session identifier alone; a single identifier cannot
+  // prove which route the message belongs to.
   function resolveLoginPtyRouteByHostRouteId(params: Record<string, unknown>): LoginPtyRoute | null {
     const hostRouteId = readNonEmptyString(params.hostRouteId);
-    if (!hostRouteId) return null;
+    if (!hostRouteId) {
+      if (!loggedMissingLoginPtyHostRouteId) {
+        loggedMissingLoginPtyHostRouteId = true;
+        log.warn(
+          "login pseudo-terminal message has no hostRouteId; the plugin build is too old",
+        );
+      }
+      return null;
+    }
     return loginPtyRoutesByHostRouteId.get(hostRouteId) ?? null;
   }
 

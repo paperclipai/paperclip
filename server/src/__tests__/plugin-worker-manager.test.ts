@@ -1363,7 +1363,7 @@ describe("plugin worker manager setup-token pty route gate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Login pseudo-terminal concurrency (PAP-6026)
+// Login pseudo-terminal concurrency
 // ---------------------------------------------------------------------------
 // One shared plugin worker now holds more than one live login pseudo-terminal
 // route at once, so a second owner is never blocked by a first owner's
@@ -1617,8 +1617,80 @@ describe("plugin worker manager login pseudo-terminal concurrency", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The process-wide login pseudo-terminal route ceiling (board-approved
-// deviation, PAP-6021 card 45cc663c)
+// The missing-hostRouteId diagnostic. `hostRouteId` is a required field on
+// the login pseudo-terminal output and exit notifications, so a plugin build
+// old enough to omit it loses its login pseudo-terminal output. This warns
+// an operator instead of failing silently.
+// ---------------------------------------------------------------------------
+
+describe("plugin worker manager login pseudo-terminal missing hostRouteId diagnostic", () => {
+  it("logs one warning when a login pseudo-terminal message arrives with no hostRouteId", async () => {
+    const handle = makeLoginPtyHandle();
+    vi.mocked(logger.warn).mockClear();
+    try {
+      await handle.start();
+      const chunks: string[] = [];
+      const route = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "dropped", omitHostRouteId: true }],
+        }),
+      );
+      route.onData((chunk) => chunks.push(chunk));
+      // Give the malformed notification time to arrive and be dropped.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      // The message is still dropped: the current behaviour does not change.
+      expect(chunks).toEqual([]);
+
+      const warnCalls = vi.mocked(logger.warn).mock.calls.flat().map((arg) => JSON.stringify(arg));
+      const matches = warnCalls.filter((call) => call.includes("hostRouteId"));
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toContain("plugin build is too old");
+      // No identifier and no raw output in the warning.
+      expect(matches[0]).not.toContain("dropped");
+      expect(matches[0]).not.toContain("ws-A");
+
+      await route.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("repeats the warning no more than one time for one worker", async () => {
+    const handle = makeLoginPtyHandle();
+    vi.mocked(logger.warn).mockClear();
+    try {
+      await handle.start();
+      const route = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [
+            { chunk: "one", omitHostRouteId: true },
+            { chunk: "two", omitHostRouteId: true },
+            { chunk: "three", omitHostRouteId: true },
+          ],
+        }),
+      );
+      // Give every malformed notification time to arrive.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      const warnCalls = vi.mocked(logger.warn).mock.calls.flat().map((arg) => JSON.stringify(arg));
+      const matches = warnCalls.filter((call) => call.includes("hostRouteId"));
+      expect(matches).toHaveLength(1);
+
+      await route.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The process-wide login pseudo-terminal route ceiling. A host process can
+// run only so many concurrent login pseudo-terminal routes before the
+// underlying resources are exhausted, so the ceiling protects the host
+// process itself, not one user or one worker.
 // ---------------------------------------------------------------------------
 // Every login pseudo-terminal route reserves one slot from the same
 // process-wide aggregate route-slot controller the duplex channel route
@@ -1743,7 +1815,7 @@ describe("plugin worker manager login pseudo-terminal route ceiling", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Login pseudo-terminal pre-bind queue (GH #12122 / PAP-5132)
+// Login pseudo-terminal pre-bind queue
 // ---------------------------------------------------------------------------
 // The host reads the worker pipe and `readline` dispatches every line of one
 // chunk synchronously. The route only becomes `open` inside the `await`

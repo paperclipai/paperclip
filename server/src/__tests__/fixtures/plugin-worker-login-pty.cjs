@@ -9,13 +9,16 @@
 //   - `mode`: "normal" | "malformed-open" | "no-open-reply" | "duplicate-open-reply" |
 //     "exit-before-open-reply"
 //   - `workerSessionId`: the worker session id the open reply returns (default "ws-1")
-//   - `outputs`: an array of `{ chunk, sid?, crossRoute? }`. The fixture emits each
-//     as an output notification after the open reply. `sid` defaults to the real
-//     worker session id; a test sets a wrong `sid` to prove the host drops a
-//     mismatched notification. `crossRoute: true` sends this route's own worker
-//     session id under a DIFFERENT, already-open route's host route identifier
-//     (any other entry currently registered), so a test proves the host drops a
-//     swapped `(hostRouteId, workerSessionId)` pair instead of misdelivering it.
+//   - `outputs`: an array of `{ chunk, sid?, crossRoute?, omitHostRouteId? }`. The
+//     fixture emits each as an output notification after the open reply. `sid`
+//     defaults to the real worker session id; a test sets a wrong `sid` to prove
+//     the host drops a mismatched notification. `crossRoute: true` sends this
+//     route's own worker session id under a DIFFERENT, already-open route's host
+//     route identifier (any other entry currently registered), so a test proves
+//     the host drops a swapped `(hostRouteId, workerSessionId)` pair instead of
+//     misdelivering it. `omitHostRouteId: true` sends the notification with no
+//     `hostRouteId` field at all, so a test proves the host warns about a plugin
+//     build old enough to omit the field, instead of silently dropping it.
 //   - `exitCode`: when set, the fixture emits an exit notification after the outputs.
 //   - `extraExits`: an array of `{ exitCode, sid? }`. The fixture emits each as a
 //     further exit notification, after the main `exitCode` exit. `sid` defaults
@@ -56,27 +59,30 @@ function pickOtherHostRouteId(ownHostRouteId) {
   return null;
 }
 
-// Serialize one array of `{ chunk, sid?, crossRoute? }` entries as
-// newline-delimited output notification lines. A test sets a wrong `sid` on
-// one entry to force a mismatch. `crossRoute: true` stamps some OTHER
-// already-open route's host route identifier on this route's own worker
-// session id, so a test proves the host drops a swapped pair. Every other
-// line echoes this route's own host route identifier, so the host can route
-// each chunk to its own route when the worker holds more than one.
+// Serialize one array of `{ chunk, sid?, crossRoute?, omitHostRouteId? }`
+// entries as newline-delimited output notification lines. A test sets a
+// wrong `sid` on one entry to force a mismatch. `crossRoute: true` stamps
+// some OTHER already-open route's host route identifier on this route's own
+// worker session id, so a test proves the host drops a swapped pair. Every
+// other line echoes this route's own host route identifier, so the host can
+// route each chunk to its own route when the worker holds more than one.
+// `omitHostRouteId: true` sends the notification with no `hostRouteId` field
+// at all, so a test proves the host warns instead of silently dropping it.
 function outputLines(entries, hostRouteId, workerSessionId) {
   let lines = "";
   for (const entry of entries) {
     const effectiveHostRouteId = entry.crossRoute
       ? pickOtherHostRouteId(hostRouteId) ?? hostRouteId
       : entry.hostRouteId ?? hostRouteId;
+    const params = {
+      workerSessionId: entry.sid ?? workerSessionId,
+      chunk: entry.chunk,
+    };
+    if (!entry.omitHostRouteId) params.hostRouteId = effectiveHostRouteId;
     lines += `${JSON.stringify({
       jsonrpc: "2.0",
       method: "loginPty.output",
-      params: {
-        hostRouteId: effectiveHostRouteId,
-        workerSessionId: entry.sid ?? workerSessionId,
-        chunk: entry.chunk,
-      },
+      params,
     })}\n`;
   }
   return lines;
