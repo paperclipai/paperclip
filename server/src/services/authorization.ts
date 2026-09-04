@@ -28,6 +28,7 @@ import {
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
 import { logger } from "../middleware/logger.js";
+import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { grantsForHumanRole, normalizeHumanRole } from "./company-member-roles.js";
 
 export type AuthorizationActor =
@@ -170,8 +171,10 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
 
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   if (agent.role === "ceo") return true;
-  if (!agent.permissions || typeof agent.permissions !== "object") return false;
-  return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  // Raw agent rows may predate permission normalization; apply the same
+  // defaults the agent service applies on read so enforcement matches what
+  // the API reports.
+  return normalizeAgentPermissions(agent.permissions).canCreateAgents;
 }
 
 function scopeValueList(value: unknown): string[] {
@@ -984,6 +987,11 @@ export function authorizationService(db: Db | DbTransaction) {
 
     if (
       input.action === "company_scope:read" ||
+      // Agent creation is a company-wide privileged action. The default-on
+      // canCreateAgents flag must never reach the legacy creator allow when
+      // the effective execution context (agent, project, issue, or run
+      // policy) resolves to low trust.
+      input.action === "agents:create" ||
       input.action === "decision_queue:manage" ||
       input.action === "decision_queue:read" ||
       input.action === "decision_triage:manage" ||
@@ -2242,11 +2250,19 @@ export function authorizationService(db: Db | DbTransaction) {
       if (grantDecision.allowed) return grantDecision;
     }
 
-    if (
-      (input.action === "agents:create" ||
-        input.action === "tasks:manage_active_checkouts") &&
-      canCreateAgentsLegacy(actorAgent)
-    ) {
+    if (input.action === "agents:create" && canCreateAgentsLegacy(actorAgent)) {
+      return allow({
+        action: input.action,
+        reason: "allow_legacy_agent_creator",
+        explanation: "Allowed by legacy agent creator authority.",
+      });
+    }
+
+    // Active-checkout management deliberately does not ride on
+    // canCreateAgents: that flag is default-on for standard-trust agents, and
+    // coupling would let any peer write over another agent's checked-out
+    // issue. CEOs, explicit grants, and the manager chain remain the paths.
+    if (input.action === "tasks:manage_active_checkouts" && actorAgent.role === "ceo") {
       return allow({
         action: input.action,
         reason: "allow_legacy_agent_creator",
