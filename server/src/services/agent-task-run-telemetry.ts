@@ -38,19 +38,19 @@ function resolveDurationSeconds(
 
 /**
  * Emits one `agent.task_run` telemetry event for a run that a caller already
- * wrote to a terminal status. Call this beside each terminal status write in
- * the legacy run engine, after the write commits. Never call this inside a
- * database transaction — the write must commit first.
+ * wrote to a terminal status. The native runtime and the legacy run engine
+ * both call this function beside each terminal status write. Call this
+ * function after the run commits.
  *
  * This function never throws. A telemetry failure must never fail a run.
  * Telemetry enrichment does an awaited database lookup, so treat this call
  * as best-effort background work: do not let a caller's own required
  * lifecycle work (publishing a live event, cancelling a wake, clearing an
  * issue lock, returning a response) wait behind it. Fire this call with
- * `void emitAgentTaskRun(...).catch(() => {})` and never await it, even
- * alongside other required work with `Promise.all` — an awaited
- * `Promise.all` still blocks the caller's return on the slower of the two
- * promises, so it does not remove the delay.
+ * `void emitAgentTaskRun(...)` and never await it, even alongside other
+ * required work with `Promise.all` — an awaited `Promise.all` still blocks
+ * the caller's return on the slower of the two promises, so it does not
+ * remove the delay.
  */
 export async function emitAgentTaskRun(db: Db, run: HeartbeatRun): Promise<void> {
   try {
