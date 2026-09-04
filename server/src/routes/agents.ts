@@ -4740,6 +4740,13 @@ export function agentRoutes(
       // read before a concurrent change landed -- silently loses sibling keys such
       // as `heartbeat`. adapterConfig above already merges onto the stored value.
       // runtimeConfig now does the same.
+      //
+      // The merge reads the row and writes the whole column, so two PATCH
+      // requests that overlap can still drop one of the two changes. That
+      // window is the same one adapterConfig has on this route. Closing it
+      // needs an atomic write for both columns -- a JSONB merge in SQL or a
+      // version check -- and the config-revision snapshot reads the patch as a
+      // plain object, so that change belongs in the service layer.
       const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
       patchData.runtimeConfig = { ...existingRuntimeConfig, ...requestedRuntimeConfig };
     }
