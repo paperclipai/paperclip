@@ -22,7 +22,24 @@ LMSTUDIO_URL = "http://127.0.0.1:1234/v1/chat/completions"
 # auf dem MacBook und riss beim JIT-Kaltstart regelmässig den Timeout.
 DEFAULT_MODEL = "google/gemma-4-12b"
 # Ausweichmodell, falls das Primärmodell doch einmal weg ist.
-FALLBACK_MODEL = "gemma-4-31b-it-mlx"
+#
+# 04.09.2026: stand auf "gemma-4-31b-it-mlx". Dieses Modell existiert seit der
+# Archivierung ins NAS nicht mehr — der Ausweichpfad lief also ins Leere, und
+# zwar fuer BEIDE Nutzer dieses Moduls (Wake-Satellit und Telegram-Jarvis).
+# Aufgefallen ist es erst, als die LM-Link-Verbindung zur RTX anfing zu
+# flattern (peer_keepalive_timeout) und der Fallback gebraucht wurde.
+#
+# Jetzt bewusst das lokale 12b, also dasselbe wie DEFAULT_MODEL: Die grossen
+# Modelle liegen samt und sonders hinter LM Link (RTX bzw. MacBook). Genau
+# deren Ausfall ist der haeufigste Fehlerfall — ein Fallback auf einem
+# weiteren LM-Link-Geraet faellt dann mit aus. Lokal ist die einzige Lage, die
+# den Ausfall ueberlebt. Wer hier wieder ein grosses Modell einsetzt, nimmt in
+# Kauf, dass Primaer- und Ausweichpfad gemeinsam sterben.
+#
+# Kein qwen als Fallback: chat() liest ausschliesslich `content` und wirft bei
+# leerem Feld LlmError. qwen3.6/3.8 liefern ihre Antwort in `reasoning_content`
+# und lassen `content` leer — der Fallback wuerde zuverlaessig scheitern.
+FALLBACK_MODEL = "google/gemma-4-12b"
 DEFAULT_TEMPERATURE = 0.3
 RETRY_DELAY_SEC = 5
 

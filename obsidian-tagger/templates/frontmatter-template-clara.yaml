@@ -155,7 +155,28 @@ ignoriere:
   min_zeichen: 50
 
 llm:
-  modell: "mistral-small-3.2-24b-instruct-2506"
+  modell: "google/gemma-4-12b"
+  # 04.09.2026 von "mistral-small-3.2-24b-instruct-2506" umgestellt: dieses
+  # Modell existiert in LM Studio nicht mehr (Archivierung ins NAS), jeder
+  # Aufruf scheiterte mit "Invalid model identifier".
+  #
+  # Ausschlaggebend fuer den Ersatz ist der Nachtlauf (Clara-Vault-Pflege,
+  # 02:00): der braucht ein Modell, das nachts sicher da ist. Genau daran
+  # scheiterte mistral-small schon vorher (RTX, nachts nicht sicher).
+  #
+  # Deshalb NICHT das qwen3.6-35b-a3b-mlx des WHITESTAG-Taggers: das liegt auf
+  # dem MacBook und damit hinter LM Link. Am 04.09. liess es sich nicht einmal
+  # laden ("LM Link connection closed"), waehrend die Verbindung flatterte —
+  # als Nachtlauf-Modell also untauglich. google/gemma-4-12b liegt lokal auf
+  # der Studio und ueberlebt einen LM-Link-Ausfall als einziges.
+  #
+  # Im WHITESTAG-Template ist es als taugliche Alternative dokumentiert; ein
+  # Test am 04.09. lieferte sauberes JSON (Personen/Orte/Datum) in `content`.
+  # Gemma antwortet in `content`, nicht in `reasoning_content` — der Abfang in
+  # tagger.py wird hier also gar nicht gebraucht.
+  #
+  # Auf ein groesseres Modell (abiray/qwen3.6-35b-a3b auf der RTX) kann zurueck,
+  # wer LM Link stabil bekommen hat.
   endpoint: "http://127.0.0.1:1234/v1/chat/completions"
   temperatur: 0.2
   max_input_chars: 8000

@@ -54,12 +54,30 @@ TTS_FORMAT = "mp3_44100_128"
 # gesprochenes Deutsch natuerlicher. Der Preis ist gemessen und bewusst:
 #   mistral-small-24b (RTX, lokal)  1,8 / 0,9 / 0,9 s
 #   gemma-4-31b-it-mlx (MacBook)    4,1 / 3,2 / 3,2 s
-# Das Modell liegt auf dem MacBook (`lms ps` -> MacbookM5Mx128), der
-# Sprachpfad haengt damit an LM Link statt nur am Studio. Abgefedert durch
-# den Fallback in llm.chat(): weil CHAT_MODEL hier == llm.FALLBACK_MODEL
-# ist, weicht der Modul-Default auf llm.DEFAULT_MODEL aus — ein lokales
-# Netz unter dem entfernten Modell. Zurueck geht es mit einer Zeile.
-CHAT_MODEL = "gemma-4-31b-it-mlx"
+# Das Modell lag auf dem MacBook (`lms ps` -> MacbookM5Mx128), der Sprachpfad
+# hing damit an LM Link statt nur am Studio.
+#
+# 22.08.2026 auf die GGUF-Q8-Kopie derselben Gemma umgestellt, die jetzt auf
+# der RTX liegt. Gleiches Modell, gleiche Sprachqualitaet, nur schneller —
+# unter laufender Flottenlast gemessen (dieselben drei Fragen, ohne
+# max_tokens, deshalb hoeher als die Werte oben):
+#   gemma4-31b-it (RTX)              19,3 / 9,7 / 6,3 s
+#   gemma-4-31b-it-mlx (MacBook)    108,1 / 32,0 /  -   s
+# Das MacBook traegt weiterhin 7 aktive n8n-Workflows, zwei Reports und den
+# Fallback von 14 Agenten bei ~2 GB freiem RAM; daher der Einbruch.
+#
+# 04.09.2026: Diese Repo-Fassung hinkte seit dem 22.08. hinterher und trug
+# weiter "gemma-4-31b-it-mlx" — ein Modell, das es nach der Archivierung gar
+# nicht mehr gibt. Live lief laengst die Zeile unten; ein `deploy.sh` haette
+# den Satelliten also auf ein totes Modell zurueckgeworfen. Deshalb hier
+# nachgezogen.
+#
+# Zum Fallback in llm.chat(): der steht seit dem 04.09. auf dem lokalen
+# `google/gemma-4-12b`. Vorher zeigte er auf das entfernte MLX-Modell und lief
+# damit ebenfalls ins Leere. Der Primaerpfad hier liegt auf der RTX und damit
+# hinter LM Link — genau dessen Ausfall soll der Fallback abfangen, also muss
+# er lokal liegen. Zurueck geht es mit einer Zeile.
+CHAT_MODEL = "gemma4-31b-it"
 
 # Mandant fest verdrahtet.
 TENANT = {
