@@ -113,6 +113,8 @@ describe("AuditFeed", () => {
       lockedEntity?: { type: string; id: string; label?: string };
       mode?: "all" | "agents";
       onModeChange?: (mode: "all" | "agents") => void;
+      actionDomain?: string;
+      onActionDomainChange?: (actionDomain: string) => void;
     } = {},
   ) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -127,6 +129,8 @@ describe("AuditFeed", () => {
             lockedEntity={props.lockedEntity}
             mode={props.mode}
             onModeChange={props.onModeChange}
+            actionDomain={props.actionDomain}
+            onActionDomainChange={props.onActionDomainChange}
           />
         </QueryClientProvider>,
       );
@@ -200,6 +204,35 @@ describe("AuditFeed", () => {
     expect(container.textContent).toContain("on behalf of Dotta");
     expect(container.querySelector('a[href="/agents/agent-1/runs/run-1"]')).toBeTruthy();
     expect(container.textContent).toContain("Recorded by Paperclip");
+  });
+
+  it("filters and renders connection tests in the same audit row shape", async () => {
+    listAgentActionsMock.mockResolvedValue({
+      items: [record({
+        actorType: "user",
+        actorId: "user-1",
+        action: "tool_gateway.call_completed",
+        entityType: "agent",
+        entityId: "agent-1",
+        agentId: "agent-1",
+        runId: null,
+        responsibleUserId: null,
+        details: { source: "test", tool: "get_repository", connectionId: "conn-1" },
+        entity: { issue: null, comment: null, document: null },
+      })],
+      nextCursor: null,
+      accessTier: "full",
+    });
+
+    await render({ actionDomain: "tool_" });
+
+    expect(listAgentActionsMock).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ action: "tool_" }),
+    );
+    expect(container.textContent).toContain("tested get repository on");
+    expect(container.querySelector('a[href="/apps/conn-1/permissions"]')).toBeTruthy();
+    expect(container.textContent).toContain("tool_gateway.call_completed");
   });
 
   it("shows the permission-denied upsell when the feed 403s", async () => {

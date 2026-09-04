@@ -174,14 +174,16 @@ describe("Connectors landing page", () => {
   it("renders one connector list with the requested header and no gallery sections", async () => {
     await renderBrowse();
 
-    expect(setBreadcrumbsMock).toHaveBeenCalledWith([]);
+    expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Connectors" }]);
     expect(setBreadcrumbsMock).not.toHaveBeenCalledWith(expect.arrayContaining([
       expect.objectContaining({ href: "/dashboard" }),
     ]));
-    expect(container.querySelector("header")?.textContent).toBe("Connectors");
+    expect(container.querySelector("header")?.textContent).not.toContain("Connectors");
     expect(
       container.querySelector('header input[aria-label="Search connectors"]'),
     ).toBeTruthy();
+    expect(container.querySelector("header")?.classList).toContain("justify-start");
+    expect(container.querySelector("header")?.classList).not.toContain("justify-end");
     expect(container.querySelector('[aria-label="Popular apps"]')).toBeNull();
     expect(container.querySelector('[aria-label="Connected apps"]')).toBeNull();
     expect(container.querySelector('[aria-label="All apps"]')).toBeNull();
@@ -277,11 +279,11 @@ describe("Connectors landing page", () => {
     await act(async () => {
       notion
         .querySelector<HTMLButtonElement>(
-          'button[aria-label="Open devinfoley@gmail.com connection settings"]',
+          'button[aria-label="Open devinfoley@gmail.com permissions"]',
         )
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-notion/setup");
+    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-notion/permissions");
 
     await act(async () => {
       notion
@@ -298,7 +300,7 @@ describe("Connectors landing page", () => {
     await act(async () => {
       reconnect?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-expired/setup");
+    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-expired/permissions");
   });
 
   it("removes a connection from the overflow menu only after destructive confirmation", async () => {

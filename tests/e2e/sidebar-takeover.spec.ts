@@ -3,9 +3,9 @@ import { test, expect, request as pwRequest, type APIRequestContext } from "@pla
 /**
  * E2E: contextual sidebar companion model.
  *
- * Contextual routes render their navigation beside the stable global sidebar.
- * The global company navigation and account menu remain available, and leaving
- * the surface restores the user's global sidebar preference.
+ * Most contextual routes render their navigation beside the stable global
+ * sidebar. Settings intentionally takes over that sidebar while preserving the
+ * account menu, and its Back to app link restores the global navigation.
  *
  * Plugin route sidebars share the same Layout path. A live plugin-route test
  * requires a plugin fixture, so that branch remains covered by Layout tests.
@@ -60,7 +60,7 @@ test.describe("Contextual sidebar companion", () => {
     }, COLLAPSED_STORAGE_KEY);
   });
 
-  test("shows Settings beside the global navigation", async ({ page }) => {
+  test("replaces global navigation with Settings navigation", async ({ page }) => {
     await page.goto(`/${prefix}/company/settings`);
 
     const contextual = page.locator('[data-contextual-sidebar="settings"]');
@@ -70,10 +70,10 @@ test.describe("Contextual sidebar companion", () => {
 
     await expect(contextual.getByRole("link", { name: "General" })).toBeVisible();
     await expect(contextual.getByText("Environments", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Back from Settings" })).toBeVisible();
+    await expect(contextual.getByRole("link", { name: "Back to app" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Open account menu" })).toBeVisible();
 
-    await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Dashboard" })).toHaveCount(0);
     await expect(page.getByLabel(APP_SIDEBAR_EXPANDED_MARKER)).toHaveCount(0);
   });
 
@@ -91,7 +91,7 @@ test.describe("Contextual sidebar companion", () => {
   test("keeps the retired collapse control absent across contextual navigation", async ({ page }) => {
     await page.goto(`/${prefix}/company/settings`);
     await expect(page.locator('[data-contextual-sidebar="settings"]')).toBeVisible();
-    await expect(page.getByRole("link", { name: "Dashboard" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Back to app" })).toBeVisible();
     await expect(page.getByLabel(APP_SIDEBAR_EXPANDED_MARKER)).toHaveCount(0);
 
     await page.goto(`/${prefix}/dashboard`);
@@ -101,9 +101,9 @@ test.describe("Contextual sidebar companion", () => {
     await expect(page.getByLabel(APP_SIDEBAR_EXPANDED_MARKER)).toHaveCount(0);
   });
 
-  test("uses Dashboard as the safe fallback for a direct Settings link", async ({ page }) => {
+  test("uses Dashboard as the destination for a direct Settings link", async ({ page }) => {
     await page.goto(`/${prefix}/company/settings`);
-    await page.getByRole("button", { name: "Back from Settings" }).click();
+    await page.getByRole("link", { name: "Back to app" }).click();
 
     await expect(page).toHaveURL(new RegExp(`/${prefix}/dashboard$`));
     await expect(page.locator("[data-contextual-sidebar]")).toHaveCount(0);

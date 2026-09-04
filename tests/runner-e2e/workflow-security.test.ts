@@ -3,6 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+const ordinaryPrTrustedWorkflowRevision =
+  "a0a78ee60946a5f79f85b2bd0584fc766fae43bb";
 const fullStackTestNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
 const buildRunnerNeeds =
@@ -11,6 +13,112 @@ const buildRemoteProviderPackNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,?\s*\]/u;
 
 describe("public repository paid workflow security", () => {
+  it("pins ordinary PR CI to the trusted Node-before-pnpm workflow", async () => {
+    const ordinaryPrWorkflow = await readFile(
+      path.join(repositoryRoot, ".github/workflows/pr.yml"),
+      "utf8",
+    );
+    const trustedWorkflowCalls = [
+      ...ordinaryPrWorkflow.matchAll(
+        /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([0-9a-f]{40})$/gmu,
+      ),
+    ];
+
+    expect(trustedWorkflowCalls).toHaveLength(1);
+    expect(trustedWorkflowCalls[0]?.[1]).toBe(
+      "paperclipai/paperclip/.github/workflows/pr-trusted.yml",
+    );
+    expect(trustedWorkflowCalls[0]?.[2]).toBe(
+      ordinaryPrTrustedWorkflowRevision,
+    );
+  });
+
+  it("keeps pnpm bootstrap registry telemetry out of trusted workflow setup", async () => {
+    for (const workflowName of [
+      "runner-full-stack-e2e.yml",
+      "pr-trusted.yml",
+    ]) {
+      const workflow = await readFile(
+        path.join(repositoryRoot, ".github/workflows", workflowName),
+        "utf8",
+      );
+      const pnpmSetupSteps = workflow
+        .split(/\n(?= {6}- )/u)
+        .filter((step) => step.includes("uses: pnpm/action-setup@"));
+
+      expect(pnpmSetupSteps, workflowName).toHaveLength(7);
+      for (const step of pnpmSetupSteps) {
+        expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
+        expect(step, workflowName).toContain('NPM_CONFIG_FUND: "false"');
+        expect(step, workflowName).toContain(
+          'NPM_CONFIG_UPDATE_NOTIFIER: "false"',
+        );
+      }
+      for (const variable of [
+        "NPM_CONFIG_AUDIT",
+        "NPM_CONFIG_FUND",
+        "NPM_CONFIG_UPDATE_NOTIFIER",
+      ]) {
+        expect(
+          workflow.match(new RegExp(`${variable}:`, "gu")),
+          workflowName,
+        ).toHaveLength(pnpmSetupSteps.length);
+      }
+    }
+  });
+
+  it("installs a modern Node runtime before every trusted pnpm bootstrap", async () => {
+    const workflows = [
+      {
+        name: "runner-full-stack-e2e.yml",
+        expectedCachedSetupNodeSteps: 4,
+      },
+      {
+        name: "pr-trusted.yml",
+        expectedCachedSetupNodeSteps: 7,
+      },
+    ];
+
+    for (const { name, expectedCachedSetupNodeSteps } of workflows) {
+      const workflow = await readFile(
+        path.join(repositoryRoot, ".github/workflows", name),
+        "utf8",
+      );
+      const steps = workflow.split(/\n(?= {6}- )/u);
+      const pnpmSetupStepIndexes = steps.flatMap((step, index) =>
+        step.includes("uses: pnpm/action-setup@") ? [index] : [],
+      );
+
+      expect(pnpmSetupStepIndexes, name).toHaveLength(7);
+      for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
+        const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
+        const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;
+        expect(nodeBootstrapStep, name).toContain("uses: actions/setup-node@");
+        expect(nodeBootstrapStep, name).not.toContain("cache: pnpm");
+
+        const nodeVersionMatch = nodeBootstrapStep.match(
+          /^\s*node-version:\s*["']?(\d+)(?:\.(\d+))?/mu,
+        );
+        expect(nodeVersionMatch, name).not.toBeNull();
+        const nodeMajor = Number(nodeVersionMatch![1]);
+        const nodeMinor = Number(nodeVersionMatch![2] ?? 0);
+        expect(
+          nodeMajor > 22 || (nodeMajor === 22 && nodeMinor >= 13),
+          `${name} must install Node >=22.13 before pnpm/action-setup`,
+        ).toBe(true);
+
+        const conditionPattern = /^ {6}- if:\s*(.+)$/mu;
+        expect(nodeBootstrapStep.match(conditionPattern)?.[1] ?? null).toBe(
+          pnpmSetupStep.match(conditionPattern)?.[1] ?? null,
+        );
+      }
+
+      expect(workflow.match(/^\s+cache: pnpm$/gmu), name).toHaveLength(
+        expectedCachedSetupNodeSteps,
+      );
+    }
+  });
+
   it("gates every provider-secret job with stable actor IDs", async () => {
     const workflows = await Promise.all(
       ["runner-full-stack-e2e.yml", "runner-live-evals.yml", "e2e.yml"].map(
@@ -92,6 +200,10 @@ describe("public repository paid workflow security", () => {
       "repos/$REPOSITORY/branches/$encoded_branch",
     );
     expect(authorizeJob).toContain('echo "sha=$target_sha"');
+    expect(authorizeJob).toContain(
+      "target_ref: ${{ steps.target.outputs.ref }}",
+    );
+    expect(authorizeJob).toContain('echo "ref=refs/heads/$TARGET_BRANCH"');
     expect(authorizeJob).not.toContain("actions/checkout@");
     expect(authorizeJob).not.toContain("pnpm install");
     expect(targetLockJob).toContain("name: Resolve target pnpm lockfile");
@@ -252,6 +364,14 @@ describe("public repository paid workflow security", () => {
       "ref: ${{ needs.authorize.outputs.target_sha }}",
     );
     expect(historyJob).not.toContain("Download resolved target lockfile");
+    for (const targetProvenanceJob of [paidJob, reportJob]) {
+      expect(targetProvenanceJob).toContain(
+        "PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}",
+      );
+      expect(targetProvenanceJob).toContain(
+        "PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}",
+      );
+    }
     for (const [secret, condition] of Object.entries({
       OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",
       ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",
@@ -353,6 +473,14 @@ describe("public repository paid workflow security", () => {
     expect(buildJob).toContain(
       "provider_pack_artifact_name: ${{ steps.provider_pack_artifact_name.outputs.name }}",
     );
+    expect(buildJob).toContain(
+      "runner-e2e-build-${TARGET_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+    );
+    expect(buildJob).toContain(
+      "runner-e2e-provider-pack-${TARGET_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}",
+    );
+    expect(buildJob).not.toContain("runner-e2e-build-${GITHUB_SHA}");
+    expect(buildJob).not.toContain("runner-e2e-provider-pack-${GITHUB_SHA}");
     expect(workflow).toContain("needs_runner_typescript=");
     expect(workflow).toContain("needs_native_binaries=");
     expect(workflow).toContain("needs_remote_provider_pack=");

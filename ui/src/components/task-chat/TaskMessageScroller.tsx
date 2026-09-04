@@ -215,12 +215,17 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       <div
         ref={ref}
         onScroll={handleScroll}
-        // absolute inset-0 (not h-full): the viewport must equal the flex-sized
-        // wrapper exactly — percentage heights don't reliably resolve against
-        // flex-determined block heights, which let the thread overflow the page.
+        // Keep the viewport tied to the flex-sized wrapper vertically —
+        // percentage heights don't reliably resolve against flex-determined
+        // block heights, which let the thread overflow the page. In the
+        // streamlined shell, extend only the scroll box through the page's
+        // right gutter; matching padding preserves the message column while
+        // placing the scrollbar against the properties-panel boundary.
         className={cn(
-          "scrollbar-while-scrolling absolute inset-0 overflow-y-auto",
-          streamlined && "overflow-x-hidden",
+          "scrollbar-while-scrolling absolute inset-y-0 left-0 overflow-y-auto",
+          streamlined
+            ? "-right-4 overflow-x-hidden pr-4 md:-right-6 md:pr-6"
+            : "right-0",
           className,
         )}
         data-testid="task-chat-scroller"

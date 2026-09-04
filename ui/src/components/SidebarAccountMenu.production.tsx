@@ -2,8 +2,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
+  Flag,
   LogOut,
-  Megaphone,
   type LucideIcon,
   UserRound,
   UserRoundPen,
@@ -15,6 +15,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
@@ -154,11 +155,15 @@ export function SidebarAccountMenu({
 
   return (
     <div className="border-t border-r border-border bg-background px-3 py-2">
-      <Popover open={open} onOpenChange={setOpen}>
+      <div className={cn("flex items-center gap-0.5", !rail && "px-2")}>
+        <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
+            className={cn(
+              "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground",
+              rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
+            )}
             aria-label="Open account menu"
           >
             <Avatar size="sm">
@@ -244,14 +249,6 @@ export function SidebarAccountMenu({
                 external
                 onClick={() => setOpen(false)}
               />
-              <MenuAction
-                label="Feedback"
-                description="Share feedback or report an issue."
-                icon={Megaphone}
-                href={FEEDBACK_URL}
-                external
-                onClick={() => setOpen(false)}
-              />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
               {deploymentMode === "authenticated" ? (
                 <button
@@ -280,7 +277,24 @@ export function SidebarAccountMenu({
             </div>
           </div>
         </PopoverContent>
-      </Popover>
+        </Popover>
+        {!rail ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                href={FEEDBACK_URL}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Share feedback"
+                className="flex size-8 shrink-0 items-center justify-center rounded-lg text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Flag className="h-4 w-4" aria-hidden="true" />
+              </a>
+            </TooltipTrigger>
+            <TooltipContent side="top">Share feedback</TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
     </div>
   );
 }

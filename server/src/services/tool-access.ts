@@ -2820,7 +2820,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         key: `connection:${input.connection.uid}:delegation:${input.ownerUserId}:${input.agentId}`,
         revisionId: input.connection.updatedAt.toISOString(),
         label: `Delegate ${input.connection.name}`,
-        href: `/${company?.issuePrefix ?? ""}/apps/${input.connection.id}/setup#personal-identity`,
+        href: `/${company?.issuePrefix ?? ""}/apps/${input.connection.id}/permissions#personal-identity`,
       },
     };
     const [existing] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -6275,11 +6275,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   function connectionSetupUrl(connection: typeof toolConnections.$inferSelect) {
-    return `/apps/${connection.id}/setup`;
+    return `/apps/${connection.id}/permissions`;
   }
 
   function connectionReconnectUrl(connection: typeof toolConnections.$inferSelect) {
-    return `/apps/${connection.id}/advanced`;
+    return `/apps/${connection.id}/permissions`;
   }
 
   function credentialScope(connection: typeof toolConnections.$inferSelect, actor?: ActorInfo) {
@@ -8594,7 +8594,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           connectionMethodKey: method?.key,
           methodConfig: normalizedMethodConfig?.values ?? {},
           // Grant-backed setup keeps the full discovered catalog selectable;
-          // the wizard projects the app's ask-first defaults into policies at
+          // the wizard projects the app's action defaults into policies at
           // finish time instead of using catalog quarantine as access state.
           quarantineNewEntries: false,
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),

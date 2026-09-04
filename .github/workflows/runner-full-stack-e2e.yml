@@ -60,6 +60,7 @@ jobs:
       max_parallel_default: ${{ steps.runner.outputs.max_parallel_default }}
       max_parallel_limit: ${{ steps.runner.outputs.max_parallel_limit }}
       target_sha: ${{ steps.target.outputs.sha }}
+      target_ref: ${{ steps.target.outputs.ref }}
     steps:
       - name: Require default branch and allowlisted numeric actor IDs
         env:
@@ -113,6 +114,7 @@ jobs:
             exit 1
           fi
           echo "sha=$target_sha" >> "$GITHUB_OUTPUT"
+          echo "ref=refs/heads/$TARGET_BRANCH" >> "$GITHUB_OUTPUT"
           echo "Resolved the requested repository branch to $target_sha."
 
       - name: Select paid test runner
@@ -156,13 +158,17 @@ jobs:
           ref: ${{ needs.authorize.outputs.target_sha }}
           persist-credentials: false
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 9.15.4
-
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
 
       - name: Resolve target lockfile without lifecycle scripts
         id: lock
@@ -230,7 +236,15 @@ jobs:
           cp "$lock" pnpm-lock.yaml
           test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
 
@@ -418,31 +432,25 @@ jobs:
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$IMAGE_TAG@$digest" >/dev/null
           immutable="${IMAGE_TAG%:*}@$digest"
-          # The Daytona base image is large. The build cache plus a second full
-          # anonymous pull can exhaust a standard GitHub-hosted runner before
-          # Docker creates the tiny metadata-probe container. The pushed digest
-          # is already immutable, so release the local builder/cache first.
-          docker buildx prune --all --force >/dev/null
-          docker system prune --all --force >/dev/null
-          anonymous_config="$(mktemp -d)"
-          docker --config "$anonymous_config" pull "$immutable"
           # The Dockerfile's final two RUN steps execute the runner metadata,
           # transport-mode, provider-pack JSON, and pinned ACP binary checks as
-          # root and as the unprivileged Daytona user. Starting another
-          # container after this full pull can exhaust the hosted runner's thin
-          # writable layer even after pruning, so assert the published image
-          # configuration here without creating a redundant container.
-          image_config="$(docker image inspect "$immutable" \
-            --format '{{json .}}')"
-          published_content_id="$(jq -r '.Config.Labels["io.paperclip.runner.content-id"] // empty' <<< "$image_config")"
-          source_revision="$(jq -r '.Config.Labels["org.opencontainers.image.revision"] // empty' <<< "$image_config")"
+          # root and as the unprivileged Daytona user. Buildx reads the signed
+          # digest's OCI config directly from GHCR, so verification does not
+          # download the image's large filesystem layers. Logging out first
+          # preserves the proof that Daytona can retrieve this public image
+          # without the workflow's package credentials.
+          docker logout ghcr.io >/dev/null
+          image_config="$(docker buildx imagetools inspect "$immutable" \
+            --format '{{json .Image}}')"
+          published_content_id="$(jq -r '.config.Labels["io.paperclip.runner.content-id"] // empty' <<< "$image_config")"
+          source_revision="$(jq -r '.config.Labels["org.opencontainers.image.revision"] // empty' <<< "$image_config")"
           test "$published_content_id" = "$IMAGE_CONTENT_ID"
           [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]]
           jq -e \
-            '.Architecture == "amd64" and
-             .Os == "linux" and
-             .Config.User == "daytona" and
-             (.Config.Env | any(startswith("PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=")))' \
+            '.architecture == "amd64" and
+             .os == "linux" and
+             .config.User == "daytona" and
+             (.config.Env | any(startswith("PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=")))' \
             <<< "$image_config" >/dev/null
           echo "image=$immutable" >> "$GITHUB_OUTPUT"
           echo "source_revision=$source_revision" >> "$GITHUB_OUTPUT"
@@ -486,7 +494,15 @@ jobs:
           cp "$lock" pnpm-lock.yaml
           test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
 
@@ -548,7 +564,9 @@ jobs:
 
       - name: Name immutable shared campaign outputs
         id: build_artifact_name
-        run: echo "name=runner-e2e-build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+        run: echo "name=runner-e2e-build-${TARGET_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Upload immutable shared campaign outputs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -606,7 +624,16 @@ jobs:
           test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
       - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
 
@@ -674,7 +701,9 @@ jobs:
       - name: Name immutable remote provider pack
         id: provider_pack_artifact_name
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
-        run: echo "name=runner-e2e-provider-pack-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+        env:
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+        run: echo "name=runner-e2e-provider-pack-${TARGET_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Upload immutable remote provider pack
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
@@ -753,13 +782,17 @@ jobs:
           cp "$lock" pnpm-lock.yaml
           test "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)" = "$EXPECTED_LOCK_SHA256"
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 9.15.4
-
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
 
       # This job receives provider credentials only in the final paid-test
       # step. Keep target-selected dependency lifecycle code from running in
@@ -881,6 +914,8 @@ jobs:
           PAPERCLIP_E2E_DAYTONA_IMAGE: ${{ needs.daytona_image.outputs.image }}
           PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: ${{ github.workspace }}/packages/paperclip-runner/provider-pack
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.executionId }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
         run: pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
 
       - name: Upload access-controlled packaged cell evidence
@@ -909,7 +944,15 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
         with:
           version: 9.15.4
 
@@ -962,6 +1005,8 @@ jobs:
           PAPERCLIP_RUNNER_E2E_REPORT_OUT: ${{ github.workspace }}/runner-e2e-merged-report/normalized
           PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: ${{ needs.catalog.outputs.execution_ids }}
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
+          PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
         run: |
           set +e
           pnpm test:e2e:runner:report
@@ -1013,13 +1058,17 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 9.15.4
-
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
 
       - run: pnpm install --frozen-lockfile
 

@@ -133,11 +133,17 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(el.scrollHeight);
   });
 
-  it("keeps the scrollbar at the full-width thread viewport edge", () => {
+  it("extends only the streamlined scroll box through the page gutter", () => {
     render();
-    const frame = scroller().parentElement;
+    const el = scroller();
+    const frame = el.parentElement;
 
     expect(frame?.className).toBe("relative min-h-0 flex-1");
+    expect(el.classList).toContain("-right-4");
+    expect(el.classList).toContain("pr-4");
+    expect(el.classList).toContain("md:-right-6");
+    expect(el.classList).toContain("md:pr-6");
+    expect(el.classList).not.toContain("right-0");
   });
 
   it("shows the scrollbar only while scroll activity is recent", () => {

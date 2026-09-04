@@ -1,24 +1,19 @@
-import { Activity, Beaker, Blocks, Inbox, Settings2, ShieldCheck } from "lucide-react";
+import { Blocks, Inbox, ShieldCheck } from "lucide-react";
 
 export const APP_TABS = [
-  { key: "setup", label: "Setup", icon: Settings2 },
-  { key: "test", label: "Test", icon: Beaker },
-  { key: "services", label: "Services", icon: Blocks },
   { key: "permissions", label: "Permissions", icon: ShieldCheck },
+  { key: "services", label: "Services", icon: Blocks },
   { key: "review", label: "Review", icon: Inbox },
-  { key: "activity", label: "Activity", icon: Activity },
 ] as const;
 
 export type AppTabKey = (typeof APP_TABS)[number]["key"];
 
 /**
  * Tabs hidden for an application that has no live connection (the
- * `AppNotConnected` shell). The Test tab runs real calls against a connected
- * app, so it only appears once the app is connected. Services lists the toolkits
- * behind a broker's API key, which there is likewise nothing to read without one.
+ * `AppNotConnected` shell). Services lists the toolkits behind a broker's API
+ * key, which there is nothing to read without a live connection.
  */
 export const CONNECTED_ONLY_APP_TABS: ReadonlySet<AppTabKey> = new Set<AppTabKey>([
-  "test",
   "services",
 ]);
 
@@ -47,5 +42,5 @@ export function isAppTabKey(value: string | undefined): value is AppTabKey {
 }
 
 export function appTabLabel(tabKey: AppTabKey): string {
-  return APP_TABS.find((tab) => tab.key === tabKey)?.label ?? "Setup";
+  return APP_TABS.find((tab) => tab.key === tabKey)?.label ?? "Permissions";
 }

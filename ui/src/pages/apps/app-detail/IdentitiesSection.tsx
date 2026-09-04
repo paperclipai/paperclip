@@ -160,11 +160,19 @@ export function IdentitiesSection({
     <section className="space-y-5">
       <IdentitiesHeading />
 
-      <ConnectionAudienceCallout
+      <HumanAccessCards
         personal={usesPersonalIdentity}
+        restricted={!usesPersonalIdentity && Boolean(orgGrant?.members?.length)}
         connectedName={usesPersonalIdentity ? personalSubjectLabel ?? connectedUser?.label ?? null : null}
         connectedImage={usesPersonalIdentity ? connectedUser?.image ?? null : null}
         status={(usesPersonalIdentity ? personalGrant : orgGrant)?.status ?? null}
+        canEditAudience={orgGrant?.capabilities?.canEditAudience ?? false}
+        onChooseAll={() => {
+          if (orgGrant) onReplaceAudience(orgGrant, []);
+        }}
+        onChooseSelected={() => {
+          if (orgGrant) onOpenAudience(orgGrant.id);
+        }}
       />
 
       <div>
@@ -224,39 +232,69 @@ export function IdentitiesSection({
 }
 
 function IdentitiesHeading() {
-  return <h2 className="text-sm font-semibold text-foreground">Account</h2>;
+  return <h2 className="text-sm font-semibold text-foreground">Which humans can use this credential?</h2>;
 }
 
-function ConnectionAudienceCallout({
+function HumanAccessCards({
   personal,
+  restricted,
   connectedName,
   connectedImage,
   status,
+  canEditAudience,
+  onChooseAll,
+  onChooseSelected,
 }: {
   personal: boolean;
+  restricted: boolean;
   connectedName: string | null;
   connectedImage: string | null;
   status: ConnectionGrant["status"] | null;
+  canEditAudience: boolean;
+  onChooseAll: () => void;
+  onChooseSelected: () => void;
 }) {
-  const Icon = personal ? UserRound : Building2;
   return (
-    <div className="flex items-start gap-4 rounded-lg border border-border bg-card p-5">
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
-        <Icon className="h-5 w-5" />
-      </div>
-      <div className="min-w-0 space-y-3">
-        <p className="text-lg font-semibold text-foreground">
-          {personal
-            ? "Only you can use this connection"
-            : "Anyone in your company can use this connection"}
-        </p>
-        {connectedName && status !== null ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <Identity name={connectedName} avatarUrl={connectedImage} />
-            {status === "active" ? null : <StatusText status={status} />}
-          </div>
-        ) : null}
-      </div>
+    <div className="space-y-3">
+      <RadioCardGroup
+        ariaLabel="Which humans can use this credential"
+        value={personal ? "personal" : restricted ? "selected" : "company"}
+        className="sm:grid-cols-2"
+        onValueChange={(next) => {
+          if (!canEditAudience || personal) return;
+          if (next === "company") onChooseAll();
+          if (next === "selected") onChooseSelected();
+        }}
+        options={personal ? [
+          {
+            value: "personal",
+            title: "Just me",
+            description: "Only you can use this connection.",
+            icon: <UserRound className="h-4 w-4" />,
+          },
+        ] : [
+          {
+            value: "selected",
+            title: "Humans I pick",
+            description: "Only selected people in your company.",
+            icon: <UserRound className="h-4 w-4" />,
+            disabled: !canEditAudience,
+          },
+          {
+            value: "company",
+            title: "Any human in the company",
+            description: "Anyone in your company can use this connection.",
+            icon: <Building2 className="h-4 w-4" />,
+            disabled: !canEditAudience,
+          },
+        ]}
+      />
+      {connectedName && status !== null ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Identity name={connectedName} avatarUrl={connectedImage} />
+          {status === "active" ? null : <StatusText status={status} />}
+        </div>
+      ) : null}
     </div>
   );
 }

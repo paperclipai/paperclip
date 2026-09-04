@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { SidebarCompanyMenu as SidebarCompanyMenuProduction } from "./SidebarCompanyMenu.production";
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -364,6 +365,56 @@ describe("SidebarCompanyMenu", () => {
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
     expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
     expect(document.body.textContent).not.toContain("Switch organization");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows the production-shell invite shortcut when no surface is hidden", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, { status: "ok" });
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarCompanyMenuProduction />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await openMenu("Open Acme Labs company switcher");
+
+    expect(document.body.textContent).toContain("Invite people to Acme Labs");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the production-shell invite shortcut when the operator hides the invites surface", async () => {
+    // The production shell (streamlined UI disabled) must honor
+    // PAPERCLIP_HIDDEN_SETTINGS like the streamlined menu — this is the knob
+    // Paperclip Cloud uses to drop the shortcut on its managed stacks.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, { status: "ok", hiddenSettings: ["company.invites"] });
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarCompanyMenuProduction />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await openMenu("Open Acme Labs company switcher");
+
+    expect(document.body.textContent).toContain("Switch");
+    expect(document.body.textContent).not.toContain("Invite people");
 
     act(() => {
       root.unmount();

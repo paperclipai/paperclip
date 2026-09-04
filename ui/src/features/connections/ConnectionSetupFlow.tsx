@@ -211,7 +211,7 @@ const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
   access: 1,
   key: 2,
 };
-const ZAPIER_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, number> = {
+const SELECTED_APP_STEP_INDEX: Record<Exclude<Step, "gallery" | "success">, number> = {
   access: 0,
   key: 1,
 };
@@ -441,7 +441,9 @@ export function ConnectionSetupFlow({
   });
 
   const [step, setStep] = useState<Step>(
-    requestedAppKey ? "key" : prefill.link || zapierSource ? "access" : "gallery",
+    requestedAppKey
+      ? resumeConnectionId ? "key" : "access"
+      : prefill.link || zapierSource ? "access" : "gallery",
   );
   const [entry, setEntry] = useState<AppDefinition | null>(null);
   const [galleryName, setGalleryName] = useState("");
@@ -1633,11 +1635,13 @@ export function ConnectionSetupFlow({
   const stepLabels = zapierSource
     ? ZAPIER_STEP_LABELS
     : entry && credentialSourceMethods.length > 1
-      ? ["Pick app", "Access", "Choose connection"]
+      ? ["Access", "Choose connection"]
     : entry && credentialSourceMethods[0]?.auth === "oauth"
-      ? ["Pick app", "Access", "Sign in"]
+      ? ["Access", "Sign in"]
     : isGoogleSheetsRobotMethod(entry, connectionMethodKey)
-      ? ["Pick app", "Access", "Share sheet"]
+      ? ["Access", "Share sheet"]
+      : entry
+        ? ["Access", "Add your key"]
       : STEP_LABELS;
   // The Access step's identity question only makes sense when there *is* a
   // credential, so it reads the selected method's auth kind.
@@ -1662,8 +1666,8 @@ export function ConnectionSetupFlow({
     ? `Continue to ${entry?.name ?? "sign-in"}`
     : "Save and continue";
 
-  const stepIndex = zapierSource && step !== "gallery" && step !== "success"
-    ? ZAPIER_STEP_INDEX[step]
+  const stepIndex = (zapierSource || entry) && step !== "gallery" && step !== "success"
+    ? SELECTED_APP_STEP_INDEX[step]
     : step === "success"
       ? stepLabels.length
       : STEP_INDEX[step];

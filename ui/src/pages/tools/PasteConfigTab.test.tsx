@@ -294,6 +294,42 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(container.textContent).not.toContain("Next, you'll add the keys");
   });
 
+  it("activates imported write actions as allowed by default", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const result = connectResult();
+    result.actions.canMakeChanges = [{
+      catalogEntryId: "cat-write",
+      toolName: "create_page",
+      title: "Create page",
+      description: "Create a page.",
+      riskLevel: "write",
+      isReadOnly: false,
+      isWrite: true,
+      isDestructive: false,
+      status: "active",
+    }];
+    toolsApiMock.connectApp.mockResolvedValue(result);
+    toolsApiMock.finishApp.mockResolvedValue({ connection: result.connection });
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const activateButton = buttonStartingWith("Activate 2 of 2");
+    expect(activateButton).toBeTruthy();
+    await act(async () => {
+      activateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(toolsApiMock.finishApp).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["cat-read", "cat-write"],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+  });
+
   it("collects imported headers as secret replacement fields before checking actions", async () => {
     await pasteAndCheck(
       {
@@ -453,7 +489,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
       buttonStartingWith("Back")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions");
     expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
     expect(toolsApiMock.startOAuth).not.toHaveBeenCalled();
   });

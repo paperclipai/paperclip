@@ -647,6 +647,17 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
   });
 
+  it("starts a selected app deep link at step one of its two-step setup", async () => {
+    mockSearch.value = "source=gmail";
+    listGalleryMock.mockResolvedValue({ apps: [GMAIL] });
+
+    await render();
+
+    expect(document.body.textContent).toContain("Step 1 of 2");
+    expect(document.body.textContent).toContain("Access   ·   Choose connection");
+    expect(document.body.textContent).not.toContain("Pick app   ·");
+  });
+
   it("opens a brokered Gmail deep link at the access step", async () => {
     mockParams.appKey = "gmail";
     mockSearch.value = "byo=1&appKey=gmail&stage=access";
@@ -654,6 +665,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
+    expect(document.body.textContent).toContain("Step 1 of 2");
+    expect(document.body.textContent).toContain("Access   ·   Choose connection");
+    expect(document.body.textContent).not.toContain("Pick app   ·");
     expect(document.body.textContent).toContain("Which humans can use this credential?");
     expect(document.body.textContent).toContain("Just me");
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });

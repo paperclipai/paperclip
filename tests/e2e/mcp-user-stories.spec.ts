@@ -303,7 +303,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
       await page.goto(`/${seed.prefix}/apps/${connectionId}`);
       await expect(page.getByRole("heading", { name: /Sheets Fixture us1/i })).toBeVisible({ timeout: 30_000 });
       await screenshot(page, "US-1", "01-connected-app");
-      await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`);
+      await page.goto(`/${seed.prefix}/activity?action=tool_`);
       await screenshot(page, "US-1", "02-activity");
     } finally {
       await mock.close();

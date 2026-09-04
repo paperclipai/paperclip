@@ -1325,6 +1325,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(agent).toEqual({ status: "running", errorReason: null });
   });
 
+  it("does not queue immediate recovery when the failed run's issue is hidden", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      provider: "test",
+      model: "test-model",
+    });
+
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(issues)
+      .set({ hiddenAt: new Date("2026-03-19T00:05:00.000Z") })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const run = await heartbeat.getRun(runId);
+    const recoveryRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId));
+
+    expect(run).toMatchObject({ status: "failed" });
+    expect(recoveryRuns).toHaveLength(0);
+  });
+
+  it("leaves hidden issues out of stranded-issue reconciliation", async () => {
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    await db
+      .update(issues)
+      .set({ hiddenAt: new Date("2026-03-19T00:05:00.000Z") })
+      .where(eq(issues.id, issueId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.issueIds).not.toContain(issueId);
+    expect(result.continuationRequeued).toBe(0);
+  });
+
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -6028,7 +6075,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.continuationRequeued).toBe(0);
     expect(result.escalated).toBe(1);
     expect(result.skipped).toBe(0);
-    expect(result.issueIds).toEqual([blocked.issueId, unblocked.issueId]);
+    expect([...result.issueIds].sort()).toEqual(
+      [blocked.issueId, unblocked.issueId].sort(),
+    );
 
     const blockedWakeups = await db
       .select()

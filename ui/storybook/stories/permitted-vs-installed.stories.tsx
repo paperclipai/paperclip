@@ -137,26 +137,24 @@ function PanelHarness({
   install: InstallState;
   capabilities?: ToolConnectionCapabilities;
 }) {
-  const [state, setState] = useState(install);
   const [access, setAccess] = useState<AccessDraft>({ mode: "all", agentIds: new Set() });
   return (
     <div className="mx-auto max-w-3xl bg-background p-6">
       <PermissionsPanel
+        connectionId="connection-gmail"
         capabilities={capabilities}
         appName="Gmail"
         agents={AGENTS}
         access={access}
-        install={state}
+        install={install}
         readOnly={GMAIL_TOOLS.filter((t) => t.isReadOnly)}
         canChange={GMAIL_TOOLS.filter((t) => !t.isReadOnly)}
         quarantined={[]}
         enabledIds={new Set(["g-list", "g-read"])}
         askFirstIds={new Set(["g-send"])}
         pending={false}
-        installPending={false}
         refreshPending={false}
         onSaveAccess={setAccess}
-        onSaveInstall={setState}
         onSetActionPermission={() => {}}
         onReviewQuarantined={() => {}}
         onRefreshActions={() => {}}

@@ -71,8 +71,16 @@ describe("runner E2E Daytona image contract", () => {
     );
     expect(workflow).not.toContain("e2e-git-${{ github.sha }}");
     expect(workflow).toContain("cosign sign --yes");
-    expect(workflow).toContain("docker image inspect");
-    expect(workflow).toContain('.Config.User == "daytona"');
+    expect(workflow).toContain("docker logout ghcr.io");
+    expect(workflow).toContain(`docker buildx imagetools inspect "$immutable"`);
+    expect(workflow).toContain(`--format '{{json .Image}}'`);
+    expect(workflow).not.toContain(`docker --config "$anonymous_config" pull`);
+    expect(workflow).not.toContain("docker image inspect");
+    expect(workflow).not.toContain("docker buildx prune --all --force");
+    expect(workflow).not.toContain("docker system prune --all --force");
+    expect(workflow).toContain('.architecture == "amd64"');
+    expect(workflow).toContain('.os == "linux"');
+    expect(workflow).toContain('.config.User == "daytona"');
     expect(workflow).toContain("PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT=");
     expect(workflow).toContain(
       "node packages/paperclip-runner/scripts/build-provider-pack.mjs packages/paperclip-runner/provider-pack",
@@ -83,7 +91,12 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(
       "PAPERCLIP_RUNNER_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}",
     );
-    expect(workflow).toContain("anonymous_config");
+    expect(workflow.indexOf("cosign verify")).toBeLessThan(
+      workflow.indexOf("docker logout ghcr.io"),
+    );
+    expect(workflow.indexOf("docker logout ghcr.io")).toBeLessThan(
+      workflow.indexOf(`--format '{{json .Image}}'`),
+    );
   });
 
   it("hashes the audited image dependency closure rather than the repository revision", async () => {

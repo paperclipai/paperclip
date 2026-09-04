@@ -3026,7 +3026,7 @@ export function createToolGatewayService(
     if (!session.issueId || !session.agentId || !session.runId) return;
     const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
       .where(eq(companies.id, session.companyId)).limit(1);
-    const href = `/${company?.issuePrefix ?? ""}/apps/${connection.id}/setup`;
+    const href = `/${company?.issuePrefix ?? ""}/apps/${connection.id}/permissions`;
     const idempotencyKey = `connection-authorization:${connection.id}:${userId}`;
     const payload = {
       version: 1 as const,
@@ -3097,7 +3097,7 @@ export function createToolGatewayService(
     if (!session.issueId || !session.agentId || !session.runId) return;
     const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
       .where(eq(companies.id, session.companyId)).limit(1);
-    const href = `/${company?.issuePrefix ?? ""}/apps/${connection.id}/setup`;
+    const href = `/${company?.issuePrefix ?? ""}/apps/${connection.id}/permissions`;
     const idempotencyKey = `connection-delegation:${connection.id}:${userId}:${session.agentId}`;
     const payload = {
       version: 1 as const,
