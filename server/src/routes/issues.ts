@@ -1182,6 +1182,10 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "issue_rewake_throttled",
   "workspace_worktree_requires_project",
   "execution_review_participant_recovery",
+  // Issue monitors and the heartbeat timer (services/heartbeat.ts).
+  "heartbeat_timer",
+  "issue_monitor_recovery",
+  "issue_monitor_recovery_issue",
   // Recovery sweeps (services/recovery/service.ts).
   "issue_disposition_repair",
   "provider_quota_recovery",

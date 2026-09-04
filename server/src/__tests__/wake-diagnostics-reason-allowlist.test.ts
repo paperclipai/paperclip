@@ -33,12 +33,6 @@ const KNOWN_DYNAMIC_REASON_SOURCES = new Set([
   // getHeartbeatDailyCapBlock() only ever returns "heartbeat.daily_run_limit" or
   // "heartbeat.daily_cost_limit", both already in the allow-list.
   "dailyCapBlock.reason",
-  // enqueueWake(input) in server/src/services/native-runtime/status-decision-committer.ts
-  // is a file-local helper; every one of its six call sites passes a literal, and all four
-  // distinct values are in the allow-list: "issue_status_changed", "monitor_due",
-  // "issue_children_completed", "issue_blockers_resolved". Traced by hand when upstream's
-  // native status-decision committer landed.
-  "input.reason",
 ]);
 
 function walkTsFiles(dir: string, out: string[] = []): string[] {
@@ -97,6 +91,59 @@ function buildStringConstantMap(): Map<string, string> {
 }
 
 /**
+ * Resolves a wake `reason` that is a parameter of a file-local helper.
+ *
+ * Several files wrap the `agentWakeupRequests` write in a helper such as
+ * `enqueueWake({ reason, ... })`, so the literal lives at the helper's call sites
+ * rather than at the write itself. Whitelisting the parameter would let a new call
+ * site introduce a new reason without this guard noticing, so instead we find the
+ * enclosing helper and read the `reason` of every call to it in the same file.
+ *
+ * Returns null when the enclosing helper cannot be identified, so the caller can
+ * still report the reason source as unresolved.
+ */
+function resolveReasonFromHelperCallSites(
+  text: string,
+  writeSiteIndex: number,
+  identifier: string,
+): string[] | null {
+  // `input.reason` / `opts.reason` -> the parameter is the part before the dot.
+  const paramName = identifier.split(".")[0];
+  if (!paramName) return null;
+
+  // Walk backwards to the nearest enclosing function declaration.
+  const before = text.slice(0, writeSiteIndex);
+  const declRe = /(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  let decl: RegExpExecArray | null;
+  let helperName: string | null = null;
+  while ((decl = declRe.exec(before))) helperName = decl[1];
+  if (!helperName) return null;
+
+  const literals = new Set<string>();
+  const callRe = new RegExp(`\\b${helperName}\\s*\\(`, "g");
+  let call: RegExpExecArray | null;
+  while ((call = callRe.exec(text))) {
+    const openIdx = call.index + call[0].length - 1;
+    // Skip the declaration itself.
+    if (/(?:async\s+)?function\s*$/.test(text.slice(Math.max(0, call.index - 20), call.index))) {
+      continue;
+    }
+    const args = extractBalancedParens(text, openIdx);
+    const reasonLine = args.match(/\breason\s*:\s*([^\n]*)/);
+    if (!reasonLine) continue;
+    // Read only the value position. For a ternary such as
+    // `reason: kind === "monitor" ? "monitor_due" : "issue_status_changed"`, the
+    // strings before the `?` belong to the condition, not to the reason.
+    const questionIdx = reasonLine[1].indexOf("?");
+    const valueExpr = questionIdx === -1
+      ? reasonLine[1]
+      : reasonLine[1].slice(questionIdx + 1);
+    for (const q of valueExpr.matchAll(/"([^"]+)"/g)) literals.add(q[1]);
+  }
+  return literals.size > 0 ? [...literals] : null;
+}
+
+/**
  * Finds every `.insert(agentWakeupRequests)` / `.update(agentWakeupRequests)` call site
  * under server/src and resolves the `reason` field of its `.values(...)`/`.set(...)`
  * argument to a literal string where possible.
@@ -132,6 +179,19 @@ function collectWakeupReasonLiterals(): { reason: string; files: string[] }[] {
         const literal = constMap.get(identifier)!;
         if (!found.has(literal)) found.set(literal, new Set());
         found.get(literal)!.add(relFile);
+      } else if (identifier.includes(".")) {
+        // A helper parameter such as `input.reason`. Trace the helper's call sites
+        // rather than trusting it, so a new call site with a new literal is caught.
+        const traced = resolveReasonFromHelperCallSites(text, m.index, identifier);
+        if (traced) {
+          for (const literal of traced) {
+            if (!found.has(literal)) found.set(literal, new Set());
+            found.get(literal)!.add(relFile);
+          }
+        } else if (!KNOWN_DYNAMIC_REASON_SOURCES.has(identifier)) {
+          if (!unresolved.has(identifier)) unresolved.set(identifier, new Set());
+          unresolved.get(identifier)!.add(relFile);
+        }
       } else if (KNOWN_DYNAMIC_REASON_SOURCES.has(identifier)) {
         // Deliberately excluded -- see KNOWN_DYNAMIC_REASON_SOURCES above.
         continue;
