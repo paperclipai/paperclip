@@ -898,6 +898,7 @@ class AuthorityConnection {
   secureChannel: SecureChannel | null = null;
   lease: ConnectionLeaseRecord | null = null;
   connectionId: string | null = null;
+  inFlightCommandId: string | null = null;
   readonly wire: PrpWireConnection;
   #closed = false;
   #onClose: () => void;
@@ -1537,6 +1538,7 @@ export class DurablePrpControlPlane {
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
     const pending = this.#nextPendingCommand();
+    connection.inFlightCommandId = pending[0]?.commandId ?? null;
     for (const command of pending) {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
@@ -1625,6 +1627,8 @@ export class DurablePrpControlPlane {
   #sendNextCommand(connection: AuthorityConnection): void {
     const [command] = this.#nextPendingCommand();
     if (command === undefined) return;
+    if (connection.inFlightCommandId === command.commandId) return;
+    connection.inFlightCommandId = command.commandId;
     this.#store.state.commandDeliveryCounts[command.commandId] =
       (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     this.#store.save();
@@ -1654,6 +1658,9 @@ export class DurablePrpControlPlane {
     if (command === undefined) {
       connection.close();
       return;
+    }
+    if (connection.inFlightCommandId === command.commandId) {
+      connection.inFlightCommandId = null;
     }
     const status = result.status;
     // `indeterminate` is terminal too: a runner that crashed between journaling

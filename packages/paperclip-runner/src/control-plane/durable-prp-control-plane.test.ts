@@ -1039,15 +1039,19 @@ describe.sequential("DurablePrpControlPlane", () => {
         {},
         "command-suspend-1",
       );
-      const nextAuthorityCommand = controlPlane.queueCommand(
-        "runner.drain",
-        {},
-        "command-after-suspend-1",
-      );
       const client = await authenticate(
         controlPlane,
         controlPlane.issueBootstrapTicket(),
       );
+      const nextAuthorityCommand = controlPlane.queueCommand(
+        "runner.drain",
+        {},
+        "command-after-suspend-1",
+        true,
+      );
+      expect(
+        controlPlane.store.state.commandDeliveryCounts[command.commandId],
+      ).toBe(1);
       const terminalResult = {
         protocol: "paperclip.runner",
         version: 1,
