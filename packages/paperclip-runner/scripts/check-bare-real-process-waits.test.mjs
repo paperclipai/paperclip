@@ -228,6 +228,18 @@ test("rejects a vi.waitFor( that follows division after an await-named property,
   ]);
 });
 
+test("rejects a vi.waitFor( that follows division after a private #await field, inside a template literal interpolation", () => {
+  const source = [
+    "async function example() {",
+    "  const message = `status: ${this.#await / divisor + (await vi.waitFor(() => expect(x).toBe(1)))}`;",
+    "}",
+  ].join("\n");
+
+  assert.deepEqual(findBareRealProcessWaits(source), [
+    { line: 2, pattern: "vi.waitFor(" },
+  ]);
+});
+
 test("still flags a real bare vi.waitFor( on the line after a comment mentioning the pattern", () => {
   const source = [
     "async function example() {",

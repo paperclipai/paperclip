@@ -76,6 +76,14 @@ function isKeywordShapedPropertyName(source, wordStartIndex) {
   return beforeWordIndex >= 0 && source[beforeWordIndex] === ".";
 }
 
+// A private-field access such as `this.#await` reads a `#` right before the
+// word. The `#` is part of the field's own name, not the `await` keyword, so
+// the token this check extracts is `#await` — a word that can never equal
+// the bare keyword `await` no matter what sits before the `#`. This keeps
+// the standalone-keyword check in `isRegexLiteralStart` correct without a
+// separate lookup for the `.` that a private-field access also requires.
+const WORD_WITH_OPTIONAL_PRIVATE_FIELD_HASH = /#?[A-Za-z_$][\w$]*$/;
+
 function isRegexLiteralStart(source, index) {
   let previousIndex = index - 1;
   while (previousIndex >= 0 && /\s/.test(source[previousIndex])) {
@@ -84,7 +92,9 @@ function isRegexLiteralStart(source, index) {
   if (previousIndex < 0) return true;
   const previousCharacter = source[previousIndex];
   if (!/[\w$)\]]/.test(previousCharacter)) return true;
-  const wordMatch = source.slice(0, previousIndex + 1).match(/[A-Za-z_$][\w$]*$/);
+  const wordMatch = source
+    .slice(0, previousIndex + 1)
+    .match(WORD_WITH_OPTIONAL_PRIVATE_FIELD_HASH);
   const word = wordMatch?.[0] ?? "";
   if (!REGEX_PRECEDING_KEYWORDS.has(word)) return false;
   const wordStartIndex = previousIndex + 1 - word.length;
