@@ -20,8 +20,27 @@ WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY patches ./patches
 COPY scripts/link-plugin-dev-sdk.mjs ./scripts/link-plugin-dev-sdk.mjs
-COPY packages/paperclip-eval-kernel ./packages/paperclip-eval-kernel
-COPY packages/paperclip-runner ./packages/paperclip-runner
+COPY \
+    packages/paperclip-eval-kernel/package.json \
+    packages/paperclip-eval-kernel/tsconfig.json \
+    ./packages/paperclip-eval-kernel/
+COPY packages/paperclip-eval-kernel/src ./packages/paperclip-eval-kernel/src
+COPY \
+    packages/paperclip-runner/package.json \
+    packages/paperclip-runner/styles.css \
+    packages/paperclip-runner/tsconfig.json \
+    packages/paperclip-runner/tsconfig.surfaces.json \
+    ./packages/paperclip-runner/
+COPY packages/paperclip-runner/protocol ./packages/paperclip-runner/protocol
+COPY packages/paperclip-runner/runner/crates/runner-core/src/generated_acpx_sidecar_contract.rs ./packages/paperclip-runner/runner/crates/runner-core/src/generated_acpx_sidecar_contract.rs
+COPY \
+    packages/paperclip-runner/scripts/acpx-sidecar-contract.mjs \
+    packages/paperclip-runner/scripts/build-provider-pack.mjs \
+    packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs \
+    packages/paperclip-runner/scripts/generate-acpx-sidecar-contract.mjs \
+    packages/paperclip-runner/scripts/generate-protocol-schema-module.mjs \
+    ./packages/paperclip-runner/scripts/
+COPY packages/paperclip-runner/src ./packages/paperclip-runner/src
 RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
 RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
