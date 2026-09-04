@@ -62,16 +62,15 @@ const STOPPWORTE = new Set([
   // Allgemeine Adverbien/Präpositionen die oft vorkommen
   'beim', 'wenn', 'wie', 'was', 'wer', 'wo', 'warum', 'wieso', 'weshalb',
   'welche', 'welcher', 'welches', 'welchem', 'wenigen', 'vielen', 'manchen',
-  // Datumstripletts (verhindern falsche E-Mail-Verlinkungen)
-  '2026-06-10', '2026-06-11', '2026-06-12', '2026-06-13',
-  '2026-05-30', '2026-05-31', '2026-06-01', '2026-06-02',
-  '2026-06-03', '2026-06-04', '2026-06-05', '2026-06-06',
-  '2026-06-07', '2026-06-08', '2026-06-09',
-  // Weitere häufige Datumsmuster (YYYY-MM-DD)
-  /^202[0-9]-[0-1][0-9]-[0-3][0-9]$/, // regex pattern for YYYY-MM-DD dates
   // Fallback-Muster für Muster, die nicht explizit gelistet sind
   'muster', 'beispiel', 'beispieldaten', 'testdaten',
 ]);
+
+// Datums-Dateinamen (YYYY-MM-DD) verhindern falsche Verlinkungen: jede
+// Datumsnennung im Fließtext würde sonst auf die Tagesnotiz zeigen.
+// Muss als Muster geprüft werden — ein RegExp in STOPPWORTE wäre wirkungslos,
+// weil das Set ausschließlich per has(string) abgefragt wird.
+const DATUMS_MUSTER = /^202[0-9]-[0-1][0-9]-[0-3][0-9]$/;
 
 function buildIndex({ vaultPfad, indexOrdner, ausgeschlosseneOrdner, minBegrifflaenge, stoppworte, maxBodyFrequenz }) {
   const ausgeschlossen = new Set(ausgeschlosseneOrdner || []);
@@ -116,7 +115,7 @@ function buildIndex({ vaultPfad, indexOrdner, ausgeschlosseneOrdner, minBegriffl
     if (!begriff) return;
     const key = begriff.toLowerCase().trim();
     if (key.length < minLen) { geblocktKurz++; return; }
-    if (stops.has(key)) { geblocktStop++; return; }
+    if (stops.has(key) || DATUMS_MUSTER.test(key)) { geblocktStop++; return; }
     if (isDateiname && (dateinamenZaehler[key] || 0) > 1) {
       geblocktDup++;
       return;

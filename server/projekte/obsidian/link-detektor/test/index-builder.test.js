@@ -59,6 +59,21 @@ describe("buildIndex", () => {
     expect(index).toHaveLength(0);
   });
 
+  test("Dateinamen im Format YYYY-MM-DD landen nie im Index", () => {
+    const { index } = buildIndex({
+      vaultPfad: FIXTURE,
+      indexOrdner: ["Datumsnotizen"],
+      ausgeschlosseneOrdner: [],
+      minBegrifflaenge: 5,
+    });
+    const terme = index.map((e) => e.term);
+    // Beweist, dass der Ordner ueberhaupt gescannt wurde
+    expect(terme).toContain("projektabschluss-bericht");
+    // 2026-07-22 steht in keiner expliziten Stoppwortliste — nur ein echtes
+    // Musterpruefen faengt es ab
+    expect(terme).not.toContain("2026-07-22");
+  });
+
   test("Längen-Cap >= 30: lange Terme werden nicht vorzeitig gefiltert", () => {
     const { index } = buildIndex({
       vaultPfad: FIXTURE,
