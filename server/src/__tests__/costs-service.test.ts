@@ -414,7 +414,10 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     db = createDb(tempDb.connectionString);
     costs = costService(db);
     finance = financeService(db);
-  }, 240_000);
+    // The embedded Postgres takes about 42 s to start on a cold Windows runner,
+    // which overruns the 30 s hookTimeout in vitest.config.ts. 90 s keeps the
+    // suite fail-fast while covering that start-up with headroom.
+  }, 90_000);
 
   afterEach(async () => {
     await db.delete(financeEvents);
