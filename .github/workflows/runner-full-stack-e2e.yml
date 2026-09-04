@@ -1108,11 +1108,12 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          if ! command -v convert >/dev/null 2>&1; then
+          if ! command -v convert >/dev/null 2>&1 || ! command -v tesseract >/dev/null 2>&1; then
             sudo apt-get update -qq
-            sudo apt-get install --no-install-recommends -y imagemagick
+            sudo apt-get install --no-install-recommends -y imagemagick tesseract-ocr
           fi
           convert -version
+          tesseract --version
 
       - name: Prepare public history bundle with redacted layout previews
         id: prepare_public_history

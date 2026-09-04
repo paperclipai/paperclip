@@ -199,11 +199,13 @@ It accepts only declared screenshots from passing results. It validates a
 bounded, non-interlaced PNG container before invoking ImageMagick with strict
 memory, disk, thread, and time limits. It reduces each image to at most 160
 pixels on either edge, applies a strong blur, limits the palette, removes alpha
-and metadata, and validates the new PNG again. This is a layout preview, not
-diagnostic evidence. It then prunes full-resolution raster files, all failure
-images, video, archives, active SVG, and generated reports. This transformation
-runs before AWS credentials are available. The AWS job downloads only the
-prepared public tree.
+and metadata, and validates the new PNG again. Tesseract must then find no
+readable letter or digit. OCR output is never logged. Any readable text or OCR
+failure blocks the whole publication. This is a layout preview, not diagnostic
+evidence. The job then prunes full-resolution raster files, all failure images,
+video, archives, active SVG, and generated reports. This transformation runs
+before AWS credentials are available. The AWS job downloads only the prepared
+public tree.
 
 The remaining allowlist contains `public-visuals/*.png`, `.json`, `.log`, `.md`,
 and `.txt` evidence, plus the generated dashboard, normalized

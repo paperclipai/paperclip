@@ -690,6 +690,8 @@ describe("public repository paid workflow security", () => {
     expect(workflow).toContain("unexpected_png=");
     expect(workflow).toContain("passed_count=");
     expect(workflow).toContain("pnpm test:e2e:runner:history:prepare");
+    expect(report).toContain("tesseract-ocr");
+    expect(report).toContain("tesseract --version");
     expect(report).not.toContain("id-token: write");
     expect(report).not.toMatch(
       /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)_API_KEY/,
