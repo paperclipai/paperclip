@@ -31,6 +31,7 @@ import {
   codexSemanticToolSpecs,
 } from "../drivers/codex/codex-app-server-driver.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
+import { waitForCapabilityLiveProcess } from "../../test/wait-for-live-process.js";
 
 import {
   createCapabilityRunnerdCodexTransport,
@@ -1209,20 +1210,22 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
     canonicalEventIds.add(`runner-codex:run-provider-trace:${sourceSeq}`);
   }
 
-  await expect
-    .poll(async () => {
+  await waitForCapabilityLiveProcess(
+    "native and rehydration trace files reach a terminal status",
+    async () => {
       const [nativeTrace, rehydrationTrace] = await Promise.all([
         readFile(tracePath, "utf8"),
         readFile(`${tracePath}.rehydration`, "utf8"),
       ]);
-      return [nativeTrace, rehydrationTrace].map((contents) =>
+      const parsed = [nativeTrace, rehydrationTrace].map((contents) =>
         JSON.parse(contents.trim().split("\n").at(-1) ?? "{}"),
       );
-    })
-    .toEqual([
-      expect.objectContaining({ status: "complete" }),
-      expect.objectContaining({ status: "complete" }),
-    ]);
+      expect(parsed).toEqual([
+        expect.objectContaining({ status: "complete" }),
+        expect.objectContaining({ status: "complete" }),
+      ]);
+    },
+  );
 
   const nativeEntries = (await readFile(tracePath, "utf8"))
     .trim()

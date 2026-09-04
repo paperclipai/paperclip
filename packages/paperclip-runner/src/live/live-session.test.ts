@@ -24,6 +24,7 @@ import {
 import { DurableCapabilityLiveSessionStore } from "./durable-live-session-store.js";
 import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
 import { captureTurnRejection } from "../../test/capture-turn-rejection.js";
+import { waitForCapabilityLiveProcess } from "../../test/wait-for-live-process.js";
 
 class AsyncNotifications implements AsyncIterable<CodexRpcNotification> {
   #values: CodexRpcNotification[] = [];
@@ -420,6 +421,7 @@ describe("Capability live runnerd and Codex session", () => {
       "transient terminal-notification store failure",
     );
 
+    // bare-wait-ok: settles fully in-process, no spawned OS process.
     await vi.waitFor(async () => {
       expect((await store.load(session.id))?.status).toBe("failed");
     });
@@ -448,6 +450,7 @@ describe("Capability live runnerd and Codex session", () => {
     await expect(session.sendMessage("finish after consecutive store failures")).rejects.toThrow(
       "transient terminal-notification store failure",
     );
+    // bare-wait-ok: settles fully in-process, no spawned OS process.
     await vi.waitFor(async () => {
       expect(session.snapshot().status).toBe("failed");
       expect(store.terminalSaveFailureCount()).toBeGreaterThanOrEqual(2);
@@ -484,6 +487,7 @@ describe("Capability live runnerd and Codex session", () => {
     await expect(session.sendMessage("fail before shutdown cleanup")).rejects.toThrow(
       "transient terminal-notification store failure",
     );
+    // bare-wait-ok: settles fully in-process, no spawned OS process.
     await vi.waitFor(() => expect(session.snapshot().status).toBe("failed"));
     const cleanupFailure = new Error("provider cleanup failed");
     state.closeError = cleanupFailure;
@@ -571,10 +575,12 @@ describe("Capability live runnerd and Codex session", () => {
     await session.sendMessage("warm response");
     expect(session.snapshot().status).toBe("warm_idle");
     expect(state.transports[0]?.processInfo().exited).toBe(false);
+    // bare-wait-ok: settles fully in-process, no spawned OS process.
     await vi.waitFor(() => expect(session.snapshot().status).toBe("suspended"), { timeout: 500 });
     expect(state.transports[0]?.processInfo().exited).toBe(true);
 
     const active = session.sendMessage("start a long turn");
+    // bare-wait-ok: settles fully in-process, no spawned OS process.
     await vi.waitFor(() => expect(session.snapshot().activeTurnId).not.toBeNull());
     expect(session.snapshot().status).toBe("running");
     await session.interrupt("test cleanup");
@@ -614,6 +620,7 @@ describe("Capability live runnerd and Codex session", () => {
 
     const abandonedTurn = session.sendMessage("start a provider request that never returns");
     void abandonedTurn.catch(() => undefined);
+    // bare-wait-ok: settles fully in-process, no spawned OS process.
     await vi.waitFor(() => {
       expect(state.transports[0]?.requests.some((request) => request.method === "turn/start"))
         .toBe(true);
@@ -1049,6 +1056,7 @@ describe("Capability live runnerd and Codex session", () => {
       requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731",
     });
     const longTurn = session.sendMessage("Start a long turn.");
+    // bare-wait-ok: settles fully in-process, no spawned OS process.
     await vi.waitFor(() => expect(session.snapshot().activeTurnId).not.toBeNull());
     await session.interrupt("bounded test interrupt");
     await expect(longTurn).resolves.toMatchObject({ status: "interrupted" });
@@ -1095,6 +1103,7 @@ describe("Capability live runnerd and Codex session", () => {
     });
     state.holdAfterTool = true;
     const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once."));
+    // bare-wait-ok: settles fully in-process, no spawned OS process.
     await vi.waitFor(async () => {
       expect((await firstStore.load(binding.sessionId))?.mockState).toContain(
         "Progress persisted through the live Codex tool loop.",
@@ -1232,6 +1241,7 @@ describe("Capability live runnerd and Codex session", () => {
     });
     state.holdAfterTool = true;
     const killedTurn = captureTurnRejection(first.sendMessage("Apply idempotent progress once."));
+    // bare-wait-ok: settles fully in-process, no spawned OS process.
     await vi.waitFor(async () => {
       expect((await store.load(first.id))?.mockState).toContain("progress-governed-once");
     });
@@ -1428,13 +1438,16 @@ describe("Capability live runnerd and Codex session", () => {
         turnTimeoutMs: 2_000,
       });
       const killedTurn = captureTurnRejection(first.sendMessage("Apply the governed idempotent effect."));
-      await vi.waitFor(async () => {
-        const checkpoint = await store.load(binding.sessionId);
-        expect(checkpoint?.mockState).toContain("One durable governed effect.");
-        expect(checkpoint?.activeTurnId).toBe("turn-1");
-        expect(checkpoint?.process?.runnerPid).not.toBeNull();
-        expect(checkpoint?.process?.codexPid).not.toBeNull();
-      });
+      await waitForCapabilityLiveProcess(
+        "durable checkpoint reflects the applied governed effect",
+        async () => {
+          const checkpoint = await store.load(binding.sessionId);
+          expect(checkpoint?.mockState).toContain("One durable governed effect.");
+          expect(checkpoint?.activeTurnId).toBe("turn-1");
+          expect(checkpoint?.process?.runnerPid).not.toBeNull();
+          expect(checkpoint?.process?.codexPid).not.toBeNull();
+        },
+      );
       await first.recordUsage({
         receiptId: "real-response-1",
         providerResponseId: "fixture-response-1",
