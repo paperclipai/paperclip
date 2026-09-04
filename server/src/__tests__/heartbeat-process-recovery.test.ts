@@ -724,7 +724,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recovery.title).toContain("Recover stalled issue");
     expect(recovery.description).toContain(`Previous source status: \`${input.previousStatus}\``);
     expect(recovery.description).toContain(`Retry reason: \`${input.retryReason}\``);
-    expect(recovery.description).toContain("Fix the runtime/adapter problem");
+    expect(recovery.description).toContain("fix the runtime/adapter problem");
 
     const relation = await db
       .select()
