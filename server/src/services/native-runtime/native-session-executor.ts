@@ -2188,21 +2188,29 @@ function loadWarmNativeCheckpoint(
   ) {
     throw new Error("native_session_supervisor_checkpoint_mismatch");
   }
-  const resumed = {
-    ...envelope.snapshot,
-    identity: {
-      runId: execution.binding.runId,
-      sessionId: nativeSessionKey(execution),
-      companyId: execution.binding.companyId,
-      issueId: execution.binding.issueId,
-      agentId: execution.binding.agentId,
-    },
-    semanticResult: null,
-    terminal: null,
-    activeTurnId: null,
-    terminalTurns: [],
-    pendingRuntimeRequests: [],
-  };
+  const sameRunRecovery =
+    persistedIdentity.runId === execution.binding.runId &&
+    persistedIdentity.issueId === execution.binding.issueId;
+  const resumed = sameRunRecovery
+    ? structuredClone(envelope.snapshot)
+    : {
+        ...envelope.snapshot,
+        identity: {
+          runId: execution.binding.runId,
+          sessionId: nativeSessionKey(execution),
+          companyId: execution.binding.companyId,
+          issueId: execution.binding.issueId,
+          agentId: execution.binding.agentId,
+        },
+        // A warm provider can be rebound only after the previous run settled.
+        // Its provider identity survives, but run-scoped turn, result, and
+        // request authority must not cross into the new heartbeat run.
+        semanticResult: null,
+        terminal: null,
+        activeTurnId: null,
+        terminalTurns: [],
+        pendingRuntimeRequests: [],
+      };
   if (path !== scopedPath) {
     // Copy the validated legacy checkpoint into the fully scoped location.
     // persistWarmNativeCheckpoint uses an atomic rename and leaving the old
