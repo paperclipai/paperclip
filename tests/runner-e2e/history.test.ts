@@ -1,8 +1,10 @@
 import {
+  chmod,
   copyFile,
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -26,7 +28,10 @@ import {
   mergeRunnerHistory,
 } from "./history.js";
 import { renderRunnerHistoryIndex } from "./history-index.js";
-import { preparePublicHistoryBundle } from "./history-public-bundle.js";
+import {
+  createPublicLayoutPreview,
+  preparePublicHistoryBundle,
+} from "./history-public-bundle.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
@@ -34,6 +39,59 @@ const safePng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAFElEQVQI12M0TpvJAANMDEgAhQMALHABOEZNdkwAAAAASUVORK5CYII=",
   "base64",
 );
+
+async function installPreviewToolchain(root: string, ocrOutput: string) {
+  const imageMagick = path.join(root, "fake-image-magick.mjs");
+  const tesseract = path.join(root, "fake-tesseract.mjs");
+  await writeFile(
+    imageMagick,
+    `#!/usr/bin/env node
+import { copyFile } from "node:fs/promises";
+const args = process.argv.slice(2);
+const expected = [
+  "-limit", "memory", "128MiB",
+  "-limit", "map", "256MiB",
+  "-limit", "disk", "256MiB",
+  "-limit", "thread", "1",
+  "-limit", "time", "30",
+  null,
+  "-background", "#f3f4f6",
+  "-alpha", "remove", "-alpha", "off",
+  "-resize", "96x96>",
+  "-blur", "0x3.5",
+  "-colors", "16",
+  "-strip",
+  "-define", "png:exclude-chunks=all",
+  null,
+];
+if (args.length !== expected.length || expected.some((value, index) => value !== null && args[index] !== value)) {
+  throw new Error("unexpected ImageMagick sanitization contract");
+}
+if (!args.at(-1)?.startsWith("PNG8:")) {
+  throw new Error("sanitized preview must be emitted as PNG8");
+}
+await copyFile(args[15], args.at(-1).slice("PNG8:".length));
+`,
+    "utf8",
+  );
+  await writeFile(
+    tesseract,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.length !== 6 || args[1] !== "stdout" || args[2] !== "--psm" || args[3] !== "11" || args[4] !== "-l" || args[5] !== "eng") {
+  throw new Error("unexpected Tesseract sanitization contract");
+}
+if (process.env.OMP_THREAD_LIMIT !== "1") {
+  throw new Error("OCR must run with a bounded thread count");
+}
+process.stdout.write(${JSON.stringify(ocrOutput)});
+`,
+    "utf8",
+  );
+  await Promise.all([chmod(imageMagick, 0o755), chmod(tesseract, 0o755)]);
+  return { imageMagick, tesseract };
+}
+
 afterEach(async () => {
   vi.unstubAllEnvs();
   await Promise.all(
@@ -205,6 +263,41 @@ describe("runner E2E campaign history", () => {
 });
 
 describe("historical publication security", () => {
+  it("exercises the production layout preview sanitizer contract", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-preview-test-"));
+    temporaryDirectories.push(root);
+    const source = path.join(root, "source.png");
+    const destination = path.join(root, "public", "preview.png");
+    const tools = await installPreviewToolchain(root, ".,!\n");
+    await writeFile(source, safePng);
+    vi.stubEnv("RUNNER_E2E_IMAGE_MAGICK_BINARY", tools.imageMagick);
+    vi.stubEnv("RUNNER_E2E_TESSERACT_BINARY", tools.tesseract);
+
+    await createPublicLayoutPreview(source, destination);
+
+    await expect(readFile(destination)).resolves.toEqual(safePng);
+    expect((await readdir(path.dirname(destination))).sort()).toEqual([
+      "preview.png",
+    ]);
+  });
+
+  it("rejects and removes a production preview with OCR-readable text", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-preview-test-"));
+    temporaryDirectories.push(root);
+    const source = path.join(root, "source.png");
+    const destination = path.join(root, "public", "preview.png");
+    const tools = await installPreviewToolchain(root, "Readable42\n");
+    await writeFile(source, safePng);
+    vi.stubEnv("RUNNER_E2E_IMAGE_MAGICK_BINARY", tools.imageMagick);
+    vi.stubEnv("RUNNER_E2E_TESSERACT_BINARY", tools.tesseract);
+
+    await expect(
+      createPublicLayoutPreview(source, destination),
+    ).rejects.toThrow("Public layout preview still contains OCR-readable text");
+    await expect(readFile(destination)).rejects.toThrow();
+    expect((await readdir(path.dirname(destination))).sort()).toEqual([]);
+  });
+
   it("publishes blurred layout previews while keeping raw visuals private", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-landing-test-"));
     const source = path.join(root, "private");
