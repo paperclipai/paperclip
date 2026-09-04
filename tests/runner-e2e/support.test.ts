@@ -10,11 +10,12 @@ import { classifyFailure, shouldRetryFailure } from "./failure-classifier.js";
 import {
   assertIsolatedServerEnvironment,
   buildPaperclipServerEnvironment,
+  buildRunnerE2EProcessEnvironment,
   resolvePaperclipRemoteRunnerBinaryForHarness,
   resolvePaperclipRunnerBinaryForHarness,
   runnerE2EServerControlPaths,
 } from "./harness-env.js";
-import { runnerExecutionById } from "./catalog.js";
+import { runnerExecutionById, runnerMatrix } from "./catalog.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import { evaluateMatchers } from "./matchers.js";
 import {
@@ -113,6 +114,41 @@ describe("runner E2E local binary resolution", () => {
         runnerBinary,
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("runner E2E provider environment", () => {
+  const legacyLocal = runnerExecutionById(
+    "core-compatibility.legacy-opencode.local.message-marker",
+  );
+  const legacyDaytona = runnerExecutionById(
+    "core-compatibility.legacy-opencode.daytona.message-marker",
+  );
+  const nativeOpenCode = runnerExecutionById(
+    "core-compatibility.runner-opencode.local.message-marker",
+  );
+  const breadthOpenCode = runnerMatrix.find(
+    (execution) => execution.suite.id === "openrouter-model-breadth",
+  )!;
+
+  it("allows the pinned model only for isolated legacy OpenCode harnesses", () => {
+    for (const execution of [legacyLocal, legacyDaytona]) {
+      expect(
+        buildRunnerE2EProcessEnvironment(
+          { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
+          [execution],
+        ),
+      ).toEqual({ KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "true" });
+    }
+
+    for (const execution of [nativeOpenCode, breadthOpenCode]) {
+      expect(
+        buildRunnerE2EProcessEnvironment(
+          { KEEP_ME: "yes", OPENCODE_ALLOW_ALL_MODELS: "ambient" },
+          [execution],
+        ),
+      ).toEqual({ KEEP_ME: "yes" });
+    }
   });
 });
 

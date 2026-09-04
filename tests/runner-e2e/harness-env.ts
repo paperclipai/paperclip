@@ -88,6 +88,30 @@ export function resolvePaperclipRemoteRunnerBinaryForHarness(
 }
 
 /**
+ * Keep fixture-only provider switches scoped to the one isolated harness that
+ * needs them. In particular, the pinned legacy OpenCode model is routed by the
+ * paid gateway and may not appear in OpenCode's public model catalog.
+ */
+export function buildRunnerE2EProcessEnvironment(
+  source: NodeJS.ProcessEnv,
+  executions: readonly MatrixExecution[],
+): NodeJS.ProcessEnv {
+  const result = { ...source };
+  delete result.OPENCODE_ALLOW_ALL_MODELS;
+  if (
+    executions.length > 0 &&
+    executions.every(
+      (execution) =>
+        execution.profile.generation === "legacy" &&
+        execution.profile.provider === "opencode",
+    )
+  ) {
+    result.OPENCODE_ALLOW_ALL_MODELS = "true";
+  }
+  return result;
+}
+
+/**
  * Build the environment inherited by the Paperclip server. Paid credentials
  * deliberately stay in the launcher/Playwright process and cross the server
  * boundary only once, in the encrypted company-secrets API request.

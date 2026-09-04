@@ -22,6 +22,7 @@ import { packageEvidence } from "./evidence.js";
 import { classifyFailure, shouldRetryFailure } from "./failure-classifier.js";
 import { buildRunnerCampaign } from "./history.js";
 import {
+  buildRunnerE2EProcessEnvironment,
   resolvePaperclipRemoteRunnerBinaryForHarness,
   resolvePaperclipRunnerBinaryForHarness,
 } from "./harness-env.js";
@@ -395,7 +396,7 @@ async function runAttempt(input: {
       repositoryRoot,
     );
     const childEnv: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...buildRunnerE2EProcessEnvironment(process.env, executions),
       PATH: providerPath,
       PAPERCLIP_RUNNER_E2E_EXECUTION_IDS: JSON.stringify(
         executions.map((candidate) => candidate.id),
