@@ -224,6 +224,8 @@ export const queryKeys = {
       ["agents", companyId, "detect-model", adapterType] as const,
     authSignal: (companyId: string, adapterType: string, environmentId?: string | null) =>
       ["agents", companyId, "auth-signal", adapterType, environmentId ?? null] as const,
+    activeLoginSession: (companyId: string, adapterType: string) =>
+      ["agents", companyId, "active-login-session", adapterType] as const,
   },
   builtInAgents: {
     list: (companyId: string) => ["built-in-agents", companyId] as const,

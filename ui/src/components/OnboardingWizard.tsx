@@ -1087,6 +1087,36 @@ function OnboardingWizardInner({
   const showAdapterLoginPanel =
     canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
   /**
+   * Restores `loginStarted` after a reload.
+   *
+   * The panel resumes an active session on its own mount, but this step only
+   * mounts the panel once `loginStarted` is true — and a reload loses that
+   * state, which is never in the draft (see `loginStarted` above). Without
+   * this read, a reload during a login would leave the panel unmounted and
+   * the resumed session unreachable from this step. A 404 means no active
+   * session for the caller.
+   */
+  const activeLoginSessionQuery = useQuery({
+    queryKey: createdCompanyId
+      ? queryKeys.agents.activeLoginSession(createdCompanyId, adapterType)
+      : ["agents", "none", "active-login-session", adapterType],
+    queryFn: async () => {
+      try {
+        return adapterCaps.login?.panelMode === "submitted_browser_code"
+          ? await agentsApi.getActiveClaudeSetupTokenLoginSession(createdCompanyId!)
+          : await agentsApi.getActiveAdapterAuthLoginSession(createdCompanyId!, adapterType);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    enabled:
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+  });
+  useEffect(() => {
+    if (activeLoginSessionQuery.data) setLoginStarted(true);
+  }, [activeLoginSessionQuery.data]);
+  /**
    * The signal is being fetched and has not answered yet.
    *
    * Worth its own state rather than folding into "no panel to show". Until it
