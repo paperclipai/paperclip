@@ -872,6 +872,15 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(aliasRes.status, JSON.stringify(aliasRes.body)).toBe(400);
     expect(aliasRes.body).toMatchObject({ error: "parentIssueId must be a UUID" });
 
+    // A malformed `parentIssueId` that `parentId` supersedes is never read, so it
+    // must stay 200 exactly as it was before this guard existed. Validating it
+    // would 400 a request that has always succeeded.
+    const supersededAliasRes = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", parentId: randomUUID(), parentIssueId: "bad" });
+    expect(supersededAliasRes.status, JSON.stringify(supersededAliasRes.body)).toBe(200);
+    expect(supersededAliasRes.body).toMatchObject({ count: 0 });
+
     const nullAssigneeRes = await request(app)
       .get(`/api/companies/${companyId}/issues/count`)
       .query({ attention: "blocked", assigneeAgentId: "null" });
@@ -1215,6 +1224,26 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([parentChildIssueId]);
+
+    // Precedence also decides validation: a malformed alias that `parentId`
+    // supersedes is never read, so it must not turn a 200 into a 400.
+    const malformedAliasRes = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", parentId, parentIssueId: "bad", limit: "20" });
+
+    expect(malformedAliasRes.status, JSON.stringify(malformedAliasRes.body)).toBe(200);
+    expect(malformedAliasRes.body.map((issue: { id: string }) => issue.id)).toEqual([
+      parentChildIssueId,
+    ]);
+
+    // But with no canonical `parentId` to supersede it, the alias is the value
+    // that reaches the query, so it must still be rejected at the boundary.
+    const aliasOnlyRes = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", parentIssueId: "bad", limit: "20" });
+
+    expect(aliasOnlyRes.status, JSON.stringify(aliasOnlyRes.body)).toBe(400);
+    expect(aliasOnlyRes.body).toMatchObject({ error: "parentIssueId must be a UUID" });
   });
 
   it("filters issue lists by goalId and createdByAgentId", async () => {

@@ -2908,14 +2908,15 @@ function parseIssueUuidFilters<Name extends IssueUuidFilterName>(
   }
   const parentIdName = "parentId" as Name;
   if (names.includes(parentIdName)) {
+    // `parentId ?? parentIssueId` is the long-standing precedence on both routes.
+    // Only validate the alias when it is the value that will actually be used —
+    // validating a superseded alias would 400 a request that has always been 200.
     const rawParentIssueId = query.parentIssueId;
-    if (rawParentIssueId !== undefined) {
+    if (filters[parentIdName] === undefined && rawParentIssueId !== undefined) {
       if (typeof rawParentIssueId !== "string" || !isUuidLike(rawParentIssueId.trim())) {
         return { ok: false, error: "parentIssueId must be a UUID" };
       }
-      if (filters[parentIdName] === undefined) {
-        filters[parentIdName] = rawParentIssueId.trim();
-      }
+      filters[parentIdName] = rawParentIssueId.trim();
     }
   }
   return { ok: true, filters };
