@@ -2,7 +2,13 @@ import { useRef, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import { cn } from "../../lib/utils";
-import { TAG_SWAP_ENTER, TAG_SWAP_EXIT, TAG_SWAP_TRAVEL } from "./onboarding-motion";
+import {
+  SOURCE_COLLAPSE_FADE,
+  SOURCE_COLLAPSE_MOVE,
+  TAG_SWAP_ENTER,
+  TAG_SWAP_EXIT,
+  TAG_SWAP_TRAVEL,
+} from "./onboarding-motion";
 
 /**
  * The connect step's row of model sources, and the tag under each one saying
@@ -120,6 +126,7 @@ export function ModelSourceTiles({
   selectedId,
   onSelect,
   label,
+  collapsed = false,
 }: {
   sources: ModelSource[];
   mode: CredentialMode;
@@ -127,6 +134,15 @@ export function ModelSourceTiles({
   selectedId: string | null;
   onSelect: (id: string) => void;
   label: string;
+  /**
+   * Show only the chosen source, centred.
+   *
+   * The row is a question, and once a sign-in is running it has been answered —
+   * leaving the alternative on screen invites a press that would have to cancel
+   * a live server session to honour. Collapsing says the choice is made without
+   * disabling anything, which reads better than a greyed-out tile.
+   */
+  collapsed?: boolean;
 }) {
   const tiles = useRef(new Map<string, HTMLButtonElement>());
 
@@ -148,12 +164,17 @@ export function ModelSourceTiles({
     tiles.current.get(target.id)?.focus();
   };
 
+  const shown = collapsed ? sources.filter((source) => source.id === selectedId) : sources;
+
   return (
     <div
       role="radiogroup"
       aria-label={label}
-      className="flex items-start gap-3"
+      className={cn("flex items-start gap-3", collapsed && "justify-center")}
       onKeyDown={(event) => {
+        // Collapsed, the row is a statement rather than a choice; arrow keys
+        // would move a selection that is no longer being asked for.
+        if (collapsed) return;
         if (event.key === "ArrowRight" || event.key === "ArrowDown") {
           event.preventDefault();
           moveSelection(1);
@@ -163,19 +184,39 @@ export function ModelSourceTiles({
         }
       }}
     >
-      {sources.map((source) => (
-        <ModelSourceTile
-          key={source.id}
-          source={source}
-          mode={mode}
-          selected={source.id === selectedId}
-          onSelect={() => onSelect(source.id)}
-          buttonRef={(node) => {
-            if (node) tiles.current.set(source.id, node);
-            else tiles.current.delete(source.id);
-          }}
-        />
-      ))}
+      {/*
+        `popLayout` takes the leaving tile out of flow at once, so the survivor's
+        `layout` animation targets its final centred position rather than
+        chasing a gap that is still closing.
+
+        The wrapper carries the width, not the tile: held at the width it had
+        with two in the row, so the kept tile travels without also growing.
+      */}
+      <AnimatePresence initial={false} mode="popLayout">
+        {shown.map((source) => (
+          <motion.div
+            key={source.id}
+            layout
+            transition={SOURCE_COLLAPSE_MOVE}
+            exit={{ opacity: 0, transition: SOURCE_COLLAPSE_FADE }}
+            className={cn(
+              "flex min-w-0",
+              collapsed ? "w-(--sz-source-tile-two-up)" : "flex-1",
+            )}
+          >
+            <ModelSourceTile
+              source={source}
+              mode={mode}
+              selected={source.id === selectedId}
+              onSelect={() => onSelect(source.id)}
+              buttonRef={(node) => {
+                if (node) tiles.current.set(source.id, node);
+                else tiles.current.delete(source.id);
+              }}
+            />
+          </motion.div>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }

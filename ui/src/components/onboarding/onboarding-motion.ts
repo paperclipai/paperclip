@@ -161,3 +161,84 @@ export const CANVAS_ENTER_TRAVEL = 10;
 export const CANVAS_CONTENT_ENTER = TAG_SWAP_ENTER;
 export const CANVAS_CONTENT_EXIT = TAG_SWAP_EXIT;
 export const CANVAS_CONTENT_TRAVEL = TAG_SWAP_TRAVEL;
+
+/**
+ * The connect step's sign-in sequence: picking a source, the card opening on a
+ * wait, and the primary button walking through four labels.
+ *
+ * All of it is built from the vocabulary above rather than a second one. The
+ * sequence is one gesture that starts at the tile row and ends at the button,
+ * so a new curve partway through would break it into separate events — the
+ * same reasoning the canvas tokens are written with.
+ */
+
+/**
+ * The row collapsing to the chosen source.
+ *
+ * The unpicked tile fades where it stands while the picked one travels to the
+ * centre, and the two are deliberately not symmetrical: one is leaving and one
+ * is being kept, so animating both the same way would read as the row
+ * reshuffling rather than as a choice being made. The exit is the tag's, short
+ * enough to be gone before the survivor arrives.
+ *
+ * The travel is a layout animation, not a fixed offset — the distance depends
+ * on which tile was picked, and hard-coding it would send the right-hand tile
+ * the wrong way.
+ */
+export const SOURCE_COLLAPSE_MOVE = { duration: 0.42, ease: TAG_SWAP_EASE } as const;
+export const SOURCE_COLLAPSE_FADE = TAG_SWAP_EXIT;
+
+/**
+ * The credential-mode link leaving as the row collapses.
+ *
+ * Faster than the collapse it accompanies. It is not part of the choice, it is
+ * a control that has stopped applying — once a sign-in is running there is no
+ * switching to keys without cancelling — so it should be gone before the eye
+ * follows the tile, rather than travelling alongside it and inviting a press.
+ */
+export const SOURCE_LINK_EXIT = { duration: 0.16, ease: TAG_SWAP_EASE } as const;
+
+/**
+ * The card's staged reveal once the sign-in has something to show.
+ *
+ * The instruction first, the field a beat later. The order is the reading
+ * order, and the gap is what makes it read as one thing unfolding rather than
+ * two arriving together — it also means the sentence has been read by the time
+ * the field is ready to be pasted into, which is the point of staging it at all.
+ *
+ * Both rise slightly, on the canvas's own travel, so the reveal belongs to the
+ * surface that opened rather than being a separate entrance inside it.
+ */
+export const CARD_REVEAL_TRAVEL = 6;
+export const CARD_REVEAL_INSTRUCTION = { duration: 0.3, ease: STEP_EASE } as const;
+export const CARD_REVEAL_FIELD = { duration: 0.3, delay: 0.12, ease: STEP_EASE } as const;
+
+/**
+ * The primary button changing label.
+ *
+ * Two animations at once, and they are separate on purpose. The text
+ * cross-fades on the link label's timing — the outgoing word mostly gone before
+ * the incoming one starts, so two labels are never legible at once. The button's
+ * *width* eases in and out underneath it, because "Next" and "Waiting for code"
+ * are very different sizes and snapping between them would make a settled
+ * control look like it was replaced.
+ *
+ * The width is the slower of the two, so the shape finishes arriving after the
+ * word does. Reversing that reads as the button resizing and then, separately,
+ * changing its mind about what it says.
+ */
+export const CTA_WIDTH = { duration: 0.34, ease: TAG_SWAP_EASE } as const;
+export const CTA_LABEL_OUT = LINK_LABEL_FADE_OUT;
+export const CTA_LABEL_IN = LINK_LABEL_FADE_IN;
+
+/**
+ * The deliberate pause between a pasted code being accepted and the step
+ * advancing.
+ *
+ * Not a fetch — the work is already done by the time this starts. It exists so
+ * "Connecting" is legible as a state rather than a flicker on the way out: the
+ * step advancing the instant a paste lands reads as the paste having gone
+ * wrong, because nothing acknowledged it. Two seconds is long enough to be read
+ * and short enough not to feel stalled.
+ */
+export const CONNECTED_HOLD_MS = 2000;

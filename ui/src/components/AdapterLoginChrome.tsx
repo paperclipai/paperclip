@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Copy, Check } from "lucide-react";
+import { motion } from "motion/react";
+import { Copy, Check, Loader2 } from "lucide-react";
 
 import { Button } from "./ui/button";
 import { copyTextToClipboard } from "../lib/clipboard";
+import {
+  CARD_REVEAL_FIELD,
+  CARD_REVEAL_INSTRUCTION,
+  CARD_REVEAL_TRAVEL,
+} from "./onboarding/onboarding-motion";
 
 /**
  * Which shell a login panel draws itself in.
@@ -33,6 +39,7 @@ export type AdapterLoginChrome = "panel" | "onboarding";
 export function OnboardingLoginCard({
   instruction,
   onCancel,
+  loading = false,
   children,
 }: {
   /**
@@ -42,10 +49,32 @@ export function OnboardingLoginCard({
    */
   instruction: ReactNode;
   onCancel?: () => void;
+  /**
+   * Show a spinner instead of the contents, at the same height.
+   *
+   * The card opens before the sign-in has anything to put in it. Rendering it
+   * empty and growing later would push the footer twice for one event, so both
+   * states share a floor — see `--sz-108px`, which is exactly the height of an
+   * instruction over one row. A card holding more than that (the settings
+   * chrome's link *and* field) still grows past it.
+   */
+  loading?: boolean;
   children: ReactNode;
 }) {
+  if (loading) {
+    return (
+      <div
+        className="flex min-h-(--sz-108px) items-center justify-center rounded-xl bg-muted/40"
+        role="status"
+        aria-label="Preparing the sign-in"
+      >
+        <Loader2 className="size-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-xl bg-muted/40 px-4 py-3.5 flex flex-col gap-4">
+    <div className="flex min-h-(--sz-108px) flex-col gap-4 rounded-xl bg-muted/40 p-4">
       {/* No `gap`: `justify-between` already holds the two apart, and the eight
           pixels a gap reserves are eight the instruction does not have. The
           longest of these strings needs the full width between the inset and
@@ -64,7 +93,11 @@ export function OnboardingLoginCard({
           to give and wraps on the rounding. Matching the width the design
           actually renders is the closer reading of it than matching a nominal
           size in a font it was not drawn in. */}
-      <div className="flex items-center justify-between pl-2">
+      <motion.div
+        className="flex items-center justify-between pl-2"
+        initial={{ opacity: 0, y: CARD_REVEAL_TRAVEL }}
+        animate={{ opacity: 1, y: 0, transition: CARD_REVEAL_INSTRUCTION }}
+      >
         <span className="text-xs text-muted-foreground">{instruction}</span>
         {onCancel && (
           <Button
@@ -77,8 +110,16 @@ export function OnboardingLoginCard({
             Cancel
           </Button>
         )}
-      </div>
-      {children}
+      </motion.div>
+      {/* A beat behind the sentence above it, so the card reads as one thing
+          unfolding and the instruction has been read by the time the field is
+          ready to be pasted into. */}
+      <motion.div
+        initial={{ opacity: 0, y: CARD_REVEAL_TRAVEL }}
+        animate={{ opacity: 1, y: 0, transition: CARD_REVEAL_FIELD }}
+      >
+        {children}
+      </motion.div>
     </div>
   );
 }

@@ -1,13 +1,12 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { MotionConfig } from "motion/react";
+import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { isValidBrowserCode } from "@paperclipai/shared";
+import { CONNECTED_HOLD_MS, SOURCE_LINK_EXIT } from "./components/onboarding/onboarding-motion";
 
 import {
   OnboardingLoginCard,
   OnboardingLoginCodeInput,
-  OnboardingLoginCodeRow,
-  OnboardingLoginUrlRow,
 } from "./components/AdapterLoginChrome";
 import { AgentPreview } from "./components/onboarding/AgentPreview";
 import { ConnectInputCanvas } from "./components/onboarding/ConnectInputCanvas";
@@ -43,9 +42,6 @@ import "./index.css";
  * it needs a query client, a router and a company.
  */
 
-const PROMPT_DELAY_MS = 1200;
-const SUBMIT_DELAY_MS = 900;
-const POLL_DELAY_MS = 3200;
 
 /**
  * OpenAI's blossom, inlined — the shipped step inlines it for the same reason.
@@ -73,8 +69,22 @@ const MODEL_SOURCES: ModelSource[] = [
   { id: "codex_local", label: "OpenAI", icon: <OpenAiBlossom className="size-full" /> },
 ];
 
-/** Where the flow is. `auth` splits by source, exactly as the step does. */
-type Phase = "idle" | "connecting" | "auth" | "submitting" | "done";
+/**
+ * Where the sequence is.
+ *
+ * `loading` and `ready` are the same card at the same height — only its
+ * contents differ — so the footer is pushed down once, when the card arrives,
+ * and never again.
+ */
+type Phase = "idle" | "loading" | "ready" | "waiting" | "connecting" | "done";
+
+/** Stand-ins for the round trips a real sign-in makes. */
+const PROMPT_DELAY_MS = 1400;
+
+const OAUTH_URL: Record<string, string> = {
+  claude_local: "https://claude.ai/oauth/authorize?code=true&client=paperclip",
+  codex_local: "https://auth.openai.com/codex/device",
+};
 
 function ConnectFlowPreview({
   initialSourceId,
@@ -87,66 +97,74 @@ function ConnectFlowPreview({
   const [useApiKeys, setUseApiKeys] = useState(false);
   const [phase, setPhase] = useState<Phase>(initialPhase);
   const [code, setCode] = useState("");
-  const [polled, setPolled] = useState(false);
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
-  const submitsBrowserCode = selectedId === "claude_local";
   const mode: CredentialMode = useApiKeys ? "api" : "subscription";
+  const providerName = selectedId === "codex_local" ? "OpenAI" : "Claude";
+  const signInLabel = `Sign in to ${providerName}`;
+  const authUrl = OAUTH_URL[selectedId ?? "claude_local"]!;
 
   const after = (ms: number, fn: () => void) => {
     timers.current.push(setTimeout(fn, ms));
   };
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
-  // The prompt round trip.
+  // The prompt round trip: the card is already open on a spinner by now.
   useEffect(() => {
-    if (phase !== "connecting") return;
-    after(PROMPT_DELAY_MS, () => setPhase("auth"));
+    if (phase !== "loading") return;
+    after(PROMPT_DELAY_MS, () => setPhase("ready"));
   }, [phase]);
-
-  // The poll that lands while the customer is away in another tab, for the
-  // displayed-code login only. Armed on *reaching* `auth` rather than on
-  // leaving `connecting`, so a `?state=openai` deep link arms it too — hung off
-  // the transition, that link opened on a Next that never enabled.
-  useEffect(() => {
-    if (phase !== "auth" || submitsBrowserCode || polled) return;
-    after(POLL_DELAY_MS, () => setPolled(true));
-  }, [phase, submitsBrowserCode, polled]);
-
-  const finishSubmit = () => {
-    setPhase("submitting");
-    after(SUBMIT_DELAY_MS, () => setPhase("done"));
-  };
-
-  // The same two-part rule the shipped panel uses: the paste arms the submit,
-  // and the value gates it. Both halves matter here. Running it from the paste
-  // handler alone would submit whatever was in the field *before* the paste —
-  // the handler fires first — and skipping the check would advance the flow on
-  // an empty or malformed paste, which is a worse lie than not previewing it,
-  // since demonstrating this interaction is what the page is for.
-  const pastedRef = useRef(false);
-  useEffect(() => {
-    if (!pastedRef.current) return;
-    pastedRef.current = false;
-    if (!isValidBrowserCode(code.trim())) return;
-    finishSubmit();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code]);
 
   const reset = () => {
     timers.current.forEach(clearTimeout);
     timers.current = [];
     setPhase("idle");
     setCode("");
-    setPolled(false);
+    setSelectedId(null);
   };
 
-  const loggingIn = phase === "connecting" || phase === "auth" || phase === "submitting";
+  // Picking a source is what starts the sign-in — the row collapses, the link
+  // goes, and the card opens on a wait, all from the one press.
+  const pick = (id: string) => {
+    if (phase !== "idle") return;
+    setSelectedId(id);
+    setPhase("loading");
+  };
+
+  // The paste is the answer; see the shipped panel for why it is the paste and
+  // not the value. The hold after it is deliberate — `CONNECTED_HOLD_MS`.
+  const pastedRef = useRef(false);
+  useEffect(() => {
+    if (!pastedRef.current) return;
+    pastedRef.current = false;
+    if (!isValidBrowserCode(code.trim())) return;
+    setPhase("connecting");
+    after(CONNECTED_HOLD_MS, () => setPhase("done"));
+  }, [code]);
+
+  const collapsed = phase !== "idle" && selectedId !== null;
+  const cardOpen = phase === "loading" || phase === "ready" || phase === "waiting" || phase === "connecting";
   const done = phase === "done";
+
+  // Four labels, three shapes. The button is only ever pressable on `ready`:
+  // before that there is nothing to sign in to, and after it the sign-in is
+  // happening somewhere this screen cannot hurry.
+  const cta =
+    done
+      ? { label: "Start over", icon: "arrow" as const, disabled: false }
+      : phase === "ready"
+        ? { label: signInLabel, icon: "none" as const, disabled: false }
+        : phase === "waiting"
+          ? { label: "Waiting for code", icon: "spinner" as const, disabled: true }
+          : phase === "connecting"
+            ? { label: "Connecting", icon: "spinner" as const, disabled: true }
+            : { label: "Next", icon: "arrow" as const, disabled: true };
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className="w-(--sz-560px) max-w-full p-10">
+      {/* 40px inset, not 64: the sequence draws a 480px column inside the 560
+          frame, wider than the arc's other steps. */}
+      <div className="w-(--sz-560px) max-w-full px-10 py-10">
         <Stepper step={done ? 3 : 2} />
 
         <div className="flex flex-col items-center">
@@ -177,91 +195,102 @@ function ConnectFlowPreview({
                 sources={MODEL_SOURCES}
                 mode={mode}
                 selectedId={selectedId}
-                onSelect={(id) => {
-                  if (loggingIn) return;
-                  setSelectedId(id);
-                }}
+                onSelect={pick}
+                collapsed={collapsed}
               />
-              <CredentialModeLink
-                mode={mode}
-                onChange={(next) => {
-                  setUseApiKeys(next === "api");
-                  reset();
-                }}
-              />
+              {/* Gone as soon as a source is picked, and faster than the row
+                  collapses. Once a sign-in is running there is no switching to
+                  keys without abandoning it, so leaving the control on screen
+                  would invite a press that cannot be honoured. */}
+              <AnimatePresence initial={false}>
+                {!collapsed && (
+                  <motion.div
+                    key="credential-mode"
+                    exit={{ opacity: 0, transition: SOURCE_LINK_EXIT }}
+                  >
+                    <CredentialModeLink
+                      mode={mode}
+                      onChange={(next) => setUseApiKeys(next === "api")}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
-            {/* Opens on the press, not on the selection — the card is the
-                sign-in, so there is nothing to hold before one starts. */}
-            <ConnectInputCanvas
-              open={phase === "auth" || phase === "submitting"}
-              contentKey={`${selectedId}:${mode}`}
-            >
-              {submitsBrowserCode ? (
-                <OnboardingLoginCard
-                  instruction="Open Claude link then come back and enter code"
-                  onCancel={reset}
-                >
-                  <OnboardingLoginUrlRow url="https://claude.ai/oauth/authorize?code=true&client=paperclip&scope=all" />
-                  <OnboardingLoginCodeInput
-                    value={code}
-                    onChange={setCode}
-                    disabled={phase === "submitting"}
-                    onSubmit={() => {
-                      if (code.trim()) finishSubmit();
-                    }}
-                    onPaste={() => {
-                      pastedRef.current = true;
-                    }}
-                  />
-                </OnboardingLoginCard>
-              ) : (
-                <OnboardingLoginCard
-                  instruction="Copy this code then open the authentication link"
-                  onCancel={reset}
-                >
-                  {/* Code above link — see the same order in the shipped panel.
-                      Pressing the link leaves for another tab that wants this
-                      code, so it is read before the link is there to press. */}
-                  <OnboardingLoginCodeRow code="Q2RJ-E1YIF" />
-                  <OnboardingLoginUrlRow url="https://auth.openai.com/codex/device" />
-                </OnboardingLoginCard>
-              )}
+            <ConnectInputCanvas open={cardOpen} contentKey={`${selectedId}:${mode}`}>
+              <OnboardingLoginCard
+                loading={phase === "loading"}
+                instruction={
+                  <>
+                    {/* The same destination as the button below. Two ways to
+                        reach one link: the button for the customer following
+                        the flow, the anchor for anyone who wants to copy it
+                        into another browser. */}
+                    <a
+                      href={authUrl}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="underline underline-offset-2 hover:text-foreground"
+                    >
+                      {signInLabel}
+                    </a>
+                    {" then come back and enter authorization code"}
+                  </>
+                }
+              >
+                <OnboardingLoginCodeInput
+                  value={code}
+                  onChange={setCode}
+                  disabled={phase === "connecting"}
+                  onSubmit={() => {
+                    if (isValidBrowserCode(code.trim())) {
+                      setPhase("connecting");
+                      after(CONNECTED_HOLD_MS, () => setPhase("done"));
+                    }
+                  }}
+                  onPaste={() => {
+                    pastedRef.current = true;
+                  }}
+                />
+              </OnboardingLoginCard>
             </ConnectInputCanvas>
           </>
         )}
 
+        {/*
+          Back unwinds the sign-in before it leaves the step. Once the row has
+          collapsed there is a live session behind the card, and the nearest
+          thing to "back" is the state before it started — the row open again,
+          both sources offered. Only from there does Back mean the previous
+          step.
+
+          It is also the only way out now that the card has no Cancel of its
+          own: one control, and what it undoes depends on how far in you are.
+        */}
         <FooterNav
-          onBack={phase === "idle" ? () => {} : undefined}
-          primaryLabel={
-            // "Start over" is preview-only: the real step has left for Review
-            // by now, and this page has nowhere to send you but back.
-            done ? "Start over" : loggingIn && !submitsBrowserCode ? "Next" : "Connect"
-          }
-          loadingLabel="Connecting"
-          // Busy only where the work is happening on this screen. The
-          // displayed-code login finishes in another tab, so its button is
-          // waiting rather than working, and stays still.
-          loading={loggingIn && submitsBrowserCode}
-          primaryDisabled={
-            done ? false : selectedId === null || (loggingIn && !(polled && !submitsBrowserCode))
-          }
+          onBack={() => {
+            if (phase === "idle") return;
+            reset();
+          }}
+          primaryLabel={cta.label}
+          primaryIcon={cta.icon}
+          primaryDisabled={cta.disabled}
           onPrimary={() => {
-            if (done) reset();
-            else if (phase === "idle") setPhase("connecting");
-            else if (polled && !submitsBrowserCode) setPhase("done");
+            if (done) {
+              reset();
+              return;
+            }
+            if (phase === "ready") {
+              window.open(authUrl, "_blank", "noreferrer,noopener");
+              setPhase("waiting");
+            }
           }}
         />
 
         {/* Preview-only. A real paste carries the code; here anything will do. */}
-        {phase === "auth" && submitsBrowserCode && (
+        {(phase === "ready" || phase === "waiting") && (
           <p className="pt-4 text-center text-xs text-muted-foreground/70">
-            Preview: paste any text into the field to see the auto-submit.
-          </p>
-        )}
-        {phase === "auth" && !submitsBrowserCode && !polled && (
-          <p className="pt-4 text-center text-xs text-muted-foreground/70">
-            Preview: Next enables when the poll lands, a few seconds from now.
+            Preview: paste any text into the field to see the hold and the advance.
           </p>
         )}
       </div>
@@ -272,10 +301,10 @@ function ConnectFlowPreview({
 /** `?state=` opens on a frame; everything stays clickable afterwards. */
 const STATES: Record<string, { initialSourceId: string | null; initialPhase: Phase }> = {
   default: { initialSourceId: null, initialPhase: "idle" },
-  selected: { initialSourceId: "claude_local", initialPhase: "idle" },
-  connecting: { initialSourceId: "claude_local", initialPhase: "connecting" },
-  claude: { initialSourceId: "claude_local", initialPhase: "auth" },
-  openai: { initialSourceId: "codex_local", initialPhase: "auth" },
+  loading: { initialSourceId: "claude_local", initialPhase: "loading" },
+  ready: { initialSourceId: "claude_local", initialPhase: "ready" },
+  waiting: { initialSourceId: "claude_local", initialPhase: "waiting" },
+  openai: { initialSourceId: "codex_local", initialPhase: "ready" },
 };
 
 const requested = new URLSearchParams(window.location.search).get("state") ?? "default";
@@ -283,9 +312,6 @@ const initial = STATES[requested] ?? STATES.default!;
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    {/* Centred against the viewport with `min-h-dvh` and `my-auto`, the way the
-        sibling preview is: align-items would put the top of a too-tall step out
-        of scroll reach, and auto margins collapse instead. */}
     <div className="flex min-h-dvh justify-center">
       <div className="my-auto">
         <ConnectFlowPreview {...initial} />
