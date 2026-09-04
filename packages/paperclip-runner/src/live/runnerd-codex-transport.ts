@@ -3052,12 +3052,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const committedEvents = core.store.state.committedEvents;
     const runAttachment = recoveredRunAttachment(core.store.state);
-    // Reconnecting the exact run authority has no run.attach command to wake
+    // Relaunching the exact run authority has no run.attach command to wake
     // provider restoration. Queue a unique, side-effect-free barrier before
     // runnerd starts so every provider backend restores its durable session
-    // and emits a fresh session.resumed event while executing the probe.
+    // and emits a fresh session.resumed event while executing the probe. A
+    // live adopted process already owns that provider session and therefore
+    // must use its committed identity instead of waiting for a second resume.
     const recoveryProbeCommandId =
-      exactAuthority && runAttachment === null
+      exactAuthority &&
+      runAttachment === null &&
+      this.options.adoptExistingRunner === undefined
         ? `command_resume_probe_${randomUUID().replaceAll("-", "")}`
         : null;
     if (recoveryProbeCommandId !== null) {
