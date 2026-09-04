@@ -312,13 +312,26 @@ describe.sequential("issue thread interaction routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
-    vi.clearAllMocks();
-    mockInteractionService.getForIssue.mockReset();
+    // Every mock here is a vi.hoisted() singleton. All 70+ tests share it.
+    // A queued mockResolvedValueOnce() value can outlive its own test and
+    // leak into a later, unrelated test. vi.resetAllMocks() drains that
+    // queue for every mock in one call. It also keeps each mock's
+    // constructor-provided vi.fn(impl) default. So the code below only
+    // sets values that must differ from that default.
+    // vi.clearAllMocks() clears call history only. It does not drain the
+    // queue. That gap once let a leftover queued value deny an unrelated
+    // later test.
+    vi.resetAllMocks();
+    // mockRunAttribution.value is a plain object, not a vi.fn().
+    // resetAllMocks() does not reset it. createApp() overwrites it for an
+    // agent actor. A board actor leaves whatever value a prior test set here.
+    mockRunAttribution.value = {
+      companyId: "company-1",
+      agentId: CREATED_AGENT_ID,
+      responsibleUserId: null,
+    };
     mockQuestionResponseDeliveries.deliver.mockResolvedValue(null);
     mockRequestNativeQuestionRunCancellation.mockResolvedValue(null);
-    mockResolveTaskWatchdogMutationScope.mockReset();
-    mockResolveCoreTrustPreset.mockReset();
-    mockAccessDecide.mockReset();
     mockResolveTaskWatchdogMutationScope.mockResolvedValue({ kind: "none" });
     mockResolveCoreTrustPreset.mockReturnValue({ kind: "standard" });
     mockAccessDecide.mockImplementation(async (input: { action?: string }) => ({
