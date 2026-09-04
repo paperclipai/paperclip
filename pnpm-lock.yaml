@@ -17,7 +17,7 @@ patchedDependencies:
     hash: axsvv3fhdlmmbmnhpi2cywic6q
     path: patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
   '@agentclientprotocol/codex-acp@1.6.2':
-    hash: grbydorkxatbzksnwwfuawwtim
+    hash: jb7mkuk6elgpjomlxcdukdpiyy
     path: patches/@agentclientprotocol__codex-acp@1.6.2.patch
   acpx@0.12.0:
     hash: b2ggqg6aj4hdob4whk6vq6jmc4
@@ -176,7 +176,7 @@ importers:
     dependencies:
       '@agentclientprotocol/codex-acp':
         specifier: ^1.6.2
-        version: 1.6.2(patch_hash=grbydorkxatbzksnwwfuawwtim)
+        version: 1.6.2(patch_hash=jb7mkuk6elgpjomlxcdukdpiyy)
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -479,7 +479,7 @@ importers:
         version: 0.70.0(patch_hash=fymctidcjqjhi4cj72qtivlxry)(@anthropic-ai/sdk@0.121.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
-        version: 1.6.2(patch_hash=grbydorkxatbzksnwwfuawwtim)
+        version: 1.6.2(patch_hash=jb7mkuk6elgpjomlxcdukdpiyy)
       acpx:
         specifier: 0.13.1
         version: 0.13.1(patch_hash=lzpwjtiaybzoijy455dfycwavu)
@@ -8418,7 +8418,7 @@ snapshots:
       - '@anthropic-ai/sdk'
       - '@modelcontextprotocol/sdk'
 
-  '@agentclientprotocol/codex-acp@1.6.2(patch_hash=grbydorkxatbzksnwwfuawwtim)':
+  '@agentclientprotocol/codex-acp@1.6.2(patch_hash=jb7mkuk6elgpjomlxcdukdpiyy)':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@openai/codex': 0.148.0
