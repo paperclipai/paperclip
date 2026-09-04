@@ -90,6 +90,91 @@ function buildStringConstantMap(): Map<string, string> {
   return constMap;
 }
 
+/** Splits an argument list on top-level commas, ignoring nested brackets and strings. */
+function splitTopLevelArgs(argList: string): string[] {
+  const inner = argList.replace(/^\(/, "").replace(/\)$/, "");
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let current = "";
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      if (ch === quote && inner[i - 1] !== "\\") quote = null;
+    } else if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+    } else if ("([{".includes(ch)) {
+      depth++;
+    } else if (")]}".includes(ch)) {
+      depth--;
+    } else if (ch === "," && depth === 0) {
+      parts.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+/** True when the text has a `reason` used as a property key, not as some other key's value. */
+function hasReasonProperty(text: string): boolean {
+  return /(?:^|[{,])\s*reason\s*[:,}]/.test(text);
+}
+
+/**
+ * Resolves the reason carried by a spread of a caller-supplied object, such as
+ * `.set({ status, ...patch })`.
+ *
+ * The spread hides whatever the caller passed, so the guard cannot read the write
+ * site alone. This finds the parameter the spread came from, locates that
+ * parameter's position in the enclosing helper, and reads the matching argument at
+ * every call site.
+ *
+ * Returns the literals it proved, or null when any call site passes something this
+ * scan cannot inspect — a variable, a spread, or a call. The caller then reports the
+ * site as unresolved, so an unprovable spread fails the test instead of passing.
+ */
+function resolveSpreadReasonFromCallSites(
+  text: string,
+  writeSiteIndex: number,
+  spreadName: string,
+): { literals: string[] } | null {
+  const before = text.slice(0, writeSiteIndex);
+  const declRe = /(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  let decl: RegExpExecArray | null;
+  let helperName: string | null = null;
+  let declIndex = -1;
+  while ((decl = declRe.exec(before))) {
+    helperName = decl[1];
+    declIndex = decl.index + decl[0].length - 1;
+  }
+  if (!helperName || declIndex < 0) return null;
+
+  // Which parameter position does the spread variable occupy?
+  const params = splitTopLevelArgs(extractBalancedParens(text, declIndex));
+  const paramIndex = params.findIndex((param) =>
+    new RegExp(`^${spreadName}\\b`).test(param.replace(/^\.\.\./, "")),
+  );
+  if (paramIndex === -1) return null;
+
+  const literals = new Set<string>();
+  const callRe = new RegExp(`\\b${helperName}\\s*\\(`, "g");
+  let call: RegExpExecArray | null;
+  while ((call = callRe.exec(text))) {
+    const openIdx = call.index + call[0].length - 1;
+    if (openIdx === declIndex) continue;
+    const args = splitTopLevelArgs(extractBalancedParens(text, openIdx));
+    const arg = args[paramIndex];
+    if (arg === undefined) continue; // optional parameter omitted -- carries no reason
+    if (!arg.startsWith("{")) return null; // a variable or call -- cannot prove absence
+    if (!hasReasonProperty(arg)) continue; // inline object, provably no reason
+    for (const q of arg.matchAll(/reason\s*:\s*"([^"]+)"/g)) literals.add(q[1]);
+  }
+  return { literals: [...literals] };
+}
+
 /**
  * Resolves a wake `reason` that is a parameter of a file-local helper.
  *
@@ -176,18 +261,38 @@ function collectWakeupReasonLiterals(): { reason: string; files: string[] }[] {
         const shorthand = /[{,]\s*reason\s*[,}]/.test(block);
         const spread = /\.\.\.[A-Za-z_][A-Za-z0-9_]*/.test(block);
         if (!shorthand && !spread) continue;
-        const traced = resolveReasonFromHelperCallSites(text, m.index, "reason");
-        if (traced) {
-          for (const literal of traced) {
-            if (!found.has(literal)) found.set(literal, new Set());
-            found.get(literal)!.add(relFile);
+        if (shorthand) {
+          const traced = resolveReasonFromHelperCallSites(text, m.index, "reason");
+          if (traced) {
+            for (const literal of traced) {
+              if (!found.has(literal)) found.set(literal, new Set());
+              found.get(literal)!.add(relFile);
+            }
+          } else {
+            // A shorthand write whose helper cannot be traced is a real unknown.
+            if (!unresolved.has("reason (shorthand)")) unresolved.set("reason (shorthand)", new Set());
+            unresolved.get("reason (shorthand)")!.add(relFile);
           }
-        } else if (shorthand) {
-          // A shorthand write whose helper cannot be traced is a real unknown.
-          if (!unresolved.has("reason (shorthand)")) unresolved.set("reason (shorthand)", new Set());
-          unresolved.get("reason (shorthand)")!.add(relFile);
         }
-        // A spread whose call sites never pass `reason` contributes nothing.
+        if (spread) {
+          // Resolve each spread separately. A spread is only safe when every call
+          // site passes an inline object this scan can read; anything else -- a
+          // variable, a nested spread, a call -- is reported rather than skipped.
+          for (const spreadMatch of block.matchAll(/\.\.\.([A-Za-z_][A-Za-z0-9_]*)/g)) {
+            const spreadName = spreadMatch[1];
+            const resolved = resolveSpreadReasonFromCallSites(text, m.index, spreadName);
+            if (!resolved) {
+              const key = `...${spreadName} (unprovable spread)`;
+              if (!unresolved.has(key)) unresolved.set(key, new Set());
+              unresolved.get(key)!.add(relFile);
+              continue;
+            }
+            for (const literal of resolved.literals) {
+              if (!found.has(literal)) found.set(literal, new Set());
+              found.get(literal)!.add(relFile);
+            }
+          }
+        }
         continue;
       }
 
