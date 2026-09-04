@@ -319,6 +319,9 @@ describe("runner E2E catalog", () => {
       'summary:"PAPERCLIP_E2E_PLAN_DONE_nonce"',
     );
     expect(task!.buildPrompt("nonce")).toContain(
+      "do not emit an acknowledgement, progress update, preamble, or any other assistant text; make paperclip_finish your first action",
+    );
+    expect(task!.buildPrompt("nonce")).toContain(
       "one atomic issue PATCH with status `done` and that exact comment",
     );
     expect(task!.buildRevisionRequest?.("nonce")).toContain("baseRevisionId");
