@@ -197,9 +197,9 @@ packaging because it is active content.
 Before permanent publication, the trusted report job creates a separate tree.
 It accepts only declared screenshots from passing results. It validates a
 bounded, non-interlaced PNG container before invoking ImageMagick with strict
-memory, disk, thread, and time limits. It reduces each image to at most 160
-pixels on either edge, applies a strong blur, limits the palette, removes alpha
-and metadata, and validates the new PNG again. Tesseract must then find no
+memory, disk, thread, and time limits. It reduces each image to at most 96
+pixels on either edge, applies a 3.5-sigma blur, limits the palette to 16
+colors, removes alpha and metadata, and validates the new PNG again. Tesseract must then find no
 readable letter or digit. OCR output is never logged. Any readable text or OCR
 failure blocks the whole publication. This is a layout preview, not diagnostic
 evidence. The job then prunes full-resolution raster files, all failure images,

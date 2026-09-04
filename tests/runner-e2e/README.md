@@ -207,8 +207,8 @@ cost. The CI report job stages the same portable site at
 Permanent public history has a narrower boundary. A trusted job without
 provider or AWS credentials copies successful declared PNG screenshots into a
 separate publication tree. It validates the PNG container, reduces each image
-to at most 160 pixels on either edge, applies a strong blur, limits the image to
-24 colors, and removes metadata. It then runs OCR and rejects the whole public
+to at most 96 pixels on either edge, applies a 3.5-sigma blur, limits the image
+to 16 colors, and removes metadata. It then runs OCR and rejects the whole public
 bundle if any letter or digit remains readable. These layout previews preserve
 coarse UI state while making rendered task and provider text unreadable. The job then
 removes the full-resolution raster files, failure screenshots, video, archives,
