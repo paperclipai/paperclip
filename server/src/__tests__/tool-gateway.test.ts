@@ -731,6 +731,104 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("keeps additive app-gallery assignments out of gateway-only runtimes", async () => {
+    const company = await createCompany(db);
+    const assigned = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "gateway-assigned-app",
+      connectionName: "Dedicated GitHub identity",
+      toolName: "get_me",
+      riskLevel: "read",
+    });
+    const unassigned = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "gateway-unassigned-app",
+      connectionName: "Personal GitHub identity",
+      toolName: "get_me",
+      riskLevel: "read",
+    });
+    const assignedToolName = expectedConnectedToolName({
+      applicationKey: assigned.application.applicationKey,
+      connectionId: assigned.connection.id,
+      toolName: assigned.catalogEntry.toolName,
+    });
+    const unassignedToolName = expectedConnectedToolName({
+      applicationKey: unassigned.application.applicationKey,
+      connectionId: unassigned.connection.id,
+      toolName: unassigned.catalogEntry.toolName,
+    });
+    const [gatewayProfile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `runtime-gateway-${randomUUID()}`,
+      name: "Resolved runtime identity",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: gatewayProfile.id,
+      selectorType: "connection",
+      effect: "include",
+      connectionId: assigned.connection.id,
+    });
+    const [appProfile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `app:${unassigned.connection.id}`,
+      name: "Personal GitHub",
+      defaultAction: "deny",
+      metadata: { source: "app_gallery_finish", connectionId: unassigned.connection.id },
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: appProfile.id,
+      selectorType: "connection",
+      effect: "include",
+      connectionId: unassigned.connection.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: appProfile.id,
+      targetType: "company",
+      targetId: company.id,
+      priority: 100,
+      metadata: { source: "app_gallery_finish" },
+    });
+
+    const gateway = createTestToolGatewayService(db);
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: {
+        name: "Resolved runtime GitHub",
+        profileId: gatewayProfile.id,
+        defaultProfileMode: "gateway_only",
+      },
+    });
+    const token = await gateway.createNamedGatewayToken({
+      companyId: company.id,
+      gatewayId: created.id,
+      body: { name: "Runtime token" },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+
+    const listed = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(200);
+    const visibleToolNames = listed.body.result.tools.map((tool: { name: string }) => tool.name);
+    expect(visibleToolNames).toContain(assignedToolName);
+    expect(visibleToolNames).not.toContain(unassignedToolName);
+
+    const denied = await request(app)
+      .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+      .set("authorization", `Bearer ${token.token}`)
+      .send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: unassignedToolName, arguments: {} },
+      })
+      .expect(403);
+    expect(denied.body.error.data.reasonCode).toBe("deny_default");
+  });
+
   it("proxies namespaced resources and prompts only for fully assigned MCP connections", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(async ({ body }) => {
