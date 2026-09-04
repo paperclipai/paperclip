@@ -204,16 +204,19 @@ usage is labeled `unavailable` or `unpriced`; it is never presented as zero
 cost. The CI report job stages the same portable site at
 `normalized/index.html` inside the access-controlled merged report artifact.
 
-Permanent public history has a narrower boundary. Before uploading to S3 or
-packaging the optional GitHub Pages artifact, the publisher removes raster and
-video evidence, archives, and the generated Playwright/blob/HTML report trees.
-It then regenerates the dashboard against only the remaining allowlisted,
-inert structured per-attempt evidence (`.json`, `.log`, `.md`, and `.txt`).
-Per-attempt XML is excluded because browsers can process XML/XSLT. The root
-`junit.xml` remains public because the report aggregator builds it from fixed
-markup and XML-escaped fields. Public dashboards therefore contain results and
-accounting but no attempt screenshots, videos, traces, or generated Playwright
-reports.
+Permanent public history has a narrower boundary. A trusted job without
+provider or AWS credentials copies successful declared PNG screenshots into a
+separate publication tree. It validates the PNG container, reduces each image
+to at most 96 pixels on either edge, applies a 3.5-sigma blur, limits the image
+to 16 colors, and removes metadata. It then runs OCR and rejects the whole public
+bundle if any letter or digit remains readable. These layout previews preserve
+coarse UI state while making rendered task and provider text unreadable. The job then
+removes the full-resolution raster files, failure screenshots, video, archives,
+SVG, and generated Playwright/blob/HTML report trees. Only the derived
+`public-visuals/*.png` previews and allowlisted inert evidence (`.json`, `.log`,
+`.md`, and `.txt`) remain. Per-attempt XML is excluded because browsers can
+process XML/XSLT. The root `junit.xml` remains public because the report
+aggregator builds it from fixed markup and XML-escaped fields.
 
 ### Billing interpretation
 
@@ -380,11 +383,13 @@ bundle digest fails closed.
 
 GitHub Pages remains the stable latest dashboard. Enable Pages with GitHub
 Actions as its source and set `RUNNER_FULL_STACK_E2E_PUBLISH_PAGES=true`.
-The publisher prunes screenshots, video, archives, and generated report trees,
-then regenerates the public dashboard before either the CloudFront-backed S3
-history or optional Pages artifact is created. Public per-attempt evidence is
-limited to allowlisted inert structured text. Databases, Paperclip homes,
-workspaces, raw/unredacted logs, credentials, and visual evidence are never
+The trusted report job creates a separate public bundle before the AWS role is
+available. It publishes only blurred, low-resolution, metadata-free layout
+previews with an empty OCR result for successful declared screenshots and
+allowlisted inert structured text. The S3/CloudFront history and optional Pages
+mirror use this same bundle.
+Full-resolution and failure screenshots, video, archives, generated reports,
+databases, Paperclip homes, workspaces, raw logs, and credentials are never
 published. Sanitized allowlisted `.log` copies may be public only after
 exact-value/key-shape scanning and redaction.
 

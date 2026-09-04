@@ -179,8 +179,9 @@ latest pointers are mutable, and S3 versioning makes those updates recoverable.
 ## Public evidence boundary
 
 CloudFront and GitHub Pages are public. Fixture identifiers, timing, token
-usage, costs, normalized results, and allowlisted inert structured per-attempt
-evidence are expected public data. Screenshots, video, archives, generated
+usage, costs, normalized results, allowlisted inert structured per-attempt
+evidence, and deliberately degraded layout previews are expected public data.
+Full-resolution and failure screenshots, video, archives, generated
 Playwright/blob/HTML report trees, credentials, Paperclip homes, databases,
 workspaces, master keys, raw/unredacted logs, and unallowlisted files are not.
 Only allowlisted `.log` copies that passed exact-value/key-shape scanning and
@@ -189,20 +190,31 @@ redaction may cross the public boundary.
 The packaged evidence uploaded as a 30-day GitHub Actions artifact has a
 different, access-controlled boundary. Text is exact-value and key-shape
 scanned and redacted. PNG and WebM are raw-byte scanned but cannot be inspected
-for credentials rendered as pixels, so they remain only in local evidence and
-the access-controlled artifact. SVG is rejected during packaging because it is
-active content.
+for credentials rendered as pixels, so full-resolution files remain only in
+local evidence and the access-controlled artifact. SVG is rejected during
+packaging because it is active content.
 
-Before permanent publication, the campaign publisher prunes raster/video
-files, archives, and generated report trees. It then regenerates the dashboard
-from the remaining allowlisted `.json`, `.log`, `.md`, and `.txt` evidence and
-accepts only that dashboard, normalized JSON/JUnit/summary, fixed
-branding assets, and the inert structured evidence paths. Per-attempt XML is
-excluded because browsers can process XML/XSLT; the only public XML is the
-root `junit.xml`, which the report aggregator constructs from fixed markup and
-XML-escaped fields. The same pruned tree feeds both S3/CloudFront history and
-the optional GitHub Pages artifact. A leak fails the cell and withholds the
-unsafe file.
+Before permanent publication, the trusted report job creates a separate tree.
+It accepts only declared screenshots from passing results. It validates a
+bounded, non-interlaced PNG container before invoking ImageMagick with strict
+memory, disk, thread, and time limits. It reduces each image to at most 96
+pixels on either edge, applies a 3.5-sigma blur, limits the palette to 16
+colors, removes alpha and metadata, and validates the new PNG again. Tesseract must then find no
+readable letter or digit. OCR output is never logged. Any readable text or OCR
+failure blocks the whole publication. This is a layout preview, not diagnostic
+evidence. The job then prunes full-resolution raster files, all failure images,
+video, archives, active SVG, and generated reports. This transformation runs
+before AWS credentials are available. The AWS job downloads only the prepared
+public tree.
+
+The remaining allowlist contains `public-visuals/*.png`, `.json`, `.log`, `.md`,
+and `.txt` evidence, plus the generated dashboard, normalized
+JSON/JUnit/summary, and fixed branding assets. Per-attempt XML is excluded
+because browsers can process XML/XSLT. The only public XML is the root
+`junit.xml`, which the report aggregator constructs from fixed markup and
+XML-escaped fields. The same prepared tree feeds S3/CloudFront history and the
+optional GitHub Pages artifact. Any malformed image, transformation error,
+unexpected file, or scan failure withholds publication.
 
 Rotate the affected credential immediately if a secret-scanning failure or
 unexpected public object is observed. Preserve the access-controlled Actions
