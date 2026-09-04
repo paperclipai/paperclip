@@ -328,9 +328,35 @@ describe("runner E2E catalog", () => {
       "Do not call get_task_context, list_documents, or any other tool",
     );
     expect(task!.buildPrompt("nonce")).toContain(
+      "those two tool calls form one indivisible response sequence",
+    );
+    expect(task!.buildPrompt("nonce")).toContain(
+      "Do not emit assistant text, end the heartbeat, or stop after write_document alone",
+    );
+    expect(task!.buildPrompt("nonce")).toContain(
       "one atomic issue PATCH with status `done` and that exact comment",
     );
-    expect(task!.buildRevisionRequest?.("nonce")).toContain("baseRevisionId");
+    const revisionRequest = task!.buildRevisionRequest?.("nonce");
+    expect(revisionRequest).toContain("baseRevisionId");
+    expect(revisionRequest).toContain(
+      "request_human_input must be your immediate next action",
+    );
+  });
+
+  it("requires one atomic legacy Ask completion write", () => {
+    const task = runnerTasks.find(
+      (candidate) => candidate.id === "ask-question",
+    );
+    expect(task).toBeDefined();
+    const prompt = task!.buildPrompt("nonce");
+    expect(prompt).toContain(
+      "make exactly one public-API write containing the marker",
+    );
+    expect(prompt).toContain(
+      'PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"E2E_ASK_12_nonce"}',
+    );
+    expect(prompt).toContain("Do not POST to /comments");
+    expect(prompt).toContain("do not PATCH the status separately");
   });
 
   it("accepts only complete immutable Daytona digests", () => {
