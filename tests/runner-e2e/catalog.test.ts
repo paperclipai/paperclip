@@ -319,7 +319,13 @@ describe("runner E2E catalog", () => {
       'summary:"PAPERCLIP_E2E_PLAN_DONE_nonce"',
     );
     expect(task!.buildPrompt("nonce")).toContain(
-      "do not emit an acknowledgement, progress update, preamble, or any other assistant text; make paperclip_finish your first action",
+      "trust that inline acceptance",
+    );
+    expect(task!.buildPrompt("nonce")).toContain(
+      "Your first response action on that wake must be the paperclip_finish tool call",
+    );
+    expect(task!.buildPrompt("nonce")).toContain(
+      "Do not call get_task_context, list_documents, or any other tool",
     );
     expect(task!.buildPrompt("nonce")).toContain(
       "one atomic issue PATCH with status `done` and that exact comment",
