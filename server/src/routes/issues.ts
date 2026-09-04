@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
@@ -68,6 +68,7 @@ import {
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
+  findUnsupportedMonitorSchedulingFields,
   isClosedIsolatedExecutionWorkspace,
   isMarkdownArtifactWorkProduct,
   isMarkdownAttachmentContent,
@@ -296,6 +297,25 @@ const editQueuedCommentSchema = queuedCommentMutationTargetSchema.extend({
 const reorderQueuedCommentsSchema = queuedCommentMutationTargetSchema.extend({
   orderedCommentIds: z.array(z.string().min(1)).max(MAX_ISSUE_COMMENT_LIMIT),
 });
+
+/**
+ * RBR-1101: monitor-scheduling fields have no write path on PATCH /issues/:id
+ * (see `findUnsupportedMonitorSchedulingFields` for the full rationale). Zod's
+ * default `.parse()` in `validate()` silently strips these unknown keys before
+ * the handler ever sees them, so this must inspect the *raw* body ahead of
+ * that validation to catch and name them, instead of relying on the schema.
+ */
+function rejectUnsupportedMonitorSchedulingFields(req: Request, res: Response, next: NextFunction) {
+  const unsupportedFields = findUnsupportedMonitorSchedulingFields(req.body);
+  if (unsupportedFields.length > 0) {
+    next(badRequest(
+      `Unsupported field(s): ${unsupportedFields.join(", ")}. Monitor-scheduling is not settable via PATCH /issues/:id.`,
+      { code: "unsupported_monitor_scheduling_fields", fields: unsupportedFields },
+    ));
+    return;
+  }
+  next();
+}
 
 function prefersMinimalIssueUpdateResponse(req: Request) {
   return (req.get("Prefer") ?? "")
@@ -9911,7 +9931,11 @@ export function issueRoutes(
     },
   );
 
-  router.patch("/issues/:id", validateIssueMutationBody(updateIssueRouteSchema), async (req, res) => {
+router.patch(
+    "/issues/:id",
+    rejectUnsupportedMonitorSchedulingFields,
+    validateIssueMutationBody(updateIssueRouteSchema),
+    async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
@@ -11499,7 +11523,8 @@ export function issueRoutes(
       return;
     }
     res.json({ ...issueResponse, changes, comment });
-  });
+    },
+  );
 
   router.delete("/issues/:id", async (req, res) => {
     const id = req.params.id as string;

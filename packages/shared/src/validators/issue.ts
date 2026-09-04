@@ -613,6 +613,49 @@ export const updateIssueSchema = objectWithoutDefaults(
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
 
+/**
+ * PATCH /issues/:id has no write path for monitor-scheduling: these fields are
+ * not in `createIssueBaseSchema`, and `services/issues.ts` `svc.update()` never
+ * persists them. Because `updateIssueSchema` isn't `.strict()`'d, Zod's default
+ * `.parse()` silently drops unrecognized keys, so a caller sending these fields
+ * previously got an HTTP 200 with a silent no-op (RBR-1094).
+ *
+ * This inspects the *raw* request body (before Zod strips unknown keys) for
+ * monitor-scheduling keys and returns their names so a route guard can reject
+ * the request outright, naming exactly what was rejected. Scoped narrowly to
+ * monitor-scheduling per RBR-1101; this intentionally does not flip
+ * `updateIssueSchema` to global `.strict()`, which would newly reject any
+ * other silently-ignored extra key across every PATCH caller company-wide.
+ */
+export const UNSUPPORTED_MONITOR_SCHEDULING_FLAT_FIELDS = [
+  "monitor",
+  "monitorNextCheckAt",
+  "monitorNotes",
+  "monitorScheduledBy",
+] as const;
+
+function isPlainObjectForMonitorFieldCheck(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function findUnsupportedMonitorSchedulingFields(raw: unknown): string[] {
+  if (!isPlainObjectForMonitorFieldCheck(raw)) return [];
+  const found: string[] = [];
+  for (const field of UNSUPPORTED_MONITOR_SCHEDULING_FLAT_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(raw, field)) {
+      found.push(field);
+    }
+  }
+  const executionState = raw.executionState;
+  if (
+    isPlainObjectForMonitorFieldCheck(executionState)
+    && Object.prototype.hasOwnProperty.call(executionState, "monitor")
+  ) {
+    found.push("executionState.monitor");
+  }
+  return found;
+}
+
 export const stalledReviewDecisionSchema = z.object({
   action: z.enum(["approve", "request_changes", "send_back"]),
   note: multilineTextSchema.pipe(z.string().min(1)).optional(),

@@ -1873,6 +1873,81 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("rejects unsupported monitor-scheduling fields on PATCH /issues/:id with a 4xx naming them (RBR-1101)", async () => {
+    const { sourceIssueId, sourceIssue } = await seedCompany();
+    const app = createApp();
+
+    const flatFields = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({
+        status: "todo",
+        monitor: { nextCheckAt: new Date().toISOString(), notes: "retry later" },
+        monitorNextCheckAt: new Date().toISOString(),
+        monitorNotes: "retry the assignee at the provider reset time",
+        monitorScheduledBy: "assignee",
+      })
+      .expect(400);
+    expect(flatFields.body.code).toBe("unsupported_monitor_scheduling_fields");
+    expect(flatFields.body.error).toContain("monitorNextCheckAt");
+    expect(flatFields.body.error).toContain("monitorNotes");
+    expect(flatFields.body.error).toContain("monitorScheduledBy");
+    expect(flatFields.body.details).toMatchObject({
+      code: "unsupported_monitor_scheduling_fields",
+      fields: expect.arrayContaining(["monitor", "monitorNextCheckAt", "monitorNotes", "monitorScheduledBy"]),
+    });
+
+    // Amendment (SPA-2830): a bare top-level `monitor` key (the bare flat field
+    // a client might send thinking it's the policy rather than under
+    // executionPolicy) is also rejected by the real PATCH path, not just
+    // asserted via the constant read.
+    const bareMonitorField = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({
+        status: "todo",
+        monitor: { nextCheckAt: new Date().toISOString(), notes: "retry later" },
+      })
+      .expect(400);
+    expect(bareMonitorField.body.code).toBe("unsupported_monitor_scheduling_fields");
+    expect(bareMonitorField.body.error).toContain("monitor");
+    expect(bareMonitorField.body.details).toMatchObject({
+      code: "unsupported_monitor_scheduling_fields",
+      fields: ["monitor"],
+    });
+
+    const [unchangedAfterBare] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    // Non-vacuous: seedCompany seeded the source issue at `in_progress`, and the
+    // rejected request body sent `status: "todo"`. So this assertion proves the
+    // whole request was rejected (no partial write), not that todo→todo wrote
+    // nothing.
+    expect(unchangedAfterBare?.status).toBe(sourceIssue.status);
+    expect(unchangedAfterBare?.status).not.toBe("todo");
+
+    const nestedField = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({
+        executionState: { monitor: { nextCheckAt: new Date().toISOString() } },
+      })
+      .expect(400);
+    expect(nestedField.body.code).toBe("unsupported_monitor_scheduling_fields");
+    expect(nestedField.body.error).toContain("executionState.monitor");
+    expect(nestedField.body.details).toMatchObject({
+      code: "unsupported_monitor_scheduling_fields",
+      fields: ["executionState.monitor"],
+    });
+
+    // The request must be rejected outright: no partial write of the legitimate
+    // `status` field alongside the rejected monitor-scheduling fields.
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(unchangedIssue?.status).toBe(sourceIssue.status);
+
+    // AC-b: existing legitimate PATCH payloads without these fields are unaffected.
+    const legitimate = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo" })
+      .expect(200);
+    expect(legitimate.body).toMatchObject({ id: sourceIssueId, status: "todo" });
+  });
+
   it("folds stale recovery during read projection after the source issue reaches done", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
