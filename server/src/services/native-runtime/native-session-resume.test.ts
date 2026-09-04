@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
-import { rebindNativeSessionCheckpoint } from "./native-session-resume.js";
+import {
+  isUnusedLegacyNativeRetryReplacement,
+  rebindNativeSessionCheckpoint,
+} from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
 const companyId = "10000000-0000-4000-8000-000000000001";
@@ -87,6 +90,51 @@ function previousRun(overrides: Record<string, unknown> = {}) {
 }
 
 describe("rebindNativeSessionCheckpoint", () => {
+  it("permits legacy retry rebinding only before the replacement acquired authority", () => {
+    const source = {
+      runtimeMode: "native",
+      status: "interrupted",
+      nativeSessionId: normalizedSessionId,
+    };
+    const replacement = {
+      processPid: null,
+      processGroupId: null,
+      processStartedAt: null,
+      runnerProfileJson: {},
+    };
+    expect(
+      isUnusedLegacyNativeRetryReplacement({
+        source,
+        replacement,
+        hasProviderEvents: false,
+      }),
+    ).toBe(true);
+    expect(
+      isUnusedLegacyNativeRetryReplacement({
+        source,
+        replacement: { ...replacement, processPid: 123 },
+        hasProviderEvents: false,
+      }),
+    ).toBe(false);
+    expect(
+      isUnusedLegacyNativeRetryReplacement({
+        source,
+        replacement,
+        hasProviderEvents: true,
+      }),
+    ).toBe(false);
+    expect(
+      isUnusedLegacyNativeRetryReplacement({
+        source,
+        replacement: {
+          ...replacement,
+          runnerProfileJson: { sessionCheckpoint: { providerSessionId: "claimed" } },
+        },
+        hasProviderEvents: false,
+      }),
+    ).toBe(false);
+  });
+
   it("retains provider identity but clears prior turn and event state", () => {
     const rebound = rebindNativeSessionCheckpoint({
       previousRun: previousRun(),

@@ -15,6 +15,10 @@ import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshot
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
 import {
+  readDevServerRestartRequest,
+  removeDevServerRestartRequest,
+} from "../server/src/dev-server-status.ts";
+import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
   touchLocalServiceRegistryRecord,
@@ -331,10 +335,9 @@ function clearDevServerStatus() {
   rmSync(devServerRestartRequestFilePath, { force: true });
 }
 
-function consumeDevServerRestartRequest() {
-  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return false;
-  rmSync(devServerRestartRequestFilePath, { force: true });
-  return true;
+function getDevServerRestartRequest() {
+  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return null;
+  return readDevServerRestartRequest(env);
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -747,8 +750,8 @@ async function startServerChild() {
 
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) return;
-  const manualRestartRequested = consumeDevServerRestartRequest();
-  if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+  const manualRestartRequest = getDevServerRestartRequest();
+  if (!manualRestartRequest && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
@@ -764,11 +767,30 @@ async function maybeAutoRestartChild() {
     restartInFlight = false;
     return;
   }
-  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+  const observedServerIdentity =
+    typeof (health as { serverInfo?: { processStartedAt?: unknown } })
+      .serverInfo?.processStartedAt === "string"
+      ? (health as { serverInfo: { processStartedAt: string } }).serverInfo
+          .processStartedAt
+      : null;
+  if (
+    manualRestartRequest?.previousServerIdentity &&
+    observedServerIdentity !== manualRestartRequest.previousServerIdentity
+  ) {
+    removeDevServerRestartRequest(
+      manualRestartRequest.requestId
+        ? { requestId: manualRestartRequest.requestId }
+        : undefined,
+      env,
+    );
     restartInFlight = false;
     return;
   }
-  if (!manualRestartRequested && (devServer.activeRunCount ?? 0) > 0) {
+  if (!manualRestartRequest && devServer.autoRestartEnabled !== true) {
+    restartInFlight = false;
+    return;
+  }
+  if (!manualRestartRequest && (devServer.activeRunCount ?? 0) > 0) {
     restartInFlight = false;
     return;
   }
@@ -780,7 +802,26 @@ async function maybeAutoRestartChild() {
       exitOnDecline: false,
     });
     await stopChildForRestart();
+    const restartRequestConsumed = manualRestartRequest
+      ? removeDevServerRestartRequest(
+        manualRestartRequest.requestId
+          ? { requestId: manualRestartRequest.requestId }
+          : undefined,
+        env,
+      )
+      : true;
     await startServerChild();
+    if (manualRestartRequest && !restartRequestConsumed) {
+      // A live writer may briefly hold the request lock. Starting the child is
+      // still correct because the requested restart already happened; retry
+      // correlated cleanup afterward without terminating the supervisor.
+      removeDevServerRestartRequest(
+        manualRestartRequest.requestId
+          ? { requestId: manualRestartRequest.requestId }
+          : undefined,
+        env,
+      );
+    }
   } catch (error) {
     const err = toError(error, "Auto-restart failed");
     process.stderr.write(`${err.stack ?? err.message}\n`);

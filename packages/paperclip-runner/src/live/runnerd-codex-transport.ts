@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -29,7 +30,10 @@ import {
   codexSemanticToolSpecs,
   createIsolatedCodexAppServerArgs,
 } from "../drivers/codex/codex-app-server-driver.js";
-import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
+import type {
+  DurableRecoveryCommittedEvent,
+  DurableRecoveryIdentity,
+} from "../contracts/durable-recovery.js";
 import type { HarnessRuntimeRequestResolution } from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
@@ -69,6 +73,50 @@ const MAX_NOTIFICATION_COUNT = 2_048;
 const MAX_NOTIFICATION_BYTES = 4 * 1024 * 1024;
 const RUNNER_CLIENT_VERSION = "0.3.0";
 const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
+
+function readLocalProcessStartedAt(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (process.platform === "linux") {
+      return new Date(statSync(`/proc/${pid}`).ctimeMs).toISOString();
+    }
+    if (
+      ["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(
+        process.platform,
+      )
+    ) {
+      const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+        timeout: 1_500,
+        windowsHide: true,
+      }).trim();
+      const parsed = new Date(raw);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+    }
+    if (process.platform === "win32") {
+      const script = [
+        `$target = Get-Process -Id ${pid} -ErrorAction Stop`,
+        "$target.StartTime.ToUniversalTime().ToString('o')",
+      ].join("; ");
+      for (const command of ["powershell.exe", "pwsh.exe"]) {
+        try {
+          const raw = execFileSync(
+            command,
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            { encoding: "utf8", timeout: 1_500, windowsHide: true },
+          ).trim();
+          const parsed = new Date(raw);
+          if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+        } catch {
+          // Try the other supported PowerShell host.
+        }
+      }
+    }
+  } catch {
+    // Process exit and restricted process metadata both produce no fingerprint.
+  }
+  return null;
+}
 
 const CODEX_COLLABORATION_RUNTIME_INSTRUCTIONS = `## Codex-style collaboration
 
@@ -307,25 +355,31 @@ function recoveredRunAttachment(state: {
     .reverse()
     .find((candidate) => candidate.type === "run.attach");
   if (!command) return null;
-  let providerIdentityEventIndex = -1;
-  if (command.status === "completed") {
-    for (let index = state.committedEvents.length - 1; index >= 0; index -= 1) {
-      const eventType = state.committedEvents[index]?.eventType;
-      if (
-        eventType === "harness.ready" ||
-        eventType === "session.started" ||
-        eventType === "session.resumed"
-      ) {
-        providerIdentityEventIndex = index;
-        break;
-      }
-    }
-  }
+  const providerIdentityEventIndex =
+    command.status === "completed"
+      ? latestProviderIdentityEventIndex(state.committedEvents)
+      : -1;
   return {
     commandId: command.commandId,
     status: command.status,
     providerIdentityEventIndex,
   };
+}
+
+function latestProviderIdentityEventIndex(
+  events: readonly { eventType: string }[],
+): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const eventType = events[index]?.eventType;
+    if (
+      eventType === "harness.ready" ||
+      eventType === "session.started" ||
+      eventType === "session.resumed"
+    ) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 function providerDrainStateFromSnapshot(state: Record<string, unknown>): {
@@ -532,9 +586,13 @@ export interface CapabilityRunnerdProcessEvidence {
   runnerPid: number | null;
   runnerProcessGroupId: number | null;
   providerPid: number | null;
+  providerProcessStartedAt: string | null;
   codexPid: number | null;
+  codexProcessStartedAt: string | null;
   sidecarPid: number | null;
+  sidecarProcessStartedAt: string | null;
   agentPid: number | null;
+  agentProcessStartedAt: string | null;
   providerDriver: string | null;
   providerVersion: string | null;
   acpxAgent: QualifiedAcpxAgent | null;
@@ -669,6 +727,18 @@ export interface CapabilityRunnerdCodexTransportOptions {
   readRunnerState?: () => Promise<Record<string, unknown>>;
   /** Active-connection recovery budget. Omitted for the existing local mode. */
   runnerReconnectGraceMs?: number;
+  /**
+   * A verified local runner that outlived its controller. Adoption registers
+   * the durable authority and waits for this exact process to reconnect; it
+   * never calls the process launcher while the process remains alive.
+   */
+  adoptExistingRunner?: {
+    pid: number;
+    processGroupId: number | null;
+    startedAt: string;
+    isAlive: () => Promise<boolean> | boolean;
+    signal?: (signal: NodeJS.Signals) => Promise<boolean> | boolean;
+  };
 }
 
 export type RunnerdCodexTransportOptions =
@@ -677,6 +747,8 @@ export type RunnerdCodexTransportOptions =
 export interface CapabilityRunnerdCodexTransport {
   transport: CodexAppServerTransport;
   evidence(): Readonly<CapabilityRunnerdProcessEvidence>;
+  /** Relinquish controller authority without stopping the durable runner. */
+  detachControllerForRestart(): Promise<void>;
 }
 
 export type RunnerdCodexTransport = CapabilityRunnerdCodexTransport;
@@ -1581,6 +1653,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   });
   #core: DurablePrpControlPlane | null = null;
   #handle: RunnerProcessHandle | null = null;
+  #adoptedRunnerMonitor: NodeJS.Timeout | null = null;
   #pump: NodeJS.Timeout | null = null;
   #eventIndex = 0;
   #threadId = "";
@@ -1633,9 +1706,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       runnerPid: null,
       runnerProcessGroupId: null,
       providerPid: null,
+      providerProcessStartedAt: null,
       codexPid: null,
+      codexProcessStartedAt: null,
       sidecarPid: null,
+      sidecarProcessStartedAt: null,
       agentPid: null,
+      agentProcessStartedAt: null,
       providerDriver: null,
       providerVersion: null,
       acpxAgent: null,
@@ -1746,6 +1823,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         snapshot.activeProviderTurnId.length > 0
           ? snapshot.activeProviderTurnId
           : null;
+      if (activeProviderTurnId !== null) this.#turnId = activeProviderTurnId;
       const recoveredTurns: Array<Record<string, unknown>> =
         activeProviderTurnId === null
           ? []
@@ -1985,7 +2063,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         );
         return false;
       }
-      if (this.#handle?.child.exitCode !== null) return false;
+      if (await this.#runnerHasExited()) return false;
       await new Promise((resolveWait) => setTimeout(resolveWait, 5));
     }
     this.#diagnostic("provider turn stop timed out before runner suspension");
@@ -2050,13 +2128,37 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return this.#closePromise;
   }
 
+  async detachControllerForRestart(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#pump !== null) clearInterval(this.#pump);
+    this.#pump = null;
+    if (this.#adoptedRunnerMonitor !== null)
+      clearInterval(this.#adoptedRunnerMonitor);
+    this.#adoptedRunnerMonitor = null;
+    this.#core?.disconnectActiveRunner();
+    if (this.#controlPlaneRelease !== null) await this.#controlPlaneRelease();
+    await this.#core?.stop();
+    this.#controlPlaneRelease = null;
+    this.#handle = null;
+    this.#queue.close();
+    this.#diagnostic(
+      "controller authority detached for restart; durable runner left alive",
+    );
+  }
+
   async #closeOnce(): Promise<void> {
     this.#closed = true;
-    if (this.#core !== null && this.#handle !== null) {
+    const adoptedRunner = this.options.adoptExistingRunner;
+    if (
+      this.#core !== null &&
+      (this.#handle !== null || adoptedRunner !== undefined) &&
+      (this.#failure === null || this.#startupComplete)
+    ) {
       // A terminal provider frame can become visible one control loop before
       // its durable provider suffix is ACKed. Drain it before suspension so a
       // fresh run authority never inherits the prior run's pending events.
-      if (this.#handle.child.exitCode === null) {
+      if (!(await this.#runnerHasExited())) {
         const stoppedActiveTurn =
           await this.#stopActiveProviderTurnBeforeSuspend();
         await this.#drainSettledProviderEventsBeforeSuspend(
@@ -2064,7 +2166,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         );
       }
       const runnerAlreadyStopping =
-        this.#handle.child.exitCode !== null ||
+        (await this.#runnerHasExited()) ||
         this.#core.store.state.commands.some(
           (command) =>
             (command.type === "runner.suspend" ||
@@ -2079,15 +2181,26 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#core.queueCommand("runner.suspend", {}, undefined, true);
       }
       try {
-        const result = await waitForProcess(
-          this.#handle,
-          this.options.closeGraceMs ?? 10_000,
-        );
-        this.#evidence.runnerExited = true;
-        this.#evidence.runnerExitCode = result.code;
-        this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
-        if (result.stderr.trim())
-          this.#diagnostic(result.stderr.trim().slice(-4_096));
+        if (this.#handle) {
+          const result = await waitForProcess(
+            this.#handle,
+            this.options.closeGraceMs ?? 10_000,
+          );
+          this.#evidence.runnerExited = true;
+          this.#evidence.runnerExitCode = result.code;
+          this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
+          if (result.stderr.trim())
+            this.#diagnostic(result.stderr.trim().slice(-4_096));
+        } else if (adoptedRunner) {
+          const deadline = Date.now() + (this.options.closeGraceMs ?? 10_000);
+          while ((await adoptedRunner.isAlive()) && Date.now() < deadline) {
+            await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+          }
+          if (await adoptedRunner.isAlive()) {
+            await adoptedRunner.signal?.("SIGKILL");
+          }
+          this.#evidence.runnerExited = !(await adoptedRunner.isAlive());
+        }
       } catch (error) {
         this.#diagnostic(`runner shutdown failed: ${String(error)}`);
       }
@@ -2119,6 +2232,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (this.#pump !== null) clearInterval(this.#pump);
     this.#pump = null;
+    if (this.#adoptedRunnerMonitor !== null)
+      clearInterval(this.#adoptedRunnerMonitor);
+    this.#adoptedRunnerMonitor = null;
     this.#queue.close();
     // Ensure a runner that missed or could not finish the graceful lifecycle
     // command cannot keep the control-plane server alive during teardown.
@@ -2524,6 +2640,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }),
         this.options.environment,
       ),
+      diagnosticsDirectory: resolve(this.#root, "diagnostics"),
       processLauncher: this.options.runnerProcessLauncher,
     });
     this.#handle = handle;
@@ -2538,7 +2655,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     await this.#awaitRegistrationReady(registration?.ready);
     this.#evidence.runnerPid = handle.child.pid ?? null;
-    this.#evidence.runnerProcessGroupId = null;
+    this.#evidence.runnerProcessGroupId = handle.processGroupId ?? null;
     this.#publish();
     this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
     await this.#waitCommand("run.prepare");
@@ -2798,6 +2915,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       runAttachment !== null && runAttachment.providerIdentityEventIndex >= 0
         ? runAttachment.providerIdentityEventIndex
         : committedEvents.length;
+    const adoptedProviderIdentityIndex =
+      latestProviderIdentityEventIndex(committedEvents);
+    if (
+      this.options.adoptExistingRunner &&
+      exactAuthority &&
+      adoptedProviderIdentityIndex >= 0
+    ) {
+      this.#applyProviderIdentityEvent(
+        committedEvents[adoptedProviderIdentityIndex]!,
+      );
+    }
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
       : null;
@@ -2805,44 +2933,50 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       registration?.startupFailureCode ?? "runner_local_connect_failed";
     if (registration === null) await core.start();
     else this.#controlPlaneRelease = registration.release;
-    const handle = spawnRunner({
-      connection: registration?.connection ?? {
-        mode: "connect",
-        connectUrl: registration?.connectUrl ?? core.connectUrl,
-      },
-      stateDirectory:
-        this.options.runnerStateDirectory ?? resolve(this.#root, "runner"),
-      identity,
-      ticket: core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS),
-      maxOutboxBytes: 256 * 1024,
-      p0ReserveBytes: 64 * 1024,
-      maxRuntimeMs: 60 * 60 * 1_000,
-      reconnectGraceMs: this.options.runnerReconnectGraceMs,
-      lifecyclePolicy: this.options.lifecyclePolicy,
-      runnerBinaryPath,
-      runnerVersion: runnerArtifact.version,
-      runnerDigest: runnerArtifact.digest,
-      acpxLaunchProfile: runnerAcpxLaunchProfile,
-      opencodeLaunchProfile: runnerOpenCodeLaunchProfile,
-      environment: withRunnerdProviderTrace(
-        createCapabilityRunnerdProviderEnvironment({
-          provider,
-          options: {
-            ...this.options,
-            stateDirectory: this.#root,
+    const adoptedRunner = this.options.adoptExistingRunner;
+    const handle = adoptedRunner
+      ? null
+      : spawnRunner({
+          connection: registration?.connection ?? {
+            mode: "connect",
+            connectUrl: registration?.connectUrl ?? core.connectUrl,
           },
+          stateDirectory:
+            this.options.runnerStateDirectory ?? resolve(this.#root, "runner"),
           identity,
-          codexHome,
-          runtimeContextPath,
-          hasRuntimeContext: runtimeContext !== null,
-          acpxSidecarPath,
-        }),
-        this.options.environment,
-      ),
-      processLauncher: this.options.runnerProcessLauncher,
-    });
-    this.#handle = handle;
-    this.#watchRunner(handle);
+          ticket: core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS),
+          maxOutboxBytes: 256 * 1024,
+          p0ReserveBytes: 64 * 1024,
+          maxRuntimeMs: 60 * 60 * 1_000,
+          reconnectGraceMs: this.options.runnerReconnectGraceMs,
+          lifecyclePolicy: this.options.lifecyclePolicy,
+          runnerBinaryPath,
+          runnerVersion: runnerArtifact.version,
+          runnerDigest: runnerArtifact.digest,
+          acpxLaunchProfile: runnerAcpxLaunchProfile,
+          opencodeLaunchProfile: runnerOpenCodeLaunchProfile,
+          environment: withRunnerdProviderTrace(
+            createCapabilityRunnerdProviderEnvironment({
+              provider,
+              options: {
+                ...this.options,
+                stateDirectory: this.#root,
+              },
+              identity,
+              codexHome,
+              runtimeContextPath,
+              hasRuntimeContext: runtimeContext !== null,
+              acpxSidecarPath,
+            }),
+            this.options.environment,
+          ),
+          diagnosticsDirectory: resolve(this.#root, "diagnostics"),
+          processLauncher: this.options.runnerProcessLauncher,
+        });
+    if (handle) {
+      this.#handle = handle;
+      this.#watchRunner(handle);
+    }
     await registration?.activate?.();
     if (registration?.failure) {
       void registration.failure.catch((error: unknown) => {
@@ -2852,10 +2986,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       });
     }
     await this.#awaitRegistrationReady(registration?.ready);
-    this.#evidence.runnerPid = handle.child.pid ?? null;
-    this.#evidence.runnerProcessGroupId = null;
+    if (adoptedRunner) {
+      this.#evidence.runnerPid = adoptedRunner.pid;
+      this.#evidence.runnerProcessGroupId = adoptedRunner.processGroupId;
+      this.#watchAdoptedRunner(adoptedRunner);
+    } else {
+      this.#evidence.runnerPid = handle?.child.pid ?? null;
+      this.#evidence.runnerProcessGroupId = handle?.processGroupId ?? null;
+    }
     this.#publish();
     this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
+    if (adoptedRunner) await this.#awaitAdoptedRunnerConnection(adoptedRunner);
     if (runAttachment) {
       await this.#waitCommand("run.attach", runAttachment.commandId);
     }
@@ -2890,7 +3031,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#throwIfFailed();
         this.#pumpEvents();
         if (this.#turnId !== pendingTurnId) break;
-        if (this.#handle?.child.exitCode !== null)
+        if (await this.#runnerHasExited())
           throw new Error("runnerd exited before provider turn startup");
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));
       }
@@ -2978,7 +3119,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#evidence.providerPid !== null)
       )
         return;
-      if (this.#handle?.child.exitCode !== null)
+      if (await this.#runnerHasExited())
         throw new Error("runnerd exited before provider startup");
       await new Promise((resolveWait) => setTimeout(resolveWait, 10));
     }
@@ -3000,7 +3141,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           `PRP command ${type} ${command.status}: ${JSON.stringify(command.result)}`,
         );
       }
-      if (this.#handle?.child.exitCode !== null)
+      if (await this.#runnerHasExited())
         throw new Error(`runnerd exited while waiting for ${type}`);
       await new Promise((resolveWait) => setTimeout(resolveWait, 10));
     }
@@ -3034,58 +3175,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         event.eventType === "session.started" ||
         event.eventType === "session.resumed"
       ) {
-        const started = record(record(event.envelope.payload).payload);
-        const runtimeIdentity = record(started.runtimeIdentity);
-        const descriptor = record(started.providerDescriptor);
-        const {
-          processId: pid,
-          threadId,
-          sessionId,
-        } = resolveRunnerdSessionIdentity(started);
-        const providerIdentity = record(started.providerIdentity);
-        if (pid !== null) {
-          this.#evidence.providerPid = pid;
-          if (descriptor.driver === "acpx_runtime")
-            this.#evidence.sidecarPid = pid;
-          else this.#evidence.codexPid = pid;
-        }
-        if (typeof descriptor.driver === "string")
-          this.#evidence.providerDriver = descriptor.driver;
-        if (typeof descriptor.providerVersion === "string")
-          this.#evidence.providerVersion = descriptor.providerVersion;
-        if (
-          descriptor.agent === "pi" ||
-          descriptor.agent === "claude" ||
-          descriptor.agent === "codex"
-        )
-          this.#evidence.acpxAgent = descriptor.agent;
-        if (typeof descriptor.agentServerVersion === "string")
-          this.#evidence.agentServerVersion = descriptor.agentServerVersion;
-        if (typeof descriptor.agentRuntimeVersion === "string")
-          this.#evidence.agentRuntimeVersion = descriptor.agentRuntimeVersion;
-        if (typeof descriptor.acpProtocolVersion === "number")
-          this.#evidence.acpProtocolVersion = descriptor.acpProtocolVersion;
-        if (typeof descriptor.agentProcessId === "number")
-          this.#evidence.agentPid = descriptor.agentProcessId;
-        if (
-          runtimeIdentity.executionKind === "local_process" ||
-          runtimeIdentity.executionKind === "remote_service"
-        ) {
-          this.#evidence.providerExecutionKind = runtimeIdentity.executionKind;
-        }
-        if (runtimeIdentity.service === "anthropic_managed_agents") {
-          this.#evidence.providerService = "anthropic_managed_agents";
-        } else if (
-          runtimeIdentity.service === "aws_bedrock_agentcore_harness"
-        ) {
-          this.#evidence.providerService = "aws_bedrock_agentcore_harness";
-        }
-        if (threadId !== null) this.#threadId = threadId;
-        if (sessionId !== null) this.#sessionId = sessionId;
-        if (typeof providerIdentity.kind === "string") {
-          this.#providerIdentity = structuredClone(providerIdentity);
-        }
-        this.#publish();
+        this.#applyProviderIdentityEvent(event);
         continue;
       }
       if (event.eventType === "harness.diagnostic") {
@@ -3096,6 +3186,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           typeof diagnostic.pid === "number"
         ) {
           this.#evidence.agentPid = diagnostic.pid;
+          this.#evidence.agentProcessStartedAt = readLocalProcessStartedAt(
+            diagnostic.pid,
+          );
           this.#publish();
         }
       }
@@ -3301,6 +3394,70 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
+  #applyProviderIdentityEvent(event: DurableRecoveryCommittedEvent): void {
+    const started = record(record(event.envelope.payload).payload);
+    const runtimeIdentity = record(started.runtimeIdentity);
+    const descriptor = record(started.providerDescriptor);
+    const {
+      processId: pid,
+      threadId,
+      sessionId,
+    } = resolveRunnerdSessionIdentity(started);
+    const providerIdentity = record(started.providerIdentity);
+    if (pid !== null) {
+      this.#evidence.providerPid = pid;
+      this.#evidence.providerProcessStartedAt = readLocalProcessStartedAt(pid);
+      if (descriptor.driver === "acpx_runtime") {
+        this.#evidence.sidecarPid = pid;
+        this.#evidence.sidecarProcessStartedAt =
+          this.#evidence.providerProcessStartedAt;
+      } else {
+        this.#evidence.codexPid = pid;
+        this.#evidence.codexProcessStartedAt =
+          this.#evidence.providerProcessStartedAt;
+      }
+    }
+    if (typeof descriptor.driver === "string")
+      this.#evidence.providerDriver = descriptor.driver;
+    if (typeof descriptor.providerVersion === "string")
+      this.#evidence.providerVersion = descriptor.providerVersion;
+    if (
+      descriptor.agent === "pi" ||
+      descriptor.agent === "claude" ||
+      descriptor.agent === "codex"
+    )
+      this.#evidence.acpxAgent = descriptor.agent;
+    if (typeof descriptor.agentServerVersion === "string")
+      this.#evidence.agentServerVersion = descriptor.agentServerVersion;
+    if (typeof descriptor.agentRuntimeVersion === "string")
+      this.#evidence.agentRuntimeVersion = descriptor.agentRuntimeVersion;
+    if (typeof descriptor.acpProtocolVersion === "number")
+      this.#evidence.acpProtocolVersion = descriptor.acpProtocolVersion;
+    if (typeof descriptor.agentProcessId === "number") {
+      this.#evidence.agentPid = descriptor.agentProcessId;
+      this.#evidence.agentProcessStartedAt = readLocalProcessStartedAt(
+        descriptor.agentProcessId,
+      );
+    }
+    if (
+      runtimeIdentity.executionKind === "local_process" ||
+      runtimeIdentity.executionKind === "remote_service"
+    ) {
+      this.#evidence.providerExecutionKind = runtimeIdentity.executionKind;
+    }
+    if (runtimeIdentity.service === "anthropic_managed_agents") {
+      this.#evidence.providerService = "anthropic_managed_agents";
+    } else if (runtimeIdentity.service === "aws_bedrock_agentcore_harness") {
+      this.#evidence.providerService = "aws_bedrock_agentcore_harness";
+    }
+    if (threadId !== null) this.#threadId = threadId;
+    if (sessionId !== null) this.#sessionId = sessionId;
+    if (typeof providerIdentity.kind === "string") {
+      this.#providerIdentity = structuredClone(providerIdentity);
+    }
+    this.#publish();
+  }
+
   #flushPendingTraceRehydrations(): void {
     const tracePath = this.options.environment?.PAPERCLIP_PROVIDER_TRACE_PATH;
     if (!tracePath) return;
@@ -3341,6 +3498,80 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ),
       );
     }
+  }
+
+  async #runnerHasExited(): Promise<boolean> {
+    if (this.#handle) return this.#handle.child.exitCode !== null;
+    const adoptedRunner = this.options.adoptExistingRunner;
+    if (!adoptedRunner) return true;
+    try {
+      return !(await adoptedRunner.isAlive());
+    } catch {
+      return true;
+    }
+  }
+
+  #watchAdoptedRunner(
+    adoptedRunner: NonNullable<
+      CapabilityRunnerdCodexTransportOptions["adoptExistingRunner"]
+    >,
+  ): void {
+    let checking = false;
+    this.#adoptedRunnerMonitor = setInterval(() => {
+      if (checking || this.#closed) return;
+      checking = true;
+      void Promise.resolve(adoptedRunner.isAlive())
+        .then((alive) => {
+          if (alive || this.#closed) return;
+          this.#evidence.runnerExited = true;
+          this.#publish();
+          this.#failTransport(
+            new Error(
+              "native_adopted_runner_exited: the verified runner exited while its durable authority was active",
+            ),
+          );
+        })
+        .catch(() => {
+          if (!this.#closed) {
+            this.#failTransport(
+              new Error(
+                "native_adopted_runner_identity_unverifiable: runner liveness could not be revalidated",
+              ),
+            );
+          }
+        })
+        .finally(() => {
+          checking = false;
+        });
+    }, 250);
+    this.#adoptedRunnerMonitor.unref?.();
+  }
+
+  async #awaitAdoptedRunnerConnection(
+    adoptedRunner: NonNullable<
+      CapabilityRunnerdCodexTransportOptions["adoptExistingRunner"]
+    >,
+  ): Promise<void> {
+    const core = this.#core;
+    if (!core) throw new Error("native_runner_authority_unavailable");
+    this.#diagnostic(
+      `waiting for adopted runner ${adoptedRunner.pid} to authenticate to its durable PRP authority`,
+    );
+    while (core.activeRunnerConnectionCount() !== 1) {
+      this.#throwIfFailed();
+      if (!(await adoptedRunner.isAlive())) {
+        throw new Error(
+          "native_adopted_runner_exited: runner exited before PRP authentication",
+        );
+      }
+      await Promise.race([
+        new Promise<void>((resolveWait) => setTimeout(resolveWait, 25)),
+        this.#failureSignal,
+      ]);
+    }
+    this.#diagnostic(
+      `adopted runner ${adoptedRunner.pid} authenticated to its durable PRP authority`,
+    );
   }
 
   #watchRunner(handle: RunnerProcessHandle): void {
@@ -3465,6 +3696,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#evidence.runnerExitCode = null;
         this.#evidence.runnerSignal = null;
         this.#evidence.runnerPid = recoveredHandle.child.pid ?? null;
+        this.#evidence.runnerProcessGroupId =
+          recoveredHandle.processGroupId ?? null;
         this.#publish();
 
         let processSettled = false;
@@ -3566,7 +3799,11 @@ export function createCapabilityRunnerdCodexTransport(
   options: CapabilityRunnerdCodexTransportOptions = {},
 ): CapabilityRunnerdCodexTransport {
   const transport = new DurablePrpCodexTransport(options);
-  return { transport, evidence: () => transport.evidence() };
+  return {
+    transport,
+    evidence: () => transport.evidence(),
+    detachControllerForRestart: () => transport.detachControllerForRestart(),
+  };
 }
 
 export const createRunnerdCodexTransport =
