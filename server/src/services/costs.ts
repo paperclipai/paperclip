@@ -199,6 +199,13 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         )
       `;
 
+      // Runs in the issue subtree, gathered as a UNION of two index-friendly branches
+      // instead of `issueId IN (...) OR EXISTS (...)`. The OR across a JSON predicate and
+      // a correlated activity_log subquery forced a full scan of the company's
+      // heartbeat_runs (~3.9s to return a handful of rows); the UNION lets each branch use
+      // its index (heartbeat_runs_company_ctx_issue_created_idx / activity_log_* + pkey),
+      // dropping this to ~56ms. UNION (not UNION ALL) de-dupes by run id, so
+      // count(*)/sum() over the result equal the original count(distinct)/sum().
       const runSummarySql = sql`
         WITH RECURSIVE issue_tree(id) AS (
           ${cteSeedText}
@@ -209,24 +216,31 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           WHERE ${childIssues.companyId} = ${companyId}
             AND ${childIssues.hiddenAt} IS NULL
             AND ${childIssues.harnessKind} IS NULL
-        )
-        SELECT
-          count(distinct ${heartbeatRuns.id})::int AS "runCount",
-          coalesce(sum(extract(epoch from (coalesce(${heartbeatRuns.finishedAt}, now()) - ${heartbeatRuns.startedAt})) * 1000), 0)::double precision AS "runtimeMs"
-        FROM ${heartbeatRuns}
-        WHERE ${heartbeatRuns.companyId} = ${companyId}
-          AND ${heartbeatRuns.startedAt} IS NOT NULL
-          AND (
-            ${heartbeatRuns.contextSnapshot} ->> 'issueId' IN (SELECT id FROM issue_tree)
-            OR EXISTS (
-              SELECT 1
+        ),
+        matching_runs AS (
+          SELECT ${heartbeatRuns.id} AS id, ${heartbeatRuns.startedAt} AS started_at, ${heartbeatRuns.finishedAt} AS finished_at
+          FROM ${heartbeatRuns}
+          WHERE ${heartbeatRuns.companyId} = ${companyId}
+            AND ${heartbeatRuns.startedAt} IS NOT NULL
+            AND ${heartbeatRuns.contextSnapshot} ->> 'issueId' IN (SELECT id FROM issue_tree)
+          UNION
+          SELECT ${heartbeatRuns.id} AS id, ${heartbeatRuns.startedAt} AS started_at, ${heartbeatRuns.finishedAt} AS finished_at
+          FROM ${heartbeatRuns}
+          WHERE ${heartbeatRuns.companyId} = ${companyId}
+            AND ${heartbeatRuns.startedAt} IS NOT NULL
+            AND ${heartbeatRuns.id} IN (
+              SELECT ${activityLog.runId}
               FROM ${activityLog}
-              JOIN issue_tree ON ${activityLog.entityId} = issue_tree.id
               WHERE ${activityLog.companyId} = ${companyId}
                 AND ${activityLog.entityType} = 'issue'
-                AND ${activityLog.runId} = ${heartbeatRuns.id}
+                AND ${activityLog.entityId} IN (SELECT id FROM issue_tree)
+                AND ${activityLog.runId} IS NOT NULL
             )
-          )
+        )
+        SELECT
+          count(*)::int AS "runCount",
+          coalesce(sum(extract(epoch from (coalesce(finished_at, now()) - started_at)) * 1000), 0)::double precision AS "runtimeMs"
+        FROM matching_runs
       `;
 
       // Run cost-event aggregation and run-duration aggregation in parallel.

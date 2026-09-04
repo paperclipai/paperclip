@@ -381,7 +381,6 @@ export function activityService(db: Db) {
       const runs = await db
         .select({
           runId: heartbeatRuns.id,
-          runtimeMode: heartbeatRuns.runtimeMode,
           status: heartbeatRuns.status,
           agentId: heartbeatRuns.agentId,
           adapterType: agents.adapterType,
@@ -403,9 +402,6 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
-          wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
-          wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
-          contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -418,17 +414,26 @@ export function activityService(db: Db) {
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),
-            or(
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
+            // Runs linked to the issue directly (context_snapshot.issueId) or via
+            // activity_log, gathered in ONE statement so the lookup is atomic (no run
+            // lost to a link created between two separate queries) and each branch uses
+            // its index. The prior `issueId = X OR EXISTS(correlated activity_log)`
+            // forced a full scan of the company's heartbeat_runs; a plain
+            // `OR id IN (subquery)` also seq-scans, so the qualifying ids are collected
+            // by a UNION (de-dupes by id) and filtered via the primary key.
+            sql`${heartbeatRuns.id} IN (
+              SELECT ${heartbeatRuns.id}
+              FROM ${heartbeatRuns}
+              WHERE ${heartbeatRuns.companyId} = ${companyId}
+                AND ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}
+              UNION
+              SELECT ${activityLog.runId}
+              FROM ${activityLog}
+              WHERE ${activityLog.companyId} = ${companyId}
+                AND ${activityLog.entityType} = 'issue'
+                AND ${activityLog.entityId} = ${issueId}
+                AND ${activityLog.runId} IS NOT NULL
+            )`,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt));
