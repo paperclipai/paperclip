@@ -286,7 +286,10 @@ export async function resolveManagedGitHubIdentitySelection(
   ));
   const githubConnections = connections.filter((connection) => {
     const config = connection.config && typeof connection.config === "object" ? connection.config as Record<string, unknown> : {};
-    return config.sourceTemplateKey === "github";
+    const transportConfig = connection.transportConfig && typeof connection.transportConfig === "object"
+      ? connection.transportConfig as Record<string, unknown>
+      : {};
+    return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
   });
   if (githubConnections.length === 0) return { configured: false };
 

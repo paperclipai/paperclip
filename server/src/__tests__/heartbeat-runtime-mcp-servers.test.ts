@@ -242,7 +242,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
         status: "active",
         enabled: true,
         healthStatus: "ok",
-        config: { sourceTemplateKey: "github" },
+        config: {},
+        transportConfig: { sourceTemplateKey: "github" },
       },
       {
         companyId: company!.id,
@@ -254,7 +255,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
         status: "active",
         enabled: true,
         healthStatus: "ok",
-        config: { sourceTemplateKey: "github" },
+        config: {},
+        transportConfig: { sourceTemplateKey: "github" },
       },
     ]).returning();
     await db.insert(connectionGrants).values([
