@@ -208,8 +208,9 @@ Permanent public history has a narrower boundary. A trusted job without
 provider or AWS credentials copies successful declared PNG screenshots into a
 separate publication tree. It validates the PNG container, reduces each image
 to at most 160 pixels on either edge, applies a strong blur, limits the image to
-24 colors, and removes metadata. These layout previews preserve coarse UI
-state while making rendered task and provider text unreadable. The job then
+24 colors, and removes metadata. It then runs OCR and rejects the whole public
+bundle if any letter or digit remains readable. These layout previews preserve
+coarse UI state while making rendered task and provider text unreadable. The job then
 removes the full-resolution raster files, failure screenshots, video, archives,
 SVG, and generated Playwright/blob/HTML report trees. Only the derived
 `public-visuals/*.png` previews and allowlisted inert evidence (`.json`, `.log`,
@@ -384,8 +385,9 @@ GitHub Pages remains the stable latest dashboard. Enable Pages with GitHub
 Actions as its source and set `RUNNER_FULL_STACK_E2E_PUBLISH_PAGES=true`.
 The trusted report job creates a separate public bundle before the AWS role is
 available. It publishes only blurred, low-resolution, metadata-free layout
-previews for successful declared screenshots and allowlisted inert structured
-text. The S3/CloudFront history and optional Pages mirror use this same bundle.
+previews with an empty OCR result for successful declared screenshots and
+allowlisted inert structured text. The S3/CloudFront history and optional Pages
+mirror use this same bundle.
 Full-resolution and failure screenshots, video, archives, generated reports,
 databases, Paperclip homes, workspaces, raw logs, and credentials are never
 published. Sanitized allowlisted `.log` copies may be public only after

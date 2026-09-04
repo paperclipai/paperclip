@@ -263,6 +263,24 @@ async function validatePublicPreview(file: string) {
   });
 }
 
+async function assertPreviewHasNoReadableText(file: string) {
+  const { stdout } = await execFileAsync(
+    process.env.RUNNER_E2E_TESSERACT_BINARY ?? "tesseract",
+    [file, "stdout", "--psm", "11", "-l", "eng"],
+    {
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, OMP_THREAD_LIMIT: "1" },
+    },
+  );
+  // The report job no longer has provider secrets, so it cannot compare OCR
+  // output with exact credential values. Reject every readable letter or digit
+  // instead. Do not include OCR output in the error because it is untrusted.
+  if (/[\p{L}\p{N}]/u.test(stdout)) {
+    throw new Error("Public layout preview still contains OCR-readable text");
+  }
+}
+
 export async function createPublicLayoutPreview(
   source: string,
   destination: string,
@@ -313,6 +331,7 @@ export async function createPublicLayoutPreview(
       { timeout: 45_000, maxBuffer: 1024 * 1024 },
     );
     await validatePublicPreview(output);
+    await assertPreviewHasNoReadableText(output);
     await copyFile(output, destination, fsConstants.COPYFILE_EXCL);
   } finally {
     await rm(temporary, { recursive: true, force: true });
