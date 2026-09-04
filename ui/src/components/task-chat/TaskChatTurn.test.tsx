@@ -214,6 +214,19 @@ describe("TaskChatTurn", () => {
     );
   });
 
+  it("labels a later segment as a continuation of the steered run", () => {
+    renderTurn({
+      ...SETTLED,
+      standaloneHeader: true,
+      continuedAfterSteering: true,
+      agentName: "Codex",
+    });
+
+    expect(summaryBtn()?.textContent).toContain(
+      "Continued after steering · Worked for 38s",
+    );
+  });
+
   it("keeps a yielded runner summary after the settled timeline", () => {
     renderTurn({
       ...SETTLED,

@@ -75,7 +75,10 @@ import {
 } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
-import { normalizeIssueQueuedCommentQueue } from "../lib/issue-queued-comment-queue";
+import {
+  mergePendingIssueQueuedComments,
+  normalizeIssueQueuedCommentQueue,
+} from "../lib/issue-queued-comment-queue";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import {
   hasLegacyIssueDetailQuery,
@@ -970,10 +973,8 @@ function useTaskDetailInterfaceMode() {
     enabled: classicTaskInterfacePreferenceEnabled,
     loaded: classicTaskInterfaceLoaded,
   } = useClassicTaskInterfaceEnabled();
-  const {
-    enabled: streamlinedUiEnabled,
-    loaded: streamlinedUiLoaded,
-  } = useStreamlinedUiEnabled();
+  const { enabled: streamlinedUiEnabled, loaded: streamlinedUiLoaded } =
+    useStreamlinedUiEnabled();
   const classicTaskInterfaceEnabled = classicTaskInterfacePreferenceEnabled;
   const taskChatShellEnabled = !classicTaskInterfaceEnabled;
 
@@ -991,7 +992,8 @@ function IssueDetailLoadingState({
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
-  const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
+  const identifier =
+    headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
   const { taskChatShellEnabled } = useTaskDetailInterfaceMode();
 
   return (
@@ -1430,8 +1432,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
 }: IssueDetailChatTabProps) {
   // Preserve master's Classic Task Interface seam: Streamlined UI changes the
   // TaskChatThread presentation but never swaps it for IssueChatThread.
-  const { classicTaskInterfaceEnabled, streamlinedTaskDetailEnabled } = useTaskDetailInterfaceMode();
-  const ThreadComponent = classicTaskInterfaceEnabled ? IssueChatThread : TaskChatThread;
+  const { classicTaskInterfaceEnabled, streamlinedTaskDetailEnabled } =
+    useTaskDetailInterfaceMode();
+  const ThreadComponent = classicTaskInterfaceEnabled
+    ? IssueChatThread
+    : TaskChatThread;
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const { data: activity } = useQuery({
@@ -1448,7 +1453,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   });
   const resolvedLiveRuns = liveRuns ?? [];
   const liveRunCount = resolvedLiveRuns.length;
-  const activeRunQueryEnabled = !!executionRunId || issueStatus === "in_progress";
+  const activeRunQueryEnabled =
+    !!executionRunId || issueStatus === "in_progress";
   const { data: activeRun = null, isFetched: activeRunFetched } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
@@ -1473,20 +1479,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       (run) => run.status === "running" || run.status === "queued",
     ) ??
     null;
-  // Do not briefly enable runner-only queue traffic from the current assignee
-  // while the authoritative active-run lookup is still loading. A task can be
-  // reassigned to a Paperclip Runner agent while an existing direct-adapter
-  // run remains active; that legacy run must never create or poll native queue
-  // state.
+  // Do not briefly select queue behavior from the current assignee while the
+  // authoritative active-run lookup is still loading. The active runtime owns
+  // the protocol: native Paperclip turns can steer in place, while legacy
+  // adapters expose the same composer queue with an interrupt fallback.
   const runtimeSelectionKnown =
     liveRunsFetched && (!activeRunQueryEnabled || activeRunFetched);
-  const paperclipQueueEnabled =
+  const queuedCommentQueueEnabled =
     !classicTaskInterfaceEnabled &&
     runtimeSelectionKnown &&
-    (liveRuntimeRun
-      ? liveRuntimeRun.runtimeMode === "native" &&
-        liveRuntimeRun.adapterType === "paperclip_runner"
-      : assigneeUsesPaperclipRunner);
+    Boolean(liveRuntimeRun || assigneeUsesPaperclipRunner);
   const { data: authoritativeQueuedCommentQueue } = useQuery({
     queryKey: queryKeys.issues.queuedComments(issueId),
     queryFn: async () =>
@@ -1494,8 +1496,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         await issuesApi.getQueuedComments(issueId),
         issueId,
       ),
-    enabled: paperclipQueueEnabled,
-    refetchInterval: paperclipQueueEnabled ? 1000 : false,
+    enabled: queuedCommentQueueEnabled,
+    refetchInterval: queuedCommentQueueEnabled ? 1000 : false,
   });
   const [consumedQueuedCommentIds, setConsumedQueuedCommentIds] = useState<
     ReadonlySet<string>
@@ -1503,10 +1505,19 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const [discardedQueuedCommentIds, setDiscardedQueuedCommentIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
+  const [localSteeringPlacements, setLocalSteeringPlacements] = useState<
+    ReadonlyMap<
+      string,
+      { targetRunId: string; anchorAt: string; sequence: number }
+    >
+  >(() => new Map());
   useEffect(() => {
     setConsumedQueuedCommentIds(new Set());
     setDiscardedQueuedCommentIds(new Set());
-  }, [authoritativeQueuedCommentQueue?.queueId, issueId]);
+  }, [issueId]);
+  useEffect(() => {
+    setLocalSteeringPlacements(new Map());
+  }, [issueId]);
   const hasLiveRuns = liveRunCount > 0 || !!resolvedActiveRun;
   const { data: linkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
@@ -1672,6 +1683,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         kind: "steer",
       });
     }
+    for (const [commentId, placement] of localSteeringPlacements) {
+      if (inputPlacementByCommentId.has(commentId)) continue;
+      inputPlacementByCommentId.set(commentId, {
+        runId: placement.targetRunId,
+        anchorAt: placement.anchorAt,
+        sequence: placement.sequence,
+        anchorMs: new Date(placement.anchorAt).getTime(),
+        kind: "steer",
+      });
+    }
     for (const evt of resolvedActivity) {
       if (evt.action !== "issue.comment_added" || !evt.runId) continue;
       const details = evt.details ?? {};
@@ -1705,6 +1726,45 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     const projectedComments = comments.map((comment) => {
       const meta = runMetaByCommentId.get(comment.id);
       const inputPlacement = inputPlacementByCommentId.get(comment.id);
+      const submittedAtMs = new Date(comment.createdAt).getTime();
+      // Older activity rows may predate the explicit followUpRequested flag.
+      // A run-start input is a provable queued follow-up only when it was
+      // submitted during a completed run for this issue and the same agent,
+      // before the target run consumed it. Merely overlapping any linked run
+      // is not enough: issue activity can link otherwise unrelated runs.
+      const targetRun =
+        inputPlacement?.kind === "run_start"
+          ? resolvedLinkedRuns.find((run) => run.runId === inputPlacement.runId)
+          : undefined;
+      const targetStartedAtMs = targetRun
+        ? new Date(targetRun.startedAt ?? targetRun.createdAt).getTime()
+        : Number.NaN;
+      const submittedDuringSourceRun = Boolean(
+        targetRun?.contextIssueId === issueId &&
+        Number.isFinite(targetStartedAtMs) &&
+        Number.isFinite(submittedAtMs) &&
+        resolvedLinkedRuns.some((run) => {
+          if (
+            run.runId === targetRun.runId ||
+            run.agentId !== targetRun.agentId ||
+            run.contextIssueId !== issueId ||
+            !run.finishedAt
+          ) {
+            return false;
+          }
+          const startedAtMs = new Date(
+            run.startedAt ?? run.createdAt,
+          ).getTime();
+          const finishedAtMs = new Date(run.finishedAt).getTime();
+          return (
+            Number.isFinite(startedAtMs) &&
+            Number.isFinite(finishedAtMs) &&
+            startedAtMs <= submittedAtMs &&
+            submittedAtMs <= finishedAtMs &&
+            finishedAtMs <= targetStartedAtMs
+          );
+        }),
+      );
       const nextComment: IssueDetailComment = {
         ...comment,
         ...(meta ?? {}),
@@ -1719,13 +1779,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             }
           : {}),
       };
-      if (followUpCommentIds.has(comment.id)) {
+      if (followUpCommentIds.has(comment.id) || submittedDuringSourceRun) {
         nextComment.followUpRequested = true;
       }
       const queuedTargetRunId =
         locallyQueuedCommentRunIds.get(comment.id) ??
         nextComment.queueTargetRunId ??
         null;
+      if (inputPlacement?.kind === "steer") {
+        return nextComment;
+      }
       const locallyQueuedComment = applyLocalQueuedIssueCommentState(
         nextComment,
         {
@@ -1738,9 +1801,6 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       );
       if (locallyQueuedComment !== nextComment) {
         return locallyQueuedComment;
-      }
-      if (inputPlacement?.kind === "steer") {
-        return nextComment;
       }
       // A queued target is fixed when the message is submitted. If that run
       // settles while the request is still in flight, do not rebind the
@@ -1802,78 +1862,77 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     }
     const responseComments = classicTaskInterfaceEnabled
       ? []
-      : interactions.flatMap(
-          (interaction): IssueDetailComment[] => {
-            const answeredQuestions =
-              interaction.kind === "ask_user_questions" &&
-              interaction.status === "answered";
-            const resolvedPlanDecision =
-              isPlanConfirmationInteraction(interaction) &&
-              (interaction.status === "accepted" ||
-                interaction.status === "rejected");
-            if (
-              (!answeredQuestions && !resolvedPlanDecision) ||
-              !interaction.resolvedAt
-            ) {
-              return [];
-            }
-            const resolvedAt =
-              interaction.resolvedAt instanceof Date
-                ? interaction.resolvedAt
-                : new Date(interaction.resolvedAt);
-            if (Number.isNaN(resolvedAt.getTime())) return [];
-            const delivery = answeredQuestions
-              ? (questionDeliveryByInteractionId.get(interaction.id) ?? null)
+      : interactions.flatMap((interaction): IssueDetailComment[] => {
+          const answeredQuestions =
+            interaction.kind === "ask_user_questions" &&
+            interaction.status === "answered";
+          const resolvedPlanDecision =
+            isPlanConfirmationInteraction(interaction) &&
+            (interaction.status === "accepted" ||
+              interaction.status === "rejected");
+          if (
+            (!answeredQuestions && !resolvedPlanDecision) ||
+            !interaction.resolvedAt
+          ) {
+            return [];
+          }
+          const resolvedAt =
+            interaction.resolvedAt instanceof Date
+              ? interaction.resolvedAt
+              : new Date(interaction.resolvedAt);
+          if (Number.isNaN(resolvedAt.getTime())) return [];
+          const delivery = answeredQuestions
+            ? (questionDeliveryByInteractionId.get(interaction.id) ?? null)
+            : null;
+          const queuedTargetRunId =
+            interaction.sourceRunId &&
+            interruptibleIssueRun?.id === interaction.sourceRunId &&
+            interruptibleIssueRun.adapterType !== "paperclip_runner"
+              ? interaction.sourceRunId
               : null;
-            const queuedTargetRunId =
-              interaction.sourceRunId &&
-              interruptibleIssueRun?.id === interaction.sourceRunId &&
-              interruptibleIssueRun.adapterType !== "paperclip_runner"
-                ? interaction.sourceRunId
-                : null;
-            const body =
-              interaction.kind === "ask_user_questions"
-                ? buildAnsweredQuestionsDeliveryText(interaction)
-                : isPlanConfirmationInteraction(interaction)
-                  ? buildPlanDecisionResponseText(interaction)
-                  : "";
-            return [
-              {
-                id: `interaction-response:${interaction.id}`,
-                companyId: interaction.companyId,
-                issueId: interaction.issueId,
-                authorType: interaction.resolvedByAgentId ? "agent" : "user",
-                authorAgentId: interaction.resolvedByAgentId ?? null,
-                authorUserId: interaction.resolvedByUserId ?? null,
-                createdByRunId: interaction.resolvedByRunId ?? null,
-                body,
-                presentation: null,
-                metadata: null,
-                createdAt: resolvedAt,
-                updatedAt: resolvedAt,
-                consumedByRunId: delivery?.targetRunId ?? null,
-                ...(delivery?.deliveryMode === "steered"
-                  ? { steeredIntoRunId: delivery.targetRunId }
-                  : {}),
-                conversationAnchorAt: resolvedAt,
-                conversationAnchorSequence: 0,
-                ...(queuedTargetRunId
-                  ? {
-                      queueState: "queued" as const,
-                      queueTargetRunId: queuedTargetRunId,
-                      queueReason: queuedCommentReason,
-                    }
-                  : {}),
-              },
-            ];
-          },
-        );
+          const body =
+            interaction.kind === "ask_user_questions"
+              ? buildAnsweredQuestionsDeliveryText(interaction)
+              : isPlanConfirmationInteraction(interaction)
+                ? buildPlanDecisionResponseText(interaction)
+                : "";
+          return [
+            {
+              id: `interaction-response:${interaction.id}`,
+              companyId: interaction.companyId,
+              issueId: interaction.issueId,
+              authorType: interaction.resolvedByAgentId ? "agent" : "user",
+              authorAgentId: interaction.resolvedByAgentId ?? null,
+              authorUserId: interaction.resolvedByUserId ?? null,
+              createdByRunId: interaction.resolvedByRunId ?? null,
+              body,
+              presentation: null,
+              metadata: null,
+              createdAt: resolvedAt,
+              updatedAt: resolvedAt,
+              consumedByRunId: delivery?.targetRunId ?? null,
+              ...(delivery?.deliveryMode === "steered"
+                ? { steeredIntoRunId: delivery.targetRunId }
+                : {}),
+              conversationAnchorAt: resolvedAt,
+              conversationAnchorSequence: 0,
+              ...(queuedTargetRunId
+                ? {
+                    queueState: "queued" as const,
+                    queueTargetRunId: queuedTargetRunId,
+                    queueReason: queuedCommentReason,
+                  }
+                : {}),
+            },
+          ];
+        });
     return [...projectedComments, ...responseComments];
   }, [
     comments,
     classicTaskInterfaceEnabled,
     interactions,
     liveRunIds,
+    localSteeringPlacements,
     locallyQueuedCommentRunIds,
     queuedCommentReason,
     resolvedActivity,
@@ -1881,23 +1940,54 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     interruptibleIssueRun,
   ]);
   const effectiveQueuedCommentQueue = useMemo(() => {
-    if (!paperclipQueueEnabled || !authoritativeQueuedCommentQueue?.queueId)
-      return null;
-    return {
-      ...authoritativeQueuedCommentQueue,
-      entries: authoritativeQueuedCommentQueue.entries
-        .filter(
-          (entry) =>
-            !consumedQueuedCommentIds.has(entry.comment.id) &&
-            !discardedQueuedCommentIds.has(entry.comment.id),
-        )
-        .map((entry, position) => ({ ...entry, position })),
-    };
+    if (!queuedCommentQueueEnabled) return null;
+    const visibleAuthoritativeQueue = authoritativeQueuedCommentQueue
+      ? {
+          ...authoritativeQueuedCommentQueue,
+          entries: authoritativeQueuedCommentQueue.entries.filter(
+            (entry) =>
+              !consumedQueuedCommentIds.has(entry.comment.id) &&
+              !discardedQueuedCommentIds.has(entry.comment.id),
+          ),
+        }
+      : null;
+    const pendingComments = commentsWithRunMeta.flatMap((comment) => {
+      if (
+        consumedQueuedCommentIds.has(comment.id) ||
+        discardedQueuedCommentIds.has(comment.id) ||
+        comment.steeredIntoRunId
+      ) {
+        return [];
+      }
+      const targetRunId =
+        locallyQueuedCommentRunIds.get(comment.id) ??
+        ("clientStatus" in comment && comment.clientStatus === "queued"
+          ? (comment.queueTargetRunId ?? null)
+          : comment.queueState === "queued"
+            ? (comment.queueTargetRunId ?? null)
+            : null);
+      return targetRunId ? [{ comment, targetRunId }] : [];
+    });
+    const fallbackProtocol =
+      liveRuntimeRun?.runtimeMode === "native" &&
+      liveRuntimeRun.adapterType === "paperclip_runner"
+        ? "paperclip_runner_v1"
+        : "legacy";
+    return mergePendingIssueQueuedComments({
+      issueId,
+      authoritativeQueue: visibleAuthoritativeQueue,
+      pendingComments,
+      fallbackProtocol,
+    });
   }, [
     authoritativeQueuedCommentQueue,
+    commentsWithRunMeta,
     consumedQueuedCommentIds,
     discardedQueuedCommentIds,
-    paperclipQueueEnabled,
+    issueId,
+    liveRuntimeRun,
+    locallyQueuedCommentRunIds,
+    queuedCommentQueueEnabled,
   ]);
   const commentsForThread = useMemo(
     () =>
@@ -1907,6 +1997,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         return [
           {
             ...comment,
+            clientStatus: undefined,
             queueState: undefined,
             queueTargetRunId: null,
             queueReason: undefined,
@@ -2003,6 +2094,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         throw new Error(
           "The queued message no longer has an active run target.",
         );
+      const anchorAt = new Date().toISOString();
+      setLocalSteeringPlacements((current) => {
+        const next = new Map(current);
+        const sequence = [...current.values()].filter(
+          (placement) => placement.targetRunId === targetRunId,
+        ).length;
+        next.set(commentId, { targetRunId, anchorAt, sequence });
+        return next;
+      });
+      setConsumedQueuedCommentIds((current) => new Set(current).add(commentId));
       try {
         const nextQueue = await issuesApi.steerQueuedComment(
           issueId,
@@ -2013,12 +2114,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             revision,
           },
         );
-        // Keep the message in the composer queue until its durable steering
-        // acknowledgement has refreshed. Removing it first briefly projects the
-        // comment as an ordinary historical bubble above one unsplit live turn;
-        // the later activity refresh then re-sorts it into the middle. Publish
-        // the queue removal only after comment + activity placement are ready so
-        // the blue bubble enters the timeline once, at its final causal slot.
+        // The local steering placement already promoted the message into the
+        // active turn. Refresh its durable acknowledgement before publishing
+        // the returned queue so the local and server anchors hand off without a
+        // bubble-to-queue-to-bubble jump.
         await Promise.all([
           queryClient.invalidateQueries({
             queryKey: queryKeys.issues.comments(issueId),
@@ -2028,10 +2127,17 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           }),
         ]);
         storeQueuedCommentQueue(nextQueue);
-        setConsumedQueuedCommentIds((current) =>
-          new Set(current).add(commentId),
-        );
       } catch (error) {
+        setConsumedQueuedCommentIds((current) => {
+          const next = new Set(current);
+          next.delete(commentId);
+          return next;
+        });
+        setLocalSteeringPlacements((current) => {
+          const next = new Map(current);
+          next.delete(commentId);
+          return next;
+        });
         await refreshQueueAfterConflict(error);
       }
     },
@@ -2061,6 +2167,19 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         );
         setDiscardedQueuedCommentIds((current) =>
           new Set(current).add(commentId),
+        );
+        // Discard deletes the persisted issue comment. Remove the cached copy
+        // in the same commit as the queue update so it cannot briefly return as
+        // a normal user bubble when the now-empty queue loses its queueId.
+        queryClient.setQueryData<
+          InfiniteData<IssueComment[], string | null> | undefined
+        >(queryKeys.issues.comments(issueId), (current) =>
+          current
+            ? {
+                ...current,
+                pages: removeIssueCommentFromPages(current.pages, commentId),
+              }
+            : current,
         );
         await queryClient.invalidateQueries({
           queryKey: queryKeys.issues.comments(issueId),
@@ -2150,10 +2269,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         ) : (
           // Chat shell: center the bubbles at the thread cap (mirrors
           // TaskChatThreadView) and dock a composer placeholder beneath them.
-          <div className={cn(
-            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4",
-            streamlinedTaskDetailEnabled && "md:px-0",
-          )}>
+          <div
+            className={cn(
+              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4",
+              streamlinedTaskDetailEnabled && "md:px-0",
+            )}
+          >
             <IssueChatSkeleton />
             <IssueChatComposerSkeleton className="mt-3" />
           </div>
@@ -2739,7 +2860,8 @@ export function IssueDetail() {
   const relationIssueLinkState = useMemo(() => {
     const sourceState = resolvedIssueDetailState ?? location.state;
     if (!streamlinedTaskDetailEnabled) return sourceState;
-    if (typeof sourceState !== "object" || sourceState === null) return sourceState;
+    if (typeof sourceState !== "object" || sourceState === null)
+      return sourceState;
     return {
       ...sourceState,
       // The inbox `y` shortcut is intentionally armed only for the selected
@@ -2749,7 +2871,9 @@ export function IssueDetail() {
     };
   }, [location.state, resolvedIssueDetailState, streamlinedTaskDetailEnabled]);
   const preferInboxHistoryBack = useMemo(
-    () => readIssueDetailLocationState(null, location.state)?.issueDetailSource === "inbox",
+    () =>
+      readIssueDetailLocationState(null, location.state)?.issueDetailSource ===
+      "inbox",
     [location.state],
   );
   const issueHeaderSeed = useMemo(
@@ -2878,7 +3002,8 @@ export function IssueDetail() {
 
   const { data: workProducts } = useQuery({
     queryKey: queryKeys.issues.workProducts(issueId!),
-    queryFn: () => issuesApi.listWorkProducts(issueId!, { refreshPullRequests: true }),
+    queryFn: () =>
+      issuesApi.listWorkProducts(issueId!, { refreshPullRequests: true }),
     enabled: !!issueId,
     refetchOnMount: "always",
     placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(
@@ -3251,7 +3376,12 @@ export function IssueDetail() {
       return;
     }
     setPanelVisible(false);
-  }, [openTaskSidePanel, panelVisible, setPanelVisible, suppressPanelUntilPlan]);
+  }, [
+    openTaskSidePanel,
+    panelVisible,
+    setPanelVisible,
+    suppressPanelUntilPlan,
+  ]);
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(
     childIssuesLoading,
     childIssues.length,
@@ -4008,7 +4138,10 @@ export function IssueDetail() {
 
   const subTasksTree = useMemo(
     () =>
-      taskChatShellEnabled && !streamlinedTaskDetailEnabled && issue && showRichSubIssuesSection ? (
+      taskChatShellEnabled &&
+      !streamlinedTaskDetailEnabled &&
+      issue &&
+      showRichSubIssuesSection ? (
         <IssuesList
           issues={childIssues}
           isLoading={childIssuesLoading}
@@ -4219,6 +4352,9 @@ export function IssueDetail() {
           const next = new Map(current);
           next.set(comment.id, context.queuedCommentTargetRunId!);
           return next;
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.queuedComments(issueId!),
         });
       }
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
@@ -4585,6 +4721,9 @@ export function IssueDetail() {
           const next = new Map(current);
           next.set(comment.id, context.queuedCommentTargetRunId!);
           return next;
+        });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.queuedComments(issueId!),
         });
       }
       if (comment) {
@@ -5203,7 +5342,9 @@ export function IssueDetail() {
     const sharedProps = {
       issue: panelIssue,
       childIssues: panelChildIssues,
-      issueLinkState: streamlinedTaskDetailEnabled ? relationIssueLinkState : undefined,
+      issueLinkState: streamlinedTaskDetailEnabled
+        ? relationIssueLinkState
+        : undefined,
       onAddSubIssue: openNewSubIssue,
       onUpdate: handleIssuePropertiesUpdate,
       hasActiveRun: resolvedHasActiveRun,
@@ -5269,9 +5410,8 @@ export function IssueDetail() {
   const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
   const canQuickArchiveFromInbox =
     keyboardShortcutsEnabled &&
-    (!streamlinedUiEnabled || (
-      isFromInbox && shouldArmIssueDetailInboxQuickArchive(location.state)
-    )) &&
+    (!streamlinedUiEnabled ||
+      (isFromInbox && shouldArmIssueDetailInboxQuickArchive(location.state))) &&
     !issue?.hiddenAt;
 
   useEffect(() => {
@@ -5476,7 +5616,12 @@ export function IssueDetail() {
       lastMaximizeRequestKeyRef.current = null;
       clearPanelMaximizeRequest();
     }
-  }, [issueId, location.hash, routeIssueDocumentDeepLink, clearPanelMaximizeRequest]);
+  }, [
+    issueId,
+    location.hash,
+    routeIssueDocumentDeepLink,
+    clearPanelMaximizeRequest,
+  ]);
 
   // Leaving the issue page entirely also ends the deep link's lifetime.
   useEffect(
@@ -6543,58 +6688,67 @@ export function IssueDetail() {
   );
 
   const issueHeaderBlock = (
-      <div
-        data-testid="issue-detail-header"
-        className={cn(streamlinedTaskDetailEnabled ? "relative space-y-2" : "space-y-3", shellSectionClass)}
-      >
-        {streamlinedTaskDetailEnabled ? (
-          <div className="flex min-w-0 items-center gap-2 pr-8">
-            {issueStatusControl}
-            <div data-slot="task-detail-title" className="flex min-w-0 flex-1 items-baseline gap-2">
-              <InlineEditor
-                value={issue.title}
-                onSave={(title) => updateIssue.mutateAsync({ title })}
-                as="h2"
-                className="min-w-0 text-xl font-semibold leading-normal text-balance"
-              />
-              <span
-                data-slot="task-title-identifier"
-                className="shrink-0 font-mono text-sm text-muted-foreground"
-              >
-                {issue.identifier ?? issue.id.slice(0, 8)}
-              </span>
-            </div>
-          </div>
-        ) : null}
-
-        <div
-          className={cn(
-            "flex min-w-0 flex-wrap items-center gap-2",
-            streamlinedTaskDetailEnabled && "gap-x-6 gap-y-2 pl-7",
-          )}
-        >
-          {!streamlinedTaskDetailEnabled ? issueStatusControl : null}
-          {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
-          {SHOW_TASK_PRIORITY_UI && (
-            <PriorityIcon
-              priority={issue.priority}
-              onChange={(priority) => updateIssue.mutate({ priority })}
+    <div
+      data-testid="issue-detail-header"
+      className={cn(
+        streamlinedTaskDetailEnabled ? "relative space-y-2" : "space-y-3",
+        shellSectionClass,
+      )}
+    >
+      {streamlinedTaskDetailEnabled ? (
+        <div className="flex min-w-0 items-center gap-2 pr-8">
+          {issueStatusControl}
+          <div
+            data-slot="task-detail-title"
+            className="flex min-w-0 flex-1 items-baseline gap-2"
+          >
+            <InlineEditor
+              value={issue.title}
+              onSave={(title) => updateIssue.mutateAsync({ title })}
+              as="h2"
+              className="min-w-0 text-xl font-semibold leading-normal text-balance"
             />
-          )}
-          {!streamlinedTaskDetailEnabled ? (
-            <span className="shrink-0 font-mono text-sm text-muted-foreground">
+            <span
+              data-slot="task-title-identifier"
+              className="shrink-0 font-mono text-sm text-muted-foreground"
+            >
               {issue.identifier ?? issue.id.slice(0, 8)}
             </span>
-          ) : null}
-          {hasLiveRuns && (
-            <Badge variant="outline" className={cn("gap-1.5 text-(length:--text-nano)", liveBlueBadge)}>
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
-              </span>
-              Live
-            </Badge>
-          )}
+          </div>
+        </div>
+      ) : null}
+
+      <div
+        className={cn(
+          "flex min-w-0 flex-wrap items-center gap-2",
+          streamlinedTaskDetailEnabled && "gap-x-6 gap-y-2 pl-7",
+        )}
+      >
+        {!streamlinedTaskDetailEnabled ? issueStatusControl : null}
+        {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
+        {SHOW_TASK_PRIORITY_UI && (
+          <PriorityIcon
+            priority={issue.priority}
+            onChange={(priority) => updateIssue.mutate({ priority })}
+          />
+        )}
+        {!streamlinedTaskDetailEnabled ? (
+          <span className="shrink-0 font-mono text-sm text-muted-foreground">
+            {issue.identifier ?? issue.id.slice(0, 8)}
+          </span>
+        ) : null}
+        {hasLiveRuns && (
+          <Badge
+            variant="outline"
+            className={cn("gap-1.5 text-(length:--text-nano)", liveBlueBadge)}
+          >
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
+            </span>
+            Live
+          </Badge>
+        )}
 
         {issue.originKind === "routine_execution" && issue.originId && (
           <Link
@@ -6811,7 +6965,8 @@ export function IssueDetail() {
           <div
             data-slot="task-title-actions"
             className={cn(
-              streamlinedTaskDetailEnabled && "absolute right-0 top-0 flex h-7 items-center",
+              streamlinedTaskDetailEnabled &&
+                "absolute right-0 top-0 flex h-7 items-center",
             )}
           >
             <Popover open={moreOpen} onOpenChange={setMoreOpen}>
@@ -6833,75 +6988,49 @@ export function IssueDetail() {
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-52 p-1" align="end">
-              {streamlinedTaskDetailEnabled ? (
-                <>
-                  <button
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
-                    onClick={() => {
-                      openNewSubIssue();
-                      setMoreOpen(false);
-                    }}
-                  >
-                    <Plus className="h-3 w-3" />
-                    Add subtask
-                  </button>
-                  <button
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
-                    onClick={() => {
-                      void copyIssueToClipboard();
-                      setMoreOpen(false);
-                    }}
-                  >
-                    {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                    Copy as markdown
-                  </button>
-                  {canArchiveFromInbox ? (
+                {streamlinedTaskDetailEnabled ? (
+                  <>
                     <button
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50 disabled:opacity-50"
-                      disabled={archivePending}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
                       onClick={() => {
-                        if (!archivePending && issue?.id) archiveFromInbox.mutate(issue.id);
+                        openNewSubIssue();
                         setMoreOpen(false);
                       }}
                     >
-                      <Archive className="h-3 w-3" />
-                      Archive from inbox
+                      <Plus className="h-3 w-3" />
+                      Add subtask
                     </button>
-                  ) : null}
-                </>
-              ) : null}
-              {canPauseLeafWork ? (
-                <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                  onClick={() => {
-                    setTreeControlMode("pause");
-                    setTreeControlCancelConfirmed(false);
-                    setTreeControlOpen(true);
-                    setMoreOpen(false);
-                  }}
-                >
-                  <PauseCircle className="h-3 w-3" />
-                  Pause work...
-                </button>
-              ) : null}
-              {canResumeLeafWork ? (
-                <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                  onClick={() => {
-                    setTreeControlMode("resume");
-                    setTreeControlWakeAgentsOnResume(
-                      isAgentOwnedNonTerminalIssue,
-                    );
-                    setTreeControlOpen(true);
-                    setMoreOpen(false);
-                  }}
-                >
-                  <PlayCircle className="h-3 w-3" />
-                  Resume work
-                </button>
-              ) : null}
-              {canShowSubtreeControls ? (
-                <>
+                    <button
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
+                      onClick={() => {
+                        void copyIssueToClipboard();
+                        setMoreOpen(false);
+                      }}
+                    >
+                      {copied ? (
+                        <Check className="h-3 w-3" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                      Copy as markdown
+                    </button>
+                    {canArchiveFromInbox ? (
+                      <button
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50 disabled:opacity-50"
+                        disabled={archivePending}
+                        onClick={() => {
+                          if (!archivePending && issue?.id)
+                            archiveFromInbox.mutate(issue.id);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <Archive className="h-3 w-3" />
+                        Archive from inbox
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+                {canPauseLeafWork ? (
                   <button
                     className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                     onClick={() => {
@@ -6912,64 +7041,95 @@ export function IssueDetail() {
                     }}
                   >
                     <PauseCircle className="h-3 w-3" />
-                    Pause subtree...
+                    Pause work...
                   </button>
-                  {canResumeSubtree ? (
-                    <button
-                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
-                      onClick={() => {
-                        setTreeControlMode("resume");
-                        setTreeControlWakeAgentsOnResume(true);
-                        setTreeControlOpen(true);
-                        setMoreOpen(false);
-                      }}
-                    >
-                      <PlayCircle className="h-3 w-3" />
-                      Resume subtree
-                    </button>
-                  ) : null}
+                ) : null}
+                {canResumeLeafWork ? (
                   <button
-                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                    className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                     onClick={() => {
-                      setTreeControlMode("cancel");
-                      setTreeControlCancelConfirmed(false);
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(
+                        isAgentOwnedNonTerminalIssue,
+                      );
                       setTreeControlOpen(true);
                       setMoreOpen(false);
                     }}
                   >
-                    <XCircle className="h-3 w-3" />
-                    Cancel subtree...
+                    <PlayCircle className="h-3 w-3" />
+                    Resume work
                   </button>
-                  {canRestoreSubtree ? (
+                ) : null}
+                {canShowSubtreeControls ? (
+                  <>
                     <button
                       className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
                       onClick={() => {
-                        setTreeControlMode("restore");
-                        setTreeControlWakeAgentsOnResume(false);
+                        setTreeControlMode("pause");
                         setTreeControlCancelConfirmed(false);
                         setTreeControlOpen(true);
                         setMoreOpen(false);
                       }}
                     >
-                      <Repeat className="h-3 w-3" />
-                      Restore subtree...
+                      <PauseCircle className="h-3 w-3" />
+                      Pause subtree...
                     </button>
-                  ) : null}
-                </>
-              ) : null}
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
-                  );
-                  setMoreOpen(false);
-                }}
-              >
-                <EyeOff className="h-3 w-3" />
-                Hide this task
-              </button>
+                    {canResumeSubtree ? (
+                      <button
+                        className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                        onClick={() => {
+                          setTreeControlMode("resume");
+                          setTreeControlWakeAgentsOnResume(true);
+                          setTreeControlOpen(true);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <PlayCircle className="h-3 w-3" />
+                        Resume subtree
+                      </button>
+                    ) : null}
+                    <button
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                      onClick={() => {
+                        setTreeControlMode("cancel");
+                        setTreeControlCancelConfirmed(false);
+                        setTreeControlOpen(true);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <XCircle className="h-3 w-3" />
+                      Cancel subtree...
+                    </button>
+                    {canRestoreSubtree ? (
+                      <button
+                        className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                        onClick={() => {
+                          setTreeControlMode("restore");
+                          setTreeControlWakeAgentsOnResume(false);
+                          setTreeControlCancelConfirmed(false);
+                          setTreeControlOpen(true);
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <Repeat className="h-3 w-3" />
+                        Restore subtree...
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
+                  onClick={() => {
+                    updateIssue.mutate(
+                      { hiddenAt: new Date().toISOString() },
+                      { onSuccess: () => navigate("/issues/all") },
+                    );
+                    setMoreOpen(false);
+                  }}
+                >
+                  <EyeOff className="h-3 w-3" />
+                  Hide this task
+                </button>
               </PopoverContent>
             </Popover>
           </div>
@@ -6982,12 +7142,16 @@ export function IssueDetail() {
           onSave={(title) => updateIssue.mutateAsync({ title })}
           as="h2"
           className={
-            taskChatShellEnabled ? "text-base font-semibold" : "text-xl font-bold"
+            taskChatShellEnabled
+              ? "text-base font-semibold"
+              : "text-xl font-bold"
           }
         />
       ) : null}
 
-      {taskChatShellEnabled && !streamlinedTaskDetailEnabled ? subTasksTree : null}
+      {taskChatShellEnabled && !streamlinedTaskDetailEnabled
+        ? subTasksTree
+        : null}
 
       <IssueMonitorBanner
         issue={issue}
@@ -7184,433 +7348,551 @@ export function IssueDetail() {
                 ) : null}
               </div>
             ) : (
-            <div className="text-xs">
-              This task is paused by ancestor{" "}
-              {activePauseHoldRoot?.identifier ? (
-                <Link to={createIssueDetailPath(activePauseHoldRoot.identifier)} className="underline">
-                  {activePauseHoldRoot.identifier}
-                </Link>
-              ) : (
-                activePauseHold.rootIssueId.slice(0, 8)
-              )}
-              . Resume from the root task to deliver deferred work.
-            </div>
-          )}
-        </div>
-      )}
-
-      {taskChatShellEnabled ? null : issueHeaderBlock}
-
-      {taskChatShellEnabled ? null : pluginOutletsBlock}
-
-      {taskChatShellEnabled ? null : showRichSubIssuesSection ? (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-muted-foreground">Sub-tasks</h3>
+              <div className="text-xs">
+                This task is paused by ancestor{" "}
+                {activePauseHoldRoot?.identifier ? (
+                  <Link
+                    to={createIssueDetailPath(activePauseHoldRoot.identifier)}
+                    className="underline"
+                  >
+                    {activePauseHoldRoot.identifier}
+                  </Link>
+                ) : (
+                  activePauseHold.rootIssueId.slice(0, 8)
+                )}
+                . Resume from the root task to deliver deferred work.
+              </div>
+            )}
           </div>
-          <IssuesList
-            issues={childIssues}
-            isLoading={childIssuesLoading}
-            agents={agents}
-            projects={projects}
-            liveIssueIds={liveIssueIds}
-            mutedIssueIds={mutedChildIssueIds}
-            issueBadgeById={childPauseBadgeById}
-            projectId={issue.projectId ?? undefined}
-            viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
-            issueLinkState={resolvedIssueDetailState ?? location.state}
-            searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
-            searchWithinLoadedIssues
-            baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
-            createIssueLabel="Sub-task"
-            defaultSortField="workflow"
-            showProgressSummary
-            parentIssueIdForCostSummary={issue.id}
-            onUpdateIssue={handleChildIssueUpdate}
-          />
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
-          <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shrink-0 shadow-none">
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
-            New Sub-task
-          </Button>
-        </div>
-      )}
-
-      {!taskChatShellEnabled && showPlanDecompositionsSection ? (
-        <IssuePlanDecompositionsSection
-          issueId={issue.id}
-          issueIdentifier={issue.identifier}
-          agentMap={agentMap}
-        />
-      ) : null}
-
-      {/* Flag ON: attachments/work products/workspace live in the properties
-          pane (Artifacts tab) — the center column belongs to the thread. */}
-      {taskChatShellEnabled ? null : (
-      <IssueDocumentsSection
-        issue={issue}
-        canDeleteDocuments={Boolean(session?.user?.id)}
-        canManageDocumentLocks={Boolean(session?.user?.id)}
-        feedbackVotes={feedbackVotes}
-        feedbackDataSharingPreference={feedbackDataSharingPreference}
-        feedbackTermsUrl={FEEDBACK_TERMS_URL}
-        mentions={mentionOptions}
-        externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
-        imageUploadHandler={async (file) => {
-          const attachment = await uploadAttachment.mutateAsync(file);
-          return attachment.contentPath;
-        }}
-        onVote={async (revisionId, vote, options) => {
-          await feedbackVoteMutation.mutateAsync({
-            targetType: "issue_document_revision",
-            targetId: revisionId,
-            vote,
-            reason: options?.reason,
-            allowSharing: options?.allowSharing,
-            sharingPreferenceAtSubmit: feedbackDataSharingPreference,
-          });
-        }}
-        extraActions={!hasAttachments ? attachmentUploadButton : null}
-        agentMap={agentMap}
-        userProfileMap={userProfileMap}
-      />
-      )}
-
-      {taskChatShellEnabled ? null : (
-      <IssueOutputSection
-        workProducts={workProducts}
-        onMediaClick={(item) => {
-          const meta = item.metadata;
-          if (!meta) return;
-          const idx = mediaGalleryItems.findIndex((galleryItem) => (
-            galleryItem.contentPath === meta.contentPath ||
-            galleryItem.id === `work-product-${item.id}` ||
-            galleryItem.id === meta.attachmentId
-          ));
-          setGalleryIndex(idx >= 0 ? idx : 0);
-          setGalleryOpen(true);
-        }}
-      />
-      )}
-
-      {taskChatShellEnabled ? null : attachmentsInitialLoading ? (
-        <IssueSectionSkeleton titleWidth="w-24" rows={2} />
-      ) : hasAttachments ? (
-        <IssueAttachmentsSection
-          attachments={attachmentList}
-          uploadButton={attachmentUploadButton}
-          error={attachmentError}
-          dragActive={attachmentDragActive}
-          deletePending={deleteAttachment.isPending}
-          onDelete={(attachmentId) => deleteAttachment.mutate(attachmentId)}
-          onImageClick={(attachment) => {
-            const idx = mediaGalleryItems.findIndex((a) => a.id === attachment.id);
-            setGalleryIndex(idx >= 0 ? idx : 0);
-            setGalleryOpen(true);
-          }}
-          onDragEnter={(evt) => {
-            evt.preventDefault();
-            setAttachmentDragActive(true);
-          }}
-          onDragOver={(evt) => {
-            evt.preventDefault();
-            setAttachmentDragActive(true);
-          }}
-          onDragLeave={(evt) => {
-            if (evt.currentTarget.contains(evt.relatedTarget as Node | null)) return;
-            setAttachmentDragActive(false);
-          }}
-          onDrop={(evt) => void handleAttachmentDrop(evt)}
-        />
-      ) : null}
-
-      <ImageGalleryModal
-        items={mediaGalleryItems}
-        initialIndex={galleryIndex}
-        open={galleryOpen}
-        onOpenChange={setGalleryOpen}
-      />
-
-      {taskChatShellEnabled ? null : (
-      <IssueWorkspaceCard
-        issue={issue}
-        project={resolvedProject}
-        onUpdate={(data) => updateIssue.mutate(data)}
-        onBrowseFiles={fileViewerEnabled ? () => setFileViewerPromptOpen(true) : undefined}
-        onOpenFileByPath={fileViewerEnabled ? () => setFileViewerPromptOpen(true) : undefined}
-      />
-      )}
-
-      {!taskChatShellEnabled && fileViewerEnabled && issue.workProducts && issue.workProducts.length > 0 && (() => {
-        const workProductsWithFileRefs = issue.workProducts
-          .map((product) => ({ product, fileRef: extractWorkspaceFileRefFromWorkProduct(product) }))
-          .filter(({ fileRef }) => fileRef !== null);
-
-        if (workProductsWithFileRefs.length === 0) return null;
-
-        return (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="text-sm font-medium text-muted-foreground">Artifacts</h3>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {workProductsWithFileRefs.map(({ product, fileRef }) => (
-                <ArtifactFileChip
-                  key={product.id}
-                  workspaceFileRef={fileRef!}
-                  title={product.title}
-                />
-              ))}
-            </div>
-          </div>
-        );
-      })()}
-
-      {taskChatShellEnabled ? null : <Separator className={shellSectionClass} />}
-
-      <Tabs
-        value={resolvedDetailTab}
-        onValueChange={setDetailTab}
-        className={taskChatShellEnabled ? (isMobile ? undefined : "min-h-0 flex-1") : "space-y-3"}
-      >
-        {/* Redesign: the chat IS the page — the Chat/Activity/Related-work tab
-            strip is hidden and the thread renders as the only surface. */}
-        {taskChatShellEnabled ? null : (
-        <TabsList variant="line" className={cn("w-full justify-start gap-1", shellSectionClass)}>
-          <TabsTrigger value="chat" className="gap-1.5">
-            <MessageSquare className="h-3.5 w-3.5" />
-            Chat
-          </TabsTrigger>
-          <TabsTrigger value="activity" className="gap-1.5">
-            <ActivityIcon className="h-3.5 w-3.5" />
-            Activity
-          </TabsTrigger>
-          <TabsTrigger value="related-work" className="gap-1.5">
-            <ListTree className="h-3.5 w-3.5" />
-            Related work
-          </TabsTrigger>
-          {issuePluginTabItems.map((item) => (
-            <TabsTrigger key={item.value} value={item.value}>
-              {item.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
         )}
 
-        {/* The chat shell keeps the page's responsive 16px/24px gutters so
-            thread content and the composer do not touch either sidebar. */}
-        <TabsContent
-          data-testid="issue-detail-content"
-          value="chat"
+        {taskChatShellEnabled ? null : issueHeaderBlock}
+
+        {taskChatShellEnabled ? null : pluginOutletsBlock}
+
+        {taskChatShellEnabled ? null : showRichSubIssuesSection ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-medium text-muted-foreground">
+                Sub-tasks
+              </h3>
+            </div>
+            <IssuesList
+              issues={childIssues}
+              isLoading={childIssuesLoading}
+              agents={agents}
+              projects={projects}
+              liveIssueIds={liveIssueIds}
+              mutedIssueIds={mutedChildIssueIds}
+              issueBadgeById={childPauseBadgeById}
+              projectId={issue.projectId ?? undefined}
+              viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
+              issueLinkState={resolvedIssueDetailState ?? location.state}
+              searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
+              searchWithinLoadedIssues
+              baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(
+                issue,
+                currentUserId,
+              )}
+              createIssueLabel="Sub-task"
+              defaultSortField="workflow"
+              showProgressSummary
+              parentIssueIdForCostSummary={issue.id}
+              onUpdateIssue={handleChildIssueUpdate}
+            />
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openNewSubIssue}
+              className="shrink-0 shadow-none"
+            >
+              <Plus className="mr-1.5 h-3.5 w-3.5" />
+              New Sub-task
+            </Button>
+          </div>
+        )}
+
+        {!taskChatShellEnabled && showPlanDecompositionsSection ? (
+          <IssuePlanDecompositionsSection
+            issueId={issue.id}
+            issueIdentifier={issue.identifier}
+            agentMap={agentMap}
+          />
+        ) : null}
+
+        {/* Flag ON: attachments/work products/workspace live in the properties
+          pane (Artifacts tab) — the center column belongs to the thread. */}
+        {taskChatShellEnabled ? null : (
+          <IssueDocumentsSection
+            issue={issue}
+            canDeleteDocuments={Boolean(session?.user?.id)}
+            canManageDocumentLocks={Boolean(session?.user?.id)}
+            feedbackVotes={feedbackVotes}
+            feedbackDataSharingPreference={feedbackDataSharingPreference}
+            feedbackTermsUrl={FEEDBACK_TERMS_URL}
+            mentions={mentionOptions}
+            externalReferences={
+              externalObjectsState.isEnabled
+                ? externalObjectsState.markdownReferences
+                : undefined
+            }
+            imageUploadHandler={async (file) => {
+              const attachment = await uploadAttachment.mutateAsync(file);
+              return attachment.contentPath;
+            }}
+            onVote={async (revisionId, vote, options) => {
+              await feedbackVoteMutation.mutateAsync({
+                targetType: "issue_document_revision",
+                targetId: revisionId,
+                vote,
+                reason: options?.reason,
+                allowSharing: options?.allowSharing,
+                sharingPreferenceAtSubmit: feedbackDataSharingPreference,
+              });
+            }}
+            extraActions={!hasAttachments ? attachmentUploadButton : null}
+            agentMap={agentMap}
+            userProfileMap={userProfileMap}
+          />
+        )}
+
+        {taskChatShellEnabled ? null : (
+          <IssueOutputSection
+            workProducts={workProducts}
+            onMediaClick={(item) => {
+              const meta = item.metadata;
+              if (!meta) return;
+              const idx = mediaGalleryItems.findIndex(
+                (galleryItem) =>
+                  galleryItem.contentPath === meta.contentPath ||
+                  galleryItem.id === `work-product-${item.id}` ||
+                  galleryItem.id === meta.attachmentId,
+              );
+              setGalleryIndex(idx >= 0 ? idx : 0);
+              setGalleryOpen(true);
+            }}
+          />
+        )}
+
+        {taskChatShellEnabled ? null : attachmentsInitialLoading ? (
+          <IssueSectionSkeleton titleWidth="w-24" rows={2} />
+        ) : hasAttachments ? (
+          <IssueAttachmentsSection
+            attachments={attachmentList}
+            uploadButton={attachmentUploadButton}
+            error={attachmentError}
+            dragActive={attachmentDragActive}
+            deletePending={deleteAttachment.isPending}
+            onDelete={(attachmentId) => deleteAttachment.mutate(attachmentId)}
+            onImageClick={(attachment) => {
+              const idx = mediaGalleryItems.findIndex(
+                (a) => a.id === attachment.id,
+              );
+              setGalleryIndex(idx >= 0 ? idx : 0);
+              setGalleryOpen(true);
+            }}
+            onDragEnter={(evt) => {
+              evt.preventDefault();
+              setAttachmentDragActive(true);
+            }}
+            onDragOver={(evt) => {
+              evt.preventDefault();
+              setAttachmentDragActive(true);
+            }}
+            onDragLeave={(evt) => {
+              if (evt.currentTarget.contains(evt.relatedTarget as Node | null))
+                return;
+              setAttachmentDragActive(false);
+            }}
+            onDrop={(evt) => void handleAttachmentDrop(evt)}
+          />
+        ) : null}
+
+        <ImageGalleryModal
+          items={mediaGalleryItems}
+          initialIndex={galleryIndex}
+          open={galleryOpen}
+          onOpenChange={setGalleryOpen}
+        />
+
+        {taskChatShellEnabled ? null : (
+          <IssueWorkspaceCard
+            issue={issue}
+            project={resolvedProject}
+            onUpdate={(data) => updateIssue.mutate(data)}
+            onBrowseFiles={
+              fileViewerEnabled
+                ? () => setFileViewerPromptOpen(true)
+                : undefined
+            }
+            onOpenFileByPath={
+              fileViewerEnabled
+                ? () => setFileViewerPromptOpen(true)
+                : undefined
+            }
+          />
+        )}
+
+        {!taskChatShellEnabled &&
+          fileViewerEnabled &&
+          issue.workProducts &&
+          issue.workProducts.length > 0 &&
+          (() => {
+            const workProductsWithFileRefs = issue.workProducts
+              .map((product) => ({
+                product,
+                fileRef: extractWorkspaceFileRefFromWorkProduct(product),
+              }))
+              .filter(({ fileRef }) => fileRef !== null);
+
+            if (workProductsWithFileRefs.length === 0) return null;
+
+            return (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-medium text-muted-foreground">
+                    Artifacts
+                  </h3>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {workProductsWithFileRefs.map(({ product, fileRef }) => (
+                    <ArtifactFileChip
+                      key={product.id}
+                      workspaceFileRef={fileRef!}
+                      title={product.title}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+        {taskChatShellEnabled ? null : (
+          <Separator className={shellSectionClass} />
+        )}
+
+        <Tabs
+          value={resolvedDetailTab}
+          onValueChange={setDetailTab}
           className={
             taskChatShellEnabled
               ? isMobile
-                ? streamlinedTaskDetailEnabled ? undefined : "-mx-4"
-                : streamlinedTaskDetailEnabled
-                  ? "flex min-h-0 flex-col"
-                  : "-mx-4 -mt-4 md:-mx-6 md:-mt-6 flex min-h-0 flex-col"
-              : undefined
+                ? undefined
+                : "min-h-0 flex-1"
+              : "space-y-3"
           }
         >
-          {resolvedDetailTab === "chat" ? (
-            <IssueDetailChatTab
-              threadHeader={taskChatThreadHeader}
-              issueBrief={
-                // Suppress the seeded-description bubble for the onboarding first
-                // task: its description is agent instructions, not something the
-                // user typed. The user lands on a seeded agent greeting instead.
-                taskChatShellEnabled &&
-                issue.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND
-                  ? {
-                      description: issue.description ?? "",
-                      author: issue.createdByAgentId ? "agent" : "human",
-                      authorName: issue.createdByAgentId
-                        ? agentMap.get(issue.createdByAgentId)?.name ?? "Agent"
-                        : undefined,
-                      agentIcon: issue.createdByAgentId
-                        ? agentMap.get(issue.createdByAgentId)?.icon
-                        : undefined,
-                      createdAt: issue.createdAt,
-                      onSave: (description) => updateIssue.mutateAsync({ description }),
-                      mentions: mentionOptions,
-                      externalReferences: externalObjectsState.isEnabled
-                        ? externalObjectsState.markdownReferences
-                        : undefined,
-                      imageUploadHandler: async (file) => {
-                        const attachment = await uploadAttachment.mutateAsync(file);
-                        return attachment.contentPath;
-                      },
-                      onDropFile: async (file) => {
-                        await uploadAttachment.mutateAsync(file);
-                      },
-                    }
+          {/* Redesign: the chat IS the page — the Chat/Activity/Related-work tab
+            strip is hidden and the thread renders as the only surface. */}
+          {taskChatShellEnabled ? null : (
+            <TabsList
+              variant="line"
+              className={cn("w-full justify-start gap-1", shellSectionClass)}
+            >
+              <TabsTrigger value="chat" className="gap-1.5">
+                <MessageSquare className="h-3.5 w-3.5" />
+                Chat
+              </TabsTrigger>
+              <TabsTrigger value="activity" className="gap-1.5">
+                <ActivityIcon className="h-3.5 w-3.5" />
+                Activity
+              </TabsTrigger>
+              <TabsTrigger value="related-work" className="gap-1.5">
+                <ListTree className="h-3.5 w-3.5" />
+                Related work
+              </TabsTrigger>
+              {issuePluginTabItems.map((item) => (
+                <TabsTrigger key={item.value} value={item.value}>
+                  {item.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          )}
+
+          {/* The chat shell keeps the page's responsive 16px/24px gutters so
+            thread content and the composer do not touch either sidebar. */}
+          <TabsContent
+            data-testid="issue-detail-content"
+            value="chat"
+            className={
+              taskChatShellEnabled
+                ? isMobile
+                  ? streamlinedTaskDetailEnabled
+                    ? undefined
+                    : "-mx-4"
+                  : streamlinedTaskDetailEnabled
+                    ? "flex min-h-0 flex-col"
+                    : "-mx-4 -mt-4 md:-mx-6 md:-mt-6 flex min-h-0 flex-col"
+                : undefined
+            }
+          >
+            {resolvedDetailTab === "chat" ? (
+              <IssueDetailChatTab
+                threadHeader={taskChatThreadHeader}
+                issueBrief={
+                  // Suppress the seeded-description bubble for the onboarding first
+                  // task: its description is agent instructions, not something the
+                  // user typed. The user lands on a seeded agent greeting instead.
+                  taskChatShellEnabled &&
+                  issue.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND
+                    ? {
+                        description: issue.description ?? "",
+                        author: issue.createdByAgentId ? "agent" : "human",
+                        authorName: issue.createdByAgentId
+                          ? (agentMap.get(issue.createdByAgentId)?.name ??
+                            "Agent")
+                          : undefined,
+                        agentIcon: issue.createdByAgentId
+                          ? agentMap.get(issue.createdByAgentId)?.icon
+                          : undefined,
+                        createdAt: issue.createdAt,
+                        onSave: (description) =>
+                          updateIssue.mutateAsync({ description }),
+                        mentions: mentionOptions,
+                        externalReferences: externalObjectsState.isEnabled
+                          ? externalObjectsState.markdownReferences
+                          : undefined,
+                        imageUploadHandler: async (file) => {
+                          const attachment =
+                            await uploadAttachment.mutateAsync(file);
+                          return attachment.contentPath;
+                        },
+                        onDropFile: async (file) => {
+                          await uploadAttachment.mutateAsync(file);
+                        },
+                      }
+                    : undefined
+                }
+                issueId={issue.id}
+                companyId={issue.companyId}
+                projectId={issue.projectId ?? null}
+                issueStatus={issue.status}
+                issueAssigneeAgentId={issue.assigneeAgentId}
+                issueWorkMode={issue.workMode ?? "standard"}
+                executionRunId={issue.executionRunId ?? null}
+                blockedBy={issue.blockedBy ?? []}
+                liveIssueIds={liveIssueIds}
+                blockerAttention={issue.blockerAttention ?? null}
+                successfulRunHandoff={issue.successfulRunHandoff ?? null}
+                scheduledRetry={issue.scheduledRetry ?? null}
+                recoveryAction={issue.activeRecoveryAction ?? null}
+                onResolveRecoveryAction={handleResolveRecoveryAction}
+                onReissueIsolatedRecoveryAction={
+                  handleReissueIsolatedRecoveryAction
+                }
+                reissueIsolatedRecoveryActionPending={
+                  reissueIsolatedRecoveryAction.isPending
+                }
+                onReconcileForwardRecoveryAction={
+                  handleReconcileForwardRecoveryAction
+                }
+                onBreakGlassOverrideRecoveryAction={
+                  handleBreakGlassOverrideRecoveryAction
+                }
+                onQuarantineRestoreRecoveryAction={
+                  handleQuarantineRestoreRecoveryAction
+                }
+                quarantineRestoreRecoveryActionPending={
+                  reconcileRecoveryAction.isPending
+                }
+                canBreakGlassRecoveryAction={canManageBoardRuntime}
+                reconcileRecoveryActionPending={
+                  reconcileRecoveryAction.isPending
+                }
+                canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
+                legacyRecoverySourceIssue={legacyRecoverySourceIssue}
+                comments={threadComments}
+                commentsInitialLoading={commentsLoading}
+                locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
+                interactions={interactions}
+                documents={issue.documentSummaries ?? []}
+                workProducts={workProducts ?? []}
+                attachments={attachments ?? []}
+                hasOlderComments={hasOlderComments}
+                commentsLoadingOlder={commentsLoadingOlder}
+                onLoadOlderComments={loadOlderComments}
+                onRefreshLatestComments={refetchLatestComments}
+                composerRef={commentComposerRef}
+                composerAccessory={
+                  hasVisibleMonitorSurface(issue) ? (
+                    <IssueMonitorComposerStrip
+                      issue={issue}
+                      onCheckNow={() => checkIssueMonitorNow.mutate()}
+                      checkingNow={checkIssueMonitorNow.isPending}
+                    />
+                  ) : null
+                }
+                footer={
+                  !taskChatShellEnabled && siblingNavigation ? (
+                    <IssueSiblingNavigation
+                      navigation={siblingNavigation}
+                      linkState={resolvedIssueDetailState ?? location.state}
+                    />
+                  ) : null
+                }
+                feedbackVotes={feedbackVotes}
+                feedbackDataSharingPreference={feedbackDataSharingPreference}
+                feedbackTermsUrl={FEEDBACK_TERMS_URL}
+                agentMap={agentMap}
+                currentUserId={currentUserId}
+                userLabelMap={userLabelMap}
+                userProfileMap={userProfileMap}
+                draftKey={`paperclip:issue-comment-draft:${issue.id}`}
+                reassignOptions={commentReassignOptions}
+                currentAssigneeValue={actualAssigneeValue}
+                suggestedAssigneeValue={suggestedAssigneeValue}
+                mentions={mentionOptions}
+                composerDisabledReason={null}
+                composerHint={composerHint}
+                queuedCommentReason={queuedCommentReason}
+                onVote={handleCommentVote}
+                onAdd={handleChatAdd}
+                onImageUpload={handleCommentImageUpload}
+                onAttachImage={handleCommentAttachImage}
+                onInterruptQueued={handleInterruptQueuedRun}
+                onDeleteComment={(commentId) =>
+                  deleteComment.mutateAsync({ commentId }).then(() => undefined)
+                }
+                onPauseWorkRun={
+                  canManageTreeControl
+                    ? (runId) =>
+                        pauseIssueWorkRun
+                          .mutateAsync({ runId, scope: treeControlScope })
+                          .then(() => undefined)
+                    : undefined
+                }
+                runFinalizationActions={runFinalizationActions}
+                onWorkModeChange={(nextMode) => {
+                  const currentMode: IssueWorkMode =
+                    issue.workMode ?? "standard";
+                  if (currentMode === nextMode) return;
+                  return updateIssue
+                    .mutateAsync({ workMode: nextMode })
+                    .then(() => undefined);
+                }}
+                onCancelQueued={handleCancelQueuedComment}
+                interruptingQueuedRunId={
+                  interruptQueuedComment.isPending
+                    ? (interruptQueuedComment.variables ?? null)
+                    : null
+                }
+                pausingWorkRunId={
+                  pauseIssueWorkRun.isPending
+                    ? (pauseIssueWorkRun.variables?.runId ?? null)
+                    : null
+                }
+                onImageClick={handleChatImageClick}
+                onAcceptInteraction={handleAcceptInteraction}
+                onRejectInteraction={handleRejectInteraction}
+                onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
+                onCancelInteraction={handleCancelInteraction}
+                onSkipInteraction={handleSkipInteraction}
+                onSubmitInteractionVerdicts={handleSubmitInteractionVerdicts}
+                assigneeUserId={issue.assigneeUserId ?? null}
+                onResumeFromBacklog={
+                  canResumeFromBacklog ? handleResumeFromBacklog : undefined
+                }
+                resumeFromBacklogPending={
+                  updateIssue.isPending &&
+                  updateIssue.variables?.status === "todo"
+                }
+                onResumeAssignee={
+                  issue.assigneeAgentId ? handleResumeAssignee : undefined
+                }
+                resumeAssigneePending={resumeAssigneeAgent.isPending}
+                onTryAgainNoLiveExecutionPath={
+                  issue.status === "blocked" && issue.activeRecoveryAction
+                    ? handleTryAgainNoLiveExecutionPath
+                    : undefined
+                }
+                tryAgainNoLiveExecutionPathPending={
+                  resolveRecoveryAction.isPending &&
+                  resolveRecoveryAction.variables?.sourceIssueStatus === "todo"
+                }
+                externalReferences={
+                  externalObjectsState.isEnabled
+                    ? externalObjectsState.markdownReferences
+                    : undefined
+                }
+                linkCaseReferences={casesChipsEnabled}
+              />
+            ) : null}
+          </TabsContent>
+
+          <TabsContent value="activity" className={shellSectionClass}>
+            {detailTab === "activity" ? (
+              <IssueDetailActivityTab
+                issue={issue}
+                issueId={issue.id}
+                companyId={issue.companyId}
+                issueStatus={issue.status}
+                childIssues={childIssues}
+                agentMap={agentMap}
+                hasLiveRuns={hasLiveRuns}
+                currentUserId={currentUserId}
+                userProfileMap={userProfileMap}
+                pendingApprovalAction={pendingApprovalAction}
+                handoffFocusSignal={handoffFocusSignal}
+                onApprovalAction={(approvalId, action) => {
+                  approvalDecision.mutate({ approvalId, action });
+                }}
+                externalReferences={
+                  externalObjectsState.isEnabled
+                    ? externalObjectsState.markdownReferences
+                    : undefined
+                }
+              />
+            ) : null}
+          </TabsContent>
+
+          <TabsContent value="related-work" className={shellSectionClass}>
+            <IssueRelatedWorkPanel
+              relatedWork={issue.relatedWork}
+              externalObjectsEnabled={externalObjectsState.isEnabled}
+              externalObjects={
+                externalObjectsState.isEnabled
+                  ? externalObjectsState.groups
                   : undefined
               }
-              issueId={issue.id}
-              companyId={issue.companyId}
-              projectId={issue.projectId ?? null}
-              issueStatus={issue.status}
-              issueAssigneeAgentId={issue.assigneeAgentId}
-              issueWorkMode={issue.workMode ?? "standard"}
-              executionRunId={issue.executionRunId ?? null}
-              blockedBy={issue.blockedBy ?? []}
-              liveIssueIds={liveIssueIds}
-              blockerAttention={issue.blockerAttention ?? null}
-              successfulRunHandoff={issue.successfulRunHandoff ?? null}
-              scheduledRetry={issue.scheduledRetry ?? null}
-              recoveryAction={issue.activeRecoveryAction ?? null}
-              onResolveRecoveryAction={handleResolveRecoveryAction}
-              onReissueIsolatedRecoveryAction={handleReissueIsolatedRecoveryAction}
-              reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryAction.isPending}
-              onReconcileForwardRecoveryAction={handleReconcileForwardRecoveryAction}
-              onBreakGlassOverrideRecoveryAction={handleBreakGlassOverrideRecoveryAction}
-              onQuarantineRestoreRecoveryAction={handleQuarantineRestoreRecoveryAction}
-              quarantineRestoreRecoveryActionPending={reconcileRecoveryAction.isPending}
-              canBreakGlassRecoveryAction={canManageBoardRuntime}
-              reconcileRecoveryActionPending={reconcileRecoveryAction.isPending}
-              canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
-              legacyRecoverySourceIssue={legacyRecoverySourceIssue}
-              comments={threadComments}
-              commentsInitialLoading={commentsLoading}
-              locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
-              interactions={interactions}
-              documents={issue.documentSummaries ?? []}
-              workProducts={workProducts ?? []}
-              attachments={attachments ?? []}
-              hasOlderComments={hasOlderComments}
-              commentsLoadingOlder={commentsLoadingOlder}
-              onLoadOlderComments={loadOlderComments}
-              onRefreshLatestComments={refetchLatestComments}
-              composerRef={commentComposerRef}
-              composerAccessory={
-                hasVisibleMonitorSurface(issue) ? (
-                  <IssueMonitorComposerStrip
-                    issue={issue}
-                    onCheckNow={() => checkIssueMonitorNow.mutate()}
-                    checkingNow={checkIssueMonitorNow.isPending}
-                  />
-                ) : null
-              }
-              footer={
-                !taskChatShellEnabled && siblingNavigation ? (
-                  <IssueSiblingNavigation
-                    navigation={siblingNavigation}
-                    linkState={resolvedIssueDetailState ?? location.state}
-                  />
-                ) : null
-              }
-              feedbackVotes={feedbackVotes}
-              feedbackDataSharingPreference={feedbackDataSharingPreference}
-              feedbackTermsUrl={FEEDBACK_TERMS_URL}
-              agentMap={agentMap}
-              currentUserId={currentUserId}
-              userLabelMap={userLabelMap}
-              userProfileMap={userProfileMap}
-              draftKey={`paperclip:issue-comment-draft:${issue.id}`}
-              reassignOptions={commentReassignOptions}
-              currentAssigneeValue={actualAssigneeValue}
-              suggestedAssigneeValue={suggestedAssigneeValue}
-              mentions={mentionOptions}
-              composerDisabledReason={null}
-              composerHint={composerHint}
-              queuedCommentReason={queuedCommentReason}
-              onVote={handleCommentVote}
-              onAdd={handleChatAdd}
-              onImageUpload={handleCommentImageUpload}
-              onAttachImage={handleCommentAttachImage}
-              onInterruptQueued={handleInterruptQueuedRun}
-              onDeleteComment={(commentId) => deleteComment.mutateAsync({ commentId }).then(() => undefined)}
-              onPauseWorkRun={canManageTreeControl
-                ? (runId) => pauseIssueWorkRun.mutateAsync({ runId, scope: treeControlScope }).then(() => undefined)
-                : undefined}
-              runFinalizationActions={runFinalizationActions}
-              onWorkModeChange={(nextMode) => {
-                const currentMode: IssueWorkMode = issue.workMode ?? "standard";
-                if (currentMode === nextMode) return;
-                return updateIssue.mutateAsync({ workMode: nextMode }).then(() => undefined);
-              }}
-              onCancelQueued={handleCancelQueuedComment}
-              interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
-              pausingWorkRunId={pauseIssueWorkRun.isPending ? pauseIssueWorkRun.variables?.runId ?? null : null}
-              onImageClick={handleChatImageClick}
-              onAcceptInteraction={handleAcceptInteraction}
-              onRejectInteraction={handleRejectInteraction}
-              onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
-              onCancelInteraction={handleCancelInteraction}
-              onSkipInteraction={handleSkipInteraction}
-              onSubmitInteractionVerdicts={handleSubmitInteractionVerdicts}
-              assigneeUserId={issue.assigneeUserId ?? null}
-              onResumeFromBacklog={canResumeFromBacklog ? handleResumeFromBacklog : undefined}
-              resumeFromBacklogPending={
-                updateIssue.isPending && updateIssue.variables?.status === "todo"
-              }
-              onResumeAssignee={issue.assigneeAgentId ? handleResumeAssignee : undefined}
-              resumeAssigneePending={resumeAssigneeAgent.isPending}
-              onTryAgainNoLiveExecutionPath={
-                issue.status === "blocked" && issue.activeRecoveryAction
-                  ? handleTryAgainNoLiveExecutionPath
+              externalObjectsLoading={
+                externalObjectsState.isEnabled
+                  ? externalObjectsState.isLoading
                   : undefined
               }
-              tryAgainNoLiveExecutionPathPending={
-                resolveRecoveryAction.isPending &&
-                resolveRecoveryAction.variables?.sourceIssueStatus === "todo"
+              externalObjectsError={
+                externalObjectsState.isEnabled
+                  ? externalObjectsState.isError
+                  : undefined
               }
-              externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
-              linkCaseReferences={casesChipsEnabled}
-            />
-          ) : null}
-        </TabsContent>
-
-        <TabsContent value="activity" className={shellSectionClass}>
-          {detailTab === "activity" ? (
-            <IssueDetailActivityTab
-              issue={issue}
-              issueId={issue.id}
-              companyId={issue.companyId}
-              issueStatus={issue.status}
-              childIssues={childIssues}
-              agentMap={agentMap}
-              hasLiveRuns={hasLiveRuns}
-              currentUserId={currentUserId}
-              userProfileMap={userProfileMap}
-              pendingApprovalAction={pendingApprovalAction}
-              handoffFocusSignal={handoffFocusSignal}
-              onApprovalAction={(approvalId, action) => {
-                approvalDecision.mutate({ approvalId, action });
-              }}
-              externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
-            />
-          ) : null}
-        </TabsContent>
-
-        <TabsContent value="related-work" className={shellSectionClass}>
-          <IssueRelatedWorkPanel
-            relatedWork={issue.relatedWork}
-            externalObjectsEnabled={externalObjectsState.isEnabled}
-            externalObjects={externalObjectsState.isEnabled ? externalObjectsState.groups : undefined}
-            externalObjectsLoading={externalObjectsState.isEnabled ? externalObjectsState.isLoading : undefined}
-            externalObjectsError={externalObjectsState.isEnabled ? externalObjectsState.isError : undefined}
-            onRetryExternalObjects={externalObjectsState.isEnabled ? externalObjectsState.refetch : undefined}
-          />
-        </TabsContent>
-
-        {activePluginTab && (
-          <TabsContent value={activePluginTab.value} className={shellSectionClass}>
-            <PluginSlotMount
-              slot={activePluginTab.slot}
-              context={{
-                companyId: issue.companyId,
-                projectId: issue.projectId ?? null,
-                entityId: issue.id,
-                entityType: "issue",
-              }}
-              missingBehavior="placeholder"
+              onRetryExternalObjects={
+                externalObjectsState.isEnabled
+                  ? externalObjectsState.refetch
+                  : undefined
+              }
             />
           </TabsContent>
-        )}
-      </Tabs>
+
+          {activePluginTab && (
+            <TabsContent
+              value={activePluginTab.value}
+              className={shellSectionClass}
+            >
+              <PluginSlotMount
+                slot={activePluginTab.slot}
+                context={{
+                  companyId: issue.companyId,
+                  projectId: issue.projectId ?? null,
+                  entityId: issue.id,
+                  entityType: "issue",
+                }}
+                missingBehavior="placeholder"
+              />
+            </TabsContent>
+          )}
+        </Tabs>
 
         <Dialog open={treeControlOpen} onOpenChange={setTreeControlOpen}>
           <DialogContent className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-(--sz-560px)">
