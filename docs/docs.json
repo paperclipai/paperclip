@@ -99,6 +99,7 @@
             "group": "Agent Adapters",
             "pages": [
               "adapters/overview",
+              "adapters/agy-local",
               "adapters/claude-local",
               "adapters/codex-local",
               "adapters/process",

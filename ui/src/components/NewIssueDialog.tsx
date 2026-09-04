@@ -201,6 +201,12 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "xhigh", label: "X-High" },
     { value: "max", label: "Max" },
   ],
+  agy_local: [
+    { value: "", label: "Default" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ],
 } as const;
 
 function loadDraft(): IssueDraft | null {
@@ -1191,6 +1197,8 @@ export function NewIssueDialog() {
         ? "Codex options"
         : assigneeAdapterType === "opencode_local"
           ? "OpenCode options"
+          : assigneeAdapterType === "agy_local"
+            ? "Antigravity options"
         : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"

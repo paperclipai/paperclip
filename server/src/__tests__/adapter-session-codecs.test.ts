@@ -13,6 +13,10 @@ import {
   sessionCodec as opencodeSessionCodec,
   isOpenCodeUnknownSessionError,
 } from "@paperclipai/adapter-opencode-local/server";
+import {
+  sessionCodec as agySessionCodec,
+  isAgyUnknownSessionError,
+} from "@paperclipai/adapter-agy-local/server";
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
 describe("adapter session codecs", () => {
@@ -233,6 +237,50 @@ describe("adapter session codecs", () => {
     expect(acpxSessionCodec.serialize(parsed)).toEqual(parsed);
     expect(acpxSessionCodec.getDisplayId?.(parsed)).toBe("runtime-session-1");
   });
+
+  it("normalizes agy session params with cwd and handles conversationId fallback", () => {
+    const parsedFromSessionId = agySessionCodec.deserialize({
+      sessionId: "agy-session-1",
+      cwd: "/tmp/agy",
+    });
+    expect(parsedFromSessionId).toEqual({
+      sessionId: "agy-session-1",
+      cwd: "/tmp/agy",
+    });
+
+    const parsedFromConversationId = agySessionCodec.deserialize({
+      conversationId: "agy-session-2",
+      folder: "/tmp/agy2",
+    });
+    expect(parsedFromConversationId).toEqual({
+      sessionId: "agy-session-2",
+    });
+
+    const serialized = agySessionCodec.serialize(parsedFromSessionId);
+    expect(serialized).toEqual({
+      sessionId: "agy-session-1",
+      cwd: "/tmp/agy",
+    });
+    expect(agySessionCodec.getDisplayId?.(serialized ?? null)).toBe("agy-session-1");
+
+    const parsedWithRemote = agySessionCodec.deserialize({
+      sessionId: "agy-remote-1",
+      cwd: "/tmp/agy",
+      remoteExecution: {
+        environmentId: "env-1",
+        leaseId: "lease-1",
+      },
+    });
+    expect(parsedWithRemote).toEqual({
+      sessionId: "agy-remote-1",
+      cwd: "/tmp/agy",
+      remoteExecution: {
+        environmentId: "env-1",
+        leaseId: "lease-1",
+      },
+    });
+    expect(agySessionCodec.serialize(parsedWithRemote)).toEqual(parsedWithRemote);
+  });
 });
 
 describe("codex resume recovery detection", () => {
@@ -317,6 +365,29 @@ describe("gemini resume recovery detection", () => {
         "{\"type\":\"result\",\"subtype\":\"success\"}",
         "",
       ),
+    ).toBe(false);
+  });
+});
+
+describe("agy resume recovery detection", () => {
+  it("detects unknown session errors from agy output", () => {
+    expect(
+      isAgyUnknownSessionError({
+        stdout: "",
+        stderr: 'conversation "conv-123" not found',
+      }),
+    ).toBe(true);
+    expect(
+      isAgyUnknownSessionError({
+        stdout: 'Error: conversation "conv-123" not found',
+        stderr: "",
+      }),
+    ).toBe(true);
+    expect(
+      isAgyUnknownSessionError({
+        stdout: '{"type":"result","status":"success"}',
+        stderr: "",
+      }),
     ).toBe(false);
   });
 });
