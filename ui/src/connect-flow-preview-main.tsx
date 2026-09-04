@@ -334,6 +334,18 @@ function ConnectFlowPreview({
             */}
             <motion.div
               className="overflow-hidden"
+              /*
+                Inert whenever the card is not live.
+
+                Animating height instead of mounting means the card is always in
+                the DOM, and a clipped element is still focusable and still
+                announced — at state 1 the authorization field was reachable by
+                keyboard inside a card nobody could see. `inert` removes the
+                whole subtree from focus order and the accessibility tree
+                without giving up the height animation that made the column
+                slide.
+              */
+              inert={!cardLive}
               initial={false}
               animate={{
                 height: cardSpace ? "auto" : 0,

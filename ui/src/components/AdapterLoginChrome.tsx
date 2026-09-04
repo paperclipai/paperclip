@@ -9,6 +9,7 @@ import {
   CARD_REVEAL_INSTRUCTION,
   CARD_REVEAL_TRAVEL,
   COPIED_REVEAL,
+  COPIED_REVEAL_DELAY_MS,
   COPIED_REVEAL_TRAVEL,
 } from "./onboarding/onboarding-motion";
 
@@ -248,7 +249,13 @@ export function OnboardingLoginCodeRow({
     if (!autoCopy || autoCopiedRef.current) return;
     autoCopiedRef.current = true;
     void copyTextToClipboard(code)
-      .then(() => setCopied(true))
+      .then(() => {
+        // Written now, said later: the clipboard should be ready the instant
+        // the code is readable, but the claim waits for the rest of the card to
+        // stop moving — see COPIED_REVEAL_DELAY_MS.
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setCopied(true), COPIED_REVEAL_DELAY_MS);
+      })
       .catch(() => {
         // Refused, most likely for want of user activation. The button stays.
       });
@@ -274,8 +281,10 @@ export function OnboardingLoginCodeRow({
         value={code}
         label="Copy the code"
         onCopied={() => {
-          setCopied(true);
+          // No wait here. A press is a direct action, and delaying its
+          // acknowledgement would read as the button having missed.
           if (timeoutRef.current) clearTimeout(timeoutRef.current);
+          setCopied(true);
         }}
       />
     </div>

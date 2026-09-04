@@ -308,3 +308,19 @@ export const SOURCE_EXIT_FADE = { duration: 0.18, ease: TAG_SWAP_EASE } as const
  */
 export const COPIED_REVEAL_TRAVEL = 6;
 export const COPIED_REVEAL = { duration: 0.26, ease: STEP_EASE } as const;
+
+/**
+ * How long "Copied!" waits before it appears.
+ *
+ * The clipboard is written the moment the card is live, but saying so while the
+ * instruction and the code are themselves still fading in buries the one part
+ * of the card that is reporting an event rather than presenting a fact — it
+ * arrives inside the reveal and reads as another thing that was always there.
+ *
+ * Timed off the card's own reveal, so it lands after the last of it settles
+ * rather than at a number picked to look right. The extra beat is deliberate
+ * separation: this is the only thing moving by then, which is what makes it
+ * noticeable at all.
+ */
+export const COPIED_REVEAL_DELAY_MS =
+  (CARD_REVEAL_FIELD.delay + CARD_REVEAL_FIELD.duration) * 1000 + 120;
