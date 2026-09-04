@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MotionConfig } from "motion/react";
+import { isValidBrowserCode } from "@paperclipai/shared";
 
 import {
   OnboardingLoginCard,
@@ -117,6 +118,21 @@ function ConnectFlowPreview({
     after(SUBMIT_DELAY_MS, () => setPhase("done"));
   };
 
+  // The same two-part rule the shipped panel uses: the paste arms the submit,
+  // and the value gates it. Both halves matter here. Running it from the paste
+  // handler alone would submit whatever was in the field *before* the paste —
+  // the handler fires first — and skipping the check would advance the flow on
+  // an empty or malformed paste, which is a worse lie than not previewing it,
+  // since demonstrating this interaction is what the page is for.
+  const pastedRef = useRef(false);
+  useEffect(() => {
+    if (!pastedRef.current) return;
+    pastedRef.current = false;
+    if (!isValidBrowserCode(code.trim())) return;
+    finishSubmit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
+
   const reset = () => {
     timers.current.forEach(clearTimeout);
     timers.current = [];
@@ -194,11 +210,9 @@ function ConnectFlowPreview({
                     onSubmit={() => {
                       if (code.trim()) finishSubmit();
                     }}
-                    // Mirrors the shipped rule: the paste is what submits,
-                    // because no shape check can tell a whole code from the
-                    // first character of one. Deferred a tick so the pasted
-                    // value is in the field before the card swaps out.
-                    onPaste={() => after(0, finishSubmit)}
+                    onPaste={() => {
+                      pastedRef.current = true;
+                    }}
                   />
                 </OnboardingLoginCard>
               ) : (
