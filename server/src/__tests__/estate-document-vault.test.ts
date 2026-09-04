@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { createHmac } from "crypto";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import express from "express";
 import request from "supertest";
 import type { Db } from "@paperclipai/db";
@@ -431,5 +432,74 @@ describe("POST /estate/integrations/snug/webhook", () => {
     expect(res.status).toBe(201);
     const insertCall = (db.insert as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(insertCall).toBeDefined();
+  });
+
+  describe("HMAC signature verification (SNUG_WEBHOOK_SECRET set)", () => {
+    const TEST_SECRET = "test-snug-secret";
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    function makeHmac(payload: object, secret = TEST_SECRET) {
+      return "sha256=" + createHmac("sha256", secret).update(JSON.stringify(payload)).digest("hex");
+    }
+
+    it("returns 401 when signature header is missing", async () => {
+      vi.stubEnv("SNUG_WEBHOOK_SECRET", TEST_SECRET);
+      const vault = makeVaultClient();
+      const snug = makeSnugClient();
+      const db = makeDb();
+
+      const res = await request(createApp(db, vault, snug))
+        .post("/estate/integrations/snug/webhook")
+        .send(validPayload);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/invalid webhook signature/i);
+    });
+
+    it("returns 401 when signature does not match payload", async () => {
+      vi.stubEnv("SNUG_WEBHOOK_SECRET", TEST_SECRET);
+      const vault = makeVaultClient();
+      const snug = makeSnugClient();
+      const db = makeDb();
+
+      const res = await request(createApp(db, vault, snug))
+        .post("/estate/integrations/snug/webhook")
+        .set("x-snug-signature", "sha256=" + "a".repeat(64))
+        .send(validPayload);
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toMatch(/invalid webhook signature/i);
+    });
+
+    it("accepts request with valid sha256= signature", async () => {
+      vi.stubEnv("SNUG_WEBHOOK_SECRET", TEST_SECRET);
+      const vault = makeVaultClient();
+      const snug = makeSnugClient();
+      const db = makeDb();
+
+      const res = await request(createApp(db, vault, snug))
+        .post("/estate/integrations/snug/webhook")
+        .set("x-snug-signature", makeHmac(validPayload))
+        .send(validPayload);
+
+      expect(res.status).toBe(201);
+    });
+
+    it("rejects when signed with wrong secret", async () => {
+      vi.stubEnv("SNUG_WEBHOOK_SECRET", TEST_SECRET);
+      const vault = makeVaultClient();
+      const snug = makeSnugClient();
+      const db = makeDb();
+
+      const res = await request(createApp(db, vault, snug))
+        .post("/estate/integrations/snug/webhook")
+        .set("x-snug-signature", makeHmac(validPayload, "wrong-secret"))
+        .send(validPayload);
+
+      expect(res.status).toBe(401);
+    });
   });
 });
