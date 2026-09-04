@@ -251,9 +251,6 @@ describe("public repository paid workflow security", () => {
       "if: needs.authorize.outputs.playwright_channel == 'chrome'",
     );
     expect(paidJob).toContain("google-chrome --version");
-    expect(paidJob).toMatch(
-      /- name: Install Playwright FFmpeg on AWS runner\n\s+if: needs\.authorize\.outputs\.playwright_channel == 'chrome'[\s\S]*pnpm exec playwright install ffmpeg/,
-    );
     expect(paidJob).toContain(
       "if: needs.authorize.outputs.playwright_channel != 'chrome'",
     );
@@ -272,12 +269,27 @@ describe("public repository paid workflow security", () => {
     const awsFfmpegInstall = paidJob.indexOf(
       "- name: Install Playwright FFmpeg on AWS runner",
     );
+    const hostedChromiumInstall = paidJob.indexOf(
+      "- name: Install Chromium headless shell on GitHub-hosted fallback",
+    );
     const paidExecution = paidJob.indexOf("- name: Run paid cell");
     expect(paidInstall).toBeGreaterThan(0);
     expect(daytonaPluginPreparation).toBeGreaterThan(paidInstall);
     expect(awsFfmpegInstall).toBeGreaterThan(daytonaPluginPreparation);
+    expect(hostedChromiumInstall).toBeGreaterThan(awsFfmpegInstall);
     expect(paidExecution).toBeGreaterThan(awsFfmpegInstall);
     expect(paidExecution).toBeGreaterThan(daytonaPluginPreparation);
+    const awsFfmpegStep = paidJob.slice(
+      awsFfmpegInstall,
+      hostedChromiumInstall,
+    );
+    expect(awsFfmpegStep).toContain(
+      "if: needs.authorize.outputs.playwright_channel == 'chrome'",
+    );
+    expect(awsFfmpegStep).toContain("pnpm exec playwright install ffmpeg");
+    expect(awsFfmpegStep).not.toMatch(
+      /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)_API_KEY/,
+    );
     const preparedBeforeProviderAccess = paidJob.slice(
       daytonaPluginPreparation,
       paidExecution,
