@@ -291,6 +291,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
         await environmentsSvc.ensureKubernetesEnvironment(
           agent.companyId,
           bootstrap.kubernetesConfig,
+          { applyOverOperatorEdits: bootstrap.applyOverOperatorEdits },
         );
         kubernetesEnvironment =
           await environmentsSvc.findKubernetesEnvironment(agent.companyId);

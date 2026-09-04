@@ -10,6 +10,13 @@
  *   3. Idempotently ensure a configured Kubernetes sandbox environment for every
  *      company (mirrors `ensureLocalEnvironment`).
  *
+ * The managed-environment reconciler preserves a row whose stock fields were
+ * edited in the board (or that predates stock tracking) and only reports that
+ * an update is available, so by default a changed `PAPERCLIP_K8S_*` value does
+ * not reach such a row. `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE=true` declares the
+ * env-supplied config the source of truth: every boot applies it over operator
+ * edits and resets the stock baseline.
+ *
  * The boot hook is *configuration convenience*; the actual security gate is the
  * per-run guard in the heartbeat (see `execution-allowlist.ts`). Even with no
  * boot hook, setting `executionMode=kubernetes` denies local execution.
@@ -29,6 +36,14 @@ export type ExecutionPolicyBootstrapEnv = Record<string, string | undefined>;
 export interface ExecutionPolicyBootstrap {
   executionMode: Extract<InstanceExecutionMode, "kubernetes">;
   kubernetesConfig: KubernetesEnvironmentConfigInput;
+  /**
+   * `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE=true`. When set, the managed
+   * Kubernetes environment's stock fields are overwritten with the env-declared
+   * config on every boot, even when an operator edited the row in the board.
+   * Kept outside `kubernetesConfig` because that object is stored verbatim in
+   * `environment.config`.
+   */
+  applyOverOperatorEdits: boolean;
 }
 
 function parseBool(value: string | undefined): boolean | undefined {
@@ -128,7 +143,19 @@ export function parseExecutionPolicyBootstrapEnv(
   const adapters = parseAdapterRegistryEnv(env);
   if (adapters) kubernetesConfig.adapters = adapters;
 
-  return { executionMode: "kubernetes", kubernetesConfig };
+  const rawAuthoritative = env.PAPERCLIP_K8S_CONFIG_AUTHORITATIVE;
+  const applyOverOperatorEdits = parseBool(rawAuthoritative);
+  if (rawAuthoritative !== undefined && applyOverOperatorEdits === undefined) {
+    throw new Error(
+      `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE must be "true" or "false" (got "${rawAuthoritative}").`,
+    );
+  }
+
+  return {
+    executionMode: "kubernetes",
+    kubernetesConfig,
+    applyOverOperatorEdits: applyOverOperatorEdits ?? false,
+  };
 }
 
 /**
@@ -150,7 +177,9 @@ export async function applyExecutionPolicyBootstrap(
   const failedCompanyIds: string[] = [];
   for (const companyId of companyIds) {
     try {
-      await environments.ensureKubernetesEnvironment(companyId, bootstrap.kubernetesConfig);
+      await environments.ensureKubernetesEnvironment(companyId, bootstrap.kubernetesConfig, {
+        applyOverOperatorEdits: bootstrap.applyOverOperatorEdits,
+      });
       configured += 1;
     } catch (err) {
       logger.error(
@@ -168,6 +197,7 @@ export async function applyExecutionPolicyBootstrap(
       backend: bootstrap.kubernetesConfig.backend,
       runtimeClassName: bootstrap.kubernetesConfig.runtimeClassName,
       egressMode: bootstrap.kubernetesConfig.egressMode,
+      configAuthoritative: bootstrap.applyOverOperatorEdits,
     },
     "applied forced Kubernetes execution policy",
   );
