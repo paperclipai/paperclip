@@ -304,6 +304,81 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
   });
 
+  it("does not project brokered GitHub credentials across a low-trust boundary", async () => {
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: [],
+        },
+        sourcePresets: {},
+      },
+      trustedEnvProjection: {
+        GH_TOKEN: "brokered-github-token",
+        GITHUB_TOKEN: "brokered-github-token",
+      },
+      trustedEnvSecretKeys: ["GH_TOKEN", "GITHUB_TOKEN"],
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+          config: { env: {} },
+          secretKeys: new Set<string>(),
+          manifest: [],
+        }),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({});
+    expect(result.secretKeys).toEqual(new Set());
+  });
+
+  it("does not let a brokered projection satisfy low-trust push preflight", async () => {
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: { env: {} },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+          allowedSecretBindingIds: [],
+        },
+        sourcePresets: {},
+      },
+      requiredScopedEnvBinding: {
+        keys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        consumerScopes: ["agent", "project"],
+        reason: "push_write_credential_missing",
+        remediation: "Bind an explicitly allowed GitHub write credential.",
+      },
+      trustedEnvProjection: { GH_TOKEN: "brokered-github-token" },
+      trustedEnvSecretKeys: ["GH_TOKEN"],
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(),
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    })).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: {
+        configurationIncomplete: { reason: "push_write_credential_missing" },
+      },
+    });
+  });
+
   it("blocks required missing user secrets before runtime env resolution", async () => {
     const resolveAdapterConfigForRuntime = vi.fn();
     const resolveEnvBindings = vi.fn();

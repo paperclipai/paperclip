@@ -1285,6 +1285,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     input.trustPreset?.kind === "low_trust_review"
       ? (input.trustPreset.boundary.allowedSecretBindingIds ?? [])
       : undefined;
+  const allowTrustedEnvProjection = input.trustPreset?.kind !== "low_trust_review";
   if (input.trustPreset?.kind === "low_trust_review") {
     assertLowTrustEnvConfigAllowed(environmentEnv, "environment.env");
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
@@ -1295,7 +1296,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   const requiredScopedBindingsConfigured = requiredScopedEnvBinding
     ? requiredScopedEnvBinding.keys.some(
         (key) =>
-          typeof input.trustedEnvProjection?.[key] === "string" ||
+          (allowTrustedEnvProjection && typeof input.trustedEnvProjection?.[key] === "string") ||
           (requiredScopedEnvBinding.consumerScopes.includes("agent") &&
             isConfiguredEnvBindingValue(agentEnv[key])) ||
           (requiredScopedEnvBinding.consumerScopes.includes("project") &&
@@ -1555,7 +1556,11 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
-  if (input.trustedEnvProjection && Object.keys(input.trustedEnvProjection).length > 0) {
+  if (
+    allowTrustedEnvProjection
+    && input.trustedEnvProjection
+    && Object.keys(input.trustedEnvProjection).length > 0
+  ) {
     resolvedConfig.env = {
       ...parseObject(resolvedConfig.env),
       ...input.trustedEnvProjection,

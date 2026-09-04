@@ -149,6 +149,40 @@ describe("createGitRemoteAuthProvider", () => {
     const invocation = await provider(githubUrl);
     expect(invocation?.secretName).toBe("GH_TOKEN");
   });
+
+  it("ignores a managed connection installed only for another agent", async () => {
+    const query = (rows: unknown[]) => ({
+      from: () => ({ where: async () => rows }),
+    });
+    const db = {
+      select: vi.fn()
+        .mockReturnValueOnce(query([{
+          id: "github-connection",
+          companyId: "company-1",
+          enabled: true,
+          status: "active",
+          config: { sourceTemplateKey: "github" },
+        }]))
+        .mockReturnValueOnce(query([{
+          connectionId: "github-connection",
+          companyId: "company-1",
+          targetType: "agent",
+          targetId: "agent-a",
+        }])),
+    } as unknown as Db;
+    const secrets = buildSecretsFake({ GH_TOKEN: "agent-b-legacy-token" });
+    const provider = createGitRemoteAuthProvider(db, "company-1", { agentId: "agent-b" }, {
+      secrets,
+      env: {},
+    });
+
+    const invocation = await provider(githubUrl);
+
+    expect(invocation?.source).toBe("company_secret");
+    expect(invocation?.secretName).toBe("GH_TOKEN");
+    expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("agent-b-legacy-token");
+    expect(db.select).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("buildGitAuthInvocation", () => {

@@ -2147,7 +2147,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   router.post("/tool-connections/:connectionId/health-check", async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
-    if (existing.credentialPolicy === "per_user") activeToolMembership(req, existing.companyId);
+    if (existing.credentialPolicy === "per_user") await assertToolConnectionAccess(req, existing);
     else await assertToolConnectionConfigureAccess(req, existing);
     res.json(await svc.checkHealth(existing.id, getActorInfo(req)));
   });

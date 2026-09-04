@@ -300,6 +300,11 @@ async function resolveManagedGitHubCredential(
       || (install.targetType === "agent" && install.targetId === context.agentId)
     )
   )).map((connection) => connection.id));
+  // A GitHub connection installed only for another agent is not configured for
+  // this run. Treating the company-wide connection as configured here would
+  // make unrelated agents fail before their adapter starts and would also
+  // suppress their otherwise-eligible legacy credential fallback.
+  if (eligibleConnectionIds.size === 0) return { configured: false };
   const grants = await db.select().from(connectionGrants).where(and(
     eq(connectionGrants.companyId, companyId),
     inArray(connectionGrants.connectionId, [...eligibleConnectionIds]),

@@ -6,7 +6,11 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
-import { logActivity } from "./activity-log.js";
+import {
+  logActivity,
+  publishActivity,
+  type ActivityPublication,
+} from "./activity-log.js";
 import {
   createPaperclipCloudConnector,
   paperclipCloudConnectorConfigFromEnv,
@@ -263,7 +267,7 @@ export function githubConnectionEventService(
     }
   }
 
-  async function applyInstallationEvent(binding: GitHubBinding, event: LeasedEvent) {
+  async function applyInstallationEvent(database: Db, binding: GitHubBinding, event: LeasedEvent) {
     const github = binding.providerTenant.github!;
     const unavailable = event.event === "installation" && (event.action === "deleted" || event.action === "suspend");
     const installationIds = unavailable
@@ -291,9 +295,9 @@ export function githubConnectionEventService(
         webhookHealth: unavailable ? "unhealthy" as const : "healthy" as const,
       },
     };
-    await db.update(connectionGrants).set({ providerTenant, updatedAt: now() })
+    await database.update(connectionGrants).set({ providerTenant, updatedAt: now() })
       .where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, binding.companyId)));
-    await db.update(toolConnections).set({
+    await database.update(toolConnections).set({
       healthStatus: unavailable ? "failed" : "ok",
       healthMessage: unavailable
         ? "GitHub installation access was removed or suspended. Manage repository access on GitHub."
@@ -337,50 +341,59 @@ export function githubConnectionEventService(
       }).where(eq(connectionEventDeliveries.id, existing!.id));
     }
     try {
-      if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
-      if (event.event === "installation" || event.event === "installation_repositories") {
-        for (const binding of bindings) await applyInstallationEvent(binding, normalizedEvent);
-      } else {
-        const touchedAt = now();
-        for (const binding of bindings) {
-          const github = binding.providerTenant.github;
-          if (!github) continue;
-          await db.update(connectionGrants).set({
-            providerTenant: {
-              ...binding.providerTenant,
-              github: { ...github, lastWebhookAt: touchedAt.toISOString(), webhookHealth: "healthy" },
-            },
-            updatedAt: touchedAt,
-          }).where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, companyId)));
+      const postCommitPublications: ActivityPublication[] = [];
+      const applyAndFinalize = async (database: Db) => {
+        if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
+        if (event.event === "installation" || event.event === "installation_repositories") {
+          for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
+        } else {
+          const touchedAt = now();
+          for (const binding of bindings) {
+            const github = binding.providerTenant.github;
+            if (!github) continue;
+            await database.update(connectionGrants).set({
+              providerTenant: {
+                ...binding.providerTenant,
+                github: { ...github, lastWebhookAt: touchedAt.toISOString(), webhookHealth: "healthy" },
+              },
+              updatedAt: touchedAt,
+            }).where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, companyId)));
+          }
         }
+        const finishedAt = now();
+        await database.update(connectionEventDeliveries).set({
+          status: "processed",
+          processedAt: finishedAt,
+          lastError: null,
+          updatedAt: finishedAt,
+        }).where(and(
+          eq(connectionEventDeliveries.companyId, companyId),
+          eq(connectionEventDeliveries.provider, event.provider),
+          eq(connectionEventDeliveries.providerDeliveryId, event.id),
+        ));
+        await logActivity(database, {
+          companyId,
+          actorType: "system",
+          actorId: "system:github-webhook",
+          action: "tool_connection.webhook_processed",
+          entityType: "tool_connection",
+          entityId: bindings[0]!.connectionId,
+          details: {
+            provider: "github",
+            event: event.event,
+            action: event.action,
+            deliveryId: event.id,
+            installationId: event.installationId,
+            repositoryId: event.repositoryId,
+          },
+        }, postCommitPublications);
+      };
+      if (event.event === "installation" || event.event === "installation_repositories") {
+        await db.transaction(async (tx) => applyAndFinalize(tx as unknown as Db));
+      } else {
+        await applyAndFinalize(db);
       }
-      const finishedAt = now();
-      await db.update(connectionEventDeliveries).set({
-        status: "processed",
-        processedAt: finishedAt,
-        lastError: null,
-        updatedAt: finishedAt,
-      }).where(and(
-        eq(connectionEventDeliveries.companyId, companyId),
-        eq(connectionEventDeliveries.provider, event.provider),
-        eq(connectionEventDeliveries.providerDeliveryId, event.id),
-      ));
-      await logActivity(db, {
-        companyId,
-        actorType: "system",
-        actorId: "system:github-webhook",
-        action: "tool_connection.webhook_processed",
-        entityType: "tool_connection",
-        entityId: bindings[0]!.connectionId,
-        details: {
-          provider: "github",
-          event: event.event,
-          action: event.action,
-          deliveryId: event.id,
-          installationId: event.installationId,
-          repositoryId: event.repositoryId,
-        },
-      });
+      for (const publication of postCommitPublications) publishActivity(publication);
       return "processed" as const;
     } catch (error) {
       await db.update(connectionEventDeliveries).set({

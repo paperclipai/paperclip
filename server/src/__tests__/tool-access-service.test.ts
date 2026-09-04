@@ -1280,6 +1280,31 @@ describeEmbeddedPostgres("tool access service", () => {
     ]));
   });
 
+  it("prevents an unrelated member from health-checking a per-user connection", async () => {
+    const company = await createCompany(db);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await db.update(toolConnections).set({
+      credentialPolicy: "per_user",
+      createdByUserId: "alice",
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      kind: "user",
+      subjectUserId: "alice",
+      status: "active",
+      isDefault: false,
+    });
+
+    const response = await request(createRouteApp(
+      db,
+      boardSessionActor(company.id, "member", "mallory"),
+    )).post(`/api/tool-connections/${connection.id}/health-check`);
+
+    expect(response.status).toBe(403);
+    expect(response.body.error).toContain("need access to this connection");
+  });
+
   it("serializes delegation creation behind membership removal so reauthorization cannot revive stale consent", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
