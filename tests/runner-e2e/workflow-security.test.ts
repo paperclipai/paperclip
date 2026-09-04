@@ -504,12 +504,18 @@ describe("public repository paid workflow security", () => {
       "utf8",
     );
     const buildJobStart = workflow.indexOf("  build_runner_artifacts:");
+    const remoteBuildJobStart = workflow.indexOf(
+      "  build_remote_provider_pack:",
+      buildJobStart,
+    );
     const testJobStart = workflow.indexOf("  test:", buildJobStart);
     const reportJobStart = workflow.indexOf("  report:", testJobStart);
     const buildJob = workflow.slice(buildJobStart, testJobStart);
+    const runnerBuildJob = workflow.slice(buildJobStart, remoteBuildJobStart);
     const testJob = workflow.slice(testJobStart, reportJobStart);
 
     expect(buildJobStart).toBeGreaterThan(0);
+    expect(remoteBuildJobStart).toBeGreaterThan(buildJobStart);
     expect(testJobStart).toBeGreaterThan(buildJobStart);
     expect(buildJob).toMatch(buildRunnerNeeds);
     expect(buildJob).toMatch(buildRemoteProviderPackNeeds);
@@ -532,6 +538,110 @@ describe("public repository paid workflow security", () => {
     );
     expect(buildJob).toContain("runner-e2e-build-bundle.tar.gz.sha256");
     expect(buildJob).toContain("runner-e2e-provider-pack.tar.gz.sha256");
+    expect(runnerBuildJob).toContain(
+      "build_content_id: ${{ steps.build_identity.outputs.content_id }}",
+    );
+    expect(runnerBuildJob).toContain(
+      "actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25",
+    );
+    expect(runnerBuildJob).toContain(
+      "actions/cache/save@caa296126883cff596d87d8935842f9db880ef25",
+    );
+    expect(runnerBuildJob).not.toContain("restore-keys:");
+    expect(runnerBuildJob).toContain(
+      "cache_key=runner-e2e-build-v1-$ref_scope-$content_id",
+    );
+    expect(runnerBuildJob).not.toContain(
+      "cache_key=runner-e2e-build-v1-$TARGET_SHA",
+    );
+    expect(runnerBuildJob).toContain(
+      '"repos/$REPOSITORY/contents/.github/workflows/runner-full-stack-e2e.yml"',
+    );
+    expect(runnerBuildJob).toContain('-f "ref=$GITHUB_WORKFLOW_SHA"');
+    for (const input of [
+      ".npmrc",
+      "package.json",
+      "patches",
+      "pnpm-workspace.yaml",
+      "scripts",
+      "tsconfig.base.json",
+      "packages/paperclip-eval-kernel",
+      "packages/paperclip-runner",
+    ]) {
+      expect(runnerBuildJob).toContain(input);
+    }
+    for (const optionalInput of [".cargo", ".pnpmfile.cjs", "pnpmfile.cjs"]) {
+      expect(runnerBuildJob).toContain(optionalInput);
+    }
+    const runnerPackage = JSON.parse(
+      await readFile(
+        path.join(repositoryRoot, "packages/paperclip-runner/package.json"),
+        "utf8",
+      ),
+    ) as Record<string, Record<string, string> | undefined>;
+    const workspaceDependencies = [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ].flatMap((section) =>
+      Object.entries(runnerPackage[section] ?? {})
+        .filter(([, version]) => version.startsWith("workspace:"))
+        .map(([name]) => name),
+    );
+    expect(workspaceDependencies.sort()).toEqual([
+      "@paperclipai/paperclip-eval-kernel",
+    ]);
+    for (const toolchainInput of [
+      "CARGO_ENCODED_RUSTFLAGS",
+      "NODE_OPTIONS",
+      "RUSTFLAGS",
+      "uname -srm",
+      'sha256sum /etc/os-release "$(command -v cc)"',
+      "node --version",
+      "pnpm --version",
+      "rustc -vV",
+      "cargo -Vv",
+      "cc --version",
+      "ld --version",
+      "ldd --version",
+    ]) {
+      expect(runnerBuildJob).toContain(toolchainInput);
+    }
+    expect(
+      runnerBuildJob.match(
+        /if: steps\.restore_build_cache\.outputs\.cache-hit != 'true'/gu,
+      ),
+    ).toHaveLength(4);
+    expect(
+      runnerBuildJob.indexOf("Restore exact reusable build outputs"),
+    ).toBeLessThan(
+      runnerBuildJob.indexOf(
+        "Build shared TypeScript and native runner outputs",
+      ),
+    );
+    expect(
+      runnerBuildJob.indexOf(
+        "Verify and qualify reusable build outputs for this target",
+      ),
+    ).toBeLessThan(runnerBuildJob.indexOf("Save exact reusable build outputs"));
+    expect(runnerBuildJob).toContain("paperclip-runner/e2e-build-origin/v1");
+    expect(runnerBuildJob).toContain(
+      "paperclip-runner/e2e-build-qualification/v1",
+    );
+    expect(runnerBuildJob).toContain('--arg targetSha "$TARGET_SHA"');
+    expect(runnerBuildJob).toContain(".targetRef == $targetRef");
+    expect(runnerBuildJob).toContain(".buildContentId == $buildContentId");
+    expect(runnerBuildJob).toContain(".bundleSha256 == $bundleSha256");
+    expect(runnerBuildJob).toContain(
+      'awk \'substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d" { exit 1 }\'',
+    );
+    expect(runnerBuildJob).toContain(
+      "Reusable runner build contains an unexpected member",
+    );
+    expect(runnerBuildJob).toContain(
+      "key: ${{ steps.restore_build_cache.outputs.cache-primary-key }}",
+    );
     expect(buildJob).toContain(
       "build_artifact_name: ${{ steps.build_artifact_name.outputs.name }}",
     );
@@ -564,10 +674,22 @@ describe("public repository paid workflow security", () => {
     expect(testJob).toContain(
       "needs.build_runner_artifacts.outputs.build_artifact_name",
     );
+    expect(buildJob).toContain(
+      "needs.build_runner_artifacts.outputs.build_content_id",
+    );
+    expect(testJob).toContain(
+      "needs.build_runner_artifacts.outputs.build_content_id",
+    );
     expect(testJob).toContain(
       "needs.build_remote_provider_pack.outputs.provider_pack_artifact_name",
     );
     expect(testJob).toContain("sha256sum --check");
+    expect(buildJob).toContain("paperclip-runner/e2e-build-qualification/v1");
+    expect(testJob).toContain("paperclip-runner/e2e-build-qualification/v1");
+    expect(buildJob).toContain(".targetSha == $targetSha");
+    expect(testJob).toContain(".targetSha == $targetSha");
+    expect(buildJob).toContain(".originTargetSha == $origin[0].targetSha");
+    expect(testJob).toContain(".originTargetSha == $origin[0].targetSha");
     expect(testJob.indexOf("sha256sum --check")).toBeLessThan(
       testJob.indexOf("tar --extract"),
     );

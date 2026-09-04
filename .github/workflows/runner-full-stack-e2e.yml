@@ -479,6 +479,7 @@ jobs:
       contents: read
     outputs:
       build_artifact_name: ${{ steps.build_artifact_name.outputs.name }}
+      build_content_id: ${{ steps.build_identity.outputs.content_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -522,11 +523,115 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+      # This identity is deliberately computed by the trusted workflow rather
+      # than target-owned test code. It hashes the conservative source closure,
+      # the resolved lockfile, the selected output shape, the active workflow
+      # blob, and the native toolchain. The target ref scope prevents a branch
+      # under validation from populating another branch's executable cache.
+      - name: Resolve exact reusable build identity
+        id: build_identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
+          NEEDS_RUNNER_TYPESCRIPT: ${{ needs.catalog.outputs.needs_runner_typescript }}
+          NEEDS_NATIVE_BINARIES: ${{ needs.catalog.outputs.needs_native_binaries }}
+          TEST_RUNNER: ${{ needs.authorize.outputs.test_runner }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          [[ "$TARGET_REF" == refs/heads/* ]]
+          [[ "$EXPECTED_LOCK_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          for value in "$NEEDS_RUNNER_TYPESCRIPT" "$NEEDS_NATIVE_BINARIES"; do
+            test "$value" = true || test "$value" = false
+          done
+
+          workflow_blob="$(gh api -X GET \
+            "repos/$REPOSITORY/contents/.github/workflows/runner-full-stack-e2e.yml" \
+            -f "ref=$GITHUB_WORKFLOW_SHA" --jq .sha)"
+          [[ "$workflow_blob" =~ ^[0-9a-f]{40}$ ]]
+
+          toolchain_id="$({
+            printf '%s\n' 'paperclip-runner/e2e-build-toolchain/v1'
+            printf 'runner=%s\n' "$TEST_RUNNER"
+            printf 'runner-os=%s\n' "$RUNNER_OS"
+            printf 'runner-arch=%s\n' "$RUNNER_ARCH"
+            for variable in \
+              CC CFLAGS CI CARGO_BUILD_TARGET CARGO_ENCODED_RUSTFLAGS \
+              CARGO_TARGET_DIR LANG LC_ALL LDFLAGS NODE_ENV NODE_OPTIONS \
+              RUSTC RUSTC_WRAPPER RUSTFLAGS SOURCE_DATE_EPOCH TZ
+            do
+              printf '%s=%s\n' "$variable" "${!variable-}"
+            done
+            uname -srm
+            sha256sum /etc/os-release "$(command -v cc)" "$(command -v ld)" "$(command -v ldd)"
+            node --version
+            pnpm --version
+            (cd packages/paperclip-runner && rustc -vV)
+            (cd packages/paperclip-runner && cargo -Vv)
+            cc --version
+            ld --version
+            ldd --version
+          } | sha256sum | cut -d ' ' -f 1)"
+          [[ "$toolchain_id" =~ ^[0-9a-f]{64}$ ]]
+
+          manifest="$RUNNER_TEMP/runner-e2e-build-inputs"
+          {
+            printf '%s\n' 'paperclip-runner/e2e-build-inputs/v1'
+            printf 'workflow=%s\n' "$workflow_blob"
+            printf 'lock=%s\n' "$EXPECTED_LOCK_SHA256"
+            printf 'toolchain=%s\n' "$toolchain_id"
+            printf 'runner-typescript=%s\n' "$NEEDS_RUNNER_TYPESCRIPT"
+            printf 'native-binaries=%s\n' "$NEEDS_NATIVE_BINARIES"
+            for input in \
+              .npmrc \
+              package.json \
+              patches \
+              pnpm-workspace.yaml \
+              scripts \
+              tsconfig.base.json \
+              packages/paperclip-eval-kernel \
+              packages/paperclip-runner
+            do
+              printf '%s=%s\n' "$input" "$(git rev-parse "HEAD:$input")"
+            done
+            for optional_input in .cargo .pnpmfile.cjs pnpmfile.cjs; do
+              if git cat-file -e "HEAD:$optional_input" 2>/dev/null; then
+                printf '%s=%s\n' "$optional_input" "$(git rev-parse "HEAD:$optional_input")"
+              else
+                printf '%s=missing\n' "$optional_input"
+              fi
+            done
+          } > "$manifest"
+          content_id="$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+          ref_scope="$(printf '%s' "$TARGET_REF" | sha256sum | cut -d ' ' -f 1)"
+          [[ "$content_id" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$ref_scope" =~ ^[0-9a-f]{64}$ ]]
+          {
+            echo "content_id=$content_id"
+            echo "toolchain_id=$toolchain_id"
+            echo "cache_key=runner-e2e-build-v1-$ref_scope-$content_id"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact reusable build outputs
+        id: restore_build_cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            runner-e2e-build-bundle.tar.gz
+            runner-e2e-build-bundle.tar.gz.sha256
+            runner-e2e-build-origin.json
+          key: ${{ steps.build_identity.outputs.cache_key }}
+
+      - if: steps.restore_build_cache.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       # build:typescript also builds the eval-kernel dependency, so the two
       # TypeScript trees are compiled at most once in this campaign.
       - name: Build shared TypeScript and native runner outputs
+        if: steps.restore_build_cache.outputs.cache-hit != 'true'
         env:
           NEEDS_RUNNER_TYPESCRIPT: ${{ needs.catalog.outputs.needs_runner_typescript }}
           NEEDS_NATIVE_BINARIES: ${{ needs.catalog.outputs.needs_native_binaries }}
@@ -542,7 +647,12 @@ jobs:
           fi
 
       - name: Package immutable campaign outputs
+        if: steps.restore_build_cache.outputs.cache-hit != 'true'
         env:
+          TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          BUILD_CONTENT_ID: ${{ steps.build_identity.outputs.content_id }}
+          TOOLCHAIN_ID: ${{ steps.build_identity.outputs.toolchain_id }}
           NEEDS_RUNNER_TYPESCRIPT: ${{ needs.catalog.outputs.needs_runner_typescript }}
           NEEDS_NATIVE_BINARIES: ${{ needs.catalog.outputs.needs_native_binaries }}
         run: |
@@ -572,6 +682,122 @@ jobs:
             --file runner-e2e-build-bundle.tar.gz \
             "${archive_paths[@]}"
           sha256sum runner-e2e-build-bundle.tar.gz > runner-e2e-build-bundle.tar.gz.sha256
+          bundle_sha256="$(sha256sum runner-e2e-build-bundle.tar.gz | cut -d ' ' -f 1)"
+          jq -n \
+            --arg schema paperclip-runner/e2e-build-origin/v1 \
+            --arg targetRef "$TARGET_REF" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg buildContentId "$BUILD_CONTENT_ID" \
+            --arg toolchainId "$TOOLCHAIN_ID" \
+            --arg bundleSha256 "$bundle_sha256" \
+            --argjson needsRunnerTypescript "$NEEDS_RUNNER_TYPESCRIPT" \
+            --argjson needsNativeBinaries "$NEEDS_NATIVE_BINARIES" \
+            '{schema: $schema, targetRef: $targetRef, targetSha: $targetSha,
+              buildContentId: $buildContentId, toolchainId: $toolchainId,
+              bundleSha256: $bundleSha256,
+              needsRunnerTypescript: $needsRunnerTypescript,
+              needsNativeBinaries: $needsNativeBinaries}' \
+            > runner-e2e-build-origin.json
+
+      - name: Verify and qualify reusable build outputs for this target
+        env:
+          TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          BUILD_CONTENT_ID: ${{ steps.build_identity.outputs.content_id }}
+          TOOLCHAIN_ID: ${{ steps.build_identity.outputs.toolchain_id }}
+          NEEDS_RUNNER_TYPESCRIPT: ${{ needs.catalog.outputs.needs_runner_typescript }}
+          NEEDS_NATIVE_BINARIES: ${{ needs.catalog.outputs.needs_native_binaries }}
+        run: |
+          set -euo pipefail
+          files=(
+            runner-e2e-build-bundle.tar.gz
+            runner-e2e-build-bundle.tar.gz.sha256
+            runner-e2e-build-origin.json
+          )
+          for file in "${files[@]}"; do
+            test -f "$file"
+            test ! -L "$file"
+          done
+          sha256sum --check runner-e2e-build-bundle.tar.gz.sha256
+          bundle_sha256="$(sha256sum runner-e2e-build-bundle.tar.gz | cut -d ' ' -f 1)"
+          jq -e \
+            --arg targetRef "$TARGET_REF" \
+            --arg buildContentId "$BUILD_CONTENT_ID" \
+            --arg toolchainId "$TOOLCHAIN_ID" \
+            --arg bundleSha256 "$bundle_sha256" \
+            --argjson needsRunnerTypescript "$NEEDS_RUNNER_TYPESCRIPT" \
+            --argjson needsNativeBinaries "$NEEDS_NATIVE_BINARIES" \
+            '.schema == "paperclip-runner/e2e-build-origin/v1" and
+             .targetRef == $targetRef and
+             (.targetSha | test("^[0-9a-f]{40}$")) and
+             .buildContentId == $buildContentId and
+             .toolchainId == $toolchainId and
+             .bundleSha256 == $bundleSha256 and
+             .needsRunnerTypescript == $needsRunnerTypescript and
+             .needsNativeBinaries == $needsNativeBinaries' \
+            runner-e2e-build-origin.json >/dev/null
+          tar --list --gzip --file runner-e2e-build-bundle.tar.gz > "$RUNNER_TEMP/runner-e2e-build-members"
+          tar --list --verbose --gzip --file runner-e2e-build-bundle.tar.gz \
+            | awk 'substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d" { exit 1 }'
+          while IFS= read -r member; do
+            case "$member" in
+              packages/paperclip-eval-kernel/dist | packages/paperclip-eval-kernel/dist/*) ;;
+              packages/paperclip-runner/dist | packages/paperclip-runner/dist/*)
+                test "$NEEDS_RUNNER_TYPESCRIPT" = true
+                ;;
+              packages/paperclip-runner/runner/target/debug/conformance-tracer | \
+              packages/paperclip-runner/runner/target/debug/paperclip-runnerd | \
+              packages/paperclip-runner/runner/target/debug/fake-harness | \
+              packages/paperclip-runner/runner/target/debug/fake-codex-app-server | \
+              packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar)
+                test "$NEEDS_NATIVE_BINARIES" = true
+                ;;
+              *)
+                echo "Reusable runner build contains an unexpected member: $member" >&2
+                exit 1
+                ;;
+            esac
+          done < "$RUNNER_TEMP/runner-e2e-build-members"
+          grep -Eq '^packages/paperclip-eval-kernel/dist(/|$)' "$RUNNER_TEMP/runner-e2e-build-members"
+          if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
+            grep -Eq '^packages/paperclip-runner/dist(/|$)' "$RUNNER_TEMP/runner-e2e-build-members"
+          fi
+          if [ "$NEEDS_NATIVE_BINARIES" = true ]; then
+            for binary in \
+              conformance-tracer \
+              paperclip-runnerd \
+              fake-harness \
+              fake-codex-app-server \
+              fake-acpx-sidecar
+            do
+              grep -Fqx "packages/paperclip-runner/runner/target/debug/$binary" \
+                "$RUNNER_TEMP/runner-e2e-build-members"
+            done
+          fi
+          origin_target_sha="$(jq -r .targetSha runner-e2e-build-origin.json)"
+          jq -n \
+            --arg schema paperclip-runner/e2e-build-qualification/v1 \
+            --arg targetRef "$TARGET_REF" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg originTargetSha "$origin_target_sha" \
+            --arg buildContentId "$BUILD_CONTENT_ID" \
+            --arg toolchainId "$TOOLCHAIN_ID" \
+            --arg bundleSha256 "$bundle_sha256" \
+            '{schema: $schema, targetRef: $targetRef, targetSha: $targetSha,
+              originTargetSha: $originTargetSha,
+              buildContentId: $buildContentId, toolchainId: $toolchainId,
+              bundleSha256: $bundleSha256}' \
+            > runner-e2e-build-qualification.json
+
+      - name: Save exact reusable build outputs
+        if: steps.restore_build_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            runner-e2e-build-bundle.tar.gz
+            runner-e2e-build-bundle.tar.gz.sha256
+            runner-e2e-build-origin.json
+          key: ${{ steps.restore_build_cache.outputs.cache-primary-key }}
 
       - name: Name immutable shared campaign outputs
         id: build_artifact_name
@@ -586,6 +812,8 @@ jobs:
           path: |
             runner-e2e-build-bundle.tar.gz
             runner-e2e-build-bundle.tar.gz.sha256
+            runner-e2e-build-origin.json
+            runner-e2e-build-qualification.json
           retention-days: 1
           compression-level: 0
           if-no-files-found: error
@@ -670,12 +898,49 @@ jobs:
 
       - name: Verify and restore shared TypeScript outputs
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
+        env:
+          TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          BUILD_CONTENT_ID: ${{ needs.build_runner_artifacts.outputs.build_content_id }}
         run: |
           set -euo pipefail
+          files=(
+            runner-e2e-build/runner-e2e-build-bundle.tar.gz
+            runner-e2e-build/runner-e2e-build-bundle.tar.gz.sha256
+            runner-e2e-build/runner-e2e-build-origin.json
+            runner-e2e-build/runner-e2e-build-qualification.json
+          )
+          for file in "${files[@]}"; do
+            test -f "$file"
+            test ! -L "$file"
+          done
+          test "$(find runner-e2e-build -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4
           (
             cd runner-e2e-build
             sha256sum --check runner-e2e-build-bundle.tar.gz.sha256
           )
+          bundle_sha256="$(sha256sum runner-e2e-build/runner-e2e-build-bundle.tar.gz | cut -d ' ' -f 1)"
+          jq -e \
+            --arg targetRef "$TARGET_REF" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg buildContentId "$BUILD_CONTENT_ID" \
+            --arg bundleSha256 "$bundle_sha256" \
+            --slurpfile origin runner-e2e-build/runner-e2e-build-origin.json \
+            '($origin | length) == 1 and
+             $origin[0].schema == "paperclip-runner/e2e-build-origin/v1" and
+             $origin[0].targetRef == $targetRef and
+             ($origin[0].targetSha | test("^[0-9a-f]{40}$")) and
+             .schema == "paperclip-runner/e2e-build-qualification/v1" and
+             .targetRef == $targetRef and
+             .targetSha == $targetSha and
+             .originTargetSha == $origin[0].targetSha and
+             .buildContentId == $buildContentId and
+             .buildContentId == $origin[0].buildContentId and
+             .toolchainId == $origin[0].toolchainId and
+             .bundleSha256 == $bundleSha256 and
+             .bundleSha256 == $origin[0].bundleSha256 and
+             $origin[0].needsRunnerTypescript == true' \
+            runner-e2e-build/runner-e2e-build-qualification.json >/dev/null
           tar --extract --gzip \
             --file runner-e2e-build/runner-e2e-build-bundle.tar.gz \
             --directory "$GITHUB_WORKSPACE"
@@ -860,14 +1125,53 @@ jobs:
       - name: Verify and restore campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         env:
+          TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
+          TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          BUILD_CONTENT_ID: ${{ needs.build_runner_artifacts.outputs.build_content_id }}
           NEEDS_RUNNER_TYPESCRIPT: ${{ matrix.profileId == 'runner-opencode' || startsWith(matrix.profileId, 'runner-acpx-') || matrix.suiteId == 'openrouter-model-breadth' }}
           NEEDS_NATIVE_BINARY: ${{ startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth' }}
         run: |
           set -euo pipefail
+          files=(
+            runner-e2e-build/runner-e2e-build-bundle.tar.gz
+            runner-e2e-build/runner-e2e-build-bundle.tar.gz.sha256
+            runner-e2e-build/runner-e2e-build-origin.json
+            runner-e2e-build/runner-e2e-build-qualification.json
+          )
+          for file in "${files[@]}"; do
+            test -f "$file"
+            test ! -L "$file"
+          done
+          test "$(find runner-e2e-build -maxdepth 1 -type f | wc -l | tr -d ' ')" = 4
           (
             cd runner-e2e-build
             sha256sum --check runner-e2e-build-bundle.tar.gz.sha256
           )
+          bundle_sha256="$(sha256sum runner-e2e-build/runner-e2e-build-bundle.tar.gz | cut -d ' ' -f 1)"
+          jq -e \
+            --arg targetRef "$TARGET_REF" \
+            --arg targetSha "$TARGET_SHA" \
+            --arg buildContentId "$BUILD_CONTENT_ID" \
+            --arg bundleSha256 "$bundle_sha256" \
+            --argjson needsRunnerTypescript "$NEEDS_RUNNER_TYPESCRIPT" \
+            --argjson needsNativeBinary "$NEEDS_NATIVE_BINARY" \
+            --slurpfile origin runner-e2e-build/runner-e2e-build-origin.json \
+            '($origin | length) == 1 and
+             $origin[0].schema == "paperclip-runner/e2e-build-origin/v1" and
+             $origin[0].targetRef == $targetRef and
+             ($origin[0].targetSha | test("^[0-9a-f]{40}$")) and
+             .schema == "paperclip-runner/e2e-build-qualification/v1" and
+             .targetRef == $targetRef and
+             .targetSha == $targetSha and
+             .originTargetSha == $origin[0].targetSha and
+             .buildContentId == $buildContentId and
+             .buildContentId == $origin[0].buildContentId and
+             .toolchainId == $origin[0].toolchainId and
+             .bundleSha256 == $bundleSha256 and
+             .bundleSha256 == $origin[0].bundleSha256 and
+             ($needsRunnerTypescript == false or $origin[0].needsRunnerTypescript == true) and
+             ($needsNativeBinary == false or $origin[0].needsNativeBinaries == true)' \
+            runner-e2e-build/runner-e2e-build-qualification.json >/dev/null
           tar --extract --gzip \
             --file runner-e2e-build/runner-e2e-build-bundle.tar.gz \
             --directory "$GITHUB_WORKSPACE"
