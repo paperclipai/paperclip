@@ -306,8 +306,8 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
   );
   assert.match(
     workflow,
-    /pnpm install --ignore-scripts --no-frozen-lockfile/,
-    "the policy job must resolve the complete merge tree instead of only updating lockfile metadata",
+    /pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile/,
+    "the policy job must resolve the complete merge tree without rewriting platform metadata",
   );
   assert.match(
     workflow,
