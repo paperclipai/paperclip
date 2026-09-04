@@ -86,6 +86,39 @@ danach geschaut, was tatsächlich im Snapshot liegt.
 (sonntags 03:30), das dasselbe Repo sperrt. Alle restic-Aufrufe laufen mit
 `--retry-lock 30m`, eine Überschneidung wartet also, statt abzubrechen.
 
+Dazu am **6. jedes Monats um 06:30** die Integritätsprüfung (siehe unten).
+
+## Ist das Repo überhaupt noch heil?
+
+Die tägliche Sicherung meldet nur, ob das **Schreiben** geklappt hat, und der
+Wächter schaut ausschließlich auf das **Alter** der Snapshots. Beides bliebe
+grün, während das Repo langsam verrottet — bemerkt hätte man es erst bei der
+Wiederherstellung, also an dem Tag, an dem es zu spät ist. Bis zum 04.09.2026
+hat das nie jemand geprüft.
+
+`pruefe-repo.sh` (Dienst `de.whitestag.repo-pruefung`) macht das monatlich in
+zwei Stufen:
+
+1. **`restic check`** — Struktur und Metadaten: Sind alle Bäume und Blöcke,
+   auf die ein Snapshot zeigt, vorhanden? Schnell, findet aber **keine**
+   gekippten Bits, weil die Daten dabei nie gelesen werden.
+2. **`restic check --read-data-subset=<monat>/12`** — liest die Blöcke wirklich
+   und rechnet die Prüfsummen nach. Das ist der einzige Test, der stille
+   Korruption findet.
+
+Das **rotierende Zwölftel** ist der Kern: jeden Monat ein anderer Abschnitt,
+nach zwölf Monaten ist das Repo einmal vollständig gelesen — bei rund 1 GiB
+Verkehr pro Lauf statt über 12 GiB auf einmal.
+
+Schlägt die Prüfung an, ist das **kein Betriebsfehler, sondern ein Befund am
+Backup selbst**; die Alarmmail sagt das ausdrücklich und nennt als nächsten
+Schritt `restic check --read-data` von Hand, dann `restic repair` — und vor
+allem: nichts löschen, bevor der Umfang feststeht.
+
+Der Wächter überwacht die Prüfung ihrerseits (Statusdatei, Grenze 45 Tage) —
+sonst wäre der Prüfer selbst unbewacht. Eine Prüfung, die Schaden **gefunden**
+hat, zählt dabei ausdrücklich nicht als „zuletzt geprüft".
+
 ## Bedienung
 
 ```bash
@@ -93,7 +126,9 @@ danach geschaut, was tatsächlich im Snapshot liegt.
 bash nextcloud-backup.sh --nur-db               # nur die Datenbank
 bash nextcloud-backup.sh --nur-code             # nur den Ordner
 bash nextcloud-backup.sh --kein-versand         # ohne Fehlermail
-python3 -m pytest -q                            # 6 Tests
+bash pruefe-repo.sh --nur-struktur              # Schnellprüfung, ohne Lesen
+bash pruefe-repo.sh --anteil 1/1                # alles lesen (dauert)
+python3 -m pytest -q                            # 26 Tests
 ```
 
 Log: `~/.paperclip/logs/nextcloud-backup.log`,

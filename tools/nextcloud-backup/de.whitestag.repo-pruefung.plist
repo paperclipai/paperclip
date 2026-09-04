@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>de.whitestag.repo-pruefung</string>
+
+    <!-- Einstieg ueber node, NICHT bash: sonst scheitert der Zugriff auf
+         ~/.restic und die rclone-Konfiguration still an TCC — und die
+         Pruefung meldete dann ein heiles Repo als beschaedigt. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>/Users/walterschoenenbroecher.de/.paperclip/scripts/nextcloud-backup/run-pruefe-repo.js</string>
+    </array>
+
+    <!-- Am 6. jedes Monats um 06:30. Bewusst NICHT am Monatsersten: dort
+         liegen schon der Monatswechsel der Aufbewahrung und mehrere
+         Berichte. Und bewusst nach 05:00, damit die naechtliche Sicherung
+         die Repo-Sperre wieder los ist — die Pruefung wartet zwar
+         (--retry-lock 30m), aber warten muss sie deshalb nicht.
+
+         launchd holt einen verpassten Kalendertermin beim naechsten
+         Aufwachen nach. War der Mac am 6. aus, laeuft die Pruefung also
+         verspaetet statt gar nicht. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Day</key><integer>6</integer>
+        <key>Hour</key><integer>6</integer>
+        <key>Minute</key><integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/walterschoenenbroecher.de/.paperclip/logs/repo-pruefung.launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/walterschoenenbroecher.de/.paperclip/logs/repo-pruefung.launchd.log</string>
+
+    <key>RunAtLoad</key><false/>
+
+    <!-- Der Lauf liest bis zu einem Zwoelftel des Repos ueber die Leitung
+         und darf dabei nicht mit der Zeit knapp werden. -->
+    <key>ExitTimeOut</key><integer>7200</integer>
+</dict>
+</plist>
