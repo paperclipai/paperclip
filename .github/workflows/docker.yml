@@ -87,7 +87,7 @@ jobs:
       - name: Refresh lockfile for Docker build context
         run: |
           set -euo pipefail
-          pnpm install --ignore-scripts --no-frozen-lockfile
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
 
           changed="$(git status --porcelain)"
           if [ -z "$changed" ]; then
@@ -281,7 +281,7 @@ jobs:
       - name: Refresh lockfile for Docker build context
         run: |
           set -euo pipefail
-          pnpm install --ignore-scripts --no-frozen-lockfile
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
 
           changed="$(git status --porcelain)"
           if [ -z "$changed" ]; then
