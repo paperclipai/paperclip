@@ -1,7 +1,10 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
-import { cn } from "../../lib/utils";
+import {
+  OnboardingLoginCard,
+  onboardingCardInputClass,
+} from "../AdapterLoginChrome";
 import {
   CANVAS_CONTENT_ENTER,
   CANVAS_ENTER_TRAVEL,
@@ -105,20 +108,24 @@ export function ConnectInputCanvas({
  * The API key field, for when the credential mode is keys rather than a
  * subscription.
  *
- * Built to the login panel's shape on purpose: same card, same padding, same
- * label-left / control-right row, same 28px control height. These two are
- * alternatives to each other — one canvas shows one or the other, and the
- * credential switch above trades between them — so they should read as two
- * answers to one question rather than as two different kinds of thing. Before
- * this the key field was a stacked label over a full-width input with no card
- * at all, and flipping the mode changed the shape of the step rather than its
- * content.
+ * Built to the sign-in card's shape on purpose, and that reasoning is
+ * unchanged from when it was written — only its target moved. These two are
+ * alternatives to each other: one canvas shows one or the other and the
+ * credential switch above trades between them, so they have to read as two
+ * answers to one question rather than as two different kinds of thing. It was
+ * matched to the old bordered panel; the connect step's sign-in became a
+ * borderless card with 44px rows, and this stayed behind, so flipping the
+ * toggle changed the shape of the step rather than its content — the exact
+ * failure the original note was written to prevent.
+ *
+ * It now composes the same primitives rather than restating their measurements,
+ * which is what keeps that from happening again.
  *
  * The variable name is the label rather than a sentence about it. Someone
- * pasting a key knows which one they are holding; what they cannot know is where
- * this step will put it, and the name answers that in the place it is asked —
- * while staying short enough to sit opposite the field the way "Sign in to the
- * environment" sits opposite its button.
+ * pasting a key knows which one they are holding; what they cannot know is
+ * where this step will put it, and the name answers that in the place it is
+ * asked. It takes the instruction slot the sign-in cards use for their
+ * sentence, in mono, because it is a name and not prose.
  */
 export function ApiKeyField({
   envKey,
@@ -139,29 +146,20 @@ export function ApiKeyField({
   }, []);
 
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
-      <label className="flex items-center justify-between gap-3">
-        <span className="font-mono text-xs font-medium text-foreground">
-          {envKey}
-        </span>
-        <input
-          ref={inputRef}
-          type="password"
-          autoComplete="off"
-          spellCheck={false}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder="Paste your key"
-          // `h-7` is the login button's height, so the two states put their
-          // control on the same line and the card does not change depth when the
-          // mode is flipped.
-          className={cn(
-            "h-7 w-(--sz-220px) shrink-0 rounded-md border border-border bg-background px-2",
-            "font-mono text-xs outline-none placeholder:font-sans",
-            "focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)",
-          )}
-        />
-      </label>
-    </div>
+    <OnboardingLoginCard
+      instruction={<span className="font-mono">{envKey}</span>}
+    >
+      <input
+        ref={inputRef}
+        aria-label={envKey}
+        type="password"
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="Paste your key"
+        className={onboardingCardInputClass}
+      />
+    </OnboardingLoginCard>
   );
 }

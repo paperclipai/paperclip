@@ -35,7 +35,12 @@ export function OnboardingLoginCard({
   onCancel,
   children,
 }: {
-  instruction: string;
+  /**
+   * A node rather than a string: the sign-in cards pass a sentence, and the
+   * key card passes the environment variable it will write to, which has to
+   * be mono to read as a name rather than as prose.
+   */
+  instruction: ReactNode;
   onCancel?: () => void;
   children: ReactNode;
 }) {
@@ -202,6 +207,19 @@ export function OnboardingLoginCodeRow({ code }: { code: string }) {
 }
 
 /**
+ * One row's worth of input, shared by every card that takes one.
+ *
+ * Exported rather than duplicated because the two inputs that use it — the
+ * browser code here and the API key on the credential card — sit in the same
+ * canvas one toggle apart, so a divergence between them is visible by flipping
+ * a switch. They differ in what they hold, not in what they look like.
+ */
+export const onboardingCardInputClass =
+  "h-(--sz-44px) w-full rounded-lg bg-muted px-5 font-mono text-xs text-foreground " +
+  "placeholder:font-sans placeholder:text-sm placeholder:text-muted-foreground " +
+  "outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)";
+
+/**
  * The field the browser code is pasted back into.
  *
  * No Submit button beside it: the code arrives in one piece, off the clipboard,
@@ -245,7 +263,7 @@ export function OnboardingLoginCodeInput({
           onSubmit();
         }
       }}
-      className="h-(--sz-44px) w-full rounded-lg bg-muted px-5 font-mono text-xs text-foreground placeholder:font-sans placeholder:text-sm placeholder:text-muted-foreground outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)"
+      className={onboardingCardInputClass}
     />
   );
 }
