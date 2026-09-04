@@ -206,6 +206,12 @@ describe("runner E2E catalog", () => {
     expect(breadthHello).toContain(
       "Do not emit any assistant text, acknowledgement, or preamble before calling it",
     );
+
+    const nativeAsk = ask?.buildPrompt("nonce");
+    expect(nativeAsk).toContain("paperclip_finish must be your only tool call");
+    expect(nativeAsk).toContain(
+      "never call report_progress or any other tool before or after it",
+    );
   });
 
   it("uses only declared secret references in generated payloads", () => {

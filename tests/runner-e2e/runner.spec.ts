@@ -1026,7 +1026,11 @@ for (const execution of executions) {
           });
           await page.goto(
             `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issue.identifier ?? issue.id)}`,
-            { waitUntil: "domcontentloaded" },
+            // A restarted Vite dev server may keep loading its fresh module
+            // graph after the task UI is already usable. Bind navigation only
+            // to the committed canonical route, then let the explicit UI and
+            // API assertions below prove readiness and preserved state.
+            { waitUntil: "commit" },
           );
           await expect(
             page

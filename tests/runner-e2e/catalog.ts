@@ -512,7 +512,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         `Your final visible task-thread answer must be exactly this complete marker, including its final suffix: E2E_ASK_12_${nonce}.`,
         "Do not create or modify files, do not create a plan or additional work, and do not expose credentials.",
         "After posting the direct answer, mark this task Done.",
-        `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"E2E_ASK_12_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly E2E_ASK_12_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"E2E_ASK_12_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. For the entire run, paperclip_finish must be your only tool call: never call report_progress or any other tool before or after it. Wait for that tool call to succeed, then emit exactly E2E_ASK_12_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds.`,
         `In a legacy runner, post exactly E2E_ASK_12_${nonce} as the task comment body and mark the task Done through the public API.`,
       ].join("\n"),
     buildMatchers(nonce, execution) {
