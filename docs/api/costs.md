@@ -45,6 +45,11 @@ GET /api/companies/{companyId}/costs/by-project
 
 Returns per-project cost breakdown for the current month.
 
+Each cost event is counted once, against the project of the issue that owns it.
+This cut and `by-agent` aggregate the same ledger, so they report the same
+company total. Events that resolve to no project are omitted from the list
+rather than folded into one row.
+
 ## Budget Management
 
 ### Set Company Budget

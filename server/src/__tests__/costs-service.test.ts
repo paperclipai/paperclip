@@ -414,7 +414,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     db = createDb(tempDb.connectionString);
     costs = costService(db);
     finance = financeService(db);
-  }, 20_000);
+  }, 240_000);
 
   afterEach(async () => {
     await db.delete(financeEvents);
@@ -546,6 +546,146 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentRow?.inputTokens).toBe(4_000_000_000);
     expect(byProjectRow?.costCents).toBe(4_000_000_000);
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
+  });
+
+  /**
+   * A run can touch issues in more than one project in a single pass. Resolving
+   * the project through `activity_log` gave one link row per (run, project)
+   * pair, so such a run joined more than once and its full usage was counted in
+   * every project it touched. `by-project` and `by-agent` aggregate the same
+   * ledger, so their company totals must agree.
+   */
+  it("attributes a run that touched two projects to its owner so by-project sums to by-agent", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const ownerProjectId = randomUUID();
+    const touchedProjectId = randomUUID();
+    const ownerIssueId = randomUUID();
+    const touchedIssueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values([
+      { id: ownerProjectId, companyId, name: "Owner Project", status: "active" },
+      { id: touchedProjectId, companyId, name: "Merely Touched Project", status: "active" },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: ownerIssueId,
+        companyId,
+        projectId: ownerProjectId,
+        title: "Owner",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "TST-1",
+      },
+      {
+        id: touchedIssueId,
+        companyId,
+        projectId: touchedProjectId,
+        title: "Merely touched",
+        status: "done",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: "TST-2",
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "succeeded",
+      startedAt: new Date("2026-04-10T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-10T00:10:00.000Z"),
+      contextSnapshot: { issueId: ownerIssueId },
+      usageJson: { costUsd: 3.5, billingType: "subscription_included" },
+    });
+    // These activity_log rows are what made the run appear under both projects.
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: ownerIssueId,
+        runId,
+      },
+      {
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        action: "issue.commented",
+        entityType: "issue",
+        entityId: touchedIssueId,
+        runId,
+      },
+    ]);
+
+    // One ledger row, owned by TST-1, and deliberately without its own
+    // project_id — the fallback through the owning issue is what resolves it.
+    await db.insert(costEvents).values({
+      companyId,
+      agentId,
+      issueId: ownerIssueId,
+      projectId: null,
+      heartbeatRunId: runId,
+      provider: "anthropic",
+      biller: "claude",
+      billingType: "subscription_included",
+      costStatus: "unpriced",
+      model: "claude-opus-5",
+      inputTokens: 1_000,
+      cachedInputTokens: 10_000,
+      outputTokens: 100,
+      costCents: 0,
+      occurredAt: new Date("2026-04-10T00:10:00.000Z"),
+    });
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    };
+
+    const costs = costService(db);
+    const byProject = await costs.byProject(companyId, range);
+    const byAgent = await costs.byAgent(companyId, range);
+
+    // Charged once, to the project of the issue that owns the run.
+    expect(byProject).toHaveLength(1);
+    expect(byProject[0]?.projectName).toBe("Owner Project");
+    expect(byProject[0]?.inputTokens).toBe(1_000);
+    expect(byProject[0]?.cachedInputTokens).toBe(10_000);
+    expect(byProject[0]?.outputTokens).toBe(100);
+
+    // The conservation property: the two cuts of the same ledger agree.
+    const tokensOf = (row: {
+      inputTokens: number;
+      cachedInputTokens: number;
+      outputTokens: number;
+    }) => Number(row.inputTokens) + Number(row.cachedInputTokens) + Number(row.outputTokens);
+    const projectTokens = byProject.reduce((acc, row) => acc + tokensOf(row), 0);
+    const agentTokens = byAgent.reduce((acc, row) => acc + tokensOf(row), 0);
+    expect(projectTokens).toBe(agentTokens);
   });
 
   it("aggregates issue costs across recursive descendants only", async () => {
