@@ -30,7 +30,8 @@ COPY . .
 RUN test -f packages/paperclip-runner/generated/capability/semantic-tool-contracts.json \
  && test -f packages/paperclip-runner/generated/semantic-action-catalog.json \
  && test -f packages/paperclip-runner/spec/evals/stress-workflow-traceability.json \
- && test -d packages/paperclip-runner/protocol/fixtures/replay
+ && test -d packages/paperclip-runner/protocol/fixtures/replay \
+ && node -e "const fs=require('node:fs');const path=require('node:path');const root='packages/paperclip-runner';const manifest=JSON.parse(fs.readFileSync(path.join(root,'spec/evals/stress-workflow-traceability.json'),'utf8'));for(const finding of manifest.findings){for(const regressionTest of finding.regressionTests){fs.accessSync(path.resolve(root,regressionTest));}}"
 # ajv is installed in an isolated directory (the runner's own package.json
 # uses workspace: ranges npm cannot install from) and symlinked in so ESM
 # resolution finds it from the scripts' location.

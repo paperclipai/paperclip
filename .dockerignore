@@ -37,3 +37,11 @@ packages/paperclip-runner/scripts/*-smoke.mjs
 # now guards this in PR CI.
 !packages/paperclip-runner/generated/**
 !packages/paperclip-runner/docs/capability-contract.md
+!packages/paperclip-runner/src/backends/harness-driver-backend.test.ts
+!packages/paperclip-runner/src/contracts/native-execution.test.ts
+!packages/paperclip-runner/src/drivers/acpx/codex-acpx-driver.test.ts
+!packages/paperclip-runner/src/drivers/acpx/runtime-host.test.ts
+!packages/paperclip-runner/src/drivers/opencode/mcp-bridge.test.ts
+!packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.test.ts
+!packages/paperclip-runner/src/native-session-runtime.test.ts
+!packages/paperclip-runner/src/protocol/result-normalization.test.ts
