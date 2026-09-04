@@ -266,6 +266,15 @@ vi.mock("../services/index.js", () => ({
   executionWorkspaceService: executionWorkspaceServiceFactoryMock,
   externalObjectService: externalObjectsServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
+  githubConnectionEventService: vi.fn(() => ({
+    pollOnce: vi.fn(async () => ({
+      leased: 0,
+      processed: 0,
+      duplicate: 0,
+      ignored: 0,
+      failed: 0,
+    })),
+  })),
   issueThreadInteractionService: issueThreadInteractionServiceFactoryMock,
   issueService: vi.fn(() => ({ update: vi.fn(async () => null) })),
   instanceSettingsService: vi.fn(() => ({
@@ -306,6 +315,12 @@ vi.mock("../services/index.js", () => ({
       checked: 0,
       healthy: 0,
       needsAttention: 0,
+      failed: 0,
+    })),
+    sweepGitHubConnectionContinuity: vi.fn(async () => ({
+      checked: 0,
+      due: 0,
+      refreshed: 0,
       failed: 0,
     })),
   })),

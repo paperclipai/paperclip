@@ -10,8 +10,11 @@ import {
   type KeyObject,
 } from "node:crypto";
 import {
+  GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
+  type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
 import {
@@ -27,7 +30,9 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack";
+export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId;
+export type PaperclipCloudConnectorProvider = "google" | "github";
 
 export type PaperclipCloudConnectorConfig = {
   baseUrl: string;
@@ -37,29 +42,50 @@ export type PaperclipCloudConnectorConfig = {
   sealPrivateKey: string;
 };
 
-export type SealedGmailCredentials = {
+export type SealedConnectorCredentials = {
   v: 1;
   accessToken: string;
   refreshToken: string | null;
   tokenType: string;
-  accessTokenExpiresAt: string;
+  accessTokenExpiresAt: string | null;
+  refreshTokenExpiresAt: string | null;
   scopes: string[];
   subject: string;
   companyId: string;
   instanceId: string;
   environment: PaperclipCloudConnectorEnvironment;
-  provider: "google";
+  provider: PaperclipCloudConnectorProvider;
   profile: string;
+  appSlug?: string;
 };
 
+export type SealedGmailCredentials = SealedConnectorCredentials & { provider: "google" };
 export type SealedGoogleWorkspaceCredentials = SealedGmailCredentials;
+
+export type SealedConnectorEvents = {
+  v: 1;
+  instanceId: string;
+  environment: PaperclipCloudConnectorEnvironment;
+  leaseId: string;
+  events: Array<{
+    id: string;
+    provider: "github";
+    event: string;
+    action: string | null;
+    installationId: string | null;
+    repositoryId: string | null;
+    payload: Record<string, unknown>;
+    createdAt: string;
+    bindingIds: string[];
+  }>;
+};
 
 type SealedEnvelope = {
   v: 1;
   alg: "X25519-HKDF-SHA256-A256GCM";
-  purpose: "initial" | "access";
-  provider: "google";
-  profile: GoogleWorkspaceConnectorProfileId;
+  purpose: "initial" | "access" | "events";
+  provider: PaperclipCloudConnectorProvider;
+  profile: PaperclipCloudConnectorProfileId;
   epk: string;
   iv: string;
   ct: string;
@@ -77,6 +103,9 @@ type ConnectorResponse = {
   providers?: unknown;
   active?: unknown;
   status?: unknown;
+  leaseId?: unknown;
+  events?: unknown;
+  acknowledged?: unknown;
 };
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
@@ -85,6 +114,9 @@ const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
   claim: "/v1/connector/claims",
   refresh: "/v1/connector/refresh",
   revoke: "/v1/connector/revoke",
+  "webhook-bind": "/v1/connector/webhook-bindings",
+  "event-lease": "/v1/connector/events/lease",
+  "event-ack": "/v1/connector/events/ack",
 };
 const JWS_TYP = "paperclip-cloud-connector-request+jwt";
 const SEAL_ALGORITHM = "X25519-HKDF-SHA256-A256GCM";
@@ -185,8 +217,8 @@ export function createPaperclipCloudConnector(input: {
 
   async function call(
     operation: PaperclipCloudConnectorOperation,
-    claims: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string },
-    secret?: { field: "refreshToken" | "token"; value: string },
+    claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string },
+    secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement"; value: string },
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
     const issuedAt = Math.floor(now() / 1000);
@@ -206,9 +238,10 @@ export function createPaperclipCloudConnector(input: {
     if (claims.claimId !== undefined) payload.cl = claims.claimId;
     if (claims.redemptionId !== undefined) payload.rid = claims.redemptionId;
     if (claims.profile !== undefined) {
-      payload.prv = "google";
+      const definition = connectorProfileDefinition(claims.profile);
+      payload.prv = definition.provider;
       payload.prf = claims.profile;
-      payload.scp = [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES[claims.profile].scopes];
+      payload.scp = [...definition.scopes];
     }
     if (secret) payload.sh = await sha256Base64Url(secret.value);
     const body = {
@@ -246,32 +279,33 @@ export function createPaperclipCloudConnector(input: {
     purpose: SealedEnvelope["purpose"],
     subject: string,
     companyId: string,
-    profile: GoogleWorkspaceConnectorProfileId,
-  ): SealedGmailCredentials {
-    const envelope = parseEnvelope(response.sealed, purpose);
+    profile: PaperclipCloudConnectorProfileId,
+  ): SealedConnectorCredentials {
+    const definition = connectorProfileDefinition(profile);
+    const envelope = parseEnvelope(response.sealed, purpose, definition.provider, profile);
     const credentials = unseal(
       envelope,
       sealKey,
       config.instanceId,
       config.environment,
-      "google",
+      definition.provider,
       profile,
-      GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes,
+      definition.scopes,
     );
     if (
       credentials.instanceId !== config.instanceId
       || credentials.environment !== config.environment
       || credentials.subject !== subject
       || credentials.companyId !== companyId
-      || credentials.provider !== "google"
+      || credentials.provider !== definition.provider
     ) {
-      throw new PaperclipCloudConnectorError("Paperclip Cloud Gmail credential binding did not match", "CONNECTOR_BINDING_MISMATCH");
+      throw new PaperclipCloudConnectorError("Paperclip Cloud credential binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
     if (credentials.profile !== profile) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector profile binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
-    if (!sameStringSet(credentials.scopes, GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes)) {
-      throw new PaperclipCloudConnectorError("Paperclip Cloud Gmail scope grant did not match", "REAUTHORIZATION_REQUIRED");
+    if (!sameStringSet(credentials.scopes, definition.scopes)) {
+      throw new PaperclipCloudConnectorError("Paperclip Cloud scope grant did not match", "REAUTHORIZATION_REQUIRED");
     }
     return credentials;
   }
@@ -293,7 +327,7 @@ export function createPaperclipCloudConnector(input: {
       if (response.status === "removed" && response.active === false) return "removed";
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid instance status", "CONNECTOR_BAD_RESPONSE");
     },
-    async getCapabilities(): Promise<GoogleWorkspaceConnectorProfileId[]> {
+    async getCapabilities(): Promise<PaperclipCloudConnectorProfileId[]> {
       let response: ConnectorResponse;
       try {
         response = await call("status", {
@@ -305,10 +339,10 @@ export function createPaperclipCloudConnector(input: {
       }
       if (response.active !== true || response.status !== "active" || !Array.isArray(response.profiles)) return [];
       return [...new Set(response.profiles.flatMap((value) =>
-        typeof value === "string" && isGoogleWorkspaceConnectorProfileId(value) ? [value] : []
+        typeof value === "string" && isPaperclipCloudConnectorProfileId(value) ? [value] : []
       ))];
     },
-    async startAuthorization(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; returnUri: string; returnState: string }) {
+    async startAuthorization(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
       const response = await call("session", { ...values, profile });
       if (typeof response.confirmationUrl !== "string" || typeof response.expiresAt !== "string") {
@@ -326,11 +360,11 @@ export function createPaperclipCloudConnector(input: {
         ...(handoff ? { handoff } : {}),
       };
     },
-    async claim(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; claimId: string; redemptionId: string }) {
+    async claim(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; claimId: string; redemptionId: string }) {
       const profile = values.profile ?? "gmail.draft";
       return openCredentials(await call("claim", { ...values, profile }), sealPurpose("initial", profile), values.subject, values.companyId, profile);
     },
-    async refresh(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; refreshToken: string }) {
+    async refresh(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; refreshToken: string }) {
       const profile = values.profile ?? "gmail.draft";
       return openCredentials(
         await call("refresh", { ...values, profile }, { field: "refreshToken", value: values.refreshToken }),
@@ -340,8 +374,56 @@ export function createPaperclipCloudConnector(input: {
         profile,
       );
     },
-    async revoke(values: { subject: string; companyId: string; profile?: GoogleWorkspaceConnectorProfileId; token: string }) {
+    async revoke(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; token: string }) {
       await call("revoke", { ...values, profile: values.profile ?? "gmail.draft" }, { field: "token", value: values.token });
+    },
+    async setWebhookBinding(values: {
+      subject: string;
+      companyId: string;
+      id: string;
+      installationId: string;
+      connectionId: string;
+      grantId: string;
+      active: boolean;
+      accessToken?: string;
+    }) {
+      if (values.active && !values.accessToken) {
+        throw new PaperclipCloudConnectorError(
+          "GitHub access token is required to authorize a webhook binding",
+          "CONNECTOR_CONFIG_INVALID",
+        );
+      }
+      const binding = JSON.stringify({
+        id: values.id,
+        installationId: values.installationId,
+        connectionId: values.connectionId,
+        grantId: values.grantId,
+        active: values.active,
+        ...(values.active ? { accessToken: values.accessToken } : {}),
+      });
+      await call("webhook-bind", { ...values, profile: "github.code" }, { field: "binding", value: binding });
+    },
+    async leaseEvents(values: { subject: string; companyId: string }): Promise<{ leaseId: string; events: SealedConnectorEvents["events"] } | null> {
+      const response = await call("event-lease", values);
+      if (Array.isArray(response.events) && response.events.length === 0) return null;
+      if (typeof response.leaseId !== "string") {
+        throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid event lease", "CONNECTOR_BAD_RESPONSE");
+      }
+      const envelope = parseEnvelope(response.sealed, "events", "github", "github.code");
+      const opened = unsealEvents(envelope, sealKey, config.instanceId, config.environment);
+      if (opened.leaseId !== response.leaseId) {
+        throw new PaperclipCloudConnectorError("Paperclip Cloud connector event lease did not match", "CONNECTOR_BINDING_MISMATCH");
+      }
+      return { leaseId: opened.leaseId, events: opened.events };
+    },
+    async acknowledgeEvents(values: { subject: string; companyId: string; leaseId: string; deliveryIds: string[] }): Promise<number> {
+      const acknowledgement = JSON.stringify({ leaseId: values.leaseId, deliveryIds: values.deliveryIds });
+      const response = await call("event-ack", values, { field: "acknowledgement", value: acknowledgement });
+      const acknowledged = response.acknowledged;
+      if (typeof acknowledged !== "number" || !Number.isSafeInteger(acknowledged) || acknowledged < 0) {
+        throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid acknowledgement", "CONNECTOR_BAD_RESPONSE");
+      }
+      return acknowledged;
     },
   };
 }
@@ -373,11 +455,11 @@ export function isPaperclipCloudConnectorStrategy(value: unknown): boolean {
   return value === "paperclip_cloud_connector" || value === "paperclip_id_connector";
 }
 
-let capabilityCache: { key: string; expiresAt: number; profiles: GoogleWorkspaceConnectorProfileId[] } | null = null;
+let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;
 
 export async function paperclipCloudConnectorCapabilitiesFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<GoogleWorkspaceConnectorProfileId[]> {
+): Promise<PaperclipCloudConnectorProfileId[]> {
   let config: PaperclipCloudConnectorConfig | null;
   try {
     config = paperclipCloudConnectorConfigFromEnv(env);
@@ -426,11 +508,16 @@ function privateKey(value: string, curve: "ed25519" | "x25519"): KeyObject {
   }
 }
 
-function parseEnvelope(value: unknown, purpose: SealedEnvelope["purpose"]): SealedEnvelope {
+function parseEnvelope(
+  value: unknown,
+  purpose: SealedEnvelope["purpose"],
+  provider: PaperclipCloudConnectorProvider,
+  profile: PaperclipCloudConnectorProfileId,
+): SealedEnvelope {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw badEnvelope();
   const candidate = value as Partial<SealedEnvelope>;
   if (candidate.v !== 1 || candidate.alg !== SEAL_ALGORITHM || candidate.purpose !== purpose
-    || candidate.provider !== "google" || !candidate.profile || !isGoogleWorkspaceConnectorProfileId(candidate.profile)
+    || candidate.provider !== provider || candidate.profile !== profile
     || typeof candidate.epk !== "string" || typeof candidate.iv !== "string" || typeof candidate.ct !== "string") {
     throw badEnvelope();
   }
@@ -442,64 +529,101 @@ function unseal(
   recipientPrivateKey: KeyObject,
   instanceId: string,
   environment: string,
-  provider: "google",
-  profile: GoogleWorkspaceConnectorProfileId,
+  provider: PaperclipCloudConnectorProvider,
+  profile: PaperclipCloudConnectorProfileId,
   scopes: readonly string[],
-): SealedGmailCredentials {
+): SealedConnectorCredentials {
   try {
-    const ephemeralRaw = Buffer.from(envelope.epk, "base64url");
-    if (ephemeralRaw.length !== 32) throw badEnvelope();
-    const ephemeralKey = createPublicKey({
-      key: Buffer.concat([X25519_SPKI_PREFIX, ephemeralRaw]),
-      format: "der",
-      type: "spki",
-    });
-    const recipientJwk = createPublicKey(recipientPrivateKey).export({ format: "jwk" }) as { x?: string };
-    if (!recipientJwk.x) throw badEnvelope();
-    const recipientRaw = Buffer.from(recipientJwk.x, "base64url");
-    if (envelope.provider !== provider || envelope.profile !== profile) throw badEnvelope();
-    const aad = Buffer.from([
-      1,
-      SEAL_ALGORITHM,
-      envelope.purpose,
-      instanceId,
-      environment,
-      provider,
-      profile,
-      [...scopes].sort().join(" "),
-    ].join("\n"), "utf8");
-    const key = Buffer.from(hkdfSync(
-      "sha256",
-      diffieHellman({ privateKey: recipientPrivateKey, publicKey: ephemeralKey }),
-      Buffer.concat([ephemeralRaw, recipientRaw]),
-      aad,
-      32,
-    ));
-    const iv = Buffer.from(envelope.iv, "base64url");
-    const combined = Buffer.from(envelope.ct, "base64url");
-    if (iv.length !== 12 || combined.length <= AES_TAG_BYTES) throw badEnvelope();
-    const decipher = createDecipheriv("aes-256-gcm", key, iv, { authTagLength: AES_TAG_BYTES });
-    decipher.setAAD(aad);
-    decipher.setAuthTag(combined.subarray(-AES_TAG_BYTES));
-    const plaintext = Buffer.concat([
-      decipher.update(combined.subarray(0, -AES_TAG_BYTES)),
-      decipher.final(),
-    ]);
-    const parsed = JSON.parse(plaintext.toString("utf8")) as Partial<SealedGmailCredentials>;
+    const parsed = decryptEnvelope(envelope, recipientPrivateKey, instanceId, environment, provider, profile, scopes) as Partial<SealedConnectorCredentials>;
     if (parsed.v !== 1 || typeof parsed.accessToken !== "string" || parsed.accessToken.length === 0
       || !(parsed.refreshToken === null || typeof parsed.refreshToken === "string")
-      || typeof parsed.tokenType !== "string" || typeof parsed.accessTokenExpiresAt !== "string"
+      || typeof parsed.tokenType !== "string"
+      || !(parsed.accessTokenExpiresAt === null || typeof parsed.accessTokenExpiresAt === "string")
+      || !(parsed.refreshTokenExpiresAt === null || typeof parsed.refreshTokenExpiresAt === "string")
       || !Array.isArray(parsed.scopes) || !parsed.scopes.every((scope) => typeof scope === "string")
       || typeof parsed.subject !== "string" || typeof parsed.companyId !== "string"
       || typeof parsed.instanceId !== "string" || typeof parsed.environment !== "string"
+      || !(parsed.appSlug === undefined || (typeof parsed.appSlug === "string" && /^[a-z0-9-]{1,100}$/.test(parsed.appSlug)))
       || parsed.provider !== provider || parsed.profile !== profile) {
       throw badEnvelope();
     }
-    return parsed as SealedGmailCredentials;
+    return parsed as SealedConnectorCredentials;
   } catch (error) {
     if (error instanceof PaperclipCloudConnectorError) throw error;
     throw badEnvelope();
   }
+}
+
+function unsealEvents(
+  envelope: SealedEnvelope,
+  recipientPrivateKey: KeyObject,
+  instanceId: string,
+  environment: PaperclipCloudConnectorEnvironment,
+): SealedConnectorEvents {
+  try {
+    const parsed = decryptEnvelope(envelope, recipientPrivateKey, instanceId, environment, "github", "github.code", []) as Partial<SealedConnectorEvents>;
+    if (parsed.v !== 1 || parsed.instanceId !== instanceId || parsed.environment !== environment
+      || typeof parsed.leaseId !== "string" || !Array.isArray(parsed.events)) throw badEnvelope();
+    for (const event of parsed.events) {
+      if (!isRecord(event) || typeof event.id !== "string" || event.provider !== "github"
+        || typeof event.event !== "string" || !isRecord(event.payload) || !Array.isArray(event.bindingIds)
+        || !event.bindingIds.every((id) => typeof id === "string")) throw badEnvelope();
+    }
+    return parsed as SealedConnectorEvents;
+  } catch (error) {
+    if (error instanceof PaperclipCloudConnectorError) throw error;
+    throw badEnvelope();
+  }
+}
+
+function decryptEnvelope(
+  envelope: SealedEnvelope,
+  recipientPrivateKey: KeyObject,
+  instanceId: string,
+  environment: string,
+  provider: PaperclipCloudConnectorProvider,
+  profile: PaperclipCloudConnectorProfileId,
+  scopes: readonly string[],
+): unknown {
+  const ephemeralRaw = Buffer.from(envelope.epk, "base64url");
+  if (ephemeralRaw.length !== 32) throw badEnvelope();
+  const ephemeralKey = createPublicKey({
+    key: Buffer.concat([X25519_SPKI_PREFIX, ephemeralRaw]),
+    format: "der",
+    type: "spki",
+  });
+  const recipientJwk = createPublicKey(recipientPrivateKey).export({ format: "jwk" }) as { x?: string };
+  if (!recipientJwk.x) throw badEnvelope();
+  const recipientRaw = Buffer.from(recipientJwk.x, "base64url");
+  if (envelope.provider !== provider || envelope.profile !== profile) throw badEnvelope();
+  const aad = Buffer.from([
+    1,
+    SEAL_ALGORITHM,
+    envelope.purpose,
+    instanceId,
+    environment,
+    provider,
+    profile,
+    [...scopes].sort().join(" "),
+  ].join("\n"), "utf8");
+  const key = Buffer.from(hkdfSync(
+    "sha256",
+    diffieHellman({ privateKey: recipientPrivateKey, publicKey: ephemeralKey }),
+    Buffer.concat([ephemeralRaw, recipientRaw]),
+    aad,
+    32,
+  ));
+  const iv = Buffer.from(envelope.iv, "base64url");
+  const combined = Buffer.from(envelope.ct, "base64url");
+  if (iv.length !== 12 || combined.length <= AES_TAG_BYTES) throw badEnvelope();
+  const decipher = createDecipheriv("aes-256-gcm", key, iv, { authTagLength: AES_TAG_BYTES });
+  decipher.setAAD(aad);
+  decipher.setAuthTag(combined.subarray(-AES_TAG_BYTES));
+  const plaintext = Buffer.concat([
+    decipher.update(combined.subarray(0, -AES_TAG_BYTES)),
+    decipher.final(),
+  ]);
+  return JSON.parse(plaintext.toString("utf8")) as unknown;
 }
 
 function badEnvelope() {
@@ -508,9 +632,23 @@ function badEnvelope() {
 
 function sealPurpose(
   kind: "initial" | "access",
-  _profile: GoogleWorkspaceConnectorProfileId,
+  _profile: PaperclipCloudConnectorProfileId,
 ): SealedEnvelope["purpose"] {
   return kind;
+}
+
+function connectorProfileDefinition(profile: PaperclipCloudConnectorProfileId): {
+  provider: PaperclipCloudConnectorProvider;
+  scopes: readonly string[];
+} {
+  if (isGitHubConnectorProfileId(profile)) {
+    return { provider: "github", scopes: GITHUB_CONNECTOR_PROFILES[profile].scopes };
+  }
+  return { provider: "google", scopes: GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes };
+}
+
+function isPaperclipCloudConnectorProfileId(value: string): value is PaperclipCloudConnectorProfileId {
+  return isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value);
 }
 
 async function sha256Base64Url(value: string): Promise<string> {

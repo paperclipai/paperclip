@@ -63,6 +63,7 @@ import {
   executionWorkspaceService,
   heartbeatService,
   issueThreadInteractionService,
+  githubConnectionEventService,
   issueService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
@@ -1128,6 +1129,40 @@ export async function startServer(): Promise<StartedServer> {
     if (heartbeatSchedulerStopped) return;
     trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep(ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS));
   };
+  const githubConnectionEvents = githubConnectionEventService(db as any, {
+    wakeup: environmentLeaseCleanupHeartbeat.wakeup,
+  });
+  const tools = toolAccessService(db as any, {
+    deploymentMode: config.deploymentMode,
+    deploymentExposure: config.deploymentExposure,
+    trustedLocalStdioRuntimeHost: process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
+      ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+      ?? null,
+  });
+  const scheduleGitHubConnectionEventPoll = () => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(githubConnectionEvents.pollOnce()
+      .then((result) => {
+        if (result.leased > 0 || result.failed > 0) {
+          logger.info(result, "GitHub connection event poll completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "GitHub connection event poll failed");
+      }));
+  };
+  const scheduleGitHubConnectionContinuitySweep = () => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(tools.sweepGitHubConnectionContinuity()
+      .then((result) => {
+        if (result.due > 0 || result.failed > 0) {
+          logger.info(result, "GitHub connection continuity sweep completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "GitHub connection continuity sweep failed");
+      }));
+  };
 
   await questionResponseDeliveries.sweepPending().then((result) => {
     if (result.scanned > 0) {
@@ -1136,6 +1171,8 @@ export async function startServer(): Promise<StartedServer> {
   }).catch((err) => {
     logger.error({ err }, "startup question-response delivery sweep failed");
   });
+  scheduleGitHubConnectionEventPoll();
+  scheduleGitHubConnectionContinuitySweep();
 
   if (heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
@@ -1262,13 +1299,6 @@ export async function startServer(): Promise<StartedServer> {
         }));
     };
 
-    const tools = toolAccessService(db as any, {
-      deploymentMode: config.deploymentMode,
-      deploymentExposure: config.deploymentExposure,
-      trustedLocalStdioRuntimeHost: process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
-        ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
-        ?? null,
-    });
     const worktreeRunExecutionActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
     });
@@ -1469,6 +1499,8 @@ export async function startServer(): Promise<StartedServer> {
 
         if (heartbeatSchedulerStopped) return;
         scheduleMergedPullRequestConfirmationSweep();
+        scheduleGitHubConnectionEventPoll();
+        scheduleGitHubConnectionContinuitySweep();
         scheduleTerminalWorkspaceSweep();
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
@@ -1628,6 +1660,8 @@ export async function startServer(): Promise<StartedServer> {
     startHeartbeatSchedulerInterval(() => {
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
+      scheduleGitHubConnectionEventPoll();
+      scheduleGitHubConnectionContinuitySweep();
     });
   }
   

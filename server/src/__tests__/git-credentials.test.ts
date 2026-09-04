@@ -83,13 +83,23 @@ describe("createGitRemoteAuthProvider", () => {
     await expect(provider(githubUrl)).resolves.toBeNull();
   });
 
-  it("returns null for out-of-scope URLs without touching the secret store", async () => {
+  it("accepts GitHub SSH remotes for process-scoped HTTPS rewriting", async () => {
     const secrets = buildSecretsFake({ GITHUB_TOKEN: "token" });
     const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
       secrets,
       env: {},
     });
-    await expect(provider("git@github.com:example/repo.git")).resolves.toBeNull();
+    const invocation = await provider("git@github.com:example/repo.git");
+    expect(invocation?.env.GIT_CONFIG_VALUE_3).toBe("git@github.com:");
+    expect(invocation?.env.GIT_CONFIG_KEY_3).toBe("url.https://github.com/.insteadOf");
+  });
+
+  it("returns null for non-GitHub URLs without touching the secret store", async () => {
+    const secrets = buildSecretsFake({ GITHUB_TOKEN: "token" });
+    const provider = createGitRemoteAuthProvider(fakeDb, "company-1", undefined, {
+      secrets,
+      env: {},
+    });
     await expect(provider("https://gitlab.com/example/repo.git")).resolves.toBeNull();
     expect(secrets.getByName).not.toHaveBeenCalled();
   });
@@ -155,7 +165,28 @@ describe("buildGitAuthInvocation", () => {
     expect(invocation.configArgs[3]).toContain("x-access-token");
     expect(invocation.configArgs[5]).toContain("credential.https://www.github.com.helper=");
     expect(invocation.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("super-secret-token");
+    expect(invocation.env.GH_TOKEN).toBe("super-secret-token");
+    expect(invocation.env.GITHUB_TOKEN).toBe("super-secret-token");
     expect(invocation.env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(invocation.env).not.toHaveProperty("HOME");
+  });
+
+  it("sets GitHub's stable noreply commit identity without exposing the token in config", () => {
+    const invocation = buildGitAuthInvocation({
+      token: "super-secret-token",
+      source: "managed_connection",
+      secretName: null,
+      githubIdentity: { userId: "12345", login: "octocat" },
+    });
+    expect(invocation.env.GIT_CONFIG_KEY_7).toBe("user.name");
+    expect(invocation.env.GIT_CONFIG_VALUE_7).toBe("octocat");
+    expect(invocation.env.GIT_CONFIG_KEY_8).toBe("user.email");
+    expect(invocation.env.GIT_CONFIG_VALUE_8).toBe("12345+octocat@users.noreply.github.com");
+    expect(invocation.env.GIT_AUTHOR_NAME).toBe("octocat");
+    expect(invocation.env.GIT_AUTHOR_EMAIL).toBe("12345+octocat@users.noreply.github.com");
+    expect(invocation.env.GIT_COMMITTER_NAME).toBe("octocat");
+    expect(invocation.env.GIT_COMMITTER_EMAIL).toBe("12345+octocat@users.noreply.github.com");
+    expect(Object.values(invocation.env).filter((value) => value.includes("super-secret-token"))).toHaveLength(3);
   });
 });
 

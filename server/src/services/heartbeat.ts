@@ -102,6 +102,7 @@ import { logger } from "../middleware/logger.js";
 import {
   createGitRemoteAuthProvider,
   describeGitAuthFailure,
+  GIT_CREDENTIAL_TOKEN_ENV_KEY,
   scrubGitCredentialText,
   type GitRemoteAuthProvider,
 } from "./git-credentials.js";
@@ -1269,6 +1270,9 @@ export async function resolveExecutionRunAdapterConfig(input: {
     reason: string;
     remediation: string;
   };
+  /** Audited class-3 values resolved by an internal credential broker. */
+  trustedEnvProjection?: Record<string, string>;
+  trustedEnvSecretKeys?: string[];
 }) {
   const executionRunConfig = stripForbiddenEnvFromAdapterConfig(
     input.executionRunConfig,
@@ -1291,6 +1295,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   const requiredScopedBindingsConfigured = requiredScopedEnvBinding
     ? requiredScopedEnvBinding.keys.some(
         (key) =>
+          typeof input.trustedEnvProjection?.[key] === "string" ||
           (requiredScopedEnvBinding.consumerScopes.includes("agent") &&
             isConfiguredEnvBindingValue(agentEnv[key])) ||
           (requiredScopedEnvBinding.consumerScopes.includes("project") &&
@@ -1549,6 +1554,13 @@ export async function resolveExecutionRunAdapterConfig(input: {
     for (const key of routineEnvResolution.secretKeys) {
       secretKeys.add(key);
     }
+  }
+  if (input.trustedEnvProjection && Object.keys(input.trustedEnvProjection).length > 0) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...input.trustedEnvProjection,
+    };
+    for (const key of input.trustedEnvSecretKeys ?? []) secretKeys.add(key);
   }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no
   // usable auth.json and an empty OPENAI_API_KEY would dispatch a run that
@@ -2230,6 +2242,7 @@ export interface ResolveAdditionalProjectWorkspaceDeps {
 /** Build the real dependencies for {@link resolveAdditionalProjectWorkspace}. */
 function defaultAdditionalProjectWorkspaceDeps(
   db: Db,
+  resolveGitAuth?: GitRemoteAuthProvider,
 ): ResolveAdditionalProjectWorkspaceDeps {
   return {
     loadProjectWorkspaceRows: (companyId, projectId) =>
@@ -2248,6 +2261,7 @@ function defaultAdditionalProjectWorkspaceDeps(
         ...input,
         resolveGitAuth:
           input.resolveGitAuth ??
+          resolveGitAuth ??
           createGitRemoteAuthProvider(db, input.companyId),
       }),
     ensureManagedProjectWorkspace: (input) =>
@@ -2255,6 +2269,7 @@ function defaultAdditionalProjectWorkspaceDeps(
         ...input,
         resolveGitAuth:
           input.resolveGitAuth ??
+          resolveGitAuth ??
           createGitRemoteAuthProvider(db, input.companyId),
       }),
     // A realized workspace must hold real content. An empty directory gives the agent an empty
@@ -10298,6 +10313,12 @@ export function heartbeatService(
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
+      issueId,
+      responsibleUserId: readNonEmptyString(context.responsibleUserId)
+        ?? readNonEmptyString(context.responsible_user_id),
+      agentId: agent.id,
+    });
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(
       context.projectWorkspaceId,
@@ -10358,9 +10379,6 @@ export function heartbeatService(
       if (preferredProjectWorkspaceId && !preferredWorkspace) {
         preferredWorkspaceWarning = `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
       }
-      const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
-        issueId,
-      });
       for (const workspace of projectWorkspaceRows) {
         let projectCwd: string;
         let managedWorkspaceWarning: string | null = null;
@@ -10555,6 +10573,12 @@ export function heartbeatService(
     const executionEnvironmentDriver = opts?.executionEnvironmentDriver ?? null;
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
+      issueId,
+      responsibleUserId: readNonEmptyString(context.responsibleUserId)
+        ?? readNonEmptyString(context.responsible_user_id),
+      agentId: agent.id,
+    });
     const { additionalWorkspaces, warnings, failures } =
       await resolveAdditionalRunWorkspaces(issueId, anchor.projectId, {
         enabled: true,
@@ -10578,7 +10602,7 @@ export function heartbeatService(
         resolveProjectWorkspace: (project) =>
           resolveAdditionalProjectWorkspace(
             { companyId: agent.companyId, project },
-            defaultAdditionalProjectWorkspaceDeps(db),
+            defaultAdditionalProjectWorkspaceDeps(db, resolveGitAuth),
           ),
       });
 
@@ -18330,6 +18354,12 @@ export function heartbeatService(
         issueId,
         explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
       });
+      const githubRunAuth = await createGitRemoteAuthProvider(db, agent.companyId, {
+        issueId,
+        heartbeatRunId: run.id,
+        responsibleUserId,
+        agentId: agent.id,
+      })("https://github.com/paperclipai/credential-probe.git");
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           companyId: agent.companyId,
@@ -18348,6 +18378,10 @@ export function heartbeatService(
           routineEnv: routineEnvContext.env,
           secretsSvc,
           trustPreset,
+          ...(githubRunAuth ? {
+            trustedEnvProjection: githubRunAuth.env,
+            trustedEnvSecretKeys: ["GH_TOKEN", "GITHUB_TOKEN", GIT_CREDENTIAL_TOKEN_ENV_KEY],
+          } : {}),
           requiredScopedEnvBinding: pushCapabilityPreflightRequired
             ? {
                 keys: [...PUSH_CAPABILITY_ENV_KEYS],
@@ -18669,6 +18703,8 @@ export function heartbeatService(
         {
           issueId,
           heartbeatRunId: run.id,
+          responsibleUserId: run.responsibleUserId,
+          agentId: agent.id,
         },
       );
       const {

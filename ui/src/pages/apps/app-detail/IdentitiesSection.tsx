@@ -77,11 +77,15 @@ export function IdentitiesSection({
   credentialPolicy,
   ownerUserId,
   connectedUser,
+  dedicatedAgent,
   grantsQuery,
   loading,
   error,
   onConnectAsMe,
   onConnectOrganization,
+  onConnectAgent,
+  onRefreshAccess,
+  refreshAccessPending = false,
   onReplaceAudience,
   connectPending,
   audiencePending,
@@ -94,11 +98,15 @@ export function IdentitiesSection({
   credentialPolicy: ToolConnectionCredentialPolicy;
   ownerUserId: string | null;
   connectedUser: { label: string; image: string | null } | null;
+  dedicatedAgent: { id: string; name: string } | null;
   grantsQuery: ConnectionGrantsResponse | undefined;
   loading: boolean;
   error: boolean;
   onConnectAsMe: () => void;
   onConnectOrganization: () => void;
+  onConnectAgent: (agentId: string) => void;
+  onRefreshAccess?: () => void;
+  refreshAccessPending?: boolean;
   onReplaceAudience: (grant: ConnectionGrant, memberUserIds: string[]) => void;
   connectPending: boolean;
   audiencePending: boolean;
@@ -126,6 +134,12 @@ export function IdentitiesSection({
       ?? personalGrants[0]
       ?? null;
   }, [grants, myGrant, ownerUserId]);
+  const agentGrant = useMemo(
+    () => grants.find((grant) => grant.kind === "agent" && grant.subjectAgentId === dedicatedAgent?.id)
+      ?? grants.find((grant) => grant.kind === "agent")
+      ?? null,
+    [dedicatedAgent?.id, grants],
+  );
   const personalSubjectLabel = memberLabel(
     members,
     personalGrant?.subjectUserId ?? ownerUserId ?? currentUserId,
@@ -156,6 +170,30 @@ export function IdentitiesSection({
     );
   }
 
+  if (credentialPolicy === "per_agent") {
+    const github = agentGrant?.providerTenant?.github;
+    return (
+      <section className="space-y-5">
+        <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
+        <IdentityRow
+          title={github ? `@${github.login}` : "Dedicated GitHub account"}
+          status={agentGrant?.status ?? null}
+          detail={dedicatedAgent ? `Used only by ${dedicatedAgent.name}` : "Dedicated to one agent"}
+          actions={!agentGrant && dedicatedAgent && capabilities?.canConfigure ? (
+            <Button size="sm" disabled={connectPending} onClick={() => onConnectAgent(dedicatedAgent.id)}>
+              {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+              Connect dedicated account
+            </Button>
+          ) : null}
+        />
+        {github ? <GitHubConnectionSummary grant={agentGrant} onRefreshAccess={onRefreshAccess} refreshPending={refreshAccessPending} /> : null}
+        <InlineBanner tone="warning" compact>
+          Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls.
+        </InlineBanner>
+      </section>
+    );
+  }
+
   return (
     <section className="space-y-5">
       <IdentitiesHeading />
@@ -174,6 +212,14 @@ export function IdentitiesSection({
           if (orgGrant) onOpenAudience(orgGrant.id);
         }}
       />
+
+      {(usesPersonalIdentity ? personalGrant : orgGrant)?.providerTenant?.github ? (
+        <GitHubConnectionSummary
+          grant={(usesPersonalIdentity ? personalGrant : orgGrant)!}
+          onRefreshAccess={onRefreshAccess}
+          refreshPending={refreshAccessPending}
+        />
+      ) : null}
 
       <div>
         {usesPersonalIdentity ? (
@@ -228,6 +274,49 @@ export function IdentitiesSection({
       ) : null}
 
     </section>
+  );
+}
+
+function GitHubConnectionSummary({
+  grant,
+  onRefreshAccess,
+  refreshPending,
+}: {
+  grant: ConnectionGrant;
+  onRefreshAccess?: () => void;
+  refreshPending: boolean;
+}) {
+  const github = grant.providerTenant?.github;
+  if (!github) return null;
+  return (
+    <div className="space-y-4 rounded-lg border border-border p-4">
+      <div className="grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
+        <p><span className="font-medium text-foreground">Installation</span><br />{github.installationOwnerLogins.join(", ") || "GitHub"}</p>
+        <p><span className="font-medium text-foreground">Repositories</span><br />{github.repositoryCount} · {github.repositorySelection === "all" ? "All repositories" : "Selected repositories"}</p>
+        <p><span className="font-medium text-foreground">Token continuity</span><br />{grant.providerTenant?.oauth?.accessTokenExpiresAt ? "Automatically refreshed" : "Long-lived"}</p>
+        <p><span className="font-medium text-foreground">Webhook health</span><br />{github.webhookHealth === "healthy" ? "Healthy" : github.webhookHealth === "unhealthy" ? "Needs attention" : "Pending first event"}</p>
+        <p><span className="font-medium text-foreground">Last event</span><br />{github.lastWebhookAt ? new Date(github.lastWebhookAt).toLocaleString() : "No event received yet"}</p>
+        <p><span className="font-medium text-foreground">Last access refresh</span><br />{github.lastAccessRefreshAt ? new Date(github.lastAccessRefreshAt).toLocaleString() : "Not refreshed yet"}</p>
+      </div>
+      {github.repositorySelection === "all" ? (
+        <InlineBanner tone="warning" compact>
+          This installation can access every current and future repository in its GitHub account. Selected repositories is the safer default.
+        </InlineBanner>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        {github.managementUrl ? (
+          <Button asChild size="sm" variant="outline">
+            <a href={github.managementUrl} target="_blank" rel="noreferrer">Manage repositories on GitHub</a>
+          </Button>
+        ) : null}
+        {onRefreshAccess ? (
+          <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
+            {refreshPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+            Refresh access
+          </Button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
