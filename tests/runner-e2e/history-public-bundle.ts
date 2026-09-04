@@ -31,7 +31,7 @@ const PNG_SIGNATURE = Buffer.from([
 const MAX_PRIVATE_PNG_BYTES = 32 * 1024 * 1024;
 const MAX_PRIVATE_PNG_PIXELS = 64 * 1024 * 1024;
 const MAX_PRIVATE_PNG_EDGE = 32 * 1024;
-const MAX_PUBLIC_PREVIEW_EDGE = 160;
+const MAX_PUBLIC_PREVIEW_EDGE = 96;
 const MAX_PUBLIC_PREVIEW_BYTES = 256 * 1024;
 const PRIVATE_PNG_CHUNKS = new Set([
   "IHDR",
@@ -320,9 +320,9 @@ export async function createPublicLayoutPreview(
         "-resize",
         `${MAX_PUBLIC_PREVIEW_EDGE}x${MAX_PUBLIC_PREVIEW_EDGE}>`,
         "-blur",
-        "0x2.5",
+        "0x3.5",
         "-colors",
-        "24",
+        "16",
         "-strip",
         "-define",
         "png:exclude-chunks=all",
