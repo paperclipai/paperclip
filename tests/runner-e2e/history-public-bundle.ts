@@ -379,7 +379,7 @@ function safePassedScreenshot(input: unknown) {
     throw new Error("Passing result has unsafe screenshot metadata");
   }
   return {
-    ...screenshot,
+    id: screenshot.id,
     label: `${screenshot.label} (redacted layout preview)`,
     file: `${PUBLIC_VISUAL_DIRECTORY}/${screenshot.file}`,
     privateFile: screenshot.file,

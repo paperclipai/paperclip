@@ -312,8 +312,9 @@ describe("historical publication security", () => {
           id: "final-state",
           label: "Final state",
           file: "final-state.png",
+          unexpectedSecretMetadata: "sk-private-screenshot-metadata",
         },
-      ],
+      ] as RunnerE2EResult["screenshots"],
     } satisfies RunnerE2EResult;
     const campaign = buildRunnerCampaign({
       campaignId: "campaign-1",
@@ -422,11 +423,20 @@ describe("historical publication security", () => {
         "utf8",
       ),
     ).resolves.toBe("{}\n");
-    expect(
-      JSON.parse(
-        await readFile(path.join(output, "normalized-results.json"), "utf8"),
-      ).schema,
-    ).toBe("paperclip.runner-e2e.campaign/v2");
+    const publicCampaign = JSON.parse(
+      await readFile(path.join(output, "normalized-results.json"), "utf8"),
+    );
+    expect(publicCampaign.schema).toBe("paperclip.runner-e2e.campaign/v2");
+    expect(publicCampaign.results[0].screenshots).toEqual([
+      {
+        id: "final-state",
+        label: "Final state (redacted layout preview)",
+        file: "public-visuals/final-state.png",
+      },
+    ]);
+    expect(JSON.stringify(publicCampaign)).not.toContain(
+      "sk-private-screenshot-metadata",
+    );
     await expect(
       regenerateRunnerDashboard({
         bundle: source,
