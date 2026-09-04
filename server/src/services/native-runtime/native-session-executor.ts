@@ -1590,7 +1590,11 @@ async function migrateRunnerdStateRootForExecution(input: {
 
 export function runnerdStateProvesIncompleteBootstrap(root: string): boolean {
   try {
-    const statePath = resolve(root, "control-plane", "control-plane-state.json");
+    const statePath = resolve(
+      root,
+      "control-plane",
+      "control-plane-state.json",
+    );
     const state = record(
       JSON.parse(
         readBoundedNativeFile(
@@ -3240,7 +3244,8 @@ export async function renewNativeSessionExecutionLease(input: {
   controller?: NativeControllerIdentity;
   leaseTtlMs?: number;
 }): Promise<void> {
-  const controller = input.controller ?? (await currentNativeControllerIdentity());
+  const controller =
+    input.controller ?? (await currentNativeControllerIdentity());
   const leaseTtlMs = input.leaseTtlMs ?? NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
   if (
     !Number.isInteger(leaseTtlMs) ||
@@ -6423,145 +6428,150 @@ async function createRunnerdBackendWithinSessionClaim(
               input.trace,
               "session.checkpoint.restore",
               async () => {
-              if (
-                remoteTarget?.transport === "sandbox" &&
-                remoteCommandRunner
-              ) {
-                const acquisitionRecordedAtMs = Date.now();
-                const backupAvailable = harnessBackupCandidates(root).some(
-                  (candidate) =>
-                    existsSync(resolve(candidate, "manifest.json")),
-                );
-                const restoreIntoCreatedSandbox =
-                  shouldRestoreNativeHarnessBackupIntoSandbox({
-                    acquisitionOutcome:
-                      sandboxLeaseAcquisition?.outcome ?? null,
-                    reusableLeaseConfigured:
-                      remoteTarget.reusableLeaseConfigured,
-                    backupAvailable,
+                if (
+                  remoteTarget?.transport === "sandbox" &&
+                  remoteCommandRunner
+                ) {
+                  const acquisitionRecordedAtMs = Date.now();
+                  const backupAvailable = harnessBackupCandidates(root).some(
+                    (candidate) =>
+                      existsSync(resolve(candidate, "manifest.json")),
+                  );
+                  const restoreIntoCreatedSandbox =
+                    shouldRestoreNativeHarnessBackupIntoSandbox({
+                      acquisitionOutcome:
+                        sandboxLeaseAcquisition?.outcome ?? null,
+                      reusableLeaseConfigured:
+                        remoteTarget.reusableLeaseConfigured,
+                      backupAvailable,
+                    });
+                  await input.trace?.record({
+                    name: "sandbox.lease.acquisition",
+                    startedAtMs: acquisitionRecordedAtMs,
+                    endedAtMs: acquisitionRecordedAtMs,
+                    attributes: {
+                      provider: remoteTarget.providerKey ?? "sandbox",
+                      harness: input.execution.session.driverKind,
+                      lifecycleMode:
+                        input.execution.session.lifecyclePolicy.mode,
+                      outcome: sandboxLeaseAcquisition?.outcome ?? "unknown",
+                      stateSource:
+                        sandboxLeaseAcquisition?.outcome === "replacement" ||
+                        restoreIntoCreatedSandbox
+                          ? "verified_failover_backup"
+                          : sandboxLeaseAcquisition?.outcome === "resumed"
+                            ? "sandbox_filesystem"
+                            : "new_sandbox",
+                      bytesTransferred: 0,
+                    },
                   });
-                await input.trace?.record({
-                  name: "sandbox.lease.acquisition",
-                  startedAtMs: acquisitionRecordedAtMs,
-                  endedAtMs: acquisitionRecordedAtMs,
-                  attributes: {
-                    provider: remoteTarget.providerKey ?? "sandbox",
-                    harness: input.execution.session.driverKind,
-                    lifecycleMode: input.execution.session.lifecyclePolicy.mode,
-                    outcome: sandboxLeaseAcquisition?.outcome ?? "unknown",
-                    stateSource:
-                      sandboxLeaseAcquisition?.outcome === "replacement" ||
-                      restoreIntoCreatedSandbox
-                        ? "verified_failover_backup"
-                        : sandboxLeaseAcquisition?.outcome === "resumed"
-                          ? "sandbox_filesystem"
-                          : "new_sandbox",
-                    bytesTransferred: 0,
-                  },
-                });
-                if (sandboxLeaseAcquisition?.outcome === "resumed") {
-                  const reuseStartedAtMs = Date.now();
-                  const state = await measureNativeRunnerSpan(
-                    input.trace,
-                    "sandbox.lease.resume",
-                    inspectRemoteHarnessState,
-                    {
-                      attributes: {
-                        provider: remoteTarget.providerKey ?? "sandbox",
-                        harness: input.execution.session.driverKind,
-                        lifecycleMode:
-                          input.execution.session.lifecyclePolicy.mode,
-                        outcome: "resumed",
+                  if (sandboxLeaseAcquisition?.outcome === "resumed") {
+                    const reuseStartedAtMs = Date.now();
+                    const state = await measureNativeRunnerSpan(
+                      input.trace,
+                      "sandbox.lease.resume",
+                      inspectRemoteHarnessState,
+                      {
+                        attributes: {
+                          provider: remoteTarget.providerKey ?? "sandbox",
+                          harness: input.execution.session.driverKind,
+                          lifecycleMode:
+                            input.execution.session.lifecyclePolicy.mode,
+                          outcome: "resumed",
+                        },
                       },
-                    },
-                  );
-                  if (!state.complete || !state.runnerState) {
-                    throw new Error("runner_harness_state_mismatch");
-                  }
-                  await recordInPlaceHarnessReuse(
-                    state.runnerState,
-                    reuseStartedAtMs,
-                  );
-                } else if (sandboxLeaseAcquisition?.outcome === "replacement") {
-                  await measureNativeRunnerSpan(
-                    input.trace,
-                    "sandbox.lease.replacement",
-                    restoreVerifiedHarnessBackup,
-                    {
-                      attributes: {
-                        provider: remoteTarget.providerKey ?? "sandbox",
-                        harness: input.execution.session.driverKind,
-                        lifecycleMode:
-                          input.execution.session.lifecyclePolicy.mode,
-                        outcome: "replacement",
-                        reason: sandboxLeaseAcquisition.reason ?? "unknown",
-                      },
-                    },
-                  );
-                } else if (restoreIntoCreatedSandbox) {
-                  await measureNativeRunnerSpan(
-                    input.trace,
-                    "sandbox.lease.replacement",
-                    restoreVerifiedHarnessBackup,
-                    {
-                      attributes: {
-                        provider: remoteTarget.providerKey ?? "sandbox",
-                        harness: input.execution.session.driverKind,
-                        lifecycleMode:
-                          input.execution.session.lifecyclePolicy.mode,
-                        outcome: "created",
-                        reason: "reuse_disabled",
-                      },
-                    },
-                  );
-                } else {
-                  const reuseStartedAtMs = Date.now();
-                  const state = await inspectRemoteHarnessState();
-                  if (state.complete && state.runnerState) {
-                    // Re-entry while this newly-created lease is already running (for
-                    // example a transport reconnect) still uses the in-place state.
+                    );
+                    if (!state.complete || !state.runnerState) {
+                      throw new Error("runner_harness_state_mismatch");
+                    }
                     await recordInPlaceHarnessReuse(
                       state.runnerState,
                       reuseStartedAtMs,
                     );
-                  } else if (backupAvailable) {
-                    // A continuation that has a durable backup but no recorded reusable
-                    // lease was not provider-confirmed lost. Never silently create a new
-                    // provider session from that ambiguous state.
-                    throw new Error("runner_harness_state_mismatch");
-                  }
-                }
-                await materializeRemoteHarnessLaunchState();
-              } else if (remoteTarget && remoteCommandRunner) {
-                // Local and generic SSH execution retain their existing checkpoint
-                // behavior. The manifest-only failover gate applies to managed sandbox
-                // replacement, where provider lease provenance is available.
-                for (const directory of persistenceProfile.directories) {
-                  const localDirectory = resolve(root, directory.name);
-                  const remoteDirectory = remotePersistencePath(directory);
-                  if (
-                    remoteDirectory &&
-                    existsSync(localDirectory) &&
-                    !(await remoteRunnerPathExists({
-                      runner: remoteCommandRunner,
-                      path:
-                        directory.name === "runner"
-                          ? posix.join(remoteDirectory, "runner-state.json")
-                          : remoteDirectory,
-                      kind: directory.name === "runner" ? "file" : "directory",
-                    }))
+                  } else if (
+                    sandboxLeaseAcquisition?.outcome === "replacement"
                   ) {
-                    await stageRemoteRunnerDirectory({
-                      target: remoteTarget,
-                      runner: remoteCommandRunner,
-                      sourcePath: localDirectory,
-                      targetPath: remoteDirectory,
-                      mode: 0o700,
-                      excludeTopLevelEntries: directory.excludeTopLevelEntries,
-                    });
+                    await measureNativeRunnerSpan(
+                      input.trace,
+                      "sandbox.lease.replacement",
+                      restoreVerifiedHarnessBackup,
+                      {
+                        attributes: {
+                          provider: remoteTarget.providerKey ?? "sandbox",
+                          harness: input.execution.session.driverKind,
+                          lifecycleMode:
+                            input.execution.session.lifecyclePolicy.mode,
+                          outcome: "replacement",
+                          reason: sandboxLeaseAcquisition.reason ?? "unknown",
+                        },
+                      },
+                    );
+                  } else if (restoreIntoCreatedSandbox) {
+                    await measureNativeRunnerSpan(
+                      input.trace,
+                      "sandbox.lease.replacement",
+                      restoreVerifiedHarnessBackup,
+                      {
+                        attributes: {
+                          provider: remoteTarget.providerKey ?? "sandbox",
+                          harness: input.execution.session.driverKind,
+                          lifecycleMode:
+                            input.execution.session.lifecyclePolicy.mode,
+                          outcome: "created",
+                          reason: "reuse_disabled",
+                        },
+                      },
+                    );
+                  } else {
+                    const reuseStartedAtMs = Date.now();
+                    const state = await inspectRemoteHarnessState();
+                    if (state.complete && state.runnerState) {
+                      // Re-entry while this newly-created lease is already running (for
+                      // example a transport reconnect) still uses the in-place state.
+                      await recordInPlaceHarnessReuse(
+                        state.runnerState,
+                        reuseStartedAtMs,
+                      );
+                    } else if (backupAvailable) {
+                      // A continuation that has a durable backup but no recorded reusable
+                      // lease was not provider-confirmed lost. Never silently create a new
+                      // provider session from that ambiguous state.
+                      throw new Error("runner_harness_state_mismatch");
+                    }
+                  }
+                  await materializeRemoteHarnessLaunchState();
+                } else if (remoteTarget && remoteCommandRunner) {
+                  // Local and generic SSH execution retain their existing checkpoint
+                  // behavior. The manifest-only failover gate applies to managed sandbox
+                  // replacement, where provider lease provenance is available.
+                  for (const directory of persistenceProfile.directories) {
+                    const localDirectory = resolve(root, directory.name);
+                    const remoteDirectory = remotePersistencePath(directory);
+                    if (
+                      remoteDirectory &&
+                      existsSync(localDirectory) &&
+                      !(await remoteRunnerPathExists({
+                        runner: remoteCommandRunner,
+                        path:
+                          directory.name === "runner"
+                            ? posix.join(remoteDirectory, "runner-state.json")
+                            : remoteDirectory,
+                        kind:
+                          directory.name === "runner" ? "file" : "directory",
+                      }))
+                    ) {
+                      await stageRemoteRunnerDirectory({
+                        target: remoteTarget,
+                        runner: remoteCommandRunner,
+                        sourcePath: localDirectory,
+                        targetPath: remoteDirectory,
+                        mode: 0o700,
+                        excludeTopLevelEntries:
+                          directory.excludeTopLevelEntries,
+                      });
+                    }
                   }
                 }
-              }
               },
               {
                 attributes: {
@@ -7056,13 +7066,13 @@ async function createRunnerdBackendWithinSessionClaim(
         runnerProcessLauncher: remoteProcessLauncher,
         runnerReconnectGraceMs: remoteTarget ? 120_000 : undefined,
         adoptExistingRunner: adoptedProcess
-            ? {
-                ...adoptedProcess,
-                isAlive: () => verifiedRecoveryProcessIsAlive(adoptedProcess),
-                signal: (signal) =>
-                  signalVerifiedRecoveryProcess(adoptedProcess, signal),
-              }
-            : undefined,
+          ? {
+              ...adoptedProcess,
+              isAlive: () => verifiedRecoveryProcessIsAlive(adoptedProcess),
+              signal: (signal) =>
+                signalVerifiedRecoveryProcess(adoptedProcess, signal),
+            }
+          : undefined,
         environment: effectiveRunnerEnvironment,
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
         runtimeContext:

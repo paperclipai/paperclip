@@ -1678,24 +1678,31 @@ export class DurablePrpControlPlane {
       this.#store.state.duplicateCommandResults += 1;
       this.#store.save();
       this.#ackTerminalCommandResult(connection, command);
-      this.#sendNextCommand(connection);
+      if (!this.#isTerminalLifecycleCommand(command)) {
+        this.#sendNextCommand(connection);
+      }
       return;
     }
     command.status = status;
     command.result = structuredClone(result);
     this.#store.save();
     this.#ackTerminalCommandResult(connection, command);
-    this.#sendNextCommand(connection);
+    if (!this.#isTerminalLifecycleCommand(command)) {
+      this.#sendNextCommand(connection);
+    }
+  }
+
+  #isTerminalLifecycleCommand(command: DurableRecoveryCoreCommand): boolean {
+    return (
+      command.type === "runner.suspend" || command.type === "runner.shutdown"
+    );
   }
 
   #ackTerminalCommandResult(
     connection: AuthorityConnection,
     command: DurableRecoveryCoreCommand,
   ): void {
-    if (
-      command.type !== "runner.suspend" &&
-      command.type !== "runner.shutdown"
-    ) {
+    if (!this.#isTerminalLifecycleCommand(command)) {
       return;
     }
     connection.sendJson(

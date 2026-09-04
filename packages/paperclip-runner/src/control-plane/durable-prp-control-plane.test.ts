@@ -1039,6 +1039,11 @@ describe.sequential("DurablePrpControlPlane", () => {
         {},
         "command-suspend-1",
       );
+      const nextAuthorityCommand = controlPlane.queueCommand(
+        "runner.drain",
+        {},
+        "command-after-suspend-1",
+      );
       const client = await authenticate(
         controlPlane,
         controlPlane.issueBootstrapTicket(),
@@ -1068,7 +1073,13 @@ describe.sequential("DurablePrpControlPlane", () => {
       });
       expect(controlPlane.store.state.commands).toMatchObject([
         { commandId: "command-suspend-1", status: "completed" },
+        { commandId: "command-after-suspend-1", status: "pending" },
       ]);
+      expect(
+        controlPlane.store.state.commandDeliveryCounts[
+          nextAuthorityCommand.commandId
+        ],
+      ).toBeUndefined();
 
       sendSecure(client!, terminalResult);
       await expect(receiveSecure(client!)).resolves.toMatchObject({
@@ -1076,6 +1087,11 @@ describe.sequential("DurablePrpControlPlane", () => {
         payload: { commandId: "command-suspend-1" },
       });
       expect(controlPlane.store.state.duplicateCommandResults).toBe(1);
+      expect(
+        controlPlane.store.state.commandDeliveryCounts[
+          nextAuthorityCommand.commandId
+        ],
+      ).toBeUndefined();
       client?.socket.destroy();
     } finally {
       await controlPlane.stop();
