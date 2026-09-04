@@ -2035,8 +2035,9 @@ it("adopts a live runner on the same durable authority without spawning a duplic
   let adopted: ReturnType<typeof createCapabilityRunnerdCodexTransport> | null =
     null;
   try {
+    let opened: Record<string, unknown>;
     try {
-      await first.transport.request("thread/start", {
+      opened = await first.transport.request("thread/start", {
         cwd: tmpdir(),
         dynamicTools: codexSemanticToolSpecs(),
       });
@@ -2055,12 +2056,39 @@ it("adopts a live runner on the same durable authority without spawning a duplic
     await first.detachControllerForRestart();
     expect(() => process.kill(runnerPid!, 0)).not.toThrow();
 
+    const controlPlaneStatePath = join(
+      stateDirectory,
+      "control-plane",
+      "control-plane-state.json",
+    );
+    const controlPlaneState = JSON.parse(
+      await readFile(controlPlaneStatePath, "utf8"),
+    ) as { committedEvents: Array<{ eventType: string }> };
+    controlPlaneState.committedEvents =
+      controlPlaneState.committedEvents.filter(
+        (event) =>
+          event.eventType !== "harness.ready" &&
+          event.eventType !== "session.started" &&
+          event.eventType !== "session.resumed",
+      );
+    await writeFile(
+      controlPlaneStatePath,
+      `${JSON.stringify(controlPlaneState, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+
     const duplicateLauncher = vi.fn(() => {
       throw new Error("duplicate runner spawn attempted");
     });
     adopted = createCapabilityRunnerdCodexTransport({
       ...sharedOptions,
       resumeDynamicTools: [],
+      resumeProviderSession: {
+        driverSessionId: String((opened.thread as Record<string, unknown>).id),
+        providerSessionId: String(
+          (opened.thread as Record<string, unknown>).sessionId,
+        ),
+      },
       runnerProcessLauncher: duplicateLauncher,
       adoptExistingRunner: {
         pid: runnerPid!,
@@ -2086,6 +2114,9 @@ it("adopts a live runner on the same durable authority without spawning a duplic
     expect(adopted.evidence().diagnostics).toContain(
       `adopted runner ${runnerPid} authenticated to its durable PRP authority`,
     );
+    expect(adopted.evidence().diagnostics).toContain(
+      "restored adopted provider identity from the exact durable checkpoint after PRP event compaction",
+    );
   } finally {
     await adopted?.transport.close().catch(() => undefined);
     if (runnerPid) {
@@ -2097,7 +2128,9 @@ it("adopts a live runner on the same durable authority without spawning a duplic
     }
     server.closeAllConnections();
     if (server.listening) {
-      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+      await new Promise<void>((resolveClose) =>
+        server.close(() => resolveClose()),
+      );
     }
     await rm(stateDirectory, { recursive: true, force: true });
   }

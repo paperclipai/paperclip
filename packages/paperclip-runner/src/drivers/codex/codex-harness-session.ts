@@ -26,7 +26,10 @@ import {
 } from "../../contracts/codex.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import { boundedCodexPayload as boundedPayload } from "./codex-boundaries.js";
-import { CodexRpcError, redactCodexDiagnostic } from "./app-server-transport.js";
+import {
+  CodexRpcError,
+  redactCodexDiagnostic,
+} from "./app-server-transport.js";
 import { runtimeRequestResponse } from "./codex-question-adapter.js";
 import {
   CODEX_PLANNING_PERMISSION_PROFILE as PLANNING_PERMISSION_PROFILE,
@@ -43,10 +46,16 @@ import {
 } from "./codex-session-state.js";
 import { pumpNotifications } from "./codex-session-notifications.js";
 import { handleServerRequest } from "./codex-session-server-requests.js";
-import { mapTerminalTurn, terminalReplayConflict } from "./codex-session-terminal.js";
+import {
+  mapTerminalTurn,
+  terminalReplayConflict,
+} from "./codex-session-terminal.js";
 import { boundedText, record, text, userInput } from "./codex-driver-values.js";
 
-export class CodexHarnessSession extends CodexSessionState implements HarnessSession {
+export class CodexHarnessSession
+  extends CodexSessionState
+  implements HarnessSession
+{
   constructor(input: CodexSessionStateInput) {
     super(input);
     this.transport.setServerRequestHandler((request) =>
@@ -132,10 +141,10 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
         ? input.message.text
         : dispositionOnlyRecovery
           ? input.message.text
-        : JSON.stringify({
-            task: this.taskEnvelope,
-            message: input.message.text,
-          });
+          : JSON.stringify({
+              task: this.taskEnvelope,
+              message: input.message.text,
+            });
     const effectiveCollaborationMode = this.opened.context.collaborationMode;
     if (
       input.requestedCollaborationMode &&
@@ -434,12 +443,13 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     this.requireCapability("runtimeRequestResolution");
     const pending = this.pendingRuntimeRequestMap.get(input.requestId);
     if (
-      pending === undefined
-      || pending.request.input === undefined
-      || pending.request.turnId !== input.turnId
-      || this.activeTurnId !== input.turnId
-      || pending.settlingResolution !== undefined
-    ) return { result: "already_settled", cleanup: Promise.resolve() };
+      pending === undefined ||
+      pending.request.input === undefined ||
+      pending.request.turnId !== input.turnId ||
+      this.activeTurnId !== input.turnId ||
+      pending.settlingResolution !== undefined
+    )
+      return { result: "already_settled", cleanup: Promise.resolve() };
     if (!this.pendingRuntimeRequestMap.delete(input.requestId)) {
       return { result: "already_settled", cleanup: Promise.resolve() };
     }
@@ -450,15 +460,19 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     );
     pending.settle(safeRequestResponse(pending.request.method, "cancel"));
     const cleanup = Promise.allSettled([
-      Promise.resolve().then(() => this.transport.resolveRuntimeRequest?.({
-        requestId: input.requestId,
-        turnId: input.turnId,
-        resolution: { action: "cancel" },
-      })),
-      Promise.resolve().then(() => this.transport.request("turn/interrupt", {
-        threadId: this.opened.threadId,
-        turnId: input.turnId,
-      })),
+      Promise.resolve().then(() =>
+        this.transport.resolveRuntimeRequest?.({
+          requestId: input.requestId,
+          turnId: input.turnId,
+          resolution: { action: "cancel" },
+        }),
+      ),
+      Promise.resolve().then(() =>
+        this.transport.request("turn/interrupt", {
+          threadId: this.opened.threadId,
+          turnId: input.turnId,
+        }),
+      ),
     ]).then(() => undefined);
     return { result: "handed_off", cleanup };
   }
@@ -520,7 +534,9 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
   }
 
   lineage(): HarnessThreadLineageEntry[] {
-    return [...this.lineageByThread.values()].map((entry) => structuredClone(entry));
+    return [...this.lineageByThread.values()].map((entry) =>
+      structuredClone(entry),
+    );
   }
 
   async read(): Promise<Record<string, unknown>> {
@@ -557,7 +573,8 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     const reconciledUsage = boundedPayload(
       record(thread.tokenUsage ?? snapshot.tokenUsage),
     );
-    if (Object.keys(reconciledUsage).length > 0) this.usageSnapshot = reconciledUsage;
+    if (Object.keys(reconciledUsage).length > 0)
+      this.usageSnapshot = reconciledUsage;
     const activeTurns = turns.filter(
       (turn) => text(turn.status) === "inProgress",
     );
@@ -626,7 +643,9 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
 
   async usage(): Promise<Record<string, unknown> | null> {
     this.requireCapability("usage");
-    return this.usageSnapshot === null ? null : structuredClone(this.usageSnapshot);
+    return this.usageSnapshot === null
+      ? null
+      : structuredClone(this.usageSnapshot);
   }
 
   async snapshot(): Promise<PersistedHarnessSession> {
@@ -655,12 +674,11 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
         turnId,
         fingerprint,
       })),
-      dispositionOnlyRecoveryConsumed:
-        this.dispositionOnlyRecoveryConsumed,
-      dispositionOnlyRecoveryTurnId:
-        this.dispositionOnlyRecoveryTurnId,
+      dispositionOnlyRecoveryConsumed: this.dispositionOnlyRecoveryConsumed,
+      dispositionOnlyRecoveryTurnId: this.dispositionOnlyRecoveryTurnId,
       pendingRuntimeRequests: this.pendingRuntimeRequests(),
-      goal: this.currentGoal === null ? null : structuredClone(this.currentGoal),
+      goal:
+        this.currentGoal === null ? null : structuredClone(this.currentGoal),
       lineage: this.lineage(),
       lastSourceSequence: this.sourceSequence,
     };
@@ -672,4 +690,8 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
     await this.transport.close();
   }
 
+  async detachControllerForRestart(): Promise<void> {
+    if (this.transport.detachControllerForRestart === undefined) return;
+    await this.transport.detachControllerForRestart();
+  }
 }

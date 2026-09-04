@@ -34,7 +34,10 @@ import type {
   DurableRecoveryCommittedEvent,
   DurableRecoveryIdentity,
 } from "../contracts/durable-recovery.js";
-import type { HarnessRuntimeRequestResolution } from "../contracts/harness-driver.js";
+import type {
+  HarnessRuntimeRequestResolution,
+  PersistedHarnessProviderIdentity,
+} from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
   durableRecoveryInternals,
@@ -691,6 +694,16 @@ export interface CapabilityRunnerdCodexTransportOptions {
   };
   /** Provider turn recorded by the owner checkpoint when restoring an active run. */
   resumeActiveTurnId?: string | null;
+  /**
+   * Exact provider identity from the database checkpoint. A verified adopted
+   * runner may use this when its original identity event has left the bounded
+   * PRP replay window; thread/read still validates it against the live runner.
+   */
+  resumeProviderSession?: {
+    driverSessionId: string;
+    providerSessionId?: string | null;
+    providerIdentity?: PersistedHarnessProviderIdentity;
+  };
   /** Explicitly permits ACPX to rotate its provider-native session after a governed wait. */
   providerRecoveryPolicy?:
     | "same_session_only"
@@ -1659,6 +1672,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #threadId = "";
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
+  #providerIdentityRestoredFromCheckpoint = false;
   #turnId = "";
   #turnStartResponsePending = false;
   #turnStartResponseEpoch = 0;
@@ -2137,9 +2151,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       clearInterval(this.#adoptedRunnerMonitor);
     this.#adoptedRunnerMonitor = null;
     this.#core?.disconnectActiveRunner();
-    if (this.#controlPlaneRelease !== null) await this.#controlPlaneRelease();
-    await this.#core?.stop();
+    const release = this.#controlPlaneRelease;
     this.#controlPlaneRelease = null;
+    await Promise.resolve(release?.()).catch((error: unknown) => {
+      this.#diagnostic(
+        `controller route release failed during restart detach: ${String(error)}`,
+      );
+    });
+    await this.#core?.stop().catch((error: unknown) => {
+      this.#diagnostic(
+        `controller authority stop failed during restart detach: ${String(error)}`,
+      );
+    });
     this.#handle = null;
     this.#queue.close();
     this.#diagnostic(
@@ -2925,6 +2948,24 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#applyProviderIdentityEvent(
         committedEvents[adoptedProviderIdentityIndex]!,
       );
+    } else if (
+      this.options.adoptExistingRunner &&
+      exactAuthority &&
+      adoptedProviderIdentityIndex < 0 &&
+      this.options.resumeProviderSession?.driverSessionId.trim() &&
+      this.options.resumeProviderSession.providerSessionId?.trim()
+    ) {
+      this.#threadId = this.options.resumeProviderSession.driverSessionId;
+      this.#sessionId = this.options.resumeProviderSession.providerSessionId;
+      if (this.options.resumeProviderSession.providerIdentity !== undefined) {
+        this.#providerIdentity = record(
+          structuredClone(this.options.resumeProviderSession.providerIdentity),
+        );
+      }
+      this.#providerIdentityRestoredFromCheckpoint = true;
+      this.#diagnostic(
+        "restored adopted provider identity from the exact durable checkpoint after PRP event compaction",
+      );
     }
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
@@ -3115,7 +3156,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#pumpEvents();
       if (
         this.#threadId.length > 0 &&
-        (this.#evidence.providerExecutionKind === "remote_service" ||
+        (this.#providerIdentityRestoredFromCheckpoint ||
+          this.#evidence.providerExecutionKind === "remote_service" ||
           this.#evidence.providerPid !== null)
       )
         return;

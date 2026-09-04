@@ -128,7 +128,9 @@ import {
   buildNativeRuntimeContext,
   cancelNativeSession,
   claimNativeRestartRecoveries,
+  currentNativeControllerIdentity,
   dispatchNativeSessionResumptions,
+  detachNativeSessionsForRestart,
   ensureNativeCompletionContract,
   executePaperclipNativeSession,
   finalizeNativeRun,
@@ -12544,11 +12546,22 @@ export function heartbeatService(
       });
     }
 
+    const nativeRunIds = activeRuns
+      .filter(
+        ({ run, adapterType }) =>
+          adapterType === "paperclip_runner" &&
+          isNativeSessionId(run.nativeSessionId),
+      )
+      .map(({ run }) => run.id);
+    const detachedNativeSessions =
+      await detachNativeSessionsForRestart(nativeRunIds);
+
     logger.info(
       {
         signal,
         previousServerPid: intent.previousServerPid,
         activeRunIds: snapshotRuns.map((run) => run.runId),
+        detachedNativeSessions,
       },
       "hot-restart shutdown snapshot captured; skipping graceful run drain",
     );
@@ -12719,10 +12732,7 @@ export function heartbeatService(
         continue;
       }
 
-      if (
-        run.runtimeMode === "native" &&
-        adapterType === "paperclip_runner"
-      ) {
+      if (run.runtimeMode === "native" && adapterType === "paperclip_runner") {
         classify(candidate, "skipped", "native_restart_recovery_owned", patch);
         continue;
       }
@@ -12987,7 +12997,9 @@ export function heartbeatService(
         );
       });
       activeRunExecutionPromises.add(execution);
-      void execution.finally(() => activeRunExecutionPromises.delete(execution));
+      void execution.finally(() =>
+        activeRunExecutionPromises.delete(execution),
+      );
     }
 
     return {
@@ -16965,6 +16977,11 @@ export function heartbeatService(
         adapterConfig: agents.adapterConfig,
         nativeCoordinatorPhase: nativeRunFinalizations.phase,
         nativeRecoveryState: nativeRunFinalizations.recoveryState,
+        nativeControllerBootId: nativeRunFinalizations.controllerBootId,
+        nativeControllerPid: nativeRunFinalizations.controllerPid,
+        nativeControllerProcessStartedAt:
+          nativeRunFinalizations.controllerProcessStartedAt,
+        nativeControllerLeaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -17004,6 +17021,7 @@ export function heartbeatService(
     );
 
     const reaped: string[] = [];
+    const currentNativeController = await currentNativeControllerIdentity();
 
     for (const {
       run,
@@ -17011,6 +17029,10 @@ export function heartbeatService(
       adapterConfig,
       nativeCoordinatorPhase,
       nativeRecoveryState,
+      nativeControllerBootId,
+      nativeControllerPid,
+      nativeControllerProcessStartedAt,
+      nativeControllerLeaseExpiresAt,
     } of activeRuns) {
       const nativeRun = run.runtimeMode === "native";
       const nativeProcessPidAlive =
@@ -17019,19 +17041,27 @@ export function heartbeatService(
         nativeRun &&
         !!run.processGroupId &&
         isProcessGroupAlive(run.processGroupId);
+      const coordinatorOwnedByCurrentController =
+        nativeRun &&
+        nativeControllerBootId === currentNativeController.bootId &&
+        nativeControllerPid === currentNativeController.pid &&
+        nativeControllerProcessStartedAt?.getTime() ===
+          currentNativeController.processStartedAt.getTime() &&
+        !!nativeControllerLeaseExpiresAt &&
+        nativeControllerLeaseExpiresAt.getTime() > now.getTime();
       const locallyTracked =
-        runningProcesses.has(run.id) || activeRunExecutions.has(run.id);
+        runningProcesses.has(run.id) ||
+        activeRunExecutions.has(run.id) ||
+        coordinatorOwnedByCurrentController;
       if (
         nativeRun &&
-        (
-          [
-            "awaiting_evidence",
-            "awaiting_runner_reattach",
-            "resuming_session",
-            "bootstrap_incomplete",
-          ].includes(nativeRecoveryState ?? "") ||
-          nativeCoordinatorPhase === "retryable_failure"
-        )
+        ([
+          "awaiting_evidence",
+          "awaiting_runner_reattach",
+          "resuming_session",
+          "bootstrap_incomplete",
+        ].includes(nativeRecoveryState ?? "") ||
+          nativeCoordinatorPhase === "retryable_failure")
       ) {
         continue;
       }
@@ -17050,9 +17080,10 @@ export function heartbeatService(
       // intentionally precedes resumedRunIds so a claim cannot bypass the
       // ownership check.
       if (
-        nativeProcessPidAlive ||
-        nativeProcessGroupAlive ||
-        observedOwnerUnverified
+        !locallyTracked &&
+        (nativeProcessPidAlive ||
+          nativeProcessGroupAlive ||
+          observedOwnerUnverified)
       ) {
         await markNativeOwnershipUnverified(run, {
           reason:
@@ -20180,30 +20211,29 @@ export function heartbeatService(
           // recovery existed. Only an entirely unused replacement row may
           // inherit its source checkpoint; any process/provider evidence on the
           // replacement makes the ownership ambiguous and therefore ineligible.
-          const legacyRetrySource =
-            run.retryOfRunId
-              ? await db
-                  .select({
-                    id: heartbeatRuns.id,
-                    companyId: heartbeatRuns.companyId,
-                    agentId: heartbeatRuns.agentId,
-                    runnerInstanceId: heartbeatRuns.runnerInstanceId,
-                    nativeSessionId: heartbeatRuns.nativeSessionId,
-                    runnerProfileJson: heartbeatRuns.runnerProfileJson,
-                    runtimeMode: heartbeatRuns.runtimeMode,
-                    status: heartbeatRuns.status,
-                  })
-                  .from(heartbeatRuns)
-                  .where(
-                    and(
-                      eq(heartbeatRuns.id, run.retryOfRunId),
-                      eq(heartbeatRuns.companyId, agent.companyId),
-                      eq(heartbeatRuns.agentId, agent.id),
-                    ),
-                  )
-                  .limit(1)
-                  .then((rows) => rows[0] ?? null)
-              : null;
+          const legacyRetrySource = run.retryOfRunId
+            ? await db
+                .select({
+                  id: heartbeatRuns.id,
+                  companyId: heartbeatRuns.companyId,
+                  agentId: heartbeatRuns.agentId,
+                  runnerInstanceId: heartbeatRuns.runnerInstanceId,
+                  nativeSessionId: heartbeatRuns.nativeSessionId,
+                  runnerProfileJson: heartbeatRuns.runnerProfileJson,
+                  runtimeMode: heartbeatRuns.runtimeMode,
+                  status: heartbeatRuns.status,
+                })
+                .from(heartbeatRuns)
+                .where(
+                  and(
+                    eq(heartbeatRuns.id, run.retryOfRunId),
+                    eq(heartbeatRuns.companyId, agent.companyId),
+                    eq(heartbeatRuns.agentId, agent.id),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null)
+            : null;
           const legacyRetryHasProviderEvidence = legacyRetrySource
             ? await db
                 .select({ id: heartbeatRunEvents.id })
@@ -20233,18 +20263,17 @@ export function heartbeatService(
             })
               ? legacyRetrySource
               : null;
-          const legacyRetrySessionId = compatibleLegacyRetrySource
-            ?.nativeSessionId;
+          const legacyRetrySessionId =
+            compatibleLegacyRetrySource?.nativeSessionId;
           const taskResumeRunId =
             taskSessionForRun?.lastRunId &&
             taskSessionForRun.lastRunId !== run.id &&
             isNativeSessionId(taskNativeSessionId)
               ? taskSessionForRun.lastRunId
               : null;
-          const resumableTaskSessionId =
-            taskResumeRunId
-              ? taskNativeSessionId
-              : legacyRetrySessionId ?? null;
+          const resumableTaskSessionId = taskResumeRunId
+            ? taskNativeSessionId
+            : (legacyRetrySessionId ?? null);
           const priorNativeRunId =
             taskResumeRunId ?? compatibleLegacyRetrySource?.id ?? null;
           const previousNativeRun =
