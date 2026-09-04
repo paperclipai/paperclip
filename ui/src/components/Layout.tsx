@@ -659,8 +659,6 @@ export function Layout() {
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
-              serverGit={health?.serverInfo?.git}
-              version={health?.version}
               forceExpanded={replacesPrimarySidebar}
             />
           </div>
@@ -684,8 +682,6 @@ export function Layout() {
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
-              serverGit={health?.serverInfo?.git}
-              version={health?.version}
               forceExpanded={replacesPrimarySidebar}
             />
           </SidebarShell>
