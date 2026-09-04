@@ -724,6 +724,39 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.querySelector("select")).toBeNull();
   });
 
+  it("renders GPT-6 Astra and its model-specific reasoning efforts", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterConfig: {
+          model: "gpt-6-astra",
+          modelReasoningEffort: "ultra",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("gpt-6-astra");
+    const effortButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Ultra");
+    expect(effortButton).not.toBeUndefined();
+
+    await act(async () => {
+      effortButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const effortChoices = Array.from(document.body.querySelectorAll("button"))
+      .map((button) => button.textContent?.replace(/\s+/g, "").trim());
+    expect(effortChoices).toContain("Maxmax");
+    expect(effortChoices).toContain("Ultraultra");
+    expect(effortChoices).not.toContain("Minimalminimal");
+  });
+
   it("keeps secret access out of the main Configuration content", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),

@@ -2151,7 +2151,7 @@ describe("IssueProperties", () => {
       },
     ]);
     mockAgentsApi.adapterModels.mockResolvedValue([
-      { id: "gpt-5.5", label: "GPT-5.5" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
       { id: "gpt-5.4", label: "GPT-5.4" },
     ]);
 
@@ -2178,7 +2178,7 @@ describe("IssueProperties", () => {
     let modelButton: HTMLButtonElement | undefined;
     await waitForAssertion(() => {
       modelButton = Array.from(container.querySelectorAll("button"))
-        .find((button) => button.textContent?.includes("GPT-5.5"));
+        .find((button) => button.textContent?.includes("gpt-6-astra"));
       expect(modelButton).not.toBeUndefined();
     });
 
@@ -2189,7 +2189,7 @@ describe("IssueProperties", () => {
     expect(onUpdate).toHaveBeenCalledWith({
       assigneeAdapterOverrides: {
         adapterConfig: {
-          model: "gpt-5.5",
+          model: "gpt-6-astra",
           modelReasoningEffort: "high",
         },
       },

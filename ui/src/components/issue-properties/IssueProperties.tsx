@@ -790,6 +790,24 @@ export function IssueProperties({
     }
     updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(nextConfig));
   };
+  const updateAssigneeOverrideModel = (nextModel: string) => {
+    const nextConfig: Record<string, unknown> = {
+      ...assigneeOverrideAdapterConfig,
+      model: nextModel || undefined,
+    };
+    if (
+      assigneeAdapterType === "codex_local"
+      && assigneeOverrideThinkingEffort
+      && !thinkingEffortOptionsFor(assigneeAdapterType, nextModel).some(
+        (option) => option.value === assigneeOverrideThinkingEffort,
+      )
+    ) {
+      delete nextConfig.modelReasoningEffort;
+      delete nextConfig.reasoningEffort;
+      delete nextConfig.effort;
+    }
+    updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(nextConfig));
+  };
   const setAssigneeOverrideLane = (lane: IssueModelLane) => {
     if (lane === "primary") {
       updateAssigneeAdapterOverrides(null);
@@ -855,13 +873,13 @@ export function IssueProperties({
               noneLabel="Default model"
               searchPlaceholder="Search models..."
               emptyMessage="No models found."
-              onChange={(model) => updateAssigneeOverrideConfig({ model: model || undefined })}
+              onChange={updateAssigneeOverrideModel}
             />
           </div>
           <div className="space-y-1.5">
             <div className="text-xs text-muted-foreground">Thinking effort</div>
             <div className="flex items-center gap-1.5 flex-wrap">
-              {thinkingEffortOptionsFor(assigneeAdapterType).map((option) => (
+              {thinkingEffortOptionsFor(assigneeAdapterType, assigneeOverrideModel).map((option) => (
                 <button
                   key={option.value || "default"}
                   className={cn(
