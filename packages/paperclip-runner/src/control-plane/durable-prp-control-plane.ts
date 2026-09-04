@@ -898,7 +898,7 @@ class AuthorityConnection {
   secureChannel: SecureChannel | null = null;
   lease: ConnectionLeaseRecord | null = null;
   connectionId: string | null = null;
-  inFlightCommandId: string | null = null;
+  terminalLifecycleCommandId: string | null = null;
   readonly wire: PrpWireConnection;
   #closed = false;
   #onClose: () => void;
@@ -1538,7 +1538,11 @@ export class DurablePrpControlPlane {
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
     const pending = this.#nextPendingCommand();
-    connection.inFlightCommandId = pending[0]?.commandId ?? null;
+    const [pendingCommand] = pending;
+    connection.terminalLifecycleCommandId =
+      pendingCommand && this.#isTerminalLifecycleCommand(pendingCommand)
+        ? pendingCommand.commandId
+        : null;
     for (const command of pending) {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
@@ -1625,10 +1629,12 @@ export class DurablePrpControlPlane {
   }
 
   #sendNextCommand(connection: AuthorityConnection): void {
+    if (connection.terminalLifecycleCommandId !== null) return;
     const [command] = this.#nextPendingCommand();
     if (command === undefined) return;
-    if (connection.inFlightCommandId === command.commandId) return;
-    connection.inFlightCommandId = command.commandId;
+    if (this.#isTerminalLifecycleCommand(command)) {
+      connection.terminalLifecycleCommandId = command.commandId;
+    }
     this.#store.state.commandDeliveryCounts[command.commandId] =
       (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     this.#store.save();
@@ -1659,8 +1665,8 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
-    if (connection.inFlightCommandId === command.commandId) {
-      connection.inFlightCommandId = null;
+    if (this.#isTerminalLifecycleCommand(command)) {
+      connection.terminalLifecycleCommandId = command.commandId;
     }
     const status = result.status;
     // `indeterminate` is terminal too: a runner that crashed between journaling

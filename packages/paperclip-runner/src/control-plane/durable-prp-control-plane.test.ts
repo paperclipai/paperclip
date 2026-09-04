@@ -1096,7 +1096,17 @@ describe.sequential("DurablePrpControlPlane", () => {
           nextAuthorityCommand.commandId
         ],
       ).toBeUndefined();
+      const leaseToken = client!.leaseToken!;
       client?.socket.destroy();
+      const successor = await authenticate(controlPlane, leaseToken);
+      expect(successor?.welcome.payload).toMatchObject({
+        pendingCommands: [
+          expect.objectContaining({
+            commandId: nextAuthorityCommand.commandId,
+          }),
+        ],
+      });
+      successor?.socket.destroy();
     } finally {
       await controlPlane.stop();
       rmSync(root, { recursive: true, force: true });
