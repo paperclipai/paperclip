@@ -175,8 +175,13 @@ function ConnectFlowPreview({
     } else if (phase === "connecting" && handsOverCode) {
       after(CONNECTED_HOLD_MS, () => setPhase("done"));
     } else if (phase === "unwindCard") {
-      // The card's own fade, with its space still held.
-      after(CARD_EXIT_MS, () => setPhase("unwindRoom"));
+      // The card's own fade, with its space still held. The fields are emptied
+      // at the end of it, once nothing is legible, so the reset is never seen.
+      after(CARD_EXIT_MS, () => {
+        setCode("");
+        setApiKey("");
+        setPhase("unwindRoom");
+      });
     } else if (phase === "unwindRoom") {
       // The room closing: the card's height going and the link's coming back,
       // together, so the column slides once rather than twice.
@@ -205,8 +210,10 @@ function ConnectFlowPreview({
   const unwind = () => {
     timers.current.forEach(clearTimeout);
     timers.current = [];
-    setCode("");
-    setApiKey("");
+    // What was typed stays until the card has gone. Clearing it here emptied
+    // the field while it was still on screen, so the placeholder appeared under
+    // the fade — the card left saying "Enter API key here" over a field the
+    // customer had just filled in.
     setPhase("unwindCard");
   };
 
