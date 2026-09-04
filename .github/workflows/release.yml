@@ -66,7 +66,11 @@ jobs:
         run: pnpm build
 
   publish_canary:
-    if: github.event_name == 'push'
+    # Nur im Upstream veroeffentlichen. Forks haben weder das npm-Token noch
+    # Anspruch auf die Paketnamen -- dort scheiterte der Job zwangslaeufig mit
+    # ENEEDAUTH und faerbte jeden Release-Lauf rot. verify_canary laeuft im
+    # Fork weiter, damit Tests dort weiterhin greifen.
+    if: github.event_name == 'push' && !github.event.repository.fork
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 45
