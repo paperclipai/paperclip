@@ -44,6 +44,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   }, 20_000);
 
   afterEach(async () => {
+    mockTelemetryClient.track.mockClear();
     await db.delete(nativeRunFinalizations);
     await db.delete(issueComments);
     await db.delete(issueRelations);
@@ -278,6 +279,14 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRunEvents.runId, runningRunId))
       .then((rows) => rows[0]);
     expect(event?.message).toContain("process and sandbox gone");
+
+    // The recovery sweep's own terminal write must emit exactly one
+    // agent.task_run event for the run it just terminalized.
+    expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    expect(mockTelemetryClient.track).toHaveBeenCalledWith(
+      "agent.task_run",
+      expect.objectContaining({ agent_id: agentId, state: "interrupted" }),
+    );
   });
 
   it("preserves a process-less native run while same-run resumption owns its retry", async () => {
@@ -379,6 +388,12 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRunEvents.runId, runningRunId))
       .then((rows) => rows[0]);
     expect(event?.message).toContain("issue reached a terminal status");
+
+    expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    expect(mockTelemetryClient.track).toHaveBeenCalledWith(
+      "agent.task_run",
+      expect.objectContaining({ agent_id: agentId, state: "succeeded" }),
+    );
   });
 
   it("terminalizes a running run to cancelled when its issue is cancelled (reuse-lease path)", async () => {
@@ -411,6 +426,12 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRuns.id, runningRunId))
       .then((rows) => rows[0]?.status);
     expect(runStatus).toBe("cancelled");
+
+    expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    expect(mockTelemetryClient.track).toHaveBeenCalledWith(
+      "agent.task_run",
+      expect.objectContaining({ agent_id: agentId, state: "cancelled" }),
+    );
   });
 
   it("does not terminalize a running run whose process is alive and whose issue is not terminal", async () => {
@@ -445,6 +466,9 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRuns.id, runningRunId))
       .then((rows) => rows[0]?.status);
     expect(runStatus).toBe("running");
+
+    // No terminal write happened, so no telemetry event fires.
+    expect(mockTelemetryClient.track).not.toHaveBeenCalled();
   });
 
   it("does not terminalize a live run that a terminal issue and an active issue both reference", async () => {

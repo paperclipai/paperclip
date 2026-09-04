@@ -145,6 +145,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
+import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
@@ -5725,7 +5726,8 @@ export function issueRoutes(
     queueId: string;
     revision?: string;
   }) {
-    return db.transaction(async (tx) => {
+    let cancelledRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
+    const result = await db.transaction(async (tx) => {
       const locked = await lockQueuedCommentState({
         tx,
         issue: input.issue,
@@ -5801,13 +5803,14 @@ export function issueRoutes(
               eq(heartbeatRuns.id, locked.queueRun.id),
               eq(heartbeatRuns.status, "queued"),
             ))
-            .returning({ id: heartbeatRuns.id })
+            .returning()
             .then((rows) => rows[0] ?? null);
           if (!cancelledRun) {
             throw conflict("The queued message is already being dispatched", {
               code: "queued_comment_already_dispatching",
             });
           }
+          cancelledRunToEmit = cancelledRun;
         }
       } else {
         const updatedWake = await tx
@@ -5862,6 +5865,8 @@ export function issueRoutes(
         }),
       };
     });
+    if (cancelledRunToEmit) await emitAgentTaskRun(db, cancelledRunToEmit);
+    return result;
   }
 
   function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
