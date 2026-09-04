@@ -641,12 +641,19 @@ function OnboardingWizardInner({
    * defaulted. A customer who never touched the row could reach the end of the
    * step having chosen nothing.
    *
-   * Restored true when the draft names a source. Someone returning here has
-   * already answered, and asking again would throw that answer away.
+   * Always false on arrival, including from a draft that names a source.
+   *
+   * It used to restore, on the reasoning that someone returning had already
+   * answered and asking again threw that answer away. Picking a source is what
+   * starts the sign-in now, so a restored selection is not an answer the step
+   * can act on — it is a lit tile with nothing behind it, and the sequence has
+   * no way to begin from there without either starting a server session
+   * unbidden or leaving the button to do a job the row is supposed to do.
+   *
+   * `adapterType` still restores; it is what the hire needs. This is only about
+   * whether the row has been *answered* on this visit.
    */
-  const [sourcePicked, setSourcePicked] = useState<boolean>(
-    () => typeof saved?.adapterType === "string" && saved.adapterType.length > 0,
-  );
+  const [sourcePicked, setSourcePicked] = useState(false);
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   // Native drafts may carry provider-specific configuration that is invalid
@@ -1322,18 +1329,9 @@ function OnboardingWizardInner({
                 disabled:
                   !connectStepReady || (credentialMode === "api" && !apiKey.trim()),
               }
-          : sourceSelected && connectPhase === "idle"
-            ? // A restored draft arrives with a source already chosen, so no
-              // tile is ever going to be pressed to start the sequence. The
-              // button takes that job here — pressing it begins the sign-in
-              // exactly as picking a tile would — rather than leaving the step
-              // on a dead "Next" beside a choice that was already made.
-              {
-                label: "Connect",
-                icon: "arrow",
-                disabled: !connectStepReady,
-              }
-            : { label: "Next", icon: "arrow", disabled: true };
+          : // Nothing is chosen on arrival, and the row is what chooses. Until
+            // it has been answered the button has nothing to do.
+            { label: "Next", icon: "arrow", disabled: true };
 
   /**
    * Back, on the connect step, unwinds the sign-in before it leaves the step.
@@ -1358,11 +1356,6 @@ function OnboardingWizardInner({
    * it is meant to start, against a source with no credential.
    */
   function handleConnectStepPrimary() {
-    // Restored into a chosen source: start the sequence the tile would have.
-    if (connectPhase === "idle" && sourceSelected && (connectStepNeedsLogin || credentialMode === "api")) {
-      setConnectPhase("collapsing");
-      return;
-    }
     // Mid-sequence the button belongs to the sign-in, not to the step.
     if (connectPhase === "ready" && connectStepNeedsLogin) {
       if (connectAuthUrl) window.open(connectAuthUrl, "_blank", "noreferrer,noopener");

@@ -2083,6 +2083,22 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    /**
+     * Press a source tile. This is what starts the sign-in — the row is the
+     * question, and answering it is the whole of the trigger. Nothing is
+     * selected on arrival, including from a draft that names an adapter.
+     */
+    async function pickSource(match: RegExp) {
+      const tile = [...document.body.querySelectorAll('[role="radio"]')].find((t) =>
+        match.test(t.textContent ?? ""),
+      );
+      expect(tile, "the row should offer that source").toBeTruthy();
+      await act(async () => {
+        tile!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 10; i++) await flushReact();
+    }
+
     /** Press the step's forward button and let the sign-in queries settle. */
     async function pressArcPrimary() {
       const cta = [...document.body.querySelectorAll("button")].find((b) =>
@@ -2104,7 +2120,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // difference between this step and the one it replaced.
       expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
 
-      await pressArcPrimary();
+      await pickSource(/Claude/);
 
       expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalled();
       // Connect started a sign-in rather than hiring. The ordering is the point:
@@ -2137,7 +2153,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // Nothing chosen yet on a fresh arrival: the row is a question.
       expect(rowCentred()).toBe(false);
 
-      await pressArcPrimary();
+      await pickSource(/Claude/);
 
       // The row has been answered, so it now shows only the answer — leaving
       // the alternative up would invite a press that has to cancel a live
@@ -2167,7 +2183,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     it("submits the browser code on the paste, not on the first keystroke", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });
-      await pressArcPrimary();
+      await pickSource(/Claude/);
 
       const field = document.body.querySelector(
         'input[aria-label="Authorization code"]',
@@ -2207,7 +2223,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
 
-      await pressArcPrimary();
+      await pickSource(/OpenAI/);
 
       expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalled();
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
@@ -2242,6 +2258,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
       const { root } = await openStep4({ adapterType: "claude_local" });
 
+      // Answer the row, then press: with a credential already in place there is
+      // no sign-in to run, so the button goes straight to the hire.
+      await pickSource(/Claude/);
       await pressArcPrimary();
 
       // The positive half is what makes this a test: a source that is already
