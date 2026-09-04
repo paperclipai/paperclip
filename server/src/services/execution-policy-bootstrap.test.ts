@@ -39,7 +39,7 @@ const bootstrap: ExecutionPolicyBootstrap = {
 const fakeDb = {} as never;
 
 describe("parseExecutionPolicyBootstrapEnv", () => {
-  it("returns null when no execution mode is set (default unrestricted)", () => {
+  it("disables bootstrap when no execution mode is set", () => {
     expect(parseExecutionPolicyBootstrapEnv(env({}))).toBeNull();
   });
 
@@ -127,25 +127,45 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
     expect(parsed?.kubernetesConfig).not.toHaveProperty("applyOverOperatorEdits");
   });
 
-  it("reads PAPERCLIP_K8S_CONFIG_AUTHORITATIVE into applyOverOperatorEdits", () => {
+  it.each([
+    ["true", true], ["1", true], [" YES ", true],
+    ["false", false], ["0", false], [" NO ", false],
+  ])("parses authoritative flag %j as %j without storing it in provider config", (value, expected) => {
     const parsed = parseExecutionPolicyBootstrapEnv(
-      env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "true" }),
+      env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: value }),
     );
-    expect(parsed?.applyOverOperatorEdits).toBe(true);
+    expect(parsed?.applyOverOperatorEdits).toBe(expected);
     expect(parsed?.kubernetesConfig).not.toHaveProperty("applyOverOperatorEdits");
-    expect(
-      parseExecutionPolicyBootstrapEnv(
-        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "false" }),
-      )?.applyOverOperatorEdits,
-    ).toBe(false);
   });
 
-  it("throws when PAPERCLIP_K8S_CONFIG_AUTHORITATIVE is not a boolean", () => {
+  it.each(["sometimes", "", " "])("rejects authoritative flag %j", (value) => {
     expect(() =>
       parseExecutionPolicyBootstrapEnv(
-        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "sometimes" }),
+        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: value }),
       ),
     ).toThrow(/PAPERCLIP_K8S_CONFIG_AUTHORITATIVE/);
+  });
+
+  it("falls back to out-of-cluster access and leaves list syntax validation to the provider", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(env({
+      PAPERCLIP_EXECUTION_MODE: "kubernetes",
+      PAPERCLIP_K8S_IN_CLUSTER: "sometimes",
+      PAPERCLIP_K8S_EGRESS_ALLOW_FQDNS: " not a hostname, , example.com ",
+      PAPERCLIP_K8S_EGRESS_ALLOW_CIDRS: " not a CIDR, , ",
+    }));
+    expect(parsed?.kubernetesConfig).toEqual({
+      inCluster: false,
+      egressAllowFqdns: ["not a hostname", "example.com"],
+      egressAllowCidrs: ["not a CIDR"],
+    });
+  });
+
+  it.each([undefined, "", "any"])("ignores Kubernetes variables when execution mode is %j", (mode) => {
+    expect(parseExecutionPolicyBootstrapEnv(env({
+      PAPERCLIP_EXECUTION_MODE: mode,
+      PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "invalid",
+      PAPERCLIP_K8S_BACKEND: "invalid",
+    }))).toBeNull();
   });
 
   it("throws when PAPERCLIP_K8S_RPC_TIMEOUT_MS is not a positive integer", () => {

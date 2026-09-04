@@ -124,12 +124,14 @@ configuration fails closed.
 
 ## Kubernetes execution policy
 
-Set these to force every agent run onto the Kubernetes sandbox provider from the deployment manifest, with no product API calls. The server reads them at boot, stores `executionMode` in instance settings, and ensures one managed Kubernetes environment per company. The per-run guard in the heartbeat enforces the mode; the variables below only configure the managed environment.
+Set `PAPERCLIP_EXECUTION_MODE=kubernetes` to require the Kubernetes sandbox provider from the deployment manifest. At boot, the server persists `executionMode: "kubernetes"` in instance general settings. It reconciles a single instance-wide managed sandbox environment, with company-scoped stock-tracking bindings. The heartbeat checks the persisted policy for each run and refuses local fallback.
+
+Bootstrap configuration is applied at startup, not continuously. If a run cannot find an active managed Kubernetes environment, it also attempts a lazy ensure with the same environment variables and ownership flag.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PAPERCLIP_EXECUTION_MODE` | `any` | Set to `kubernetes` to deny local execution and turn the bootstrap on. `any` and unset mean no forced mode, and every `PAPERCLIP_K8S_*` value is then ignored. |
-| `PAPERCLIP_K8S_IN_CLUSTER` | `false` | `true` when the server runs inside the cluster and should use its service account. |
+| `PAPERCLIP_EXECUTION_MODE` | (unset) | `kubernetes` enables bootstrap and persists the Kubernetes-only policy. `any`, empty, or unset disables bootstrap and ignores `PAPERCLIP_K8S_*`; it does not reset the stored policy. |
+| `PAPERCLIP_K8S_IN_CLUSTER` | `false` | `true`, `1`, or `yes` selects in-cluster service-account access. `false`, `0`, `no`, and unrecognized values become `false`. |
 | `PAPERCLIP_K8S_BACKEND` | plugin default | `job` or `sandbox-cr`. |
 | `PAPERCLIP_K8S_EGRESS_MODE` | plugin default | `cilium` or `standard`. |
 | `PAPERCLIP_K8S_EGRESS_ALLOW_FQDNS` | (unset) | Comma-separated hostnames sandboxes may reach. |
@@ -139,11 +141,28 @@ Set these to force every agent run onto the Kubernetes sandbox provider from the
 | `PAPERCLIP_K8S_IMAGE_REGISTRY` | (unset) | Registry that sandbox images are pulled from. |
 | `PAPERCLIP_K8S_RPC_TIMEOUT_MS` | plugin default | Timeout for calls to the sandbox provider, in milliseconds. |
 | `PAPERCLIP_K8S_ADAPTER_TYPE` | (unset) | Adapter type the managed environment is created for. |
-| `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE` | `false` | When `true`, every boot applies the values above over edits an operator made to the managed environment in the board and resets its stock baseline. When `false`, an edited environment keeps the edit and the boot log reports that an update is available. A manually archived environment is never reactivated. |
+| `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE` | `false` | `true`, `1`, or `yes` declares the managed environment's stock fields manifest-owned. Bootstrap can replace operator edits and reset the stock baseline. `false`, `0`, `no`, or unset preserves operator edits and reports the pending update in `environment.managed_stock_skipped` activity. A manually archived environment stays archived in either case. |
 
 Adapter availability inside the managed environment follows `PAPERCLIP_ADAPTERS` and `PAPERCLIP_ADAPTERS_FILE`, the same variables the instance uses.
 
-An invalid value in any of these fails startup. Set `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE=true` when the manifest is the only place the environment is meant to be configured, for example under a GitOps controller; leave it unset when operators tune the environment in the board.
+Set `PAPERCLIP_K8S_CONFIG_AUTHORITATIVE=true` only when the manifest owns the managed environment's stock fields. These are its name, description, entire config, managed metadata markers, and availability status. Config is replaced, not merged, so config keys absent from the manifest are removed. Operator `envVars` and unrelated metadata keys are preserved. An unchanged stock row needs no environment write. To keep board edits instead, leave the flag unset.
+
+Paperclip can reactivate a row it archived for provider unavailability. An operator archive, including a repeated archive after Paperclip's archive, takes precedence over the flag. The operator must restore that environment to active before bootstrap can update it.
+
+Validation differs by variable. An unknown non-empty execution mode fails startup. With Kubernetes bootstrap enabled, an unknown non-empty backend or egress mode, a non-empty timeout that is not a positive integer, or an unrecognized authoritative flag (including an empty value) also fails startup. Boolean parsing ignores case and surrounding whitespace. The in-cluster flag falls back to `false` on invalid input. Hostname and CIDR lists are split on commas, trimmed, and stripped of empty entries without syntax validation here. Other string fields are trimmed; empty optional values are omitted. Successful bootstrap does not prove that the provider can acquire a lease.
+
+### Remove the persisted Kubernetes-only policy
+
+Changing `PAPERCLIP_EXECUTION_MODE` to `any` or removing it only stops bootstrap. A stored `executionMode: "kubernetes"` continues to block local execution, even after the Kubernetes infrastructure is removed.
+
+For a self-hosted instance:
+
+1. Set `PAPERCLIP_EXECUTION_MODE=any` or remove it from the deployment configuration, then restart. This prevents later boots from restoring the Kubernetes-only policy.
+2. As an instance administrator, send `PATCH /api/instance/settings/general` with JSON body `{"executionMode":"any"}` using your normal board authentication.
+3. Read `GET /api/instance/settings/general` and confirm `executionMode` is `any`.
+4. Check the instance and agent environment selections before removing Kubernetes infrastructure. The policy reset does not change environment rows, defaults, or the separate `enableManagedSandboxOnly` restriction.
+
+Cloud-managed instances reject changes to `executionMode` through this API with `403` and code `execution_mode_platform_managed`. The self-hosted reset procedure does not apply to them; their platform operator owns policy changes.
 
 ## Secrets
 

@@ -50,7 +50,7 @@ const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
   "Managed Kubernetes sandbox environment for hosted tenant execution.";
 /** Provider key (== plugin driverKey) of the first-party Kubernetes sandbox provider. */
 const KUBERNETES_PROVIDER_KEY = "kubernetes";
-/** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
+/** Legacy lookup marker for the instance-wide managed Kubernetes environment. */
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
 const ACTIVE_CUSTOM_IMAGE_SETUP_STATUSES = ["starting", "waiting_for_user", "capturing"] as const;
 
@@ -106,15 +106,10 @@ export interface ManagedSandboxEnvironmentInput {
   /** Version label recorded with the stock binding; hashes remain the drift authority. */
   stockVersion?: string;
   /**
-   * Apply the desired stock over an operator-modified row. By default the
-   * reconciler preserves a row whose stock fields (name, description, config,
-   * managed metadata markers, status) differ from the recorded baseline and
-   * only reports that an update is available. With this flag the caller
-   * declares that its input is the source of truth: the reconciler overwrites
-   * every stock field and resets the baseline, so a board edit or a row that
-   * predates stock tracking no longer freezes later updates. A row an operator
-   * archived by hand stays archived. A row the reconciler archived for
-   * provider unavailability is reactivated and updated in the same pass.
+   * Declares stock fields (name, description, config, managed metadata, status)
+   * caller-owned, replacing operator edits and resetting the baseline. envVars
+   * and unrelated metadata remain operator-owned. Operator archives take
+   * precedence; only a reconciler-owned archive may be reactivated.
    */
   applyOverOperatorEdits?: boolean;
 }
@@ -331,8 +326,9 @@ export function environmentService(db: Db) {
    * - A stock-controlled managed row advances to a new stock hash in the same
    *   transaction as its managed fields, including provider switches.
    * - A stock-current row is returned without an environment write.
-   * - An operator-modified or previously unmanaged row is preserved and
-   *   reported as skipped; its user-owned fields are never folded into stock.
+   * - An operator-modified or previously unmanaged row is preserved unless the
+   *   caller opts into replacing its stock fields. Operator-owned fields are
+   *   excluded from the baseline.
    */
   const ensureManagedSandboxEnvironment = async (
     input: ManagedSandboxEnvironmentInput,
@@ -551,9 +547,8 @@ export function environmentService(db: Db) {
           },
         );
         if (operatorReaffirmedArchive) stockStatus = "operator_modified";
-        // Provider unavailability is an operational state transition, not an
-        // operator edit. The binding records that Paperclip archived this row.
-        // A manually archived row still has an active binding baseline.
+        // Status alone cannot prove archive ownership. An operator's later
+        // archive clears the row token, even if the row was already archived.
         const archivedByReconciler = row.status === "archived" &&
           typeof rowArchiveToken === "string" &&
           matchingBindings.some((binding) => {
@@ -561,12 +556,8 @@ export function environmentService(db: Db) {
             return bindingDefaults.status === "archived" &&
               bindingDefaults[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY] === rowArchiveToken;
           });
-        // The caller declared its input authoritative: apply it over operator
-        // drift through the same update path a stock-controlled row takes. The
-        // result still reports the observed `operator_modified` status, so the
-        // activity log shows that an operator edit was overwritten. A row an
-        // operator archived by hand is left alone; a reconciler-archived row
-        // is reactivated by the update.
+        // Keep the observed stockStatus so activity records disclose overwrites.
+        // Manifest ownership does not grant permission to undo operator archives.
         const applyOverOperatorEdits = stockStatus === "operator_modified" &&
           input.applyOverOperatorEdits === true &&
           (row.status !== "archived" || (archivedByReconciler && !operatorReaffirmedArchive));
@@ -579,10 +570,8 @@ export function environmentService(db: Db) {
             : desiredStock;
           let baselineHash = baseline?.stockHash ?? latestStockHash;
 
-          // If Paperclip archived this row, restore only its availability
-          // status. Keep every other operator-modified field intact and leave
-          // the stock update pending. A manually archived row remains
-          // operator_modified and is not reactivated here.
+          // Without manifest ownership, provider recovery restores availability
+          // but must not replace operator config or mark the stock update applied.
           if (archivedByReconciler) {
             const reactivated = await tx
               .update(environments)
@@ -951,14 +940,8 @@ export function environmentService(db: Db) {
     archiveManagedSandboxEnvironment,
 
     /**
-     * Idempotently ensure a managed Kubernetes sandbox environment exists for
-     * an instance, configured from instance/operator-supplied config. A thin
-     * wrapper over `ensureManagedSandboxEnvironment` that pins the provider to
-     * "kubernetes" and stamps the legacy marker `findKubernetesEnvironment`
-     * keys on. On subsequent calls stock-controlled config advances in place;
-     * operator modifications remain untouched for explicit review unless
-     * `options.applyOverOperatorEdits` declares the supplied config
-     * authoritative (see `ManagedSandboxEnvironmentInput`).
+     * The legacy Kubernetes marker is required by findKubernetesEnvironment.
+     * Operator edits win unless the caller explicitly declares manifest ownership.
      */
     ensureKubernetesEnvironment: async (
       companyIdOrConfig: string | KubernetesEnvironmentConfigInput,
