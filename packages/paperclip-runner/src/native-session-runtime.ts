@@ -86,6 +86,12 @@ export interface ExecuteNativeSessionOptions {
   existingSession?: NativeSession;
   persistedSession?: PersistedNativeSession | null;
   keepSessionOpen?: boolean;
+  /**
+   * Wait for the backend's close contract before returning a durable result.
+   * Use this only for backends whose close path is internally bounded and
+   * carries required persistence (for example, a remote runner checkpoint).
+   */
+  requireSessionCloseBeforeReturn?: boolean;
   onCheckpoint?: (
     snapshot: PersistedNativeSession,
     options?: CheckpointControlPlaneSessionOptions,
@@ -2001,19 +2007,26 @@ export async function executeNativeSession(
     executionSucceeded = true;
     return { ...durableExecutionResult, ...enrichment };
   } finally {
-    if (
-      (!options.keepSessionOpen || !executionSucceeded || sessionQuarantined) &&
-      !failedCleanupDeferred
-    ) {
+    const shouldClose =
+      !options.keepSessionOpen || !executionSucceeded || sessionQuarantined;
+    if (shouldClose && options.requireSessionCloseBeforeReturn) {
+      if (!failedCleanupDeferred) closeSession();
+      // A remote runner close owns its suspension and verified checkpoint.
+      // Its implementation is finite, and the host must not release the
+      // environment until the complete close/retry owner has settled.
+      const requiredClose = sessionCloseRecoveryPromise ?? sessionClosePromise;
+      if (requiredClose !== null) {
+        await Promise.allSettled([requiredClose]);
+      }
+    } else if (shouldClose && !failedCleanupDeferred) {
       // A provider that ignores close must not keep execution pending forever.
       // closeSession removes it from the caller before invoking the backend;
       // retain observation of the promise, but bound the final join. Provider
       // cleanup cannot reverse a result the control plane already committed;
       // after that durable boundary the session remains unavailable for reuse
       // and late close rejection stays observed without contradicting success.
-      const closeSettlement = Promise.allSettled([closeSession()]);
       await settlesWithin(
-        closeSettlement,
+        Promise.allSettled([closeSession()]),
         FAILED_OPERATION_SETTLEMENT_GRACE_MS,
       );
     }

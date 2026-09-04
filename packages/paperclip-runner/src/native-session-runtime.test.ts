@@ -2679,6 +2679,111 @@ describe("executeNativeSession recovery", () => {
     await pendingClose;
   });
 
+  it.each([false, true])(
+    "waits for a required backend checkpoint close when enrichment failure=%s",
+    async (enrichmentFails) => {
+      let releaseClose = () => {};
+      const pendingClose = new Promise<void>((resolve) => {
+        releaseClose = resolve;
+      });
+      const close = vi.fn(() => pendingClose);
+      let snapshotCount = 0;
+      const session: NativeSession = {
+        identity: () => identity,
+        async capabilities() {
+          return {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: false,
+            structuredResult: true,
+          };
+        },
+        async *events() {
+          yield runnerEvent(1, "turn.completed");
+        },
+        async startTurn() {
+          return { turnId: "turn-recovery" };
+        },
+        async result() {
+          return { result, terminal, turnId: "turn-recovery" };
+        },
+        async snapshot() {
+          snapshotCount += 1;
+          if (enrichmentFails && snapshotCount === 3) {
+            throw new Error("checkpoint enrichment failed");
+          }
+          return {
+            backendKind: "mock",
+            sessionId: "driver-recovery",
+            identity,
+            providerSessionId: "provider-recovery",
+            cursor: "1",
+            activeTurnId: null,
+            pendingRuntimeRequests: [],
+            lineage: [],
+          };
+        },
+        close,
+      };
+      const backend: NativeSessionBackend = {
+        async descriptor() {
+          return {
+            kind: "mock",
+            name: "recovery-backend",
+            version: "1",
+            capabilities: {
+              resume: true,
+              typedEvents: true,
+              steering: false,
+              interruption: false,
+              structuredResult: true,
+            },
+          };
+        },
+        async openSession() {
+          return session;
+        },
+      };
+      const events: PrpEvent[] = [];
+      const port: ControlPlanePort = {
+        async openRun() {},
+        async checkpointSession() {},
+        async appendEvent(event) {
+          events.push(structuredClone(event as PrpEvent));
+          return {
+            cursor: events.length,
+            highestContiguousSourceSeq: highestContiguous(events),
+            disposition: "committed",
+          };
+        },
+        async replayEvents() {
+          return { events: [], highestContiguousSourceSeq: 0 };
+        },
+        async completeRun() {},
+      };
+
+      let resolved = false;
+      const execution = executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        requireSessionCloseBeforeReturn: true,
+      }).then((value) => {
+        resolved = true;
+        return value;
+      });
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(resolved).toBe(false);
+      releaseClose();
+      await expect(execution).resolves.toMatchObject({ result, terminal });
+      expect(resolved).toBe(true);
+    },
+  );
+
   it("closes after a synchronous governed-wait probe returns no result", async () => {
     const resolveGovernedWait = vi.fn(() => null);
     const lifecycle: string[] = [];

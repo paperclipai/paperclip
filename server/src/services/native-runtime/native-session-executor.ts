@@ -1314,6 +1314,24 @@ function runnerdAuthorityLifecycle(
   }
 }
 
+function runnerdAuthorityLifecycleWithVerifiedBackup(input: {
+  root: string;
+  identity: RunnerdDurableIdentity;
+  execution: NativeExecutionInput;
+  allowVerifiedBackup: boolean;
+}): "suspended" | "not_suspended" | "indeterminate" {
+  const direct = runnerdAuthorityLifecycle(input.root, input.identity);
+  if (direct !== "indeterminate" || !input.allowVerifiedBackup) return direct;
+  const backup = verifyNativeHarnessBackup({
+    root: input.root,
+    execution: input.execution,
+    runnerInstanceId: input.identity.runnerInstanceId,
+  });
+  return backup
+    ? runnerdAuthorityLifecycle(backup.root, input.identity)
+    : "indeterminate";
+}
+
 type PriorRunnerdStateVerification =
   | "verified"
   | "active"
@@ -1327,6 +1345,7 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
   root: string;
   identity: RunnerdDurableIdentity;
   execution: NativeExecutionInput;
+  allowVerifiedBackup: boolean;
 }): Promise<PriorRunnerdStateVerification> {
   let priorRun: {
     status: string;
@@ -1366,7 +1385,7 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
       nativeSessionScopeKey(priorExecution) ===
         nativeSessionScopeKey(input.execution);
     if (!sameScope) return "scope_mismatch";
-    const lifecycle = runnerdAuthorityLifecycle(input.root, input.identity);
+    const lifecycle = runnerdAuthorityLifecycleWithVerifiedBackup(input);
     return lifecycle === "suspended"
       ? "verified"
       : "terminal_state_indeterminate";
@@ -1378,6 +1397,7 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
 async function migrateRunnerdStateRootForExecution(input: {
   db: Db;
   execution: NativeExecutionInput;
+  allowVerifiedBackup: boolean;
 }): Promise<void> {
   const scoped = scopedRunnerdStateRoot(input.execution);
   if (existsSync(scoped)) {
@@ -1404,6 +1424,7 @@ async function migrateRunnerdStateRootForExecution(input: {
         root: scoped,
         identity,
         execution: input.execution,
+        allowVerifiedBackup: input.allowVerifiedBackup,
       });
       if (verification !== "verified") {
         if (verification !== "active" && verification !== "unavailable") {
@@ -1441,6 +1462,7 @@ async function migrateRunnerdStateRootForExecution(input: {
         root: legacy,
         identity,
         execution: input.execution,
+        allowVerifiedBackup: input.allowVerifiedBackup,
       });
       if (verification !== "verified") {
         if (verification === "terminal_state_indeterminate") {
@@ -3286,6 +3308,9 @@ async function executePaperclipNativeSessionWithinScope(
     await migrateRunnerdStateRootForExecution({
       db: input.db,
       execution: input.execution,
+      allowVerifiedBackup:
+        input.runnerExecutionTarget?.kind === "remote" &&
+        input.runnerExecutionTarget.transport === "sandbox",
     });
   }
   const durableRunnerBinding = input.useRunnerd
@@ -3923,6 +3948,9 @@ async function executePaperclipNativeSessionWithinScope(
             existingSession: existingWarmSession,
             persistedSession: persistedWarmSession,
             keepSessionOpen: warmSessionId !== null,
+            requireSessionCloseBeforeReturn:
+              runnerdBackend !== null &&
+              input.runnerExecutionTarget?.kind === "remote",
             onCheckpoint:
               warmSessionId !== null && warmConfigDigest !== null
                 ? async (snapshot) =>
@@ -5225,6 +5253,9 @@ export async function createRunnerdBackend(input: {
     await migrateRunnerdStateRootForExecution({
       db: input.db,
       execution: input.execution,
+      allowVerifiedBackup:
+        input.runnerExecutionTarget?.kind === "remote" &&
+        input.runnerExecutionTarget.transport === "sandbox",
     });
     return await createRunnerdBackendWithinSessionClaim(input, sessionScopeId);
   } finally {
