@@ -3296,7 +3296,7 @@ export function estateRoutes(
         .from(estateReviews)
         .where(and(
           eq(estateReviews.companyId, estate.companyId),
-          eq(estateReviews.year, currentYear),
+          eq(estateReviews.reviewYear, currentYear),
         )),
     ]);
 
