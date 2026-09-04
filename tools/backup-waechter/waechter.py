@@ -34,6 +34,12 @@ NAS = "/Volumes/WHITESTAG-ARCHIV/Backup Mac Studio M4 Max/paperclip-db"
 # Lauf mittendrin abgebrochen ist.
 VAULT_SYNC_STATUS = os.path.expanduser(
     "~/.paperclip/logs/vault-nas-sync-last.json")
+# Monatliche Integritaetspruefung des restic-Repos (de.whitestag.repo-pruefung).
+# Ohne diese Zeile im Waechter waere die Pruefung selbst unbewacht: faellt sie
+# aus, wuerde niemand das Repo mehr auf Korruption ansehen — und das faellt
+# erst bei der Wiederherstellung auf.
+REPO_PRUEF_STATUS = os.path.expanduser(
+    "~/.paperclip/logs/repo-pruefung-last.json")
 # Synology-Drive-Spiegel von "Claude Code MAC". Kein eigener Dienst von uns —
 # der Synology-Client spiegelt fortlaufend. Genau deshalb faellt sein Ausfall
 # ohne Pruefung niemandem auf.
@@ -57,6 +63,11 @@ GRENZE_VAULT = 9 * TAG
 # Synology-Spiegel grosszuegig: der Ordner darf auch mal ein Wochenende ruhig
 # sein. Passiert dort eine Woche lang nichts, stimmt aber etwas nicht.
 GRENZE_SYNOLOGY = 7 * TAG
+# Die Repo-Pruefung laeuft am 6. jedes Monats. 45 Tage lassen einen langen
+# Monat plus einen verspaeteten Nachholtermin durch (der Mac war am 6. aus),
+# schlagen aber an, wenn ein Termin ganz ausfaellt. Enger waere ein
+# Fehlalarm-Automat, weiter wuerde einen echten Ausfall zu lange decken.
+GRENZE_REPO_PRUEFUNG = 45 * TAG
 
 # Gebuchter Speicher des Hetzner-Tarifs, VON HAND eingetragen: weder OCS-API
 # noch WebDAV verraten ihn — Nextcloud meldet fuer das Konto nur „unbegrenzt"
@@ -258,8 +269,8 @@ def baue_html(befund, anzahl, alarm):
             f"liegen auf der NAS.</p>"
             f"<p style='color:#9aa0a6;font-size:12px'>Wächter "
             f"<code>de.whitestag.backup-waechter</code>, täglich 09:00. "
-            f"Die Lebendmeldung kommt montags — bleibt sie aus, ist der "
-            f"Wächter selbst tot.</p></div>")
+            f"Die Lebendmeldung kommt montags und donnerstags — bleibt sie "
+            f"aus, ist der Wächter selbst tot.</p></div>")
 
 
 def main():
@@ -294,6 +305,12 @@ def main():
                            GRENZE_SYNOLOGY, "Synology Drive"),
         pruefung.Pruefling("Vault (Nextcloud)", aus_repo(TAG_VAULT),
                            GRENZE_VAULT, "restic"),
+        # Nicht das Alter einer Sicherung, sondern das der letzten
+        # Unversehrtheitspruefung. Alle anderen Zeilen sagen nur, dass etwas
+        # GESCHRIEBEN wurde — diese sagt, dass es sich auch LESEN laesst.
+        pruefung.Pruefling("Repo-Pruefung (Hetzner)",
+                           status_stand(REPO_PRUEF_STATUS),
+                           GRENZE_REPO_PRUEFUNG, "Statusdatei"),
     ]
     befund = pruefung.bewerte(jetzt, prueflinge)
 

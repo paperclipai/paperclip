@@ -12,6 +12,7 @@ import pruefung
 
 JETZT = datetime(2026, 8, 21, 9, 0)          # ein Freitag
 MONTAG = datetime(2026, 8, 24, 9, 0)
+DONNERSTAG = datetime(2026, 8, 27, 9, 0)
 
 TAG = timedelta(days=1)
 STD = timedelta(hours=1)
@@ -144,10 +145,32 @@ def test_leere_liste_ergibt_None():
     assert pruefung.neuester_snapshot([], "obsidian-vault") is None
 
 
-def test_heartbeat_nur_montags():
-    """Wöchentliche Lebendmeldung: bleibt sie aus, ist der Wächter tot."""
+def test_heartbeat_montags_und_donnerstags():
+    """Lebendmeldung: bleibt sie aus, ist der Wächter selbst tot.
+
+    Seit 04.09.2026 zweimal statt einmal die Woche. Mit nur montags war die
+    Blindzeit sieben Tage: fiel der Wächter am Dienstag aus, hätte der Ausfall
+    des Ausfallmelders erst am folgenden Montag auffallen können. Ein zweiter
+    Termin halbiert das, ohne dass die Meldung zur täglichen Gewohnheit wird —
+    und eine Meldung, die man gewohnheitsmäßig wegklickt, ist keine.
+    """
     assert pruefung.heartbeat_faellig(MONTAG)
-    assert not pruefung.heartbeat_faellig(JETZT)
+    assert pruefung.heartbeat_faellig(DONNERSTAG)
+    assert not pruefung.heartbeat_faellig(JETZT)          # Freitag
+
+
+def test_heartbeat_teilt_die_woche_moeglichst_gleichmaessig():
+    """Mo+Do statt etwa Mo+Di: der längste stille Abschnitt soll klein sein.
+
+    Do->Mo sind vier Tage, Mo->Do drei. Bei Mo+Di wären es sechs — dann hätte
+    der zweite Termin fast nichts gebracht.
+    """
+    woche = [datetime(2026, 8, 24) + i * TAG for i in range(7)]
+    faellig = [t for t in woche if pruefung.heartbeat_faellig(t)]
+    assert len(faellig) == 2
+    luecken = [(b - a).days for a, b in zip(faellig, faellig[1:])]
+    luecken.append(7 - sum(luecken))
+    assert max(luecken) <= 4
 
 
 # --- Platzwarnung ----------------------------------------------------------

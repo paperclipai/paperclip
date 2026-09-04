@@ -166,6 +166,9 @@ def main():
                            waechter.GRENZE_SYNOLOGY, "Synology Drive"),
         pruefung.Pruefling("Vault (Nextcloud)", aus_repo(waechter.TAG_VAULT),
                            waechter.GRENZE_TAEGLICH, "restic"),
+        pruefung.Pruefling("Repo-Pruefung (Hetzner)",
+                           waechter.status_stand(waechter.REPO_PRUEF_STATUS),
+                           waechter.GRENZE_REPO_PRUEFUNG, "Statusdatei"),
     ]
     befund = pruefung.bewerte(jetzt, prueflinge)
 

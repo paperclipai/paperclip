@@ -4,6 +4,8 @@
 Hier geht es um den Fall, der im Ernstfall zählt: die Quelle ist weg. Ein
 Wächter, der dann „alles gut" meldet, ist gefährlicher als gar keiner.
 """
+from datetime import datetime, timedelta
+
 import waechter
 
 
@@ -112,3 +114,31 @@ def test_fehlender_synology_spiegel_ergibt_unbekannt(tmp_path):
 def test_leerer_synology_spiegel_ergibt_unbekannt(tmp_path):
     """Ein leerer Spiegelordner bedeutet, dass der Sync nichts abgelegt hat."""
     assert waechter.ordner_stand(str(tmp_path)) is None
+
+
+# --- Repo-Pruefung ---------------------------------------------------------
+
+def test_repo_pruefung_wird_ueberwacht(tmp_path):
+    """Die monatliche Integritaetspruefung meldet ihren Stand wie jeder
+    andere Dienst ueber eine Statusdatei — und faellt sie aus, sieht das der
+    Waechter."""
+    p = tmp_path / "repo-pruefung-last.json"
+    p.write_text('{"stand":"ok","zeit":"2026-09-06 06:30:00","anteil":"9/12"}')
+    assert waechter.status_stand(str(p)) == datetime(2026, 9, 6, 6, 30)
+
+
+def test_beschaedigtes_repo_zaehlt_nicht_als_geprueft(tmp_path):
+    """Der wichtigste Fall: eine Pruefung, die Schaden GEFUNDEN hat, darf
+    nicht als „zuletzt geprueft, alles gut" durchgehen."""
+    p = tmp_path / "repo-pruefung-last.json"
+    p.write_text('{"stand":"fehler","zeit":"2026-09-06 06:30:00",'
+                 '"grund":"Datenpruefung fehlgeschlagen"}')
+    assert waechter.status_stand(str(p)) is None
+
+
+def test_grenze_der_repo_pruefung_deckt_einen_ganzen_monat():
+    """45 Tage muessen einen langen Monat plus einen Nachholtermin
+    ueberstehen — sonst alarmiert der Waechter jeden Monat grundlos."""
+    assert waechter.GRENZE_REPO_PRUEFUNG > timedelta(days=31)
+    # Aber nicht so weit, dass ein ganz ausgefallener Termin gedeckt waere.
+    assert waechter.GRENZE_REPO_PRUEFUNG < timedelta(days=62)

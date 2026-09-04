@@ -16,6 +16,7 @@ schon Dienste wochenlang unbemerkt tot gewesen.
 | Datenbank (Nextcloud) | restic-Snapshot, Schlagwort `paperclip-db` | tägl. 05:00 | **30 Stunden** |
 | Claude-Code-Ordner | restic-Snapshot, Schlagwort `claude-code` | tägl. 05:00 | **30 Stunden** |
 | Vault (Nextcloud) | restic-Snapshot, Schlagwort `obsidian-vault` | So 03:30 | **9 Tage** |
+| Repo-Prüfung (Hetzner) | Statusdatei `repo-pruefung-last.json` | 6. d. Monats | **45 Tage** |
 
 30 Stunden lassen einen verspäteten Lauf durch, schlagen aber an, sobald eine
 Nacht ausfällt. Der Vault geht nur sonntags raus, deshalb die großzügigere
@@ -29,6 +30,15 @@ nicht als „jüngster Snapshot" — sonst verdeckte ein frischer
 Geprüft wird die **mtime**, nicht das Datum im Dateinamen: gefragt ist, wann
 zuletzt tatsächlich geschrieben wurde. Ein Name lässt sich vergeben, ohne dass
 Daten fließen.
+
+Die letzte Zeile fällt aus der Reihe: sie misst nicht das Alter einer
+Sicherung, sondern das der letzten **Unversehrtheitsprüfung**
+(`tools/nextcloud-backup/pruefe-repo.sh`). Alle anderen Zeilen sagen nur, dass
+etwas *geschrieben* wurde — diese sagt, dass es sich auch *lesen* lässt. Ohne
+sie wäre der Prüfer selbst unbewacht: fällt er aus, sieht niemand mehr nach
+Korruption, und das fällt erst bei der Wiederherstellung auf. Eine Prüfung,
+die Schaden **gefunden** hat, zählt dabei nicht als „zuletzt geprüft" — dafür
+sorgt `status_stand`, das nur `"stand": "ok"` durchlässt.
 
 ## Speicherplatz
 
@@ -60,10 +70,16 @@ erzeugt Vertrauen, das nichts trägt. Dieselbe Regel wie `None` statt `0` in
 
 - **Alarm** (jederzeit, wenn etwas nicht stimmt): Mail von `cto@` an `ws@` mit
   Befund und Altersangaben im Klartext.
-- **Lebendmeldung** (montags, wenn alles grün ist): kurze Statusmail.
-  Der Wächter kann selbst sterben — das einzige verlässliche Gegenmittel ist
-  eine erwartete Nachricht, deren **Ausbleiben** auffällt. Kommt montags nichts,
-  ist der Wächter tot.
+- **Lebendmeldung** (montags und donnerstags, wenn alles grün ist): kurze
+  Statusmail. Der Wächter kann selbst sterben — das einzige verlässliche
+  Gegenmittel ist eine erwartete Nachricht, deren **Ausbleiben** auffällt.
+  Kommt sie nicht, ist der Wächter tot.
+
+  Bis zum 04.09.2026 kam sie nur montags; die Blindzeit war damit sieben Tage.
+  Zwei Termine halbieren sie auf höchstens vier (Do→Mo). **Täglich wäre
+  schlechter, nicht besser**: eine Meldung, die jeden Morgen kommt, wird zur
+  Gewohnheit, und ihr Ausbleiben fällt dann gerade nicht mehr auf. Die Tage
+  stehen als `HEARTBEAT_TAGE` in `pruefung.py`.
 
 ## Der Umweg über node — nicht wegoptimieren
 
@@ -90,7 +106,7 @@ launchd startet **`/opt/homebrew/bin/node run-waechter.js`**, das
 python3 waechter.py --kein-versand            # prüfen, ohne zu mailen
 python3 waechter.py --heartbeat-erzwingen     # Lebendmeldung sofort schicken
 python3 waechter.py --nas /Volumes/GIBTSNICHT # Alarmfall proben
-python3 -m pytest -q                          # 25 Tests
+python3 -m pytest -q                          # 43 Tests
 ```
 
 Log: `~/.paperclip/logs/backup-waechter.log`,

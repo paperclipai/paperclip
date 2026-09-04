@@ -139,11 +139,22 @@ def _zeit(roh: str) -> datetime:
     return stand
 
 
+# Montag und Donnerstag. Die Wochentage stehen als Konstante da, weil an
+# ihnen die Blindzeit hängt: der größte Abstand zwischen zwei Terminen ist die
+# Zeit, die ein toter Wächter unbemerkt tot sein kann.
+HEARTBEAT_TAGE = (0, 3)
+
+
 def heartbeat_faellig(jetzt: datetime) -> bool:
-    """Montags eine Lebendmeldung.
+    """Montags und donnerstags eine Lebendmeldung.
 
     Der Wächter kann selbst sterben; dann herrscht wieder Stille. Das einzige
     verlässliche Gegenmittel ist eine erwartete Nachricht, deren AUSBLEIBEN
     auffällt.
+
+    Bis zum 04.09.2026 kam sie nur montags — die Blindzeit war damit sieben
+    Tage. Zwei Termine halbieren sie auf höchstens vier. Täglich wäre
+    schlechter, nicht besser: eine Meldung, die jeden Morgen kommt, wird zur
+    Gewohnheit, und ihr Ausbleiben fällt dann gerade NICHT mehr auf.
     """
-    return jetzt.weekday() == 0
+    return jetzt.weekday() in HEARTBEAT_TAGE
