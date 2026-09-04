@@ -2,14 +2,22 @@ import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { isValidBrowserCode } from "@paperclipai/shared";
-import { CONNECTED_HOLD_MS, SOURCE_LINK_EXIT } from "./components/onboarding/onboarding-motion";
+import {
+  CARD_ENTER,
+  CARD_EXIT,
+  CARD_EXIT_MS,
+  CONNECTED_HOLD_MS,
+  FOOTER_SETTLE,
+  FOOTER_SETTLE_MS,
+  SOURCE_COLLAPSE_MS,
+  SOURCE_LINK_EXIT,
+} from "./components/onboarding/onboarding-motion";
 
 import {
   OnboardingLoginCard,
   OnboardingLoginCodeInput,
 } from "./components/AdapterLoginChrome";
 import { AgentPreview } from "./components/onboarding/AgentPreview";
-import { ConnectInputCanvas } from "./components/onboarding/ConnectInputCanvas";
 import { CredentialModeLink } from "./components/onboarding/CredentialModeLink";
 import { FooterNav } from "./components/onboarding/FooterNav";
 import {
@@ -76,7 +84,20 @@ const MODEL_SOURCES: ModelSource[] = [
  * contents differ — so the footer is pushed down once, when the card arrives,
  * and never again.
  */
-type Phase = "idle" | "loading" | "ready" | "waiting" | "connecting" | "done";
+type Phase =
+  | "idle"
+  /** The row answering: chosen tile travelling to centre, the other leaving. */
+  | "collapsing"
+  /** The card arriving on a spinner, pushing the footer down as it does. */
+  | "loading"
+  | "ready"
+  | "waiting"
+  | "connecting"
+  /** Back, first beat: the card leaves, then the footer comes back up. */
+  | "unwindCard"
+  /** Back, second beat: the row reopens and the button reverts. */
+  | "unwindRow"
+  | "done";
 
 /** Stand-ins for the round trips a real sign-in makes. */
 const PROMPT_DELAY_MS = 1400;
@@ -109,18 +130,46 @@ function ConnectFlowPreview({
   };
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
-  // The prompt round trip: the card is already open on a spinner by now.
+  /*
+    The sequence, one beat handing to the next.
+
+    Each wait is the duration of the animation before it, so a beat never
+    starts over the top of the one still running — which is what made the
+    collapse and the card's arrival read as two unrelated things happening at
+    once rather than one causing the other.
+  */
   useEffect(() => {
-    if (phase !== "loading") return;
-    after(PROMPT_DELAY_MS, () => setPhase("ready"));
+    if (phase === "collapsing") {
+      // The row finishes answering before the card starts arriving.
+      after(SOURCE_COLLAPSE_MS, () => setPhase("loading"));
+    } else if (phase === "loading") {
+      after(PROMPT_DELAY_MS, () => setPhase("ready"));
+    } else if (phase === "unwindCard") {
+      // The card's own fade, then the footer's climb back up, before the row
+      // is touched at all.
+      after(CARD_EXIT_MS + FOOTER_SETTLE_MS, () => setPhase("unwindRow"));
+    } else if (phase === "unwindRow") {
+      after(SOURCE_COLLAPSE_MS, () => {
+        setSelectedId(null);
+        setPhase("idle");
+      });
+    }
   }, [phase]);
+
+  /** Back: two beats, card first, row second. */
+  const unwind = () => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
+    setCode("");
+    setPhase("unwindCard");
+  };
 
   const reset = () => {
     timers.current.forEach(clearTimeout);
     timers.current = [];
-    setPhase("idle");
     setCode("");
     setSelectedId(null);
+    setPhase("idle");
   };
 
   // Picking a source is what starts the sign-in — the row collapses, the link
@@ -128,7 +177,7 @@ function ConnectFlowPreview({
   const pick = (id: string) => {
     if (phase !== "idle") return;
     setSelectedId(id);
-    setPhase("loading");
+    setPhase("collapsing");
   };
 
   // The paste is the answer; see the shipped panel for why it is the paste and
@@ -142,15 +191,27 @@ function ConnectFlowPreview({
     after(CONNECTED_HOLD_MS, () => setPhase("done"));
   }, [code]);
 
-  const collapsed = phase !== "idle" && selectedId !== null;
-  const cardOpen = phase === "loading" || phase === "ready" || phase === "waiting" || phase === "connecting";
+  // Collapsed from the moment a tile is pressed until the row is asked to
+  // reopen — `unwindRow` is where it expands, one beat after the card left.
+  const collapsed =
+    selectedId !== null &&
+    phase !== "idle" &&
+    phase !== "unwindRow" &&
+    phase !== "done";
+  const cardOpen =
+    phase === "loading" || phase === "ready" || phase === "waiting" || phase === "connecting";
   const done = phase === "done";
 
   // Four labels, three shapes. The button is only ever pressable on `ready`:
   // before that there is nothing to sign in to, and after it the sign-in is
   // happening somewhere this screen cannot hurry.
   const cta =
-    done
+    // `unwindCard` keeps whatever the button said: the first beat of Back is
+    // the card leaving, and changing the label at the same time would make two
+    // things happen in a beat meant to carry one.
+    phase === "unwindCard"
+      ? { label: signInLabel, icon: "none" as const, disabled: true }
+      : done
       ? { label: "Start over", icon: "arrow" as const, disabled: false }
       : phase === "ready"
         ? { label: signInLabel, icon: "none" as const, disabled: false }
@@ -217,43 +278,59 @@ function ConnectFlowPreview({
               </AnimatePresence>
             </div>
 
-            <ConnectInputCanvas open={cardOpen} contentKey={`${selectedId}:${mode}`}>
-              <OnboardingLoginCard
-                loading={phase === "loading"}
-                instruction={
-                  <>
-                    {/* The same destination as the button below. Two ways to
-                        reach one link: the button for the customer following
-                        the flow, the anchor for anyone who wants to copy it
-                        into another browser. */}
-                    <a
-                      href={authUrl}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="underline underline-offset-2 hover:text-foreground"
-                    >
-                      {signInLabel}
-                    </a>
-                    {" then come back and enter authorization code"}
-                  </>
-                }
-              >
-                <OnboardingLoginCodeInput
-                  value={code}
-                  onChange={setCode}
-                  disabled={phase === "connecting"}
-                  onSubmit={() => {
-                    if (isValidBrowserCode(code.trim())) {
-                      setPhase("connecting");
-                      after(CONNECTED_HOLD_MS, () => setPhase("done"));
+            {/*
+              The card holds its own space while it fades out — AnimatePresence
+              keeps it mounted through the exit — so the footer below does not
+              begin climbing until the card is genuinely gone. That is what
+              makes Back read as two beats rather than one blur.
+            */}
+            <AnimatePresence initial={false}>
+              {cardOpen && (
+                <motion.div
+                  key="auth-card"
+                  className="mt-5"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1, transition: CARD_ENTER }}
+                  exit={{ opacity: 0, transition: CARD_EXIT }}
+                >
+                  <OnboardingLoginCard
+                    loading={phase === "loading"}
+                    instruction={
+                      <>
+                        {/* The same destination as the button below. Two ways to
+                            reach one link: the button for the customer following
+                            the flow, the anchor for anyone who wants to copy it
+                            into another browser. */}
+                        <a
+                          href={authUrl}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          className="underline underline-offset-2 hover:text-foreground"
+                        >
+                          {signInLabel}
+                        </a>
+                        {" then come back and enter authorization code"}
+                      </>
                     }
-                  }}
-                  onPaste={() => {
-                    pastedRef.current = true;
-                  }}
-                />
-              </OnboardingLoginCard>
-            </ConnectInputCanvas>
+              >
+                    <OnboardingLoginCodeInput
+                      value={code}
+                      onChange={setCode}
+                      disabled={phase === "connecting"}
+                      onSubmit={() => {
+                        if (isValidBrowserCode(code.trim())) {
+                          setPhase("connecting");
+                          after(CONNECTED_HOLD_MS, () => setPhase("done"));
+                        }
+                      }}
+                      onPaste={() => {
+                        pastedRef.current = true;
+                      }}
+                    />
+                      </OnboardingLoginCard>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </>
         )}
 
@@ -267,10 +344,15 @@ function ConnectFlowPreview({
           It is also the only way out now that the card has no Cancel of its
           own: one control, and what it undoes depends on how far in you are.
         */}
+        {/* `layout`, not an animated height: the footer's position changes
+            because the card above it mounted or unmounted, and letting motion
+            measure that is what the canvas's own notes recommend after three
+            failed attempts at animating a height directly. */}
+        <motion.div layout transition={FOOTER_SETTLE}>
         <FooterNav
           onBack={() => {
-            if (phase === "idle") return;
-            reset();
+            if (phase === "idle" || phase === "unwindCard" || phase === "unwindRow") return;
+            unwind();
           }}
           primaryLabel={cta.label}
           primaryIcon={cta.icon}
@@ -286,6 +368,7 @@ function ConnectFlowPreview({
             }
           }}
         />
+        </motion.div>
 
         {/* Preview-only. A real paste carries the code; here anything will do. */}
         {(phase === "ready" || phase === "waiting") && (

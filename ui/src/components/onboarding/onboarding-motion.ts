@@ -242,3 +242,31 @@ export const CTA_LABEL_IN = LINK_LABEL_FADE_IN;
  * and short enough not to feel stalled.
  */
 export const CONNECTED_HOLD_MS = 2000;
+
+/**
+ * The sign-in card arriving and leaving, and the footer moving because of it.
+ *
+ * These are sequenced rather than concurrent, and the ordering is the whole
+ * point. Running the collapse and the card's arrival together read as two
+ * unrelated things happening at once; run in order, the row answering the
+ * question is what *causes* the card to open.
+ *
+ * The footer is not animated directly. The card holds its own space while it
+ * fades — `AnimatePresence` keeps it mounted through its exit — so the footer
+ * only moves once the card is genuinely gone, and a `layout` animation carries
+ * it. That is why the exit is quick and the settle that follows is separate:
+ * "card goes, then the bar comes back up" is two beats, not one.
+ */
+export const CARD_ENTER = { duration: 0.3, ease: STEP_EASE } as const;
+export const CARD_EXIT = { duration: 0.18, ease: TAG_SWAP_EASE } as const;
+export const FOOTER_SETTLE = { duration: 0.34, ease: TAG_SWAP_EASE } as const;
+
+/**
+ * Milliseconds, for the timers that drive the sequence from one beat to the
+ * next. Kept beside the transitions they mirror so the two cannot drift — a
+ * timer that fires early would start the next beat over the top of the one
+ * still running, which is the exact fault this sequencing exists to fix.
+ */
+export const SOURCE_COLLAPSE_MS = SOURCE_COLLAPSE_MOVE.duration * 1000;
+export const CARD_EXIT_MS = CARD_EXIT.duration * 1000;
+export const FOOTER_SETTLE_MS = FOOTER_SETTLE.duration * 1000;
