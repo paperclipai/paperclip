@@ -671,6 +671,12 @@ describe("public repository paid workflow security", () => {
       workflow.indexOf("  report:"),
       workflow.indexOf("  publish_history:"),
     );
+    const sanitizer = report.slice(
+      report.indexOf("      - name: Qualify public preview raster sanitizer"),
+      report.indexOf(
+        "      - name: Prepare public history bundle with redacted layout previews",
+      ),
+    );
     const publisher = workflow.slice(workflow.indexOf("  publish_history:"));
     expect(publisher).toContain("id-token: write");
     expect(publisher).toContain("name: runner-e2e-history");
@@ -690,8 +696,41 @@ describe("public repository paid workflow security", () => {
     expect(workflow).toContain("unexpected_png=");
     expect(workflow).toContain("passed_count=");
     expect(workflow).toContain("pnpm test:e2e:runner:history:prepare");
-    expect(report).toContain("tesseract-ocr");
-    expect(report).toContain("tesseract --version");
+    expect(report).toContain("runs-on: ubuntu-24.04");
+    const sanitizerPackagePins = [
+      "imagemagick=8:6.9.12.98+dfsg1-5.2build2",
+      "imagemagick-6.q16=8:6.9.12.98+dfsg1-5.2build2",
+      "libgif7=5.2.2-1ubuntu1.2",
+      "liblept5=1.82.0-3build4",
+      "libtesseract5=5.3.4-1build5",
+      "tesseract-ocr=5.3.4-1build5",
+      "tesseract-ocr-eng=1:4.1.0-2",
+      "tesseract-ocr-osd=1:4.1.0-2",
+    ];
+    const sanitizerInstall = sanitizer.match(
+      /sudo apt-get install --no-install-recommends -y \\\n((?:\s+"[^"\n]+"(?: \\\n)?)+)/u,
+    );
+    expect(sanitizer.match(/sudo apt-get install/gu)).toHaveLength(1);
+    expect(
+      [...(sanitizerInstall?.[1] ?? "").matchAll(/"([^"\n]+)"/gu)].map(
+        (match) => match[1],
+      ),
+    ).toEqual(sanitizerPackagePins);
+    for (const packagePin of sanitizerPackagePins) {
+      expect(sanitizer).toContain(`"${packagePin}"`);
+      const separator = packagePin.indexOf("=");
+      expect(sanitizer).toContain(
+        `verify_package_version ${packagePin.slice(0, separator)} "${packagePin.slice(separator + 1)}"`,
+      );
+    }
+    expect(sanitizer).toContain('[ "${VERSION_CODENAME:-}" != "noble" ]');
+    expect(sanitizer).toContain("dpkg-query --show --showformat='${Version}'");
+    expect(sanitizer).toContain(
+      '[[ "$imagemagick_version" != "Version: ImageMagick 6.9.12-98 "* ]]',
+    );
+    expect(sanitizer).toContain(
+      '[ "$tesseract_version" != "tesseract 5.3.4" ]',
+    );
     expect(report).not.toContain("id-token: write");
     expect(report).not.toMatch(
       /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)_API_KEY/,

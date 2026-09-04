@@ -982,7 +982,7 @@ jobs:
     needs: [authorize, catalog, daytona_image, test]
     outputs:
       history_source_ready: ${{ steps.history_source_ready.outputs.ready }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       actions: read
@@ -1108,12 +1108,52 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          if ! command -v convert >/dev/null 2>&1 || ! command -v tesseract >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install --no-install-recommends -y imagemagick tesseract-ocr
+          . /etc/os-release
+          if [ "${VERSION_CODENAME:-}" != "noble" ]; then
+            echo "::error::Public preview sanitizer requires Ubuntu Noble, got ${VERSION_CODENAME:-unknown}" >&2
+            exit 1
           fi
-          convert -version
-          tesseract --version
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y \
+            "imagemagick=8:6.9.12.98+dfsg1-5.2build2" \
+            "imagemagick-6.q16=8:6.9.12.98+dfsg1-5.2build2" \
+            "libgif7=5.2.2-1ubuntu1.2" \
+            "liblept5=1.82.0-3build4" \
+            "libtesseract5=5.3.4-1build5" \
+            "tesseract-ocr=5.3.4-1build5" \
+            "tesseract-ocr-eng=1:4.1.0-2" \
+            "tesseract-ocr-osd=1:4.1.0-2"
+
+          verify_package_version() {
+            local package="$1"
+            local expected="$2"
+            local actual
+            actual="$(dpkg-query --show --showformat='${Version}' "$package")"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::Unexpected $package version: expected $expected, got $actual" >&2
+              return 1
+            fi
+          }
+          verify_package_version imagemagick "8:6.9.12.98+dfsg1-5.2build2"
+          verify_package_version imagemagick-6.q16 "8:6.9.12.98+dfsg1-5.2build2"
+          verify_package_version libgif7 "5.2.2-1ubuntu1.2"
+          verify_package_version liblept5 "1.82.0-3build4"
+          verify_package_version libtesseract5 "5.3.4-1build5"
+          verify_package_version tesseract-ocr "5.3.4-1build5"
+          verify_package_version tesseract-ocr-eng "1:4.1.0-2"
+          verify_package_version tesseract-ocr-osd "1:4.1.0-2"
+
+          imagemagick_version="$(convert -version | sed -n '1p')"
+          tesseract_version="$(tesseract --version | sed -n '1p')"
+          if [[ "$imagemagick_version" != "Version: ImageMagick 6.9.12-98 "* ]]; then
+            echo "::error::Unexpected ImageMagick binary version: $imagemagick_version" >&2
+            exit 1
+          fi
+          if [ "$tesseract_version" != "tesseract 5.3.4" ]; then
+            echo "::error::Unexpected Tesseract binary version: $tesseract_version" >&2
+            exit 1
+          fi
+          printf '%s\n' "$imagemagick_version" "$tesseract_version"
 
       - name: Prepare public history bundle with redacted layout previews
         id: prepare_public_history
