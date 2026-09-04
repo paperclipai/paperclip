@@ -3565,6 +3565,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   #applyProviderIdentityEvent(event: DurableRecoveryCommittedEvent): void {
+    if (
+      event.eventType !== "harness.ready" &&
+      event.eventType !== "session.started" &&
+      event.eventType !== "session.resumed"
+    ) {
+      return;
+    }
+    this.#providerIdentityEventType = event.eventType;
     const started = record(record(event.envelope.payload).payload);
     const runtimeIdentity = record(started.runtimeIdentity);
     const descriptor = record(started.providerDescriptor);
