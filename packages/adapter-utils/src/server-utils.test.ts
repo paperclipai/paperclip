@@ -566,6 +566,30 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("done");
   });
 
+  it("strips inherited nesting/session-leak vars (Claude guards, ACP_BACKEND) from the child env", async () => {
+    const savedAcp = process.env.ACP_BACKEND;
+    process.env.ACP_BACKEND = "windsurf";
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.stdout.write(JSON.stringify({ acp: process.env.ACP_BACKEND ?? null }))"],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 10,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout ?? "{}")).toEqual({ acp: null });
+    } finally {
+      if (savedAcp === undefined) delete process.env.ACP_BACKEND;
+      else process.env.ACP_BACKEND = savedAcp;
+    }
+  });
+
   it("waits for onSpawn before sending stdin to the child", async () => {
     const spawnDelayMs = 150;
     const startedAt = Date.now();

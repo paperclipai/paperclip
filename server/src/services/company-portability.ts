@@ -803,6 +803,12 @@ const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; valu
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
   ],
+  devin_local: [
+    // devin-local runs are intentionally time-bounded (default 1800s), unlike
+    // the unbounded local CLI adapters above.
+    { path: ["timeoutSec"], value: 1800 },
+    { path: ["graceSec"], value: 15 },
+  ],
   opencode_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },

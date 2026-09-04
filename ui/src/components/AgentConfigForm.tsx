@@ -63,6 +63,7 @@ import {
 } from "./agent-config-primitives";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
+import { buildDevinEffortOptions } from "../adapters/devin-local/effort-options";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
@@ -1091,17 +1092,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : "effort";
-  const thinkingEffortOptions =
-    adapterType === "codex_local"
-      ? codexThinkingEffortOptions
-      : adapterType === "cursor"
-        ? cursorModeOptions
-        : adapterType === "opencode_local"
-          ? openCodeThinkingEffortOptions
-          : adapterType === "kimi_local"
-            ? kimiThinkingEffortOptions
-            : claudeThinkingEffortOptions;
+          : adapterType === "devin_local"
+            ? "thinkingEffort"
+            : "effort";
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1114,7 +1107,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
-          : eff("adapterConfig", "effort", String(config.effort ?? ""));
+          : adapterType === "devin_local"
+            ? eff("adapterConfig", "thinkingEffort", String(config.thinkingEffort ?? ""))
+            : eff("adapterConfig", "effort", String(config.effort ?? ""));
+  const thinkingEffortOptions = (() => {
+    if (adapterType === "codex_local") return codexThinkingEffortOptions;
+    if (adapterType === "cursor") return cursorModeOptions;
+    if (adapterType === "opencode_local") return openCodeThinkingEffortOptions;
+    if (adapterType === "kimi_local") return kimiThinkingEffortOptions;
+    if (adapterType === "devin_local") {
+      const efforts = models.find((m) => m.id === currentModelId)?.efforts;
+      return buildDevinEffortOptions(efforts, currentThinkingEffort ?? "");
+    }
+    return claudeThinkingEffortOptions;
+  })();
   const showThinkingEffort = adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
     && adapterType !== "paperclip_runner";
@@ -1576,7 +1582,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 groupByProvider={adapterType === "opencode_local"}
                 creatable
                 detectedModel={detectedModel}
-                detectedModelCandidates={[]}
+                detectedModelCandidates={detectedModelCandidates}
                 onDetectModel={adapterType === "opencode_local"
                   ? undefined
                   : async () => {

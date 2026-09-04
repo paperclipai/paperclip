@@ -230,6 +230,13 @@ export interface AdapterExecutionContext {
 export interface AdapterModel {
   id: string;
   label: string;
+  /**
+   * Reasoning-effort tiers this model supports (e.g. ["auto", "low",
+   * "high"]), when the adapter can discover them per model. Adapters that
+   * populate this let the board offer only the tiers the selected model
+   * actually has instead of a union across all models.
+   */
+  efforts?: string[];
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";

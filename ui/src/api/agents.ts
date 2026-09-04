@@ -42,6 +42,8 @@ export interface AgentKey {
 export interface AdapterModel {
   id: string;
   label: string;
+  /** Reasoning-effort tiers this model supports, when the adapter discovers them per model. */
+  efforts?: string[];
 }
 
 export interface DetectedAdapterModel {

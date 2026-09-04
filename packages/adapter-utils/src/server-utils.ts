@@ -3470,6 +3470,13 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
+    // Strip ACP session-routing variables so a spawned CLI (notably the Devin
+    // CLI) never routes at a parent session's ACP backend: an inherited
+    // ACP_BACKEND makes every `devin` call report "Not logged in". Leaks in
+    // when the Paperclip server runs inside Devin Desktop / an ACP session.
+    // Same nesting-guard class as the Claude strip above.
+    delete rawMerged.ACP_BACKEND;
+
     const mergedEnv = ensurePathInEnv(rawMerged);
     if (opts.localProcessSandbox?.homeDir) {
       mergedEnv.HOME = opts.localProcessSandbox.homeDir;

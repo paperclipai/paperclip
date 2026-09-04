@@ -27,6 +27,7 @@ const joinAdapterOptions: AgentAdapterType[] = AGENT_ADAPTER_TYPES.filter(
 const ENABLED_INVITE_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
+  "devin_local",
   "gemini_local",
   "kimi_local",
   "opencode_local",

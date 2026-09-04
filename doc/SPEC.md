@@ -196,6 +196,7 @@ Agent configuration includes an **adapter** that defines how Paperclip invokes t
 | `http` | Send an HTTP request | `POST https://openclaw.example.com/hook/{id}` |
 | `claude_local` | Local Claude Code process | Claude Code heartbeat worker |
 | `codex_local` | Local Codex process | Codex CLI heartbeat worker |
+| `devin_local` | Local Devin process | Devin CLI heartbeat worker |
 | `opencode_local` | Local OpenCode process | OpenCode heartbeat worker |
 | `pi_local` | Local Pi process | Pi CLI heartbeat worker |
 | `cursor` | Cursor API/CLI bridge | Cursor-integrated heartbeat worker |

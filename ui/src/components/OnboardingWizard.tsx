@@ -1106,6 +1106,7 @@ function OnboardingWizardInner({
     isLocalAdapterCaps ||
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
+    adapterType === "devin_local" ||
     adapterType === "gemini_local" ||
     adapterType === "kimi_local" ||
     adapterType === "opencode_local" ||
@@ -1293,6 +1294,7 @@ function OnboardingWizardInner({
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
+    devin_local: "devin",
     gemini_local: "gemini",
     kimi_local: "kimi",
     pi_local: "pi",
@@ -3048,6 +3050,8 @@ function OnboardingWizardInner({
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
                               : adapterType === "kimi_local"
                                 ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format stream-json`
+                              : adapterType === "devin_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with hello." --export /tmp/devin-debug.atif`
                               : adapterType === "opencode_local"
                                 ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
@@ -3085,6 +3089,14 @@ function OnboardingWizardInner({
                                       : "opencode auth login"}
                               </span>
                               .
+                            </p>
+                          ) : adapterType === "devin_local" ? (
+                            <p className="text-muted-foreground">
+                              If auth fails, run{" "}
+                              <span className="font-mono">devin auth login</span>{" "}
+                              (or check{" "}
+                              <span className="font-mono">devin auth status</span>)
+                              and retry.
                             </p>
                           ) : (
                             <p className="text-muted-foreground">

@@ -821,8 +821,8 @@ jobs:
 
       - name: Run e2e tests
         env:
-          PAPERCLIP_E2E_SKIP_LLM: "true"
-          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
+          PAPERCLIP_E2E_SKIP_LLM: 'true'
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: 'chrome'
         run: |
           # Playwright's own --shard balances by test count, and one spec
           # (smoke-lab) is ~40% of the lane's wall clock. Partition by recorded
