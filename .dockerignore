@@ -29,3 +29,11 @@ packages/paperclip-runner/**/*.test.ts
 packages/paperclip-runner/**/*.test.tsx
 packages/paperclip-runner/runner/crates/*/tests
 packages/paperclip-runner/scripts/*-smoke.mjs
+# Exceptions (last match wins): the image build re-runs the runner's
+# generated-file drift checks, so their committed outputs and inputs must
+# survive the slimming above. 2026-09-04: the *.md rule stripped the
+# committed capability contract out of the context and every image build
+# on master failed its drift check — .github/docker-context-checks.Dockerfile
+# now guards this in PR CI.
+!packages/paperclip-runner/generated/**
+!packages/paperclip-runner/docs/capability-contract.md

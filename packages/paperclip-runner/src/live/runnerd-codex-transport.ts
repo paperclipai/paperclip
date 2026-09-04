@@ -34,7 +34,10 @@ import type {
   DurableRecoveryCommittedEvent,
   DurableRecoveryIdentity,
 } from "../contracts/durable-recovery.js";
-import type { HarnessRuntimeRequestResolution } from "../contracts/harness-driver.js";
+import type {
+  HarnessRuntimeRequestResolution,
+  PersistedHarnessProviderIdentity,
+} from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
   durableRecoveryInternals,
@@ -863,6 +866,17 @@ export interface CapabilityRunnerdCodexTransportOptions {
   };
   /** Provider turn recorded by the owner checkpoint when restoring an active run. */
   resumeActiveTurnId?: string | null;
+  /**
+   * Exact provider identity from the database checkpoint. A verified adopted
+   * runner may use this when its original identity event has left the bounded
+   * PRP replay window. Recovery remains blocked until an authenticated live
+   * snapshot or a fresh identity event matches this checkpoint.
+   */
+  resumeProviderSession?: {
+    driverSessionId: string;
+    providerSessionId?: string | null;
+    providerIdentity?: PersistedHarnessProviderIdentity;
+  };
   /** Explicitly permits ACPX to rotate its provider-native session after a governed wait. */
   providerRecoveryPolicy?:
     | "same_session_only"
@@ -978,8 +992,14 @@ export function resolveRunnerdSessionIdentity(input: unknown): {
     descriptor.processId ??
     started.processId ??
     started.pid;
-  const threadId = started.threadId ?? started.providerSessionId;
-  const sessionId = started.sessionId ?? started.providerAccountSessionId;
+  const threadId =
+    started.threadId ?? started.driverSessionId ?? started.providerSessionId;
+  const sessionId =
+    started.sessionId ??
+    started.providerAccountSessionId ??
+    (started.driverSessionId === undefined
+      ? undefined
+      : started.providerSessionId);
   return {
     processId: typeof processId === "number" ? processId : null,
     threadId:
@@ -1842,6 +1862,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #providerIdentity: Record<string, unknown> | null = null;
   #providerIdentityEventType:
     "harness.ready" | "session.started" | "session.resumed" | null = null;
+  #checkpointProviderIdentityExpectation: {
+    driverSessionId: string;
+    providerSessionId: string;
+    providerIdentity: Record<string, unknown> | null;
+  } | null = null;
+  #checkpointProviderIdentityConfirmed = false;
   #turnId = "";
   #turnStartResponsePending = false;
   #turnStartResponseEpoch = 0;
@@ -1999,11 +2025,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (method === "thread/read") {
       if (this.#core === null) await this.#resume();
-      // An authenticated recovered runner has already restarted the provider
-      // and emitted harness.ready with its exact durable thread identity. Ask
-      // runnerd for its provider snapshot rather than reading its filesystem:
-      // remote process owners need the same recovery contract as local ones.
+      // Ask the authenticated runner for its live provider snapshot rather
+      // than reading its filesystem. This both supports remote process owners
+      // and proves any identity restored after PRP event compaction before the
+      // checkpoint-backed thread is exposed to the driver.
       const snapshot = await this.#commandResult("session.snapshot", {});
+      this.#confirmCheckpointProviderIdentity(
+        snapshot,
+        "authenticated session.snapshot",
+      );
       const activeProviderTurnId =
         typeof snapshot.activeProviderTurnId === "string" &&
         snapshot.activeProviderTurnId.length > 0
@@ -2081,7 +2111,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await this.#command("session.destroy", params);
       return {};
     }
-    if (method === "thread/resume")
+    if (method === "thread/resume") {
+      if (
+        this.#checkpointProviderIdentityExpectation !== null &&
+        !this.#checkpointProviderIdentityConfirmed
+      ) {
+        const snapshot = await this.#commandResult("session.snapshot", {});
+        this.#confirmCheckpointProviderIdentity(
+          snapshot,
+          "authenticated session.snapshot",
+        );
+      }
       return {
         thread: {
           id: this.#threadId,
@@ -2091,6 +2131,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             : { providerIdentity: structuredClone(this.#providerIdentity) }),
         },
       };
+    }
     throw new Error(
       `PRP Codex transport does not expose provider method ${method}`,
     );
@@ -2333,9 +2374,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       clearInterval(this.#adoptedRunnerMonitor);
     this.#adoptedRunnerMonitor = null;
     this.#core?.disconnectActiveRunner();
-    if (this.#controlPlaneRelease !== null) await this.#controlPlaneRelease();
-    await this.#core?.stop();
+    const release = this.#controlPlaneRelease;
     this.#controlPlaneRelease = null;
+    await Promise.resolve(release?.()).catch((error: unknown) => {
+      this.#diagnostic(
+        `controller route release failed during restart detach: ${String(error)}`,
+      );
+    });
+    await this.#core?.stop().catch((error: unknown) => {
+      this.#diagnostic(
+        `controller authority stop failed during restart detach: ${String(error)}`,
+      );
+    });
     this.#handle = null;
     this.#queue.close();
     this.#diagnostic(
@@ -3192,6 +3242,31 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#applyProviderIdentityEvent(
         committedEvents[adoptedProviderIdentityIndex]!,
       );
+    } else if (
+      this.options.adoptExistingRunner &&
+      exactAuthority &&
+      adoptedProviderIdentityIndex < 0 &&
+      this.options.resumeProviderSession?.driverSessionId.trim() &&
+      this.options.resumeProviderSession.providerSessionId?.trim()
+    ) {
+      this.#threadId = this.options.resumeProviderSession.driverSessionId;
+      this.#sessionId = this.options.resumeProviderSession.providerSessionId;
+      if (this.options.resumeProviderSession.providerIdentity !== undefined) {
+        this.#providerIdentity = record(
+          structuredClone(this.options.resumeProviderSession.providerIdentity),
+        );
+      }
+      this.#checkpointProviderIdentityExpectation = {
+        driverSessionId: this.#threadId,
+        providerSessionId: this.#sessionId,
+        providerIdentity:
+          this.#providerIdentity === null
+            ? null
+            : structuredClone(this.#providerIdentity),
+      };
+      this.#diagnostic(
+        "restored adopted provider identity from the exact durable checkpoint after PRP event compaction; awaiting live confirmation",
+      );
     }
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
@@ -3398,7 +3473,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#pumpEvents();
       if (
         this.#threadId.length > 0 &&
-        (this.#evidence.providerExecutionKind === "remote_service" ||
+        (this.#checkpointProviderIdentityExpectation !== null ||
+          this.#evidence.providerExecutionKind === "remote_service" ||
           this.#evidence.providerPid !== null) &&
         (expectedEventType === undefined ||
           this.#providerIdentityEventType === expectedEventType)
@@ -3697,6 +3773,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       sessionId,
     } = resolveRunnerdSessionIdentity(started);
     const providerIdentity = record(started.providerIdentity);
+    this.#confirmCheckpointProviderIdentity(started, event.eventType);
     if (pid !== null) {
       this.#evidence.providerPid = pid;
       this.#evidence.providerProcessStartedAt = readLocalProcessStartedAt(pid);
@@ -3749,6 +3826,44 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#providerIdentity = structuredClone(providerIdentity);
     }
     this.#publish();
+  }
+
+  #confirmCheckpointProviderIdentity(input: unknown, source: string): void {
+    const checkpointExpectation = this.#checkpointProviderIdentityExpectation;
+    if (checkpointExpectation === null) return;
+    const { threadId, sessionId } = resolveRunnerdSessionIdentity(input);
+    const providerIdentity = record(record(input).providerIdentity);
+    if (
+      threadId === null &&
+      sessionId === null &&
+      typeof providerIdentity.kind !== "string"
+    ) {
+      return;
+    }
+    const providerIdentityMatches =
+      checkpointExpectation.providerIdentity === null ||
+      (typeof providerIdentity.kind === "string" &&
+        durableRecoveryInternals.canonicalJson(providerIdentity) ===
+          durableRecoveryInternals.canonicalJson(
+            checkpointExpectation.providerIdentity,
+          ));
+    const mismatchFields = [
+      ...(threadId === checkpointExpectation.driverSessionId
+        ? []
+        : ["driverSessionId"]),
+      ...(sessionId === checkpointExpectation.providerSessionId
+        ? []
+        : ["providerSessionId"]),
+      ...(providerIdentityMatches ? [] : ["providerIdentity"]),
+    ];
+    if (mismatchFields.length > 0) {
+      throw new Error(
+        `native_adopted_provider_identity_mismatch: ${source} did not match the exact durable checkpoint (${mismatchFields.join(", ")})`,
+      );
+    }
+    if (this.#checkpointProviderIdentityConfirmed) return;
+    this.#checkpointProviderIdentityConfirmed = true;
+    this.#diagnostic(`confirmed adopted provider identity against ${source}`);
   }
 
   #flushPendingTraceRehydrations(): void {

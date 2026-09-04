@@ -117,6 +117,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
+import { currentNativeControllerIdentity } from "../services/native-runtime/native-restart-recovery.ts";
 import {
   readHotRestartIntent,
   readProcessStartedAt,
@@ -1445,6 +1446,48 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("keeps a live native run owned by the current controller out of ambiguous recovery", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "paperclip_runner",
+      runtimeMode: "native",
+      processPid: child.pid ?? null,
+    });
+    const controller = await currentNativeControllerIdentity();
+    await db
+      .update(heartbeatRuns)
+      .set({ nativeIssueId: issueId, nativePhase: "observed" })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(nativeRunFinalizations).values({
+      runId,
+      companyId,
+      issueId,
+      phase: "observed",
+      attempt: 1,
+      leaseOwner: "current-controller:test",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      controllerBootId: controller.bootId,
+      controllerPid: controller.pid,
+      controllerProcessStartedAt: controller.processStartedAt,
+      controllerGeneration: 1,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "running",
+      error: null,
+      errorCode: null,
+      processPid: child.pid,
+    });
+    expect(mockTerminateLocalService).not.toHaveBeenCalled();
+  });
+
   it("does not reap a retryable native run while its same-run recovery path owns it", async () => {
     const { companyId, agentId, runId, issueId, wakeupRequestId } =
       await seedRunFixture({
@@ -2577,12 +2620,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("suspends native Paperclip Runner ownership on graceful restart without cancelling or creating a retry run", async () => {
-    const { agentId, runId, issueId, wakeupRequestId } =
-      await seedRunFixture({
-        adapterType: "paperclip_runner",
-        agentStatus: "running",
-        runtimeMode: "native",
-      });
+    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      adapterType: "paperclip_runner",
+      agentStatus: "running",
+      runtimeMode: "native",
+    });
     await db
       .update(heartbeatRuns)
       .set({ nativeIssueId: issueId })

@@ -259,6 +259,7 @@ async function renderForm(
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
+  const onSave = vi.fn();
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -274,7 +275,7 @@ async function renderForm(
             <AgentConfigForm
               mode="edit"
               agent={makeAgent(agentOverrides)}
-              onSave={vi.fn()}
+              onSave={onSave}
               hidePromptTemplate
               content={options.content}
               showAdapterTypeField={false}
@@ -287,7 +288,7 @@ async function renderForm(
   });
 
   await flushReact();
-  return { container, root };
+  return { container, root, onSave };
 }
 
 async function renderCreateForm(
@@ -722,6 +723,84 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).not.toContain("Environment override");
     expect(result.container.querySelector("select")).toBeNull();
+  });
+
+  it("renders GPT-6 Astra and its model-specific reasoning efforts", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterConfig: {
+          model: "gpt-6-astra",
+          modelReasoningEffort: "ultra",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("gpt-6-astra");
+    const effortButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Ultra");
+    expect(effortButton).not.toBeUndefined();
+
+    await act(async () => {
+      effortButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const effortChoices = Array.from(document.body.querySelectorAll("button"))
+      .map((button) => button.textContent?.replace(/\s+/g, "").trim());
+    expect(effortChoices).toContain("Maxmax");
+    expect(effortChoices).toContain("Ultraultra");
+    expect(effortChoices).not.toContain("Minimalminimal");
+  });
+
+  it("removes a legacy incompatible effort when the model changes to Astra", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterConfig: {
+          model: "gpt-5.6-sol",
+          reasoningEffort: "minimal",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    const modelButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "gpt-5.6-sol");
+    expect(modelButton).not.toBeUndefined();
+    await act(async () => {
+      modelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const astraOption = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "gpt-6-astra");
+    expect(astraOption).not.toBeUndefined();
+    await act(async () => {
+      astraOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const saveButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Save");
+    expect(saveButton).not.toBeUndefined();
+    await act(async () => {
+      saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(result.onSave).toHaveBeenCalledWith({
+      adapterConfig: { model: "gpt-6-astra" },
+      replaceAdapterConfig: true,
+    });
   });
 
   it("keeps secret access out of the main Configuration content", async () => {

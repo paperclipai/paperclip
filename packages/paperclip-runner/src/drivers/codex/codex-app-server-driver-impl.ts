@@ -93,8 +93,10 @@ function bootstrapCancellation(
     // completed. The cancellation reason remains authoritative if cleanup
     // itself reports a secondary failure.
     void close().then(
-      () => rejectAborted(signal?.reason ?? new Error("Codex bootstrap aborted")),
-      () => rejectAborted(signal?.reason ?? new Error("Codex bootstrap aborted")),
+      () =>
+        rejectAborted(signal?.reason ?? new Error("Codex bootstrap aborted")),
+      () =>
+        rejectAborted(signal?.reason ?? new Error("Codex bootstrap aborted")),
     );
   };
   signal?.addEventListener("abort", onAbort, { once: true });
@@ -120,6 +122,7 @@ function bootstrapCancellation(
 export class CodexAppServerDriver implements HarnessDriver {
   readonly #options: CodexAppServerDriverOptions;
   readonly #caps: CodexCapabilities;
+  readonly #persistedProcessIdentities = new WeakMap<object, string>();
 
   constructor(options: CodexAppServerDriverOptions) {
     this.#options = options;
@@ -157,7 +160,11 @@ export class CodexAppServerDriver implements HarnessDriver {
         this.#options.driverIdentity?.displayName ?? "Codex app-server",
       version: this.#options.driverIdentity?.version ?? DRIVER_VERSION,
       protocolVersion: CODEX_CODEX_PROTOCOL_VERSION,
-      runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" },
+      runtimeContextCapabilities: {
+        instructions: "native",
+        skills: "native",
+        mcp: "native",
+      },
       capabilities: {
         resume: this.#caps.resume,
         typedEvents: true,
@@ -210,44 +217,45 @@ export class CodexAppServerDriver implements HarnessDriver {
       const initialize = await cancellation.wait(this.#initialize(transport));
       const requestedMode =
         this.#options.requestedCollaborationMode ?? "default";
-      const response = await cancellation.wait(transport.request("thread/start", {
-        ...createSecuredCodexThreadParams(
-          workingDirectory,
-          requestedMode,
-          this.#options.includeCollaborationModeInstructions ?? true,
-          this.#options.includeSkillInstructions ?? false,
-        ),
-        approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
-        ...(this.#options.model ? { model: this.#options.model } : {}),
-        ...(this.#direct()
-          ? {}
-          : {
-              baseInstructions: this.#baseInstructions(),
-              completionContract: {
-                revision:
-                  this.#options.taskEnvelope.completionContract.revision,
-                criterionIds:
-                  this.#options.taskEnvelope.completionContract.criteria.map(
-                    (criterion) => criterion.id,
-                  ),
-              },
-            }),
-        dynamicTools: this.#direct()
-          ? []
-          : this.#caps.dynamicTools
-            ? [
-                ...(this.#options.dynamicTools ?? []),
-                ...codexSemanticToolSpecs(),
-              ]
-            : [],
-        experimentalRawEvents: false,
-        persistExtendedHistory: false,
-      }));
-      const collaborationMode = await cancellation.wait(this.#negotiateCollaborationMode(
-        transport,
-        response,
-        requestedMode,
-      ));
+      const response = await cancellation.wait(
+        transport.request("thread/start", {
+          ...createSecuredCodexThreadParams(
+            workingDirectory,
+            requestedMode,
+            this.#options.includeCollaborationModeInstructions ?? true,
+            this.#options.includeSkillInstructions ?? false,
+          ),
+          approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
+          ...(this.#options.model ? { model: this.#options.model } : {}),
+          ...(this.#direct()
+            ? {}
+            : {
+                baseInstructions: this.#baseInstructions(),
+                completionContract: {
+                  revision:
+                    this.#options.taskEnvelope.completionContract.revision,
+                  criterionIds:
+                    this.#options.taskEnvelope.completionContract.criteria.map(
+                      (criterion) => criterion.id,
+                    ),
+                },
+              }),
+          dynamicTools: this.#direct()
+            ? []
+            : this.#caps.dynamicTools
+              ? [
+                  ...(this.#options.dynamicTools ?? []),
+                  ...codexSemanticToolSpecs(),
+                ]
+              : [],
+          experimentalRawEvents: false,
+          persistExtendedHistory: false,
+        }),
+      );
+      await cancellation.wait(this.#persistProcessOwnership(transport));
+      const collaborationMode = await cancellation.wait(
+        this.#negotiateCollaborationMode(transport, response, requestedMode),
+      );
       const opened = this.#openedThread(
         response,
         initialize,
@@ -309,15 +317,24 @@ export class CodexAppServerDriver implements HarnessDriver {
     }
     const transport = this.#transport({
       providerRecoveryPolicy: snapshot.providerRecoveryPolicy,
+      persistedSession: {
+        driverSessionId: snapshot.driverSessionId,
+        providerSessionId: snapshot.providerSessionId,
+        providerIdentity: snapshot.providerIdentity,
+        activeTurnId: snapshot.activeTurnId,
+      },
     });
     const cancellation = bootstrapCancellation(transport, options.signal);
     try {
       await cancellation.wait(this.#persistProcessOwnership(transport));
       const initialize = await cancellation.wait(this.#initialize(transport));
-      const existing = await cancellation.wait(transport.request("thread/read", {
-        threadId: snapshot.driverSessionId,
-        includeTurns: true,
-      }));
+      const existing = await cancellation.wait(
+        transport.request("thread/read", {
+          threadId: snapshot.driverSessionId,
+          includeTurns: true,
+        }),
+      );
+      await cancellation.wait(this.#persistProcessOwnership(transport));
       const existingThread = record(existing.thread);
       if (text(existingThread.id) !== snapshot.driverSessionId) {
         await cancellation.wait(cancellation.close());
@@ -331,26 +348,29 @@ export class CodexAppServerDriver implements HarnessDriver {
         this.#options.environment,
         this.#options.workingDirectoryAuthority,
       );
-      const response = await cancellation.wait(transport.request("thread/resume", {
-        threadId: snapshot.driverSessionId,
-        ...createSecuredCodexThreadParams(
-          workingDirectory,
+      const response = await cancellation.wait(
+        transport.request("thread/resume", {
+          threadId: snapshot.driverSessionId,
+          ...createSecuredCodexThreadParams(
+            workingDirectory,
+            this.#options.requestedCollaborationMode ?? "default",
+            this.#options.includeCollaborationModeInstructions ?? true,
+            this.#options.includeSkillInstructions ?? false,
+          ),
+          baseInstructions: this.#direct() ? "" : this.#baseInstructions(),
+          approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
+          ...(this.#options.model ? { model: this.#options.model } : {}),
+          persistExtendedHistory: false,
+        }),
+      );
+      await cancellation.wait(this.#persistProcessOwnership(transport));
+      const collaborationMode = await cancellation.wait(
+        this.#negotiateCollaborationMode(
+          transport,
+          response,
           this.#options.requestedCollaborationMode ?? "default",
-          this.#options.includeCollaborationModeInstructions ?? true,
-          this.#options.includeSkillInstructions ?? false,
         ),
-        baseInstructions: this.#direct()
-          ? ""
-          : this.#baseInstructions(),
-        approvalPolicy: this.#options.approvalPolicy ?? "untrusted",
-        ...(this.#options.model ? { model: this.#options.model } : {}),
-        persistExtendedHistory: false,
-      }));
-      const collaborationMode = await cancellation.wait(this.#negotiateCollaborationMode(
-        transport,
-        response,
-        this.#options.requestedCollaborationMode ?? "default",
-      ));
+      );
       const opened = this.#openedThread(
         response,
         initialize,
@@ -404,16 +424,14 @@ export class CodexAppServerDriver implements HarnessDriver {
       let reconcileUncheckpointedDispositionTurn = false;
       let providerTurnIds: Set<string> | null = null;
       if (
-        !this.#direct()
-        && snapshot.semanticResult == null
-        && recoveredActiveTurnId === null
-        && (snapshot.terminalTurns?.length ?? 0) > 0
+        !this.#direct() &&
+        snapshot.semanticResult == null &&
+        recoveredActiveTurnId === null &&
+        (snapshot.terminalTurns?.length ?? 0) > 0
       ) {
         const providerHistory = existingThread.turns;
         const providerHistoryIsArray = Array.isArray(providerHistory);
-        const turns = providerHistoryIsArray
-          ? providerHistory.map(record)
-          : [];
+        const turns = providerHistoryIsArray ? providerHistory.map(record) : [];
         const terminalIds = new Set(
           (snapshot.terminalTurns ?? []).map((turn) => turn.turnId),
         );
@@ -432,14 +450,16 @@ export class CodexAppServerDriver implements HarnessDriver {
               .filter((turnId) => turnId.length > 0),
           );
         }
-        const laterTurns = lastKnownTerminalIndex < 0
-          ? []
-          : turns.slice(lastKnownTerminalIndex + 1);
+        const laterTurns =
+          lastKnownTerminalIndex < 0
+            ? []
+            : turns.slice(lastKnownTerminalIndex + 1);
         if (laterTurns.length > 1) {
           await cancellation.wait(cancellation.close());
           return {
             recovered: false,
-            reason: "provider exposed multiple uncheckpointed disposition recovery turns",
+            reason:
+              "provider exposed multiple uncheckpointed disposition recovery turns",
           };
         }
         const uncheckpointedTurnId = text(laterTurns[0]?.id);
@@ -447,13 +467,14 @@ export class CodexAppServerDriver implements HarnessDriver {
           await cancellation.wait(cancellation.close());
           return {
             recovered: false,
-            reason: "provider exposed an unidentifiable disposition recovery turn",
+            reason:
+              "provider exposed an unidentifiable disposition recovery turn",
           };
         }
         if (uncheckpointedTurnId.length > 0) {
           if (
-            dispositionOnlyRecoveryTurnId !== null
-            && dispositionOnlyRecoveryTurnId !== uncheckpointedTurnId
+            dispositionOnlyRecoveryTurnId !== null &&
+            dispositionOnlyRecoveryTurnId !== uncheckpointedTurnId
           ) {
             await cancellation.wait(cancellation.close());
             return {
@@ -473,19 +494,15 @@ export class CodexAppServerDriver implements HarnessDriver {
         }
       }
       if (
-        dispositionOnlyRecoveryConsumed
-        && recoveredActiveTurnId === null
-        && !reconcileUncheckpointedDispositionTurn
-        && providerTurnIds !== null
-        && (
-          dispositionOnlyRecoveryTurnId === null
-          || (
-            !providerTurnIds.has(dispositionOnlyRecoveryTurnId)
-            && !(snapshot.terminalTurns ?? []).some(
+        dispositionOnlyRecoveryConsumed &&
+        recoveredActiveTurnId === null &&
+        !reconcileUncheckpointedDispositionTurn &&
+        providerTurnIds !== null &&
+        (dispositionOnlyRecoveryTurnId === null ||
+          (!providerTurnIds.has(dispositionOnlyRecoveryTurnId) &&
+            !(snapshot.terminalTurns ?? []).some(
               (terminal) => terminal.turnId === dispositionOnlyRecoveryTurnId,
-            )
-          )
-        )
+            )))
       ) {
         // Older or crash-raced checkpoints could persist the pre-request
         // one-shot marker, including a requested turn id, without an accepted
@@ -536,6 +553,13 @@ export class CodexAppServerDriver implements HarnessDriver {
 
   #transport(context?: {
     providerRecoveryPolicy?: PersistedHarnessSession["providerRecoveryPolicy"];
+    persistedSession?: Pick<
+      PersistedHarnessSession,
+      | "driverSessionId"
+      | "providerSessionId"
+      | "providerIdentity"
+      | "activeTurnId"
+    >;
   }): CodexAppServerTransport {
     return (
       this.#options.transportFactory?.(context) ??
@@ -592,11 +616,14 @@ export class CodexAppServerDriver implements HarnessDriver {
     const processInfo: CodexTransportProcessInfo | undefined =
       transport.processInfo?.();
     if (!processInfo || processInfo.exited || processInfo.pid === null) return;
+    const identity = `${processInfo.pid}:${processInfo.processGroupId ?? ""}:${processInfo.startedAt}`;
+    if (this.#persistedProcessIdentities.get(transport) === identity) return;
     await this.#options.onSpawn({
       pid: processInfo.pid,
       processGroupId: processInfo.processGroupId,
       startedAt: processInfo.startedAt,
     });
+    this.#persistedProcessIdentities.set(transport, identity);
   }
 
   async #initialize(
@@ -653,7 +680,10 @@ export class CodexAppServerDriver implements HarnessDriver {
     if (threadId.length === 0)
       throw new Error("Codex thread response omitted thread.id");
     const providerSessionId = text(thread.sessionId) || null;
-    if (this.#options.requireProviderSessionIdentity && providerSessionId === null) {
+    if (
+      this.#options.requireProviderSessionIdentity &&
+      providerSessionId === null
+    ) {
       throw new Error(
         `provider_initialize_protocol_error: provider=${this.#options.driverIdentity?.kind ?? "codex"} stage=session.open omitted provider session identity`,
       );
@@ -713,7 +743,9 @@ export class CodexAppServerDriver implements HarnessDriver {
           networkAccess: false,
         },
         approvalPolicy: boundedCodexValue(
-          response.approvalPolicy ?? this.#options.approvalPolicy ?? "untrusted",
+          response.approvalPolicy ??
+            this.#options.approvalPolicy ??
+            "untrusted",
         ),
         baseInstructions: this.#baseInstructions(),
         instructionSources: Array.isArray(response.instructionSources)

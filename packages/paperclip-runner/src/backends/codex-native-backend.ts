@@ -1,5 +1,6 @@
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
+import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type {
   NativeSessionBackend,
   PersistedNativeSession,
@@ -8,7 +9,10 @@ import type { CodexAppServerTransport } from "../drivers/codex/app-server-transp
 import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
 import type { CodexWorkingDirectoryAuthority } from "../drivers/codex/codex-boundaries.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
-import { nativeSystemInstructions, nativeTaskConstraints } from "./runtime-context.js";
+import {
+  nativeSystemInstructions,
+  nativeTaskConstraints,
+} from "./runtime-context.js";
 
 export interface CodexNativeSessionBackendOptions {
   /** Effective provider environment, including the assigned workspace boundary. */
@@ -23,6 +27,13 @@ export interface CodexNativeSessionBackendOptions {
   }) => Promise<void>;
   transportFactory?: (context?: {
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
+    persistedSession?: Pick<
+      PersistedHarnessSession,
+      | "driverSessionId"
+      | "providerSessionId"
+      | "providerIdentity"
+      | "activeTurnId"
+    >;
   }) => CodexAppServerTransport;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: (call: {
@@ -34,9 +45,7 @@ export interface CodexNativeSessionBackendOptions {
   }) => Promise<unknown>;
 }
 
-function transportDriverIdentity(
-  input: NativeExecutionInput,
-): {
+function transportDriverIdentity(input: NativeExecutionInput): {
   kind:
     | "codex_app_server"
     | "opencode_server"
@@ -108,66 +117,68 @@ function createTransportBackedNativeSessionBackend(
     input.provider.kind === "opencode" ||
     input.provider.kind === "acpx";
   if (
-    input.provider.kind === "codex"
-    && input.provider.approvalPolicy !== undefined
-    && input.provider.approvalPolicy !== "never"
+    input.provider.kind === "codex" &&
+    input.provider.approvalPolicy !== undefined &&
+    input.provider.approvalPolicy !== "never"
   ) {
     throw new Error(
       "paperclip_runner_codex_permission_mode_unqualified: set codexPermissionMode to never before starting or recovering this native run",
     );
   }
 
-  return new HarnessDriverBackend(new CodexAppServerDriver({
-    ...(input.provider.model ? { model: input.provider.model } : {}),
-    // Runnerd owns provider permissions for non-Codex facades. Their
-    // Codex-compatible surface must never open a second approval channel.
-    approvalPolicy:
-      input.provider.kind === "codex"
-        ? input.provider.approvalPolicy ?? "never"
-        : "never",
-    baseInstructions: nativeSystemInstructions(input),
-    includeSkillInstructions: isCodex && "runtimeContext" in input,
-    requestedCollaborationMode:
-      supportsCollaborativePlanning && "executionMode" in input
-        ? input.executionMode
-        : "default",
-    taskEnvelope: createCodexTaskEnvelope({
-      objective: input.completionContract.contract.objective,
-      contractRevision: input.completionContract.contract.revision,
-      criteria: input.completionContract.contract.criteria,
-      constraints: [
-        "Work only inside the supplied working directory.",
-        ...(supportsCollaborativePlanning &&
+  return new HarnessDriverBackend(
+    new CodexAppServerDriver({
+      ...(input.provider.model ? { model: input.provider.model } : {}),
+      // Runnerd owns provider permissions for non-Codex facades. Their
+      // Codex-compatible surface must never open a second approval channel.
+      approvalPolicy:
+        input.provider.kind === "codex"
+          ? (input.provider.approvalPolicy ?? "never")
+          : "never",
+      baseInstructions: nativeSystemInstructions(input),
+      includeSkillInstructions: isCodex && "runtimeContext" in input,
+      requestedCollaborationMode:
+        supportsCollaborativePlanning && "executionMode" in input
+          ? input.executionMode
+          : "default",
+      taskEnvelope: createCodexTaskEnvelope({
+        objective: input.completionContract.contract.objective,
+        contractRevision: input.completionContract.contract.revision,
+        criteria: input.completionContract.contract.criteria,
+        constraints: [
+          "Work only inside the supplied working directory.",
+          ...(supportsCollaborativePlanning &&
           "executionMode" in input &&
           input.executionMode === "plan"
-          ? [
-              "Use native plan collaboration mode and do not modify workspace files.",
-              "Treat the supplied Paperclip planning context as the canonical pinned base revision.",
-              "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
-              "Keep the final response to a short synchronization summary instead of repeating the full plan.",
-            ]
-          : []),
-        ...nativeTaskConstraints(input),
-        "Return one semantic completion result.",
-      ],
+            ? [
+                "Use native plan collaboration mode and do not modify workspace files.",
+                "Treat the supplied Paperclip planning context as the canonical pinned base revision.",
+                "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
+                "Keep the final response to a short synchronization summary instead of repeating the full plan.",
+              ]
+            : []),
+          ...nativeTaskConstraints(input),
+          "Return one semantic completion result.",
+        ],
+      }),
+      runnerInstanceId:
+        options.runnerInstanceId ?? `paperclip-native-${input.binding.runId}`,
+      onSpawn: options.onSpawn,
+      transportFactory: options.transportFactory,
+      dynamicTools: options.dynamicTools,
+      dynamicToolHandler: options.dynamicToolHandler,
+      environment: options.environment,
+      workingDirectoryAuthority: options.workingDirectoryAuthority,
+      driverIdentity,
+      capabilities: isCodex
+        ? {}
+        : { steering: false, goals: false, threadLineage: false },
+      collaborationModes: supportsCollaborativePlanning
+        ? ["default", "plan"]
+        : ["default"],
+      requireProviderSessionIdentity: options.transportFactory !== undefined,
     }),
-    runnerInstanceId:
-      options.runnerInstanceId ?? `paperclip-native-${input.binding.runId}`,
-    onSpawn: options.onSpawn,
-    transportFactory: options.transportFactory,
-    dynamicTools: options.dynamicTools,
-    dynamicToolHandler: options.dynamicToolHandler,
-    environment: options.environment,
-    workingDirectoryAuthority: options.workingDirectoryAuthority,
-    driverIdentity,
-    capabilities: isCodex
-      ? {}
-      : { steering: false, goals: false, threadLineage: false },
-    collaborationModes: supportsCollaborativePlanning
-      ? ["default", "plan"]
-      : ["default"],
-    requireProviderSessionIdentity: options.transportFactory !== undefined,
-  }));
+  );
 }
 
 /**

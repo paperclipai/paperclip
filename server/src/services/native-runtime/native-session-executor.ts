@@ -120,6 +120,32 @@ export class NativeCancellationPendingRecoveryError extends Error {
 }
 
 const activeNativeSessions = new Map<string, ActiveNativeSession>();
+
+export async function detachNativeSessionsForRestart(
+  runIds: readonly string[],
+): Promise<{
+  detachedRunIds: string[];
+  inactiveRunIds: string[];
+  unsupportedRunIds: string[];
+}> {
+  const detachedRunIds: string[] = [];
+  const inactiveRunIds: string[] = [];
+  const unsupportedRunIds: string[] = [];
+  for (const runId of new Set(runIds)) {
+    const active = activeNativeSessions.get(runId);
+    if (!active) {
+      inactiveRunIds.push(runId);
+      continue;
+    }
+    if (active.session.detachControllerForRestart === undefined) {
+      unsupportedRunIds.push(runId);
+      continue;
+    }
+    await active.session.detachControllerForRestart();
+    detachedRunIds.push(runId);
+  }
+  return { detachedRunIds, inactiveRunIds, unsupportedRunIds };
+}
 const MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
@@ -2228,21 +2254,29 @@ function loadWarmNativeCheckpoint(
   ) {
     throw new Error("native_session_supervisor_checkpoint_mismatch");
   }
-  const resumed = {
-    ...envelope.snapshot,
-    identity: {
-      runId: execution.binding.runId,
-      sessionId: nativeSessionKey(execution),
-      companyId: execution.binding.companyId,
-      issueId: execution.binding.issueId,
-      agentId: execution.binding.agentId,
-    },
-    semanticResult: null,
-    terminal: null,
-    activeTurnId: null,
-    terminalTurns: [],
-    pendingRuntimeRequests: [],
-  };
+  const sameRunRecovery =
+    persistedIdentity.runId === execution.binding.runId &&
+    persistedIdentity.issueId === execution.binding.issueId;
+  const resumed = sameRunRecovery
+    ? structuredClone(envelope.snapshot)
+    : {
+        ...envelope.snapshot,
+        identity: {
+          runId: execution.binding.runId,
+          sessionId: nativeSessionKey(execution),
+          companyId: execution.binding.companyId,
+          issueId: execution.binding.issueId,
+          agentId: execution.binding.agentId,
+        },
+        // A warm provider can be rebound only after the previous run settled.
+        // Its provider identity survives, but run-scoped turn, result, and
+        // request authority must not cross into the new heartbeat run.
+        semanticResult: null,
+        terminal: null,
+        activeTurnId: null,
+        terminalTurns: [],
+        pendingRuntimeRequests: [],
+      };
   if (path !== scopedPath) {
     // Copy the validated legacy checkpoint into the fully scoped location.
     // persistWarmNativeCheckpoint uses an atomic rename and leaving the old
@@ -7092,6 +7126,9 @@ async function createRunnerdBackendWithinSessionClaim(
               (criterion) => criterion.id,
             ),
         },
+        resumeActiveTurnId:
+          recoveryContext?.persistedSession?.activeTurnId ?? null,
+        resumeProviderSession: recoveryContext?.persistedSession,
         providerRecoveryPolicy:
           recoveryContext?.providerRecoveryPolicy ??
           (input.execution.provider.kind === "acpx" &&

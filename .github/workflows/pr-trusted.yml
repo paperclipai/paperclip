@@ -513,11 +513,40 @@ jobs:
             pnpm test:run:general -- --group '${{ matrix.group }}'
           fi
 
+  docker_context_integrity:
+    name: Docker context integrity
+    needs: gate
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Not every runner the gate can select ships the Buildx plugin —
+      # the image-build workflows set it up explicitly, so this lane does
+      # too rather than failing before it checks anything.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      # Same .dockerignore semantics as the real image builds: a
+      # context-slimming change that strips a committed build input must
+      # fail here, on the pull request, instead of failing every
+      # post-merge image build. (2026-09-04: a new **/*.md ignore rule
+      # stripped the committed capability contract out of the context;
+      # every Docker build on master failed its drift check and no cloud
+      # image published for eight hours while PR CI stayed green.)
+      - name: Run generated-file drift checks against the Docker build context
+        run: docker buildx build --file .github/docker-context-checks.Dockerfile .
+
   verify:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [gate, policy, typecheck_release_registry, general_tests, build]
+    needs: [gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
 
@@ -529,6 +558,7 @@ jobs:
           TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          DOCKER_CONTEXT_INTEGRITY_RESULT: ${{ needs.docker_context_integrity.result }}
         run: |
           test "$POLICY_RESULT" = "success"
           case "$FULL_CI" in
@@ -536,11 +566,13 @@ jobs:
               test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
               test "$GENERAL_TESTS_RESULT" = "success"
               test "$BUILD_RESULT" = "success"
+              test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"
               ;;
             false)
               test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"
               test "$GENERAL_TESTS_RESULT" = "skipped"
               test "$BUILD_RESULT" = "skipped"
+              test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"
               ;;
             *)
               echo "Invalid full_ci decision: $FULL_CI" >&2

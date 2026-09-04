@@ -135,9 +135,11 @@ export type HarnessRuntimeRequestResolution =
       response: PaperclipQuestionResponse;
     };
 
-export type HarnessRuntimeRequestAction = HarnessRuntimeRequestResolution["action"];
+export type HarnessRuntimeRequestAction =
+  HarnessRuntimeRequestResolution["action"];
 
-export type HarnessRuntimeRequestHandoffResult = "handed_off" | "already_settled";
+export type HarnessRuntimeRequestHandoffResult =
+  "handed_off" | "already_settled";
 
 /**
  * A runtime-input handoff commits its durable state transition before the
@@ -174,7 +176,9 @@ function plainRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function parseAnswers(value: unknown): Record<string, { answers: string[] }> | null {
+function parseAnswers(
+  value: unknown,
+): Record<string, { answers: string[] }> | null {
   const fields = plainRecord(value);
   if (fields === null || Object.keys(fields).length === 0) return null;
   const parsed: Record<string, { answers: string[] }> = {};
@@ -210,7 +214,12 @@ export function parseHarnessRuntimeRequestResolution(
     );
   }
   const action = rawAction as HarnessRuntimeRequestAction;
-  if (action !== "submit" && ("answers" in candidate || "content" in candidate || "response" in candidate)) {
+  if (
+    action !== "submit" &&
+    ("answers" in candidate ||
+      "content" in candidate ||
+      "response" in candidate)
+  ) {
     throw new HarnessRuntimeRequestResolutionError(
       requestKind,
       `${action} does not carry submitted form data`,
@@ -239,7 +248,10 @@ export function parseHarnessRuntimeRequestResolution(
     try {
       return {
         action,
-        response: parsePaperclipQuestionResponse(questionSet, candidate.response),
+        response: parsePaperclipQuestionResponse(
+          questionSet,
+          candidate.response,
+        ),
       };
     } catch (error) {
       throw new HarnessRuntimeRequestResolutionError(
@@ -344,10 +356,14 @@ export function harnessRuntimeRequestOutcome(
     itemId: request.itemId,
     ...(outcome.action ? { action: outcome.action } : {}),
     ...(outcome.reason ? { reason: outcome.reason } : {}),
-    ...(outcome.response ? { response: structuredClone(outcome.response) } : {}),
+    ...(outcome.response
+      ? { response: structuredClone(outcome.response) }
+      : {}),
     ...(request.input
       ? {
-          ...(request.origin?.adapter ? { adapter: request.origin.adapter } : {}),
+          ...(request.origin?.adapter
+            ? { adapter: request.origin.adapter }
+            : {}),
           requestType: "input" as const,
         }
       : {}),
@@ -385,7 +401,13 @@ export function harnessRuntimeInputExpiredOutcome(
 export interface HarnessThreadGoal {
   threadId: string;
   objective: string;
-  status: "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
+  status:
+    | "active"
+    | "paused"
+    | "blocked"
+    | "usageLimited"
+    | "budgetLimited"
+    | "complete";
   tokenBudget: number | null;
   tokensUsed: number;
   timeUsedSeconds: number;
@@ -480,9 +502,20 @@ export interface HarnessSession {
   startTurn(input: {
     message: NativeUserMessage;
     requestedCollaborationMode?: "default" | "plan";
-  }): Promise<{ turnId: string; effectiveCollaborationMode?: "default" | "plan" }>;
-  steer?(input: { turnId: string; message: NativeUserMessage; correlationId?: string }): Promise<void>;
-  interrupt?(input: { turnId?: string; reason?: string; signal?: AbortSignal }): Promise<void>;
+  }): Promise<{
+    turnId: string;
+    effectiveCollaborationMode?: "default" | "plan";
+  }>;
+  steer?(input: {
+    turnId: string;
+    message: NativeUserMessage;
+    correlationId?: string;
+  }): Promise<void>;
+  interrupt?(input: {
+    turnId?: string;
+    reason?: string;
+    signal?: AbortSignal;
+  }): Promise<void>;
   pendingRuntimeRequests?(): HarnessRuntimeRequest[];
   resolveRuntimeRequest?(input: {
     requestId: string;
@@ -503,6 +536,8 @@ export interface HarnessSession {
   usage?(): Promise<Record<string, unknown> | null>;
   transcript?(): Promise<HarnessTranscriptSnapshot>;
   snapshot(): Promise<PersistedHarnessSession>;
+  /** Relinquish controller authority without semantically closing the session. */
+  detachControllerForRestart?(): Promise<void>;
   close(input: { reason: string; force?: boolean }): Promise<void>;
 }
 

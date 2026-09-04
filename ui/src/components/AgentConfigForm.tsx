@@ -83,6 +83,7 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
 /* ---- Create mode values ---- */
 
@@ -199,15 +200,6 @@ function formatArgList(value: unknown): string {
   }
   return typeof value === "string" ? value : "";
 }
-
-const codexThinkingEffortOptions = [
-  { id: "", label: "Auto" },
-  { id: "minimal", label: "Minimal" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
-] as const;
 
 const openCodeThinkingEffortOptions = [
   { id: "", label: "Auto" },
@@ -1094,7 +1086,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
-      ? codexThinkingEffortOptions
+      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
+          id: option.value,
+          label: option.label,
+        }))
       : adapterType === "cursor"
         ? cursorModeOptions
         : adapterType === "opencode_local"
@@ -1564,11 +1559,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               <ModelDropdown
                 models={models}
                 value={currentModelId}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
-                }
+                onChange={(v) => {
+                  const supportedEfforts = codexReasoningEffortOptions(v, "Auto");
+                  const clearUnsupportedEffort = adapterType === "codex_local"
+                    && Boolean(currentThinkingEffort)
+                    && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
+                  if (isCreate) {
+                    set!({
+                      model: v,
+                      ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
+                    });
+                    return;
+                  }
+                  mark("adapterConfig", "model", v || undefined);
+                  if (clearUnsupportedEffort) {
+                    mark("adapterConfig", thinkingEffortKey, undefined);
+                    mark("adapterConfig", "reasoningEffort", undefined);
+                  }
+                }}
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 allowDefault={adapterType !== "opencode_local"}
