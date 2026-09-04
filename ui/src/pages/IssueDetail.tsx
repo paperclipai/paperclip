@@ -5405,10 +5405,12 @@ export function IssueDetail() {
     sourceBreadcrumb.href,
   ]);
 
-  // One maximize request per distinct `viewer=full` hash: routing re-runs
+  // One maximize request per issue + `viewer=full` hash: routing re-runs
   // whenever a callback dependency changes identity, and re-requesting then
-  // would re-maximize a pane the user deliberately restored.
-  const lastMaximizeRequestHashRef = useRef<string | null>(null);
+  // would re-maximize a pane the user deliberately restored. The key carries
+  // the issue param so navigating to another issue with an identical hash
+  // still maximizes the destination pane.
+  const lastMaximizeRequestKeyRef = useRef<string | null>(null);
   const routeIssueDocumentDeepLink = useCallback(
     (hash: string) => {
       const route = resolveIssueDocumentDeepLink(hash);
@@ -5435,9 +5437,12 @@ export function IssueDetail() {
         // `viewer=full` (LOOA-2181): external links (Slack approval cards)
         // land with the pane maximized. Mobile uses the sheet, which is
         // already full-screen, so the request is desktop-only.
-        if (route.maximize && lastMaximizeRequestHashRef.current !== hash) {
-          lastMaximizeRequestHashRef.current = hash;
-          requestPanelMaximize();
+        if (route.maximize) {
+          const requestKey = `${issueId ?? ""}::${hash}`;
+          if (lastMaximizeRequestKeyRef.current !== requestKey) {
+            lastMaximizeRequestKeyRef.current = requestKey;
+            requestPanelMaximize();
+          }
         }
       }
       const targetIssueId = issue?.id ?? issueId ?? "";
@@ -5468,7 +5473,7 @@ export function IssueDetail() {
       // The deep link ended (hash cleared or issue changed): drop any
       // maximize request the panel never consumed so it cannot maximize a
       // later, unrelated panel, and re-arm for the next viewer=full hash.
-      lastMaximizeRequestHashRef.current = null;
+      lastMaximizeRequestKeyRef.current = null;
       clearPanelMaximizeRequest();
     }
   }, [issueId, location.hash, routeIssueDocumentDeepLink, clearPanelMaximizeRequest]);
