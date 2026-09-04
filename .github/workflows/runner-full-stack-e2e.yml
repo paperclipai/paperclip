@@ -351,18 +351,21 @@ jobs:
       source_revision: ${{ steps.image.outputs.source_revision }}
       content_id: ${{ steps.image.outputs.content_id }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - if: needs.catalog.outputs.needs_daytona == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.authorize.outputs.target_sha }}
           persist-credentials: false
 
       - name: Download resolved target lockfile
+        if: needs.catalog.outputs.needs_daytona == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-e2e-target-lock
 
       - name: Restore resolved target lockfile
+        if: needs.catalog.outputs.needs_daytona == 'true'
         env:
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
           EXPECTED_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}

@@ -186,6 +186,10 @@ describe("public repository paid workflow security", () => {
       fullStack.indexOf("  target_lock:"),
       fullStack.indexOf("  catalog:"),
     );
+    const daytonaImageJob = fullStack.slice(
+      fullStack.indexOf("  daytona_image:"),
+      fullStack.indexOf("  build_runner_artifacts:"),
+    );
     expect(authorizeJob).toContain(
       "aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'",
     );
@@ -287,6 +291,25 @@ describe("public repository paid workflow security", () => {
     expect(fullStack).toContain(
       "cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch }}",
     );
+    expect(daytonaImageJob).toMatch(
+      /- if: needs\.catalog\.outputs\.needs_daytona == 'true'\n\s+uses: actions\/checkout@[0-9a-f]{40}/u,
+    );
+    for (const stepName of [
+      "Download resolved target lockfile",
+      "Restore resolved target lockfile",
+    ]) {
+      expect(daytonaImageJob).toMatch(
+        new RegExp(
+          `- name: ${stepName}\\n\\s+if: needs\\.catalog\\.outputs\\.needs_daytona == 'true'`,
+          "u",
+        ),
+      );
+    }
+    expect(daytonaImageJob).toMatch(
+      /- name: No Daytona image needed\n\s+id: local_only\n\s+if: needs\.catalog\.outputs\.needs_daytona != 'true'/u,
+    );
+    expect(daytonaImageJob).toContain('echo "source_revision="');
+    expect(daytonaImageJob).toContain('echo "content_id="');
     const targetCodeJobs = [
       fullStack.slice(
         fullStack.indexOf("  catalog:"),
