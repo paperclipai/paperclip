@@ -286,4 +286,132 @@ describeEmbeddedPostgres("heartbeat missing-comment retry handoff", () => {
 
     expect(handoffPromoted).toBe(true);
   }, 30_000);
+
+  it("promotes the new assignee's deferred handoff after recovery terminalizes an orphaned run", async () => {
+    const companyId = randomUUID();
+    const previousAssigneeId = randomUUID();
+    const newAssigneeId = randomUUID();
+    const issueId = randomUUID();
+    const originalRunId = randomUUID();
+    const deferredWakeId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values([
+      {
+        id: previousAssigneeId,
+        companyId,
+        name: "Previous assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 2 } },
+        permissions: {},
+      },
+      {
+        id: newAssigneeId,
+        companyId,
+        name: "New assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 2 } },
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: originalRunId,
+      companyId,
+      agentId: previousAssigneeId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date(),
+      processPid: 2_000_000_000,
+      responsibleUserId: "responsible-user",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Handoff whose original process disappeared",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: newAssigneeId,
+      responsibleUserId: "responsible-user",
+      checkoutRunId: originalRunId,
+      executionRunId: originalRunId,
+      executionLockedAt: new Date(),
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId: newAssigneeId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        mutation: "update",
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+          wakeSource: "assignment",
+          wakeTriggerDetail: "system",
+          skipIssueComment: true,
+        },
+      },
+    });
+
+    const sweep = await heartbeat.sweepStaleIssueLocks();
+    expect(sweep.terminalizedRunIds).toEqual([originalRunId]);
+
+    const handoffPromoted = await waitForCondition(async () => {
+      const [originalRun, deferredWake, promotedRun] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, originalRunId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, deferredWakeId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(heartbeatRuns.agentId, newAssigneeId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null),
+      ]);
+      return (
+        originalRun?.status === "interrupted" &&
+        originalRun.errorCode === "orphaned_running_run" &&
+        deferredWake?.runId !== null &&
+        deferredWake?.status === "completed" &&
+        promotedRun?.status === "succeeded"
+      );
+    });
+
+    expect(handoffPromoted).toBe(true);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  }, 30_000);
 });
