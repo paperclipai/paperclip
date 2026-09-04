@@ -101,6 +101,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         }
         throw new Error(`Unexpected plugin environment method: ${method}`);
       }),
+      broadcastBeforeAdapterExecute: vi.fn(async () => ({})),
     } as unknown as PluginWorkerManager;
 
     await db.insert(companies).values({
@@ -257,6 +258,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         }
         throw new Error(`Unexpected plugin environment method: ${method}`);
       }),
+      broadcastBeforeAdapterExecute: vi.fn(async () => ({})),
     } as unknown as PluginWorkerManager;
 
     await instanceSettingsService(db).updateExperimental({
