@@ -100,6 +100,7 @@ export function TaskChatTurn({
             />
           ) : null}
           <span className="min-w-0 truncate">
+            {item.continuedAfterSteering ? "Continued after steering · " : ""}
             {item.summary.durationLabel
               ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
               : item.summary.failed
