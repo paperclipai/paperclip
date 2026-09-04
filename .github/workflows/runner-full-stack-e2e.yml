@@ -1104,14 +1104,44 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Verify history source report and private screenshot evidence
+      - name: Qualify public preview raster sanitizer
+        if: always()
+        run: |
+          set -euo pipefail
+          if ! command -v convert >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install --no-install-recommends -y imagemagick
+          fi
+          convert -version
+
+      - name: Prepare public history bundle with redacted layout previews
+        id: prepare_public_history
+        if: always()
+        run: |
+          set -euo pipefail
+          pnpm test:e2e:runner:history:prepare -- \
+            "$GITHUB_WORKSPACE/runner-e2e-merged-report/normalized" \
+            "$GITHUB_WORKSPACE/runner-e2e-public-report/normalized"
+
+      - name: Upload prepared public history source
+        if: always() && steps.prepare_public_history.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-e2e-public-history-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-e2e-public-report/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Verify prepared history source and public layout previews
         id: history_source_ready
         if: always()
         run: |
           set -euo pipefail
-          dashboard_root="runner-e2e-merged-report/normalized"
-          private_screenshot="$(find "$dashboard_root" -type f -name '*.png' -print -quit 2>/dev/null || true)"
-          if [ -f "$dashboard_root/index.html" ] && [ -n "$private_screenshot" ]; then
+          dashboard_root="runner-e2e-public-report/normalized"
+          public_preview="$(find "$dashboard_root/evidence" -type f -path '*/public-visuals/*.png' -print -quit 2>/dev/null || true)"
+          unexpected_png="$(find "$dashboard_root/evidence" -type f -name '*.png' ! -path '*/public-visuals/*.png' -print -quit 2>/dev/null || true)"
+          passed_count="$(jq '[.results[] | select(.status == "passed")] | length' "$dashboard_root/normalized-results.json" 2>/dev/null || echo invalid)"
+          if [ "${{ steps.prepare_public_history.outcome }}" = "success" ] && [ -f "$dashboard_root/index.html" ] && [ -z "$unexpected_png" ] && { [ "$passed_count" = "0" ] || [ -n "$public_preview" ]; }; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -1154,10 +1184,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Download access-controlled normalized campaign
+      - name: Download prepared public campaign
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: runner-e2e-report-${{ github.run_id }}-${{ github.run_attempt }}
+          name: runner-e2e-public-history-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-e2e-merged-report
 
       - name: Exchange GitHub OIDC identity for scoped AWS credentials

@@ -196,7 +196,7 @@ export function renderRunnerHistoryIndex(history: RunnerE2EHistoryIndex) {
       <div>
         <p class="eyebrow">Historical test reporting</p>
         <h1>Runner E2E campaigns</h1>
-        <p class="lede">Each row is one workflow campaign against a Paperclip revision. Open a report for its configuration matrices, matchers, per-test billing, and sanitized structured evidence. Visual evidence remains in access-controlled workflow artifacts.</p>
+        <p class="lede">Each row is one workflow campaign against a Paperclip revision. Open a report for its configuration matrices, matchers, per-test billing, sanitized structured evidence, and blurred low-resolution layout previews. Full-resolution visual evidence remains in access-controlled workflow artifacts.</p>
       </div>
       <div class="summary" aria-label="History summary">
         <div class="metric"><strong>${campaigns.length}</strong><span>Campaigns</span></div>

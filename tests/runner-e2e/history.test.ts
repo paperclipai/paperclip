@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +16,6 @@ import {
   buildHistoryPointers,
   createBundleManifest,
   isHistoricalBundlePathAllowed,
-  prunePrivateHistoryEvidence,
   validateHistoryDestination,
 } from "./history-publish.js";
 import {
@@ -20,9 +26,14 @@ import {
   mergeRunnerHistory,
 } from "./history.js";
 import { renderRunnerHistoryIndex } from "./history-index.js";
+import { preparePublicHistoryBundle } from "./history-public-bundle.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
+const safePng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAFElEQVQI12M0TpvJAANMDEgAhQMALHABOEZNdkwAAAAASUVORK5CYII=",
+  "base64",
+);
 afterEach(async () => {
   vi.unstubAllEnvs();
   await Promise.all(
@@ -185,7 +196,7 @@ describe("runner E2E campaign history", () => {
     expect(index).toContain("65/66 passed");
     expect(index).toContain("Open report&nbsp;→");
     expect(index).toContain(
-      "Visual evidence remains in access-controlled workflow artifacts",
+      "Full-resolution visual evidence remains in access-controlled workflow artifacts",
     );
     expect(index).toContain("Inert structured public evidence");
     expect(index).not.toContain("data-gallery-dialog");
@@ -194,10 +205,12 @@ describe("runner E2E campaign history", () => {
 });
 
 describe("historical publication security", () => {
-  it("keeps visual and active evidence private when building the public dashboard", async () => {
+  it("publishes blurred layout previews while keeping raw visuals private", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-landing-test-"));
-    const output = path.join(root, "landing");
+    const source = path.join(root, "private");
+    const output = path.join(root, "public");
     temporaryDirectories.push(root);
+    await mkdir(source);
     const execution = runnerMatrix[0]!;
     const campaignResult = {
       ...result(execution, "passed"),
@@ -216,17 +229,23 @@ describe("historical publication security", () => {
       results: [campaignResult],
     });
     const evidenceDirectory = path.join(
-      root,
+      source,
+      "evidence",
+      execution.id,
+      "attempt-1",
+    );
+    const publicEvidenceDirectory = path.join(
+      output,
       "evidence",
       execution.id,
       "attempt-1",
     );
     await mkdir(evidenceDirectory, { recursive: true });
     await writeFile(
-      path.join(root, "normalized-results.json"),
+      path.join(source, "normalized-results.json"),
       JSON.stringify(campaign),
     );
-    await writeFile(path.join(evidenceDirectory, "final-state.png"), "png");
+    await writeFile(path.join(evidenceDirectory, "final-state.png"), safePng);
     await writeFile(path.join(evidenceDirectory, "failure.webm"), "webm");
     await writeFile(path.join(evidenceDirectory, "unsafe.svg"), "<svg />");
     await writeFile(
@@ -234,6 +253,15 @@ describe("historical publication security", () => {
       "<?xml-stylesheet href='https://example.test/private.xsl'?>",
     );
     await writeFile(path.join(evidenceDirectory, "result.json"), "{}\n");
+    await mkdir(path.join(evidenceDirectory, "public-visuals"));
+    await writeFile(
+      path.join(
+        evidenceDirectory,
+        "public-visuals",
+        "plan-target-injected.png",
+      ),
+      safePng,
+    );
     await mkdir(path.join(evidenceDirectory, "snapshots"));
     await writeFile(
       path.join(evidenceDirectory, "snapshots", "api-state.json"),
@@ -250,45 +278,54 @@ describe("historical publication security", () => {
       "private archive",
     );
 
-    await prunePrivateHistoryEvidence(root);
-    await regenerateRunnerDashboard({
-      bundle: root,
-      outputDirectory: output,
-      evidenceHrefPrefix: "campaigns/campaign-1",
+    await preparePublicHistoryBundle({
+      source,
+      destination: output,
+      transform: async (privateScreenshot, publicPreview) => {
+        await copyFile(privateScreenshot, publicPreview);
+      },
     });
     const dashboard = await readFile(path.join(output, "index.html"), "utf8");
-    expect(dashboard).not.toContain(
-      `campaigns/campaign-1/evidence/${execution.id}/attempt-1/final-state.png`,
-    );
-    expect(dashboard).toContain("Visual evidence · workflow artifact only");
     expect(dashboard).toContain(
-      "public history contains inert structured evidence only",
+      `evidence/${execution.id}/attempt-1/public-visuals/final-state.png`,
     );
-    expect(dashboard).toContain("Public history excludes visual evidence");
+    await expect(
+      readFile(path.join(publicEvidenceDirectory, "final-state.png")),
+    ).rejects.toThrow();
+    await expect(
+      readFile(
+        path.join(publicEvidenceDirectory, "public-visuals", "final-state.png"),
+      ),
+    ).resolves.toEqual(safePng);
+    await expect(
+      readFile(
+        path.join(
+          publicEvidenceDirectory,
+          "public-visuals",
+          "plan-target-injected.png",
+        ),
+      ),
+    ).rejects.toThrow();
     await expect(
       readFile(path.join(evidenceDirectory, "final-state.png")),
-    ).rejects.toThrow();
+    ).resolves.toEqual(safePng);
+    for (const relative of [
+      "failure.webm",
+      "unsafe.svg",
+      "junit.xml",
+      "html-report/index.html",
+      "blob-report/report.zip",
+    ]) {
+      await expect(
+        readFile(path.join(publicEvidenceDirectory, ...relative.split("/"))),
+      ).rejects.toThrow();
+    }
     await expect(
-      readFile(path.join(evidenceDirectory, "failure.webm")),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "unsafe.svg")),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "junit.xml")),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "html-report", "index.html")),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "blob-report", "report.zip")),
-    ).rejects.toThrow();
-    await expect(
-      readFile(path.join(evidenceDirectory, "result.json"), "utf8"),
+      readFile(path.join(publicEvidenceDirectory, "result.json"), "utf8"),
     ).resolves.toBe("{}\n");
     await expect(
       readFile(
-        path.join(evidenceDirectory, "snapshots", "api-state.json"),
+        path.join(publicEvidenceDirectory, "snapshots", "api-state.json"),
         "utf8",
       ),
     ).resolves.toBe("{}\n");
@@ -299,8 +336,8 @@ describe("historical publication security", () => {
     ).toBe("paperclip.runner-e2e.campaign/v2");
     await expect(
       regenerateRunnerDashboard({
-        bundle: root,
-        outputDirectory: output,
+        bundle: source,
+        outputDirectory: path.join(root, "invalid"),
         evidenceHrefPrefix: "../unsafe",
       }),
     ).rejects.toThrow("safe relative URL path");
@@ -339,6 +376,16 @@ describe("historical publication security", () => {
     expect(
       isHistoricalBundlePathAllowed(
         "evidence/core-compatibility.profile.local.case/attempt-1/final-state.png",
+      ),
+    ).toBe(false);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/public-visuals/final-state.png",
+      ),
+    ).toBe(true);
+    expect(
+      isHistoricalBundlePathAllowed(
+        "evidence/core-compatibility.profile.local.case/attempt-1/public-visuals/failure.png",
       ),
     ).toBe(false);
     expect(

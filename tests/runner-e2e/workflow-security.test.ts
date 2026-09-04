@@ -642,6 +642,12 @@ describe("public repository paid workflow security", () => {
     expect(
       report.indexOf("Select latest workflow attempt per cell"),
     ).toBeLessThan(report.indexOf("Collect blob reports"));
+    expect(report).toContain(
+      "runner-e2e-public-history-source-${{ github.run_id }}-${{ github.run_attempt }}",
+    );
+    expect(publisher).toContain(
+      "runner-e2e-public-history-source-${{ github.run_id }}-${{ github.run_attempt }}",
+    );
     expect(publisher).toContain(
       'echo "name=github-pages-${{ github.run_id }}-${{ github.run_attempt }}"',
     );
@@ -661,6 +667,10 @@ describe("public repository paid workflow security", () => {
       path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"),
       "utf8",
     );
+    const report = workflow.slice(
+      workflow.indexOf("  report:"),
+      workflow.indexOf("  publish_history:"),
+    );
     const publisher = workflow.slice(workflow.indexOf("  publish_history:"));
     expect(publisher).toContain("id-token: write");
     expect(publisher).toContain("name: runner-e2e-history");
@@ -671,9 +681,21 @@ describe("public repository paid workflow security", () => {
     expect(publisher).not.toMatch(/aws s3 (?:rm|sync .*--delete)/);
     expect(workflow).toContain("history_source_ready");
     expect(workflow).toContain(
-      "Verify history source report and private screenshot evidence",
+      "Prepare public history bundle with redacted layout previews",
     );
-    expect(workflow).toContain("private_screenshot=");
+    expect(workflow).toContain(
+      "Verify prepared history source and public layout previews",
+    );
+    expect(workflow).toContain("public_preview=");
+    expect(workflow).toContain("unexpected_png=");
+    expect(workflow).toContain("passed_count=");
+    expect(workflow).toContain("pnpm test:e2e:runner:history:prepare");
+    expect(report).not.toContain("id-token: write");
+    expect(report).not.toMatch(
+      /(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)_API_KEY/,
+    );
+    expect(publisher).not.toContain("Qualify public preview raster sanitizer");
+    expect(publisher).not.toContain("runner-e2e-report-${{ github.run_id }}");
     expect(workflow).toContain("Publish pruned immutable history");
     expect(workflow).toContain("Publish latest structured dashboard");
     expect(workflow).not.toContain("dashboard_ready");
