@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, MoreHorizontal, Pencil, RefreshCw } from "lucide-react";
 import { agentsApi } from "@/api/agents";
@@ -33,6 +33,34 @@ import { SidebarNavItem } from "./SidebarNavItem";
 
 const RECENT_TASK_MENU_ITEM_CLASS =
   "h-(--profile-popover-row-height) gap-(--profile-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) focus:bg-accent/50 focus:text-foreground";
+const RESTART_WAKE_RETRY_STORAGE_SUFFIX = ":restart-wake-retry";
+
+function restartWakeRetryStorageKey(storageKey: string | null) {
+  return storageKey ? `${storageKey}${RESTART_WAKE_RETRY_STORAGE_SUFFIX}` : null;
+}
+
+function readRestartWakeRetryIssueIds(storageKey: string | null) {
+  if (!storageKey) return new Set<string>();
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]") as unknown;
+    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function setRestartWakeRetryPending(storageKey: string | null, issueId: string, pending: boolean) {
+  if (!storageKey) return;
+  const issueIds = readRestartWakeRetryIssueIds(storageKey);
+  if (pending) issueIds.add(issueId);
+  else issueIds.delete(issueId);
+  try {
+    if (issueIds.size > 0) window.localStorage.setItem(storageKey, JSON.stringify([...issueIds]));
+    else window.localStorage.removeItem(storageKey);
+  } catch {
+    // Recent Tasks remains usable when browser storage is unavailable.
+  }
+}
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message.trim() ? error.message : fallback;
@@ -84,7 +112,7 @@ function RecentTasksList({
   const [renameEntry, setRenameEntry] = useState<RecentTaskEntry | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [pendingAction, setPendingAction] = useState<"rename" | "archive" | "pause" | null>(null);
-  const restartWakeRetryIssueIds = useRef(new Set<string>());
+  const restartRetryStorageKey = restartWakeRetryStorageKey(storageKey);
 
   if (entries.length === 0) return null;
 
@@ -154,10 +182,10 @@ function RecentTasksList({
       const state = await issuesApi.getTreeControlState(entry.id);
       if (state.activePauseHold?.isRoot) {
         const restartIssue = await issuesApi.get(entry.id);
+        setRestartWakeRetryPending(restartRetryStorageKey, entry.id, true);
         await issuesApi.releaseTreeHold(entry.id, state.activePauseHold.holdId, {
           reason: "Restarted from Recent Tasks.",
         });
-        restartWakeRetryIssueIds.current.add(entry.id);
         if (restartIssue.assigneeAgentId) {
           const wakeResult = await agentsApi.wakeup(
             restartIssue.assigneeAgentId,
@@ -173,11 +201,11 @@ function RecentTasksList({
             throw new Error(wakeResult.message ?? "The assignee wake was skipped.");
           }
         }
-        restartWakeRetryIssueIds.current.delete(entry.id);
+        setRestartWakeRetryPending(restartRetryStorageKey, entry.id, false);
         toastActions?.pushToast({ title: "Task restarted", tone: "success" });
       } else if (state.activePauseHold) {
         throw new Error("This task is paused by a parent task. Restart it from the pause root.");
-      } else if (restartWakeRetryIssueIds.current.has(entry.id)) {
+      } else if (readRestartWakeRetryIssueIds(restartRetryStorageKey).has(entry.id)) {
         const restartIssue = await issuesApi.get(entry.id);
         if (restartIssue.assigneeAgentId) {
           const wakeResult = await agentsApi.wakeup(
@@ -194,7 +222,7 @@ function RecentTasksList({
             throw new Error(wakeResult.message ?? "The assignee wake was skipped.");
           }
         }
-        restartWakeRetryIssueIds.current.delete(entry.id);
+        setRestartWakeRetryPending(restartRetryStorageKey, entry.id, false);
         toastActions?.pushToast({ title: "Task restarted", tone: "success" });
       } else {
         await issuesApi.createTreeHold(entry.id, {

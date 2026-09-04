@@ -339,7 +339,7 @@ describe("SidebarRecentTasks", () => {
     );
   });
 
-  it("retries only the wake when restart releases the hold before wakeup fails", async () => {
+  it("retries only the wake after a remount when restart releases the hold before wakeup fails", async () => {
     const issue = {
       id: "issue-1",
       companyId: "company-1",
@@ -377,6 +377,10 @@ describe("SidebarRecentTasks", () => {
       await Promise.resolve();
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
 
     await openActions("Retry restart");
     await act(async () => {
