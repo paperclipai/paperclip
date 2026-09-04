@@ -4256,6 +4256,19 @@ async function blockedInboxIssueConditions(
   companyId: string,
   filters?: IssueFilters,
 ) {
+  // The blocked-inbox branch is reached before svc.list/svc.count run their own
+  // filter asserts, so it has to validate the same set here or a malformed UUID
+  // reaches Postgres as 22P02 and surfaces as a 500.
+  assertValidAssigneeAgentFilter(parseIssueAssigneeAgentFilter(filters?.assigneeAgentId));
+  assertValidUuidFilter("participantAgentId", filters?.participantAgentId);
+  assertValidUuidFilter("goalId", filters?.goalId);
+  assertValidUuidFilter("createdByAgentId", filters?.createdByAgentId);
+  assertValidUuidFilter("projectId", filters?.projectId);
+  assertValidUuidFilter("workspaceId", filters?.workspaceId);
+  assertValidUuidFilter("executionWorkspaceId", filters?.executionWorkspaceId);
+  assertValidUuidFilter("parentId", filters?.parentId);
+  assertValidUuidFilter("descendantOf", filters?.descendantOf);
+  assertValidUuidFilter("labelId", filters?.labelId);
   const conditions = [
     eq(issues.companyId, companyId),
     visibleIssueCondition(),

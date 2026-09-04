@@ -821,17 +821,95 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     }
   });
 
+  it("returns 400 for malformed UUID issue count filters", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+
+    const app = createApp(companyId);
+
+    // Control: the same route without a UUID filter must stay green, otherwise
+    // a blanket 400 would make the loop below prove nothing.
+    const baseline = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked" });
+    expect(baseline.status, JSON.stringify(baseline.body)).toBe(200);
+    expect(baseline.body).toMatchObject({ count: 0 });
+
+    const params = [
+      "assigneeAgentId",
+      "participantAgentId",
+      "projectId",
+      "workspaceId",
+      "executionWorkspaceId",
+      "parentId",
+      "descendantOf",
+      "labelId",
+    ] as const;
+
+    for (const param of params) {
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues/count`)
+        .query({ attention: "blocked", [param]: "bad" });
+
+      expect(res.status, `${param}: ${JSON.stringify(res.body)}`).toBe(400);
+      expect(res.body).toMatchObject({
+        error: param === "assigneeAgentId"
+          ? "assigneeAgentId must be a UUID or 'null'"
+          : `${param} must be a UUID`,
+      });
+      expect(res.body).not.toHaveProperty("count");
+    }
+
+    const aliasRes = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", parentIssueId: "bad" });
+    expect(aliasRes.status, JSON.stringify(aliasRes.body)).toBe(400);
+    expect(aliasRes.body).toMatchObject({ error: "parentIssueId must be a UUID" });
+
+    const nullAssigneeRes = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", assigneeAgentId: "null" });
+    expect(nullAssigneeRes.status, JSON.stringify(nullAssigneeRes.body)).toBe(200);
+    expect(nullAssigneeRes.body).toMatchObject({ count: 0 });
+  });
+
   it("keeps valid UUID filters working with status, limit, and search", async () => {
     const companyId = randomUUID();
-    const agentId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const participantAgentId = randomUUID();
+    const otherAgentId = randomUUID();
     const projectId = randomUUID();
+    const otherProjectId = randomUUID();
     const workspaceId = randomUUID();
+    const otherWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
-    const parentId = randomUUID();
-    const rootId = randomUUID();
+    const otherExecutionWorkspaceId = randomUUID();
     const labelId = randomUUID();
+    const otherLabelId = randomUUID();
+    const rootId = randomUUID();
+    const parentId = randomUUID();
+    const siblingParentId = randomUUID();
+    const outsideParentId = randomUUID();
     const matchingIssueId = randomUUID();
-    const otherIssueId = randomUUID();
+    // One decoy per filter. Each decoy differs from the matching issue on
+    // exactly the one column its filter reads, so dropping any single filter's
+    // wiring lets that decoy through and turns this test red.
+    const decoyIssueIds = {
+      assigneeAgentId: randomUUID(),
+      participantAgentId: randomUUID(),
+      projectId: randomUUID(),
+      workspaceId: randomUUID(),
+      executionWorkspaceId: randomUUID(),
+      parentId: randomUUID(),
+      descendantOf: randomUUID(),
+      labelId: randomUUID(),
+    } as const;
 
     await db.insert(companies).values({
       id: companyId,
@@ -840,111 +918,211 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       requireBoardApprovalForNewAgents: false,
     });
     await seedCloudTenantMember(companyId);
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Assignee",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
-    await db.insert(projects).values({
-      id: projectId,
-      companyId,
-      name: "Filtered project",
-      status: "in_progress",
-    });
-    await db.insert(projectWorkspaces).values({
-      id: workspaceId,
-      companyId,
-      projectId,
-      name: "Primary",
-      sourceType: "local_path",
-      cwd: "/tmp/paperclip-issue-list-project",
-      isPrimary: true,
-    });
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId: workspaceId,
-      mode: "isolated_workspace",
-      strategyType: "git_worktree",
-      name: "Execution workspace",
-      status: "active",
-      providerType: "local_fs",
-      cwd: "/tmp/paperclip-issue-list-execution",
-    });
-    await db.insert(issues).values([
+    await db.insert(agents).values([
       {
-        id: rootId,
+        id: assigneeAgentId,
         companyId,
-        title: "Root",
-        status: "todo",
-        priority: "medium",
+        name: "Assignee",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
       },
       {
-        id: parentId,
+        id: participantAgentId,
         companyId,
-        title: "Parent",
+        name: "Participant",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Filtered project", status: "in_progress" },
+      { id: otherProjectId, companyId, name: "Other project", status: "in_progress" },
+    ]);
+    await db.insert(projectWorkspaces).values([
+      {
+        id: workspaceId,
+        companyId,
+        projectId,
+        name: "Primary",
+        sourceType: "local_path",
+        cwd: "/tmp/paperclip-issue-list-project",
+        isPrimary: true,
+      },
+      {
+        id: otherWorkspaceId,
+        companyId,
+        projectId: otherProjectId,
+        name: "Other primary",
+        sourceType: "local_path",
+        cwd: "/tmp/paperclip-issue-list-project-other",
+        isPrimary: true,
+      },
+    ]);
+    await db.insert(executionWorkspaces).values([
+      {
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId: workspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Execution workspace",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/tmp/paperclip-issue-list-execution",
+      },
+      {
+        id: otherExecutionWorkspaceId,
+        companyId,
+        projectId: otherProjectId,
+        projectWorkspaceId: otherWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Other execution workspace",
+        status: "active",
+        providerType: "local_fs",
+        cwd: "/tmp/paperclip-issue-list-execution-other",
+      },
+    ]);
+
+    const matchingShape = {
+      companyId,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId,
+      createdByAgentId: assigneeAgentId,
+      projectId,
+      projectWorkspaceId: workspaceId,
+      executionWorkspaceId,
+      parentId,
+    } as const;
+
+    await db.insert(issues).values([
+      { id: rootId, companyId, title: "Root", status: "todo", priority: "medium" },
+      { id: parentId, companyId, title: "Parent", status: "todo", priority: "medium", parentId: rootId },
+      {
+        id: siblingParentId,
+        companyId,
+        title: "Sibling parent",
         status: "todo",
         priority: "medium",
         parentId: rootId,
       },
+      { id: outsideParentId, companyId, title: "Outside parent", status: "todo", priority: "medium" },
+      { ...matchingShape, id: matchingIssueId, title: "Needle issue" },
+      // differs only on assigneeAgentId
       {
-        id: matchingIssueId,
-        companyId,
-        title: "Needle issue",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: agentId,
-        createdByAgentId: agentId,
-        projectId,
-        projectWorkspaceId: workspaceId,
-        executionWorkspaceId,
-        parentId,
+        ...matchingShape,
+        id: decoyIssueIds.assigneeAgentId,
+        title: "Needle decoy assignee",
+        assigneeAgentId: otherAgentId,
       },
+      // differs only in having no activity from participantAgentId (added below)
+      { ...matchingShape, id: decoyIssueIds.participantAgentId, title: "Needle decoy participant" },
+      // differs only on projectId
       {
-        id: otherIssueId,
+        ...matchingShape,
+        id: decoyIssueIds.projectId,
+        title: "Needle decoy project",
+        projectId: otherProjectId,
+      },
+      // differs only on projectWorkspaceId, which is what workspaceId reads
+      {
+        ...matchingShape,
+        id: decoyIssueIds.workspaceId,
+        title: "Needle decoy workspace",
+        projectWorkspaceId: otherWorkspaceId,
+      },
+      // differs only on executionWorkspaceId
+      {
+        ...matchingShape,
+        id: decoyIssueIds.executionWorkspaceId,
+        title: "Needle decoy execution workspace",
+        executionWorkspaceId: otherExecutionWorkspaceId,
+      },
+      // differs only on parentId, and stays inside rootId's subtree so
+      // descendantOf cannot mask a dropped parentId filter
+      {
+        ...matchingShape,
+        id: decoyIssueIds.parentId,
+        title: "Needle decoy parent",
+        parentId: siblingParentId,
+      },
+      // sits outside rootId's subtree; only descendantOf excludes it once
+      // parentId is dropped from the query below
+      {
+        ...matchingShape,
+        id: decoyIssueIds.descendantOf,
+        title: "Needle decoy descendant",
+        parentId: outsideParentId,
+      },
+      // differs only in carrying otherLabelId instead of labelId (added below)
+      { ...matchingShape, id: decoyIssueIds.labelId, title: "Needle decoy label" },
+    ]);
+    await db.insert(labels).values([
+      { id: labelId, companyId, name: "Needle", color: "#2563eb" },
+      { id: otherLabelId, companyId, name: "Haystack", color: "#dc2626" },
+    ]);
+
+    const decoyIssueIdList = Object.values(decoyIssueIds);
+    // Every row except the participant decoy has activity from participantAgentId,
+    // so participantAgentId is the only filter that removes that decoy.
+    await db.insert(activityLog).values([
+      ...[matchingIssueId, ...decoyIssueIdList]
+        .filter((issueId) => issueId !== decoyIssueIds.participantAgentId)
+        .map((issueId) => ({
+          companyId,
+          actorType: "agent" as const,
+          actorId: participantAgentId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: issueId,
+          agentId: participantAgentId,
+        })),
+      {
         companyId,
-        title: "Needle issue other",
-        status: "todo",
-        priority: "medium",
-        assigneeAgentId: agentId,
-        createdByAgentId: agentId,
-        projectId,
-        projectWorkspaceId: workspaceId,
-        executionWorkspaceId,
-        parentId,
+        actorType: "agent" as const,
+        actorId: otherAgentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: decoyIssueIds.participantAgentId,
+        agentId: otherAgentId,
       },
     ]);
-    await db.insert(labels).values({
-      id: labelId,
-      companyId,
-      name: "Needle",
-      color: "#2563eb",
-    });
-    await db.insert(activityLog).values({
-      companyId,
-      actorType: "agent",
-      actorId: agentId,
-      action: "issue.updated",
-      entityType: "issue",
-      entityId: matchingIssueId,
-      agentId,
-    });
-    await db.insert(issueLabels).values({ companyId, issueId: matchingIssueId, labelId });
+    // Same shape for labelId: only the label decoy is missing the filtered label.
+    await db.insert(issueLabels).values([
+      ...[matchingIssueId, ...decoyIssueIdList]
+        .filter((issueId) => issueId !== decoyIssueIds.labelId)
+        .map((issueId) => ({ companyId, issueId, labelId })),
+      { companyId, issueId: decoyIssueIds.labelId, labelId: otherLabelId },
+    ]);
 
     const app = createApp(companyId);
     const res = await request(app)
       .get(`/api/companies/${companyId}/issues`)
       .query({
         status: "todo",
-        assigneeAgentId: agentId,
-        participantAgentId: agentId,
+        assigneeAgentId,
+        participantAgentId,
         projectId,
         workspaceId,
         executionWorkspaceId,
@@ -957,6 +1135,30 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([matchingIssueId]);
+
+    // descendantOf and parentId both read issues.parentId, so a descendantOf
+    // decoy cannot differ from the matching issue on descendantOf alone. Drop
+    // parentId from the query and descendantOf becomes the only filter that
+    // excludes the out-of-subtree decoy.
+    const withoutParentIdRes = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({
+        status: "todo",
+        assigneeAgentId,
+        participantAgentId,
+        projectId,
+        workspaceId,
+        executionWorkspaceId,
+        descendantOf: rootId,
+        labelId,
+        q: "Needle",
+        limit: "20",
+      });
+
+    expect(withoutParentIdRes.status, JSON.stringify(withoutParentIdRes.body)).toBe(200);
+    expect(withoutParentIdRes.body.map((issue: { id: string }) => issue.id).sort()).toEqual(
+      [matchingIssueId, decoyIssueIds.parentId].sort(),
+    );
   });
 
   it("keeps parentId precedence over the parentIssueId alias when both are present", async () => {
