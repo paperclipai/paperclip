@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { Copy, Check, Loader2 } from "lucide-react";
 
 import { Button } from "./ui/button";
@@ -8,6 +8,8 @@ import {
   CARD_REVEAL_FIELD,
   CARD_REVEAL_INSTRUCTION,
   CARD_REVEAL_TRAVEL,
+  COPIED_REVEAL,
+  COPIED_REVEAL_TRAVEL,
 } from "./onboarding/onboarding-motion";
 
 /**
@@ -170,7 +172,7 @@ function LoginCardCopyButton({
       size="icon-xs"
       aria-label={label}
       title={label}
-      className="size-6 shrink-0 text-muted-foreground hover:text-foreground [&_svg]:size-4"
+      className="size-6 shrink-0 text-muted-foreground hover:text-foreground [&_svg]:size-3"
       onClick={async () => {
         try {
           await copyTextToClipboard(value);
@@ -216,34 +218,67 @@ export function OnboardingLoginUrlRow({ url }: { url: string }) {
 /**
  * The one-time code, for the login that hands one out.
  *
- * The word beside the button rather than only the mark on it: this code is
- * carried to another device, so the confirmation has to survive being read from
- * a step away.
+ * `autoCopy` puts it on the clipboard as the card lands and says so. The code
+ * is going to be pasted somewhere else — that is its whole purpose — so making
+ * the customer press a button first is a step that exists only to be completed.
+ *
+ * The claim is made only when the write actually succeeded. A clipboard write
+ * needs transient user activation, and this one happens a beat after the press
+ * that started the sign-in, so a browser may well refuse it; "Copied!" over an
+ * empty clipboard would send someone to paste nothing. The button beside it is
+ * the path that always works, and is why the failure is quiet rather than an
+ * error.
  */
-export function OnboardingLoginCodeRow({ code }: { code: string }) {
+export function OnboardingLoginCodeRow({
+  code,
+  autoCopy = false,
+}: {
+  code: string;
+  autoCopy?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoCopiedRef = useRef(false);
 
   useEffect(() => () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
   }, []);
 
+  useEffect(() => {
+    if (!autoCopy || autoCopiedRef.current) return;
+    autoCopiedRef.current = true;
+    void copyTextToClipboard(code)
+      .then(() => setCopied(true))
+      .catch(() => {
+        // Refused, most likely for want of user activation. The button stays.
+      });
+  }, [autoCopy, code]);
+
   return (
-    <LoginCardRow>
-      <span className="min-w-0 flex-1 truncate font-mono text-sm tracking-wide text-foreground">
-        {code}
-      </span>
-      {copied && <span className="shrink-0 text-xs text-muted-foreground">copied!</span>}
+    <div className="flex h-(--sz-44px) items-center gap-2 rounded-lg bg-muted px-4">
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{code}</span>
+      <AnimatePresence initial={false}>
+        {copied && (
+          <motion.span
+            key="copied"
+            className="shrink-0 text-sm text-muted-foreground/40"
+            initial={{ opacity: 0, y: COPIED_REVEAL_TRAVEL }}
+            animate={{ opacity: 1, y: 0, transition: COPIED_REVEAL }}
+            exit={{ opacity: 0, transition: COPIED_REVEAL }}
+          >
+            Copied!
+          </motion.span>
+        )}
+      </AnimatePresence>
       <LoginCardCopyButton
         value={code}
         label="Copy the code"
         onCopied={() => {
           setCopied(true);
           if (timeoutRef.current) clearTimeout(timeoutRef.current);
-          timeoutRef.current = setTimeout(() => setCopied(false), 1500);
         }}
       />
-    </LoginCardRow>
+    </div>
   );
 }
 

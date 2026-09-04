@@ -296,3 +296,15 @@ export const MAKE_ROOM_MS = MAKE_ROOM.duration * 1000;
  * at 180 the survivor is clear before it arrives.
  */
 export const SOURCE_EXIT_FADE = { duration: 0.18, ease: TAG_SWAP_EASE } as const;
+
+/**
+ * "Copied!" arriving beside a code that was put on the clipboard for you.
+ *
+ * It rises as it fades in, which is the difference between a label that was
+ * always there and one that just happened — the code did not change, so
+ * something has to say that an action occurred. Short, and it stays: this is a
+ * statement about the clipboard's contents, and those are still true a second
+ * later.
+ */
+export const COPIED_REVEAL_TRAVEL = 6;
+export const COPIED_REVEAL = { duration: 0.26, ease: STEP_EASE } as const;

@@ -16,6 +16,7 @@ import {
 import {
   OnboardingLoginCard,
   OnboardingLoginCodeInput,
+  OnboardingLoginCodeRow,
 } from "./components/AdapterLoginChrome";
 import { AgentPreview } from "./components/onboarding/AgentPreview";
 import { CredentialModeLink } from "./components/onboarding/CredentialModeLink";
@@ -103,6 +104,10 @@ type Phase =
 
 /** Stand-ins for the round trips a real sign-in makes. */
 const PROMPT_DELAY_MS = 1400;
+/** The displayed-code login's wait, standing in for the authorisation poll. */
+const POLL_DELAY_MS = 3000;
+/** The code OpenAI's login hands over. */
+const DISPLAYED_CODE = "Q2RJ-E1YIF";
 
 const OAUTH_URL: Record<string, string> = {
   claude_local: "https://claude.ai/oauth/authorize?code=true&client=paperclip",
@@ -125,6 +130,15 @@ function ConnectFlowPreview({
   const mode: CredentialMode = useApiKeys ? "api" : "subscription";
   const providerName = selectedId === "codex_local" ? "OpenAI" : "Claude";
   const signInLabel = `Sign in to ${providerName}`;
+  /*
+    Claude takes a code back from the customer; OpenAI hands one over. That is
+    the only difference between the two cards — the sentence and the last row —
+    and everything around them, every transition included, is shared.
+  */
+  const handsOverCode = selectedId === "codex_local";
+  const instructionTail = handsOverCode
+    ? " by providing the authorization code below"
+    : " then come back and enter authorization code";
   const authUrl = OAUTH_URL[selectedId ?? "claude_local"]!;
 
   const after = (ms: number, fn: () => void) => {
@@ -146,6 +160,13 @@ function ConnectFlowPreview({
       after(SOURCE_COLLAPSE_MS, () => setPhase("loading"));
     } else if (phase === "loading") {
       after(PROMPT_DELAY_MS, () => setPhase("ready"));
+    } else if (phase === "waiting" && handsOverCode) {
+      // Nothing comes back to this screen for the displayed-code login: the
+      // customer authorises in the other tab and the server says so. Stood in
+      // for here so the sequence can be walked end to end.
+      after(POLL_DELAY_MS, () => setPhase("connecting"));
+    } else if (phase === "connecting" && handsOverCode) {
+      after(CONNECTED_HOLD_MS, () => setPhase("done"));
     } else if (phase === "unwindCard") {
       // The card's own fade, with its space still held.
       after(CARD_EXIT_MS, () => setPhase("unwindRoom"));
@@ -159,7 +180,7 @@ function ConnectFlowPreview({
         setPhase("idle");
       });
     }
-  }, [phase]);
+  }, [phase, handsOverCode]);
 
   /** Back: two beats, card first, row second. */
   const unwind = () => {
@@ -341,24 +362,29 @@ function ConnectFlowPreview({
                         >
                           {signInLabel}
                         </a>
-                        {" then come back and enter authorization code"}
+                        {instructionTail}
                       </>
                     }
               >
-                    <OnboardingLoginCodeInput
-                      value={code}
-                      onChange={setCode}
-                      disabled={phase === "connecting"}
-                      onSubmit={() => {
-                        if (isValidBrowserCode(code.trim())) {
-                          setPhase("connecting");
-                          after(CONNECTED_HOLD_MS, () => setPhase("done"));
-                        }
-                      }}
-                      onPaste={() => {
-                        pastedRef.current = true;
-                      }}
-                    />
+                    {/* The one place the two logins differ. */}
+                    {handsOverCode ? (
+                      <OnboardingLoginCodeRow code={DISPLAYED_CODE} autoCopy={cardLive} />
+                    ) : (
+                      <OnboardingLoginCodeInput
+                        value={code}
+                        onChange={setCode}
+                        disabled={phase === "connecting"}
+                        onSubmit={() => {
+                          if (isValidBrowserCode(code.trim())) {
+                            setPhase("connecting");
+                            after(CONNECTED_HOLD_MS, () => setPhase("done"));
+                          }
+                        }}
+                        onPaste={() => {
+                          pastedRef.current = true;
+                        }}
+                      />
+                    )}
                       </OnboardingLoginCard>
             </motion.div>
           </>
