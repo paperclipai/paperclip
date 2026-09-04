@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   OnboardingLoginCard,
-  OnboardingLoginCodeInput,
+  OnboardingCardField,
   onboardingCardInputClass,
 } from "./AdapterLoginChrome";
 import { ApiKeyField } from "./onboarding/ConnectInputCanvas";
@@ -59,7 +59,7 @@ describe("the connect step's two cards", () => {
     // but that the two carry the byte-identical class string.
     const signIn = await render(
       <OnboardingLoginCard instruction="Open Claude link then come back and enter code">
-        <OnboardingLoginCodeInput value="" onChange={() => {}} onSubmit={() => {}} />
+        <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
       </OnboardingLoginCard>,
     );
     const keyCard = await render(
@@ -78,7 +78,7 @@ describe("the connect step's two cards", () => {
     // step rather than its content.
     const signIn = await render(
       <OnboardingLoginCard instruction="Open Claude link then come back and enter code">
-        <OnboardingLoginCodeInput value="" onChange={() => {}} onSubmit={() => {}} />
+        <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
       </OnboardingLoginCard>,
     );
     const keyCard = await render(

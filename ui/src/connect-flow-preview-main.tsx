@@ -15,7 +15,7 @@ import {
 
 import {
   OnboardingLoginCard,
-  OnboardingLoginCodeInput,
+  OnboardingCardField,
   OnboardingLoginCodeRow,
 } from "./components/AdapterLoginChrome";
 import { AgentPreview } from "./components/onboarding/AgentPreview";
@@ -125,6 +125,7 @@ function ConnectFlowPreview({
   const [useApiKeys, setUseApiKeys] = useState(false);
   const [phase, setPhase] = useState<Phase>(initialPhase);
   const [code, setCode] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
   const mode: CredentialMode = useApiKeys ? "api" : "subscription";
@@ -135,7 +136,8 @@ function ConnectFlowPreview({
     the only difference between the two cards — the sentence and the last row —
     and everything around them, every transition included, is shared.
   */
-  const handsOverCode = selectedId === "codex_local";
+  const apiMode = mode === "api";
+  const handsOverCode = !apiMode && selectedId === "codex_local";
   const instructionTail = handsOverCode
     ? " by providing the authorization code below"
     : " then come back and enter authorization code";
@@ -157,7 +159,12 @@ function ConnectFlowPreview({
   useEffect(() => {
     if (phase === "collapsing") {
       // The row finishes answering before the card starts arriving.
-      after(SOURCE_COLLAPSE_MS, () => setPhase("loading"));
+      //
+      // A key goes straight to `ready`. There is no prompt to fetch for one —
+      // the field is available the moment the source is chosen — and the
+      // canvas's own notes are explicit that a spinner standing in for no work
+      // is a slower screen that also says something untrue.
+      after(SOURCE_COLLAPSE_MS, () => setPhase(apiMode ? "ready" : "loading"));
     } else if (phase === "loading") {
       after(PROMPT_DELAY_MS, () => setPhase("ready"));
     } else if (phase === "waiting" && handsOverCode) {
@@ -182,13 +189,24 @@ function ConnectFlowPreview({
       setSelectedId(null);
       after(SOURCE_COLLAPSE_MS, () => setPhase("idle"));
     }
-  }, [phase, handsOverCode]);
+  }, [phase, handsOverCode, apiMode]);
+
+  /**
+   * A key is submitted by the step's button, not by arriving. It goes straight
+   * to the hold: there is nothing to wait for once it has been handed over.
+   */
+  const submitKey = () => {
+    if (!apiKey.trim() || phase !== "ready") return;
+    setPhase("connecting");
+    after(CONNECTED_HOLD_MS, () => setPhase("done"));
+  };
 
   /** Back: two beats, card first, row second. */
   const unwind = () => {
     timers.current.forEach(clearTimeout);
     timers.current = [];
     setCode("");
+    setApiKey("");
     setPhase("unwindCard");
   };
 
@@ -196,6 +214,7 @@ function ConnectFlowPreview({
     timers.current.forEach(clearTimeout);
     timers.current = [];
     setCode("");
+    setApiKey("");
     setSelectedId(null);
     setPhase("idle");
   };
@@ -252,7 +271,11 @@ function ConnectFlowPreview({
       ? { label: signInLabel, icon: "none" as const, disabled: true }
       : done
       ? { label: "Start over", icon: "arrow" as const, disabled: false }
-      : phase === "ready"
+      : phase === "ready" && apiMode
+        ? // A key is typed here rather than fetched elsewhere, so the button is
+          // the submit and stays dead until there is something to submit.
+          { label: "Connect", icon: "arrow" as const, disabled: !apiKey.trim() }
+        : phase === "ready"
         ? { label: signInLabel, icon: "none" as const, disabled: false }
         : phase === "waiting"
           ? { label: "Waiting for code", icon: "spinner" as const, disabled: true }
@@ -363,28 +386,45 @@ function ConnectFlowPreview({
                   <OnboardingLoginCard
                     loading={phase === "loading"}
                     instruction={
-                      <>
-                        {/* The same destination as the button below. Two ways to
-                            reach one link: the button for the customer following
-                            the flow, the anchor for anyone who wants to copy it
-                            into another browser. */}
-                        <a
-                          href={authUrl}
-                          target="_blank"
-                          rel="noreferrer noopener"
-                          className="underline underline-offset-2 hover:text-foreground"
-                        >
-                          {signInLabel}
-                        </a>
-                        {instructionTail}
-                      </>
+                      apiMode ? (
+                        // No link, because there is nowhere to sign in to. The
+                        // key is pasted straight in, so the sentence only has
+                        // to say what is wanted.
+                        `Provide your ${providerName} API key to connect`
+                      ) : (
+                        <>
+                          {/* The same destination as the button below. Two ways
+                              to reach one link: the button for the customer
+                              following the flow, the anchor for anyone who
+                              wants to copy it into another browser. */}
+                          <a
+                            href={authUrl}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="underline underline-offset-2 hover:text-foreground"
+                          >
+                            {signInLabel}
+                          </a>
+                          {instructionTail}
+                        </>
+                      )
                     }
               >
-                    {/* The one place the two logins differ. */}
-                    {handsOverCode ? (
+                    {/* The one place the three paths differ. */}
+                    {apiMode ? (
+                      <OnboardingCardField
+                        label="API key"
+                        placeholder="Enter API key here"
+                        masked
+                        value={apiKey}
+                        onChange={setApiKey}
+                        disabled={phase === "connecting"}
+                        onSubmit={submitKey}
+                      />
+                    ) : handsOverCode ? (
                       <OnboardingLoginCodeRow code={DISPLAYED_CODE} autoCopy={cardLive} />
                     ) : (
-                      <OnboardingLoginCodeInput
+                      <OnboardingCardField
                         value={code}
                         onChange={setCode}
                         disabled={phase === "connecting"}
@@ -427,10 +467,13 @@ function ConnectFlowPreview({
               reset();
               return;
             }
-            if (phase === "ready") {
-              window.open(authUrl, "_blank", "noreferrer,noopener");
-              setPhase("waiting");
+            if (phase !== "ready") return;
+            if (apiMode) {
+              submitKey();
+              return;
             }
+            window.open(authUrl, "_blank", "noreferrer,noopener");
+            setPhase("waiting");
           }}
         />
       </div>

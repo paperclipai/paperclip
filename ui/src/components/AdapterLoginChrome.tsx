@@ -305,39 +305,51 @@ export const onboardingCardInputClass =
   "outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)";
 
 /**
- * The field the browser code is pasted back into.
+ * The card's single-line field, whatever the card is asking for.
  *
- * No Submit button beside it: the code arrives in one piece, off the clipboard,
- * so the paste is the answer and a press after it confirms nothing the paste
- * did not already say.
+ * Three cards use it and they want different things: a browser code pasted
+ * back, and an API key typed or pasted in. Same row, same measurements — what
+ * changes is the label, the placeholder, and whether the value should be masked.
  *
- * `onPaste` is what the caller submits on, and it is separate from `onChange`
- * on purpose. There is no shape that says "this code is complete" —
- * `isValidBrowserCode` accepts any run of printable ASCII from one character up,
- * deliberately, because the provider's exact format is not pinned down — so a
- * submit driven by the value alone fires on the first keystroke of anyone who
- * types instead of pasting. Enter stays for them.
+ * No Submit button beside it in the code case: the code arrives in one piece,
+ * off the clipboard, so the paste is the answer and a press after it confirms
+ * nothing the paste did not already say.
+ *
+ * `onPaste` is what that case submits on, and it is separate from `onChange` on
+ * purpose. There is no shape that says "this code is complete" —
+ * `isValidBrowserCode` accepts any run of printable ASCII from one character
+ * up, deliberately, because the provider's exact format is not pinned down — so
+ * a submit driven by the value alone fires on the first keystroke of anyone who
+ * types instead of pasting. Enter stays for them. A key field simply omits it:
+ * a key is not submitted by arriving, it is submitted by the step's own button.
  */
-export function OnboardingLoginCodeInput({
+export function OnboardingCardField({
   value,
   onChange,
   onSubmit,
   onPaste,
   disabled,
+  label = "Authorization code",
+  placeholder = "Paste authorization code here",
+  masked = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
   onPaste?: () => void;
   disabled?: boolean;
+  label?: string;
+  placeholder?: string;
+  /** A provider key is a credential; a one-time browser code is not. */
+  masked?: boolean;
 }) {
   return (
     <input
-      aria-label="Authorization code"
-      type="text"
+      aria-label={label}
+      type={masked ? "password" : "text"}
       autoComplete="off"
       spellCheck={false}
-      placeholder="Paste authorization code here"
+      placeholder={placeholder}
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}

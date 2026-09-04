@@ -37,7 +37,7 @@ import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   OnboardingLoginCard,
-  OnboardingLoginCodeInput,
+  OnboardingCardField,
   OnboardingLoginCodeRow,
   OnboardingLoginUrlRow,
   type AdapterLoginChrome,
@@ -2829,7 +2829,7 @@ function SubmittedBrowserCodeLoginPanel({
             {/* Disabled while the submitted code is in flight and while the
                 completion read runs, so a second paste cannot land on top of a
                 login that is already finishing. */}
-            <OnboardingLoginCodeInput
+            <OnboardingCardField
               value={browserCode}
               onChange={setBrowserCode}
               onSubmit={handleSubmit}
