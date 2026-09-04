@@ -154,17 +154,12 @@ describe("dev server status helpers", () => {
     expect(readDevServerRestartRequest(env)).toBeNull();
   });
 
-  it("recovers a lock abandoned by a dead restart-request writer", () => {
+  it("immediately recovers an owner-less lock from an interrupted publisher", () => {
     const filePath = createTempStatusFile({ dirty: true });
     const env = { PAPERCLIP_DEV_SERVER_STATUS_FILE: filePath };
     const requestPath = getDevServerRestartRequestFilePath(env)!;
     const lockPath = `${requestPath}.lock`;
     mkdirSync(lockPath);
-    writeFileSync(
-      path.join(lockPath, "owner.json"),
-      JSON.stringify({ pid: 2_000_000_000, acquiredAt: new Date().toISOString() }),
-      "utf8",
-    );
 
     writeDevServerRestartRequest(
       {

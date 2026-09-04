@@ -72,13 +72,10 @@ function tryRecoverDevRestartRequestLock(lockPath: string): boolean {
       lockAgeMs >= DEV_RESTART_REQUEST_LOCK_STALE_MS ||
       (typeof owner.pid === "number" && !processIsAlive(owner.pid));
   } catch {
-    try {
-      stale =
-        Date.now() - statSync(lockPath).mtimeMs >=
-        DEV_RESTART_REQUEST_LOCK_STALE_MS;
-    } catch {
-      return true;
-    }
+    // Canonical locks are published only after owner.json is durable in a
+    // private candidate directory. A visible lock without valid ownership is
+    // therefore abandoned and can be reclaimed immediately.
+    stale = true;
   }
   if (!stale) return false;
 
@@ -102,30 +99,41 @@ function withDevRestartRequestLock<T>(filePath: string, action: () => T): T {
     attempt <= DEV_RESTART_REQUEST_LOCK_RETRY_COUNT;
     attempt += 1
   ) {
-    try {
-      mkdirSync(lockPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") {
-        throw error;
-      }
-      if (tryRecoverDevRestartRequestLock(lockPath)) continue;
-      if (attempt === DEV_RESTART_REQUEST_LOCK_RETRY_COUNT) {
-        throw new Error("dev_server_restart_request_lock_busy");
-      }
-      Atomics.wait(
-        lockWaitBuffer,
-        0,
-        0,
-        DEV_RESTART_REQUEST_LOCK_RETRY_MS,
-      );
-      continue;
-    }
+    const candidateLockPath = `${lockPath}.${process.pid}.${randomUUID()}.candidate`;
+    mkdirSync(candidateLockPath);
     try {
       writeFileSync(
-        path.join(lockPath, "owner.json"),
+        path.join(candidateLockPath, "owner.json"),
         `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
         "utf8",
       );
+      try {
+        // Publishing a populated directory makes lock ownership visible in one
+        // rename; there is no canonical owner-less crash window.
+        renameSync(candidateLockPath, lockPath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        if (code !== "EEXIST" && code !== "ENOTEMPTY" && code !== "EPERM") {
+          throw error;
+        }
+        if (tryRecoverDevRestartRequestLock(lockPath)) continue;
+        if (attempt === DEV_RESTART_REQUEST_LOCK_RETRY_COUNT) {
+          throw new Error("dev_server_restart_request_lock_busy");
+        }
+        Atomics.wait(
+          lockWaitBuffer,
+          0,
+          0,
+          DEV_RESTART_REQUEST_LOCK_RETRY_MS,
+        );
+        continue;
+      }
+    } finally {
+      if (existsSync(candidateLockPath)) {
+        rmSync(candidateLockPath, { recursive: true, force: true });
+      }
+    }
+    try {
       return action();
     } finally {
       rmSync(lockPath, { recursive: true, force: true });
