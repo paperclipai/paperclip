@@ -4,12 +4,15 @@ import {
   deleteSandboxCr,
   getSandboxCrStatus,
   findPodForSandbox,
+  makeSandboxCrOrchestrator,
   SandboxCrTimeoutError,
   waitForSandboxReady,
 } from "../../src/sandbox-cr-orchestrator.js";
 
 const SANDBOX_GROUP = "agents.x-k8s.io";
-const SANDBOX_VERSION = "v1alpha1";
+// Every CR request carries the version the caller resolved from cluster
+// discovery; these tests pin the modern one and assert it reaches the API.
+const SANDBOX_VERSION = "v1beta1";
 const SANDBOX_PLURAL = "sandboxes";
 
 // Helpers to build mock CR objects with given phase
@@ -28,11 +31,11 @@ describe("createSandboxCr", () => {
     const create = vi.fn().mockResolvedValue({ metadata: { uid: "test-uid" } });
     const clients = { custom: { createNamespacedCustomObject: create } };
     const manifest = {
-      apiVersion: "agents.x-k8s.io/v1alpha1",
+      apiVersion: "agents.x-k8s.io/v1beta1",
       kind: "Sandbox",
       metadata: { name: "pc-abc", namespace: "paperclip-acme" },
     };
-    const result = await createSandboxCr(clients as never, "paperclip-acme", manifest);
+    const result = await createSandboxCr(clients as never, "paperclip-acme", manifest, SANDBOX_VERSION);
     expect(create).toHaveBeenCalledWith({
       group: SANDBOX_GROUP,
       version: SANDBOX_VERSION,
@@ -47,7 +50,7 @@ describe("createSandboxCr", () => {
     const create = vi.fn().mockResolvedValue({ metadata: {} });
     const clients = { custom: { createNamespacedCustomObject: create } };
     await expect(
-      createSandboxCr(clients as never, "ns", {}),
+      createSandboxCr(clients as never, "ns", {}, SANDBOX_VERSION),
     ).rejects.toThrow("Sandbox CR created without a UID");
   });
 });
@@ -56,7 +59,7 @@ describe("getSandboxCrStatus", () => {
   it("maps phase=Ready to SandboxStatus.phase=Running with active=1", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Ready"));
     const clients = { custom: { getNamespacedCustomObject: get } };
-    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc");
+    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(status.phase).toBe("Running");
     expect(status.active).toBe(1);
     expect(status.complete).toBe(false);
@@ -65,7 +68,7 @@ describe("getSandboxCrStatus", () => {
   it("maps phase=Pending to SandboxStatus.phase=Pending", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Pending"));
     const clients = { custom: { getNamespacedCustomObject: get } };
-    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc");
+    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(status.phase).toBe("Pending");
     expect(status.active).toBe(0);
   });
@@ -81,7 +84,7 @@ describe("getSandboxCrStatus", () => {
       },
     });
     const clients = { custom: { getNamespacedCustomObject: get } };
-    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc");
+    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(status.phase).toBe("Failed");
     expect(status.failed).toBe(1);
     expect(status.reason).toBe("ImagePullFailed");
@@ -90,7 +93,7 @@ describe("getSandboxCrStatus", () => {
   it("maps phase=Terminating to SandboxStatus.phase=Running with reason=Terminating", async () => {
     const get = vi.fn().mockResolvedValue(makeCr("Terminating"));
     const clients = { custom: { getNamespacedCustomObject: get } };
-    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc");
+    const status = await getSandboxCrStatus(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(status.phase).toBe("Running");
     expect(status.reason).toBe("Terminating");
   });
@@ -103,7 +106,7 @@ describe("findPodForSandbox", () => {
       custom: { getNamespacedCustomObject: get },
       core: { readNamespacedPod: vi.fn(), listNamespacedPod: vi.fn() },
     };
-    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
+    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(podName).toBe("pc-abc-pod-xyz");
     // Primary path succeeded: neither the exact-name GET nor the label list runs.
     expect(clients.core.readNamespacedPod).not.toHaveBeenCalled();
@@ -121,7 +124,7 @@ describe("findPodForSandbox", () => {
       custom: { getNamespacedCustomObject: get },
       core: { readNamespacedPod: read, listNamespacedPod: list },
     };
-    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
+    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(read).toHaveBeenCalledWith({ namespace: "ns", name: "pc-abc" });
     expect(podName).toBe("pc-abc");
     expect(list).not.toHaveBeenCalled();
@@ -142,7 +145,7 @@ describe("findPodForSandbox", () => {
       custom: { getNamespacedCustomObject: get },
       core: { readNamespacedPod: read, listNamespacedPod: list },
     };
-    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
+    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(list).toHaveBeenCalledWith(
       expect.objectContaining({ labelSelector: "agents.x-k8s.io/sandbox-name=pc-abc" }),
     );
@@ -164,7 +167,7 @@ describe("findPodForSandbox", () => {
       custom: { getNamespacedCustomObject: get },
       core: { readNamespacedPod: vi.fn().mockRejectedValue({ code: 404 }), listNamespacedPod: list },
     };
-    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
+    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(podName).toBeNull();
   });
 
@@ -176,7 +179,7 @@ describe("findPodForSandbox", () => {
       custom: { getNamespacedCustomObject: get },
       core: { readNamespacedPod: read, listNamespacedPod: list },
     };
-    await expect(findPodForSandbox(clients as never, "ns", "pc-abc")).rejects.toMatchObject({
+    await expect(findPodForSandbox(clients as never, "ns", "pc-abc", SANDBOX_VERSION)).rejects.toMatchObject({
       code: 403,
     });
     expect(list).not.toHaveBeenCalled();
@@ -189,7 +192,7 @@ describe("findPodForSandbox", () => {
       custom: { getNamespacedCustomObject: get },
       core: { readNamespacedPod: vi.fn().mockRejectedValue({ code: 404 }), listNamespacedPod: list },
     };
-    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc");
+    const podName = await findPodForSandbox(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(podName).toBeNull();
   });
 });
@@ -198,7 +201,7 @@ describe("deleteSandboxCr", () => {
   it("calls custom.deleteNamespacedCustomObject with Foreground propagation", async () => {
     const del = vi.fn().mockResolvedValue({});
     const clients = { custom: { deleteNamespacedCustomObject: del } };
-    await deleteSandboxCr(clients as never, "ns", "pc-abc");
+    await deleteSandboxCr(clients as never, "ns", "pc-abc", SANDBOX_VERSION);
     expect(del).toHaveBeenCalledWith(
       expect.objectContaining({
         group: SANDBOX_GROUP,
@@ -221,6 +224,7 @@ describe("waitForSandboxReady", () => {
       "ns",
       "pc-abc",
       { timeoutMs: 5000, pollMs: 10 },
+      SANDBOX_VERSION,
     );
     expect(status.phase).toBe("Running"); // Ready maps to Running
     expect(get).toHaveBeenCalledTimes(1);
@@ -238,6 +242,7 @@ describe("waitForSandboxReady", () => {
       "ns",
       "pc-abc",
       { timeoutMs: 5000, pollMs: 10 },
+      SANDBOX_VERSION,
     );
     expect(status.phase).toBe("Running");
     expect(get).toHaveBeenCalledTimes(3);
@@ -247,10 +252,13 @@ describe("waitForSandboxReady", () => {
     const get = vi.fn().mockResolvedValue(makeCr("Pending"));
     const clients = { custom: { getNamespacedCustomObject: get } };
     await expect(
-      waitForSandboxReady(clients as never, "ns", "pc-abc", {
-        timeoutMs: 50,
-        pollMs: 10,
-      }),
+      waitForSandboxReady(
+        clients as never,
+        "ns",
+        "pc-abc",
+        { timeoutMs: 50, pollMs: 10 },
+        SANDBOX_VERSION,
+      ),
     ).rejects.toBeInstanceOf(SandboxCrTimeoutError);
   });
 
@@ -261,10 +269,55 @@ describe("waitForSandboxReady", () => {
     });
     const clients = { custom: { getNamespacedCustomObject: get } };
     await expect(
-      waitForSandboxReady(clients as never, "ns", "pc-abc", {
-        timeoutMs: 5000,
-        pollMs: 10,
-      }),
+      waitForSandboxReady(
+        clients as never,
+        "ns",
+        "pc-abc",
+        { timeoutMs: 5000, pollMs: 10 },
+        SANDBOX_VERSION,
+      ),
     ).rejects.toThrow(/failed.*OOMKilled/i);
+  });
+});
+
+describe("makeSandboxCrOrchestrator", () => {
+  // The SandboxOrchestrator interface is version-agnostic by design (the job
+  // backend has no such notion), so the resolved version is bound into the
+  // orchestrator instead of travelling through every call signature.
+  it("binds the resolved version into every CR request it makes", async () => {
+    const create = vi.fn().mockResolvedValue({ metadata: { uid: "u" } });
+    const get = vi.fn().mockResolvedValue(makeCr("Ready", "pc-abc-pod"));
+    const del = vi.fn().mockResolvedValue({});
+    const clients = {
+      custom: {
+        createNamespacedCustomObject: create,
+        getNamespacedCustomObject: get,
+        deleteNamespacedCustomObject: del,
+      },
+      core: { readNamespacedPod: vi.fn(), listNamespacedPod: vi.fn() },
+    } as never;
+
+    const orchestrator = makeSandboxCrOrchestrator("v1beta1");
+    await orchestrator.claim(clients, "ns", { kind: "Sandbox" });
+    await orchestrator.getStatus(clients, "ns", "pc-abc");
+    await orchestrator.findPod(clients, "ns", "pc-abc");
+    await orchestrator.release(clients, "ns", "pc-abc");
+    await orchestrator.waitForCompletion(clients, "ns", "pc-abc", {
+      timeoutMs: 5000,
+      pollMs: 10,
+    });
+
+    for (const call of [...create.mock.calls, ...get.mock.calls, ...del.mock.calls]) {
+      expect(call[0]).toMatchObject({ group: SANDBOX_GROUP, version: "v1beta1" });
+    }
+  });
+
+  it("addresses an older controller through v1alpha1", async () => {
+    const del = vi.fn().mockResolvedValue({});
+    const clients = { custom: { deleteNamespacedCustomObject: del } } as never;
+    await makeSandboxCrOrchestrator("v1alpha1").release(clients, "ns", "pc-abc");
+    expect(del).toHaveBeenCalledWith(
+      expect.objectContaining({ version: "v1alpha1" }),
+    );
   });
 });
