@@ -634,6 +634,9 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       driverKind: this.driverKind,
       driverSessionId: this.opened.threadId,
       providerSessionId: this.opened.providerSessionId,
+      ...(this.opened.providerIdentity === undefined
+        ? {}
+        : { providerIdentity: structuredClone(this.opened.providerIdentity) }),
       runId: this.runId,
       normalizedSessionId: this.normalizedSessionId,
       activeTurnId: this.activeTurnId,

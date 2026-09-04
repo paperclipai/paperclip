@@ -1159,6 +1159,23 @@ impl AcpxCommandExecutor {
             state.active_turn_id = None;
             self.session = None;
             self.save_state()?;
+        } else if self.state.as_ref().is_some_and(|state| {
+            state.lifecycle == "prepared"
+                && state.identity.is_some()
+                && !state.provider_exit_unconfirmed
+                && state.active_turn_id.is_none()
+        }) {
+            // turn.stop deliberately leaves an already-reaped provider in a
+            // non-recoverable `prepared` state while runner.drain crosses the
+            // durable event barrier. Once the following runner.suspend reaches
+            // this boundary, publish the exact stopped checkpoint as
+            // recoverable instead of reporting a no-op success that can never
+            // emit session.resumed in the replacement runner.
+            self.state
+                .as_mut()
+                .expect("ACPX stopped provider state remains available")
+                .lifecycle = "suspended".to_owned();
+            self.save_state()?;
         }
         Ok(CommandExecution::result(json!({"status": "completed"})))
     }
@@ -1956,7 +1973,7 @@ mod tests {
     }
 
     #[test]
-    fn unconfirmed_suspension_state_is_recoverable_but_not_attachable() {
+    fn unconfirmed_suspension_state_becomes_recoverable_only_after_cleanup_and_suspend() {
         let directory = temporary_directory("suspension-fence-pending");
         let (provider_lifetime_fence_candidates, original_lifetime_fence) =
             reserve_provider_lifetime_fence();
@@ -2018,6 +2035,14 @@ mod tests {
         let recovered = executor.state.as_ref().unwrap();
         assert_eq!(recovered.lifecycle, "prepared");
         assert!(!recovered.provider_exit_unconfirmed);
+
+        executor.suspend().unwrap();
+        let suspended: AcpxDurableState = serde_json::from_slice(
+            &fs::read(executor.state_path()).expect("read suspended ACPX state"),
+        )
+        .expect("parse suspended ACPX state");
+        assert_eq!(suspended.lifecycle, "suspended");
+        assert!(!suspended.provider_exit_unconfirmed);
         fs::remove_dir_all(directory).unwrap();
     }
 

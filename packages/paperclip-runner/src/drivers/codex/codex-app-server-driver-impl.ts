@@ -54,8 +54,10 @@ import type {
 } from "./codex-driver-types.js";
 import {
   boundedText,
+  canonicalJson,
   codexSemanticToolSpecs,
   differingJsonPaths,
+  parseProviderIdentity,
   record,
   text,
 } from "./codex-driver-values.js";
@@ -372,6 +374,17 @@ export class CodexAppServerDriver implements HarnessDriver {
           reason: "provider resumed a different provider session",
         };
       }
+      if (
+        snapshot.providerIdentity !== undefined &&
+        canonicalJson(opened.providerIdentity) !==
+          canonicalJson(snapshot.providerIdentity)
+      ) {
+        await cancellation.wait(cancellation.close());
+        return {
+          recovered: false,
+          reason: "provider resumed with a different tagged session identity",
+        };
+      }
       const checkpointedActiveTurnId = snapshot.activeTurnId ?? null;
       // A terminal fingerprint is the durable provider fact. A crash can
       // persist it before the following active-turn clear reaches the same
@@ -670,9 +683,11 @@ export class CodexAppServerDriver implements HarnessDriver {
         "Codex thread response changed the assigned working directory",
       );
     }
+    const providerIdentity = parseProviderIdentity(thread.providerIdentity);
     return {
       threadId,
       providerSessionId,
+      ...(providerIdentity === undefined ? {} : { providerIdentity }),
       collaborationMode,
       context: {
         protocolVersion: CODEX_CODEX_PROTOCOL_VERSION,

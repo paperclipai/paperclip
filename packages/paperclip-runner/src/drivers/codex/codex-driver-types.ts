@@ -2,6 +2,7 @@ import type {
   HarnessRuntimeRequest,
   HarnessRuntimeRequestResolution,
   HarnessThreadLineageEntry,
+  PersistedHarnessProviderIdentity,
   PersistedHarnessSession,
 } from "../../contracts/harness-driver.js";
 import type {
@@ -87,6 +88,7 @@ export interface TerminalReplayConflict {
 export interface OpenedCodexThread {
   threadId: string;
   providerSessionId: string | null;
+  providerIdentity?: PersistedHarnessProviderIdentity;
   collaborationMode: Record<string, unknown> | null;
   context: CodexModelContextSnapshot;
   lineage: HarnessThreadLineageEntry;
