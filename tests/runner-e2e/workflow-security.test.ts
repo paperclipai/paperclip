@@ -697,6 +697,58 @@ describe("public repository paid workflow security", () => {
     expect(workflow).toContain("passed_count=");
     expect(workflow).toContain("pnpm test:e2e:runner:history:prepare");
     expect(report).toContain("runs-on: ubuntu-24.04");
+    const sanitizerPackages = [
+      [
+        "imagemagick-6.q16_6.9.12.98+dfsg1-5.2build2_amd64.deb",
+        "5dd63a2b9343783caa918c6d74d0dfb708ff7b6ebf5b5d4a22ef9c8adbc73f2f",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/i/imagemagick/imagemagick-6.q16_6.9.12.98+dfsg1-5.2build2_amd64.deb",
+      ],
+      [
+        "imagemagick_6.9.12.98+dfsg1-5.2build2_amd64.deb",
+        "8b072461337a6ed7f03feef46c9b68f7668ba7d625332c590785431676864c17",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/i/imagemagick/imagemagick_6.9.12.98+dfsg1-5.2build2_amd64.deb",
+      ],
+      [
+        "libgif7_5.2.2-1ubuntu1.2_amd64.deb",
+        "8137945ac9167f26d0264f403ffb48a45974f096e8acab5479e33fdba6c28a36",
+        "https://security.ubuntu.com/ubuntu/pool/main/g/giflib/libgif7_5.2.2-1ubuntu1.2_amd64.deb",
+      ],
+      [
+        "liblept5_1.82.0-3build4_amd64.deb",
+        "c2bb81d58f032b09917c0d50994cce905287a1596304a4e99681a03601456ea8",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/l/leptonlib/liblept5_1.82.0-3build4_amd64.deb",
+      ],
+      [
+        "libtesseract5_5.3.4-1build5_amd64.deb",
+        "a38438115dc203b5abc1e6a6b24eb5273ba82161a11faa2f619bf5f7622efb14",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/t/tesseract/libtesseract5_5.3.4-1build5_amd64.deb",
+      ],
+      [
+        "tesseract-ocr_5.3.4-1build5_amd64.deb",
+        "2dfac382d77215aee0c3de4a2a2205505d5f2195e72e79b54ad32154fc08da77",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/t/tesseract/tesseract-ocr_5.3.4-1build5_amd64.deb",
+      ],
+      [
+        "tesseract-ocr-eng_4.1.0-2_all.deb",
+        "b1996b3113c78663f4dd16cf18aa1f288b07e9624f8d4a0ddbd7d9b52a234ba7",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/t/tesseract-lang/tesseract-ocr-eng_4.1.0-2_all.deb",
+      ],
+      [
+        "tesseract-ocr-osd_4.1.0-2_all.deb",
+        "a266496b3268134493808c1595c9d16ac92c7e1c28e3e0bf46fdb322df95ca68",
+        "https://archive.ubuntu.com/ubuntu/pool/universe/t/tesseract-lang/tesseract-ocr-osd_4.1.0-2_all.deb",
+      ],
+    ];
+    const verifiedDownloads = [
+      ...sanitizer.matchAll(
+        /download_verified_package \\\n\s+"([^"]+)" \\\n\s+"([a-f0-9]{64})" \\\n\s+"(https:\/\/[^"]+)"/gu,
+      ),
+    ].map((match) => match.slice(1));
+    expect(verifiedDownloads).toEqual(sanitizerPackages);
+    expect(sanitizer).not.toContain("apt-get");
+    expect(sanitizer).toContain("--proto '=https' --tlsv1.2");
+    expect(sanitizer).toContain("sha256sum --check --strict");
+    expect(sanitizer).toContain('sudo dpkg --install "$tool_root"/*.deb');
     const sanitizerPackagePins = [
       "imagemagick=8:6.9.12.98+dfsg1-5.2build2",
       "imagemagick-6.q16=8:6.9.12.98+dfsg1-5.2build2",
@@ -707,17 +759,7 @@ describe("public repository paid workflow security", () => {
       "tesseract-ocr-eng=1:4.1.0-2",
       "tesseract-ocr-osd=1:4.1.0-2",
     ];
-    const sanitizerInstall = sanitizer.match(
-      /sudo apt-get install --no-install-recommends -y \\\n((?:\s+"[^"\n]+"(?: \\\n)?)+)/u,
-    );
-    expect(sanitizer.match(/sudo apt-get install/gu)).toHaveLength(1);
-    expect(
-      [...(sanitizerInstall?.[1] ?? "").matchAll(/"([^"\n]+)"/gu)].map(
-        (match) => match[1],
-      ),
-    ).toEqual(sanitizerPackagePins);
     for (const packagePin of sanitizerPackagePins) {
-      expect(sanitizer).toContain(`"${packagePin}"`);
       const separator = packagePin.indexOf("=");
       expect(sanitizer).toContain(
         `verify_package_version ${packagePin.slice(0, separator)} "${packagePin.slice(separator + 1)}"`,
