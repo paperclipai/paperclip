@@ -152,8 +152,17 @@ describe("openCode models", () => {
         exitCode: 0,
         signal: null,
         timedOut: false,
+        stdout: "Models cache refreshed\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
         stdout:
-          "openrouter/example/stale-model\nopenrouter/deepseek/deepseek-v4-flash-0731\n",
+          "openrouter/example/current-model\nopenrouter/deepseek/deepseek-v4-flash-0731\n",
         stderr: "",
         pid: 1,
         startedAt: new Date().toISOString(),
@@ -167,9 +176,10 @@ describe("openCode models", () => {
       id: "openrouter/deepseek/deepseek-v4-flash-0731",
       label: "openrouter/deepseek/deepseek-v4-flash-0731",
     });
-    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenCalledTimes(3);
     expect(spy.mock.calls[0]?.[2]).toEqual(["models"]);
     expect(spy.mock.calls[1]?.[2]).toEqual(["models", "--refresh"]);
+    expect(spy.mock.calls[2]?.[2]).toEqual(["models"]);
   });
 
   it("still rejects when a refreshed non-empty catalog omits the configured model", async () => {
@@ -180,6 +190,15 @@ describe("openCode models", () => {
         signal: null,
         timedOut: false,
         stdout: "openrouter/example/stale-model\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "Models cache refreshed\n",
         stderr: "",
         pid: 1,
         startedAt: new Date().toISOString(),
@@ -201,11 +220,12 @@ describe("openCode models", () => {
     ).rejects.toThrow(
       "Configured OpenCode model is unavailable: openrouter/deepseek/deepseek-v4-flash-0731",
     );
-    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenCalledTimes(3);
     expect(spy.mock.calls[1]?.[2]).toEqual(["models", "--refresh"]);
+    expect(spy.mock.calls[2]?.[2]).toEqual(["models"]);
   });
 
-  it("still rejects from the original catalog when refresh returns no models", async () => {
+  it("still rejects from the original catalog when post-refresh enumeration returns no models", async () => {
     const spy = vi
       .spyOn(serverUtils, "runChildProcess")
       .mockResolvedValueOnce({
@@ -213,6 +233,15 @@ describe("openCode models", () => {
         signal: null,
         timedOut: false,
         stdout: "openrouter/example/stale-model\n",
+        stderr: "",
+        pid: 1,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "Models cache refreshed\n",
         stderr: "",
         pid: 1,
         startedAt: new Date().toISOString(),
@@ -232,8 +261,9 @@ describe("openCode models", () => {
         model: "openrouter/deepseek/deepseek-v4-flash-0731",
       }),
     ).rejects.toThrow("Available models: openrouter/example/stale-model");
-    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy).toHaveBeenCalledTimes(3);
     expect(spy.mock.calls[1]?.[2]).toEqual(["models", "--refresh"]);
+    expect(spy.mock.calls[2]?.[2]).toEqual(["models"]);
   });
 
   it("still rejects from the original catalog when refresh fails", async () => {

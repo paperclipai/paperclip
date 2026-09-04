@@ -238,12 +238,17 @@ async function refreshOpenCodeModelsCached(input: {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
-  const models = await discoverOpenCodeModels({
+  // OpenCode 1.18.17 uses `models --refresh` only to update its on-disk
+  // models.dev cache. Its stdout is a confirmation message, not the refreshed
+  // catalog, so enumerate once more after the refresh under the exact same
+  // command/cwd/env before deciding whether the configured model exists.
+  await discoverOpenCodeModels({
     command,
     cwd,
     env,
     refresh: true,
   });
+  const models = await discoverOpenCodeModels({ command, cwd, env });
   if (models.length > 0) {
     discoveryCache.set(discoveryCacheKey(command, cwd, env), {
       expiresAt: Date.now() + MODELS_CACHE_TTL_MS,
