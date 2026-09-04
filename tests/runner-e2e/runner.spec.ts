@@ -13,6 +13,7 @@ import {
   acceptedPlanSessionResetFailures,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
+  isOpenRouterDeepSeekHelloTerminalVariance,
   numberedPlanStepCount,
   providerSessionContinuityFailures,
 } from "./run-observations.js";
@@ -1645,6 +1646,29 @@ for (const execution of executions) {
         },
         secrets,
       );
+
+      if (
+        exactMessageMatcher?.kind === "message_exact" &&
+        isOpenRouterDeepSeekHelloTerminalVariance({
+          suiteId: execution.suite.id,
+          profileId: execution.profile.id,
+          taskId: execution.task.id,
+          expectedMarker: exactMessageMatcher.expected,
+          finalRunMessage,
+          allAgentMessages: message,
+          semanticSummary: record(finalRun.resultJson).summary,
+          issueStatus: issue.status,
+          runStatuses: selectedRuns.map((candidate) => candidate.status),
+          matcherResults,
+          invariantFailures,
+        })
+      ) {
+        // DeepSeek can occasionally complete the semantic finish correctly but
+        // expose its pre-tool acknowledgement as the visible final answer. Keep
+        // exact persisted-message, global occurrence, and DOM checks strict,
+        // while allowing one fresh-harness retry only for the zero-marker form.
+        failureClassOverride = "provider_variance";
+      }
 
       // The backend polling above can observe a terminal transition before a
       // websocket invalidation reaches the already-open task page. Reload the

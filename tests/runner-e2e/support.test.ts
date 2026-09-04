@@ -36,6 +36,7 @@ import {
   acceptedPlanSessionResetFailures,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
+  isOpenRouterDeepSeekHelloTerminalVariance,
   numberedPlanStepCount,
   providerSessionContinuityFailures,
 } from "./run-observations.js";
@@ -336,6 +337,71 @@ describe("runner E2E matchers", () => {
 });
 
 describe("runner E2E run observations", () => {
+  it("retries only the zero-marker DeepSeek hello terminal emission variance", () => {
+    const expectedMarker = "PC_H_nonce-1";
+    const observation = {
+      suiteId: "openrouter-model-breadth",
+      profileId: "openrouter-deepseek-deepseek-v4-flash-0731",
+      taskId: "hello-complete",
+      expectedMarker,
+      finalRunMessage:
+        "I'll complete this deterministic hello task by calling paperclip_finish once.",
+      allAgentMessages:
+        "I'll complete this deterministic hello task by calling paperclip_finish once.",
+      semanticSummary: expectedMarker,
+      issueStatus: "done",
+      runStatuses: ["succeeded"],
+      matcherResults: [
+        {
+          matcher: { kind: "message_exact", expected: expectedMarker },
+          passed: false,
+        },
+        {
+          matcher: {
+            kind: "message_occurrences",
+            expected: expectedMarker,
+            count: 1,
+          },
+          passed: false,
+        },
+        { matcher: { kind: "issue_status", expected: "done" }, passed: true },
+      ],
+      invariantFailures: [],
+    };
+
+    expect(isOpenRouterDeepSeekHelloTerminalVariance(observation)).toBe(true);
+    expect(
+      isOpenRouterDeepSeekHelloTerminalVariance({
+        ...observation,
+        allAgentMessages: `${expectedMarker}\n${expectedMarker}`,
+      }),
+    ).toBe(false);
+    expect(
+      isOpenRouterDeepSeekHelloTerminalVariance({
+        ...observation,
+        semanticSummary: "different-summary",
+      }),
+    ).toBe(false);
+    expect(
+      isOpenRouterDeepSeekHelloTerminalVariance({
+        ...observation,
+        invariantFailures: ["missing native terminal event"],
+      }),
+    ).toBe(false);
+    expect(
+      isOpenRouterDeepSeekHelloTerminalVariance({
+        ...observation,
+        matcherResults: [
+          ...observation.matcherResults,
+          {
+            matcher: { kind: "environment", expected: "local" },
+            passed: false,
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   it("counts provider-equivalent numbered Plan step formats", () => {
     expect(numberedPlanStepCount("1. First\n2) Second")).toBe(2);
     expect(

@@ -15,6 +15,29 @@ export interface ObservableProviderSessionRun {
   contextSnapshot?: Record<string, unknown> | null;
 }
 
+export interface ObservableMatcherResult {
+  matcher: {
+    kind?: string;
+    expected?: unknown;
+    count?: unknown;
+  };
+  passed: boolean;
+}
+
+export interface OpenRouterHelloTerminalVarianceObservation {
+  suiteId: string;
+  profileId: string;
+  taskId: string;
+  expectedMarker: string;
+  finalRunMessage: string;
+  allAgentMessages: string;
+  semanticSummary: unknown;
+  issueStatus: string;
+  runStatuses: readonly string[];
+  matcherResults: readonly ObservableMatcherResult[];
+  invariantFailures: readonly string[];
+}
+
 export function acceptedPlanSessionResetFailures(
   provider: "codex" | "opencode" | "acpx",
   previousSessionId: string | null | undefined,
@@ -56,6 +79,66 @@ export function isNonExecutingReviewFenceRun(run: ObservableRunState) {
   return (
     run.status === "cancelled" &&
     run.errorCode === "issue_continuation_waiting_on_review"
+  );
+}
+
+function normalizeMessage(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/\\_/g, "_")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
+
+function countOccurrences(value: string, expected: string) {
+  if (!expected) return 0;
+  let count = 0;
+  let cursor = 0;
+  while (cursor <= value.length - expected.length) {
+    const index = value.indexOf(expected, cursor);
+    if (index < 0) break;
+    count += 1;
+    cursor = index + expected.length;
+  }
+  return count;
+}
+
+export function isOpenRouterDeepSeekHelloTerminalVariance(
+  observation: OpenRouterHelloTerminalVarianceObservation,
+) {
+  const marker = normalizeMessage(observation.expectedMarker);
+  const finalRunMessage = normalizeMessage(observation.finalRunMessage);
+  const allAgentMessages = normalizeMessage(observation.allAgentMessages);
+  const failedMatchers = observation.matcherResults.filter(
+    (result) => !result.passed,
+  );
+  const hasExpectedExactFailure = failedMatchers.some(
+    (result) =>
+      result.matcher.kind === "message_exact" &&
+      result.matcher.expected === observation.expectedMarker,
+  );
+  const hasExpectedOccurrenceFailure = failedMatchers.some(
+    (result) =>
+      result.matcher.kind === "message_occurrences" &&
+      result.matcher.expected === observation.expectedMarker &&
+      result.matcher.count === 1,
+  );
+
+  return (
+    observation.suiteId === "openrouter-model-breadth" &&
+    observation.profileId === "openrouter-deepseek-deepseek-v4-flash-0731" &&
+    observation.taskId === "hello-complete" &&
+    observation.issueStatus === "done" &&
+    observation.runStatuses.length === 1 &&
+    observation.runStatuses[0] === "succeeded" &&
+    observation.semanticSummary === observation.expectedMarker &&
+    finalRunMessage.length > 0 &&
+    countOccurrences(finalRunMessage, marker) === 0 &&
+    countOccurrences(allAgentMessages, marker) === 0 &&
+    observation.invariantFailures.length === 0 &&
+    failedMatchers.length === 2 &&
+    hasExpectedExactFailure &&
+    hasExpectedOccurrenceFailure
   );
 }
 

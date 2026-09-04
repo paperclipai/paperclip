@@ -196,6 +196,16 @@ describe("runner E2E catalog", () => {
       );
       expect(prompt).toContain("refer to it only as “the terminal marker.”");
     }
+
+    const breadthHello = openRouterBreadthTasks
+      .find((task) => task.id === "hello-complete")
+      ?.buildPrompt("nonce");
+    expect(breadthHello).toContain(
+      "Your first response action must be the paperclip_finish tool call",
+    );
+    expect(breadthHello).toContain(
+      "Do not emit any assistant text, acknowledgement, or preamble before calling it",
+    );
   });
 
   it("uses only declared secret references in generated payloads", () => {
