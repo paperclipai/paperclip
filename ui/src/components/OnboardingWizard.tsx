@@ -2719,7 +2719,18 @@ function OnboardingWizardInner({
                       label="Model source"
                       sources={recommendedAdapters.map((opt) => ({
                         id: opt.type,
-                        label: opt.label,
+                        // The vendor name where this step has one, the registry's
+                        // tool name where it does not. `MODEL_SOURCE_NAMES` was
+                        // added with the reasoning above it and then never read,
+                        // so the row went on showing "Claude Code" and "Codex"
+                        // — the tool names — under a heading asking which
+                        // provider you are signing in to.
+                        //
+                        // The fallback is what keeps the row rendering if the
+                        // registry ever marks a third adapter `recommended`:
+                        // an unnamed source gets its tool name rather than
+                        // nothing.
+                        label: MODEL_SOURCE_NAMES[opt.type] ?? opt.label,
                         icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
                       }))}
                       mode={credentialMode}

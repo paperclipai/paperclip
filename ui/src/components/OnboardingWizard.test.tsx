@@ -1849,6 +1849,31 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       return { root, queryClient };
     }
 
+    it("names the tiles for the provider, not the adapter type", async () => {
+      // `MODEL_SOURCE_NAMES` exists so this row says "Claude" and "OpenAI" —
+      // which provider you are signing in to, the question the step's heading
+      // asks — rather than the display registry's tool names, which the agent
+      // config screens want. It was added with a long comment justifying it and
+      // then never read, so the row went on rendering whatever the registry
+      // supplied: "Claude Code" and "Codex" in the app, and the bare type here,
+      // since this suite's registry mock returns `label: type`.
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      const labels = [...document.body.querySelectorAll("button[aria-checked]")].map(
+        (tile) => tile.textContent ?? "",
+      );
+      expect(labels.length, "both recommended sources should render").toBe(2);
+      expect(labels.some((l) => l.includes("Claude"))).toBe(true);
+      expect(labels.some((l) => l.includes("OpenAI"))).toBe(true);
+      // The negative half is the one that fails on the unwired version: the
+      // registry label is the adapter type, and it must not reach the tile.
+      expect(labels.join(" ")).not.toContain("claude_local");
+      expect(labels.join(" ")).not.toContain("codex_local");
+
+      await act(async () => root.unmount());
+    });
+
     it("will not advance on a saved adapter the step no longer offers", async () => {
       // A draft can name an adapter this registry does not carry — a cloud
       // sandbox without claude_local, an adapter since disabled. The row hides
@@ -2036,7 +2061,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // the credential switch instead. What is asserted below is unchanged —
       // changing the source re-reads the signal — only the route there is.
       // The tile's text is the label plus its credential tag, hence the prefix.
-      await clickByText((t) => t.startsWith("codex_local"));
+      // That label is the provider name now, not the adapter type: this row
+      // asks which provider you are signing in to, so it reads through
+      // `MODEL_SOURCE_NAMES` rather than the display registry.
+      await clickByText((t) => t.startsWith("OpenAI"));
 
       expect(mockAgentsApi.getAdapterAuthSignal).toHaveBeenCalledWith(
         "company-new",
