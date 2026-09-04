@@ -347,10 +347,17 @@ describe("TaskChatThread draft pass-through", () => {
     const dock = container.querySelector(
       '[data-testid="task-chat-composer-dock"]',
     );
+    const thread = container.querySelector(
+      '[data-testid="task-chat-thread"]',
+    );
+    expect(thread?.classList).not.toContain("h-(--tc-thread-max-h)");
+    expect(thread?.classList).toContain("flex-1");
     expect(dock?.classList).toContain("px-4");
     expect(dock?.classList).not.toContain("px-1");
-    expect(dock?.classList).toContain("-mt-(--radius-task-composer)");
+    expect(dock?.classList).not.toContain("-mt-(--radius-task-composer)");
     expect(dock?.classList).not.toContain("pt-1");
+    expect(dock?.classList).toContain("md:pb-0");
+    expect(dock?.classList).not.toContain("md:pb-4");
     expect(dock?.classList).not.toContain("bg-background/80");
     expect(dock?.classList).not.toContain("backdrop-blur");
   });

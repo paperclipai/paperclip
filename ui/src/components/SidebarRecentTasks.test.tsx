@@ -13,7 +13,14 @@ import {
 } from "@/lib/recent-tasks";
 
 const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
-const mockIssuesApi = vi.hoisted(() => ({ get: vi.fn() }));
+const mockIssuesApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  update: vi.fn(),
+  archiveFromInbox: vi.fn(),
+  getTreeControlState: vi.fn(),
+  createTreeHold: vi.fn(),
+  releaseTreeHold: vi.fn(),
+}));
 
 vi.mock("@/api/auth", () => ({ authApi: mockAuthApi }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
@@ -50,7 +57,7 @@ describe("SidebarRecentTasks", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
-    mockIssuesApi.get.mockReset();
+    Object.values(mockIssuesApi).forEach((mock) => mock.mockReset());
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -86,10 +93,25 @@ describe("SidebarRecentTasks", () => {
     return queryClient;
   }
 
-  it("renders a compact empty state", async () => {
+  async function openActions(taskTitle: string) {
+    const actions = container.querySelector<HTMLButtonElement>(
+      `button[aria-label="More actions for ${taskTitle}"]`,
+    );
+    await act(async () => {
+      actions?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await Promise.resolve();
+    });
+  }
+
+  function menuItem(label: string) {
+    return Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent?.trim() === label);
+  }
+
+  it("hides the section when there are no recent tasks", async () => {
     await render();
-    expect(container.textContent).toContain("Recent Tasks");
-    expect(container.textContent).toContain("Open or create a task");
+    expect(container.textContent).not.toContain("Recent Tasks");
+    expect(container.textContent).not.toContain("Open or create a task");
   });
 
   it("renders refreshed task text and live state without shifting for a status icon", async () => {
@@ -130,6 +152,129 @@ describe("SidebarRecentTasks", () => {
     expect(link?.querySelector('[data-slot="recent-task-icon-spacer"]')).toBeNull();
     expect(link?.querySelector('[data-slot="sidebar-nav-icon"]')).toBeNull();
     expect(link?.firstElementChild?.textContent).toBe("Refreshed title");
+    const actions = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="More actions for Refreshed title"]',
+    );
+    expect(actions).not.toBeNull();
+    expect(actions?.className).toContain("opacity-0");
+  });
+
+  it("opens the compact task actions menu from the ellipsis button", async () => {
+    recordRecentTask({
+      id: "issue-1",
+      companyId: "company-1",
+      title: "Menu task",
+      identifier: "PAP-1",
+      status: "todo",
+      updatedAt: new Date(1),
+    }, "user-1");
+    mockIssuesApi.get.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      title: "Menu task",
+      identifier: "PAP-1",
+      status: "todo",
+      hiddenAt: null,
+      updatedAt: new Date(1),
+    });
+
+    await render();
+    await openActions("Menu task");
+
+    const menu = document.body.querySelector('[data-slot="dropdown-menu-content"]');
+    expect(menu?.textContent).toContain("Rename");
+    expect(menu?.textContent).toContain("Archive");
+    expect(menu?.textContent).toContain("Pause/Restart");
+  });
+
+  it("archives a task from the inbox without hiding or removing the recent task", async () => {
+    const issue = {
+      id: "issue-1",
+      companyId: "company-1",
+      title: "Archive me",
+      identifier: "PAP-1",
+      status: "todo" as const,
+      hiddenAt: null,
+      updatedAt: new Date(1),
+    };
+    recordRecentTask(issue, "user-1");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.archiveFromInbox.mockResolvedValue({
+      id: issue.id,
+      archivedAt: new Date(2),
+    });
+
+    await render();
+    await openActions("Archive me");
+    await act(async () => {
+      menuItem("Archive")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledWith("issue-1");
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Recent Tasks");
+    expect(container.querySelector('a[href="/issues/issue-1"]')?.textContent).toContain(
+      "Archive me",
+    );
+    expect(readRecentTasks(
+      getRecentTasksStorageKey("company-1", "user-1"),
+      "company-1",
+    )).toHaveLength(1);
+  });
+
+  it("pauses a running task or restarts its active pause hold", async () => {
+    const issue = {
+      id: "issue-1",
+      companyId: "company-1",
+      title: "Toggle work",
+      identifier: "PAP-1",
+      status: "in_progress" as const,
+      hiddenAt: null,
+      updatedAt: new Date(1),
+    };
+    recordRecentTask(issue, "user-1");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.getTreeControlState
+      .mockResolvedValueOnce({ activePauseHold: null })
+      .mockResolvedValueOnce({
+        activePauseHold: {
+          holdId: "hold-1",
+          rootIssueId: "issue-1",
+          issueId: "issue-1",
+          isRoot: true,
+          mode: "pause",
+          reason: null,
+          releasePolicy: { strategy: "manual" },
+        },
+      });
+    mockIssuesApi.createTreeHold.mockResolvedValue({ hold: {}, preview: {} });
+    mockIssuesApi.releaseTreeHold.mockResolvedValue({});
+
+    await render();
+    await openActions("Toggle work");
+    await act(async () => {
+      menuItem("Pause/Restart")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    expect(mockIssuesApi.createTreeHold).toHaveBeenCalledWith("issue-1", {
+      mode: "pause",
+      reason: "Paused from Recent Tasks.",
+      releasePolicy: { strategy: "manual" },
+    });
+
+    await openActions("Toggle work");
+    await act(async () => {
+      menuItem("Pause/Restart")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+    expect(mockIssuesApi.releaseTreeHold).toHaveBeenCalledWith("issue-1", "hold-1", {
+      reason: "Restarted from Recent Tasks.",
+      metadata: { wakeAgents: true },
+    });
   });
 
   it("synchronizes recent tasks written by another tab", async () => {

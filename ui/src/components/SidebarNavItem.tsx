@@ -128,8 +128,8 @@ export function SidebarNavItem({
           // (agents/projects) reserve extra right padding via className.
           "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
           (active ?? isActive)
-            ? "bg-background text-foreground"
-            : "text-foreground/80 hover:bg-background hover:text-foreground",
+            ? "bg-sidebar-accent text-sidebar-accent-foreground"
+            : "text-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
           className,
         )
       }
