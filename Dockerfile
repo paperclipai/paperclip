@@ -100,6 +100,34 @@ RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
 
+# Prune the workspace down to @paperclipai/server's own production
+# dependency graph, in a stage of its own rather than in `build` directly:
+# `cloud-plugins` and `cloud-server-deps` below both fork from `build` and
+# need its full devDependency toolchain (typescript, etc.) still intact to
+# build their own TypeScript at image build time, so the prune can't
+# happen in `build` itself without breaking them.
+#
+# `pnpm install --frozen-lockfile` in the deps stage installed every
+# workspace member's devDependencies plus every member's own dependencies
+# -- ui's bundler/storybook toolchain, other workspace packages' test
+# tooling, none of which the running server touches -- into one hoisted
+# node_modules that `production` below would otherwise copy wholesale. The
+# builds above are already done, so re-resolving with --prod and a
+# `server...` filter (server plus everything it actually depends on,
+# transitively) is safe and drops the unused weight.
+#
+# tsx is deliberately NOT pruned: server/package.json lists it as a
+# production dependency (not dev) because the ENTRYPOINT below imports it
+# directly (`--import ./server/node_modules/tsx/...`) to transpile the
+# workspace packages the server consumes by TypeScript source -- their
+# `exports` field points at `./src/*.ts`, not a prebuilt `dist` -- so tsx
+# has to survive any devDependency prune.
+FROM build AS pruned-app
+RUN find . -maxdepth 4 -type d -name node_modules \
+      -not -path '*/node_modules/*/node_modules*' -exec rm -rf {} + \
+  && pnpm install --prod --frozen-lockfile --ignore-scripts \
+      --filter='@paperclipai/server...'
+
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -131,7 +159,7 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-COPY --chown=node:node --from=build /app /app
+COPY --chown=node:node --from=pruned-app /app /app
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
