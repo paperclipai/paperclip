@@ -339,6 +339,67 @@ describe("SidebarRecentTasks", () => {
     );
   });
 
+  it("retries only the wake when restart releases the hold before wakeup fails", async () => {
+    const issue = {
+      id: "issue-1",
+      companyId: "company-1",
+      title: "Retry restart",
+      identifier: "PAP-1",
+      status: "in_progress" as const,
+      assigneeAgentId: "agent-1",
+      hiddenAt: null,
+      updatedAt: new Date(1),
+    };
+    recordRecentTask(issue, "user-1");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.getTreeControlState
+      .mockResolvedValueOnce({
+        activePauseHold: {
+          holdId: "hold-1",
+          rootIssueId: "issue-1",
+          issueId: "issue-1",
+          isRoot: true,
+          mode: "pause",
+          reason: null,
+          releasePolicy: { strategy: "manual" },
+        },
+      })
+      .mockResolvedValueOnce({ activePauseHold: null });
+    mockIssuesApi.releaseTreeHold.mockResolvedValue({});
+    mockAgentsApi.wakeup
+      .mockRejectedValueOnce(new Error("Wake failed"))
+      .mockResolvedValueOnce({ id: "run-1" });
+
+    await render();
+    await openActions("Retry restart");
+    await act(async () => {
+      menuItem("Pause/Restart")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    await openActions("Retry restart");
+    await act(async () => {
+      menuItem("Pause/Restart")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(mockIssuesApi.releaseTreeHold).toHaveBeenCalledTimes(1);
+    expect(mockIssuesApi.createTreeHold).not.toHaveBeenCalled();
+    expect(mockAgentsApi.wakeup).toHaveBeenCalledTimes(2);
+    expect(mockAgentsApi.wakeup).toHaveBeenLastCalledWith(
+      "agent-1",
+      {
+        source: "assignment",
+        triggerDetail: "manual",
+        reason: "recent_task_restart_retry",
+        payload: { issueId: "issue-1" },
+      },
+      "company-1",
+    );
+  });
+
   it("synchronizes recent tasks written by another tab", async () => {
     mockIssuesApi.get.mockImplementation(() => new Promise(() => {}));
     await render();

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, MoreHorizontal, Pencil, RefreshCw } from "lucide-react";
 import { agentsApi } from "@/api/agents";
@@ -84,6 +84,7 @@ function RecentTasksList({
   const [renameEntry, setRenameEntry] = useState<RecentTaskEntry | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [pendingAction, setPendingAction] = useState<"rename" | "archive" | "pause" | null>(null);
+  const restartWakeRetryIssueIds = useRef(new Set<string>());
 
   if (entries.length === 0) return null;
 
@@ -156,8 +157,9 @@ function RecentTasksList({
         await issuesApi.releaseTreeHold(entry.id, state.activePauseHold.holdId, {
           reason: "Restarted from Recent Tasks.",
         });
+        restartWakeRetryIssueIds.current.add(entry.id);
         if (restartIssue.assigneeAgentId) {
-          await agentsApi.wakeup(
+          const wakeResult = await agentsApi.wakeup(
             restartIssue.assigneeAgentId,
             {
               source: "assignment",
@@ -167,10 +169,33 @@ function RecentTasksList({
             },
             restartIssue.companyId,
           );
+          if (!("id" in wakeResult)) {
+            throw new Error(wakeResult.message ?? "The assignee wake was skipped.");
+          }
         }
+        restartWakeRetryIssueIds.current.delete(entry.id);
         toastActions?.pushToast({ title: "Task restarted", tone: "success" });
       } else if (state.activePauseHold) {
         throw new Error("This task is paused by a parent task. Restart it from the pause root.");
+      } else if (restartWakeRetryIssueIds.current.has(entry.id)) {
+        const restartIssue = await issuesApi.get(entry.id);
+        if (restartIssue.assigneeAgentId) {
+          const wakeResult = await agentsApi.wakeup(
+            restartIssue.assigneeAgentId,
+            {
+              source: "assignment",
+              triggerDetail: "manual",
+              reason: "recent_task_restart_retry",
+              payload: { issueId: restartIssue.id },
+            },
+            restartIssue.companyId,
+          );
+          if (!("id" in wakeResult)) {
+            throw new Error(wakeResult.message ?? "The assignee wake was skipped.");
+          }
+        }
+        restartWakeRetryIssueIds.current.delete(entry.id);
+        toastActions?.pushToast({ title: "Task restarted", tone: "success" });
       } else {
         await issuesApi.createTreeHold(entry.id, {
           mode: "pause",
