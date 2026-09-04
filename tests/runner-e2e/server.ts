@@ -32,6 +32,9 @@ const gracefulStopTimeoutMs = 30_000;
 const serverEnvironment = buildPaperclipServerEnvironment(process.env, {
   NODE_ENV: "test",
   PORT: port,
+  // Keep provider caches attempt-private without changing Playwright's browser
+  // cache lookup in the parent process.
+  XDG_CACHE_HOME: path.join(temporaryRoot, "xdg-cache"),
   PAPERCLIP_HOME: paperclipHome,
   PAPERCLIP_CONFIG: configPath,
   PAPERCLIP_INSTANCE_ID: required("PAPERCLIP_INSTANCE_ID"),

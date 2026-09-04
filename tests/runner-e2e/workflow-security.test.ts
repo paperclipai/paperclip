@@ -398,9 +398,6 @@ describe("public repository paid workflow security", () => {
         "PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}",
       );
     }
-    expect(paidJob).toContain(
-      "XDG_CACHE_HOME: ${{ runner.temp }}/paperclip-runner-e2e-xdg-cache",
-    );
     for (const [secret, condition] of Object.entries({
       OPENAI_API_KEY: "matrix.credentialName == 'OPENAI_API_KEY'",
       ANTHROPIC_API_KEY: "matrix.credentialName == 'ANTHROPIC_API_KEY'",

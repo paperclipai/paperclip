@@ -931,7 +931,6 @@ jobs:
           PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.executionId }}
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
-          XDG_CACHE_HOME: ${{ runner.temp }}/paperclip-runner-e2e-xdg-cache
         run: pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
 
       - name: Upload access-controlled packaged cell evidence
