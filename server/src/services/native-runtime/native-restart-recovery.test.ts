@@ -161,6 +161,22 @@ describe("native controller takeover fencing", () => {
     });
   });
 
+  it("does not treat a sub-second process-start precision difference as PID reuse", async () => {
+    await expect(
+      evaluateNativeControllerTakeover({
+        owner: owner({
+          controllerProcessStartedAt: new Date("2026-09-04T11:00:00.456Z"),
+        }),
+        now,
+        isProcessAlive: () => true,
+        readProcessStartedAt: async () => new Date("2026-09-04T11:00:00.000Z"),
+      }),
+    ).resolves.toEqual({
+      allowed: false,
+      reason: "controller_still_alive",
+    });
+  });
+
   it("does not steal a live controller lease", async () => {
     const readStartedAt = vi.fn(async () => recordedStart);
     await expect(
@@ -251,6 +267,26 @@ describe("native provider process fencing", () => {
         readProcessStartedAt: async () => recordedStart,
       }),
     ).resolves.toMatchObject({
+      livePids: [],
+      ambiguousLivePids: [456],
+      recycledPids: [],
+    });
+  });
+
+  it("fails closed on a sub-second provider process-start precision difference", async () => {
+    await expect(
+      evaluateNativeProviderProcesses({
+        identities: [
+          {
+            pid: 456,
+            processStartedAt: new Date("2026-09-04T11:00:00.456Z"),
+          },
+        ],
+        isProcessAlive: () => true,
+        readProcessStartedAt: async () => new Date("2026-09-04T11:00:00.000Z"),
+      }),
+    ).resolves.toEqual({
+      knownPids: [456],
       livePids: [],
       ambiguousLivePids: [456],
       recycledPids: [],

@@ -129,6 +129,18 @@ function sameProcessStart(left: Date | null, right: Date | null): boolean {
   return left !== null && right !== null && left.getTime() === right.getTime();
 }
 
+function definitivelyDifferentProcessStart(
+  left: Date | null,
+  right: Date | null,
+): boolean {
+  if (left === null || right === null) return false;
+  // `ps -o lstart` has only whole-second precision on macOS and BSD. A
+  // sub-second disagreement can therefore be the same process when one probe
+  // fell back to a higher-precision spawn timestamp. Treat it as ambiguous and
+  // fail closed instead of declaring the live PID recycled.
+  return Math.abs(left.getTime() - right.getTime()) >= 1_000;
+}
+
 export async function evaluateNativeControllerTakeover(input: {
   owner: Pick<
     typeof nativeRunFinalizations.$inferSelect,
@@ -176,7 +188,10 @@ export async function evaluateNativeControllerTakeover(input: {
   if (
     owner.controllerProcessStartedAt &&
     observedStartedAt &&
-    !sameProcessStart(owner.controllerProcessStartedAt, observedStartedAt)
+    definitivelyDifferentProcessStart(
+      owner.controllerProcessStartedAt,
+      observedStartedAt,
+    )
   ) {
     return { allowed: true, reason: "controller_pid_recycled" };
   }
@@ -236,8 +251,10 @@ export async function evaluateNativeProviderProcesses(input: {
       ambiguousLivePids.push(pid);
     } else if (sameProcessStart(expectedStartedAt, observedStartedAt)) {
       livePids.push(pid);
-    } else {
+    } else if (definitivelyDifferentProcessStart(expectedStartedAt, observedStartedAt)) {
       recycledPids.push(pid);
+    } else {
+      ambiguousLivePids.push(pid);
     }
   }
   return {
