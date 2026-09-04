@@ -2367,21 +2367,35 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ),
         );
       }
-      suspensionRequired = true;
-      runnerSuspended = await awaitRunnerSuspensionBarrier({
-        commands: () => this.#core?.store.state.commands ?? [],
-        queueSuspend: (commandId) => {
-          this.#core?.queueCommand("runner.suspend", {}, commandId, true);
-        },
-        readRunnerState: () => this.#readDurableRunnerState(),
-        runnerHasExited: () => this.#runnerHasExited(),
-        pump: () => this.#pumpEventsSafely(),
-        deadline: closeDeadline,
-      });
-      if (!runnerSuspended) {
-        this.#diagnostic(
-          "runner did not prove durable suspension before checkpoint",
-        );
+      suspensionRequired = this.#controlPlaneCheckpoint !== null;
+      if (suspensionRequired) {
+        runnerSuspended = await awaitRunnerSuspensionBarrier({
+          commands: () => this.#core?.store.state.commands ?? [],
+          queueSuspend: (commandId) => {
+            this.#core?.queueCommand("runner.suspend", {}, commandId, true);
+          },
+          readRunnerState: () => this.#readDurableRunnerState(),
+          runnerHasExited: () => this.#runnerHasExited(),
+          pump: () => this.#pumpEventsSafely(),
+          deadline: closeDeadline,
+        });
+        if (!runnerSuspended) {
+          this.#diagnostic(
+            "runner did not prove durable suspension before checkpoint",
+          );
+        }
+      } else {
+        const runnerAlreadyStopping =
+          (await this.#runnerHasExited()) ||
+          this.#core.store.state.commands.some(
+            (command) =>
+              (command.type === "runner.suspend" ||
+                command.type === "runner.shutdown") &&
+              command.status === "pending",
+          );
+        if (!runnerAlreadyStopping) {
+          this.#core.queueCommand("runner.suspend", {}, undefined, true);
+        }
       }
       try {
         if (this.#handle) {
