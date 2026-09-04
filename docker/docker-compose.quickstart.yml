@@ -39,6 +39,18 @@ services:
 
       # ── Required secret for session signing (generate with: openssl rand -hex 32) ──
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+
+      # ── Optional self-hosted GitLab support (see docker/certs/README.md) ──
+      PAPERCLIP_GITLAB_HOSTS: "${PAPERCLIP_GITLAB_HOSTS:-}"
+      # Points at a PEM CA bundle for a self-hosted GitLab instance on a private/internal CA.
+      # Drop the bundle file into ./certs (mounted read-only below) and set this to its
+      # in-container path, e.g. PAPERCLIP_GITLAB_CA_CERT_PATH=/certs/lab-ca.pem.
+      PAPERCLIP_GITLAB_CA_CERT_PATH: "${PAPERCLIP_GITLAB_CA_CERT_PATH:-}"
     volumes:
       # Persistent data directory (database, agent workspaces, uploads)
       - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"
+      # Deliberately NOT under /paperclip: scripts/docker-entrypoint.sh recursively
+      # chowns the whole $PAPERCLIP_HOME tree to the node user before dropping
+      # privileges, and that chown fails outright on a read-only mount, so a cert
+      # mounted at e.g. /paperclip/ca would crash the container on every boot.
+      - ./certs:/certs:ro
