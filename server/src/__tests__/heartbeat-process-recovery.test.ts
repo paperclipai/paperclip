@@ -6075,7 +6075,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.continuationRequeued).toBe(0);
     expect(result.escalated).toBe(1);
     expect(result.skipped).toBe(0);
-    expect(result.issueIds).toEqual([blocked.issueId, unblocked.issueId]);
+    expect([...result.issueIds].sort()).toEqual(
+      [blocked.issueId, unblocked.issueId].sort(),
+    );
 
     const blockedWakeups = await db
       .select()
