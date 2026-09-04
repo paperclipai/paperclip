@@ -650,7 +650,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
   describe("hire gate: adapter authentication (claude_local, the default onboarding adapter)", () => {
     /** Drives the wizard to the Connect step, agent name already filled in. */
-    async function openConnectStep() {
+    async function openConnectStep({ useApiKeys = false } = {}) {
       // The tile row is built from this registry, and the suite's default is
       // empty. That was survivable while the step preselected a source; now that
       // nothing is chosen until a tile is pressed, a step with no tiles is a step
@@ -696,6 +696,14 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await flushReact();
       await clickByText((t) => isArcPrimary(t));
       expect(document.body.textContent).toContain("Connect a model");
+
+      // The credential mode is chosen *before* a source, because picking a
+      // source starts the sequence and the mode link fades out with the row —
+      // after that it is inert, and switching would mean changing the card out
+      // from under a running sign-in.
+      if (useApiKeys) {
+        await clickByText((t) => t.startsWith("Use API key"));
+      }
 
       // Pick a source. The step arrives with nothing chosen — `adapterType`
       // carries a value for the hire, but that is not the same as the customer
@@ -784,8 +792,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
 
       async function connectWithApiKey() {
-        const handles = await openConnectStep();
-        await handles.clickByText((t) => t.startsWith("Use API key"));
+        const handles = await openConnectStep({ useApiKeys: true });
         const field = document.body.querySelector(
           'input[type="password"]',
         ) as HTMLInputElement;
@@ -899,10 +906,25 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await clickByText((t) => isArcPrimary(t));
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
 
-      // Switch to API keys, which changes the configuration the hire will send.
+      // Switching the credential mode means backing out first: the mode link
+      // fades away with the row once a source is chosen, and is inert after
+      // that, so it cannot be used to change the card out from under a running
+      // sign-in. Back unwinds to the question, and the answer is given again.
+      await clickByText((t) => t.startsWith("Back"));
       await clickByText((t) => t.startsWith("Use API key"));
+      await pickFirstSource(clickByText);
+
+      const field = document.body.querySelector(
+        'input[type="password"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(field, "sk-ant-rekey");
+      });
+      await flushReact();
       await clickByText((t) => isArcPrimary(t));
 
+      // A different configuration, so the passing probe from before it cannot
+      // stand in for one against this one.
       expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
 
       await act(async () => root.unmount());
@@ -2089,8 +2111,55 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // a hire here would create an agent with no credential to run on.
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       expect(document.body.textContent).toContain(
-        "Open Claude link then come back and enter code",
+        "Sign in to Claude then come back and enter authorization code",
       );
+
+      await act(async () => root.unmount());
+    });
+
+    it("collapses the row to the chosen source and walks the button through the sign-in", async () => {
+      // The sequence, end to end, as the step actually runs it: the row is the
+      // question, answering it starts the sign-in, and the button reports where
+      // that has got to rather than offering an action it cannot perform.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      // Collapse is read off the row's own layout, not off how many tiles are
+      // in the DOM: the leaving tile exits through AnimatePresence, and in
+      // jsdom an exit never completes, so it stays mounted either way.
+      const rowCentred = () =>
+        document.body
+          .querySelector('[role="radiogroup"]')!
+          .className.includes("justify-center");
+      const cta = () =>
+        [...document.body.querySelectorAll("button")].pop()?.textContent?.trim();
+
+      // Nothing chosen yet on a fresh arrival: the row is a question.
+      expect(rowCentred()).toBe(false);
+
+      await pressArcPrimary();
+
+      // The row has been answered, so it now shows only the answer — leaving
+      // the alternative up would invite a press that has to cancel a live
+      // session to honour.
+      expect(rowCentred()).toBe(true);
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalled();
+
+      // And the button has become the sign-in rather than a step advance.
+      expect(cta()).toBe("Sign in to Claude");
+
+      // Back unwinds rather than leaving the step: the row is a question again.
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Back"),
+      );
+      await act(async () => {
+        back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 10; i++) await flushReact();
+
+      expect(rowCentred()).toBe(false);
+      expect(cta()).toBe("Next");
+      expect(document.body.textContent).toContain("Connect a model");
 
       await act(async () => root.unmount());
     });
@@ -2144,21 +2213,26 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       // The displayed-code login hands a code over rather than taking one back,
       // so both halves of it have to reach the screen.
-      expect(document.body.textContent).toContain("Copy this code then open the authentication link");
+      expect(document.body.textContent).toContain(
+        "Sign in to OpenAI by providing the authorization code below",
+      );
       expect(document.body.textContent).toContain("Q2RJ-E1YIF");
 
-      // Code above link, deliberately. Pressing the link is what takes the
-      // customer to another tab, and it wants the code that was on this one —
-      // so the code has to have been read before the link is there to press.
+      // The link lives inside the sentence now rather than in a row of its own,
+      // and points at the same address the step's button opens — it is the
+      // path for anyone finishing the sign-in in another browser.
+      const link = document.body.querySelector('a[href*="auth.openai.com"]');
+      expect(link, "the sign-in link should be in the instruction").toBeTruthy();
+      expect(link!.textContent).toBe("Sign in to OpenAI");
+
+      // And the code sits below the sentence carrying it.
       const code = [...document.body.querySelectorAll("span")].find(
         (el) => el.textContent?.trim() === "Q2RJ-E1YIF",
       );
-      const link = document.body.querySelector('a[href*="auth.openai.com"]');
       expect(code, "the code row should render").toBeTruthy();
-      expect(link, "the link row should render").toBeTruthy();
       expect(
-        code!.compareDocumentPosition(link!) & Node.DOCUMENT_POSITION_FOLLOWING,
-        "the code should come before the link",
+        link!.compareDocumentPosition(code!) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "the code should follow the sentence that links to the sign-in",
       ).toBeTruthy();
 
       await act(async () => root.unmount());

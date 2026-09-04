@@ -31,6 +31,32 @@ import {
 export type AdapterLoginChrome = "panel" | "onboarding";
 
 /**
+ * What the connect step calls each source.
+ *
+ * One map, read by the tile row and by the sign-in card's sentence, so the row
+ * and the card cannot end up calling the same provider different things.
+ *
+ * Deliberately not the display registry's label, which ten other surfaces read
+ * and which names the tool that runs ("Codex CLI was not found on this host").
+ * Also not `ADAPTER_LOGIN_PROVIDER`, which names the account being signed in to
+ * — "Anthropic" is right in a settings panel listing credentials and wrong in a
+ * sentence that reads "Sign in to Claude".
+ *
+ * Three names for two adapters is a tension worth stating rather than hiding.
+ * The concepts differ — vendor, tool, account — but if the product decides
+ * otherwise, this is the one to delete.
+ */
+export const CONNECT_SOURCE_NAMES: Record<string, string> = {
+  claude_local: "Claude",
+  codex_local: "OpenAI",
+};
+
+/** The provider name for a source, falling back to the type when unlisted. */
+export function connectSourceName(adapterType: string): string {
+  return CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
+}
+
+/**
  * The connect step's login card: an instruction with a Cancel beside it, then
  * the rows the customer works through.
  *
@@ -192,31 +218,6 @@ function LoginCardCopyButton({
 }
 
 /**
- * The authentication link.
- *
- * Underlined and an actual anchor, because the instruction above it says to
- * open it — the copy button beside it is for the case where the login is being
- * finished in another browser, not the primary path. It truncates rather than
- * wrapping: these URLs carry a query string long enough to push the row to
- * three lines, and none of that tail tells the reader anything.
- */
-export function OnboardingLoginUrlRow({ url }: { url: string }) {
-  return (
-    <LoginCardRow>
-      <a
-        href={url}
-        target="_blank"
-        rel="noreferrer noopener"
-        className="min-w-0 flex-1 truncate font-mono text-xs text-foreground underline underline-offset-4"
-      >
-        {url}
-      </a>
-      <LoginCardCopyButton value={url} label="Copy the authentication link" />
-    </LoginCardRow>
-  );
-}
-
-/**
  * The one-time code, for the login that hands one out.
  *
  * `autoCopy` puts it on the clipboard as the card lands and says so. The code
@@ -332,6 +333,7 @@ export function OnboardingCardField({
   label = "Authorization code",
   placeholder = "Paste authorization code here",
   masked = false,
+  autoFocus = false,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -342,9 +344,20 @@ export function OnboardingCardField({
   placeholder?: string;
   /** A provider key is a credential; a one-time browser code is not. */
   masked?: boolean;
+  /**
+   * Take focus when the card opens.
+   *
+   * For the key card, where the field is the only thing being asked for and the
+   * card only opens because it was asked for. The code cards do not: their
+   * customer is on their way to another tab, and a caret waiting behind them is
+   * not where the next action is.
+   */
+  autoFocus?: boolean;
 }) {
   return (
     <input
+      // eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
+      autoFocus={autoFocus}
       aria-label={label}
       type={masked ? "password" : "text"}
       autoComplete="off"

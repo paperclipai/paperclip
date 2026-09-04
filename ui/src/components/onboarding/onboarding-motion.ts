@@ -324,3 +324,22 @@ export const COPIED_REVEAL = { duration: 0.26, ease: STEP_EASE } as const;
  */
 export const COPIED_REVEAL_DELAY_MS =
   (CARD_REVEAL_FIELD.delay + CARD_REVEAL_FIELD.duration) * 1000 + 120;
+
+/**
+ * How long to wait before the next beat of the connect sequence.
+ *
+ * The waits exist to let an animation finish. Where nothing is animating they
+ * are just a slower screen, so reduced motion collapses them to nothing — the
+ * same thing `index.css` does to the duration tokens under that media query,
+ * applied to the timers that mirror them.
+ *
+ * No `matchMedia` at all is treated as reduced rather than as full motion. The
+ * honest reading of "cannot ask" is "do not animate", and it means the sequence
+ * still advances anywhere the query is unavailable — a server render, an older
+ * embedder, or a test environment — instead of stalling on a beat that will
+ * never elapse.
+ */
+export function beatDelay(ms: number): number {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return 0;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : ms;
+}
