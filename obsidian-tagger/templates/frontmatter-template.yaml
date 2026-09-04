@@ -126,16 +126,26 @@ ignoriere:
 # 5) LLM-VERHALTEN
 # ---------------------------------------------------------------------
 llm:
-  modell: "qwen3.6-35b-a3b-mlx"
-  # Begründung: bestes Verhältnis Qualität/Speed für strukturierte
-  # Extraktion auf Deutsch; folgt JSON-Schemas zuverlässig.
-  # WICHTIG: Der nächtliche Lauf (01:00) braucht ein Modell auf einem
-  # 24/7-Gerät. qwen3.6 liegt lokal (ctx 98304); mistral-small-3.2-24b
-  # liegt auf der RTX Pro 6000 (ctx 8192), die nachts nicht sicher läuft.
-  # qwen3.6 antwortet nur in reasoning_content — tagger.py fängt das ab.
-  # Alternativen falls zu langsam:
-  #   - google/gemma-4-12b      (ebenfalls lokal)
-  #   - mistral-small-3.2-24b-instruct-2506  (RTX, nur wenn Gerät läuft)
+  modell: "gemma-4-31b-it-mlx"
+  # 04.09.2026 von "qwen3.6-35b-a3b-mlx" umgestellt: Das MacBook ist aus der
+  # Farm genommen, damit war die dortige MLX-Kopie nicht mehr aufloesbar
+  # ("Invalid model identifier"). Die Modelle wurden auf die Studio geholt —
+  # gemma-4-31b-it-mlx liegt jetzt LOKAL (lmstudio-community/
+  # gemma-4-31B-it-MLX-8bit) und ist ohnehin geladen.
+  #
+  # Warum lokal und nicht die RTX: Der nächtliche Lauf (01:00) braucht ein
+  # Modell, das sicher da ist. Die RTX haengt hinter LM Link, das seit dem
+  # 03.09. flattert (peer_keepalive_timeout), und traegt zusaetzlich die
+  # Agentenflotte — am 04.09. standen ihre Modelle dauerhaft auf
+  # PROCESSINGPROMPT und liefen in Timeouts. Lokal gibt es beide Probleme
+  # nicht. Gleiche Groessenklasse wie das bisherige 35B, kein RAM-Zuwachs
+  # (Modell ist geladen).
+  #
+  # Gemma antwortet in `content`, nicht in `reasoning_content` — der Abfang in
+  # tagger.py wird hier also nicht mehr gebraucht (schadet aber nicht).
+  # Getestet 04.09.: ok=1 fail=0, saubere deutsche Extraktion.
+  # Alternative falls RAM knapp wird:
+  #   - google/gemma-4-12b      (lokal, 7,5 GB; nutzt der Clara-Tagger)
   endpoint: "http://127.0.0.1:1234/v1/chat/completions"
   temperatur: 0.2
   max_input_chars: 8000   # Notiz wird ggf. gekürzt
