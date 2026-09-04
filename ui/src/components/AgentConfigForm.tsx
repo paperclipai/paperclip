@@ -1574,6 +1574,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   mark("adapterConfig", "model", v || undefined);
                   if (clearUnsupportedEffort) {
                     mark("adapterConfig", thinkingEffortKey, undefined);
+                    mark("adapterConfig", "reasoningEffort", undefined);
                   }
                 }}
                 open={modelOpen}
