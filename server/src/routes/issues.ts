@@ -9195,6 +9195,8 @@ export function issueRoutes(
       actorRunId: actor.runId,
       actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
       trustExplicitResponsibleUserId: actor.actorType === "user",
+      actorAgentId: actor.agentId,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
       onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
         deduplicationReason = reason;
@@ -9259,6 +9261,7 @@ export function issueRoutes(
           : {}),
         ...buildCreateIssueActivityStatusDetails(issue, res),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
+        ...(req.body.blockParentUntilDone ? { parentBlockerAdded: true } : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
           removedReferencedIssues: referenceDiff.removedReferencedIssues.map(summarizeIssueRelationForActivity),
