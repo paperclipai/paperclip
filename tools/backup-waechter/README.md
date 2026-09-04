@@ -47,11 +47,13 @@ ab **80 %** gewarnt. Das ist ein Sicherheitsnetz, keine Löschstrategie — die
 steckt in den `forget`-Regeln der Sicherungsskripte, die die Snapshot-Zahl je
 Datensatz auf höchstens 34 deckeln.
 
-**`KONTINGENT_GB` in `waechter.py` ist von Hand eingetragen** (Stand 21.08.2026:
-3000). Weder OCS-API noch WebDAV verraten die Tarifgröße — Nextcloud meldet für
-das Konto nur `-3`, also „unbegrenzt", was sich auf das Konto bezieht und nicht
-auf die Platte dahinter. Der Wert gehört bei Gelegenheit in der
-Hetzner-Verwaltung nachgesehen und hier berichtigt. `None` schaltet die Prüfung ab.
+**`KONTINGENT_GB` in `waechter.py` ist von Hand eingetragen** (3000). Weder
+OCS-API noch WebDAV verraten die Tarifgröße — Nextcloud meldet für das Konto
+nur `-3`, also „unbegrenzt", was sich auf das Konto bezieht und nicht auf die
+Platte dahinter; auch `rclone about` liefert nur `used`. Der Wert ist am
+**04.09.2026 von Walter bestätigt** und damit keine Vermutung mehr. Ändert sich
+der Tarif, muss er hier von Hand nachgezogen werden — es gibt keine Stelle, die
+das bemerken würde. `None` schaltet die Prüfung ab.
 
 Zwei Fälle sind hier mit Absicht **kein** Alarm, anders als bei den
 Sicherungsständen: fehlendes Kontingent (eine Konfigurationslücke, kein Defekt)

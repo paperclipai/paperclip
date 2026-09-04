@@ -72,8 +72,12 @@ GRENZE_REPO_PRUEFUNG = 45 * TAG
 # Gebuchter Speicher des Hetzner-Tarifs, VON HAND eingetragen: weder OCS-API
 # noch WebDAV verraten ihn — Nextcloud meldet fuer das Konto nur „unbegrenzt"
 # (`-3`), was sich auf das Konto bezieht und nicht auf die Platte dahinter.
-# Stand 21.08.2026 laut Walter „ich meine 3 TB"; bei Gelegenheit in der
-# Hetzner-Verwaltung nachsehen und hier berichtigen.
+# Auch `rclone about hetzner-nc:` liefert nur `used`, keine Gesamtgroesse.
+#
+# Am 04.09.2026 von Walter BESTAETIGT: 3 TB. Vorher stand hier „ich meine
+# 3 TB" mit der Bitte, es nachzusehen — das ist erledigt, die Zahl ist keine
+# Vermutung mehr. Aendert sich der Tarif, muss sie hier von Hand nachgezogen
+# werden; es gibt keine Stelle, die das bemerken wuerde.
 # Auf None setzen, um die Platzpruefung abzuschalten.
 KONTINGENT_GB = 3000
 PLATZ_SCHWELLE = 0.8   # ab hier wird gewarnt

@@ -41,8 +41,6 @@ Loesen mit aufraeumen.
 open scheitert, alle Namen mit Umlauten) — ueber DSM File Station pruefen.
 kontakt.astro liegt unter whitestag-academy-web/_gerettet-2026-08-21/ — die \
 einzige je existierende Kontaktseite; gehoert sie ins GitHub-Repo?
-KONTINGENT_GB in waechter.py steht auf 3000 (Erinnerung, keine Messung) — \
-Tarifgroesse bei Hetzner nachsehen und berichtigen.
 Altordner auf der NAS: WHITESTAG-Vault_OLD_2026-05-23 (6,5 GB) und die \
 Migrationsreste unter /Volumes/WHITESTAG-ARCHIV/Obsidian/."""
 
