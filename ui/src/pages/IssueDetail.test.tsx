@@ -118,7 +118,10 @@ const mockLocation = vi.hoisted(() => ({
 const mockOpenPanel = vi.hoisted(() => vi.fn());
 const mockClosePanel = vi.hoisted(() => vi.fn());
 const mockSetPanelVisible = vi.hoisted(() => vi.fn());
+const mockRequestPanelMaximize = vi.hoisted(() => vi.fn());
+const mockClearPanelMaximizeRequest = vi.hoisted(() => vi.fn());
 const mockPanelState = vi.hoisted(() => ({ panelVisible: true }));
+const mockRouteParams = vi.hoisted(() => ({ issueId: "PAP-1" }));
 const mockSidebarState = vi.hoisted(() => ({ isMobile: false }));
 const mockIssuePropertiesRender = vi.hoisted(() => vi.fn());
 const mockTaskSidePanelRender = vi.hoisted(() => vi.fn());
@@ -216,7 +219,7 @@ vi.mock("@/lib/router", () => ({
   useLocation: () => mockLocation,
   useNavigate: () => mockNavigate,
   useNavigationType: () => "PUSH",
-  useParams: () => ({ issueId: "PAP-1" }),
+  useParams: () => ({ ...mockRouteParams }),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -266,6 +269,8 @@ vi.mock("../context/PanelContext", () => ({
     closePanel: mockClosePanel,
     panelVisible: mockPanelState.panelVisible,
     setPanelVisible: mockSetPanelVisible,
+    requestPanelMaximize: mockRequestPanelMaximize,
+    clearPanelMaximizeRequest: mockClearPanelMaximizeRequest,
   }),
 }));
 
@@ -1347,6 +1352,8 @@ describe("IssueDetail", () => {
     mockOpenPanel.mockClear();
     mockClosePanel.mockClear();
     mockSetPanelVisible.mockClear();
+    mockRequestPanelMaximize.mockClear();
+    mockClearPanelMaximizeRequest.mockClear();
     mockSetBreadcrumbPanelControl.mockClear();
     mockSetMobileToolbar.mockClear();
     mockIssuePropertiesRender.mockClear();
@@ -1364,6 +1371,7 @@ describe("IssueDetail", () => {
     mockLocation.search = "";
     mockLocation.hash = "";
     mockLocation.state = null;
+    mockRouteParams.issueId = "PAP-1";
   });
 
   afterEach(async () => {
@@ -1799,6 +1807,84 @@ describe("IssueDetail", () => {
         (panel?.props?.documentDeepLink as { requestId?: number } | null)
           ?.requestId,
       ).toBe(2);
+    });
+  });
+
+  it("maximizes the desktop pane once per viewer=full deep link", async () => {
+    mockPanelState.panelVisible = false;
+    mockLocation.hash = "#document-qa-evidence&viewer=full";
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+      expect(mockRequestPanelMaximize).toHaveBeenCalledTimes(1);
+    });
+
+    // Replaying the same hash (same-page link click) reopens the document but
+    // must not re-maximize a pane the user may have deliberately restored.
+    const link = document.createElement("a");
+    link.href = "#document-qa-evidence&viewer=full";
+    link.textContent = "QA evidence";
+    container.appendChild(link);
+    await act(async () => link.click());
+    expect(mockRequestPanelMaximize).toHaveBeenCalledTimes(1);
+
+    // Ending the deep link drops the pending request and re-arms the guard.
+    mockLocation.hash = "";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await waitForAssertion(() => {
+      expect(mockClearPanelMaximizeRequest).toHaveBeenCalled();
+    });
+  });
+
+  it("re-maximizes when navigating to another issue with an identical viewer=full hash", async () => {
+    mockPanelState.panelVisible = false;
+    mockLocation.hash = "#document-qa-evidence&viewer=full";
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(mockRequestPanelMaximize).toHaveBeenCalledTimes(1);
+    });
+
+    // Navigate to a sibling issue whose URL carries the same document hash.
+    // IssueDetail stays mounted; the destination pane must still maximize.
+    mockRouteParams.issueId = "PAP-2";
+    mockLocation.pathname = "/issues/PAP-2";
+    mockIssuesApi.get.mockResolvedValue(
+      createIssue({ id: "issue-2", identifier: "PAP-2" }),
+    );
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(mockRequestPanelMaximize).toHaveBeenCalledTimes(2);
     });
   });
 

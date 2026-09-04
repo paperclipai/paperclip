@@ -196,10 +196,7 @@ describe("SidebarAccountMenu", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <SidebarAccountMenu
-              deploymentMode="authenticated"
-              version="1.2.3"
-            />
+            <SidebarAccountMenu deploymentMode="authenticated" />
           </TooltipProvider>
         </QueryClientProvider>,
       );
@@ -233,7 +230,9 @@ describe("SidebarAccountMenu", () => {
     const themePos = menuText.indexOf("Switch to");
     expect(docsPos).toBeLessThan(themePos);
 
-    expect(document.body.textContent).toContain("Paperclip v1.2.3");
+    // The popover header stays down to name + email: no "Account" badge, no version line.
+    expect(popover?.textContent).not.toContain("Account");
+    expect(popover?.textContent).not.toContain("Paperclip v");
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("w-(--sz-277px)");
@@ -331,53 +330,4 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
-  it("shows the short commit sha instead of a version for source builds", async () => {
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <SidebarAccountMenu
-              deploymentMode="authenticated"
-              version="2026.626.0+58.git.518fc71ce"
-              serverGit={{
-                available: true,
-                fullSha: "518fc71ce1234567890abcdef1234567890abcde",
-                shortSha: "518fc71",
-                branchName: "feature/source-build-label",
-                subject: "Show source build label",
-                committedAt: "2026-06-26T00:00:00.000Z",
-                localChanges: {
-                  available: true,
-                  hasLocalChanges: false,
-                  stagedFileCount: 0,
-                  unstagedFileCount: 0,
-                  untrackedFileCount: 0,
-                },
-              }}
-              open
-            />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(document.body.textContent).toContain("feature/source-build-labelPaperclip 518fc71");
-    expect(document.body.textContent).not.toContain("2026.626.0+58.git.518fc71ce");
-    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/tree/feature%2Fsource-build-label"]')?.textContent).toBe(
-      "feature/source-build-label",
-    );
-    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/commit/518fc71ce1234567890abcdef1234567890abcde"]')?.textContent).toBe(
-      "518fc71",
-    );
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
 });

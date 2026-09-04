@@ -2670,7 +2670,14 @@ export function IssueDetail() {
     ? "mx-auto w-full max-w-(--tc-shell-max-w)"
     : undefined;
   const { openNewIssue } = useDialogActions();
-  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
+  const {
+    openPanel,
+    closePanel,
+    panelVisible,
+    setPanelVisible,
+    requestPanelMaximize,
+    clearPanelMaximizeRequest,
+  } = usePanel();
   const {
     setBreadcrumbs,
     setBreadcrumbToolbar,
@@ -5398,6 +5405,12 @@ export function IssueDetail() {
     sourceBreadcrumb.href,
   ]);
 
+  // One maximize request per issue + `viewer=full` hash: routing re-runs
+  // whenever a callback dependency changes identity, and re-requesting then
+  // would re-maximize a pane the user deliberately restored. The key carries
+  // the issue param so navigating to another issue with an identical hash
+  // still maximizes the destination pane.
+  const lastMaximizeRequestKeyRef = useRef<string | null>(null);
   const routeIssueDocumentDeepLink = useCallback(
     (hash: string) => {
       const route = resolveIssueDocumentDeepLink(hash);
@@ -5421,6 +5434,16 @@ export function IssueDetail() {
           setPanelBeforePlanOverrideIssueId(issue.id);
         }
         setPanelVisible(true);
+        // `viewer=full` (LOOA-2181): external links (Slack approval cards)
+        // land with the pane maximized. Mobile uses the sheet, which is
+        // already full-screen, so the request is desktop-only.
+        if (route.maximize) {
+          const requestKey = `${issueId ?? ""}::${hash}`;
+          if (lastMaximizeRequestKeyRef.current !== requestKey) {
+            lastMaximizeRequestKeyRef.current = requestKey;
+            requestPanelMaximize();
+          }
+        }
       }
       const targetIssueId = issue?.id ?? issueId ?? "";
       setDocumentDeepLink((current) => ({
@@ -5438,6 +5461,7 @@ export function IssueDetail() {
       issue?.id,
       issueId,
       setPanelVisible,
+      requestPanelMaximize,
       suppressPanelUntilPlan,
       taskChatShellEnabled,
     ],
@@ -5446,8 +5470,21 @@ export function IssueDetail() {
   useEffect(() => {
     if (!routeIssueDocumentDeepLink(location.hash)) {
       setDocumentDeepLink(null);
+      // The deep link ended (hash cleared or issue changed): drop any
+      // maximize request the panel never consumed so it cannot maximize a
+      // later, unrelated panel, and re-arm for the next viewer=full hash.
+      lastMaximizeRequestKeyRef.current = null;
+      clearPanelMaximizeRequest();
     }
-  }, [issueId, location.hash, routeIssueDocumentDeepLink]);
+  }, [issueId, location.hash, routeIssueDocumentDeepLink, clearPanelMaximizeRequest]);
+
+  // Leaving the issue page entirely also ends the deep link's lifetime.
+  useEffect(
+    () => () => {
+      clearPanelMaximizeRequest();
+    },
+    [clearPanelMaximizeRequest],
+  );
 
   // React Router does not emit a location update when the user clicks a link
   // whose hash is already current. Capture that repeated intent so a manually

@@ -12,7 +12,9 @@ import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
 
 export const agentPermissionsSchema = z.object({
-  canCreateAgents: z.boolean().optional().default(false),
+  // No schema default: the server derives the default (enabled unless the
+  // permissions record marks the agent low-trust) when the field is omitted.
+  canCreateAgents: z.boolean().optional(),
   canCreateSkills: z.boolean().optional().default(true),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),

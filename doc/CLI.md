@@ -716,8 +716,10 @@ Preview/install options:
   `paperclipai company current --json`, or `PAPERCLIP_COMPANY_ID` to select the
   target company. `company list` falls back to the scoped current company when
   board-wide listing is forbidden. `teams install` creates agents and therefore
-  requires board authentication, an `agents:create` grant, or an agent with
-  explicit `canCreateAgents` permission.
+  requires board authentication, an `agents:create` grant, or an agent with the
+  `canCreateAgents` permission (enabled by default for newly created
+  standard-trust agents; low-trust agents and pre-existing agents without an
+  explicit value stay disabled).
 - `--request-approval-on-forbidden` turns a 403 install denial into a linked
   board approval request instead of a raw failed command; use
   `--approval-issue-id <id>` to attach it to a specific issue. During Paperclip
