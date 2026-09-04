@@ -175,10 +175,12 @@ function ConnectFlowPreview({
       // together, so the column slides once rather than twice.
       after(MAKE_ROOM_MS, () => setPhase("unwindRow"));
     } else if (phase === "unwindRow") {
-      after(SOURCE_COLLAPSE_MS, () => {
-        setSelectedId(null);
-        setPhase("idle");
-      });
+      // Let the selection go as the row starts back, not after it has arrived.
+      // Held until the end, the tile changed colour with nothing else moving,
+      // which is the hard cut — released here it fades across the travel and
+      // the tile settles into its default rather than snapping to it.
+      setSelectedId(null);
+      after(SOURCE_COLLAPSE_MS, () => setPhase("idle"));
     }
   }, [phase, handsOverCode]);
 
@@ -220,7 +222,6 @@ function ConnectFlowPreview({
   // Collapsed from the moment a tile is pressed until the row is asked to
   // reopen — `unwindRow` is where it expands, one beat after the card left.
   const collapsed =
-    selectedId !== null &&
     phase !== "idle" &&
     phase !== "unwindRow" &&
     phase !== "done";
@@ -296,6 +297,7 @@ function ConnectFlowPreview({
                 selectedId={selectedId}
                 onSelect={pick}
                 collapsed={collapsed}
+                settling={phase === "unwindRow"}
               />
               {/* Gone as soon as a source is picked, and faster than the row
                   collapses. Once a sign-in is running there is no switching to

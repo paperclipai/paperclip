@@ -67,12 +67,14 @@ function ModelSourceTile({
   selected,
   onSelect,
   buttonRef,
+  settling,
 }: {
   source: ModelSource;
   mode: CredentialMode;
   selected: boolean;
   onSelect: () => void;
   buttonRef: (node: HTMLButtonElement | null) => void;
+  settling: boolean;
 }) {
   return (
     <button
@@ -83,7 +85,13 @@ function ModelSourceTile({
       onClick={onSelect}
       className={cn(
         "flex min-w-0 flex-1 cursor-pointer flex-col items-center gap-1.5 self-stretch rounded-md border p-3",
-        "transition-(--tp-border-color-background-color) duration-(--motion-duration-fast) ease-(--motion-ease-standard)",
+        // Longer while the row is settling back to its default. Dropping the
+        // selection is the last thing that happens on the way out, and at the
+        // interaction duration it landed as a colour swap after everything else
+        // had stopped — a cut rather than a release. Across the tile's travel
+        // it reads as the choice being let go.
+        "transition-(--tp-border-color-background-color) ease-(--motion-ease-standard)",
+        settling ? "duration-(--motion-duration-slow)" : "duration-(--motion-duration-fast)",
         // Focus is a ring, never a border. The stroke has exactly one job here
         // and lending it to focus as well would mean tabbing across the row
         // looked like picking every tile in turn.
@@ -127,6 +135,7 @@ export function ModelSourceTiles({
   onSelect,
   label,
   collapsed = false,
+  settling = false,
 }: {
   sources: ModelSource[];
   mode: CredentialMode;
@@ -143,6 +152,11 @@ export function ModelSourceTiles({
    * disabling anything, which reads better than a greyed-out tile.
    */
   collapsed?: boolean;
+  /**
+   * The row is returning to its default. Only changes how long the selected
+   * styling takes to leave — see the tile's own note.
+   */
+  settling?: boolean;
 }) {
   const tiles = useRef(new Map<string, HTMLButtonElement>());
 
@@ -209,6 +223,7 @@ export function ModelSourceTiles({
               mode={mode}
               selected={source.id === selectedId}
               onSelect={() => onSelect(source.id)}
+              settling={settling}
               buttonRef={(node) => {
                 if (node) tiles.current.set(source.id, node);
                 else tiles.current.delete(source.id);
