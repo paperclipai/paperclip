@@ -279,11 +279,11 @@ describe("Connectors landing page", () => {
     await act(async () => {
       notion
         .querySelector<HTMLButtonElement>(
-          'button[aria-label="Open devinfoley@gmail.com connection settings"]',
+          'button[aria-label="Open devinfoley@gmail.com permissions"]',
         )
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-notion/setup");
+    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-notion/permissions");
 
     await act(async () => {
       notion
@@ -300,7 +300,7 @@ describe("Connectors landing page", () => {
     await act(async () => {
       reconnect?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-expired/setup");
+    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-expired/permissions");
   });
 
   it("removes a connection from the overflow menu only after destructive confirmation", async () => {

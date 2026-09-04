@@ -26,6 +26,18 @@ export function AuditHub({ section }: { section: AuditSection }) {
   const scope = auditScopeFromSearchParams(searchParams);
   const mode: AuditFeedMode = scope.mode === "agents" ? "agents" : "all";
   const routineId = scope.entityType === "routine" ? scope.entityId ?? undefined : undefined;
+  const actionParam = searchParams.get("action");
+  const actionDomain = [
+    "issue.",
+    "agent.",
+    "heartbeat.",
+    "approval.",
+    "project.",
+    "goal.",
+    "tool_",
+    "cost.",
+    "company.",
+  ].includes(actionParam ?? "") ? actionParam! : "__all";
 
   useEffect(() => {
     const current = AUDIT_SECTIONS.find((candidate) => candidate.value === section);
@@ -42,6 +54,21 @@ export function AuditHub({ section }: { section: AuditSection }) {
           const params = new URLSearchParams(current);
           if (next === "agents") params.set("mode", "agents");
           else params.delete("mode");
+          return params;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const handleActionDomainChange = useCallback(
+    (next: string) => {
+      setSearchParams(
+        (current) => {
+          const params = new URLSearchParams(current);
+          if (next === "__all") params.delete("action");
+          else params.set("action", next);
           return params;
         },
         { replace: true },
@@ -82,6 +109,8 @@ export function AuditHub({ section }: { section: AuditSection }) {
           hideHeader
           mode={mode}
           onModeChange={handleModeChange}
+          actionDomain={actionDomain}
+          onActionDomainChange={handleActionDomainChange}
           lockedAgentId={scope.agentId ?? undefined}
           lockedRunId={scope.runId ?? undefined}
           lockedEntity={

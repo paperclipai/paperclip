@@ -2,10 +2,8 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { createServer, type Server } from "node:http";
 import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
 
-// Apps navigation wave 6 — not-connected apps get a real app page.
-// A row with no live connection must open /apps/app/:applicationId/setup (previous
-// setup + advanced danger zone + reconnect prefill), not the generic connect wizard,
-// and reconnecting must revive the same application/connection, not duplicate.
+// Not-connected apps keep their identity on the Permissions page. Reconnecting
+// must revive the same application/connection, not duplicate it.
 
 const SCREENSHOT_DIR = "test-results";
 
@@ -109,10 +107,10 @@ test.describe.serial("not-connected app page", () => {
     await expect(connectButton).toBeVisible();
 
     await connectButton.click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${applicationId}/setup$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${applicationId}/permissions$`), { timeout: 20_000 });
     await expect(page.getByRole("heading", { name: "Bla" })).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("heading", { name: "Previous setup" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Reconnect this app" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Needs attention" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reconnect" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-01-app-not-connected.png`, fullPage: true });
   });
 
@@ -148,7 +146,7 @@ test.describe.serial("not-connected app page", () => {
     expect(appConns[0].status).not.toBe("archived");
   });
 
-  test("archived app connection returns to provider setup", async ({ page, request }) => {
+  test("archived app connection returns to Permissions with reconnect", async ({ page, request }) => {
     const archive = await request.delete(`/api/tool-connections/${connectionId}`);
     expect(archive.ok(), `archive failed ${archive.status()}: ${await archive.text()}`).toBe(true);
     const revive = await request.patch(`/api/tool-applications/${applicationId}`, { data: { status: "active" } });
@@ -156,11 +154,12 @@ test.describe.serial("not-connected app page", () => {
 
     await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
     await expect(page).toHaveURL(
-      new RegExp(`/${seed.prefix}/apps/app/${applicationId}/setup$`),
+      new RegExp(`/${seed.prefix}/apps/app/${applicationId}/permissions$`),
       { timeout: 20_000 },
     );
     await expect(page.getByText("Not connected", { exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Connect this app" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Needs attention" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Reconnect" })).toBeVisible();
 
     await page.goto(`/${seed.prefix}/apps/connections`);
     const row = page
@@ -172,34 +171,4 @@ test.describe.serial("not-connected app page", () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-03-reconnected-row.png`, fullPage: true });
   });
 
-  test("danger zone on the app page removes the app", async ({ page, request }) => {
-    // Build a second not-connected app to remove from its app page.
-    const second = await request.post(`/api/companies/${seed.companyId}/tools/apps/connect`, {
-      data: {
-        link: mock.url.replace("127.0.0.1", "localhost"),
-        name: "Doomed app",
-        credentialValues: { "credentials.authorization": "qa-token" },
-      },
-    });
-    expect(second.ok(), `second connect failed ${second.status()}: ${await second.text()}`).toBe(true);
-    const secondBody = await second.json();
-    await request.delete(`/api/tool-connections/${secondBody.connectionId}`);
-    await request.patch(`/api/tool-applications/${secondBody.application.id}`, { data: { status: "active" } });
-
-    await page.goto(`/${seed.prefix}/apps/app/${secondBody.application.id}/advanced`);
-    await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
-    await page.getByText("Danger zone", { exact: true }).click();
-    await page.getByRole("button", { name: "Remove app", exact: true }).click();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-04-app-page-danger.png`, fullPage: true });
-    await page.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
-    await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible();
-    await expect(
-      page
-        .getByRole("list", { name: "Connector list" })
-        .getByRole("listitem")
-        .filter({ has: page.getByRole("heading", { name: "Doomed app", exact: true }) }),
-    ).toHaveCount(0);
-  });
 });

@@ -1552,7 +1552,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await expect(db.select().from(toolOauthStates).where(eq(toolOauthStates.state, state))).resolves.toHaveLength(0);
   });
 
-  it("returns browser denials to setup without reflecting provider-authored details", async () => {
+  it("returns browser denials to Permissions without reflecting provider-authored details", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", PUBLIC_BASE_URL);
     installMcpOAuthFixture({ auth: "oauth" });
     const company = await createCompany(db);
@@ -1580,7 +1580,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     expect(res.status).toBe(303);
     const location = new URL(res.headers.location, PUBLIC_BASE_URL);
-    expect(location.pathname).toBe(`/${company.issuePrefix}/apps/${connected.connectionId}/setup`);
+    expect(location.pathname).toBe(`/${company.issuePrefix}/apps/${connected.connectionId}/permissions`);
     expect(location.searchParams.get("oauth")).toBe("denied");
     expect(location.searchParams.get("code")).toBe("oauth_authorization_denied");
     expect(res.headers.location).not.toContain(PROVIDER_CANARY);

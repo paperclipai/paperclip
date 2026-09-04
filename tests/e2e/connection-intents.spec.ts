@@ -250,11 +250,12 @@ test("store setup and task connection intent share one fake provider through con
       }),
     );
 
-    await page.goto(`/${seed.prefix}/apps/${connectionId}/test`);
+    await page.goto(`/${seed.prefix}/apps/${connectionId}/permissions`);
+    const actionRow = page.locator("[data-action-id]").filter({ hasText: "List fixture pages" });
+    await actionRow.getByRole("button", { name: "Test", exact: true }).click();
     await expect(
-      page.getByRole("heading", { name: "Test an action" }),
+      page.getByRole("heading", { name: "Test List fixture pages" }),
     ).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: /List fixture pages/i }).click();
     await page.getByRole("button", { name: "Run", exact: true }).click();
     await expect(page.getByText("Fixture page inventory")).toBeVisible({
       timeout: 30_000,

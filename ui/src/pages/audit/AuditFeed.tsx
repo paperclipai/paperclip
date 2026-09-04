@@ -38,7 +38,7 @@ const ACTION_DOMAINS: { value: string; label: string }[] = [
   { value: "approval.", label: "Approvals" },
   { value: "project.", label: "Projects" },
   { value: "goal.", label: "Goals" },
-  { value: "tool_gateway.", label: "Tools" },
+  { value: "tool_", label: "Apps & tools" },
   { value: "cost.", label: "Costs" },
   { value: "company.", label: "Organization" },
 ];
@@ -53,6 +53,7 @@ const ENTITY_TYPES: { value: string; label: string }[] = [
   { value: "project", label: "Project" },
   { value: "goal", label: "Goal" },
   { value: "company", label: "Organization" },
+  { value: "tool_connection", label: "Connection" },
 ];
 
 /**
@@ -82,6 +83,9 @@ export interface AuditFeedProps {
    */
   mode?: AuditFeedMode;
   onModeChange?: (mode: AuditFeedMode) => void;
+  /** Optional controlled action prefix, used by links from connection testing. */
+  actionDomain?: string;
+  onActionDomainChange?: (actionDomain: string) => void;
 }
 
 function toStartIso(value: string): string | undefined {
@@ -168,6 +172,18 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
   }
   if (document) {
     return <span className="font-medium text-foreground">{document.key}</span>;
+  }
+  const connectionId = record.entityType === "tool_connection"
+    ? record.entityId
+    : typeof record.details?.connectionId === "string"
+      ? record.details.connectionId
+      : null;
+  if (connectionId) {
+    return (
+      <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
+        the connection
+      </Link>
+    );
   }
   // Non-linkable entities (company, agent, goal, …) — show a plain descriptor.
   return <span className="text-muted-foreground">{record.entityType}</span>;
@@ -271,11 +287,18 @@ export function AuditFeed({
   hideHeader,
   mode,
   onModeChange,
+  actionDomain: controlledActionDomain,
+  onActionDomainChange,
 }: AuditFeedProps) {
   const { pushToast } = useToastActions();
   const [agent, setAgent] = useState<string>(ALL);
   const [responsibleUser, setResponsibleUser] = useState<string>(ALL);
-  const [actionDomain, setActionDomain] = useState<string>(ALL);
+  const [localActionDomain, setLocalActionDomain] = useState<string>(ALL);
+  const actionDomain = controlledActionDomain ?? localActionDomain;
+  const setActionDomain = (next: string) => {
+    setLocalActionDomain(next);
+    onActionDomainChange?.(next);
+  };
   const [entityType, setEntityType] = useState<string>(ALL);
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");

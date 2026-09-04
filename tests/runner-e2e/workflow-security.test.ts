@@ -3,6 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+const ordinaryPrTrustedWorkflowRevision =
+  "a0a78ee60946a5f79f85b2bd0584fc766fae43bb";
 const fullStackTestNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
 const buildRunnerNeeds =
@@ -11,6 +13,26 @@ const buildRemoteProviderPackNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,?\s*\]/u;
 
 describe("public repository paid workflow security", () => {
+  it("pins ordinary PR CI to the trusted Node-before-pnpm workflow", async () => {
+    const ordinaryPrWorkflow = await readFile(
+      path.join(repositoryRoot, ".github/workflows/pr.yml"),
+      "utf8",
+    );
+    const trustedWorkflowCalls = [
+      ...ordinaryPrWorkflow.matchAll(
+        /^\s+uses:\s+(paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml)@([0-9a-f]{40})$/gmu,
+      ),
+    ];
+
+    expect(trustedWorkflowCalls).toHaveLength(1);
+    expect(trustedWorkflowCalls[0]?.[1]).toBe(
+      "paperclipai/paperclip/.github/workflows/pr-trusted.yml",
+    );
+    expect(trustedWorkflowCalls[0]?.[2]).toBe(
+      ordinaryPrTrustedWorkflowRevision,
+    );
+  });
+
   it("keeps pnpm bootstrap registry telemetry out of trusted workflow setup", async () => {
     for (const workflowName of [
       "runner-full-stack-e2e.yml",

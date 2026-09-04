@@ -238,12 +238,15 @@ export function resolveConnectionMethodServerUrl(
 }
 
 export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string | null): Record<string, unknown> {
-  const normalizedMethodKey = app.slug === "gmail" && methodKey === "paperclip-id-oauth" ? "paperclip-draft" : methodKey;
-  const method = normalizedMethodKey
-    ? app.methods.find((candidate) => candidate.key === normalizedMethodKey) ?? null
-    : getAvailableConnectionMethod(app, null);
+  // Keep the parameters in the public contract: callers resolve defaults for a
+  // concrete app/method even though the initial policy is now uniform. This is
+  // an open default, not an approval bypass: connection finalization remains a
+  // configure-authorized, audited operation, and Ask first stays available as
+  // an operator-selected policy for any action after the connection is made.
+  void app;
+  void methodKey;
   return {
     access: "all_agents",
-    askFirstRiskLevels: method && method.riskTier !== "S1" ? ["write", "destructive"] : [],
+    askFirstRiskLevels: [],
   };
 }

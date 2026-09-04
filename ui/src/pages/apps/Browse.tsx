@@ -169,7 +169,7 @@ function connectorAction(row: ConnectorRowModel): {
     }
     return {
       label: "Add account",
-      href: applicationId ? `/apps/app/${applicationId}/setup` : null,
+      href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
     };
   }
 
@@ -183,7 +183,7 @@ function connectorAction(row: ConnectorRowModel): {
   if (row.entry) return { label: "Connect", href: connectHrefFor(row.entry) };
   return {
     label: "Connect",
-    href: applicationId ? `/apps/app/${applicationId}/setup` : null,
+    href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
   };
 }
 
@@ -191,7 +191,7 @@ function accountActionHref(row: ConnectorRowModel, connection: ToolConnection): 
   if (connection.status === "draft" && row.entry) {
     return appSourceResumeHref(row.slug, connection.id);
   }
-  return `/apps/${connection.id}/setup`;
+  return `/apps/${connection.id}/permissions`;
 }
 
 /**
@@ -617,8 +617,8 @@ function ConnectionAccountRow({
           <button
             type="button"
             className="block max-w-full cursor-pointer truncate text-left text-sm font-medium text-foreground hover:underline focus-visible:underline"
-            aria-label={`Open ${accountName} connection settings`}
-            onClick={() => onNavigate(`/apps/${connection.id}/setup`)}
+            aria-label={`Open ${accountName} permissions`}
+            onClick={() => onNavigate(`/apps/${connection.id}/permissions`)}
           >
             {accountName}
           </button>
@@ -663,8 +663,8 @@ function ConnectionAccountRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => onNavigate(`/apps/${connection.id}/setup`)}>
-              Edit connection
+            <DropdownMenuItem onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}>
+              Permissions
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={onRemove}>
