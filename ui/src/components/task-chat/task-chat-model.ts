@@ -144,8 +144,10 @@ export interface TaskChatMessageItem {
   attachedTurn?: TaskChatTurnItem;
   /**
    * Structured system-notice fields (PAP-443), carried only for
-   * author === "system": the comment's server-authored presentation hints and
-   * metadata sections drive the collapsed one-line row + expandable detail.
+   * author === "system": either system attribution or an explicit
+   * system_notice presentation routes the comment here. The comment's
+   * server-authored presentation hints and metadata sections drive the
+   * collapsed one-line row + expandable detail.
    */
   presentation?: IssueCommentPresentation | null;
   metadata?: IssueCommentMetadata | null;

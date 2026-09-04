@@ -1754,8 +1754,10 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-markdown {
   --tw-prose-pre-bg: var(--muted);
   --tw-prose-pre-code: var(--foreground);
+  --tw-prose-code: var(--foreground);
   --tw-prose-invert-pre-bg: var(--muted);
   --tw-prose-invert-pre-code: var(--foreground);
+  --tw-prose-invert-code: var(--foreground);
 }
 
 .paperclip-markdown pre {

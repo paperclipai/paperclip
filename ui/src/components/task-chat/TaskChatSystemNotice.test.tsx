@@ -127,6 +127,57 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     ).not.toBeNull();
   });
 
+  it("shows workspace-ready comments as a compact row with expandable workspace metadata", () => {
+    renderNotice({
+      text: [
+        "## Workspace Ready",
+        "",
+        "- Strategy: `git_worktree`",
+        "- Branch: `fix/workspace-ready-notice`",
+        "- CWD: `/worktrees/workspace-ready-notice`",
+      ].join("\n"),
+      presentation: {
+        kind: "system_notice",
+        tone: "info",
+        title: "Workspace ready · fix/workspace-ready-notice",
+        detailsDefaultOpen: false,
+        density: "compact",
+      },
+      metadata: {
+        version: 1,
+        sections: [
+          {
+            title: "Workspace",
+            rows: [
+              { type: "key_value", label: "Strategy", value: "git_worktree" },
+              {
+                type: "key_value",
+                label: "Branch",
+                value: "fix/workspace-ready-notice",
+              },
+              { type: "key_value", label: "CWD", value: "/worktrees/workspace-ready-notice" },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(toggleButton().getAttribute("aria-expanded")).toBe("false");
+    expect(toggleButton().textContent).toContain(
+      "Workspace ready · fix/workspace-ready-notice",
+    );
+    expect(container.textContent).not.toContain("git_worktree");
+
+    flushSync(() => toggleButton().click());
+
+    const details = container.querySelector('[data-testid="task-chat-system-notice-details"]');
+    expect(details?.textContent).toContain("Workspace");
+    expect(details?.textContent?.match(/git_worktree/g)).toHaveLength(1);
+    expect(details?.textContent?.match(/fix\/workspace-ready-notice/g)).toHaveLength(1);
+    expect(details?.textContent).toContain("/worktrees/workspace-ready-notice");
+    expect(details?.querySelector(".paperclip-markdown")).toBeNull();
+  });
+
   it("shows Try again while folded and invokes it without expanding the notice", async () => {
     const onTryAgain = vi.fn();
     renderNotice(
