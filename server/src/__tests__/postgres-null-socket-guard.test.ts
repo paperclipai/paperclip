@@ -5,12 +5,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockLoggerError = vi.hoisted(() => vi.fn());
 const mockLoggerFatal = vi.hoisted(() => vi.fn());
+const mockCaptureException = vi.hoisted(() => vi.fn());
+const mockShutdownSentry = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
     error: mockLoggerError,
     fatal: mockLoggerFatal,
   },
+}));
+
+vi.mock("../sentry.js", () => ({
+  captureException: mockCaptureException,
+  shutdownSentry: mockShutdownSentry,
 }));
 
 const {
@@ -167,6 +174,9 @@ describe("handlePostgresNullSocketGuardException", () => {
   beforeEach(() => {
     mockLoggerError.mockReset();
     mockLoggerFatal.mockReset();
+    mockCaptureException.mockReset();
+    mockShutdownSentry.mockReset();
+    mockShutdownSentry.mockImplementation(async () => {});
     exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as unknown as never);
   });
 
@@ -174,10 +184,10 @@ describe("handlePostgresNullSocketGuardException", () => {
     exitSpy.mockRestore();
   });
 
-  it("logs a stable marker and the error name, and does not exit, on a matching crash", () => {
+  it("logs a stable marker and the error name, and does not exit, on a matching crash", async () => {
     const error = makeDriverCrashError("Cannot read properties of null (reading 'write')");
 
-    handlePostgresNullSocketGuardException(error);
+    await handlePostgresNullSocketGuardException(error);
 
     expect(exitSpy).not.toHaveBeenCalled();
     expect(mockLoggerError).toHaveBeenCalledTimes(1);
@@ -188,7 +198,7 @@ describe("handlePostgresNullSocketGuardException", () => {
     });
   });
 
-  it("never logs the query text, the message, or the stack for a matching crash", () => {
+  it("never logs the query text, the message, or the stack for a matching crash", async () => {
     const secret = "select * from accounts where token = 'hunter2-secret-token'";
     const error = makeDriverCrashError(`Cannot read properties of null (reading 'write') — ${secret}`);
     // The classifier only matches the exact V8 message, so force a match by
@@ -197,7 +207,7 @@ describe("handlePostgresNullSocketGuardException", () => {
     // and the fixed error name.
     error.message = "Cannot read properties of null (reading 'write')";
 
-    handlePostgresNullSocketGuardException(error);
+    await handlePostgresNullSocketGuardException(error);
 
     const [fields] = mockLoggerError.mock.calls[0] as [Record<string, unknown>];
     expect(Object.keys(fields).sort()).toEqual(["errorName", "marker"]);
@@ -206,19 +216,48 @@ describe("handlePostgresNullSocketGuardException", () => {
     }
   });
 
-  it("logs and exits non-zero for a non-matching error", () => {
+  it("never reports a matching crash to Sentry — the process survives on its own", async () => {
+    const error = makeDriverCrashError("Cannot read properties of null (reading 'write')");
+
+    await handlePostgresNullSocketGuardException(error);
+
+    expect(mockCaptureException).not.toHaveBeenCalled();
+    expect(mockShutdownSentry).not.toHaveBeenCalled();
+  });
+
+  it("logs, reports to Sentry, flushes, and exits non-zero for a non-matching error", async () => {
     const error = new RangeError("some unrelated fatal condition");
 
-    handlePostgresNullSocketGuardException(error);
+    await handlePostgresNullSocketGuardException(error);
 
     expect(mockLoggerError).not.toHaveBeenCalled();
     expect(mockLoggerFatal).toHaveBeenCalledTimes(1);
+    expect(mockCaptureException).toHaveBeenCalledWith(error);
+    expect(mockShutdownSentry).toHaveBeenCalledTimes(1);
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  it("exits non-zero for a non-Error thrown value", () => {
-    handlePostgresNullSocketGuardException("a thrown string");
+  it("waits for the Sentry client to flush before it exits", async () => {
+    const error = new RangeError("some unrelated fatal condition");
+    let shutdownResolved = false;
+    mockShutdownSentry.mockImplementation(async () => {
+      await Promise.resolve();
+      shutdownResolved = true;
+    });
+    exitSpy.mockImplementation((() => {
+      expect(shutdownResolved).toBe(true);
+      return undefined;
+    }) as unknown as never);
 
+    await handlePostgresNullSocketGuardException(error);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("exits non-zero for a non-Error thrown value", async () => {
+    await handlePostgresNullSocketGuardException("a thrown string");
+
+    expect(mockCaptureException).toHaveBeenCalledWith(expect.any(Error));
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

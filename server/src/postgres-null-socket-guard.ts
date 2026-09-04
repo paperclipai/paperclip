@@ -14,22 +14,27 @@
 // the one known, neutralized fault below — otherwise an unrelated bug would
 // leave the process running in a state nobody chose.
 //
-// This module reports no telemetry event and calls no external
-// error-reporting client. It logs one structured line, with a fixed marker
-// and the error name only — never a query, a query parameter, a connection
-// URL, a host name, or a database name.
+// For the known, neutralized fault, this module reports no telemetry event
+// and calls no external error-reporting client. It logs one structured
+// line, with a fixed marker and the error name only — never a query, a
+// query parameter, a connection URL, a host name, or a database name.
 //
-// Interaction with Sentry: `./sentry.js` registers no `uncaughtException`
-// listener today. `@sentry/node` is an optional peer dependency this
-// repository does not install (`bootstrapSentry` fails its own version
-// check and returns before it calls `Sentry.init`), so Sentry never adds a
-// listener of its own. If an operator later installs `@sentry/node` and
-// sets a Sentry DSN, the default `OnUncaughtException` integration is not
-// among the integrations `sentry.ts` removes, so it would register its own
-// listener too. This module registers first (from the server entry point,
-// before `sentryReady`), so it runs first on every uncaught exception.
+// Interaction with Sentry: this module is the sole owner of the process's
+// `uncaughtException` decision. `sentry.ts` removes the default
+// `OnUncaughtException` integration from `Sentry.init`, so an operator who
+// installs `@sentry/node` and sets a Sentry DSN gets no second,
+// independent `uncaughtException` listener — Node calls every registered
+// listener for an event, not just the first one, so a second listener
+// would still end the process on the known, neutralized fault regardless
+// of listener order. Instead, for every uncaught exception this module
+// does not neutralize, it reports the error to Sentry itself (through
+// `captureException`) and waits for the client to flush (through
+// `shutdownSentry`) before it ends the process — the same sequence
+// `index.ts` uses for a startup failure. A deployment with no Sentry DSN
+// set sees no change: both calls are no-ops.
 
 import { logger } from "./middleware/logger.js";
+import { captureException, shutdownSentry } from "./sentry.js";
 
 const GUARD_ENABLED_ENV_VAR = "POSTGRES_NULL_SOCKET_GUARD_ENABLED";
 const GUARD_MARKER = "postgres_null_socket_write_guard_neutralized";
@@ -75,12 +80,12 @@ export function isGuardEnabled(env: NodeJS.ProcessEnv): boolean {
 
 /**
  * Handles one uncaught exception. The known driver fault logs one
- * structured, searchable line and returns — the process survives. Every
- * other error keeps today's default behavior: log, then end the process.
- * Exported so a test can drive it directly instead of dispatching a real
- * process event.
+ * structured, searchable line and returns — the process survives, and
+ * Sentry hears nothing about it. Every other error keeps today's default
+ * behavior: log, report to Sentry, then end the process. Exported so a
+ * test can drive it directly instead of dispatching a real process event.
  */
-export function handlePostgresNullSocketGuardException(error: unknown): void {
+export async function handlePostgresNullSocketGuardException(error: unknown): Promise<void> {
   if (isPostgresNullSocketWriteCrash(error)) {
     logger.error(
       { marker: GUARD_MARKER, errorName: (error as Error).name },
@@ -91,6 +96,8 @@ export function handlePostgresNullSocketGuardException(error: unknown): void {
 
   const rootError = error instanceof Error ? error : new Error(String(error));
   logger.fatal({ err: rootError }, "uncaught exception; process exiting");
+  captureException(rootError);
+  await shutdownSentry();
   process.exit(1);
 }
 

@@ -36,6 +36,19 @@
 // `mode: "strict"`: Sentry still captures the event, then exits the process,
 // so the existing crash-and-restart behavior stays.
 //
+// `OnUncaughtException` is a default integration too, and the initializer
+// removes it. `postgres-null-socket-guard.ts` registers its own
+// `uncaughtException` listener before the server does anything else,
+// including this Sentry gate — the process must survive one known,
+// neutralized driver defect and end for every other uncaught exception. A
+// second, independent listener from this default integration would end the
+// process for that known defect too, regardless of registration order,
+// because Node calls every registered `uncaughtException` listener, not
+// just the first one. So this repository gives one module exclusive
+// ownership of the decision: `postgres-null-socket-guard.ts` calls this
+// module's `captureException` itself for every uncaught exception it does
+// not neutralize, before it ends the process.
+//
 // Before it imports the package, the bootstrap checks the installed
 // `@sentry/node` version against the exact version this manifest's
 // `peerDependencies` declares — the same audited version documented in
@@ -154,7 +167,10 @@ export function buildSentryInitOptions(
           integration.name !== "Console" &&
           integration.name !== "ContextLines" &&
           integration.name !== "Http" &&
-          integration.name !== "OnUnhandledRejection",
+          integration.name !== "OnUnhandledRejection" &&
+          // Removed so this default integration never registers its own
+          // `uncaughtException` listener. See the module comment above.
+          integration.name !== "OnUncaughtException",
       );
       return [
         ...kept,

@@ -156,9 +156,10 @@ export interface StartedServer {
 }
 
 export async function startServer(): Promise<StartedServer> {
-  // Registered before every other startup step, including Sentry, so this
-  // listener runs first on any later uncaught exception — see
-  // postgres-null-socket-guard.ts for why that order matters.
+  // Registered before every other startup step, so it is the process's
+  // `uncaughtException` handler for the entire startup sequence, not just
+  // once the server is listening — see postgres-null-socket-guard.ts for
+  // how it owns that decision, Sentry reporting included.
   registerPostgresNullSocketGuard();
 
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => logger.warn(message));
