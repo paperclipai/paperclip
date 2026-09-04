@@ -20,6 +20,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .find(|pair| pair[0] == "--mode")
         .map(|pair| pair[1].as_str())
         .unwrap_or("happy");
+    let profile_digest = args
+        .windows(2)
+        .find(|pair| pair[0] == "--profile-digest")
+        .map(|pair| pair[1].as_str())
+        .unwrap_or("sha256:1111111111111111111111111111111111111111111111111111111111111111");
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut next_sequence = 1_u64;
@@ -34,7 +39,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
         if command == "permission.resolve" {
-            write_json(&mut stdout, &bootstrap_success(id, command, &request, mode))?;
+            write_json(
+                &mut stdout,
+                &bootstrap_success(id, command, &request, mode, profile_digest),
+            )?;
             continue;
         }
         match mode {
@@ -118,7 +126,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
-                write_json(&mut stdout, &bootstrap_success(id, command, &request, mode))?;
+                write_json(
+                    &mut stdout,
+                    &bootstrap_success(id, command, &request, mode, profile_digest),
+                )?;
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
                     .get("turnId")
@@ -527,7 +538,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Value {
+fn bootstrap_success(
+    id: u64,
+    command: &str,
+    request: &Value,
+    mode: &str,
+    profile_digest: &str,
+) -> Value {
     if command == "permission.resolve" {
         return json!({
             "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
@@ -567,11 +584,12 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
                     "acpxRecordId": "record-1",
                     "backendSessionId": "backend-1",
                     "agentSessionId": "agent-1",
-                    "profileDigest": format!("sha256:{}", "1".repeat(64)),
+                    "profileDigest": profile_digest,
                     "workspaceDigest": format!("sha256:{}", "2".repeat(64)),
                     "requestedModel": model,
                     "effectiveModel": if mode == "bootstrap-wrong-model" { "wrong-model" } else { model },
                     "permissionMode": params.get("permissionMode"),
+                    "providerLifetimeFenceCandidates": [60001, 60002, 60003],
                 },
                 "status": {},
             })
@@ -592,11 +610,12 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
                 "acpxRecordId": "record-1",
                 "backendSessionId": "backend-1",
                 "agentSessionId": "agent-1",
-                "profileDigest": format!("sha256:{}", "1".repeat(64)),
+                "profileDigest": profile_digest,
                 "workspaceDigest": format!("sha256:{}", "2".repeat(64)),
                 "requestedModel": "gpt-5.6-sol",
                 "effectiveModel": "gpt-5.6-sol",
                 "permissionMode": "approve-reads",
+                "providerLifetimeFenceCandidates": [60001, 60002, 60003],
             })},
         }),
         "tool.resolve" => json!({

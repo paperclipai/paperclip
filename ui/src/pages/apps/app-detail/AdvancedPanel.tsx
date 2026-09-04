@@ -19,8 +19,8 @@ import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useToast } from "@/context/ToastContext";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
-import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { navigateTopLevel } from "@/lib/browserNavigation";
+import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { cn } from "@/lib/utils";
 import type { AppDetailSectionProps } from "./types";
 import { RevokeGrantDialog } from "./IdentitiesSection";
@@ -158,15 +158,20 @@ export function ReconnectCard({
     mutationFn: () => connection.credentialPolicy === "per_user"
       ? toolsApi.startOAuth(connection.id, { asCurrentUser: true })
       : toolsApi.startOAuth(connection.id),
-    onSuccess: ({ authorizationUrl }) => {
-      // Reconnect navigates to the same discovered address a fresh connect does,
-      // so it goes through the same gate (PAP-17099).
-      const target = resolveAuthorizationTarget(authorizationUrl);
-      if (!target.ok) {
-        pushToast({ title: "Couldn’t start sign-in", body: target.message, tone: "error" });
-        return;
+    onSuccess: async (start) => {
+      try {
+        const target = await prepareOAuthNavigation(start);
+        if (target.kind === "reauthentication" && start.handoff) {
+          savePendingCloudHandoff(start.handoff.session);
+        }
+        navigateTopLevel(target.url);
+      } catch (error) {
+        pushToast({
+          title: "Couldn’t start sign-in",
+          body: error instanceof Error ? error.message : "Please try again.",
+          tone: "error",
+        });
       }
-      navigateTopLevel(target.url);
     },
     onError: (error) =>
       pushToast({

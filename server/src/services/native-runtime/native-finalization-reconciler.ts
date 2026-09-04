@@ -22,6 +22,7 @@ import {
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
+import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
@@ -206,6 +207,7 @@ export async function claimNativeSessionResumptions(input: {
   const claims: NativeSessionResumeClaim[] = [];
   for (const candidate of candidates) {
     const leaseOwner = `${input.runnerInstanceId}:resume:${randomUUID()}`;
+    let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
     const claimed = await input.db.transaction(async (tx) => {
       const row = await tx.select({
         run: heartbeatRuns,
@@ -294,7 +296,7 @@ export async function claimNativeSessionResumptions(input: {
           nextAttemptAt: null,
           updatedAt: now,
         }).where(eq(nativeRunFinalizations.runId, row.run.id));
-        await tx.update(heartbeatRuns).set({
+        const [updatedRun] = await tx.update(heartbeatRuns).set({
           status: "failed",
           finishedAt: now,
           nativePhase: "terminal_failure",
@@ -304,7 +306,8 @@ export async function claimNativeSessionResumptions(input: {
             ? failureDetail.message
             : "Persisted native session state is ambiguous and cannot be resumed safely",
           updatedAt: now,
-        }).where(eq(heartbeatRuns.id, row.run.id));
+        }).where(eq(heartbeatRuns.id, row.run.id)).returning();
+        terminalRunToEmit = updatedRun ?? null;
         await issueService(tx as unknown as Db).update(
           row.coordinator.issueId,
           { status: "in_review" },
@@ -359,6 +362,11 @@ export async function claimNativeSessionResumptions(input: {
       }).where(eq(heartbeatRuns.id, row.run.id));
       return true;
     });
+    // Telemetry is best-effort background work; it must not delay claiming
+    // the remaining candidates in this loop, so fire it and do not await it.
+    if (terminalRunToEmit) {
+      void emitAgentTaskRun(input.db, terminalRunToEmit);
+    }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
   }
   return claims;

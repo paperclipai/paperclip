@@ -54,8 +54,10 @@ import type {
 } from "./codex-driver-types.js";
 import {
   boundedText,
+  canonicalJson,
   codexSemanticToolSpecs,
   differingJsonPaths,
+  parseProviderIdentity,
   record,
   text,
 } from "./codex-driver-values.js";
@@ -199,6 +201,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     const workingDirectory = validateWorkingDirectory(
       input.workingDirectory,
       this.#options.environment,
+      this.#options.workingDirectoryAuthority,
     );
     const transport = this.#transport();
     const cancellation = bootstrapCancellation(transport, input.signal);
@@ -326,6 +329,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       const workingDirectory = validateWorkingDirectory(
         text(existingThread.cwd),
         this.#options.environment,
+        this.#options.workingDirectoryAuthority,
       );
       const response = await cancellation.wait(transport.request("thread/resume", {
         threadId: snapshot.driverSessionId,
@@ -368,6 +372,17 @@ export class CodexAppServerDriver implements HarnessDriver {
         return {
           recovered: false,
           reason: "provider resumed a different provider session",
+        };
+      }
+      if (
+        snapshot.providerIdentity !== undefined &&
+        canonicalJson(opened.providerIdentity) !==
+          canonicalJson(snapshot.providerIdentity)
+      ) {
+        await cancellation.wait(cancellation.close());
+        return {
+          recovered: false,
+          reason: "provider resumed with a different tagged session identity",
         };
       }
       const checkpointedActiveTurnId = snapshot.activeTurnId ?? null;
@@ -668,9 +683,11 @@ export class CodexAppServerDriver implements HarnessDriver {
         "Codex thread response changed the assigned working directory",
       );
     }
+    const providerIdentity = parseProviderIdentity(thread.providerIdentity);
     return {
       threadId,
       providerSessionId,
+      ...(providerIdentity === undefined ? {} : { providerIdentity }),
       collaborationMode,
       context: {
         protocolVersion: CODEX_CODEX_PROTOCOL_VERSION,

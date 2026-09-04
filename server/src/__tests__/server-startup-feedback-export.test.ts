@@ -61,10 +61,7 @@ const {
       skipped: 0,
       issueIds: [],
     })),
-    reconcileIssueGraphLiveness: vi.fn(async () => ({
-      escalationsCreated: 0,
-      dependencyWakesHealed: 0,
-    })),
+    reconcileResolvedDependencyWakes: vi.fn(async () => ({ healed: 0 })),
     reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0 })),
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),

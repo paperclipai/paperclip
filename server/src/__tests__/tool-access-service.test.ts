@@ -2310,7 +2310,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
-  it("lists testable agents with per-connection effective access summaries", async () => {
+  it("lists testable agents without calculating every agent's access summary", async () => {
     const company = await createCompany(db);
     const userId = `tool-tester-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, ["tools:use"]);
@@ -2335,13 +2335,18 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.body.agents[0]).toMatchObject({
       id: agent.id,
       orgDepth: 0,
-      effectiveAccess: {
-        connectionId: connection.id,
-        toolCount: 1,
-        allowedCount: 1,
-        askFirstCount: 0,
-        offCount: 0,
-      },
+    });
+    expect(res.body.agents[0]).not.toHaveProperty("effectiveAccess");
+
+    const accessRes = await request(app)
+      .get(`/api/tool-connections/${connection.id}/test-agents/${agent.id}/access`)
+      .expect(200);
+    expect(accessRes.body.access).toMatchObject({
+      connectionId: connection.id,
+      toolCount: 1,
+      allowedCount: 1,
+      askFirstCount: 0,
+      offCount: 0,
     });
   });
 
@@ -2412,10 +2417,10 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const app = createRouteApp(db, actor, createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }));
     const res = await request(app)
-      .get(`/api/tool-connections/${connection.id}/test-agents`)
+      .get(`/api/tool-connections/${connection.id}/test-agents/${agent.id}/access`)
       .expect(200);
 
-    const summary = res.body.agents[0].effectiveAccess;
+    const summary = res.body.access;
     expect(typeof summary.lastChangedAt).toBe("string");
     expect(summary.lastChangedByAgentId).toBe(agent.id);
     expect(summary.lastChangedByName).toBe(agent.name);
@@ -2521,6 +2526,44 @@ describeEmbeddedPostgres("tool access service", () => {
         metadata: expect.objectContaining({ source: "test" }),
       }),
     ]));
+  });
+
+  it("cancels an ask-first test request when approval signing is unavailable", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "");
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Ask first without signing ${randomUUID()}`,
+      policyType: "require_approval",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: " " }),
+    );
+
+    const res = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } })
+      .expect(500);
+
+    expect(res.body).toMatchObject({
+      reasonCode: "signing_secret_unconfigured",
+      error: expect.stringContaining("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET"),
+    });
+    const [actionRequest] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+    expect(actionRequest).toMatchObject({ status: "cancelled", signedArguments: null });
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+    expect(invocation).toMatchObject({
+      status: "failed",
+      errorCode: "signing_secret_unconfigured",
+    });
   });
 
   it("audits ask-first test calls with the real board actor and selected agent", async () => {
@@ -3418,6 +3461,7 @@ describeEmbeddedPostgres("tool access service", () => {
         .put(`/api/tool-connections/${connection.id}/installs`)
         .send({ installs: [] }),
       await request(app).get(`/api/tool-connections/${connection.id}/test-agents`),
+      await request(app).get(`/api/tool-connections/${connection.id}/test-agents/${randomUUID()}/access`),
       await request(app)
         .post(`/api/tool-connections/${connection.id}/test-calls`)
         .send({ agentId: randomUUID(), toolName: "read_notes", parameters: {} }),
@@ -3620,12 +3664,14 @@ describeEmbeddedPostgres("tool access service", () => {
 
   it("serves the app gallery manifest through the board route", async () => {
     const company = await createCompany(db);
-    const app = createRouteApp(db);
+    const app = createRouteApp(db, undefined, undefined, { paperclipCloudConnector: null });
 
     const res = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
 
     expect(res.status).toBe(200);
     expect(res.body.capabilities).toEqual({
+      canCreateOrganizationGrant: true,
+      organizationGrantReason: null,
       canSetCompanyInstall: true,
       companyInstallReason: null,
     });
@@ -3859,9 +3905,57 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.capabilities).toEqual({
+      canCreateOrganizationGrant: false,
+      organizationGrantReason: "Only a company owner, administrator, or connection manager can share this credential with the organization.",
       canSetCompanyInstall: false,
       companyInstallReason: "Only someone who can configure this connection can choose this.",
     });
+  });
+
+  it("requires connection-manager authority to create an organization credential", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db, boardSessionActor(company.id, "member"));
+
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "notion", grantKind: "organization" })
+      .expect(403);
+    // Omitted grantKind retains the legacy organization default, so it must
+    // pass through the same authorization check.
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "notion" })
+      .expect(403);
+
+    await expect(db.select().from(toolApplications)).resolves.toHaveLength(0);
+    await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
+  });
+
+  it("requires connection-manager authority to resume an organization credential", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const shared = await service.connectGalleryApp(company.id, {
+      galleryKey: "notion",
+      grantKind: "organization",
+    }, { actorType: "user", actorId: "member" });
+    const app = createRouteApp(db, boardSessionActor(company.id, "member", "member"));
+
+    // The retained shared identity wins over a contradictory personal value.
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        galleryKey: "notion",
+        resumeConnectionId: shared.connectionId,
+        grantKind: "user",
+      })
+      .expect(403);
+
+    // Omitting the explicit id must not bypass the same check through the
+    // service's retained draft lookup by application name and source.
+    await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "notion", grantKind: "user" })
+      .expect(403);
   });
 
   it("previews remote mcp.json headers as secret replacement fields without echoing values", async () => {
@@ -4946,6 +5040,14 @@ describeEmbeddedPostgres("tool access service", () => {
     await grantBoardUser(db, company.id, userId, [], "owner");
     const profile = "drive.read" as const;
     const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+    connector.startAuthorization = vi.fn(async ({ returnState }) => ({
+      authorizationUrl: `https://my.example.test/connections/confirm?session=legacy&state=${encodeURIComponent(returnState)}`,
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      handoff: {
+        kind: "paperclip_cloud" as const,
+        session: "cloud_session_abcdefghijklmnop",
+      },
+    }));
     const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
     const actor = { actorType: "user" as const, actorId: userId };
     const driveDefinition = getConnectableAppDefinition("google-drive")!;
@@ -4968,6 +5070,10 @@ describeEmbeddedPostgres("tool access service", () => {
         actor,
       });
       const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      expect(started.handoff).toEqual({
+        kind: "paperclip_cloud",
+        session: "cloud_session_abcdefghijklmnop",
+      });
       const app = createRouteApp(
         db,
         boardSessionActor(company.id, "owner", userId),
@@ -5083,7 +5189,102 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
-  it("activates allowed Drive write actions with recommended approval defaults after a managed callback", async () => {
+  it("routes a managed Drive callback into the shared organization vault when selected", async () => {
+    const company = await createCompany(db);
+    const userId = `shared-drive-member-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const profile = "drive.read" as const;
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const driveDefinition = getConnectableAppDefinition("google-drive")!;
+    const previousOwnershipAvailability = driveDefinition.ownershipAvailability;
+    driveDefinition.ownershipAvailability = { ...previousOwnershipAvailability, platform_shared: true };
+    mockToolsList([{ name: "search_files", annotations: { readOnlyHint: true } }]);
+
+    try {
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-drive",
+        connectionMethodKey: "paperclip-read",
+        grantKind: "organization",
+        name: "Shared Drive managed read",
+      }, actor);
+      expect(connected.connection).toMatchObject({ credentialPolicy: "shared" });
+
+      const started = await service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+        actor,
+      });
+      const completed = await service.completePaperclipCloudConnectorCallback({
+        state: new URL(started.authorizationUrl).searchParams.get("state")!,
+        claimId: "shared-drive-claim",
+        actor,
+      });
+
+      expect(completed.connection).toMatchObject({
+        status: "active",
+        enabled: true,
+        credentialPolicy: "shared",
+        config: {
+          oauth: {
+            strategy: "paperclip_cloud_connector",
+            connectorSubjectUserId: userId,
+          },
+        },
+      });
+      expect(completed.connection.credentialRefs).toEqual([
+        expect.objectContaining({
+          name: "oauth.access_token",
+          placement: "header",
+          key: "Authorization",
+          prefix: "Bearer ",
+        }),
+      ]);
+      expect(completed.connection.credentialSecretRefs.map((ref) => ref.configPath).sort()).toEqual([
+        "oauth.access_token",
+        "oauth.refresh_token",
+      ]);
+
+      const grants = await db.select().from(connectionGrants).where(eq(
+        connectionGrants.connectionId,
+        connected.connectionId,
+      ));
+      expect(grants).toHaveLength(1);
+      expect(grants[0]).toMatchObject({
+        kind: "organization",
+        subjectUserId: null,
+        isDefault: true,
+        status: "active",
+        providerTenant: {
+          externalId: userId,
+          oauth: { strategy: "paperclip_cloud_connector" },
+        },
+      });
+      expect(grants[0]!.credentialSecretRefs.map((ref) => ref.secretId).sort()).toEqual(
+        completed.connection.credentialSecretRefs.map((ref) => ref.secretId).sort(),
+      );
+
+      const secrets = await db.select().from(companySecrets).where(inArray(
+        companySecrets.id,
+        completed.connection.credentialSecretRefs.map((ref) => ref.secretId),
+      ));
+      expect(secrets).toHaveLength(2);
+      expect(secrets.every((secret) => secret.scope === "company" && secret.ownerUserId === null)).toBe(true);
+      const bindings = await db.select().from(companySecretBindings).where(and(
+        eq(companySecretBindings.targetType, "tool_connection"),
+        eq(companySecretBindings.targetId, connected.connectionId),
+      ));
+      expect(bindings.map((binding) => binding.configPath).sort()).toEqual([
+        "credentials.oauth.access_token",
+        "oauth.access_token",
+        "oauth.refresh_token",
+      ]);
+    } finally {
+      driveDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
+  it("activates allowed Drive write actions without approval defaults after a managed callback", async () => {
     const company = await createCompany(db);
     const userId = `drive-write-member-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -5147,14 +5348,10 @@ describeEmbeddedPostgres("tool access service", () => {
       );
       const searchEntry = callback.body.catalog.find((entry: { toolName: string }) => entry.toolName === "search_files");
       const createEntry = callback.body.catalog.find((entry: { toolName: string }) => entry.toolName === "create_file");
-      const [approvalPolicy] = await db.select().from(toolPolicies).where(and(
+      await expect(db.select().from(toolPolicies).where(and(
         eq(toolPolicies.companyId, company.id),
         eq(toolPolicies.enabled, true),
-      ));
-      expect(approvalPolicy).toMatchObject({
-        policyType: "require_approval",
-        selectors: expect.objectContaining({ catalogEntryId: createEntry.id }),
-      });
+      ))).resolves.toEqual([]);
       await expect(db.select().from(toolConnectionInstalls).where(and(
         eq(toolConnectionInstalls.connectionId, connected.connectionId),
         eq(toolConnectionInstalls.targetType, "company"),
@@ -5173,7 +5370,6 @@ describeEmbeddedPostgres("tool access service", () => {
         targetId: agent.id,
       });
       await db.update(toolProfiles).set({ status: "archived" }).where(eq(toolProfiles.id, profileRow!.id));
-      await db.update(toolPolicies).set({ enabled: false }).where(eq(toolPolicies.id, approvalPolicy!.id));
 
       mockToolsList([
         { name: "search_files", description: "Search files with a changed contract.", annotations: { readOnlyHint: true } },
@@ -5213,14 +5409,14 @@ describeEmbeddedPostgres("tool access service", () => {
       ))).resolves.toEqual([
         expect.objectContaining({ targetType: "agent", targetId: agent.id }),
       ]);
-      await expect(db.select().from(toolPolicies).where(eq(toolPolicies.id, approvalPolicy!.id)))
-        .resolves.toEqual([expect.objectContaining({ enabled: false })]);
+      await expect(db.select().from(toolPolicies).where(eq(toolPolicies.companyId, company.id)))
+        .resolves.toEqual([]);
     } finally {
       driveDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
   });
 
-  it("keeps a managed draft retryable when recommended-default finalization fails", async () => {
+  it("keeps a managed draft retryable when default finalization fails", async () => {
     const company = await createCompany(db);
     const userId = `drive-finalize-failure-${randomUUID()}`;
     await grantBoardUser(db, company.id, userId, [], "owner");
@@ -5324,16 +5520,10 @@ describeEmbeddedPostgres("tool access service", () => {
       ))).resolves.toEqual([
         expect.objectContaining({ targetType: "company", targetId: company.id }),
       ]);
-      const createEntry = completed.catalog.find((entry) => entry.toolName === "create_file")!;
       await expect(db.select().from(toolPolicies).where(and(
         eq(toolPolicies.companyId, company.id),
         eq(toolPolicies.enabled, true),
-      ))).resolves.toEqual([
-        expect.objectContaining({
-          policyType: "require_approval",
-          selectors: expect.objectContaining({ catalogEntryId: createEntry.id }),
-        }),
-      ]);
+      ))).resolves.toEqual([]);
       await expect(db.select().from(toolConnectionInstalls).where(and(
         eq(toolConnectionInstalls.connectionId, connected.connectionId),
         eq(toolConnectionInstalls.targetType, "company"),
@@ -5458,16 +5648,10 @@ describeEmbeddedPostgres("tool access service", () => {
       ))).resolves.toEqual([
         expect.objectContaining({ targetType: "company", targetId: company.id }),
       ]);
-      const createEntry = completed.catalog.find((entry) => entry.toolName === "create_file")!;
       await expect(db.select().from(toolPolicies).where(and(
         eq(toolPolicies.companyId, company.id),
         eq(toolPolicies.enabled, true),
-      ))).resolves.toEqual([
-        expect.objectContaining({
-          policyType: "require_approval",
-          selectors: expect.objectContaining({ catalogEntryId: createEntry.id }),
-        }),
-      ]);
+      ))).resolves.toEqual([]);
     } finally {
       driveDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
@@ -5627,7 +5811,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
     const userId = `oauth-owner-${randomUUID()}`;
-    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    await grantBoardUser(db, company.id, userId, ["tools:use", "tools:manage_connections"]);
     const agent = await createAgent(db, company.id);
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
@@ -5736,7 +5920,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "workspace-owner", []);
+    await grantBoardUser(db, company.id, "workspace-owner", ["tools:manage_connections"]);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
     const service = createTestToolAccessService(db);
@@ -5975,12 +6159,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolPolicies).where(and(
       eq(toolPolicies.companyId, company.id),
       eq(toolPolicies.enabled, true),
-    ))).resolves.toEqual([
-      expect.objectContaining({
-        policyType: "require_approval",
-        selectors: expect.objectContaining({ catalogEntryId: sendMessageEntry.id }),
-      }),
-    ]);
+    ))).resolves.toEqual([]);
     const callbackPolicy = toolAccessPolicyService(db);
     const decide = (entry: (typeof completed.catalog)[number]) => callbackPolicy.decide({
       companyId: company.id,
@@ -5997,8 +6176,8 @@ describeEmbeddedPostgres("tool access service", () => {
       reasonCode: "allow_profile",
     });
     await expect(decide(sendMessageEntry)).resolves.toMatchObject({
-      decision: "require_approval",
-      reasonCode: "requires_approval_policy",
+      decision: "allow",
+      reasonCode: "allow_profile",
     });
     const [personalGrant] = await db.select().from(connectionGrants).where(and(
       eq(connectionGrants.connectionId, connected.connectionId),
@@ -6244,7 +6423,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(versions.filter((version) => version.status === "current")).toHaveLength(2);
   });
 
-  it("returns a pre-scoped personal Notion callback directly to Test", async () => {
+  it("returns a pre-scoped personal Notion callback directly to Permissions", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_SECRET", "");
@@ -6316,7 +6495,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(callbackRes.status).toBe(303);
     expect(callbackRes.headers.location).toBe(
-      `/${company.issuePrefix}/apps/${connectRes.body.connectionId}/test?success=1`,
+      `/${company.issuePrefix}/apps/${connectRes.body.connectionId}/permissions?success=1`,
     );
     const [activeConnection] = await db.select().from(toolConnections).where(eq(
       toolConnections.id,
@@ -6395,7 +6574,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip-public.example");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board-user", []);
+    await grantBoardUser(db, company.id, "board-user", ["tools:manage_connections"]);
     const app = createRouteApp(db);
 
     const connectRes = await request(app)
@@ -6500,7 +6679,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(redirectCallbackRes.status).toBe(303);
     expect(redirectCallbackRes.headers.location).toBe(
-      `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/test?success=1`,
+      `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/permissions?success=1`,
     );
     expect(fetchMock).toHaveBeenCalledTimes(6);
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
@@ -6511,6 +6690,7 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it("normalizes a direct numeric loopback origin for OAuth when no public URL is configured", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
@@ -6529,6 +6709,7 @@ describeEmbeddedPostgres("tool access service", () => {
   });
 
   it("does not derive an OAuth callback origin from a non-loopback request host", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
@@ -6545,6 +6726,48 @@ describeEmbeddedPostgres("tool access service", () => {
       code: "oauth_redirect_origin_unsupported",
       error: "This Paperclip needs a browser-reachable HTTPS address (or loopback HTTP) before browser sign-in can start.",
     });
+  });
+
+  it("uses an authenticated same-origin HTTPS browser request without public URL config", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const app = createRouteApp(db, boardSessionActor(company.id, "owner"), undefined, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", "paperclip.tail123.ts.net")
+      .set("Origin", "https://paperclip.tail123.ts.net")
+      .send({ galleryKey: "slack", name: "Tailscale Slack workspace" });
+
+    expect(connectRes.status).toBe(201);
+    expect(new URL(connectRes.body.auth.startUrl).searchParams.get("redirect_uri")).toBe(
+      "https://paperclip.tail123.ts.net/api/tools/oauth/callback",
+    );
+  });
+
+  it("rejects a browser HTTPS origin that does not match the routed request host", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const app = createRouteApp(db, boardSessionActor(company.id, "owner"), undefined, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", "paperclip.tail123.ts.net")
+      .set("Origin", "https://evil.example")
+      .send({ galleryKey: "slack", name: "Mismatched Slack workspace" });
+
+    expect(connectRes.status).toBe(422);
+    expect(connectRes.body).toMatchObject({ code: "oauth_redirect_origin_unsupported" });
   });
 
   it("requires non-viewer board access to start OAuth for active app connections", async () => {
@@ -6685,7 +6908,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "oauth-operator", []);
+    await grantBoardUser(db, company.id, "oauth-operator", ["tools:manage_connections"]);
     const service = createTestToolAccessService(db);
     const initiatingActor = boardSessionActor(company.id, "operator", "oauth-operator");
     const connect = await service.connectGalleryApp(
@@ -6731,6 +6954,25 @@ describeEmbeddedPostgres("tool access service", () => {
       .get("/api/tools/oauth/callback")
       .query({ state, code: "oauth-code" })
       .expect(403);
+
+    await db.delete(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, company.id),
+      eq(principalPermissionGrants.principalType, "user"),
+      eq(principalPermissionGrants.principalId, "oauth-operator"),
+      eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
+    ));
+    await request(initiatingApp)
+      .get("/api/tools/oauth/callback")
+      .query({ state, code: "oauth-code" })
+      .expect(403);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: "oauth-operator",
+      permissionKey: "tools:manage_connections",
+      scope: null,
+      grantedByUserId: "owner",
+    });
 
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(1);
 
@@ -6910,7 +7152,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board", []);
+    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "supabase",
@@ -7001,15 +7243,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect.objectContaining({ toolName: "list_tables", riskLevel: "read" }),
     ]);
     await expect(db.select().from(toolPolicies).where(eq(toolPolicies.companyId, company.id)))
-      .resolves.toEqual([
-        expect.objectContaining({
-          policyType: "require_approval",
-          enabled: true,
-          selectors: expect.objectContaining({
-            catalogEntryId: completed.actions.canMakeChanges[0]!.catalogEntryId,
-          }),
-        }),
-      ]);
+      .resolves.toEqual([]);
     const [connection] = await db.select().from(toolConnections).where(eq(
       toolConnections.id,
       connected.connectionId,
@@ -7036,7 +7270,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board", []);
+    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "miro",
@@ -7543,7 +7777,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board", []);
+    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
     const service = createTestToolAccessService(db);
     const concurrentService = createTestToolAccessService(db);
 
@@ -7649,7 +7883,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board", []);
+    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
     const service = createTestToolAccessService(db);
     const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack invalid grant" });
     const start = await service.startOAuth(company.id, connect.connectionId, {
@@ -7740,7 +7974,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board", []);
+    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
     const service = createTestToolAccessService(db);
     const connect = await service.connectGalleryApp(company.id, {
       galleryKey: "slack",
@@ -7936,7 +8170,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board", []);
+    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
     const service = createTestToolAccessService(db);
     const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack no refresh" });
     const start = await service.startOAuth(company.id, connect.connectionId, {
@@ -7993,8 +8227,8 @@ describeEmbeddedPostgres("tool access service", () => {
       status: 502,
       details: expect.objectContaining({
         code: "oauth_refresh_missing",
-        setupUrl: `/apps/${connect.connectionId}/setup`,
-        reconnectUrl: `/apps/${connect.connectionId}/advanced`,
+        setupUrl: `/apps/${connect.connectionId}/permissions`,
+        reconnectUrl: `/apps/${connect.connectionId}/permissions`,
         connection: expect.objectContaining({ healthStatus: "failed" }),
       }),
     });
@@ -8097,6 +8331,12 @@ describeEmbeddedPostgres("tool access service", () => {
       status: "pending",
       canonicalArgumentsHash: "args-hash",
       canonicalArgumentsSummary: { summary: "redacted", redactedFields: [] },
+      signedArguments: signToolArguments({
+        invocationId: invocation.id,
+        toolName: invocation.toolName,
+        canonicalArguments: canonicalToolArguments({ redacted: true }),
+        signingSecret: "attention-test-secret",
+      }),
     });
 
     const res = await request(app).get(`/api/companies/${company.id}/tools/apps/attention`);
@@ -8152,7 +8392,7 @@ describeEmbeddedPostgres("tool access service", () => {
       schemaHash: "s1",
     }).returning();
     const canonicalArguments = canonicalToolArguments({ key: "alpha", value: "one" });
-    const invocationValues = [1, 2, 3].map(() => ({
+    const invocationValues = [1, 2, 3, 4].map(() => ({
       companyId: company.id,
       applicationId: application.id,
       connectionId: connection.id,
@@ -8164,7 +8404,7 @@ describeEmbeddedPostgres("tool access service", () => {
       approvalState: "pending" as const,
       status: "awaiting_approval" as const,
     }));
-    const [validInvocation, missingSignatureInvocation, oldSecretInvocation] =
+    const [validInvocation, missingSignatureInvocation, staleMissingSignatureInvocation, oldSecretInvocation] =
       await db.insert(toolInvocations).values(invocationValues).returning();
     const validSignedArguments = signToolArguments({
       invocationId: validInvocation.id,
@@ -8178,7 +8418,7 @@ describeEmbeddedPostgres("tool access service", () => {
       canonicalArguments,
       signingSecret: "old-secret",
     });
-    const [validRequest, missingSignatureRequest, oldSecretRequest] = await db.insert(toolActionRequests).values([
+    const [validRequest, missingSignatureRequest, staleMissingSignatureRequest, oldSecretRequest] = await db.insert(toolActionRequests).values([
       {
         companyId: company.id,
         invocationId: validInvocation.id,
@@ -8194,6 +8434,19 @@ describeEmbeddedPostgres("tool access service", () => {
         canonicalArgumentsHash: "args-hash",
         canonicalArgumentsSummary: { summary: canonicalArguments, sha256: "args-hash", sizeBytes: canonicalArguments.length },
         signedArguments: null,
+      },
+      {
+        companyId: company.id,
+        invocationId: staleMissingSignatureInvocation.id,
+        status: "pending",
+        canonicalArgumentsHash: "args-hash",
+        canonicalArgumentsSummary: {
+          summary: canonicalArguments,
+          sha256: "args-hash",
+          sizeBytes: canonicalArguments.length,
+        },
+        signedArguments: null,
+        createdAt: new Date(Date.now() - 3 * 60 * 1000),
       },
       {
         companyId: company.id,
@@ -8214,6 +8467,9 @@ describeEmbeddedPostgres("tool access service", () => {
     // An unsigned request is still being created; the read hides it but keeps it
     // pending, so the creator can finish signing and the later approve succeeds.
     expect(statusById.get(missingSignatureRequest.id)).toBe("pending");
+    // If the creator never finishes signing, Review retires the stale orphan
+    // instead of leaving a permanent badge for a request no human can approve.
+    expect(statusById.get(staleMissingSignatureRequest.id)).toBe("cancelled");
     // A request signed with a rotated/old secret is unverifiable and is cancelled.
     expect(statusById.get(oldSecretRequest.id)).toBe("cancelled");
   });
@@ -8630,7 +8886,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
   });
 
-  it("allows multiple same-named connections on one application", async () => {
+  it("automatically gives same-named connections distinct names", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     mockToolsList([
@@ -8656,8 +8912,39 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(second.connectionId).not.toBe(first.connectionId);
     const rows = await db.select().from(toolConnections).where(eq(toolConnections.applicationId, first.application.id));
     expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.name)).toEqual(["Notion", "Notion"]);
+    expect(rows.map((row) => row.name).sort()).toEqual(["Notion", "Notion (2)"]);
     expect(new Set(rows.map((row) => row.uid))).toHaveProperty("size", 2);
+  });
+
+  it("automatically resolves same-name application races", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([
+      {
+        name: "read_items",
+        description: "Read items.",
+        inputSchema: { type: "object", properties: {} },
+        annotations: { readOnlyHint: true },
+      },
+    ]);
+
+    const results = await Promise.all([
+      service.connectGalleryApp(company.id, {
+        link: "https://parallel-one.example.test/actions",
+        name: "Parallel app",
+      }, { actorType: "user", actorId: "board" }),
+      service.connectGalleryApp(company.id, {
+        link: "https://parallel-two.example.test/actions",
+        name: "Parallel app",
+      }, { actorType: "user", actorId: "board" }),
+    ]);
+
+    expect(new Set(results.map((result) => result.application.id))).toHaveProperty("size", 2);
+    const applications = await db
+      .select({ name: toolApplications.name })
+      .from(toolApplications)
+      .where(eq(toolApplications.companyId, company.id));
+    expect(applications.map((row) => row.name).sort()).toEqual(["Parallel app", "Parallel app (2)"]);
   });
 
   it("does not delete a reused application when the connect rolls back", async () => {
@@ -8808,7 +9095,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_GENERIC_EXAMPLE_TEST_CLIENT_SECRET", "generic-client-secret");
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board-user", []);
+    await grantBoardUser(db, company.id, "board-user", ["tools:manage_connections"]);
     const app = createRouteApp(db);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
@@ -8991,7 +9278,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
   it("starts OAuth only for the marked Smoke Lab HTTP fixture", async () => {
     const company = await createCompany(db);
-    await grantBoardUser(db, company.id, "board", []);
+    await grantBoardUser(db, company.id, "board", ["tools:manage_connections"]);
     const service = createTestToolAccessService(db);
     const [application] = await db.insert(toolApplications).values({
       companyId: company.id,

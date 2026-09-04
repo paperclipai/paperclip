@@ -114,7 +114,7 @@ describe("AppDefinition catalog",()=>{
  });
  it("preserves required Linear OAuth scopes",()=>expect(APP_DEFINITIONS.find((app)=>app.slug==="linear")?.methods[0]?.defaults?.scopesHint).toEqual(["read","write"]));
  it("requests only Hugging Face's MCP read scope",()=>expect(APP_DEFINITIONS.find((app)=>app.slug==="hugging-face")?.methods[0]?.defaults?.scopesHint).toEqual(["read-mcp"]));
- it("defaults S2-S4 write and destructive actions to ask-first",()=>{for(const app of APP_DEFINITIONS)for(const method of app.methods)expect(recommendedDefaultsForApp(app,method.key)).toEqual({access:"all_agents",askFirstRiskLevels:method.riskTier==="S1"?[]:["write","destructive"]})});
+ it("defaults every new connection action to allowed",()=>{for(const app of APP_DEFINITIONS)for(const method of app.methods)expect(recommendedDefaultsForApp(app,method.key)).toEqual({access:"all_agents",askFirstRiskLevels:[]})});
  it("defaults explicit read/write capability groups to their write-capable method",()=>{
   const drive=APP_DEFINITIONS.find((app)=>app.slug==="google-drive")!;
   const gmail=APP_DEFINITIONS.find((app)=>app.slug==="gmail")!;
@@ -203,7 +203,7 @@ describe("AppDefinition catalog",()=>{
     oauthStrategy:"paperclip_cloud_connector",
     connectorProfile:expected.profile,
     capabilityProfile:{key:expected.capability},
-    grantKinds:["user"],
+    grantKinds:["user","organization"],
     ownershipModes:["platform_shared"],
     defaults:{serverUrl:expected.serverUrl,scopesHint:expected.scopes},
     riskTier:expected.riskTier,
@@ -215,7 +215,7 @@ describe("AppDefinition catalog",()=>{
     &&method.capabilityProfile?.key===expected.capability
    );
    expect(customer,`${expected.profile}:customer-fallback`).toMatchObject({
-    grantKinds:["user"],
+    grantKinds:["user","organization"],
     ownershipModes:["customer"],
     defaults:{serverUrl:expected.serverUrl,scopesHint:expected.scopes},
     riskTier:expected.riskTier,

@@ -63,6 +63,15 @@
     "test:storybook-visual": "node scripts/storybook-visual-baseline.mjs download && node scripts/storybook-visual-baseline.mjs verify && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts",
     "test:storybook-visual:update": "node scripts/storybook-visual-baseline.mjs download && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts --update-snapshots && node scripts/storybook-visual-baseline.mjs pack",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:runner": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/launch.ts",
+    "test:e2e:runner:image-id": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/daytona-image-content.ts",
+    "test:e2e:runner:dashboard": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/dashboard-regenerate.ts",
+    "test:e2e:runner:models:update": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/openrouter-models-update.ts",
+    "test:e2e:runner:history:publish": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/history-publish.ts",
+    "test:e2e:runner:unit": "vitest run --config tests/runner-e2e/vitest.config.ts",
+    "test:e2e:runner:typecheck": "tsc -p tests/runner-e2e/tsconfig.json",
+    "test:e2e:runner:report": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/report.ts",
+    "test:runner-workflow-evals": "pnpm --filter @paperclipai/paperclip-eval-kernel build && pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals",
     "test:e2e:mcp-user-stories": "node scripts/e2e-mcp-user-stories.mjs",
     "test:e2e:connection-intents": "npx playwright test --config tests/e2e/playwright.config.ts tests/e2e/connection-intents.spec.ts",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
@@ -81,7 +90,7 @@
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=24.11.0"
@@ -93,6 +102,7 @@
       "acpx@0.12.0": "patches/acpx@0.12.0.patch",
       "acpx@0.13.1": "patches/acpx@0.13.1.patch",
       "@agentclientprotocol/claude-agent-acp@0.70.0": "patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch",
+      "@agentclientprotocol/claude-agent-acp@0.73.0": "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
       "@agentclientprotocol/codex-acp@1.6.2": "patches/@agentclientprotocol__codex-acp@1.6.2.patch"
     },
     "overrides": {

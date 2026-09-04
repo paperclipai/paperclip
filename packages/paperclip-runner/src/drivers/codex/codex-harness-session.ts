@@ -164,6 +164,10 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       effectiveCollaborationMode,
     });
     this.turnStartPending = true;
+    let releaseTurnStartSettled: () => void = () => {};
+    this.turnStartSettled = new Promise((resolve) => {
+      releaseTurnStartSettled = resolve;
+    });
     let response: Record<string, unknown>;
     const requestedMode = this.opened.context.collaborationMode;
     try {
@@ -184,6 +188,13 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
           : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),
       });
     } catch (error) {
+      // A turn/started notification can arrive and mark a turn active while
+      // turn/start is still pending. The turn/start request just rejected,
+      // so no turn was accepted. Roll that optimistic state back so a
+      // terminal notification for it cannot pass the active-turn check below
+      // and release a terminal event for a turn that was never accepted.
+      this.activeTurnId = null;
+      this.turnStarted = false;
       if (dispositionOnlyRecovery) {
         if (error instanceof CodexRpcError) {
           // A JSON-RPC error is a definite provider rejection: no turn was
@@ -200,6 +211,11 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       throw error;
     } finally {
       this.turnStartPending = false;
+      // Release a terminal notification that arrived and parked itself
+      // while this turn/start was in flight. This runs before turn.accepted
+      // below, in the same synchronous continuation, so a released waiter
+      // never observes the terminal turn ahead of turn.accepted.
+      releaseTurnStartSettled();
     }
     const turn = record(response.turn);
     const turnId = text(turn.id);
@@ -618,6 +634,9 @@ export class CodexHarnessSession extends CodexSessionState implements HarnessSes
       driverKind: this.driverKind,
       driverSessionId: this.opened.threadId,
       providerSessionId: this.opened.providerSessionId,
+      ...(this.opened.providerIdentity === undefined
+        ? {}
+        : { providerIdentity: structuredClone(this.opened.providerIdentity) }),
       runId: this.runId,
       normalizedSessionId: this.normalizedSessionId,
       activeTurnId: this.activeTurnId,

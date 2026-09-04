@@ -13,6 +13,7 @@ describe("resolveIssueDocumentDeepLink", () => {
       kind: "properties-pane",
       tab: "plans",
       documentKey: "plan",
+      maximize: false,
     });
   });
 
@@ -21,6 +22,22 @@ describe("resolveIssueDocumentDeepLink", () => {
       kind: "properties-pane",
       tab: "document",
       documentKey: "qa evidence",
+      maximize: false,
+    });
+  });
+
+  it("requests the maximized pane for viewer=full deep links", () => {
+    expect(resolveIssueDocumentDeepLink("#document-direction-package&viewer=full")).toEqual({
+      kind: "properties-pane",
+      tab: "document",
+      documentKey: "direction-package",
+      maximize: true,
+    });
+    expect(resolveIssueDocumentDeepLink("#document-plan&viewer=full")).toEqual({
+      kind: "properties-pane",
+      tab: "plans",
+      documentKey: "plan",
+      maximize: true,
     });
   });
 

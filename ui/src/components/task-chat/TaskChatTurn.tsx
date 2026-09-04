@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { Check, ChevronRight, X } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type {
@@ -19,10 +20,9 @@ interface TaskChatTurnProps {
    */
   timestampPrefix?: string;
   /**
-   * Content rendered on the header row, leading the summary line (PAP-413: the
-   * copy/👍/👎 action cluster). It sits beside the summary button — NOT inside
-   * the expandable fold — so it stays anchored to the summary line when the
-   * tool history expands beneath it, instead of drifting to the fold's center.
+   * Content rendered on the header row (PAP-413: the copy/👍/👎 action
+   * cluster). The inspection caret and timestamp stay left; actions sit at the
+   * stable right edge, outside the expandable fold.
    */
   leading?: ReactNode;
 }
@@ -75,6 +75,7 @@ export function TaskChatTurn({
   timestampPrefix,
   leading,
 }: TaskChatTurnProps) {
+  const streamlined = useStreamlinedTaskChatPresentation();
   const parentRow = !item.settled && item.liveStatus != null;
   // The new Paperclip Runner task surface owns one durable chronological
   // timeline. The Worked/Stopped row is its stable header, so it stays directly
@@ -182,6 +183,7 @@ export function TaskChatTurn({
         item.standaloneHeader
           ? "border-b border-border/70 py-2 text-sm"
           : "py-0.5 text-xs",
+        streamlined && "min-w-0",
       )}
       data-testid="task-chat-turn-summary"
     >
@@ -244,13 +246,17 @@ export function TaskChatTurn({
       data-settled={item.settled ? "true" : "false"}
     >
       {leading ? (
-        // Actions ride the header row (items-center matches them to the summary
-        // line), and the fold below is a separate sibling — so expanding the
-        // tool history never moves the actions off the summary line (PAP-413).
-        <div className="flex items-center gap-1">
-          {leading}
-          {header}
-        </div>
+        streamlined ? (
+          <div className="flex w-full items-center justify-between gap-2">
+            <div className="min-w-0">{header}</div>
+            <div className="shrink-0">{leading}</div>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1">
+            {leading}
+            {header}
+          </div>
+        )
       ) : (
         header
       )}

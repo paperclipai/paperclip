@@ -43,6 +43,11 @@ export const queryKeys = {
       ["tools", "connection", connectionId, "activity"] as const,
     testAgents: (connectionId: string) =>
       ["tools", "connection", connectionId, "test-agents"] as const,
+    testAgentAccesses: () => ["tools", "test-agent-access"] as const,
+    testAgentAccessesForConnection: (connectionId: string) =>
+      ["tools", "test-agent-access", connectionId] as const,
+    testAgentAccess: (connectionId: string, agentId: string) =>
+      ["tools", "test-agent-access", connectionId, agentId] as const,
     testCallStatus: (connectionId: string, actionRequestId: string) =>
       [
         "tools",
@@ -91,6 +96,8 @@ export const queryKeys = {
       ] as const,
   },
   audit: {
+    runs: (companyId: string, agentId?: string | null) =>
+      ["audit", companyId, "runs", agentId ?? "__all"] as const,
     agentActions: (
       companyId: string,
       filters: {
@@ -99,6 +106,7 @@ export const queryKeys = {
         responsibleUserId?: string | null;
         runId?: string | null;
         entityType?: string | null;
+        entityId?: string | null;
         action?: string | null;
         from?: string | null;
         to?: string | null;
@@ -114,6 +122,7 @@ export const queryKeys = {
         filters.responsibleUserId ?? "__all",
         filters.runId ?? "__all",
         filters.entityType ?? "__all",
+        filters.entityId ?? "__all",
         filters.action ?? "__all",
         filters.actorType ?? "__all",
         filters.from ?? "",
@@ -211,8 +220,6 @@ export const queryKeys = {
         adapterType,
         environmentId ?? null,
       ] as const,
-    adapterModelProfiles: (companyId: string, adapterType: string) =>
-      ["agents", companyId, "adapter-model-profiles", adapterType] as const,
     detectModel: (companyId: string, adapterType: string) =>
       ["agents", companyId, "detect-model", adapterType] as const,
     authSignal: (companyId: string, adapterType: string, environmentId?: string | null) =>

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink } from "lucide-react";
+import { Check, Copy } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -270,12 +270,6 @@ export function InvitesSection() {
               >
                 <Copy className="h-4 w-4" />
                 Copy link
-              </Button>
-              <Button size="sm" variant="outline" asChild>
-                <a href={latestInviteUrl} target="_blank" rel="noreferrer">
-                  <ExternalLink className="h-4 w-4" />
-                  Open invite
-                </a>
               </Button>
             </div>
           </div>

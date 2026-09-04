@@ -1,0 +1,304 @@
+{
+  "schema": "paperclip.local-provider-boundary-golden.v1",
+  "profiles": [
+    {
+      "id": "runner-codex",
+      "provider": "codex",
+      "adapter": "codex-app-server",
+      "originProvider": "codex",
+      "originMethod": "item/tool/requestUserInput",
+      "runId": "73000000-0000-4000-8000-000000000101",
+      "normalizedSessionId": "session-boundary-codex",
+      "sourceInstanceId": "runner-boundary-codex"
+    },
+    {
+      "id": "runner-opencode",
+      "provider": "opencode",
+      "adapter": "opencode-server",
+      "originProvider": "opencode",
+      "originMethod": "question.asked",
+      "runId": "73000000-0000-4000-8000-000000000102",
+      "normalizedSessionId": "session-boundary-opencode",
+      "sourceInstanceId": "runner-boundary-opencode"
+    },
+    {
+      "id": "runner-acpx-claude",
+      "provider": "acpx",
+      "adapter": "acpx-runtime-sidecar",
+      "originProvider": "claude",
+      "originMethod": "elicitation/create",
+      "acpxAgent": "claude",
+      "runId": "73000000-0000-4000-8000-000000000103",
+      "normalizedSessionId": "session-boundary-acpx-claude",
+      "sourceInstanceId": "runner-boundary-acpx-claude"
+    },
+    {
+      "id": "runner-acpx-codex",
+      "provider": "acpx",
+      "adapter": "acpx-runtime-sidecar",
+      "originProvider": "codex",
+      "originMethod": "elicitation/create",
+      "acpxAgent": "codex",
+      "runId": "73000000-0000-4000-8000-000000000104",
+      "normalizedSessionId": "session-boundary-acpx-codex",
+      "sourceInstanceId": "runner-boundary-acpx-codex"
+    }
+  ],
+  "turnId": "turn-boundary-1",
+  "events": [
+    {
+      "sourceEventId": "progress-completed",
+      "sourceSeq": 1,
+      "itemId": "message-progress-1",
+      "eventType": "item.completed",
+      "priority": 1,
+      "payload": {
+        "provider": "$provider",
+        "itemId": "message-progress-1",
+        "kind": "agentMessage",
+        "status": "completed",
+        "channel": "progress",
+        "providerPhase": "commentary",
+        "text": "Checking the durable boundary."
+      }
+    },
+    {
+      "sourceEventId": "reasoning-completed",
+      "sourceSeq": 2,
+      "itemId": "reasoning-1",
+      "eventType": "item.completed",
+      "priority": 1,
+      "payload": {
+        "provider": "$provider",
+        "itemId": "reasoning-1",
+        "kind": "reasoning",
+        "status": "completed",
+        "channel": "detail",
+        "providerPhase": "reasoning",
+        "text": "Verified event identity."
+      }
+    },
+    {
+      "sourceEventId": "tool-started",
+      "sourceSeq": 3,
+      "itemId": "tool-boundary-1",
+      "eventType": "tool.execution.started",
+      "priority": 2,
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "executionId": "tool-boundary-1",
+        "transport": "process",
+        "operation": "execute",
+        "name": "boundary-check",
+        "target": null,
+        "namespace": null,
+        "readOnly": true,
+        "status": "running",
+        "durationMs": null,
+        "exitCode": null,
+        "progress": "Inspecting",
+        "output": "",
+        "outputBytes": 0,
+        "outputTruncated": false,
+        "outputDigest": null
+      }
+    },
+    {
+      "sourceEventId": "tool-completed",
+      "sourceSeq": 4,
+      "itemId": "tool-boundary-1",
+      "eventType": "tool.execution.completed",
+      "priority": 1,
+      "payload": {
+        "schema": "paperclip.tool.execution.v1",
+        "executionId": "tool-boundary-1",
+        "transport": "process",
+        "operation": "execute",
+        "name": "boundary-check",
+        "target": null,
+        "namespace": null,
+        "readOnly": true,
+        "status": "completed",
+        "durationMs": 12,
+        "exitCode": 0,
+        "progress": null,
+        "output": "boundary-ok",
+        "outputBytes": 11,
+        "outputTruncated": false,
+        "outputDigest": null
+      }
+    },
+    {
+      "sourceEventId": "plan-updated",
+      "sourceSeq": 5,
+      "itemId": "turn-boundary-1",
+      "eventType": "plan.updated",
+      "priority": 1,
+      "payload": {
+        "schema": "paperclip.plan.updated.v1",
+        "planId": "turn-boundary-1",
+        "revision": 2,
+        "explanation": "Keep every boundary lossless.",
+        "steps": [
+          {
+            "stepId": "step-1",
+            "body": "Normalize",
+            "status": "completed"
+          },
+          {
+            "stepId": "step-2",
+            "body": "Project",
+            "status": "in_progress"
+          }
+        ],
+        "complete": false,
+        "syncStatus": "not_applicable",
+        "documentRevision": null
+      }
+    },
+    {
+      "sourceEventId": "usage-reported",
+      "sourceSeq": 6,
+      "eventType": "usage.reported",
+      "priority": 0,
+      "payload": {
+        "provider": "$provider",
+        "model": "boundary-model",
+        "providerSessionId": "provider-session-boundary",
+        "providerRequestId": "provider-request-boundary",
+        "cumulative": {
+          "inputTokens": 40,
+          "outputTokens": 12,
+          "cacheReadTokens": 3,
+          "cacheWriteTokens": 0,
+          "activeSeconds": 1.5,
+          "requests": 2,
+          "providerCostUsd": 0.02
+        },
+        "runDeltaAvailable": true,
+        "runDelta": {
+          "inputTokens": 20,
+          "outputTokens": 6,
+          "cacheReadTokens": 2,
+          "cacheWriteTokens": 0,
+          "activeSeconds": 0.75,
+          "requests": 1,
+          "providerCostUsd": 0.01
+        }
+      }
+    },
+    {
+      "sourceEventId": "question-created",
+      "sourceSeq": 7,
+      "itemId": "question-boundary-1",
+      "eventType": "runtime_request.created",
+      "priority": 0,
+      "payload": {
+        "request": {
+          "schema": "paperclip.runtime_request.v2",
+          "requestKind": "runtime",
+          "requestId": "question-boundary-1",
+          "turnId": "turn-boundary-1",
+          "itemId": "question-boundary-1",
+          "type": "input",
+          "status": "pending",
+          "prompt": "Choose a boundary mode",
+          "input": {
+            "schema": "paperclip.question_set.v1",
+            "title": "Boundary mode",
+            "questions": [
+              {
+                "id": "boundary-mode",
+                "prompt": "Which mode should continue?",
+                "required": true,
+                "answerMode": "single_select",
+                "options": [
+                  {
+                    "id": "lossless",
+                    "label": "Lossless"
+                  }
+                ]
+              }
+            ]
+          },
+          "origin": {
+            "adapter": "$adapter",
+            "provider": "$originProvider",
+            "method": "$originMethod"
+          }
+        }
+      }
+    },
+    {
+      "sourceEventId": "final-completed",
+      "sourceSeq": 8,
+      "itemId": "message-final-1",
+      "eventType": "item.completed",
+      "priority": 1,
+      "payload": {
+        "provider": "$provider",
+        "itemId": "message-final-1",
+        "kind": "agentMessage",
+        "status": "completed",
+        "channel": "final",
+        "providerPhase": "final_answer",
+        "text": "Boundary verified."
+      }
+    },
+    {
+      "sourceEventId": "turn-completed",
+      "sourceSeq": 9,
+      "eventType": "turn.completed",
+      "priority": 0,
+      "payload": {
+        "provider": "$provider",
+        "providerTurnId": "provider-turn-boundary-1",
+        "status": "completed",
+        "error": null
+      }
+    },
+    {
+      "sourceEventId": "run-terminal",
+      "sourceSeq": 10,
+      "eventType": "run.terminal",
+      "priority": 0,
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "completed",
+        "runTerminalState": "succeeded",
+        "reportedWorkDisposition": "done"
+      }
+    }
+  ],
+  "expected": {
+    "eventTypes": [
+      "item.completed",
+      "item.completed",
+      "tool.execution.started",
+      "tool.execution.completed",
+      "plan.updated",
+      "usage.reported",
+      "runtime_request.created",
+      "item.completed",
+      "turn.completed",
+      "run.terminal"
+    ],
+    "assistantItems": [
+      {
+        "itemId": "message-progress-1",
+        "channel": "progress",
+        "text": "Checking the durable boundary."
+      },
+      {
+        "itemId": "message-final-1",
+        "channel": "final",
+        "text": "Boundary verified."
+      }
+    ],
+    "reasoningItemId": "reasoning-1",
+    "toolExecutionId": "tool-boundary-1",
+    "planId": "turn-boundary-1",
+    "questionRequestId": "question-boundary-1",
+    "runTerminalState": "succeeded"
+  }
+}

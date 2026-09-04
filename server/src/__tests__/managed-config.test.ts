@@ -29,7 +29,6 @@ describe("managedFeatureKeySet", () => {
     // Server-managed bookkeeping fields are not overlayable features.
     expect(keys.has("worktreeRunExecutionActivatedAt")).toBe(false);
     expect(keys.has("worktreeRunExecutionActivationInstanceId")).toBe(false);
-    expect(keys.has("issueGraphLivenessAutoRecoveryLookbackHours")).toBe(false);
   });
 });
 

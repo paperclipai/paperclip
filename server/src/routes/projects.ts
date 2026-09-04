@@ -131,6 +131,17 @@ export function projectRoutes(db: Db) {
     return false;
   }
 
+  async function assertRuntimeManageAllowed(req: Request, res: Response, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "runtime:manage",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Runtime service control is outside this actor's authorization boundary" });
+    return false;
+  }
+
   async function filterProjectsForActor<T extends { id: string; companyId: string }>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((project) =>
       access.decide({
@@ -403,6 +414,7 @@ export function projectRoutes(db: Db) {
       res.status(404).json({ error: "Project workspace not found" });
       return;
     }
+    if (!(await assertRuntimeManageAllowed(req, res, project.companyId))) return;
 
     const isSharedWorkspace = Boolean(workspace.sharedWorkspaceKey);
     if (

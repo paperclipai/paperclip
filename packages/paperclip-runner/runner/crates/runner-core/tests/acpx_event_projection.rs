@@ -214,6 +214,23 @@ fn projects_runtime_request_prompt_and_origin_into_the_strict_schema() {
 
 #[test]
 fn projects_assistant_terminal_and_diagnostic_events_fail_closed() {
+    let streamed = project(AcpxProviderStateEvent::Activity(NormalizedProviderEvent {
+        event_type: "item.delta".to_owned(),
+        priority: EventPriority::P2,
+        payload: json!({
+            "provider":"acpx",
+            "itemId":"opaque-provider-message",
+            "kind":"agentMessage",
+            "channel":"progress",
+            "text":"Done",
+        }),
+    }));
+    assert_eq!(streamed[0].payload["itemId"], "item-1");
+    assert_eq!(
+        streamed[0].payload["providerItemId"],
+        "opaque-provider-message"
+    );
+
     let assistant = project(AcpxProviderStateEvent::AssistantMessage {
         turn_id: "turn-1".to_owned(),
         text: "Done".to_owned(),

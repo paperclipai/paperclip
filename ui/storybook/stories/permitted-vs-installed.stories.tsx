@@ -137,26 +137,24 @@ function PanelHarness({
   install: InstallState;
   capabilities?: ToolConnectionCapabilities;
 }) {
-  const [state, setState] = useState(install);
   const [access, setAccess] = useState<AccessDraft>({ mode: "all", agentIds: new Set() });
   return (
     <div className="mx-auto max-w-3xl bg-background p-6">
       <PermissionsPanel
+        connectionId="connection-gmail"
         capabilities={capabilities}
         appName="Gmail"
         agents={AGENTS}
         access={access}
-        install={state}
+        install={install}
         readOnly={GMAIL_TOOLS.filter((t) => t.isReadOnly)}
         canChange={GMAIL_TOOLS.filter((t) => !t.isReadOnly)}
         quarantined={[]}
         enabledIds={new Set(["g-list", "g-read"])}
         askFirstIds={new Set(["g-send"])}
         pending={false}
-        installPending={false}
         refreshPending={false}
         onSaveAccess={setAccess}
-        onSaveInstall={setState}
         onSetActionPermission={() => {}}
         onReviewQuarantined={() => {}}
         onRefreshActions={() => {}}
@@ -269,13 +267,21 @@ function SeededAccessStep({
   initialGrantKind,
   initialChoice,
   initialAgentIds,
-  capabilities = { canSetCompanyInstall: true, editableAgentIds: AGENT_IDS },
+  capabilities = {
+    canCreateOrganizationGrant: true,
+    canSetCompanyInstall: true,
+    editableAgentIds: AGENT_IDS,
+  },
 }: {
   authKind: "oauth" | "api_key" | "none";
   initialGrantKind: "user" | "organization";
   initialChoice: "specific" | "all";
   initialAgentIds: Set<string>;
-  capabilities?: { canSetCompanyInstall: boolean; editableAgentIds: string[] };
+  capabilities?: {
+    canCreateOrganizationGrant: boolean;
+    canSetCompanyInstall: boolean;
+    editableAgentIds: string[];
+  };
 }) {
   const client = useMemo(() => {
     const c = new QueryClient({
@@ -291,8 +297,6 @@ function SeededAccessStep({
     <QueryClientProvider client={client}>
       <div className="bg-background p-6">
         <AccessStep
-          appName="Gmail"
-          providerName="Gmail"
           companyId={COMPANY}
           authKind={authKind}
           grantKind={grantKind}
@@ -312,7 +316,7 @@ function SeededAccessStep({
 }
 
 export const ConnectAccessJustMePickedAgents: Story = {
-  name: "3 · Connect Access — Just me + Agents I pick",
+  name: "3 · Connect Access — Just me + Just agents I pick",
   render: () => (
     <SeededAccessStep
       authKind="oauth"

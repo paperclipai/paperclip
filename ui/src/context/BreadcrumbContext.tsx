@@ -23,8 +23,15 @@ interface BreadcrumbContextValue {
   setBreadcrumbs: (crumbs: Breadcrumb[]) => void;
   breadcrumbToolbar: ReactNode | null;
   setBreadcrumbToolbar: (node: ReactNode | null) => void;
+  breadcrumbPanelControl: BreadcrumbPanelControl | null;
+  setBreadcrumbPanelControl: (control: BreadcrumbPanelControl | null) => void;
   mobileToolbar: ReactNode | null;
   setMobileToolbar: (node: ReactNode | null) => void;
+}
+
+export interface BreadcrumbPanelControl {
+  open: boolean;
+  onToggle: () => void;
 }
 
 interface BreadcrumbProviderProps {
@@ -62,6 +69,8 @@ export function buildDocumentTitle(breadcrumbs: Breadcrumb[], companyName?: stri
 export function BreadcrumbProvider({ children, companyName }: BreadcrumbProviderProps) {
   const [breadcrumbs, setBreadcrumbsState] = useState<Breadcrumb[]>([]);
   const [breadcrumbToolbar, setBreadcrumbToolbarState] = useState<ReactNode | null>(null);
+  const [breadcrumbPanelControl, setBreadcrumbPanelControlState] =
+    useState<BreadcrumbPanelControl | null>(null);
   const [mobileToolbar, setMobileToolbarState] = useState<ReactNode | null>(null);
 
   const setBreadcrumbs = useCallback((crumbs: Breadcrumb[]) => {
@@ -76,6 +85,10 @@ export function BreadcrumbProvider({ children, companyName }: BreadcrumbProvider
     setBreadcrumbToolbarState(node);
   }, []);
 
+  const setBreadcrumbPanelControl = useCallback((control: BreadcrumbPanelControl | null) => {
+    setBreadcrumbPanelControlState(control);
+  }, []);
+
   useEffect(() => {
     document.title = buildDocumentTitle(breadcrumbs, companyName);
   }, [breadcrumbs, companyName]);
@@ -87,6 +100,8 @@ export function BreadcrumbProvider({ children, companyName }: BreadcrumbProvider
         setBreadcrumbs,
         breadcrumbToolbar,
         setBreadcrumbToolbar,
+        breadcrumbPanelControl,
+        setBreadcrumbPanelControl,
         mobileToolbar,
         setMobileToolbar,
       }}

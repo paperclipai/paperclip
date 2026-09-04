@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
   ACPX_IDENTITY_RECORD_SCHEMA,
+  acpxProviderSessionIdentity,
   createAcpxIdentityRecord,
   createAcpxRecoveryBinding,
   verifyExpectedAcpxIdentity,
@@ -40,6 +41,19 @@ describe("ACPX recovery identity", () => {
       schema: ACPX_IDENTITY_RECORD_SCHEMA,
       normalizedSessionId: "session-1",
       permissionMode: "approve-reads",
+    });
+    expect(acpxProviderSessionIdentity(record, fixture.binding)).toEqual({
+      kind: "acpx",
+      normalizedSessionId: "session-1",
+      acpxRecordId: fixture.expected.acpxRecordId,
+      backendSessionId: fixture.expected.backendSessionId,
+      agentSessionId: fixture.expected.agentSessionId,
+      profileDigest: fixture.binding.commandDigest,
+      workspaceDigest: fixture.binding.workspaceDigest,
+      requestedModel: fixture.binding.requestedModel,
+      effectiveModel: fixture.binding.effectiveModel,
+      permissionMode: "approve-reads",
+      providerLifetimeFenceCandidates: [60_001, 60_002, 60_003],
     });
     expect(() =>
       verifyExpectedAcpxIdentity(fixture.expected, fixture.binding, record),
@@ -127,7 +141,7 @@ describe("ACPX recovery identity", () => {
         {
           ...fixture.expected,
           normalizedSessionId: otherBinding.normalizedSessionId,
-          profileDigest: otherBinding.profileDigest,
+          profileDigest: otherBinding.commandDigest,
           workspaceDigest: otherBinding.workspaceDigest,
         },
         otherBinding,
@@ -163,17 +177,6 @@ describe("ACPX recovery identity", () => {
     expect(() =>
       verifyExpectedAcpxIdentity(fixture.expected, fixture.binding, earlyV1),
     ).toThrow(/persisted runtime record/);
-    expect(() =>
-      verifyExpectedAcpxIdentity(
-        {
-          ...fixture.expected,
-          profileDigest: fixture.input.profile.commandDigest,
-        },
-        fixture.binding,
-        earlyV1,
-      ),
-    ).toThrow(/immutable session configuration/);
-
     const changedBinding = await createAcpxRecoveryBinding({
       ...fixture.input,
       profile: {
@@ -184,11 +187,12 @@ describe("ACPX recovery identity", () => {
     expect(changedBinding.profileDigest).not.toBe(
       fixture.binding.profileDigest,
     );
+    expect(changedBinding.commandDigest).toBe(fixture.binding.commandDigest);
     expect(() =>
       verifyExpectedAcpxIdentity(
         {
           ...fixture.expected,
-          profileDigest: changedBinding.profileDigest,
+          profileDigest: changedBinding.commandDigest,
         },
         changedBinding,
         earlyV1,
@@ -207,7 +211,7 @@ describe("ACPX recovery identity", () => {
     expect(() =>
       verifyExpectedAcpxIdentity(fixture.expected, fixture.binding, {
         ...createAcpxIdentityRecord(fixture.expected, fixture.binding),
-        schema: "paperclip.runner.acpx-identity.v2",
+        schema: "paperclip.runner.acpx-identity.v1",
       }),
     ).toThrow(/Unsupported ACPX identity record schema/);
     const missingPermissionMode = createAcpxIdentityRecord(
@@ -222,6 +226,24 @@ describe("ACPX recovery identity", () => {
         missingPermissionMode,
       ),
     ).toThrow(/permission mode is invalid/);
+    const missingFenceCandidates = createAcpxIdentityRecord(
+      fixture.expected,
+      fixture.binding,
+    ) as Partial<ReturnType<typeof createAcpxIdentityRecord>>;
+    delete missingFenceCandidates.providerLifetimeFenceCandidates;
+    expect(() =>
+      verifyExpectedAcpxIdentity(
+        fixture.expected,
+        fixture.binding,
+        missingFenceCandidates,
+      ),
+    ).toThrow(/lifetime fence candidates are invalid/);
+    expect(() =>
+      verifyExpectedAcpxIdentity(fixture.expected, fixture.binding, {
+        ...createAcpxIdentityRecord(fixture.expected, fixture.binding),
+        providerLifetimeFenceCandidates: [60_001, 60_002, 60_004],
+      }),
+    ).toThrow(/does not match the persisted runtime record/);
 
     await expect(
       createAcpxRecoveryBinding({
@@ -262,11 +284,12 @@ async function recoveryFixture() {
     acpxRecordId: "record-1",
     backendSessionId: "backend-1",
     agentSessionId: "agent-1",
-    profileDigest: binding.profileDigest,
+    profileDigest: binding.commandDigest,
     workspaceDigest: binding.workspaceDigest,
     requestedModel: binding.requestedModel,
     effectiveModel: binding.effectiveModel,
     permissionMode: binding.permissionMode,
+    providerLifetimeFenceCandidates: [60_001, 60_002, 60_003] as const,
   };
   return { root, workspace, input, binding, expected };
 }

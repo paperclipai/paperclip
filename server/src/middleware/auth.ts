@@ -512,7 +512,60 @@ export function cloudActorHeaderSourceFromHeaders(
   };
 }
 
+/**
+ * postgres.js codes for a connection the server side closed out from under
+ * an in-flight query — a pooled Postgres endpoint recycling or suspending
+ * (observed 2026-09-03 with a managed pooler closing the socket mid-INSERT).
+ * The driver reconnects transparently on the next query; only the statement
+ * that was on the wire is lost.
+ */
+const transientDbConnectionCodes = new Set([
+  "CONNECTION_CLOSED",
+  "CONNECTION_ENDED",
+  "CONNECTION_DESTROYED",
+]);
+
+/**
+ * True when the error chain (drizzle wraps the driver error as `cause`)
+ * carries a postgres.js closed-connection code. Exported for tests.
+ */
+export function isTransientDbConnectionError(error: unknown): boolean {
+  for (let current: unknown = error; current instanceof Error; current = current.cause) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && transientDbConnectionCodes.has(code)) return true;
+  }
+  return false;
+}
+
+/**
+ * Runs `run` and retries it exactly once when it fails on a transient
+ * closed-connection error. Callers must pass an idempotent operation.
+ * Exported for tests.
+ */
+export async function retryOnTransientDbConnectionError<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isTransientDbConnectionError(error)) throw error;
+    return run();
+  }
+}
+
+/**
+ * Trusted-header actor resolution with a single transient-connection retry.
+ * The tenant sync inside is idempotent end to end — every write is an
+ * upsert/on-conflict/delete and the write debounce records only after the
+ * whole sync succeeds — so replaying it after a dropped connection is safe,
+ * and turns a golden-path authentication 500 into a served request.
+ */
 export async function resolveCloudTenantActor(
+  db: Db,
+  req: CloudActorHeaderSource,
+): Promise<Express.Request["actor"] | null> {
+  return retryOnTransientDbConnectionError(() => resolveCloudTenantActorOnce(db, req));
+}
+
+async function resolveCloudTenantActorOnce(
   db: Db,
   req: CloudActorHeaderSource,
 ): Promise<Express.Request["actor"] | null> {

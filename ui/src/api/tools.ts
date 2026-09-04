@@ -47,6 +47,7 @@ import type {
   ToolConnectionActivityResponse,
   ToolConnectionLifecycleEventType,
   ToolConnectionTestAgentsResponse,
+  ToolConnectionTestAgentAccessResponse,
   ToolConnectionTestCallResult,
   ToolConnectionTestCallStatus,
   ToolActionRequest,
@@ -288,8 +289,8 @@ export type ToolPolicyTestResponse = {
 export const toolsApi = {
   getCloudConnectorEnrollment: () =>
     api.get<CloudConnectorEnrollmentStatus>("/tools/oauth/cloud-connector/enrollment"),
-  startCloudConnectorEnrollment: (companyId: string, label?: string) =>
-    api.post<CloudConnectorEnrollmentStatus>("/tools/oauth/cloud-connector/enrollment", { companyId, label }),
+  startCloudConnectorEnrollment: (companyId: string, label?: string, returnTo?: string) =>
+    api.post<CloudConnectorEnrollmentStatus>("/tools/oauth/cloud-connector/enrollment", { companyId, label, returnTo }),
   // --- Applications ---
   listGallery: (companyId: string) =>
     api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`),
@@ -395,7 +396,7 @@ export const toolsApi = {
     connectionId: string,
     input: { subjectUserId: string; scopes?: string[]; returnTo?: string },
   ) =>
-    api.post<{ url: string }>(
+    api.post<{ url: string; handoff?: ToolOAuthStartResult["handoff"] }>(
       `/companies/${companyId}/tools/connections/${connectionId}/start-authorization`,
       input,
     ),
@@ -426,6 +427,10 @@ export const toolsApi = {
   listTestAgents: (connectionId: string) =>
     api.get<ToolConnectionTestAgentsResponse>(
       `/tool-connections/${connectionId}/test-agents`,
+    ),
+  getTestAgentAccess: (connectionId: string, agentId: string) =>
+    api.get<ToolConnectionTestAgentAccessResponse>(
+      `/tool-connections/${connectionId}/test-agents/${agentId}/access`,
     ),
   runTestCall: (
     connectionId: string,

@@ -29,6 +29,7 @@ const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
 const inlineEntitySelectorRenderMock = vi.fn((props: { options?: Array<{ id: string }> }) => props);
 
 vi.mock("@/lib/router", () => ({
+  Navigate: ({ to }: { to: string }) => <a data-redirect href={to}>Redirect</a>,
   Link: ({ to, children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string; children: ReactNode }) => (
     <a href={to} {...props}>
       {children}
@@ -677,8 +678,7 @@ describe("Routines page", () => {
       });
     }
 
-    const sectionLabels = Array.from(container.querySelectorAll("span"))
-      .filter((element) => element.className.includes("uppercase") && element.className.includes("tracking-wide"))
+    const sectionLabels = Array.from(container.querySelectorAll("[data-routine-section-label]"))
       .map((element) => element.textContent);
     expect(sectionLabels).toEqual(["RPI", "Test", "Unfiled"]);
 
@@ -1034,13 +1034,9 @@ describe("Routines page", () => {
     });
   });
 
-  it("shows recent runs through the issues list scoped to routine execution issues", async () => {
+  it("keeps the list focused on routines and links run history to Audit", async () => {
     currentSearch = "tab=runs";
     routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1" })]);
-    issuesListMock.mockResolvedValue([
-      createIssue({ id: "issue-1", title: "Routine execution A" }),
-      createIssue({ id: "issue-2", title: "Routine execution B", identifier: "PAP-1001", issueNumber: 1001 }),
-    ]);
 
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -1058,13 +1054,9 @@ describe("Routines page", () => {
       await flush();
     });
 
-    for (let attempts = 0; attempts < 5 && issuesListMock.mock.calls.length === 0; attempts += 1) {
-      await act(async () => {
-        await flush();
-      });
-    }
-
-    expect(issuesListMock).toHaveBeenCalledWith("company-1", { originKind: "routine_execution" });
+    expect(container.querySelector('a[data-redirect][href="/activity/runs"]'))
+      .not.toBeNull();
+    expect(issuesListMock).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();

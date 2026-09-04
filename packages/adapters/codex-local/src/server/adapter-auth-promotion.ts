@@ -1,11 +1,10 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { toAccountHandle } from "@paperclipai/shared";
 import {
-  ensureCodexAuthCacheEntryDir,
-  isCodexAuthCacheEnabled,
+  ensureCodexAuthCacheEntryDirExclusive,
   readSubscriptionAccountId,
-  writeCodexAuthCacheEntry,
 } from "./codex-auth-cache.js";
 import { writeCredentialSeedOrNewer } from "./codex-auth-seed-write.js";
 import { codexHomeHasUsableAuth, resolveManagedCodexHomeDir } from "./codex-home.js";
@@ -18,13 +17,18 @@ import { assertUsableSubscriptionShape } from "./device-login-export.js";
 //
 // The helper never writes the instance-global host (`CODEX_HOME` or `~/.codex`),
 // because that source has no `companyId`. It writes two company-scoped targets:
-// the company credential home and the company per-identity cache slot. The
-// company home write is the first-login host rule: the cache vend never seeds an
-// empty host, so a first login must seed the company home directly.
+// this account's own home, and — only as a fallback for an agent with no bound
+// secret — the company default home.
+//
+// This account's own home is the durable result of a login: the write is fail
+// loud, and the caller names it with a company secret so any agent can bind to
+// it. The company default home is a best-effort fallback: it is seeded only the
+// first time any account logs in for the company (while it holds no usable
+// credential yet), and a write failure there never fails the login.
 //
 // Two decisions gate the write:
-//   - Decision C: only a user-initiated login seeds the company slot. An
-//     automatic background path never seeds an empty slot.
+//   - Decision C: only a user-initiated login seeds a home. An automatic
+//     background path never seeds one.
 //   - Decision H: the helper writes only while the session still holds the sole
 //     active claim on `(company_id, adapter_type)`. This is defense in depth over
 //     the partial unique index, so a second session cannot race the same slot.
@@ -93,30 +97,45 @@ export async function checkStagedCredentialReadiness(
 /**
  * The promotion outcome.
  *
- * - `promoted`: the helper wrote the company home (a seed or a strictly-newer
- *   same-identity update). The helper then tries the per-identity cache slot when
- *   the cache is on. The cache write is best-effort: a cache failure keeps the
- *   `promoted` outcome, because the company home is already durable.
- * - `kept`: the login carried the SAME identity as the company home, and the home
- *   already held a newer same-identity credential, so the home was kept. This is a
- *   successful authentication: a later run vends and uses the same account. The
- *   helper still tries the best-effort cache write.
- * - `kept_foreign_identity`: the login carried a DIFFERENT identity than the
- *   company home. The helper never clobbers an occupied home, so it kept the other
- *   account and installed nothing durable for this login. The identity-anchored
- *   vend reads the home identity first, so a later run can never select this
- *   login. This is NOT a successful authentication; the caller must fail the
- *   session instead of a report of `authenticated`.
+ * - `promoted`: the helper wrote this account's own home (a seed for a first
+ *   login of this account, or a strictly-newer update for a repeat login). The
+ *   helper also seeds the company default home when it holds no usable
+ *   credential yet.
+ * - `kept`: the login carried a credential that is not newer than what this
+ *   account's own home already holds, so the home was kept as-is. This is
+ *   still a successful authentication: a later run reads the same home.
  * - `not_sole_owner`: Decision H rejected the write. Nothing was written.
  * - `background_skipped`: Decision C rejected the write (an automatic background
- *   path never seeds a company slot). Nothing was written.
+ *   path never seeds a home). Nothing was written.
  */
-export type PromoteDeviceLoginCredentialOutcome =
-  | "promoted"
-  | "kept"
-  | "kept_foreign_identity"
-  | "not_sole_owner"
-  | "background_skipped";
+export type PromoteDeviceLoginCredentialOutcome = "promoted" | "kept" | "not_sole_owner" | "background_skipped";
+
+/**
+ * The promotion result. `accountId` and `accountHomeDir` are set once the
+ * credential's identity is known — every outcome below the handle-validation
+ * step carries `accountId`; only `promoted` and `kept` reach the write step and
+ * carry `accountHomeDir`.
+ *
+ * `accountHomeCreated` is true only when this account's own home directory was
+ * absent right before this call created it. The check and the creation run
+ * under one lock, so a concurrent promotion for the same account (a second
+ * login for the same Codex account) never also reports `created: true` for a
+ * directory the first call already made. A caller that must undo a later
+ * failure (for example, a failed secret write) should remove the directory
+ * only when `accountHomeCreated` is true, and should still re-check that no
+ * company secret now names this account's home before it deletes: the
+ * absence of a company secret at the time this call started is not proof
+ * that this login is the only login that used the directory. A user can also
+ * delete the secret and keep the account home, so a repeat login then reads
+ * no secret. `accountHomeCreated` is false for every outcome that does not
+ * reach the write step (`not_sole_owner`, `background_skipped`).
+ */
+export interface PromoteDeviceLoginCredentialResult {
+  outcome: PromoteDeviceLoginCredentialOutcome;
+  accountId: string | null;
+  accountHomeDir: string | null;
+  accountHomeCreated: boolean;
+}
 
 export interface PromoteDeviceLoginCredentialInput {
   /** The exact staged credential bytes the login sandbox produced. */
@@ -167,13 +186,14 @@ function requireSafeCompanyId(companyId: string): string {
 
 /**
  * Promotes a device-login credential into the company scope. The order is fixed:
- * readiness check, credential validation, Decision C, Decision H, then the writes.
- * The readiness check and the writes run while the caller still holds the active
- * claim, so a second session cannot race the same slot.
+ * readiness check, credential validation, account-handle validation, Decision C,
+ * Decision H, then the writes. The readiness check and the writes run while the
+ * caller still holds the active claim, so a second session cannot race the same
+ * slot.
  */
 export async function promoteDeviceLoginCredential(
   input: PromoteDeviceLoginCredentialInput,
-): Promise<PromoteDeviceLoginCredentialOutcome> {
+): Promise<PromoteDeviceLoginCredentialResult> {
   const { authBytes, userInitiated, checkReadiness, isSoleActiveOwner, log } = input;
   const env = input.env ?? process.env;
   const companyId = requireSafeCompanyId(input.companyId);
@@ -191,84 +211,92 @@ export async function promoteDeviceLoginCredential(
   const accountId = readSubscriptionAccountId(authBytes);
   if (!accountId) {
     // The shape gate above already guarantees a subscription identity; this guard
-    // keeps the account_id non-null for the cache key without a non-null cast.
+    // keeps the account_id non-null for the handle conversion without a non-null
+    // cast.
     throw new Error("device-login promotion: the credential has no subscription identity");
   }
 
-  // 3. Decision C: only a user-initiated login seeds the company slot.
+  // 2b. Convert the identity into a safe account handle. The handle names both
+  //     this account's own home directory and its company secret, so a login
+  //     whose identity cannot form one must fail before any write.
+  const accountHandle = toAccountHandle(accountId);
+  if (!accountHandle) {
+    throw new Error("device-login promotion: the account identifier cannot form a valid account handle");
+  }
+
+  // 3. Decision C: only a user-initiated login seeds a home.
   if (!userInitiated) {
-    await log("[paperclip] Codex device-login promotion: skipped (an automatic background login never seeds a company slot).");
-    return "background_skipped";
+    await log("[paperclip] Codex device-login promotion: skipped (an automatic background login never seeds a home).");
+    return { outcome: "background_skipped", accountId, accountHomeDir: null, accountHomeCreated: false };
   }
 
   // 4. Decision H: write only while the session still owns the active slot.
   const soleOwner = await isSoleActiveOwner();
   if (!soleOwner) {
     await log("[paperclip] Codex device-login promotion: skipped (the session no longer holds the sole active claim on the slot).");
-    return "not_sole_owner";
+    return { outcome: "not_sole_owner", accountId, accountHomeDir: null, accountHomeCreated: false };
   }
 
-  // 5a. First-login host rule: seed or update the company credential home. The
-  //     shared writer seeds an empty home and applies a strictly-newer
-  //     same-identity update; it keeps a newer same-identity or a different
-  //     identity. It never touches the instance-global host.
-  const companyHome = resolveManagedCodexHomeDir(env, companyId);
-  await mkdir(companyHome, { recursive: true, mode: PRIVATE_DIR_MODE });
-  const companyHomeAuthPath = path.join(companyHome, AUTH_FILE_NAME);
-  const homeOutcome = await writeCredentialSeedOrNewer({
+  // 5a. This account's own home is the durable result of a login: each account
+  //     handle addresses exactly one home, so this write can never collide with
+  //     a different identity, and a write failure here fails the whole
+  //     promotion (fail loud, unlike the company default home fallback below).
+  //     Two different logins can promote the same account at the same time
+  //     (each login owns its own promotion slot), so the absence check and the
+  //     directory creation run inside one lock: only the caller that truly
+  //     finds the directory absent gets `created: true`. A plain
+  //     check-then-create sequence here would let two concurrent callers for
+  //     the same account both see the directory as absent and both believe
+  //     they created it.
+  const { entryPath: accountHomeAuthPath, created: accountHomeCreated } =
+    await ensureCodexAuthCacheEntryDirExclusive(env, accountHandle, companyId);
+  const accountHomeDir = path.dirname(accountHomeAuthPath);
+  const accountHomeOutcome = await writeCredentialSeedOrNewer({
     sourceBytes: authBytes,
-    destinationPath: companyHomeAuthPath,
+    destinationPath: accountHomeAuthPath,
     seedIfDestAbsent: true,
     log,
-    writtenLine: "[paperclip] Codex device-login promotion: wrote the company credential home at mode 0600.",
-    keptLine: "[paperclip] Codex device-login promotion: kept the company credential home (the login is not a seed or a strictly-newer same-identity credential).",
-    tempPrefix: "auth.json.promotion-home",
+    writtenLine: "[paperclip] Codex device-login promotion: wrote this account's own home at mode 0600.",
+    keptLine: "[paperclip] Codex device-login promotion: kept this account's own home (the login is not a seed or a strictly-newer credential).",
+    tempPrefix: "auth.json.promotion-account-home",
     errorLabel: "codex device-login promotion",
     env,
   });
 
-  // A kept home has two very different meanings. The writer keeps the home when
-  // it already holds a newer SAME-identity credential (a genuine success: a later
-  // run vends and uses the same account), and it also keeps the home when the home
-  // holds a DIFFERENT identity (the writer never clobbers an occupied home). The
-  // second case installed nothing durable for this login: the home still holds the
-  // other account, and the identity-anchored vend reads the home identity first,
-  // so it can never select this login. Compare the login identity with the kept
-  // home identity, so the caller can fail the session instead of a report of
-  // `authenticated`. A home that this helper cannot read as the same identity is
-  // treated as a foreign identity; the caller fails closed.
-  let foreignIdentityKeep = false;
-  if (homeOutcome === "kept") {
-    const homeBytes = await readFile(companyHomeAuthPath).catch(() => null);
-    const homeAccountId = homeBytes ? readSubscriptionAccountId(homeBytes) : null;
-    foreignIdentityKeep = homeAccountId !== accountId;
-  }
-
-  // 5b. Record the credential in its per-identity company cache slot, so a later
-  //     run can vend a strictly-newer copy. The cache write respects the
-  //     off-switch. It is company-scoped and per identity, so it never crosses a
-  //     company boundary and never clobbers a different identity.
-  //
-  //     The company home write above already made the credential durable, so a
-  //     later run authenticates from the home even when the cache slot is absent.
-  //     The cache is only a vend optimization. So a cache write failure (a
-  //     permission error, a full disk, or a lock timeout) must not fail the
-  //     promotion, or the operator sees a failed login for a credential that is
-  //     already usable. Log the failure and keep the home outcome; a later run
-  //     re-seeds the cache slot from the durable home.
-  if (isCodexAuthCacheEnabled(env)) {
+  // 5b. Company default home fallback, for an agent with no bound secret. Seed
+  //     it only the first time any account logs in for the company, i.e. only
+  //     while it holds no usable credential yet; a login for a second account
+  //     must never touch it once some account has claimed it. This write is
+  //     best-effort: this account's own home above is already durable, so a
+  //     failure here (a permission error, a full disk, a lock timeout) must not
+  //     fail the promotion.
+  const companyHome = resolveManagedCodexHomeDir(env, companyId);
+  if (!(await codexHomeHasUsableAuth(companyHome))) {
     try {
-      const cacheEntryPath = await ensureCodexAuthCacheEntryDir(env, accountId, companyId);
-      await writeCodexAuthCacheEntry({ sandboxAuthBytes: authBytes, cacheEntryPath, log, env });
+      await mkdir(companyHome, { recursive: true, mode: PRIVATE_DIR_MODE });
+      const companyHomeAuthPath = path.join(companyHome, AUTH_FILE_NAME);
+      await writeCredentialSeedOrNewer({
+        sourceBytes: authBytes,
+        destinationPath: companyHomeAuthPath,
+        seedIfDestAbsent: true,
+        log,
+        writtenLine: "[paperclip] Codex device-login promotion: seeded the company default home.",
+        keptLine: "[paperclip] Codex device-login promotion: kept the company default home.",
+        tempPrefix: "auth.json.promotion-home",
+        errorLabel: "codex device-login promotion",
+        env,
+      });
     } catch {
       await log(
-        "[paperclip] Codex device-login promotion: the per-identity cache write failed; the company credential home is durable, so the login stays successful.",
+        "[paperclip] Codex device-login promotion: seeding the company default home failed; this account's own home is durable, so the login stays successful.",
       );
     }
   }
 
-  if (homeOutcome === "written") {
-    return "promoted";
-  }
-  return foreignIdentityKeep ? "kept_foreign_identity" : "kept";
+  return {
+    outcome: accountHomeOutcome === "written" ? "promoted" : "kept",
+    accountId,
+    accountHomeDir,
+    accountHomeCreated,
+  };
 }

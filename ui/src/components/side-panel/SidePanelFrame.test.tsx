@@ -67,6 +67,53 @@ describe("side-panel shell controls", () => {
     expect(onWindowToggle).toHaveBeenCalledOnce();
   });
 
+  it("offers an explicit X close control for the task-detail sidebar", async () => {
+    const onToggle = vi.fn();
+    await act(async () => root.render(
+      <TooltipProvider>
+        <SidePanelWindowControls
+          maximized={false}
+          onMaximizedChange={vi.fn()}
+          onToggle={onToggle}
+          closeControl="close"
+        />
+      </TooltipProvider>,
+    ));
+
+    const closeButton = container.querySelector<HTMLButtonElement>('[aria-label="Close side panel"]');
+    expect(closeButton).not.toBeNull();
+    expect(closeButton?.querySelector(".lucide-x")).not.toBeNull();
+    expect(container.querySelector('[aria-label="Toggle side panel"]')).toBeNull();
+    await act(async () => closeButton?.click());
+    expect(onToggle).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the task-detail frame borderless except for its docked left edge", async () => {
+    await act(async () => root.render(
+      <SidePanelFrame header={<div>Tabs</div>} footer={<div>Actions</div>} headerSize="task-detail">
+        Body
+      </SidePanelFrame>,
+    ));
+    const frame = container.querySelector("section")!;
+    const header = container.querySelector("header")!;
+    const footer = container.querySelector("footer")!;
+    expect(frame.className).toContain("border-l");
+    expect(header.className).toContain("h-(--side-panel-header-height)");
+    expect(header.className).not.toContain("h-(--sz-60px)");
+    expect(header.className).not.toContain("border-b");
+    expect(footer.className).not.toContain("border-t");
+  });
+
+  it("preserves the shared default header and footer treatment", async () => {
+    await act(async () => root.render(
+      <SidePanelFrame header={<div>Tabs</div>} footer={<div>Actions</div>}>
+        Body
+      </SidePanelFrame>,
+    ));
+    expect(container.querySelector("header")?.className).toContain("h-(--side-panel-header-height)");
+    expect(container.querySelector("footer")?.className).toContain("border-t");
+  });
+
   it("keeps the prose scrollbar on the full-width viewport while centering its content", async () => {
     await act(async () => root.render(
       <SidePanelFrame contentMode="prose">Document body</SidePanelFrame>,

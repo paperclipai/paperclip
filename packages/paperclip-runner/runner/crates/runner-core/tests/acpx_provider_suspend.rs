@@ -13,6 +13,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), mode.to_owned()],
+            verified_launch: None,
             request_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
         },
@@ -56,6 +57,19 @@ fn rejects_suspension_during_an_active_turn_without_closing_the_session() {
     assert!(error.contains("safe suspension point"), "{error}");
     assert_eq!(session.state().active_turn_id(), Some("turn-1"));
     session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn reaps_an_active_provider_generation_at_the_suspension_boundary() {
+    let mut session = AcpxProviderSession::start(&config("suspend")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+
+    session
+        .terminate_active_turn_for_suspension("turn-1")
+        .unwrap();
+    assert!(session.shutdown("already terminated").is_ok());
 }
 
 #[test]

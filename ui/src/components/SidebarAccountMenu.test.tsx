@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
+import { SidebarAccountMenu as ProductionSidebarAccountMenu } from "./SidebarAccountMenu.production";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -100,6 +102,86 @@ describe("SidebarAccountMenu", () => {
     vi.clearAllMocks();
   });
 
+  it("shares the nav background without separator borders", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <SidebarAccountMenu deploymentMode="local_trusted" />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const accountSurface = container.firstElementChild;
+    expect(accountSurface?.className).toContain("bg-border/50");
+    expect(accountSurface?.className).toContain("dark:bg-muted");
+    expect(accountSurface?.className).not.toContain("border-t");
+    expect(accountSurface?.className).not.toContain("border-r");
+    expect(accountSurface?.className).not.toContain("border-border");
+    const accountTrigger = container.querySelector('button[aria-label="Open account menu"]');
+    expect(accountTrigger?.classList).toContain("rounded-lg");
+    expect(accountTrigger?.classList).toContain("hover:bg-background");
+
+    const feedbackButton = container.querySelector<HTMLAnchorElement>(
+      'a[aria-label="Share feedback"]',
+    );
+    expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
+    expect(feedbackButton?.getAttribute("target")).toBe("_blank");
+    expect(feedbackButton?.classList).toContain("hover:bg-background");
+    expect(feedbackButton?.querySelector("svg")?.classList).toContain("lucide-flag");
+    expect(feedbackButton?.getAttribute("data-slot")).toBe("tooltip-trigger");
+    expect(feedbackButton?.hasAttribute("title")).toBe(false);
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the classic feedback control visible beside the profile trigger", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <ProductionSidebarAccountMenu deploymentMode="local_trusted" />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const accountTrigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open account menu"]',
+    );
+    expect(accountTrigger?.classList).toContain("rounded-lg");
+    expect(accountTrigger?.classList).toContain("hover:bg-accent/50");
+
+    const feedbackButton = container.querySelector<HTMLAnchorElement>(
+      'a[aria-label="Share feedback"]',
+    );
+    expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
+    expect(feedbackButton?.getAttribute("target")).toBe("_blank");
+    expect(feedbackButton?.classList).toContain("hover:bg-accent/50");
+    expect(feedbackButton?.querySelector("svg")?.classList).toContain("lucide-flag");
+    expect(feedbackButton?.getAttribute("data-slot")).toBe("tooltip-trigger");
+
+    await act(async () => {
+      accountTrigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    expect(popover?.textContent).not.toContain("Feedback");
+    expect(popover?.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
   it("keeps authenticated self-hosted sign-out on the local auth flow", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -113,10 +195,9 @@ describe("SidebarAccountMenu", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu
-            deploymentMode="authenticated"
-            version="1.2.3"
-          />
+          <TooltipProvider>
+            <SidebarAccountMenu deploymentMode="authenticated" />
+          </TooltipProvider>
         </QueryClientProvider>,
       );
     });
@@ -135,28 +216,28 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Edit profile");
+    expect(document.body.textContent).toContain("Settings");
     expect(document.body.textContent).not.toContain("Instance settings");
     expect(document.body.textContent).toContain("Documentation");
-    expect(document.body.textContent).toContain("Feedback");
 
-    // Feedback link opens in a new tab pointing at the feedback URL
-    const feedbackAnchor = document.body.querySelector('a[href="https://paperclip.ing/feedback"]') as HTMLAnchorElement | null;
-    expect(feedbackAnchor).not.toBeNull();
-    expect(feedbackAnchor?.getAttribute("target")).toBe("_blank");
+    const popover = document.body.querySelector('[data-slot="popover-content"]');
+    expect(popover?.textContent).not.toContain("Feedback");
+    expect(popover?.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
 
-    // Feedback appears after Documentation and before the theme toggle
-    const menuText = document.body.querySelector('[data-slot="popover-content"]')?.textContent ?? "";
+    // Documentation still appears before the theme toggle.
+    const menuText = popover?.textContent ?? "";
     const docsPos = menuText.indexOf("Documentation");
-    const feedbackPos = menuText.indexOf("Feedback");
     const themePos = menuText.indexOf("Switch to");
-    expect(docsPos).toBeLessThan(feedbackPos);
-    expect(feedbackPos).toBeLessThan(themePos);
+    expect(docsPos).toBeLessThan(themePos);
 
-    expect(document.body.textContent).toContain("Paperclip v1.2.3");
+    // The popover header stays down to name + email: no "Account" badge, no version line.
+    expect(popover?.textContent).not.toContain("Account");
+    expect(popover?.textContent).not.toContain("Paperclip v");
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("w-(--sz-277px)");
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
+    expect(document.body.querySelector('a[href="/company/settings"]')).not.toBeNull();
 
     const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Sign out"),
@@ -195,11 +276,13 @@ describe("SidebarAccountMenu", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu
-            deploymentMode="authenticated"
-            open
-            onOpenChange={onOpenChange}
-          />
+          <TooltipProvider>
+            <SidebarAccountMenu
+              deploymentMode="authenticated"
+              open
+              onOpenChange={onOpenChange}
+            />
+          </TooltipProvider>
         </QueryClientProvider>,
       );
     });
@@ -232,7 +315,9 @@ describe("SidebarAccountMenu", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu deploymentMode="local_trusted" open />
+          <TooltipProvider>
+            <SidebarAccountMenu deploymentMode="local_trusted" open />
+          </TooltipProvider>
         </QueryClientProvider>,
       );
     });
@@ -245,51 +330,4 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
-  it("shows the short commit sha instead of a version for source builds", async () => {
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarAccountMenu
-            deploymentMode="authenticated"
-            version="2026.626.0+58.git.518fc71ce"
-            serverGit={{
-              available: true,
-              fullSha: "518fc71ce1234567890abcdef1234567890abcde",
-              shortSha: "518fc71",
-              branchName: "feature/source-build-label",
-              subject: "Show source build label",
-              committedAt: "2026-06-26T00:00:00.000Z",
-              localChanges: {
-                available: true,
-                hasLocalChanges: false,
-                stagedFileCount: 0,
-                unstagedFileCount: 0,
-                untrackedFileCount: 0,
-              },
-            }}
-            open
-          />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(document.body.textContent).toContain("feature/source-build-labelPaperclip 518fc71");
-    expect(document.body.textContent).not.toContain("2026.626.0+58.git.518fc71ce");
-    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/tree/feature%2Fsource-build-label"]')?.textContent).toBe(
-      "feature/source-build-label",
-    );
-    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/commit/518fc71ce1234567890abcdef1234567890abcde"]')?.textContent).toBe(
-      "518fc71",
-    );
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
 });

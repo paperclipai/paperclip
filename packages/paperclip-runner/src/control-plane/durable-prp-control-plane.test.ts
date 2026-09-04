@@ -31,6 +31,117 @@ const identity: DurableRecoveryIdentity = {
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
 
+it("pins the ACPX launch profile in runner startup arguments and restarts", () => {
+  const launches: RunnerProcessLaunchSpec[] = [];
+  const handle = spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test",
+    identity,
+    ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024,
+    p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion,
+    runnerDigest: expectedRunnerDigest,
+    acpxLaunchProfile: {
+      authorityDigest: `sha256:${"d".repeat(64)}`,
+      command: "/provider-pack/node",
+      commandSha256: `sha256:${"b".repeat(64)}`,
+      sidecarScript: "/provider-pack/acpx-sidecar.js",
+      sidecarScriptSha256: `sha256:${"c".repeat(64)}`,
+    },
+    processLauncher: (spec) => {
+      launches.push(spec);
+      return {
+        child: {
+          pid: 42,
+          exitCode: null,
+          signalCode: null,
+          kill: () => true,
+        },
+        completion: Promise.resolve({
+          code: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+        }),
+      };
+    },
+  });
+
+  handle.restart("replacement-ticket");
+  expect(launches).toHaveLength(2);
+  for (const launch of launches) {
+    expect(launch.args).toContain("--acpx-launch-authority-digest");
+    expect(launch.args).toContain("--acpx-sidecar-command");
+    expect(launch.args).toContain(`sha256:${"d".repeat(64)}`);
+    expect(launch.args).toContain("/provider-pack/node");
+    expect(launch.args).toContain(`sha256:${"b".repeat(64)}`);
+    expect(launch.args).toContain("/provider-pack/acpx-sidecar.js");
+    expect(launch.args).toContain(`sha256:${"c".repeat(64)}`);
+  }
+});
+
+it("pins the OpenCode launch profile in runner startup arguments and restarts", () => {
+  const launches: RunnerProcessLaunchSpec[] = [];
+  const profile = {
+    command: "/provider-pack/node",
+    commandSha256: `sha256:${"b".repeat(64)}`,
+    proxyScript: "/provider-pack/opencode-proxy.js",
+    proxyScriptSha256: `sha256:${"c".repeat(64)}`,
+    executable: "/provider-pack/opencode.exe",
+    executableSha256: `sha256:${"d".repeat(64)}`,
+  };
+  const handle = spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test",
+    identity,
+    ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024,
+    p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion,
+    runnerDigest: expectedRunnerDigest,
+    opencodeLaunchProfile: profile,
+    processLauncher: (spec) => {
+      launches.push(spec);
+      return {
+        child: {
+          pid: 42,
+          exitCode: null,
+          signalCode: null,
+          kill: () => true,
+        },
+        completion: Promise.resolve({
+          code: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+        }),
+      };
+    },
+  });
+
+  handle.restart("replacement-ticket");
+  expect(launches).toHaveLength(2);
+  for (const launch of launches) {
+    expect(launch.args).toEqual(
+      expect.arrayContaining([
+        "--opencode-proxy-command",
+        profile.command,
+        "--opencode-proxy-command-sha256",
+        profile.commandSha256,
+        "--opencode-proxy-script",
+        profile.proxyScript,
+        "--opencode-proxy-script-sha256",
+        profile.proxyScriptSha256,
+        "--opencode-executable",
+        profile.executable,
+        "--opencode-executable-sha256",
+        profile.executableSha256,
+      ]),
+    );
+  }
+});
+
 it("preserves an explicit OpenCode permission mode at the runner spawn boundary", () => {
   const launches: RunnerProcessLaunchSpec[] = [];
   spawnRunner({
@@ -45,7 +156,6 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
     environment: {
       PATH: "/bin",
       OPENROUTER_API_KEY: "provider-key",
-      PAPERCLIP_OPENCODE_COMMAND: "/provider-pack/opencode",
       PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
       PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
       DATABASE_URL: "must-not-reach-runnerd",
@@ -75,13 +185,111 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
   expect(launches[0]!.environment).toMatchObject({
     PATH: "/bin",
     OPENROUTER_API_KEY: "provider-key",
-    PAPERCLIP_OPENCODE_COMMAND: "/provider-pack/opencode",
     PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
   });
   expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
   expect(launches[0]!.environment.PAPERCLIP_API_KEY).toBeUndefined();
   expect(launches[0]!.environment.NODE_OPTIONS).toBeUndefined();
+  expect(launches[0]!.environment.PAPERCLIP_OPENCODE_COMMAND).toBeUndefined();
+});
+
+it("preserves the controller-selected ACPX provider package root", () => {
+  const launches: RunnerProcessLaunchSpec[] = [];
+  spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test",
+    identity,
+    ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024,
+    p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion,
+    runnerDigest: expectedRunnerDigest,
+    environment: {
+      PATH: "/bin",
+      PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/verified/provider-pack",
+      PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
+        "/verified/provider-pack/package.json",
+      NODE_PATH: "/untrusted/modules",
+    },
+    processLauncher: (spec) => {
+      launches.push(spec);
+      return {
+        child: {
+          pid: 42,
+          exitCode: null,
+          signalCode: null,
+          kill: () => true,
+        },
+        completion: Promise.resolve({
+          code: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+        }),
+      };
+    },
+  });
+
+  expect(launches).toHaveLength(1);
+  expect(launches[0]!.environment.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT).toBe(
+    "/verified/provider-pack",
+  );
+  expect(
+    launches[0]!.environment.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
+  ).toBe("/verified/provider-pack/package.json");
+  expect(launches[0]!.environment.NODE_PATH).toBeUndefined();
+});
+
+it("preserves file-backed AWS workload identity at the runner spawn boundary", () => {
+  const launches: RunnerProcessLaunchSpec[] = [];
+  spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-test",
+    identity,
+    ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024,
+    p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion,
+    runnerDigest: expectedRunnerDigest,
+    environment: {
+      AWS_PROFILE: "host-profile",
+      AWS_CONFIG_FILE: "/host/home/.aws/config",
+      AWS_SHARED_CREDENTIALS_FILE: "/host/home/.aws/credentials",
+      AWS_CONTAINER_CREDENTIALS_FULL_URI: "http://127.0.0.1:9001/credentials",
+      AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/identity/container-token",
+      AWS_ACCESS_KEY_ID: "must-not-reach-runnerd",
+      AWS_SECRET_ACCESS_KEY: "must-not-reach-runnerd",
+    },
+    processLauncher: (spec) => {
+      launches.push(spec);
+      return {
+        child: {
+          pid: 42,
+          exitCode: null,
+          signalCode: null,
+          kill: () => true,
+        },
+        completion: Promise.resolve({
+          code: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+        }),
+      };
+    },
+  });
+
+  expect(launches).toHaveLength(1);
+  expect(launches[0]!.environment).toMatchObject({
+    AWS_CONTAINER_CREDENTIALS_FULL_URI: "http://127.0.0.1:9001/credentials",
+    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/identity/container-token",
+  });
+  expect(launches[0]!.environment.AWS_ACCESS_KEY_ID).toBeUndefined();
+  expect(launches[0]!.environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  expect(launches[0]!.environment.AWS_PROFILE).toBeUndefined();
+  expect(launches[0]!.environment.AWS_CONFIG_FILE).toBeUndefined();
+  expect(launches[0]!.environment.AWS_SHARED_CREDENTIALS_FILE).toBeUndefined();
 });
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
@@ -669,6 +877,159 @@ describe.sequential("DurablePrpControlPlane", () => {
       client?.socket.destroy();
     } finally {
       await recovered.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a recovered runner attached when it reports an indeterminate command", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-indeterminate-"));
+    const controlPlane = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    try {
+      await controlPlane.start();
+      const journaled = controlPlane.queueCommand(
+        "semantic_tool.result",
+        { callId: "call-1" },
+        "command-tool-1",
+      );
+      controlPlane.queueCommand(
+        "turn.interrupt",
+        { turnId: "turn-1" },
+        "command-interrupt-1",
+      );
+      const client = await authenticate(
+        controlPlane,
+        controlPlane.issueBootstrapTicket(),
+      );
+      expect(client?.welcome.payload).toMatchObject({
+        pendingCommands: [
+          expect.objectContaining({ commandId: "command-tool-1" }),
+        ],
+      });
+
+      // Exactly what runnerd replays after it is killed between journaling a
+      // command and confirming its effect. Its durable contract promotes such a
+      // command to `indeterminate` so that it is never executed twice.
+      const indeterminateResult = {
+        protocol: "paperclip.runner",
+        version: 1,
+        kind: "command_result",
+        payload: {
+          commandId: journaled.commandId,
+          commandType: journaled.type,
+          controllerSeq: journaled.controllerSeq,
+          status: "indeterminate",
+          result: {
+            code: "execution_indeterminate",
+            message:
+              "runner recovered after journaling this command; it will not execute twice",
+          },
+        },
+      };
+      sendSecure(client!, indeterminateResult);
+
+      // The authority has to accept that terminal status and hand out the next
+      // command. Closing the connection instead strands the runner in a silent
+      // reconnect loop that never re-reports its provider identity.
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command",
+        payload: { commandId: "command-interrupt-1" },
+      });
+      expect(controlPlane.store.state.commands).toMatchObject([
+        { commandId: "command-tool-1", status: "indeterminate" },
+        { commandId: "command-interrupt-1", status: "pending" },
+      ]);
+
+      // The runner replays its journal on every reconnect, so the same
+      // indeterminate result arrives again. It has to be absorbed as a
+      // duplicate rather than treated as a conflicting result.
+      sendSecure(client!, indeterminateResult);
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command",
+        payload: { commandId: "command-interrupt-1" },
+      });
+      expect(controlPlane.store.state.duplicateCommandResults).toBe(1);
+
+      client?.socket.destroy();
+      await controlPlane.stop();
+
+      // That result is now persisted, so a control plane restarted over the
+      // same directory has to be able to read its own state back.
+      const restarted = new DurablePrpControlPlane({
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+      });
+      expect(restarted.store.state.commands).toMatchObject([
+        { commandId: "command-tool-1", status: "indeterminate" },
+        { commandId: "command-interrupt-1", status: "pending" },
+      ]);
+    } finally {
+      await controlPlane.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("acknowledges terminal command results after persisting them", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-terminal-ack-"));
+    const controlPlane = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    try {
+      await controlPlane.start();
+      const command = controlPlane.queueCommand(
+        "runner.suspend",
+        {},
+        "command-suspend-1",
+      );
+      const client = await authenticate(
+        controlPlane,
+        controlPlane.issueBootstrapTicket(),
+      );
+      const terminalResult = {
+        protocol: "paperclip.runner",
+        version: 1,
+        kind: "command_result",
+        payload: {
+          commandId: command.commandId,
+          commandType: command.type,
+          controllerSeq: command.controllerSeq,
+          status: "completed",
+          result: { suspended: true },
+        },
+      };
+
+      sendSecure(client!, terminalResult);
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command_result_ack",
+        payload: {
+          commandId: "command-suspend-1",
+          commandType: "runner.suspend",
+          controllerSeq: command.controllerSeq,
+          status: "completed",
+        },
+      });
+      expect(controlPlane.store.state.commands).toMatchObject([
+        { commandId: "command-suspend-1", status: "completed" },
+      ]);
+
+      sendSecure(client!, terminalResult);
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command_result_ack",
+        payload: { commandId: "command-suspend-1" },
+      });
+      expect(controlPlane.store.state.duplicateCommandResults).toBe(1);
+      client?.socket.destroy();
+    } finally {
+      await controlPlane.stop();
       rmSync(root, { recursive: true, force: true });
     }
   });

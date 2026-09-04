@@ -88,6 +88,224 @@ function isItemIdentityEvent(eventType: string): boolean {
 
 const TOOL_EXECUTION_SCHEMA = "paperclip.tool.execution.v1";
 const RUN_RESULT_SCHEMA = "paperclip.run_result.v1";
+const RUN_TERMINAL_SCHEMA = "paperclip.prp.terminal.v1";
+
+function canonicalQuestionSet(
+  value: unknown,
+): Extract<TranscriptEntry, { kind: "runtime_request" }>["questionSet"] {
+  const candidate = record(value);
+  if (
+    !candidate
+    || candidate.schema !== "paperclip.question_set.v1"
+    || !Array.isArray(candidate.questions)
+    || candidate.questions.length === 0
+  ) return null;
+  const valid = candidate.questions.every((rawQuestion) => {
+    const question = record(rawQuestion);
+    return Boolean(
+      question
+      && text(question.id)
+      && text(question.prompt)
+      && typeof question.required === "boolean"
+      && (
+        question.answerMode === "single_select"
+        || question.answerMode === "multi_select"
+        || question.answerMode === "text"
+      ),
+    );
+  });
+  return valid
+    ? structuredClone(candidate) as unknown as NonNullable<
+        Extract<TranscriptEntry, { kind: "runtime_request" }>["questionSet"]
+      >
+    : null;
+}
+
+function canonicalQuestionResponse(
+  value: unknown,
+): Extract<TranscriptEntry, { kind: "runtime_request" }>["response"] {
+  const candidate = record(value);
+  return candidate
+    && candidate.schema === "paperclip.question_response.v1"
+    && record(candidate.answers)
+    ? structuredClone(candidate) as unknown as NonNullable<
+        Extract<TranscriptEntry, { kind: "runtime_request" }>["response"]
+      >
+    : null;
+}
+
+function verificationStatus(value: unknown): "passed" | "failed" | "not_run" {
+  return value === "passed" || value === "failed" ? value : "not_run";
+}
+
+function runtimeRequestEntry(input: {
+  eventType: string;
+  envelope: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  ts: string;
+  previous?: Extract<TranscriptEntry, { kind: "runtime_request" }>;
+}): Extract<TranscriptEntry, { kind: "runtime_request" }> | null {
+  const request = record(input.payload.request) ?? input.payload;
+  const requestId = text(request.requestId) ?? text(input.payload.requestId);
+  if (!requestId) return null;
+  const suffix = input.eventType.split(".").at(-1);
+  const rawStatus = text(request.status) ?? suffix;
+  const resolvedAction = text(request.action)
+    ?? text(input.payload.action)
+    ?? input.previous?.resolvedAction
+    ?? null;
+  const lifecycleStatus = rawStatus === "resolved"
+    || rawStatus === "expired"
+    || rawStatus === "cancelled"
+    ? rawStatus
+    : "pending";
+  const status = lifecycleStatus === "resolved"
+    && (resolvedAction === "cancel" || resolvedAction === "decline")
+    ? "cancelled"
+    : lifecycleStatus;
+  const rawKind = text(request.requestKind) ?? input.previous?.requestKind ?? null;
+  const requestKind = rawKind === "runtime"
+    || rawKind === "command_approval"
+    || rawKind === "file_approval"
+    || rawKind === "permission_approval"
+    || rawKind === "user_input"
+    || rawKind === "elicitation"
+    ? rawKind
+    : null;
+  const rawType = text(request.type) ?? input.previous?.requestType ?? "permission";
+  const requestType = requestKind === "user_input"
+    || requestKind === "elicitation"
+    || rawType === "input"
+    || rawType.includes("input")
+    || rawType.includes("elicitation")
+    ? "input"
+    : "permission";
+  const choices = (Array.isArray(request.choices) ? request.choices : [])
+    .map(record)
+    .flatMap((choice) => {
+      const key = text(choice?.key);
+      const label = text(choice?.label);
+      return key && label ? [{ key, label }] : [];
+    })
+    .slice(0, 32);
+  const details = record(request.details);
+  const fields = (Array.isArray(details?.fields) ? details.fields : [])
+    .map(record)
+    .flatMap((field, index) => {
+      const name = text(field?.name) ?? `answer_${index + 1}`;
+      const label = text(field?.label) ?? text(field?.name) ?? `Answer ${index + 1}`;
+      return name && label
+        ? [{ name: name.slice(0, 160), label: label.slice(0, 240), placeholder: text(field?.placeholder)?.slice(0, 500) ?? null }]
+        : [];
+    })
+    .slice(0, 16);
+  return {
+    kind: "runtime_request",
+    ts: input.ts,
+    requestId,
+    requestKind,
+    turnId: text(request.turnId)
+      ?? text(input.payload.turnId)
+      ?? text(input.envelope.turnId)
+      ?? input.previous?.turnId
+      ?? null,
+    requestType,
+    status,
+    prompt: text(request.prompt)
+      ?? input.previous?.prompt
+      ?? "Runtime approval requested",
+    choices: choices.length > 0 ? choices : input.previous?.choices ?? [],
+    fields: fields.length > 0 ? fields : input.previous?.fields ?? [],
+    questionSet: canonicalQuestionSet(request.input)
+      ?? input.previous?.questionSet
+      ?? null,
+    resolvedAction,
+    response: canonicalQuestionResponse(request.response ?? input.payload.response)
+      ?? input.previous?.response
+      ?? null,
+  };
+}
+
+function runResultEntry(
+  payload: Record<string, unknown>,
+  ts: string,
+): Extract<TranscriptEntry, { kind: "run_result" }> {
+  const completion = record(payload.completionClaim) ?? {};
+  const blocker = record(payload.blocker);
+  const rawDisposition = text(payload.reportedWorkDisposition);
+  const disposition = rawDisposition === "blocked"
+    || rawDisposition === "needs_review"
+    || rawDisposition === "yielded"
+    ? rawDisposition
+    : "done";
+  return {
+    kind: "run_result",
+    ts,
+    disposition,
+    summary: text(payload.summary) ?? "Run completed",
+    objectiveSatisfied: typeof completion.objectiveSatisfied === "boolean"
+      ? completion.objectiveSatisfied
+      : null,
+    verification: (Array.isArray(payload.verification) ? payload.verification : [])
+      .map(record)
+      .flatMap((item) => item ? [{
+        commandOrCheck: text(item.commandOrCheck) ?? "Verification",
+        status: verificationStatus(item.status),
+        ...(text(item.detail) ? { detail: text(item.detail)! } : {}),
+        ...(text(item.artifactRef) ? { artifactRef: text(item.artifactRef)! } : {}),
+      }] : [])
+      .slice(0, 64),
+    remainingWork: (Array.isArray(completion.remainingWork) ? completion.remainingWork : [])
+      .map(record)
+      .flatMap((item) => item && text(item.description) ? [{
+        description: text(item.description)!,
+        blocksCompletion: item.blocksCompletion === true,
+      }] : [])
+      .slice(0, 64),
+    blocker: blocker ? {
+      reasonCode: text(blocker.reasonCode) ?? "blocked",
+      unblockAction: text(blocker.unblockAction) ?? "Resolve the blocker to continue.",
+      scope: blocker.scope === "task_wide" ? "task_wide" : "current_track",
+    } : null,
+    artifacts: (Array.isArray(payload.artifacts) ? payload.artifacts : [])
+      .map(record)
+      .flatMap((item) => item && text(item.ref) ? [{
+        kind: text(item.kind) ?? "artifact",
+        ref: text(item.ref)!,
+        ...(text(item.title) ? { title: text(item.title)! } : {}),
+      }] : [])
+      .slice(0, 64),
+  };
+}
+
+function runTerminalEntry(
+  payload: Record<string, unknown>,
+  ts: string,
+): Extract<TranscriptEntry, { kind: "run_terminal" }> | null {
+  if (payload.schema !== RUN_TERMINAL_SCHEMA) return null;
+  const rawTurnState = text(payload.turnTerminalState);
+  const rawRunState = text(payload.runTerminalState);
+  const rawDisposition = text(payload.reportedWorkDisposition);
+  if (
+    !rawTurnState
+    || !["completed", "failed", "interrupted", "cancelled"].includes(rawTurnState)
+    || !rawRunState
+    || !["succeeded", "failed", "cancelled"].includes(rawRunState)
+    || !rawDisposition
+    || !["done", "blocked", "needs_review", "yielded"].includes(rawDisposition)
+  ) return null;
+  const stopReason = record(payload.stopReason);
+  return {
+    kind: "run_terminal",
+    ts,
+    turnState: rawTurnState as Extract<TranscriptEntry, { kind: "run_terminal" }>["turnState"],
+    runState: rawRunState as Extract<TranscriptEntry, { kind: "run_terminal" }>["runState"],
+    disposition: rawDisposition as Extract<TranscriptEntry, { kind: "run_terminal" }>["disposition"],
+    ...(text(stopReason?.message) || text(stopReason?.code)
+      ? { stopReason: text(stopReason?.message) ?? text(stopReason?.code)! }
+      : {}),
+  };
+}
 
 const PROVIDER_ACTIVITY_PRESENTATIONS = {
   "plan.updated": {
@@ -285,10 +503,58 @@ function timestamp(event: HeartbeatRunEvent, envelope: Record<string, unknown>):
   return Number.isNaN(Date.parse(createdAt)) ? new Date(0).toISOString() : createdAt;
 }
 
-function toolPresentation(payload: Record<string, unknown>): { name: string; input: unknown } {
+interface NativeToolItemDetails {
+  name: string | null;
+  input?: unknown;
+  result?: unknown;
+  isError: boolean;
+}
+
+function nativeToolItemDetails(
+  payload: Record<string, unknown>,
+): {
+  id: string | null;
+  kind: "tooluse" | "toolresult";
+  details: NativeToolItemDetails;
+} | null {
+  const item = normalizedItem(payload);
+  const kind = (text(item.type) ?? "").replaceAll("_", "").toLowerCase();
+  if (kind !== "tooluse" && kind !== "toolresult") return null;
+  const id = kind === "toolresult"
+    ? text(item.tool_use_id) ?? text(item.id)
+    : text(item.id);
+  return {
+    id,
+    kind,
+    details: {
+      name: text(item.name),
+      ...(Object.prototype.hasOwnProperty.call(item, "input")
+        ? { input: item.input }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(item, "result")
+        ? { result: item.result }
+        : {}),
+      isError: item.isError === true || item.is_error === true,
+    },
+  };
+}
+
+function serializedNativeToolResult(item: NativeToolItemDetails): string {
+  if (item.result === undefined) return "";
+  try {
+    return JSON.stringify(item.result) ?? "";
+  } catch {
+    return "Tool result could not be serialized";
+  }
+}
+
+function toolPresentation(
+  payload: Record<string, unknown>,
+  item?: NativeToolItemDetails,
+): { name: string; input: unknown } {
   const transport = text(payload.transport);
   const operation = text(payload.operation);
-  const reportedName = text(payload.name);
+  const reportedName = text(payload.name) ?? item?.name ?? null;
   if (transport === "process") {
     return {
       name: "Bash",
@@ -297,7 +563,7 @@ function toolPresentation(payload: Record<string, unknown>): { name: string; inp
   }
   return {
     name: reportedName ?? operation ?? "Tool",
-    input: {
+    input: item?.input ?? {
       ...(operation ? { operation } : {}),
       ...(text(payload.namespace) ? { namespace: text(payload.namespace) } : {}),
       ...(text(payload.target) ? { target: text(payload.target) } : {}),
@@ -313,6 +579,7 @@ function toolPresentation(payload: Record<string, unknown>): { name: string; inp
 export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
   const startedToolIds = new Set<string>();
+  const completedToolIds = new Set<string>();
   let hasFinalAssistantMessage = false;
   let usageSummary: {
     ts: string;
@@ -329,10 +596,29 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     costUsd: number;
   } | null = null;
   let runResultFallback: { ts: string; text: string } | null = null;
-  const orderedEvents = [...events].sort((a, b) => a.seq - b.seq);
+  const seenSourceEventIds = new Set<string>();
+  const orderedEvents = [...events]
+    .sort((a, b) => a.seq - b.seq)
+    .filter((event) => {
+      const envelope = record(event.payload?.prpEvent);
+      const sourceEventId = text(envelope?.sourceEventId);
+      if (!sourceEventId) return true;
+      if (seenSourceEventIds.has(sourceEventId)) return false;
+      seenSourceEventIds.add(sourceEventId);
+      return true;
+    });
+  const hasAcceptedResult = orderedEvents.some(
+    (event) => event.eventType === "run.result.accepted",
+  );
+  const runtimeRequests = new Map<
+    string,
+    Extract<TranscriptEntry, { kind: "runtime_request" }>
+  >();
+  let hasRunResult = false;
   const completedAgentMessageIds = new Set<string>();
   const completedReasoningIds = new Set<string>();
   const completionItemIdentityById = new Map<string, ItemIdentity>();
+  const nativeToolItemsById = new Map<string, NativeToolItemDetails>();
   for (const event of orderedEvents) {
     if (!isItemIdentityEvent(event.eventType)) continue;
     const envelope = record(event.payload?.prpEvent);
@@ -347,6 +633,25 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     if (!payload) continue;
     const itemId = normalizedItemId(envelope, payload);
     if (!itemId) continue;
+    const toolItem = nativeToolItemDetails(payload);
+    if (toolItem) {
+      const toolId = toolItem.id ?? itemId;
+      const previous = nativeToolItemsById.get(toolId);
+      nativeToolItemsById.set(toolId, {
+        name: toolItem.details.name ?? previous?.name ?? null,
+        ...(toolItem.details.input !== undefined
+          ? { input: toolItem.details.input }
+          : previous?.input !== undefined
+            ? { input: previous.input }
+            : {}),
+        ...(toolItem.details.result !== undefined
+          ? { result: toolItem.details.result }
+          : previous?.result !== undefined
+            ? { result: previous.result }
+            : {}),
+        isError: toolItem.details.isError || previous?.isError === true,
+      });
+    }
     const identity = resolveItemIdentity(
       payload,
       completionItemIdentityById.get(itemId),
@@ -393,7 +698,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       if (completedAgentMessageIds.has(itemId)) continue;
       const channel = itemIdentity.assistantChannel;
       if (channel !== "progress") hasFinalAssistantMessage = true;
-      entries.push({ kind: "assistant", ts, text: value, delta: true, channel });
+      entries.push({ kind: "assistant", ts, text: value, delta: true, channel, itemId });
       continue;
     }
 
@@ -402,7 +707,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       if (!value) continue;
       const channel = itemIdentity.assistantChannel;
       if (channel !== "progress") hasFinalAssistantMessage = true;
-      entries.push({ kind: "assistant", ts, text: value, channel });
+      entries.push({ kind: "assistant", ts, text: value, channel, ...(itemId ? { itemId } : {}) });
       continue;
     }
 
@@ -416,6 +721,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         delta: true,
         lifecycle: "started",
         channel: itemIdentity.reasoningChannel,
+        itemId,
       });
       continue;
     }
@@ -429,7 +735,52 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         text: value,
         lifecycle: "completed",
         channel: itemIdentity.reasoningChannel,
+        ...(itemId ? { itemId } : {}),
       });
+      continue;
+    }
+
+    // Some provider transports expose their complete dynamic-tool lifecycle
+    // directly as item.started/item.completed events and do not emit the
+    // parallel tool.execution.* activity stream. Project those canonical
+    // tool items at their own stable item boundary so saved documents can be
+    // embedded beside the write that created them instead of falling back to
+    // the end of the run timeline.
+    const nativeToolEvent = isItemIdentityEvent(event.eventType)
+      ? nativeToolItemDetails(payload)
+      : null;
+    if (nativeToolEvent) {
+      const toolId = nativeToolEvent.id ?? itemId;
+      if (!toolId) continue;
+      const nativeToolItem = nativeToolItemsById.get(toolId)
+        ?? nativeToolEvent.details;
+      const presentation = toolPresentation({}, nativeToolItem);
+      if (!startedToolIds.has(toolId)) {
+        startedToolIds.add(toolId);
+        entries.push({
+          kind: "tool_call",
+          ts,
+          name: presentation.name,
+          input: presentation.input,
+          toolUseId: toolId,
+        });
+      }
+      if (
+        event.eventType === "item.completed"
+        && (nativeToolEvent.kind === "toolresult"
+          || nativeToolEvent.details.result !== undefined)
+        && !completedToolIds.has(toolId)
+      ) {
+        completedToolIds.add(toolId);
+        entries.push({
+          kind: "tool_result",
+          ts,
+          toolUseId: toolId,
+          toolName: presentation.name,
+          content: serializedNativeToolResult(nativeToolItem),
+          isError: nativeToolItem.isError,
+        });
+      }
       continue;
     }
 
@@ -462,7 +813,8 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       if (payload.schema !== TOOL_EXECUTION_SCHEMA) continue;
       const executionId = text(payload.executionId);
       if (!executionId) continue;
-      const presentation = toolPresentation(payload);
+      const nativeToolItem = nativeToolItemsById.get(executionId);
+      const presentation = toolPresentation(payload, nativeToolItem);
       if (!startedToolIds.has(executionId)) {
         startedToolIds.add(executionId);
         entries.push({
@@ -473,14 +825,19 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
           toolUseId: executionId,
         });
       }
-      if (event.eventType === "tool.execution.completed") {
+      if (event.eventType === "tool.execution.completed" && !completedToolIds.has(executionId)) {
+        completedToolIds.add(executionId);
+        const output = text(payload.output);
+        const content = output ?? (nativeToolItem
+          ? serializedNativeToolResult(nativeToolItem)
+          : "");
         entries.push({
           kind: "tool_result",
           ts,
           toolUseId: executionId,
           toolName: presentation.name,
-          content: text(payload.output) ?? "",
-          isError: payload.status === "failed",
+          content,
+          isError: payload.status === "failed" || nativeToolItem?.isError === true,
         });
       }
       continue;
@@ -526,14 +883,43 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
+    if (event.eventType.startsWith("runtime_request.")) {
+      const requestId = text((record(payload.request) ?? payload).requestId)
+        ?? text(payload.requestId);
+      const entry = runtimeRequestEntry({
+        eventType: event.eventType,
+        envelope,
+        payload,
+        ts,
+        ...(requestId ? { previous: runtimeRequests.get(requestId) } : {}),
+      });
+      if (entry) {
+        runtimeRequests.set(entry.requestId, entry);
+        entries.push(entry);
+      }
+      continue;
+    }
+
+    if (event.eventType === "run.terminal") {
+      const terminal = runTerminalEntry(payload, ts);
+      if (terminal) entries.push(terminal);
+      continue;
+    }
+
     if (
       (event.eventType === "run.result.proposed" || event.eventType === "run.result.accepted")
-      && !hasFinalAssistantMessage
     ) {
+      if (event.eventType === "run.result.proposed" && hasAcceptedResult) continue;
       const result = event.eventType === "run.result.accepted" ? record(payload.result) : payload;
       if (!result || result.schema !== RUN_RESULT_SCHEMA) continue;
+      if (!hasRunResult) {
+        entries.push(runResultEntry(result, ts));
+        hasRunResult = true;
+      }
       const summary = text(result.summary);
-      if (summary && !runResultFallback) runResultFallback = { ts, text: summary };
+      if (!hasFinalAssistantMessage && summary && !runResultFallback) {
+        runResultFallback = { ts, text: summary };
+      }
       continue;
     }
 

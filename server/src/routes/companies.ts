@@ -49,6 +49,8 @@ import {
   writeImportTransferPart,
 } from "../services/company-import-transfers.js";
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
+import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
+import { resolvePortableExportAgentSelection } from "../services/company-portability-agent-selection.js";
 import {
   accessService,
   agentService,
@@ -315,6 +317,25 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     return Math.floor(parsed);
   }
 
+  async function assertExternalInstructionExportAllowed(
+    req: Request,
+    companyId: string,
+    input: { include?: { agents?: boolean }; agents?: string[] },
+  ) {
+    const instanceAdmin = req.actor.type === "board"
+      && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true);
+    const includesAgents = input.agents && input.agents.length > 0
+      ? true
+      : input.include?.agents ?? true;
+    if (!includesAgents) return instanceAdmin;
+    const companyAgents = await agents.list(companyId, { includeTerminated: true });
+    const selection = resolvePortableExportAgentSelection(companyAgents, input.agents, includesAgents);
+    if (selection.agents.some((agent) => agentInstructionsBundleMode(agent) === "external")) {
+      assertInstanceAdmin(req);
+    }
+    return instanceAdmin;
+  }
+
   const timelineQuerySchema = z.object({
     from: z.string().optional(),
     to: z.string().optional(),
@@ -495,7 +516,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
-    const result = await portability.exportBundle(companyId, body);
+    const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
+    const result = await portability.exportBundle(companyId, body, { allowExternalInstructions });
     res.json(result);
   });
 
@@ -1089,7 +1111,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
-    const preview = await portability.previewExport(companyId, body);
+    const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
+    const preview = await portability.previewExport(companyId, body, { allowExternalInstructions });
     res.json(preview);
   });
 
@@ -1097,7 +1120,8 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const companyId = req.params.companyId as string;
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
-    const result = await portability.exportBundle(companyId, body);
+    const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
+    const result = await portability.exportBundle(companyId, body, { allowExternalInstructions });
     res.json(result);
   });
 

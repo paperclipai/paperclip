@@ -183,7 +183,10 @@ export {
   workspaceGitOperationScheduler,
   type WorkspaceGitSchedulerSnapshot,
 } from "./workspace-git-operation-scheduler.js";
-export { workProductService } from "./work-products.js";
+export {
+  enrichWorkProductMetadataWithDiff,
+  workProductService,
+} from "./work-products.js";
 export {
   logActivity,
   persistActivity,
@@ -200,3 +203,13 @@ export {
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export {
+  managedAgentProfileService,
+  CLAUDE_MANAGED_BETA_VERSION,
+  type ManagedAgentProfileInput,
+} from "./managed-agent-profiles.js";
+export {
+  remoteAgentProfileService,
+  type RemoteAgentProfileInput,
+  type RemoteAgentService,
+} from "./remote-agent-profiles.js";

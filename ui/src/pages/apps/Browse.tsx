@@ -1,19 +1,52 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Check, Link2, Search } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertTriangle,
+  Check,
+  ChevronRight,
+  ClipboardPaste,
+  Clock3,
+  Link2,
+  Loader2,
+  MoreHorizontal,
+  PauseCircle,
+  Search,
+  ServerCog,
+  Trash2,
+} from "lucide-react";
+import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
 import {
   appSupportsCatalogSetup,
   getAppDefinitionForUrl,
   getAppStoreDefinition,
+  isToolConnectionAttentionHealth,
 } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
-import { cn } from "@/lib/utils";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { accessApi } from "@/api/access";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { AppLogo } from "./AppLogo";
@@ -26,16 +59,8 @@ import {
   appDefinitionSlug,
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
-import {
-  AdvancedToolsLink,
-  BYO_CONNECT_HREF,
-  ByoConnectCard,
-  POPULAR_KEYS,
-} from "./store-cards";
-import {
-  appSourceConnectHref,
-  appSourceResumeHref,
-} from "./app-connect-policy";
+import { appSourceConnectHref, appSourceResumeHref } from "./app-connect-policy";
+import { composioChildParentConnectionId } from "./composio-services";
 import {
   ConnectionOwnerIdentity,
   connectionDisplayNameForOwner,
@@ -43,12 +68,37 @@ import {
   type ConnectionOwnerProfile,
 } from "./connection-owner";
 
+type ConnectorRowModel = {
+  key: string;
+  slug: string;
+  name: string;
+  description: string;
+  brandKey: string;
+  logoUrl?: string | null;
+  darkLogoUrl?: string | null;
+  entry: AppGalleryDisplayEntry | null;
+  applications: ToolApplication[];
+  connections: ToolConnection[];
+};
+
+type ConnectionState = {
+  kind: "connected" | "attention" | "paused" | "draft";
+  label: string;
+  message: string | null;
+};
+
+type ConnectionRemovalTarget = {
+  id: string;
+  accountName: string;
+  providerName: string;
+  remainingConnectionCount: number;
+  childConnectionCount: number;
+};
+
 function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
   const slug = appDefinitionSlug(entry);
   const definition = getAppStoreDefinition(slug);
-  return appSupportsCatalogSetup(definition)
-    ? appSourceConnectHref(slug)
-    : null;
+  return appSupportsCatalogSetup(definition) ? appSourceConnectHref(slug) : null;
 }
 
 function additionalConnectionHref(
@@ -65,28 +115,103 @@ function additionalConnectionHref(
   return `${path}?${params.toString()}`;
 }
 
+function connectionState(connection: ToolConnection): ConnectionState {
+  if (connection.status === "draft") {
+    return {
+      kind: "draft",
+      label: "Setup incomplete",
+      message: "Finish setup before agents can use this account.",
+    };
+  }
+  if (connection.enabled === false || connection.status === "disabled") {
+    return {
+      kind: "paused",
+      label: "Paused",
+      message: "Agents can’t use this account right now.",
+    };
+  }
+  if (isToolConnectionAttentionHealth(connection.healthStatus)) {
+    return {
+      kind: "attention",
+      label: "Needs attention",
+      message:
+        connection.healthMessage ??
+        connection.lastError ??
+        (connection.authKind === "oauth"
+          ? "Sign in again to restore access."
+          : "Replace the credential to restore access."),
+    };
+  }
+  return { kind: "connected", label: "Connected", message: null };
+}
+
+function connectionRank(connection: ToolConnection): number {
+  return connection.status === "draft" ? 0 : 1;
+}
+
+function rowRank(row: ConnectorRowModel): number {
+  if (row.connections.some((connection) => connectionRank(connection) === 1)) return 2;
+  return row.connections.length > 0 ? 1 : 0;
+}
+
+function connectorAction(row: ConnectorRowModel): {
+  label: string;
+  href: string | null;
+  title?: string;
+} {
+  const applicationId = row.applications[0]?.id ?? null;
+  if (row.connections.length > 0) {
+    if (row.entry && applicationId) {
+      return {
+        label: "Add account",
+        href: additionalConnectionHref(row.entry, applicationId),
+      };
+    }
+    return {
+      label: "Add account",
+      href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
+    };
+  }
+
+  if (row.entry?.availability?.available === false) {
+    return {
+      label: "Unavailable",
+      href: null,
+      title: row.entry.availability.reason ?? "This connector is unavailable on this instance.",
+    };
+  }
+  if (row.entry) return { label: "Connect", href: connectHrefFor(row.entry) };
+  return {
+    label: "Connect",
+    href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
+  };
+}
+
+function accountActionHref(row: ConnectorRowModel, connection: ToolConnection): string {
+  if (connection.status === "draft" && row.entry) {
+    return appSourceResumeHref(row.slug, connection.id);
+  }
+  return `/apps/${connection.id}/permissions`;
+}
+
 /**
- * Door 1 — Browse (the store) (PAP-13254 / U3 §4).
- *
- * A persistent, browsable storefront: search + Popular and Connected grids +
- * the full gallery + a first-class bring-your-own card + a labelled Developer
- * link.
- * Browse remains the single discoverability surface. Capability-backed apps
- * share the curated setup route; Zapier branches to its generated-URL screen.
+ * The Apps landing page is the single connector catalog and account-management
+ * surface. Connected providers sort first and expand in place to show every
+ * account; unconnected providers retain the same catalog setup flows.
  */
 export function Browse() {
   const navigate = useNavigate();
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
+  const [connectionToRemove, setConnectionToRemove] = useState<ConnectionRemovalTarget | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Apps" },
-    ]);
+    setBreadcrumbs([{ label: "Connectors" }]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
@@ -104,64 +229,84 @@ export function Browse() {
     enabled: !!selectedCompanyId,
   });
   const userDirectoryQuery = useQuery({
-    queryKey: queryKeys.access.companyUserDirectory(
-      selectedCompanyId ?? "__none__",
-    ),
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const removeConnection = useMutation({
+    mutationFn: (target: ConnectionRemovalTarget) =>
+      toolsApi.archiveConnection(target.id, {
+        confirmComposioChildren: target.childConnectionCount > 0,
+      }),
+    onSuccess: (_connection, target) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      pushToast({
+        title: "Connection removed",
+        body: target.remainingConnectionCount > 0
+          ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
+          : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
+        tone: "success",
+      });
+      setConnectionToRemove(null);
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't remove the connection",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
 
   const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
-  const popular = useMemo(
-    () =>
-      POPULAR_KEYS.map((key) =>
-        gallery.find((entry) => appDefinitionSlug(entry) === key),
-      ).filter((entry): entry is AppGalleryDisplayEntry => Boolean(entry)),
-    [gallery],
+  const userProfileById = useMemo(
+    () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
+    [userDirectoryQuery.data],
   );
 
-  const trimmed = query.trim().toLowerCase();
-  const filtered = useMemo(() => {
-    if (!trimmed) return gallery;
-    return gallery.filter(
-      (entry) =>
-        appDefinitionName(entry).toLowerCase().includes(trimmed) ||
-        appDefinitionDescription(entry).toLowerCase().includes(trimmed),
+  const rows = useMemo<ConnectorRowModel[]>(() => {
+    const activeConnections = (connectionsQuery.data?.connections ?? []).filter(
+      (connection) => connection.status !== "archived",
     );
-  }, [gallery, trimmed]);
-  const connectionSummaryBySlug = useMemo(() => {
-    const connections = connectionsQuery.data?.connections ?? [];
-    const gallerySlugs = new Set(
-      gallery.map((entry) => appDefinitionSlug(entry)),
+    const activeApplications = (applicationsQuery.data?.applications ?? []).filter(
+      (application) => application.status !== "archived",
     );
-    const gallerySlugByName = new Map(
-      gallery.map((entry) => [
-        appDefinitionName(entry).trim().toLowerCase(),
-        appDefinitionSlug(entry),
-      ]),
-    );
-    const connectionsByApplicationId = new Map<string, typeof connections>();
-    for (const connection of connections) {
-      if (connection.status === "archived") continue;
+    const connectionsByApplicationId = new Map<string, ToolConnection[]>();
+    for (const connection of activeConnections) {
       connectionsByApplicationId.set(connection.applicationId, [
         ...(connectionsByApplicationId.get(connection.applicationId) ?? []),
         connection,
       ]);
     }
 
-    const summaries = new Map<
-      string,
-      {
-        applicationId: string;
-        connectedCount: number;
-        draftCount: number;
-        primaryConnection: (typeof connections)[number] | null;
-      }
-    >();
-    for (const application of applicationsQuery.data?.applications ?? []) {
-      if (application.status === "archived") continue;
-      const appConnections =
-        connectionsByApplicationId.get(application.id) ?? [];
+    const gallerySlugs = new Set(gallery.map((entry) => appDefinitionSlug(entry)));
+    const gallerySlugByName = new Map(
+      gallery.map((entry) => [
+        appDefinitionName(entry).trim().toLocaleLowerCase(),
+        appDefinitionSlug(entry),
+      ]),
+    );
+    const rowsBySlug = new Map<string, ConnectorRowModel>();
+    for (const entry of gallery) {
+      const slug = appDefinitionSlug(entry);
+      rowsBySlug.set(slug, {
+        key: `gallery:${slug}`,
+        slug,
+        name: appDefinitionName(entry),
+        description: appDefinitionDescription(entry),
+        brandKey: slug,
+        logoUrl: appDefinitionLogoUrl(entry),
+        darkLogoUrl: appDefinitionDarkLogoUrl(entry),
+        entry,
+        applications: [],
+        connections: [],
+      });
+    }
+
+    const customRows: ConnectorRowModel[] = [];
+    for (const application of activeApplications) {
+      const appConnections = connectionsByApplicationId.get(application.id) ?? [];
       const configuredConnectionSlug = appConnections
         .map(
           (connection) =>
@@ -172,15 +317,8 @@ export function Browse() {
           (value): value is string =>
             typeof value === "string" && gallerySlugs.has(value),
         );
-      // Older branded URL flows (notably Zapier) were persisted as generic
-      // `link` applications even though their public endpoint matched a curated
-      // provider. Keep those already-working connections attached to the store
-      // card without rewriting credentials or relying on a display-name guess.
       const endpointMatchedSlug = appConnections
-        .flatMap((connection) => [
-          connection.config?.url,
-          connection.transportConfig?.url,
-        ])
+        .flatMap((connection) => [connection.config?.url, connection.transportConfig?.url])
         .map((value) =>
           typeof value === "string"
             ? appDefinitionSlug(getAppDefinitionForUrl(value, gallery)) || null
@@ -188,487 +326,470 @@ export function Browse() {
         )
         .find((value): value is string => Boolean(value));
       const applicationSlug = appApplicationSourceSlug(application);
-      const slug =
-        applicationSlug &&
-        applicationSlug !== "link" &&
-        gallerySlugs.has(applicationSlug)
+      const resolvedSlug =
+        applicationSlug && applicationSlug !== "link" && gallerySlugs.has(applicationSlug)
           ? applicationSlug
           : (configuredConnectionSlug ??
             endpointMatchedSlug ??
-            gallerySlugByName.get(application.name.trim().toLowerCase()) ??
+            gallerySlugByName.get(application.name.trim().toLocaleLowerCase()) ??
             null);
-      if (!slug) continue;
-      const current = summaries.get(slug);
-      const connectedConnections = appConnections.filter(
-        (connection) => connection.status !== "draft",
-      );
-      const draftConnections = appConnections.filter(
-        (connection) => connection.status === "draft",
-      );
-      summaries.set(slug, {
-        applicationId: current?.applicationId ?? application.id,
-        connectedCount:
-          (current?.connectedCount ?? 0) + connectedConnections.length,
-        draftCount: (current?.draftCount ?? 0) + draftConnections.length,
-        // Interrupted OAuth attempts remain resumable, but are not successful
-        // connections and must not receive the green Connected treatment.
-        primaryConnection:
-          current?.primaryConnection ??
-          connectedConnections[0] ??
-          draftConnections[0] ??
-          null,
+      const galleryRow = resolvedSlug ? rowsBySlug.get(resolvedSlug) : null;
+      if (galleryRow) {
+        galleryRow.applications.push(application);
+        galleryRow.connections.push(...appConnections);
+        continue;
+      }
+
+      customRows.push({
+        key: `application:${application.id}`,
+        slug: applicationSlug ?? application.id,
+        name: application.name,
+        description: application.description ?? "A custom connector configured for this organization.",
+        brandKey: applicationSlug ?? application.name,
+        entry: null,
+        applications: [application],
+        connections: appConnections,
       });
     }
-    return summaries;
-  }, [applicationsQuery.data, connectionsQuery.data, gallery]);
-  const userProfileById = useMemo(
-    () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
-    [userDirectoryQuery.data],
-  );
-  const sortedPopular = useMemo(
-    () =>
-      popular
-        .map((entry, index) => ({ entry, index }))
-        .sort((left, right) => {
-          const leftSummary = connectionSummaryBySlug.get(
-            appDefinitionSlug(left.entry),
-          );
-          const rightSummary = connectionSummaryBySlug.get(
-            appDefinitionSlug(right.entry),
-          );
-          const leftRank =
-            (leftSummary?.connectedCount ?? 0) > 0
-              ? 2
-              : (leftSummary?.draftCount ?? 0) > 0
-                ? 1
-                : 0;
-          const rightRank =
-            (rightSummary?.connectedCount ?? 0) > 0
-              ? 2
-              : (rightSummary?.draftCount ?? 0) > 0
-                ? 1
-                : 0;
-          return rightRank - leftRank || left.index - right.index;
-        })
-        .map(({ entry }) => entry),
-    [connectionSummaryBySlug, popular],
-  );
-  const connectedApps = useMemo(
-    () =>
-      gallery.filter(
-        (entry) =>
-          (connectionSummaryBySlug.get(appDefinitionSlug(entry))
-            ?.connectedCount ?? 0) > 0,
-      ),
-    [connectionSummaryBySlug, gallery],
-  );
-  const sortedFiltered = useMemo(
-    () =>
-      [...filtered].sort(
+
+    return [...rowsBySlug.values(), ...customRows]
+      .map((row) => ({
+        ...row,
+        connections: [...row.connections].sort(
+          (left, right) =>
+            connectionRank(right) - connectionRank(left) ||
+            left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+        ),
+      }))
+      .sort(
         (left, right) =>
-          appDefinitionName(left).localeCompare(
-            appDefinitionName(right),
-            undefined,
-            {
-              sensitivity: "base",
-            },
-          ) || appDefinitionSlug(left).localeCompare(appDefinitionSlug(right)),
-      ),
-    [filtered],
-  );
+          rowRank(right) - rowRank(left) ||
+          left.name.localeCompare(right.name, undefined, { sensitivity: "base" }) ||
+          left.key.localeCompare(right.key),
+      );
+  }, [applicationsQuery.data, connectionsQuery.data, gallery]);
+
+  const trimmed = query.trim().toLocaleLowerCase();
+  const visibleRows = useMemo(() => {
+    if (!trimmed) return rows;
+    return rows.filter(
+      (row) =>
+        row.name.toLocaleLowerCase().includes(trimmed) ||
+        row.description.toLocaleLowerCase().includes(trimmed) ||
+        row.connections.some((connection) =>
+          connection.name.toLocaleLowerCase().includes(trimmed),
+        ),
+    );
+  }, [rows, trimmed]);
+  const showCustomConnector =
+    !trimmed || "connect your own tool custom mcp server".includes(trimmed);
 
   if (!selectedCompanyId) {
     return (
       <div className="p-6 text-sm text-muted-foreground">
-        Select an organization to browse apps.
+        Select an organization to manage connectors.
       </div>
     );
   }
 
   const loading =
-    galleryQuery.isLoading ||
-    applicationsQuery.isLoading ||
-    connectionsQuery.isLoading;
-
-  const tileProps = (entry: AppGalleryDisplayEntry) => {
-    const summary = connectionSummaryBySlug.get(appDefinitionSlug(entry));
-    const connectHref = connectHrefFor(entry);
-    const available = entry.availability?.available !== false;
-    const primaryConnection = summary?.primaryConnection ?? null;
-    const owner = primaryConnection
-      ? connectionOwnerProfile(primaryConnection, userProfileById)
-      : null;
-    const addAnotherHref =
-      summary && summary.connectedCount > 0
-        ? additionalConnectionHref(entry, summary.applicationId)
-        : null;
-    const setupPending =
-      (summary?.connectedCount ?? 0) === 0 && (summary?.draftCount ?? 0) > 0;
-    return {
-      connectedCount: summary?.connectedCount ?? 0,
-      setupPending,
-      connectionName: primaryConnection
-        ? connectionDisplayNameForOwner(
-            primaryConnection,
-            appDefinitionName(entry),
-            owner,
-          )
-        : null,
-      owner,
-      onPrimary: primaryConnection
-        ? () =>
-            navigate(
-              setupPending
-                ? appSourceResumeHref(
-                    appDefinitionSlug(entry),
-                    primaryConnection.id,
-                  )
-                : summary && summary.connectedCount > 1
-                  ? `/apps/app/${summary.applicationId}/setup`
-                  : `/apps/${primaryConnection.id}/setup`,
-            )
-        : available && connectHref
-          ? () => navigate(connectHref)
-          : undefined,
-      onAddAnother: addAnotherHref ? () => navigate(addAnotherHref) : undefined,
-    };
-  };
+    galleryQuery.isLoading || applicationsQuery.isLoading || connectionsQuery.isLoading;
+  const loadFailed =
+    galleryQuery.isError || applicationsQuery.isError || connectionsQuery.isError;
+  const nothingMatches = visibleRows.length === 0 && !showCustomConnector;
 
   return (
-    <div className="max-w-5xl space-y-8 pb-12">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">Browse</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Choose an app or connect your own MCP server.
-        </p>
+    <div className="max-w-5xl space-y-5 pb-12">
+      <header className="flex justify-start">
+        <div className="relative w-full max-w-md">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search connectors…"
+            aria-label="Search connectors"
+            className="pl-9"
+          />
+        </div>
       </header>
 
-      <div className="relative max-w-md">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search apps…"
-          aria-label="Search apps"
-          className="h-10 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/30"
-        />
-      </div>
+      {loadFailed ? (
+        <div
+          className="flex flex-wrap items-center gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+          role="alert"
+        >
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <p className="min-w-0 flex-1">
+            Couldn’t load every connector. Existing accounts are shown where available.
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              void galleryQuery.refetch();
+              void applicationsQuery.refetch();
+              void connectionsQuery.refetch();
+            }}
+          >
+            Try again
+          </Button>
+        </div>
+      ) : null}
 
       {loading ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {Array.from({ length: 8 }).map((_, index) => (
+        <div className="space-y-3" aria-label="Loading connectors">
+          {Array.from({ length: 6 }).map((_, index) => (
             <Skeleton key={index} className="h-24 w-full rounded-xl" />
           ))}
         </div>
+      ) : nothingMatches ? (
+        <p className="flex items-center gap-2 rounded-xl border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
+          <Link2 className="h-4 w-4" />
+          No connectors match “{query.trim()}”.
+        </p>
       ) : (
-        <>
-          {!trimmed && sortedPopular.length > 0 && (
-            <section className="space-y-3">
-              <div className="text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                Popular
-              </div>
-              <div
-                className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6"
-                aria-label="Popular apps"
-              >
-                {sortedPopular.map((entry) => (
-                  <AppTile
-                    key={appDefinitionSlug(entry)}
-                    entry={entry}
-                    {...tileProps(entry)}
-                    compact
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {!trimmed && connectedApps.length > 0 && (
-            <section className="space-y-3">
-              <div className="text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                Connected
-              </div>
-              <div
-                className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6"
-                aria-label="Connected apps"
-              >
-                {connectedApps.map((entry) => (
-                  <AppTile
-                    key={appDefinitionSlug(entry)}
-                    entry={entry}
-                    {...tileProps(entry)}
-                    compact
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-
-          <section className="space-y-3">
-            <div className="text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-              {trimmed ? `Results (${sortedFiltered.length})` : "All apps"}
-            </div>
-            {sortedFiltered.length === 0 ? (
-              <p className="flex items-center gap-1.5 rounded-xl border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
-                <Link2 className="h-4 w-4" />
-                No planned apps match “{query.trim()}”.
-              </p>
-            ) : (
-              <div
-                className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
-                aria-label={trimmed ? "App search results" : "All apps"}
-              >
-                {sortedFiltered.map((entry) => (
-                  <AppTile
-                    key={appDefinitionSlug(entry)}
-                    entry={entry}
-                    {...tileProps(entry)}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <ByoConnectCard onConnect={() => navigate(BYO_CONNECT_HREF)} />
-
-          <div className="flex justify-end">
-            <AdvancedToolsLink />
-          </div>
-        </>
+        <div className="space-y-3" role="list" aria-label="Connector list">
+          {visibleRows.map((row) => (
+            <ConnectorCard
+              key={row.key}
+              row={row}
+              allConnections={connectionsQuery.data?.connections ?? []}
+              userProfileById={userProfileById}
+              onNavigate={navigate}
+              onRequestRemove={setConnectionToRemove}
+            />
+          ))}
+          {showCustomConnector ? (
+            <CustomConnectorCard onNavigate={navigate} />
+          ) : null}
+        </div>
       )}
+
+      <AlertDialog
+        open={connectionToRemove !== null}
+        onOpenChange={(open) => {
+          if (!open && !removeConnection.isPending) setConnectionToRemove(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove {connectionToRemove?.accountName ?? "this"} connection?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {connectionToRemove && connectionToRemove.childConnectionCount > 0
+                ? `This also removes ${connectionToRemove.childConnectionCount} connected ${connectionToRemove.childConnectionCount === 1 ? "service" : "services"} and takes agent access away immediately. The Composio key and child session credentials are deleted.`
+                : connectionToRemove && connectionToRemove.remainingConnectionCount > 0
+                ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
+                : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={removeConnection.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={!connectionToRemove || removeConnection.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                if (connectionToRemove) removeConnection.mutate(connectionToRemove);
+              }}
+            >
+              {removeConnection.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 />}
+              {removeConnection.isPending ? "Removing…" : "Remove connection"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
 
-function AppTile({
-  entry,
-  onPrimary,
-  onAddAnother,
-  connectedCount,
-  setupPending,
-  connectionName,
-  owner,
-  compact = false,
+function ConnectorCard({
+  row,
+  allConnections,
+  userProfileById,
+  onNavigate,
+  onRequestRemove,
 }: {
-  entry: AppGalleryDisplayEntry;
-  onPrimary?: () => void;
-  onAddAnother?: () => void;
-  connectedCount: number;
-  setupPending: boolean;
-  connectionName: string | null;
-  owner: ConnectionOwnerProfile | null;
-  compact?: boolean;
+  row: ConnectorRowModel;
+  allConnections: ToolConnection[];
+  userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
+  onNavigate: (href: string) => void;
+  onRequestRemove: (target: ConnectionRemovalTarget) => void;
 }) {
-  const disabled = !onPrimary;
-  const unavailableReason =
-    entry.availability?.available === false
-      ? (entry.availability.reason ?? "This app is disabled on this instance.")
-      : null;
-  const connected = connectedCount > 0;
-  const appName = appDefinitionName(entry);
-  const actionLabel = connected
-    ? connectedCount > 1
-      ? "Edit connections"
-      : "Edit connection"
-    : setupPending
-      ? "Finish setup"
-      : disabled
-        ? "Unavailable"
-        : "Connect";
-  const connectedActionClass = connected
-    ? "border-emerald-500/50 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
-    : undefined;
-  if (compact) {
-    return (
-      <div
-        data-app-slug={appDefinitionSlug(entry)}
-        data-connected={connected ? "true" : "false"}
-        data-setup-pending={setupPending ? "true" : "false"}
-        className={
-          disabled
-            ? "flex h-full min-w-0 cursor-not-allowed flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center opacity-60"
-            : "flex h-full min-w-0 flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center"
-        }
-      >
-        <AppLogo
-          name={appName}
-          logoUrl={appDefinitionLogoUrl(entry)}
-          darkLogoUrl={appDefinitionDarkLogoUrl(entry)}
-          size={36}
-        />
-        <span className="text-xs font-medium text-foreground">{appName}</span>
-        <div
-          data-slot="app-tile-status"
-          className="flex min-h-4 max-w-full items-center justify-center"
-        >
-          {connected ? (
-            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-              <Check className="h-3 w-3" /> {connectedCount} connected
-            </span>
-          ) : setupPending ? (
-            <span className="text-xs font-medium text-muted-foreground">
-              Setup incomplete
-            </span>
-          ) : unavailableReason ? (
-            <span
-              className="truncate text-xs text-muted-foreground"
-              title={unavailableReason}
-            >
-              {unavailableReason}
-            </span>
-          ) : null}
-        </div>
-        <div data-slot="app-tile-primary-action" className="w-full min-w-0">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={disabled}
-            onClick={onPrimary}
-            className={cn(
-              "w-full max-w-full overflow-hidden text-ellipsis",
-              connectedActionClass,
-            )}
-            aria-label={`${actionLabel} for ${appName}`}
-          >
-            {actionLabel}
-          </Button>
-        </div>
-        <div
-          data-slot="app-tile-secondary-action"
-          className="flex min-h-5 items-center justify-center"
-        >
-          {connected && onAddAnother ? (
-            <button
-              type="button"
-              onClick={onAddAnother}
-              className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-              aria-label={`Add another ${appName} account`}
-            >
-              Add new
-            </button>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
+  const action = connectorAction(row);
   return (
     <div
-      data-app-slug={appDefinitionSlug(entry)}
-      data-connected={connected ? "true" : "false"}
-      data-setup-pending={setupPending ? "true" : "false"}
-      className={
-        disabled
-          ? "flex h-full cursor-not-allowed flex-col rounded-xl border border-border bg-card px-4 py-4 text-left opacity-60"
-          : "flex h-full flex-col rounded-xl border border-border bg-card px-4 py-4 text-left"
-      }
+      role="listitem"
+      data-app-slug={row.slug}
+      data-connected={row.connections.length > 0 ? "true" : "false"}
+      className="overflow-hidden rounded-xl border border-border"
     >
-      <div className="flex items-start gap-3">
+      <div className="flex flex-wrap items-center gap-3 px-4 py-4">
         <AppLogo
-          name={appName}
-          logoUrl={appDefinitionLogoUrl(entry)}
-          darkLogoUrl={appDefinitionDarkLogoUrl(entry)}
+          name={row.name}
+          brandKey={row.brandKey}
+          logoUrl={row.logoUrl}
+          darkLogoUrl={row.darkLogoUrl}
           size={36}
         />
         <div className="min-w-0 flex-1">
-          <div
-            data-slot="app-tile-title"
-            className="break-words text-sm font-semibold leading-tight text-foreground"
-          >
-            {appName}
-          </div>
-          <div
-            data-slot="app-tile-header-status"
-            className="mt-1 flex min-h-5 items-center"
-          >
-            {connected && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-                <Check className="h-3 w-3" />
-                {connectedCount > 1
-                  ? `${connectedCount} connected`
-                  : "Connected"}
-              </span>
-            )}
-            {setupPending && (
-              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                Setup incomplete
-              </span>
-            )}
-          </div>
+          <h2 className="text-sm font-semibold text-foreground">{row.name}</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">{row.description}</p>
         </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={!action.href}
+          title={action.title}
+          onClick={() => {
+            if (action.href) onNavigate(action.href);
+          }}
+          aria-label={`${action.label} ${row.name}`}
+        >
+          {action.label}
+        </Button>
       </div>
-      <div className="mt-2 line-clamp-2 text-xs text-muted-foreground">
-        {appDefinitionDescription(entry)}
-      </div>
-      {unavailableReason ? (
-        <div className="mt-2 text-xs text-muted-foreground">
-          {unavailableReason}
+
+      {row.connections.length > 0 ? (
+        <div className="divide-y divide-border border-t border-border">
+          {row.connections.map((connection) => (
+            <ConnectionAccountRow
+              key={connection.id}
+              row={row}
+              connection={connection}
+              owner={connectionOwnerProfile(connection, userProfileById)}
+              onNavigate={onNavigate}
+              onRemove={() => {
+                const accountName = connectionDisplayNameForOwner(
+                  connection,
+                  row.name,
+                  connectionOwnerProfile(connection, userProfileById),
+                );
+                onRequestRemove({
+                  id: connection.id,
+                  accountName,
+                  providerName: row.name,
+                  remainingConnectionCount: row.connections.filter(
+                    (candidate) =>
+                      candidate.id !== connection.id &&
+                      candidate.status === "active" &&
+                      candidate.enabled,
+                  ).length,
+                  childConnectionCount: allConnections.filter(
+                    (candidate) => composioChildParentConnectionId(candidate) === connection.id,
+                  ).length,
+                });
+              }}
+            />
+          ))}
         </div>
       ) : null}
-      {connected || setupPending ? (
-        <div
-          data-slot="app-tile-details"
-          className="mt-auto border-t border-border pt-3"
-        >
-          {connectionName && (
+    </div>
+  );
+}
+
+function ConnectionAccountRow({
+  row,
+  connection,
+  owner,
+  onNavigate,
+  onRemove,
+}: {
+  row: ConnectorRowModel;
+  connection: ToolConnection;
+  owner: ConnectionOwnerProfile | null;
+  onNavigate: (href: string) => void;
+  onRemove: () => void;
+}) {
+  const state = connectionState(connection);
+  const actionHref = accountActionHref(row, connection);
+  const accountName = connectionDisplayNameForOwner(connection, row.name, owner);
+
+  return (
+    <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center">
+      <div className="flex min-w-0 flex-1 items-start gap-2.5">
+        <ConnectionStatusIcon state={state} />
+        <div className="min-w-0">
+          <button
+            type="button"
+            className="block max-w-full cursor-pointer truncate text-left text-sm font-medium text-foreground hover:underline focus-visible:underline"
+            aria-label={`Open ${accountName} permissions`}
+            onClick={() => onNavigate(`/apps/${connection.id}/permissions`)}
+          >
+            {accountName}
+          </button>
+          {state.message ? (
             <div
-              data-slot="app-tile-connection-name"
-              className="break-words text-sm font-medium text-foreground"
+              className={
+                state.kind === "attention"
+                  ? "truncate text-xs text-destructive"
+                  : "truncate text-xs text-muted-foreground"
+              }
             >
-              {connectionName}
-            </div>
-          )}
-          {owner ? (
-            <div className="mt-2 min-w-0">
-              <ConnectionOwnerIdentity owner={owner} />
+              {state.message}
             </div>
           ) : null}
-          <div
-            data-slot="app-tile-actions"
-            className="mt-3 flex items-center justify-end gap-2"
-          >
-            {onAddAnother && (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={onAddAnother}
-                aria-label={`Add another ${appName} account`}
-              >
-                Add new
-              </Button>
-            )}
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={disabled}
-              onClick={onPrimary}
-              className={connectedActionClass}
-              aria-label={`${actionLabel} for ${appName}`}
-            >
-              {actionLabel}
-            </Button>
-          </div>
         </div>
-      ) : (
-        <div
-          data-slot="app-tile-actions"
-          className="mt-auto flex justify-end pt-3"
-        >
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span>Connected by</span>
+          <ConnectionOwnerIdentity owner={owner} />
+        </div>
+        {state.kind === "attention" || state.kind === "draft" ? (
           <Button
             type="button"
             size="sm"
             variant="outline"
-            disabled={disabled}
-            onClick={onPrimary}
-            aria-label={`${actionLabel} for ${appName}`}
+            onClick={() => onNavigate(actionHref)}
           >
-            {actionLabel}
+            {state.kind === "attention" ? "Reconnect" : "Finish setup"}
           </Button>
-        </div>
-      )}
+        ) : null}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`Manage ${accountName} connection`}
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}>
+              Permissions
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={onRemove}>
+              <Trash2 />
+              Remove connection
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
+  );
+}
+
+function ConnectionStatusIcon({ state }: { state: ConnectionState }) {
+  if (state.kind === "connected") {
+    return (
+      <span className="mt-0.5 text-emerald-600 dark:text-emerald-400" title={state.label}>
+        <Check className="h-4 w-4" aria-hidden="true" />
+        <span className="sr-only">{state.label}</span>
+      </span>
+    );
+  }
+  if (state.kind === "attention") {
+    return (
+      <span className="mt-0.5 text-destructive" title={state.label}>
+        <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+        <span className="sr-only">{state.label}</span>
+      </span>
+    );
+  }
+  if (state.kind === "draft") {
+    return (
+      <span className="mt-0.5 text-amber-600 dark:text-amber-400" title={state.label}>
+        <Clock3 className="h-4 w-4" aria-hidden="true" />
+        <span className="sr-only">{state.label}</span>
+      </span>
+    );
+  }
+  return (
+    <span className="mt-0.5 text-muted-foreground" title={state.label}>
+      <PauseCircle className="h-4 w-4" aria-hidden="true" />
+      <span className="sr-only">{state.label}</span>
+    </span>
+  );
+}
+
+function CustomConnectorCard({ onNavigate }: { onNavigate: (href: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div
+      role="listitem"
+      data-app-slug="custom-mcp"
+      className="overflow-hidden rounded-xl border border-border"
+    >
+      <div className="flex flex-wrap items-center gap-3 px-4 py-4">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+          <Link2 className="h-4 w-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-foreground">Connect your own tool</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Add a custom MCP server or paste an existing configuration.
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          aria-expanded={expanded}
+          aria-controls="custom-connector-options"
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {expanded ? "Close" : "Connect"}
+        </Button>
+      </div>
+
+      {expanded ? (
+        <div
+          id="custom-connector-options"
+          className="grid gap-2 border-t border-border px-4 py-3 sm:grid-cols-2"
+        >
+          <CustomConnectorOption
+            icon={ServerCog}
+            title="Connect your own MCP server"
+            description="Enter the URL for a custom or self-hosted MCP server."
+            onClick={() => onNavigate("/apps/byo")}
+          />
+          <CustomConnectorOption
+            icon={ClipboardPaste}
+            title="Paste a config"
+            description="Paste an existing setup snippet and connect it."
+            onClick={() => onNavigate("/apps/advanced/paste-config")}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CustomConnectorOption({
+  icon: Icon,
+  title,
+  description,
+  onClick,
+}: {
+  icon: typeof ServerCog;
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex items-center gap-3 rounded-lg border border-border px-3 py-3 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"
+      onClick={onClick}
+    >
+      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border text-muted-foreground">
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-semibold text-foreground">{title}</span>
+        <span className="block text-xs text-muted-foreground">{description}</span>
+      </span>
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+    </button>
   );
 }

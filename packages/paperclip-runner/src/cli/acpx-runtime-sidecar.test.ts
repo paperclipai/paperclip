@@ -29,6 +29,21 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
+  it("shuts down without using readline after stdin closes", async () => {
+    const sidecar = startSidecar();
+    sidecar.write(initializeRequest(1, "codex"));
+    await expect(
+      sidecar.next((frame) => frame.id === 1),
+    ).resolves.toMatchObject({
+      id: 1,
+      ok: true,
+    });
+
+    await sidecar.close();
+
+    expect(sidecar.stderr()).not.toContain("ERR_USE_AFTER_CLOSE");
+  });
+
   it("keeps session admission closed while any cleanup owner remains", () => {
     const cleanup = Promise.resolve();
 

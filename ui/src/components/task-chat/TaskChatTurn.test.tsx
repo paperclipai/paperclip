@@ -476,6 +476,8 @@ describe("TaskChatTurn", () => {
     // expandable fold — so expanding the tool history can't drag it down.
     expect(fold()?.contains(lead!)).toBe(false);
     expect(summaryBtn()).not.toBeNull();
+    expect(summaryBtn()!.compareDocumentPosition(lead!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(lead?.parentElement?.parentElement?.className).toContain("justify-between");
     // Expanding still works and the leading slot stays put outside the fold.
     flushSync(() => summaryBtn()!.click());
     expect(fold()?.getAttribute("data-folded")).toBe("false");

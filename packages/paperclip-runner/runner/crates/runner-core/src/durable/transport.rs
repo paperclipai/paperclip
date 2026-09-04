@@ -1627,6 +1627,8 @@ mod tests {
             item_id: "item_1".to_owned(),
             runner_version: "0.0.0".to_owned(),
             runner_digest: "sha256:test".to_owned(),
+            acpx_launch_profile: None,
+            opencode_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
@@ -2456,6 +2458,22 @@ mod tests {
             );
             let shutdown_result = receive_secure(&mut second, &mut second_secure, &server_config);
             assert_eq!(shutdown_result["kind"], "command_result");
+            send_secure(
+                &mut second,
+                &mut second_secure,
+                &server_config,
+                &control(
+                    &server_state,
+                    "connection_2",
+                    "command_result_ack",
+                    json!({
+                        "commandId": "command_shutdown",
+                        "commandType": "runner.shutdown",
+                        "controllerSeq": 2,
+                        "status": "completed",
+                    }),
+                ),
+            );
         });
 
         let session_open_calls = Arc::new(AtomicUsize::new(0));
@@ -2477,6 +2495,7 @@ mod tests {
         let final_state: DurableState = serde_json::from_slice(&state_bytes).unwrap();
         assert_eq!(final_state.acked_source_seq, 1);
         assert!(final_state.outbox.is_empty());
+        assert!(final_state.pending_terminal_delivery.is_none());
         assert_eq!(final_state.reconnect_count, 1);
         std::fs::remove_dir_all(directory).unwrap();
     }

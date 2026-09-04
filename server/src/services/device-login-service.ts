@@ -163,6 +163,16 @@ export interface CredentialPromotionContext {
  */
 export interface CredentialPromotion {
   promote(authBytes: Buffer, context: CredentialPromotionContext): void | Promise<void>;
+  /**
+   * Wraps the service's terminal "authenticated" commit, immediately before
+   * the service runs it. A promotion that already bound and validated a
+   * value in `promote` can hold the SAME lock across this call, so a write
+   * that would invalidate that value cannot land in the gap between the
+   * earlier validation and this terminal commit. When the wrapper throws,
+   * the service records a failed login instead of `authenticated` and never
+   * runs `commit`. A promotion that omits this runs `commit` directly.
+   */
+  runTerminalCommit?<T>(commit: () => Promise<T>, context: CredentialPromotionContext): Promise<T>;
 }
 
 /** The redacted lifecycle phases. Each phase carries no secret data. */
@@ -1082,15 +1092,41 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
       // Publish `authenticated` only when the final conditional write still finds
       // the held claim. A lost write means the claim expired and the reaper
       // reclaimed the row, so the service never publishes `authenticated`.
-      return await terminate({
+      const commitAuthenticated = () =>
+        terminate({
+          sessionId,
+          lease,
+          terminal: "authenticated",
+          reason: null,
+          expectedStatuses: ["promoting"],
+          conditionalTransition,
+          activity,
+        });
+      const promotionContext: CredentialPromotionContext = {
         sessionId,
-        lease,
-        terminal: "authenticated",
-        reason: null,
-        expectedStatuses: ["promoting"],
-        conditionalTransition,
-        activity,
-      });
+        companyId: input.companyId,
+        startedByUserId: input.startedByUserId,
+        adapterType: input.adapterType,
+      };
+      try {
+        return profile.promotion.runTerminalCommit
+          ? await profile.promotion.runTerminalCommit(commitAuthenticated, promotionContext)
+          : await commitAuthenticated();
+      } catch {
+        // The wrapped final check rejected the value `promote` bound earlier
+        // (for example, a rotation landed after that validation). The login
+        // did not finish, so fail closed the same way a `promote` rejection
+        // does: never publish `authenticated`, still delete the sandbox.
+        return await terminate({
+          sessionId,
+          lease,
+          terminal: "failed",
+          reason: "promotion_failed",
+          expectedStatuses: ["promoting"],
+          conditionalTransition,
+          activity,
+        });
+      }
     }
 
     const terminal: AdapterAuthSessionStatus =

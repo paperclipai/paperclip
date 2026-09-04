@@ -47,6 +47,7 @@ pub struct AcpxProviderSessionIdentity {
     pub effective_model: String,
     #[serde(default)]
     pub permission_mode: Option<AcpxPermissionMode>,
+    pub provider_lifetime_fence_candidates: [u16; 3],
 }
 
 #[derive(Clone, Debug)]
@@ -186,6 +187,21 @@ impl AcpxProviderSessionIdentity {
                 )));
             }
         }
+        if self
+            .provider_lifetime_fence_candidates
+            .iter()
+            .any(|port| *port < 49_152)
+            || self.provider_lifetime_fence_candidates[0]
+                == self.provider_lifetime_fence_candidates[1]
+            || self.provider_lifetime_fence_candidates[0]
+                == self.provider_lifetime_fence_candidates[2]
+            || self.provider_lifetime_fence_candidates[1]
+                == self.provider_lifetime_fence_candidates[2]
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider lifetime fence candidates are invalid",
+            ));
+        }
         Ok(())
     }
 }
@@ -213,7 +229,8 @@ impl AcpxProviderSession {
                 LocalRunnerError::invalid(format!("ACPX authorized tools are invalid: {error}"))
             })?;
         let reserved_tool_bridge = reserved_terminal_tool_bridge()?;
-        let mut transport = AcpxSidecarTransport::start(&config.transport)?;
+        let mut transport =
+            AcpxSidecarTransport::start_for_agent(&config.transport, &config.agent)?;
         let bootstrap = bootstrap(&mut transport, config);
         let (identity, state) = match bootstrap {
             Ok(value) => value,
@@ -678,6 +695,31 @@ impl AcpxProviderSession {
         }
     }
 
+    /// Reaps an active provider generation at a controller-owned suspension
+    /// boundary without waiting for the provider's graceful close protocol.
+    ///
+    /// A governed Paperclip result can settle the run while the model is still
+    /// waiting for its semantic-tool callback to unwind. In that state the
+    /// ordinary sidecar close path may wait for the callback longer than the
+    /// server process that owns this runner. Process-group termination closes
+    /// this session's transport authority. The caller must additionally
+    /// acquire the identity's inherited lifetime-fence quorum before
+    /// persisting the durable session as attachable.
+    pub fn terminate_active_turn_for_suspension(
+        &mut self,
+        turn_id: &str,
+    ) -> Result<(), LocalRunnerError> {
+        self.ensure_open()?;
+        validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
+        if self.state.active_turn_id() != Some(turn_id) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX suspension termination named a stale or inactive turn",
+            ));
+        }
+        self.closed = true;
+        self.terminate_transport()
+    }
+
     fn terminate_transport(&mut self) -> Result<(), LocalRunnerError> {
         if self.transport_terminated {
             return Ok(());
@@ -705,7 +747,10 @@ impl AcpxProviderSession {
 
         let mut restart_config = self.config.clone();
         restart_config.expected_identity = Some(self.identity.clone());
-        let mut replacement = AcpxSidecarTransport::start(&restart_config.transport)?;
+        let mut replacement = AcpxSidecarTransport::start_for_agent(
+            &restart_config.transport,
+            &restart_config.agent,
+        )?;
         let (replacement_identity, _) = match bootstrap(&mut replacement, &restart_config) {
             Ok(value) => value,
             Err(error) => {
@@ -821,6 +866,15 @@ fn validate_reserved_terminal_value(
 }
 
 fn reserved_terminal_tool_bridge() -> Result<ProviderToolBridge, LocalRunnerError> {
+    let tool_set = reserved_terminal_tool_set()?;
+    let mut bridge = ProviderToolBridge::default();
+    bridge.prepare(tool_set).map_err(|error| {
+        LocalRunnerError::invalid(format!("ACPX reserved terminal tools are invalid: {error}"))
+    })?;
+    Ok(bridge)
+}
+
+fn reserved_terminal_tool_set() -> Result<AuthorizedToolSet, LocalRunnerError> {
     let result_schema: Value = serde_json::from_str(include_str!(
         "../../../../protocol/schemas/result.schema.json"
     ))
@@ -844,18 +898,33 @@ fn reserved_terminal_tool_bridge() -> Result<ProviderToolBridge, LocalRunnerErro
     let catalog_digest = authorized_tool_catalog_digest(&operations).map_err(|error| {
         LocalRunnerError::invalid(format!("ACPX reserved terminal tools are invalid: {error}"))
     })?;
-    let mut bridge = ProviderToolBridge::default();
-    bridge
-        .prepare(AuthorizedToolSet {
-            schema: TOOL_SET_SCHEMA.to_owned(),
-            schema_version: 1,
-            catalog_digest,
-            operations,
+    Ok(AuthorizedToolSet {
+        schema: TOOL_SET_SCHEMA.to_owned(),
+        schema_version: 1,
+        catalog_digest,
+        operations,
+    })
+}
+
+fn sidecar_run_tool_operations(run_tool_set: &AuthorizedToolSet) -> Vec<Value> {
+    // The authenticated TypeScript bridge installs the trusted terminal tools
+    // itself and rejects caller attempts to replace either reserved schema.
+    // Project the durable Rust catalog into the bridge's public tool shape;
+    // forwarding AuthorizedTool verbatim would expose `operationId` where the
+    // bridge requires `name` and reject every non-empty catalog at admission.
+    // Rust keeps its independent reserved receipt ledger and validates terminal
+    // values after the sidecar reports them.
+    run_tool_set
+        .operations
+        .iter()
+        .map(|tool| {
+            json!({
+                "name": tool.operation_id,
+                "description": tool.description,
+                "inputSchema": tool.input_schema,
+            })
         })
-        .map_err(|error| {
-            LocalRunnerError::invalid(format!("ACPX reserved terminal tools are invalid: {error}"))
-        })?;
-    Ok(bridge)
+        .collect()
 }
 
 fn validate_prp_run_result(value: &Value) -> Result<(), LocalRunnerError> {
@@ -887,6 +956,7 @@ fn bootstrap(
     transport: &mut AcpxSidecarTransport,
     config: &AcpxProviderSessionConfig,
 ) -> Result<(AcpxProviderSessionIdentity, AcpxProviderState), LocalRunnerError> {
+    let sidecar_tools = sidecar_run_tool_operations(&config.tool_set);
     let initialized = transport.request(
         GeneratedAcpxSidecarCommand::Initialize,
         json!({"agent": config.agent, "model": config.model}),
@@ -905,7 +975,7 @@ fn bootstrap(
             "permissionModePinned": config.permission_mode_pinned,
             "systemInstructions": config.system_instructions,
             "runtimeContext": Value::Null,
-            "tools": config.tool_set.operations,
+            "tools": &sidecar_tools,
             "expectedIdentity": config.expected_identity,
         }),
     )?;
@@ -916,7 +986,7 @@ fn bootstrap(
         json!({
             "runId": config.run_id,
             "catalogRevision": config.catalog_revision,
-            "tools": config.tool_set.operations,
+            "tools": &sidecar_tools,
         }),
     )?;
     if attached.get("runId").and_then(Value::as_str) != Some(config.run_id.as_str())
@@ -1113,5 +1183,46 @@ fn with_cleanup_error(
         Err(cleanup) => LocalRunnerError::invalid(format!(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidecar_catalog_leaves_reserved_terminal_tools_to_the_trusted_bridge() {
+        let operations = vec![AuthorizedTool {
+            operation_id: "get_task_context".to_owned(),
+            version: 1,
+            description: "Read the task context.".to_owned(),
+            input_schema: json!({"type":"object"}),
+            response_schema: json!({"type":"object"}),
+        }];
+        let run_tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+
+        let sidecar_tools = sidecar_run_tool_operations(&run_tool_set);
+        assert_eq!(
+            sidecar_tools
+                .iter()
+                .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["get_task_context"]
+        );
+        assert_eq!(run_tool_set.operations.len(), 1);
+        assert_eq!(
+            sidecar_tools[0],
+            json!({
+                "name": "get_task_context",
+                "description": "Read the task context.",
+                "inputSchema": {"type":"object"},
+            })
+        );
+        assert!(sidecar_tools[0].get("operationId").is_none());
     }
 }

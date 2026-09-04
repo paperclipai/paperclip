@@ -63,6 +63,12 @@ vi.mock("@/components/issue-properties/IssuePropertiesPlansTab", () => ({
   IssuePropertiesPlansTab: () => <div>Plan content</div>,
 }));
 
+vi.mock("@/components/task-detail/TaskDetailRelationsPanel", () => ({
+  TaskDetailSubtasksPanel: ({ items }: { items: Issue[] }) => (
+    <div>{`Subtasks content: ${items.length}`}</div>
+  ),
+}));
+
 vi.mock("@/components/WorkspaceFileBrowser", () => ({
   WorkspaceFileBrowser: () => <div>Files browser</div>,
 }));
@@ -156,6 +162,80 @@ describe("TaskSidePanel", () => {
     await render(panel());
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
     expect(container.textContent).toContain("Properties content");
+  });
+
+  it("uses the approved pre-rebase tab appearance for Streamlined UI", async () => {
+    await render(panel({ streamlinedTabs: true }));
+    const propertiesTab = container.querySelector<HTMLElement>('[data-side-panel-tab-target="properties"]');
+    expect(propertiesTab?.className).toContain("text-sm");
+    expect(propertiesTab?.querySelector("svg")).toBeNull();
+    expect(container.querySelector('[data-side-panel-tab-wrapper="properties"]')?.className).toContain("mx-1.5");
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Close Properties"]')?.className)
+      .toContain("opacity-0");
+    const addButton = container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]');
+    expect(addButton?.className).toContain("h-(--side-panel-tab-height)");
+    expect(addButton?.className).toContain("w-(--side-panel-tab-height)");
+    expect(addButton?.className).toContain("hover:bg-accent");
+  });
+
+  it("shows an uncounted Subtasks tab only when Streamlined UI has child tasks", async () => {
+    const children = [
+      issue({ id: "child-1", title: "First child" }),
+      issue({ id: "child-2", title: "Second child" }),
+    ];
+    await render(panel({ childIssues: children, showSubtasksTab: true, streamlinedTabs: true }));
+
+    const propertiesTab = container.querySelector<HTMLElement>('[data-side-panel-tab-target="properties"]');
+    const subtasksTab = container.querySelector<HTMLButtonElement>('[data-side-panel-tab-target="subtasks"]');
+    expect(propertiesTab?.getAttribute("aria-selected")).toBe("true");
+    expect(subtasksTab?.textContent?.trim()).toBe("Subtasks");
+    expect(subtasksTab?.getAttribute("aria-label")).toBe("Subtasks");
+
+    await act(async () => subtasksTab?.click());
+    expect(container.textContent).toContain("Subtasks content: 2");
+  });
+
+  it("inserts Subtasks after Properties when child tasks load later", async () => {
+    await render(panel({ childIssues: [], showSubtasksTab: true, streamlinedTabs: true }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+    const artifactsItem = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((item) => item.textContent?.includes("Artifacts"));
+    await act(async () => artifactsItem?.click());
+
+    await render(panel({
+      childIssues: [issue({ id: "child-1" })],
+      showSubtasksTab: true,
+      streamlinedTabs: true,
+    }));
+
+    expect(Array.from(container.querySelectorAll('[role="tab"]')).map((tab) => tab.getAttribute("data-side-panel-tab-target")))
+      .toEqual(["properties", "subtasks", "artifacts"]);
+  });
+
+  it("hides Subtasks for tasks without children and when Streamlined UI is off", async () => {
+    await render(panel({ childIssues: [], showSubtasksTab: true }));
+    expect(container.querySelector('[data-side-panel-tab-target="subtasks"]')).toBeNull();
+
+    await render(panel({ childIssues: [issue({ id: "child-1" })], showSubtasksTab: false }));
+    expect(container.querySelector('[data-side-panel-tab-target="subtasks"]')).toBeNull();
+  });
+
+  it("reopens a closed Subtasks tab from the launcher", async () => {
+    await render(panel({
+      childIssues: [issue({ id: "child-1" })],
+      showSubtasksTab: true,
+      streamlinedTabs: true,
+    }));
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Subtasks"]')?.click());
+    expect(container.querySelector('[data-side-panel-tab-target="subtasks"]')).toBeNull();
+
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());
+    const launcherItem = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'))
+      .find((item) => item.textContent?.includes("Subtasks"));
+    expect(launcherItem).not.toBeUndefined();
+    await act(async () => launcherItem?.click());
+    expect(container.querySelector('[data-side-panel-tab-target="subtasks"]')).not.toBeNull();
   });
 
   it("does not create a Plan tab for planning mode before a plan exists", async () => {

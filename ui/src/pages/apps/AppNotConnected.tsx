@@ -1,23 +1,14 @@
 import { useEffect, useMemo } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { ToolConnection } from "@paperclipai/shared";
-import {
-  connectionDisplaySecondaryHint,
-  isConnectableAppSlug,
-  isToolConnectionAttentionHealth,
-} from "@paperclipai/shared";
+import { isConnectableAppSlug } from "@paperclipai/shared";
 import { Navigate, useNavigate, useParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
-import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
-import { timeAgo } from "@/lib/timeAgo";
 import { toolsApi } from "@/api/tools";
-import { agentsApi } from "@/api/agents";
-import { accessApi } from "@/api/access";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { buildCompanyUserProfileMap, type CompanyUserProfile } from "@/lib/company-members";
 import { AppLogo } from "./AppLogo";
 import {
   appApplicationSourceSlug,
@@ -27,22 +18,14 @@ import {
   appDefinitionSlug,
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
-import { connectionAddress, connectionTransportLabel, DangerZone } from "./AppDetail";
-import { ActivityPanel } from "./app-detail/ActivityPanel";
+import { connectionAddress } from "./AppDetail";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { appApplicationTabHref, appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
-import {
-  ConnectionOwnerIdentity,
-  connectionDisplayNameForOwner,
-  connectionOwnerProfile,
-} from "./connection-owner";
 
 export function AppNotConnected() {
   const { applicationId = "", tab } = useParams<{ applicationId: string; tab?: string }>();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const { pushToast } = useToast();
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const activeTab: AppTabKey | null = isAppTabKey(tab) ? tab : null;
 
@@ -59,11 +42,6 @@ export function AppNotConnected() {
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listGallery(selectedCompanyId!),
-    enabled: !!selectedCompanyId && !!activeTab,
-  });
-  const userDirectoryQuery = useQuery({
-    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
-    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId && !!activeTab,
   });
 
@@ -91,63 +69,34 @@ export function AppNotConnected() {
   );
   const activeConnection = activeConnections[0] ?? null;
   const previousConnection = useMemo(() => latestArchivedConnection(appConnections), [appConnections]);
-  const userProfileById = useMemo(
-    () => buildCompanyUserProfileMap(userDirectoryQuery.data?.users),
-    [userDirectoryQuery.data],
-  );
-  const activityQuery = useQuery({
-    queryKey: queryKeys.tools.connectionActivity(previousConnection?.id ?? "__none__"),
-    queryFn: () => toolsApi.listConnectionActivity(previousConnection!.id, 20),
-    enabled: !!previousConnection && activeTab === "activity",
-  });
   const grantsQuery = useQuery({
     queryKey: queryKeys.tools.connectionGrants(previousConnection?.id ?? "__none__"),
     queryFn: () => toolsApi.listConnectionGrants(previousConnection!.id),
-    enabled: !!previousConnection && activeTab === "setup",
-  });
-  const agentsQuery = useQuery({
-    queryKey: queryKeys.agents.list(selectedCompanyId ?? "__none__"),
-    queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && activeTab === "activity",
+    enabled: !!previousConnection && !!activeTab,
   });
 
   const appName = application?.name ?? "App";
   useEffect(() => {
     if (!activeTab) return;
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
-      { label: appName, href: appApplicationTabHref(applicationId, "setup") },
+      { label: "Connectors", href: "/apps" },
+      { label: appName, href: appApplicationTabHref(applicationId, "permissions") },
       { label: appTabLabel(activeTab) },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name, appName, applicationId, activeTab]);
+  }, [setBreadcrumbs, appName, applicationId, activeTab]);
 
-  const remove = useMutation({
-    mutationFn: () => toolsApi.updateApplication(applicationId, { status: "archived" }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__") });
-      pushToast({
-        title: "App removed",
-        body: `${appName} no longer shows in your apps. You can connect it again any time.`,
-        tone: "success",
-      });
-      navigate("/apps/connections");
-    },
-    onError: (error) => {
-      pushToast({
-        title: "Couldn’t remove the app",
-        body: error instanceof Error ? error.message : "Please try again.",
-        tone: "error",
-      });
-    },
-  });
-
+  if (tab === "activity") {
+    return <Navigate to="/activity?action=tool_" replace />;
+  }
+  if (tab === "setup" || tab === "test") {
+    return <Navigate to={appApplicationTabHref(applicationId, "permissions")} replace />;
+  }
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage apps.</div>;
   }
   if (!applicationId || !activeTab) {
-    return <Navigate to={applicationId ? appApplicationTabHref(applicationId, "setup") : "/apps/connections"} replace />;
+    return <Navigate to={applicationId ? appApplicationTabHref(applicationId, "permissions") : "/apps"} replace />;
   }
   if (applicationsQuery.isLoading || connectionsQuery.isLoading) {
     return (
@@ -161,12 +110,15 @@ export function AppNotConnected() {
     return (
       <div className="max-w-3xl space-y-3 p-6 text-sm text-muted-foreground">
         <p>This app doesn’t exist anymore.</p>
-        <Button variant="outline" size="sm" onClick={() => navigate("/apps/connections")}>Back to apps</Button>
+        <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>Back to connectors</Button>
       </div>
     );
   }
-  if (activeConnection && activeTab !== "setup") {
+  if (activeConnection) {
     return <Navigate to={appTabHref(activeConnection.id, activeTab)} replace />;
+  }
+  if (activeTab === "services") {
+    return <Navigate to={appApplicationTabHref(applicationId, "permissions")} replace />;
   }
 
   const gallery = (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[];
@@ -224,26 +176,13 @@ export function AppNotConnected() {
         connectedCount={activeConnections.length}
       />
 
-      {activeTab === "setup" && (
-        <div className="space-y-8">
-          <SetupTab
-            applicationName={application.name}
-            activeConnections={activeConnections}
-            previousConnection={previousConnection}
-            previousAddress={previousAddress}
-            userProfileById={userProfileById}
-            canReconnect={canReconnect}
-            reconnectUnavailableMessage={reconnectUnavailableMessage}
-            onConnect={() => navigate(connectHref)}
-            onEdit={(connectionId) => navigate(appTabHref(connectionId, "setup"))}
-          />
-          <DangerZone
-            appName={application.name}
-            removing={remove.isPending}
-            onRemove={() => remove.mutate()}
-          />
-        </div>
-      )}
+      <ConnectionCallout
+        applicationName={application.name}
+        previousConnection={previousConnection}
+        canReconnect={canReconnect}
+        reconnectUnavailableMessage={reconnectUnavailableMessage}
+        onConnect={() => navigate(connectHref)}
+      />
       {activeTab === "review" && (
         previousConnection ? (
           <ReviewPanel connectionId={previousConnection.id} />
@@ -256,37 +195,6 @@ export function AppNotConnected() {
       )}
       {activeTab === "permissions" && (
         <PermissionsTab previousConnection={previousConnection} />
-      )}
-      {activeTab === "test" && (
-        <EmptyTab
-          title="Reconnect to test this app."
-          body="Testing becomes available after this app is connected again."
-        />
-      )}
-      {activeTab === "activity" && (
-        previousConnection ? (
-          <ActivityPanel
-            events={activityQuery.data?.events ?? []}
-            lifecycleEvents={activityQuery.data?.lifecycleEvents ?? []}
-            issues={activityQuery.data?.issues ?? {}}
-            actionRequests={activityQuery.data?.actionRequests ?? {}}
-            loading={activityQuery.isLoading}
-            agents={agentsQuery.data ?? []}
-            connectionId={previousConnection.id}
-            appName={appName}
-          />
-        ) : (
-          <ActivityPanel
-            events={[]}
-            lifecycleEvents={[]}
-            issues={{}}
-            actionRequests={{}}
-            loading={false}
-            agents={[]}
-            connectionId=""
-            appName={appName}
-          />
-        )
       )}
     </div>
   );
@@ -323,155 +231,39 @@ function ApplicationHeader({
   );
 }
 
-function SetupTab({
+function ConnectionCallout({
   applicationName,
-  activeConnections,
   previousConnection,
-  previousAddress,
-  userProfileById,
   canReconnect,
   reconnectUnavailableMessage,
   onConnect,
-  onEdit,
 }: {
   applicationName: string;
-  activeConnections: ToolConnection[];
   previousConnection: ToolConnection | null;
-  previousAddress: string | null;
-  userProfileById: ReadonlyMap<string, CompanyUserProfile>;
   canReconnect: boolean;
   reconnectUnavailableMessage: string;
   onConnect: () => void;
-  onEdit: (connectionId: string) => void;
-}) {
-  if (activeConnections.length > 0) {
-    return (
-      <div className="space-y-6">
-        <section className="space-y-3">
-          <div>
-            <h2 className="text-sm font-bold text-foreground">Already connected to {applicationName}</h2>
-            <p className="mt-0.5 text-sm text-muted-foreground">
-              Edit an existing connection, or deliberately add another account below.
-            </p>
-          </div>
-          <div className="divide-y divide-border">
-            {activeConnections.map((connection) => {
-              const owner = connectionOwnerProfile(connection, userProfileById);
-              const secondary = connectionDisplaySecondaryHint(connection) ??
-                (connection.lastUsedAt ? `Last used ${timeAgo(connection.lastUsedAt)}` : "Not used yet");
-              const status = connection.enabled === false || connection.status === "disabled"
-                ? "Paused"
-                : isToolConnectionAttentionHealth(connection.healthStatus)
-                  ? "Needs attention"
-                  : "Connected";
-              return (
-                <button
-                  key={connection.id}
-                  type="button"
-                  onClick={() => onEdit(connection.id)}
-                  className="flex w-full items-center gap-3 py-3 text-left transition-colors hover:bg-muted/30"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-foreground">
-                      {connectionDisplayNameForOwner(connection, applicationName, owner)}
-                    </div>
-                    <div className="truncate text-xs text-muted-foreground">{secondary}</div>
-                  </div>
-                  <ConnectionOwnerIdentity owner={owner} />
-                  <span className="text-xs text-muted-foreground">{status}</span>
-                  <span className="text-xs font-semibold text-primary">Edit →</span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        <section>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-bold text-foreground">Connect another</h2>
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                Add another {applicationName} account without changing the connections above.
-              </p>
-            </div>
-            <Button onClick={onConnect}>Connect another</Button>
-          </div>
-        </section>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <section>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-bold text-foreground">
-              {previousConnection ? "Reconnect this app" : "Connect this app"}
-            </h2>
-            <p className="mt-0.5 text-sm text-muted-foreground">
-              {previousConnection
-                ? previousConnection.authKind === "oauth"
-                  ? "We kept the previous setup. Sign in again to bring it back online."
-                  : "We kept the previous setup. Add a working key to bring it back online."
-                : "Agents can't use it until it's connected."}
-            </p>
-            {previousConnection && !canReconnect ? (
-              <p className="mt-1 text-sm text-muted-foreground">{reconnectUnavailableMessage}</p>
-            ) : null}
-          </div>
-          {!previousConnection || canReconnect ? (
-            <Button onClick={onConnect}>
-              {previousConnection ? "Reconnect" : "Connect"}
-            </Button>
-          ) : null}
-        </div>
-      </section>
-
-      {previousConnection && (
-        <PreviousSetup
-          connection={previousConnection}
-          previousAddress={previousAddress}
-          owner={connectionOwnerProfile(previousConnection, userProfileById)}
-        />
-      )}
-    </div>
-  );
-}
-
-function PreviousSetup({
-  connection,
-  previousAddress,
-  owner,
-}: {
-  connection: ToolConnection;
-  previousAddress: string | null;
-  owner: CompanyUserProfile | null;
 }) {
   return (
-    <section>
-      <h2 className="text-sm font-bold text-foreground">Previous setup</h2>
-      {owner && (
-        <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span>Connected by</span>
-          <ConnectionOwnerIdentity owner={owner} />
-        </div>
-      )}
-      {connection.healthMessage && (
-        <p className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          Last error: {connection.healthMessage}
+    <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border px-4 py-3">
+      <div>
+        <h2 className="text-sm font-semibold text-foreground">
+          {previousConnection ? "Needs attention" : "Not connected"}
+        </h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          {previousConnection
+            ? previousConnection.authKind === "oauth"
+              ? `Sign in to ${applicationName} again to restore access.`
+              : `Add a working ${applicationName} key to restore access.`
+            : `Connect ${applicationName} so agents can use it.`}
         </p>
-      )}
-      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-(--gtc-59)">
-        <dt className="text-muted-foreground">Address</dt>
-        <dd className="break-all font-mono text-foreground">{previousAddress}</dd>
-        <dt className="text-muted-foreground">Connection type</dt>
-        <dd className="text-foreground">{connectionTransportLabel(connection.transport)}</dd>
-        <dt className="text-muted-foreground">Last used</dt>
-        <dd className="text-foreground">
-          {connection.lastUsedAt ? timeAgo(connection.lastUsedAt) : "Never"}
-        </dd>
-      </dl>
+        {previousConnection && !canReconnect ? (
+          <p className="mt-1 text-sm text-muted-foreground">{reconnectUnavailableMessage}</p>
+        ) : null}
+      </div>
+      {!previousConnection || canReconnect ? (
+        <Button onClick={onConnect}>{previousConnection ? "Reconnect" : "Connect"}</Button>
+      ) : null}
     </section>
   );
 }

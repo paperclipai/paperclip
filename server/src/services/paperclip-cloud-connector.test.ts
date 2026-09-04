@@ -12,6 +12,7 @@ import {
   createPaperclipCloudConnector,
   GMAIL_CONNECTOR_SCOPES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  paperclipCloudConnectorCapabilitiesFromEnv,
   paperclipCloudConnectorConfigFromEnv,
   PaperclipCloudConnectorError,
   type PaperclipCloudConnectorConfig,
@@ -68,6 +69,10 @@ describe("Paperclip Cloud connector", () => {
       });
       return Response.json({
         confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        handoff: {
+          kind: "tenant_background",
+          session: "broker_state_abcdefghijklmnop",
+        },
         expiresAt: "2026-08-21T20:00:00.000Z",
       }, { status: 201 });
     });
@@ -78,7 +83,45 @@ describe("Paperclip Cloud connector", () => {
       companyId,
       returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
       returnState: "state-1",
-    })).resolves.toMatchObject({ authorizationUrl: expect.stringContaining("/connections/confirm") });
+    })).resolves.toMatchObject({
+      authorizationUrl: expect.stringContaining("/connections/confirm"),
+      handoff: {
+        kind: "paperclip_cloud",
+        session: "broker_state_abcdefghijklmnop",
+      },
+    });
+  });
+
+  it("keeps legacy session responses compatible and rejects malformed handoff descriptors", async () => {
+    const keys = config();
+    const legacy = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({
+        confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        expiresAt: "2099-08-21T20:00:00.000Z",
+      })) as typeof fetch,
+    });
+    await expect(legacy.startAuthorization({
+      subject,
+      companyId,
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "state-legacy",
+    })).resolves.not.toHaveProperty("handoff");
+
+    const malformed = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({
+        confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        handoff: { kind: "tenant_background", session: "not valid" },
+        expiresAt: "2099-08-21T20:00:00.000Z",
+      })) as typeof fetch,
+    });
+    await expect(malformed.startAuthorization({
+      subject,
+      companyId,
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "state-malformed",
+    })).rejects.toMatchObject({ code: "CONNECTOR_BAD_RESPONSE" });
   });
 
   it("opens an instance-sealed claim and verifies its user, company, and exact scopes", async () => {
@@ -270,6 +313,13 @@ describe("Paperclip Cloud connector", () => {
     })();
     expect(legacyError).toMatchObject({ code: "CONNECTOR_MIGRATION_REQUIRED" });
     expect(String(legacyError)).toContain("incompatible legacy protocol");
+  });
+
+  it("keeps gallery capability discovery available during incomplete enrollment", async () => {
+    await expect(paperclipCloudConnectorCapabilitiesFromEnv({
+      PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: "https://my-staging.paperclip.app",
+      PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "staging",
+    })).resolves.toEqual([]);
   });
 });
 

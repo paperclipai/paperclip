@@ -951,9 +951,17 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ]);
   });
 
-  it("projects a yielded run-result summary into the durable final slot", () => {
+  it("keeps a yielded run-result and provider wait prose out of the durable final slot", () => {
     expect(
       paperclipRunnerFinalResponse([
+        {
+          id: "provider-wait",
+          kind: "message",
+          author: "agent",
+          text: "Waiting for Review browser RTS plan.",
+          channel: "final",
+          streaming: false,
+        },
         {
           id: "result",
           kind: "protocol",
@@ -967,11 +975,7 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
           artifacts: [],
         },
       ]),
-    ).toMatchObject({
-      kind: "message",
-      channel: "final",
-      text: "Waiting for Review browser RTS plan.",
-    });
+    ).toBeUndefined();
   });
 
   it("keeps a saved plan at its write_document boundary", () => {
@@ -1026,25 +1030,49 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
       plan.id,
       "commentary-3:",
     ]);
+    expect(
+      embedded.find((item) => item.kind === "plan_document"),
+    ).toMatchObject({ placement: "write_boundary" });
+  });
+
+  it("retains a saved plan as an explicit fallback when its write boundary is unavailable", () => {
+    const plan: TaskChatPlanDocumentItem = {
+      id: "plan-doc:revision-fallback",
+      kind: "plan_document",
+      document: {} as TaskChatPlanDocumentItem["document"],
+    };
+
+    expect(
+      embedPlanDocumentAtWriteBoundary(
+        [commentary("commentary", "Transcript is still hydrating.")],
+        plan,
+      ),
+    ).toEqual([
+      commentary("commentary", "Transcript is still hydrating."),
+      { ...plan, placement: "fallback" },
+    ]);
   });
 });
 
 describe("transcriptToTaskChatItems native usage", () => {
   it("does not merge progress and final runner messages", () => {
-    const items = transcriptToTaskChatItems([
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "Checking files.",
-        channel: "progress",
-      },
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "The change is ready.",
-        channel: "final",
-      },
-    ], { runId: "native-run", running: true });
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Checking files.",
+          channel: "progress",
+        },
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "The change is ready.",
+          channel: "final",
+        },
+      ],
+      { runId: "native-run", running: true },
+    );
 
     expect(items).toEqual([
       expect.objectContaining({
@@ -1062,68 +1090,196 @@ describe("transcriptToTaskChatItems native usage", () => {
     ]);
   });
 
-  it("renders runner usage without inventing a context-window size", () => {
-    const items = transcriptToTaskChatItems([{
-      kind: "result",
-      ts: TS,
-      text: "",
-      inputTokens: 40,
-      outputTokens: 10,
-      cachedTokens: 5,
-      costUsd: 0.02,
-      subtype: "paperclip_runner_usage",
-      isError: false,
-      errors: [],
-    }], { runId: "native-run", running: true });
+  it("keeps separate completed commentary items as separate chronological paragraphs", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "I am checking the existing behavior.",
+          channel: "progress",
+          itemId: "message-1",
+        },
+        {
+          kind: "assistant",
+          ts: "2026-07-31T12:00:01.000Z",
+          text: "The implementation is ready.",
+          channel: "progress",
+          itemId: "message-2",
+        },
+      ],
+      { runId: "native-run", running: false },
+    );
 
-    expect(items).toEqual([{
-      id: "native-run:usage:0",
-      kind: "usage",
-      usage: {
-        used: 55,
-        size: 0,
-        inputTokens: 40,
-        outputTokens: 10,
-        costUsd: 0.02,
+    expect(items).toEqual([
+      expect.objectContaining({
+        kind: "message",
+        text: "I am checking the existing behavior.",
+      }),
+      expect.objectContaining({
+        kind: "message",
+        text: "The implementation is ready.",
+      }),
+    ]);
+  });
+
+  it("coalesces only streaming chunks that share an item identity", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Still ",
+          channel: "progress",
+          delta: true,
+          itemId: "message-1",
+        },
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "working",
+          channel: "progress",
+          delta: true,
+          itemId: "message-1",
+        },
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Next message",
+          channel: "progress",
+          delta: true,
+          itemId: "message-2",
+        },
+      ],
+      { runId: "native-run", running: true },
+    );
+
+    expect(items).toEqual([
+      expect.objectContaining({ kind: "message", text: "Still working" }),
+      expect.objectContaining({ kind: "message", text: "Next message" }),
+    ]);
+  });
+
+  it("keeps distinct completed reasoning items separate even on the same channel", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "thinking",
+          ts: TS,
+          text: "Inspecting transport.",
+          lifecycle: "completed",
+          channel: "summary",
+          itemId: "reason-1",
+        },
+        {
+          kind: "thinking",
+          ts: "2026-07-31T12:00:01.000Z",
+          text: "Checking persistence.",
+          lifecycle: "completed",
+          channel: "summary",
+          itemId: "reason-2",
+        },
+      ],
+      { runId: "native-run", running: false },
+    );
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        kind: "thinking",
+        lines: ["Inspecting transport."],
+      }),
+      expect.objectContaining({
+        kind: "thinking",
+        lines: ["Checking persistence."],
+      }),
+    ]);
+  });
+
+  it("renders runner usage without inventing a context-window size", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 5,
+          costUsd: 0.02,
+          subtype: "paperclip_runner_usage",
+          isError: false,
+          errors: [],
+        },
+      ],
+      { runId: "native-run", running: true },
+    );
+
+    expect(items).toEqual([
+      {
+        id: "native-run:usage:0",
+        kind: "usage",
+        usage: {
+          used: 55,
+          size: 0,
+          inputTokens: 40,
+          outputTokens: 10,
+          costUsd: 0.02,
+        },
       },
-    }]);
+    ]);
   });
 
   it("renders cumulative-only runner session usage", () => {
-    const items = transcriptToTaskChatItems([{
-      kind: "result",
-      ts: TS,
-      text: "",
-      inputTokens: 80,
-      outputTokens: 20,
-      cachedTokens: 0,
-      costUsd: 0,
-      subtype: "paperclip_runner_session_usage",
-      isError: false,
-      errors: [],
-    }], { runId: "native-run", running: true });
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 80,
+          outputTokens: 20,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "paperclip_runner_session_usage",
+          isError: false,
+          errors: [],
+        },
+      ],
+      { runId: "native-run", running: true },
+    );
 
-    expect(items).toEqual([expect.objectContaining({
-      kind: "usage",
-      label: "Provider session total",
-      detail: expect.stringContaining("cumulative usage"),
-      usage: expect.objectContaining({ used: 100, inputTokens: 80, outputTokens: 20 }),
-    })]);
+    expect(items).toEqual([
+      expect.objectContaining({
+        kind: "usage",
+        label: "Provider session total",
+        detail: expect.stringContaining("cumulative usage"),
+        usage: expect.objectContaining({
+          used: 100,
+          inputTokens: 80,
+          outputTokens: 20,
+        }),
+      }),
+    ]);
   });
 
   it("does not change direct-adapter result presentation", () => {
-    const items = transcriptToTaskChatItems([{
-      kind: "result",
-      ts: TS,
-      text: "done",
-      inputTokens: 40,
-      outputTokens: 10,
-      cachedTokens: 0,
-      costUsd: 0,
-      subtype: "success",
-      isError: false,
-      errors: [],
-    }], { runId: "legacy-run", running: true });
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "result",
+          ts: TS,
+          text: "done",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "success",
+          isError: false,
+          errors: [],
+        },
+      ],
+      { runId: "legacy-run", running: true },
+    );
     expect(items).toEqual([]);
   });
 });
@@ -1451,26 +1607,29 @@ describe("settledRunChildren (PAP-361)", () => {
   });
 
   it("excludes an explicit final reply when runner usage follows it", () => {
-    const finalThenUsage = transcriptToTaskChatItems([
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "Done — the limiter is wired in.",
-        channel: "final",
-      } as TranscriptEntry,
-      {
-        kind: "result",
-        ts: TS,
-        text: "",
-        inputTokens: 40,
-        outputTokens: 10,
-        cachedTokens: 0,
-        costUsd: 0,
-        subtype: "paperclip_runner_usage",
-        isError: false,
-        errors: [],
-      } as TranscriptEntry,
-    ], { runId: "native-run", running: false });
+    const finalThenUsage = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Done — the limiter is wired in.",
+          channel: "final",
+        } as TranscriptEntry,
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "paperclip_runner_usage",
+          isError: false,
+          errors: [],
+        } as TranscriptEntry,
+      ],
+      { runId: "native-run", running: false },
+    );
 
     const children = settledRunChildren(finalThenUsage);
     expect(children).toHaveLength(1);
@@ -1482,25 +1641,28 @@ describe("settledRunChildren (PAP-361)", () => {
   });
 
   it("keeps a channel-less final reply out of activity when bookkeeping follows it", () => {
-    const finalThenBookkeeping = transcriptToTaskChatItems([
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "Done — the direct adapter finished.",
-      } as TranscriptEntry,
-      {
-        kind: "result",
-        ts: TS,
-        text: "",
-        inputTokens: 40,
-        outputTokens: 10,
-        cachedTokens: 0,
-        costUsd: 0,
-        subtype: "paperclip_runner_usage",
-        isError: false,
-        errors: [],
-      } as TranscriptEntry,
-    ], { runId: "legacy-run", running: false });
+    const finalThenBookkeeping = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Done — the direct adapter finished.",
+        } as TranscriptEntry,
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "paperclip_runner_usage",
+          isError: false,
+          errors: [],
+        } as TranscriptEntry,
+      ],
+      { runId: "legacy-run", running: false },
+    );
 
     const children = settledRunChildren(finalThenBookkeeping);
     expect(children).toHaveLength(1);
@@ -1550,35 +1712,36 @@ describe("settledRunChildren (PAP-361)", () => {
   });
 
   it("does not hide channel-less commentary when real activity follows it", () => {
-    const commentaryThenToolAndUsage = transcriptToTaskChatItems([
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "Checking the direct adapter first.",
-      } as TranscriptEntry,
-      toolCall("Read", { file_path: "a.ts" }),
-      {
-        kind: "result",
-        ts: TS,
-        text: "",
-        inputTokens: 40,
-        outputTokens: 10,
-        cachedTokens: 0,
-        costUsd: 0,
-        subtype: "paperclip_runner_usage",
-        isError: false,
-        errors: [],
-      } as TranscriptEntry,
-    ], { runId: "legacy-run", running: false });
+    const commentaryThenToolAndUsage = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Checking the direct adapter first.",
+        } as TranscriptEntry,
+        toolCall("Read", { file_path: "a.ts" }),
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "paperclip_runner_usage",
+          isError: false,
+          errors: [],
+        } as TranscriptEntry,
+      ],
+      { runId: "legacy-run", running: false },
+    );
 
     const children = settledRunChildren(commentaryThenToolAndUsage);
     expect(children).toHaveLength(1);
     const phase = children[0];
     expect(phase.kind).toBe("activity_phase");
     if (phase.kind !== "activity_phase") return;
-    expect(phase.interstitial?.text).toBe(
-      "Checking the direct adapter first.",
-    );
+    expect(phase.interstitial?.text).toBe("Checking the direct adapter first.");
     expect(phase.items.map((item) => item.kind)).toEqual(["tool", "usage"]);
   });
 

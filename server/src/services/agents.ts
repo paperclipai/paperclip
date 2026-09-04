@@ -18,6 +18,7 @@ import {
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  agentRuntimeConfigSchema,
   getAgentWorkEligibility,
   isUuidLike,
   normalizeAgentApiKeyScope,
@@ -26,8 +27,7 @@ import {
   type AgentApiKeyScope,
 } from "@paperclipai/shared";
 import {
-  PAPERCLIP_OPERATIONAL_SKILL_KEY,
-  readPaperclipSkillSyncPreference,
+  normalizePaperclipRunnerAdapterConfig,
 } from "@paperclipai/adapter-utils/server-utils";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
@@ -129,32 +129,6 @@ interface AgentShortnameCollisionOptions {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function hasPaperclipOperationalSkill(config: unknown): boolean {
-  if (!isPlainRecord(config)) return false;
-  return readPaperclipSkillSyncPreference(config).desiredSkillEntries.some(
-    (entry) => entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY,
-  );
-}
-
-export function assertPaperclipRunnerOperationalSkillInvariant(input: {
-  adapterType: string;
-  nextConfig: unknown;
-  priorAdapterType?: string | null;
-  priorConfig?: unknown;
-}): void {
-  if (input.adapterType !== "paperclip_runner" || !hasPaperclipOperationalSkill(input.nextConfig)) {
-    return;
-  }
-  const preservesStaleAssignment =
-    input.priorAdapterType === "paperclip_runner"
-    && hasPaperclipOperationalSkill(input.priorConfig);
-  if (preservesStaleAssignment) return;
-  throw unprocessable(
-    `paperclip_runner does not support the legacy Paperclip operational skill (${PAPERCLIP_OPERATIONAL_SKILL_KEY}); remove it from this agent`,
-    { code: "paperclip_runner_legacy_operational_skill" },
-  );
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {
@@ -288,6 +262,12 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   if (typeof snapshot.budgetMonthlyCents !== "number" || !Number.isFinite(snapshot.budgetMonthlyCents)) {
     throw unprocessable("Invalid revision snapshot: budgetMonthlyCents");
   }
+  const runtimeConfig = agentRuntimeConfigSchema.safeParse(
+    isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
+  );
+  if (!runtimeConfig.success) {
+    throw unprocessable("Invalid revision snapshot: runtimeConfig");
+  }
 
   return {
     name: snapshot.name,
@@ -301,7 +281,7 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
         : null,
     adapterType: snapshot.adapterType,
     adapterConfig: isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
-    runtimeConfig: isPlainRecord(snapshot.runtimeConfig) ? snapshot.runtimeConfig : {},
+    runtimeConfig: runtimeConfig.data,
     defaultEnvironmentId:
       typeof snapshot.defaultEnvironmentId === "string" || snapshot.defaultEnvironmentId === null
         ? snapshot.defaultEnvironmentId
@@ -364,7 +344,7 @@ export function agentService(db: Db) {
   function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
-      permissions: normalizeAgentPermissions(row.permissions, row.role),
+      permissions: normalizeAgentPermissions(row.permissions),
     });
   }
 
@@ -696,29 +676,30 @@ export function agentService(db: Db) {
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
     if (data.permissions !== undefined) {
-      const role = (data.role ?? existing.role) as string;
-      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
+      normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
     if (
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
       isPlainRecord(normalizedPatch.adapterConfig)
     ) {
-      normalizedPatch.adapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         existing.companyId,
         normalizedPatch.adapterConfig,
         { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
       );
+      normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+        (normalizedPatch.adapterType ?? existing.adapterType) as string,
+        normalizedAdapterConfig,
+      );
+    } else if (
+      Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterType")
+      && isPlainRecord(existing.adapterConfig)
+    ) {
+      normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+        normalizedPatch.adapterType as string,
+        existing.adapterConfig,
+      );
     }
-    const nextAdapterType = (normalizedPatch.adapterType ?? existing.adapterType) as string;
-    const nextAdapterConfig = Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")
-      ? normalizedPatch.adapterConfig
-      : existing.adapterConfig;
-    assertPaperclipRunnerOperationalSkillInvariant({
-      adapterType: nextAdapterType,
-      nextConfig: nextAdapterConfig,
-      priorAdapterType: existing.adapterType,
-      priorConfig: existing.adapterConfig,
-    });
     // Run the server-enforced binding invariant when the patch touches the
     // adapter config. The update, approval, and rollback paths keep an existing
     // fixed binding but reject a newly introduced binding, because they carry no
@@ -824,16 +805,13 @@ export function agentService(db: Db) {
       const uniqueName = deduplicateAgentName(data.name, existingAgents);
 
       const role = data.role ?? "general";
-      const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
+      const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
       const adapterType = data.adapterType ?? "process";
-      const adapterConfig = isPlainRecord(data.adapterConfig)
+      const rawAdapterConfig = isPlainRecord(data.adapterConfig)
         ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
         : {};
-      assertPaperclipRunnerOperationalSkillInvariant({
-        adapterType,
-        nextConfig: adapterConfig,
-      });
+      const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
       // Run the server-enforced binding invariant after generic normalization
       // and before any database write. A create has no prior config.
       const bindingDecision = assertClaudeOAuthBindingInvariant({
@@ -1034,10 +1012,14 @@ export function agentService(db: Db) {
           Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
           isPlainRecord(patch.adapterConfig)
         ) {
-          patch.adapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
+          const normalizedAdapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
             existing.companyId,
             patch.adapterConfig,
             { adapterType: (patch.adapterType ?? existing.adapterType) as string },
+          );
+          patch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+            (patch.adapterType ?? existing.adapterType) as string,
+            normalizedAdapterConfig,
           );
           // The approval activation keeps an existing fixed binding but rejects a
           // newly introduced binding, because it carries no stored-session claim.
@@ -1046,20 +1028,19 @@ export function agentService(db: Db) {
             nextConfig: patch.adapterConfig,
             priorConfig: existing.adapterConfig,
           });
-        }
-        assertPaperclipRunnerOperationalSkillInvariant({
-          adapterType: (patch.adapterType ?? existing.adapterType) as string,
-          nextConfig: Object.prototype.hasOwnProperty.call(patch, "adapterConfig")
-            ? patch.adapterConfig
-            : existing.adapterConfig,
-          priorAdapterType: existing.adapterType,
-          priorConfig: existing.adapterConfig,
-        });
-        if (patch.permissions !== undefined) {
-          patch.permissions = normalizeAgentPermissions(
-            patch.permissions,
-            (patch.role ?? existing.role) as string,
+        } else if (
+          Object.prototype.hasOwnProperty.call(patch, "adapterType")
+          && isPlainRecord(existing.adapterConfig)
+        ) {
+          patch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
+            patch.adapterType as string,
+            existing.adapterConfig,
           );
+        }
+        if (patch.permissions !== undefined) {
+          // The pending-approval activation replays the original hire
+          // request, so the new-agent creation default applies.
+          patch.permissions = normalizeAgentPermissions(patch.permissions, { context: "create" });
         }
         const updated = await tx
           .update(agents)
@@ -1106,7 +1087,7 @@ export function agentService(db: Db) {
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, existing.role),
+          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

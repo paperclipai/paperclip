@@ -18,7 +18,10 @@ import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
@@ -32,6 +35,13 @@ import { Button } from "@/components/ui/button";
 import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert, Bug } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
+import {
+  OnboardingLoginCard,
+  OnboardingLoginCodeInput,
+  OnboardingLoginCodeRow,
+  OnboardingLoginUrlRow,
+  type AdapterLoginChrome,
+} from "./AdapterLoginChrome";
 import {
   resolveAdapterTestEnvironmentId,
   resolveLocalDefaultEnvironmentId,
@@ -51,7 +61,6 @@ import {
   help,
   adapterLabels,
 } from "./agent-config-primitives";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
@@ -80,7 +89,10 @@ import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-env
 // Canonical type lives in @paperclipai/adapter-utils; re-exported here
 // so existing imports from this file keep working.
 export type { CreateConfigValues } from "@paperclipai/adapter-utils";
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import {
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  type CreateConfigValues,
+} from "@paperclipai/adapter-utils";
 import { Badge } from "@/components/ui/badge";
 
 /* ---- Props ---- */
@@ -146,6 +158,17 @@ export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local";
 }
 
+export function resolvePaperclipRunnerTransitionModel(
+  previousAdapterType: string,
+  previousModel: unknown,
+): string {
+  return previousAdapterType === "codex_local"
+    && typeof previousModel === "string"
+    && previousModel.trim().length > 0
+    ? previousModel.trim()
+    : DEFAULT_CODEX_LOCAL_MODEL;
+}
+
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
   return (
     Object.keys(o.identity).length > 0 ||
@@ -153,8 +176,7 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
     Object.keys(o.debug).length > 0 ||
-    Object.keys(o.runtime).length > 0 ||
-    o.modelProfiles?.cheap !== undefined
+    Object.keys(o.runtime).length > 0
   );
 }
 
@@ -778,29 +800,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
-  const [cheapModelOpen, setCheapModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
-
-  // Cheap model profile state — only relevant when the adapter advertises
-  // `supportsModelProfiles`. Defaults are sourced from the adapter's
-  // /model-profiles endpoint so the UI does not encode adapter-specific
-  // cheap defaults.
-  const supportsModelProfiles = adapterCaps.supportsModelProfiles;
-  const { data: adapterCheapProfileDefinitions } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModelProfiles(selectedCompanyId, adapterType)
-      : ["agents", "none", "adapter-model-profiles", adapterType],
-    queryFn: () => agentsApi.adapterModelProfiles(selectedCompanyId!, adapterType),
-    enabled: Boolean(selectedCompanyId) && supportsModelProfiles,
-  });
-  const adapterCheapDefault = useMemo(() => {
-    return (adapterCheapProfileDefinitions ?? []).find((profile) => profile.key === "cheap") ?? null;
-  }, [adapterCheapProfileDefinitions]);
-  const adapterCheapDefaultModel = useMemo(() => {
-    const adapterConfig = adapterCheapDefault?.adapterConfig ?? {};
-    const value = (adapterConfig as Record<string, unknown>).model;
-    return typeof value === "string" ? value : "";
-  }, [adapterCheapDefault]);
 
   function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
     if (isCreate) {
@@ -818,86 +818,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return omitUndefinedEntries(next);
   }
 
-  function buildCheapAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
-    const adapterDefaultConfig = asObject(adapterCheapDefault?.adapterConfig);
-    const createCheapModel = isCreate ? (val!.cheapModel ?? "").trim() : "";
-    const cheapAdapterConfig = isCreate
-      ? {
-          ...adapterDefaultConfig,
-          ...(createCheapModel ? { model: createCheapModel } : {}),
-        }
-      : {
-          ...adapterDefaultConfig,
-          ...cheapProfileFromAgent.adapterConfig,
-          ...asObject(cheapOverlay?.adapterConfig),
-        };
-    return buildAdapterConfigForTest({ ...cheapAdapterConfig, ...adapterConfigPatch });
-  }
-
-  function getCheapModelTestCase(adapterConfigPatch?: Record<string, unknown>): { model: string; adapterConfig: Record<string, unknown> } | null {
-    if (!currentCheapEnabled) return null;
-    const adapterConfig = buildCheapAdapterConfigForTest(adapterConfigPatch);
-    const configModel = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
-    const model = configModel || currentCheapModel.trim();
-    if (!model) return null;
-    adapterConfig.model = model;
-    return { model, adapterConfig };
-  }
-
-  function prefixEnvironmentTestChecks(
-    result: AdapterEnvironmentTestResult,
-    label: string,
-    model: string | null,
-  ): AdapterEnvironmentTestResult {
-    const modelLabel = model ? ` (${model})` : "";
-    return {
-      ...result,
-      checks: [
-        {
-          code: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_test_started`,
-          level: "info",
-          message: `${label} test${modelLabel}`,
-        },
-        ...result.checks.map((check) => ({
-          ...check,
-          message: `${label} test${modelLabel}: ${check.message}`,
-        })),
-      ],
-    };
-  }
-
-  async function runEnvironmentTestCase(
-    label: string,
-    model: string | null,
-    adapterConfig: Record<string, unknown>,
-    environmentId: string | null,
-  ): Promise<AdapterEnvironmentTestResult> {
-    const result = await agentsApi.testEnvironment(selectedCompanyId!, adapterType, {
-      adapterConfig,
-      environmentId,
-    });
-    return prefixEnvironmentTestChecks(result, label, model);
-  }
-
-  function mergeEnvironmentTestResults(
-    results: AdapterEnvironmentTestResult[],
-  ): AdapterEnvironmentTestResult {
-    const checks = results.flatMap((result) => result.checks);
-    const status = results.some((result) => result.status === "fail")
-      ? "fail"
-      : results.some((result) => result.status === "warn")
-        ? "warn"
-        : "pass";
-    const testedAt = results[results.length - 1]?.testedAt ?? new Date().toISOString();
-
-    return {
-      adapterType,
-      status,
-      checks,
-      testedAt,
-    };
-  }
-
   const testEnvironment = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
@@ -905,8 +825,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       const flushedEnv = flushEnvironmentDraft();
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
-      const primaryModel = currentModelId.trim() || null;
-      const cheapTestCase = getCheapModelTestCase(adapterConfigPatch);
       // Probe where a real run would actually execute: the agent's own
       // environment, else the instance default. Testing the host for an
       // agent that runs in the instance-default sandbox reports failures
@@ -974,35 +892,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // managed sandbox instead of sending the hidden local id to the server.
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
-      const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
-        {
-          label: "Primary model",
-          model: primaryModel,
-          result: await runEnvironmentTestCase(
-            "Primary model",
-            primaryModel,
-            buildAdapterConfigForTest(adapterConfigPatch),
-            environmentId,
-          ),
-        },
-      ];
-
-      if (cheapTestCase) {
-        testResults.push({
-          label: "Cheap model",
-          model: cheapTestCase.model,
-          result: await runEnvironmentTestCase(
-            "Cheap model",
-            cheapTestCase.model,
-            cheapTestCase.adapterConfig,
-            environmentId,
-          ),
-        });
-      }
-
-      return testResults.length > 1
-        ? mergeEnvironmentTestResults(testResults.map(({ result }) => result))
-        : testResults[0]!.result;
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
+        adapterConfig: buildAdapterConfigForTest(adapterConfigPatch),
+        environmentId,
+      });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1228,70 +1121,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
-  // Cheap profile read/write helpers. Edit-mode values come from
-  // runtimeConfig.modelProfiles.cheap with overlay overrides on top; create-mode
-  // values come straight from CreateConfigValues (cheapModel + cheapModelEnabled).
-  const cheapProfileFromAgent = useMemo(() => {
-    const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
-    const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
-    const cheapAdapterConfig = asObject(cheap.adapterConfig);
-    return {
-      enabled: cheap.enabled !== false,
-      adapterConfig: cheapAdapterConfig,
-      model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
-    };
-  }, [runtimeConfig]);
-  const cheapOverlay = !isCreate ? overlay.modelProfiles?.cheap : undefined;
-  const currentCheapEnabled = isCreate
-    ? val!.cheapModelEnabled ?? false
-    : cheapOverlay?.enabled ?? cheapProfileFromAgent.enabled;
-  const currentCheapModel = isCreate
-    ? val!.cheapModel ?? ""
-    : (() => {
-        const overlayModel = (cheapOverlay?.adapterConfig as Record<string, unknown> | undefined)?.model;
-        if (typeof overlayModel === "string") return overlayModel;
-        return cheapProfileFromAgent.model;
-      })();
-
-  function setCheapEnabled(next: boolean) {
-    if (isCreate) {
-      set!({ cheapModelEnabled: next });
-      return;
-    }
-    setOverlay((prev) => ({
-      ...prev,
-      modelProfiles: {
-        cheap: {
-          ...(prev.modelProfiles?.cheap ?? {}),
-          enabled: next,
-        },
-      },
-    }));
-  }
-
-  function setCheapModel(next: string) {
-    if (isCreate) {
-      set!({ cheapModel: next });
-      return;
-    }
-    setOverlay((prev) => {
-      const existing = prev.modelProfiles?.cheap ?? {};
-      const nextAdapterConfig = {
-        ...((existing.adapterConfig ?? {}) as Record<string, unknown>),
-        model: next || undefined,
-      };
-      return {
-        ...prev,
-        modelProfiles: {
-          cheap: {
-            ...existing,
-            adapterConfig: nextAdapterConfig,
-          },
-        },
-      };
-    });
-  }
-
   const effectiveRuntimeConfig = useMemo(() => {
     if (isCreate) {
       return {
@@ -1571,6 +1400,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+                    } else if (t === "paperclip_runner") {
+                      nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
                     }
                     set!(nextValues);
                   } else {
@@ -1579,7 +1410,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      modelProfiles: { cheap: { cleared: true } },
                       adapterConfig: {
                         model:
                           t === "gemini_local"
@@ -1590,6 +1420,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
+                            : t === "paperclip_runner"
+                              ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
                               : "",
                         effort: "",
                         modelReasoningEffort: "",
@@ -1600,6 +1432,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               dangerouslyBypassApprovalsAndSandbox:
                                 DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
                             }
+                          : t === "paperclip_runner"
+                            ? {
+                                provider: "codex",
+                                codexPermissionMode:
+                                  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
+                                lifecycleMode: "per_turn",
+                              }
                           : {}),
                       },
                     }));
@@ -1722,9 +1561,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </Field>
               )}
 
-              {supportsModelProfiles && (
-                <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Primary model</div>
-              )}
               <ModelDropdown
                 models={models}
                 value={currentModelId}
@@ -1770,20 +1606,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 <p className="text-xs text-muted-foreground">
                   Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for {currentDefaultEnvironment.name}.
                 </p>
-              )}
-
-              {supportsModelProfiles && (
-                <CheapModelSection
-                  enabled={currentCheapEnabled}
-                  model={currentCheapModel}
-                  models={models}
-                  adapterType={adapterType}
-                  adapterDefaultModel={adapterCheapDefaultModel}
-                  onEnabledChange={setCheapEnabled}
-                  onModelChange={setCheapModel}
-                  open={cheapModelOpen}
-                  onOpenChange={setCheapModelOpen}
-                />
               )}
 
               {showThinkingEffort && (
@@ -2184,14 +2006,57 @@ export type AdapterLoginDescriptor = {
 // `onApplyStored` binds the fixed reference to an existing stored login with no
 // new login round trip. The panel shows the apply-existing affordance only when
 // the status route reports a stored value.
+// `autoStart`, `onCancel`, `onConnected` and `chrome` are what the onboarding
+// connect step needs, and each is off or absent by default so the two settings
+// surfaces that render this panel keep the behaviour they have.
+//
+// They are props on the existing panels rather than a second implementation
+// because the part onboarding needs unchanged is the whole of it: the session
+// start, the two polls, the server deadline, the one-shot completion read, the
+// unmount release. A copy drawn to the new design would have had to reproduce
+// all of that correctly, and the first thing to rot would have been the
+// timeout and cleanup paths, which are the ones nobody exercises by hand.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
+  // Start the login on mount instead of waiting for a press. The connect step's
+  // footer button is the press — by the time the panel is rendered there, the
+  // customer has already asked for this.
+  autoStart?: boolean;
+  // The customer abandoned the login from inside the card. The panel has
+  // already cancelled the server session by the time this fires; the caller
+  // uses it to put its own control back to the state it started in.
+  onCancel?: () => void;
+  // The login reached its success state. Onboarding advances on this, which is
+  // why the `onboarding` chrome draws no success state of its own — the screen
+  // it would appear on is already gone.
+  onConnected?: () => void;
+  chrome?: AdapterLoginChrome;
 };
 
 // The login panel dispatcher. It picks the panel from the projected panel mode,
 // not from the adapter name. The `submitted_browser_code` mode shows the
 // submitted-browser-code panel; every other mode shows the displayed-code panel.
+/**
+ * The account a source signs in to, named where one is known.
+ *
+ * "Sign in to the environment" describes the plumbing — a login performed inside
+ * a sandbox — and is the honest label when the provider is unknown. But for the
+ * two sources onboarding offers, the customer is signing in to Anthropic or to
+ * OpenAI, and naming that is what tells them which password manager entry to
+ * reach for. The generic wording stays for anything not listed, where a guess
+ * would be worse than a description.
+ */
+const ADAPTER_LOGIN_PROVIDER: Record<string, string> = {
+  claude_local: "Anthropic",
+  codex_local: "OpenAI",
+};
+
+function adapterLoginTitle(adapterType: string): string {
+  const provider = ADAPTER_LOGIN_PROVIDER[adapterType];
+  return provider ? `Sign in to ${provider}` : "Sign in to the environment";
+}
+
 export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   const getCapabilities = useAdapterCapabilities();
   const panelMode = getCapabilities(props.adapterType).login?.panelMode;
@@ -2205,6 +2070,10 @@ function DisplayedCodeLoginPanel({
   companyId,
   adapterType,
   environmentId,
+  autoStart,
+  onCancel,
+  onConnected,
+  chrome = "panel",
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2265,10 +2134,137 @@ function DisplayedCodeLoginPanel({
   const isActive = Boolean(sessionId) && !isTerminal;
   const startDisabled = startLogin.isPending || isActive;
 
+  // Release the server session at once, without a change to the panel state, the
+  // way the submitted-browser-code panel does. The server holds a per-owner
+  // reservation until the session reaches a terminal state, so an abandoned
+  // session locks the owner out until the server deadline. Fire-and-forget: a
+  // 404 means the server already removed a terminal session, and a cleanup path
+  // cannot surface any other error either, so it drops them all. The manual
+  // Cancel button keeps using the `cancelLogin` mutation, because that path also
+  // returns the panel to its idle start state.
+  const releaseServerSession = useCallback(
+    (id: string) => {
+      void agentsApi.cancelAdapterAuthLogin(companyId, adapterType, id).catch(() => {
+        // Drop the error, as above.
+      });
+    },
+    [companyId, adapterType],
+  );
+
+  // Hold the active session id for the unmount cleanup. Onboarding removes this
+  // panel as soon as Cancel is pressed — `handleCancel` fires the request and
+  // calls `onCancel` without waiting for it — so the panel can be gone before
+  // the cancel resolves. Without this, a failed cancel, or any other unmount
+  // (navigating away, the step advancing), would leave the reservation held
+  // until the server deadline and an immediate retry unable to start. The ref is
+  // null once the session leaves the active state, so the cleanup never cancels
+  // a session the server already removed.
+  const activeSessionRef = useRef<string | null>(null);
+  activeSessionRef.current = isActive ? sessionId : null;
+
+  useEffect(() => {
+    return () => {
+      const id = activeSessionRef.current;
+      if (id) releaseServerSession(id);
+    };
+  }, [releaseServerSession]);
+
+  // Start once, on mount, when the caller has already taken the press. The ref
+  // is the guard rather than the mutation's own pending flag: `startLogin`
+  // settles, and without a latch a re-render after it settles would read "not
+  // pending, no session yet" during the gap before the session id lands and
+  // start a second login the server would count against the per-owner cap.
+  const autoStartedRef = useRef(false);
+  const startLoginRef = useRef(startLogin.mutate);
+  startLoginRef.current = startLogin.mutate;
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    startLoginRef.current();
+  }, [autoStart]);
+
+  // Report success upward once. `authenticated` is this panel's terminal
+  // success: unlike the Claude login there is no completion read after it, so
+  // the status is the whole of the news.
+  const connectedRef = useRef(false);
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  useEffect(() => {
+    if (status !== "authenticated" || connectedRef.current) return;
+    connectedRef.current = true;
+    onConnectedRef.current?.();
+  }, [status]);
+
+  const handleCancel = () => {
+    cancelLogin.mutate();
+    onCancel?.();
+  };
+
+  if (chrome === "onboarding") {
+    return (
+      <OnboardingLoginCard
+        // Reads in the order the rows sit in, and in the order they are used:
+        // the code first, because the link is what leaves this screen. The
+        // sibling card's "Open Claude link then come back and enter code" has
+        // the same shape — one sentence, "then" for the hand-off — because
+        // there the returning is the part worth saying.
+        instruction={
+          prompt ? "Copy this code then open the authentication link" : "Starting the sign-in…"
+        }
+        onCancel={isActive ? handleCancel : undefined}
+      >
+        {/* The two rows are the whole card once the prompt lands. Before it
+            does there is nothing to show but the wait, and after a failure
+            there is nothing to act on — so both of those are a line of text,
+            not a row. */}
+        {startError && (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {startError}
+          </p>
+        )}
+        {isActive && !prompt && !startError && (
+          <p className="flex items-center gap-2 pl-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3 shrink-0 animate-spin" />
+            Preparing…
+          </p>
+        )}
+        {/* Code above link, which is the reverse of the settings panel below.
+            The panel numbers its two rows and its instruction reads "open the
+            page and enter the code", so there the order follows the sentence.
+
+            Here the order follows the hands. The link is the last thing touched
+            and the first thing that takes attention away — press it and the
+            next screen is a device-code form in another tab, wanting the code
+            that was on this one. Putting the code above it means it has already
+            been read, and copied, before the link is there to be pressed. */}
+        {prompt && (
+          <>
+            <OnboardingLoginCodeRow code={prompt.code} />
+            <OnboardingLoginUrlRow url={prompt.url} />
+          </>
+        )}
+        {isTerminal && status && status !== "authenticated" && (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {status === "timed_out"
+              ? "The login timed out. Start it again."
+              : status === "cancelled"
+                ? "The login was cancelled."
+                : "The login did not finish. Start it again."}
+          </p>
+        )}
+      </OnboardingLoginCard>
+    );
+  }
+
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 flex flex-col gap-2">
+      {/* `gap`, not `space-y`: the live region below collapses to
+          `display: none` whenever it has nothing to announce, and
+          `space-y` would still put its 8px on the row above — dead space
+          inside the card that pushes the row off centre. A gap only
+          applies between children that render. */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
+        <span className="text-xs font-medium text-foreground">{adapterLoginTitle(adapterType)}</span>
         <div className="flex items-center gap-1.5">
           {isActive && (
             <Button
@@ -2290,7 +2286,7 @@ function DisplayedCodeLoginPanel({
             disabled={startDisabled}
             onClick={() => startLogin.mutate()}
           >
-            Log in
+            Sign in
           </Button>
         </div>
       </div>
@@ -2307,19 +2303,34 @@ function DisplayedCodeLoginPanel({
         {isActive && !prompt && (
           <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
             <Loader2 className="size-3 animate-spin shrink-0" />
-            <span>Preparing the login…</span>
+            <span>Preparing...</span>
           </div>
         )}
 
         {isActive && prompt && (
           <div className="space-y-2">
             <div className="text-(length:--text-micro) text-muted-foreground">
-              Open the authentication page and enter the code.
+              Copy the code, then open the authentication page.
             </div>
+          {/* Code first, then the URL, and the sentence and the numbering both
+              say so.
+
+              This used to run the other way, on the reasoning that handing over
+              a code before the page it belongs to was getting ahead of the
+              customer. What that missed is where the two rows are used: opening
+              the page is what leaves this screen, and the form waiting on the
+              other side wants the code that was on this one. Reaching back for
+              it is the step worth removing, so the code is read and copied
+              while it is still in front of you.
+
+              The onboarding card is ordered the same way and for the same
+              reason. The Claude panel below is not, and should not be — its
+              second row is a field to type *into*, so there the page genuinely
+              does come first. */}
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                Code
+                1. Code
               </div>
               <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
             </div>
@@ -2328,7 +2339,7 @@ function DisplayedCodeLoginPanel({
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                Authentication URL
+                2. Authentication URL
               </div>
               <span className="font-mono text-xs text-foreground break-all">{prompt.url}</span>
             </div>
@@ -2397,9 +2408,14 @@ const CLAUDE_LOGIN_TIMED_OUT_MESSAGE = "The login timed out. Start the login aga
 // only the server `stored` state as success, and it never shows the OAuth token.
 function SubmittedBrowserCodeLoginPanel({
   companyId,
+  adapterType,
   environmentId,
   onStored,
   onApplyStored,
+  autoStart,
+  onCancel,
+  onConnected,
+  chrome = "panel",
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2713,10 +2729,137 @@ function SubmittedBrowserCodeLoginPanel({
     setBrowserCode("");
   };
 
+  // Start once, on mount, when the caller has already taken the press. Latched
+  // for the same reason as the displayed-code panel: a second start would burn
+  // an owner reservation, and here it would also rotate the stored token twice.
+  const autoStartedRef = useRef(false);
+  const startLoginRef = useRef(startLogin.mutate);
+  startLoginRef.current = startLogin.mutate;
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return;
+    autoStartedRef.current = true;
+    startLoginRef.current();
+  }, [autoStart]);
+
+  /**
+   * Submit the pasted code without a press.
+   *
+   * Only in the onboarding chrome, and only here: this is the login where the
+   * code comes *back* off the clipboard, so the paste is the answer and a
+   * Submit button after it adds a step that can be missed. The displayed-code
+   * login has no field to watch.
+   *
+   * Driven by the paste rather than by the value, which is the part that is
+   * easy to get wrong. `isValidBrowserCode` looks like a completeness check and
+   * is not one: it accepts any run of printable ASCII from a single character
+   * up, deliberately, because the provider's exact format has never been
+   * pinned down. Keying the submit off the value therefore fires on the first
+   * keystroke of anyone who types the code instead of pasting it — submitting
+   * one character, failing, and clearing the field they were typing into.
+   *
+   * So the paste arms it and the shape check still gates it, which leaves
+   * typing to Enter. A paste that is not usable simply sits in the field.
+   *
+   * `submitCode.isPending` is inside `canSubmit` and `handleSubmit` clears the
+   * field, so one paste can only submit once.
+   */
+  const handleSubmitRef = useRef(handleSubmit);
+  handleSubmitRef.current = handleSubmit;
+  const autoSubmit = chrome === "onboarding";
+  const pastedRef = useRef(false);
+  useEffect(() => {
+    if (!autoSubmit || !pastedRef.current) return;
+    pastedRef.current = false;
+    if (!canSubmit) return;
+    handleSubmitRef.current();
+  }, [autoSubmit, canSubmit, browserCode]);
+
+  // Report success upward once. The `stored` state is the only success state,
+  // which is why this watches `isStored` and not the `authenticated` status the
+  // completion read still has to follow.
+  const connectedRef = useRef(false);
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  useEffect(() => {
+    if (!isStored || connectedRef.current) return;
+    connectedRef.current = true;
+    onConnectedRef.current?.();
+  }, [isStored]);
+
+  const handleCancel = () => {
+    cancelLogin.mutate();
+    onCancel?.();
+  };
+
+  if (chrome === "onboarding") {
+    return (
+      <OnboardingLoginCard
+        instruction={
+          authorizationUrl
+            ? "Open Claude link then come back and enter code"
+            : "Starting the sign-in…"
+        }
+        onCancel={isActive ? handleCancel : undefined}
+      >
+        {startError && (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {startError}
+          </p>
+        )}
+        {/* The plain-HTTP advisory survives the redesign. It is the one thing
+            on this card that is not about getting the login done, and dropping
+            it to keep the card tidy would remove a warning about a code
+            travelling in clear text. */}
+        {transportInsecure && (
+          <p className="flex items-start gap-2 pl-2 text-xs text-amber-700 dark:text-amber-200">
+            <TriangleAlert className="mt-0.5 size-3 shrink-0" />
+            This connection is not encrypted. The login code travels in clear text on this
+            network. Continue only on a network you trust.
+          </p>
+        )}
+        {isActive && !authorizationUrl && !startError && (
+          <p className="flex items-center gap-2 pl-2 text-xs text-muted-foreground">
+            <Loader2 className="size-3 shrink-0 animate-spin" />
+            Preparing…
+          </p>
+        )}
+        {authorizationUrl && (
+          <>
+            <OnboardingLoginUrlRow url={authorizationUrl} />
+            {/* Disabled while the submitted code is in flight and while the
+                completion read runs, so a second paste cannot land on top of a
+                login that is already finishing. */}
+            <OnboardingLoginCodeInput
+              value={browserCode}
+              onChange={setBrowserCode}
+              onSubmit={handleSubmit}
+              onPaste={() => {
+                pastedRef.current = true;
+              }}
+              disabled={submitCode.isPending || isCompleting}
+            />
+          </>
+        )}
+        {(isFailure || timedOut) && (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {timedOut && !isFailure
+              ? CLAUDE_LOGIN_TIMED_OUT_MESSAGE
+              : CLAUDE_LOGIN_FAILED_MESSAGE}
+          </p>
+        )}
+      </OnboardingLoginCard>
+    );
+  }
+
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 flex flex-col gap-2">
+      {/* `gap`, not `space-y`: the live region below collapses to
+          `display: none` whenever it has nothing to announce, and
+          `space-y` would still put its 8px on the row above — dead space
+          inside the card that pushes the row off centre. A gap only
+          applies between children that render. */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
+        <span className="text-xs font-medium text-foreground">{adapterLoginTitle(adapterType)}</span>
         <div className="flex items-center gap-1.5">
           {isActive && (
             <Button
@@ -2755,7 +2898,7 @@ function SubmittedBrowserCodeLoginPanel({
             disabled={startDisabled}
             onClick={() => startLogin.mutate()}
           >
-            {storedToken && !isActive && !isStored ? "Log in to replace" : "Log in"}
+            {storedToken && !isActive && !isStored ? "Sign in to replace" : "Sign in"}
           </Button>
         </div>
       </div>
@@ -2789,7 +2932,7 @@ function SubmittedBrowserCodeLoginPanel({
         {isActive && !authorizationUrl && !isCompleting && (
           <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
             <Loader2 className="size-3 animate-spin shrink-0" />
-            <span>Preparing the login…</span>
+            <span>Preparing...</span>
           </div>
         )}
 
@@ -2812,7 +2955,7 @@ function SubmittedBrowserCodeLoginPanel({
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                  Authorization URL
+                  1. Authorization URL
                 </div>
                 <span className="font-mono text-xs text-foreground break-all">{authorizationUrl}</span>
               </div>
@@ -2835,7 +2978,7 @@ function SubmittedBrowserCodeLoginPanel({
             </div>
             <div className="space-y-1">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                Browser code
+                2. Browser code
               </div>
               <div className="flex items-center gap-2">
                 <input
@@ -3326,72 +3469,6 @@ export function ModelDropdown({
         </PopoverContent>
       </Popover>
     </Field>
-  );
-}
-
-function CheapModelSection({
-  enabled,
-  model,
-  models,
-  adapterType,
-  adapterDefaultModel,
-  onEnabledChange,
-  onModelChange,
-  open,
-  onOpenChange,
-}: {
-  enabled: boolean;
-  model: string;
-  models: AdapterModel[];
-  adapterType: string;
-  adapterDefaultModel: string;
-  onEnabledChange: (next: boolean) => void;
-  onModelChange: (next: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const placeholderHint = adapterDefaultModel
-    ? `Adapter default · ${adapterDefaultModel}`
-    : "No adapter default — choose a cheaper model";
-  return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Cheap model</div>
-          <p className="text-xs text-muted-foreground">
-            Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.
-          </p>
-        </div>
-        <ToggleSwitch checked={enabled} onCheckedChange={onEnabledChange} />
-      </div>
-      {enabled ? (
-        <ModelDropdown
-          models={models}
-          value={model}
-          onChange={onModelChange}
-          open={open}
-          onOpenChange={onOpenChange}
-          allowDefault
-          required={false}
-          groupByProvider={adapterType === "opencode_local"}
-          creatable
-          detectedModel={null}
-          detectedModelCandidates={[]}
-          emptyDetectHint={placeholderHint}
-          defaultLabel={placeholderHint}
-        />
-      ) : null}
-      {enabled && !model && adapterDefaultModel ? (
-        <p className="text-(length:--text-micro) text-muted-foreground">
-          No explicit cheap model selected — runtime falls back to <code>{adapterDefaultModel}</code>.
-        </p>
-      ) : null}
-      {enabled && !model && !adapterDefaultModel ? (
-        <p className="text-(length:--text-micro) text-amber-500">
-          No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
-        </p>
-      ) : null}
-    </div>
   );
 }
 

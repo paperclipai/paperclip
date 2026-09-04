@@ -284,6 +284,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(companyId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.tools.effectiveProfilesForAgent(companyId, agent.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccessesForConnection(variables.connection.id) }),
       ]);
     },
     onError: (_error, variables) => {

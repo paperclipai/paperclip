@@ -4,6 +4,7 @@ import path from "node:path";
 type ViteWatcherEvent = "add" | "change" | "unlink";
 
 export interface ViteWatcherHost {
+  transformIndexHtml(url: string, html: string): Promise<string>;
   watcher?: {
     on?: (event: ViteWatcherEvent, listener: (file: string) => void) => unknown;
     off?: (event: ViteWatcherEvent, listener: (file: string) => void) => unknown;
@@ -16,28 +17,6 @@ export interface CachedViteHtmlRenderer {
 }
 
 const WATCHER_EVENTS: ViteWatcherEvent[] = ["add", "change", "unlink"];
-const MAIN_ENTRY_TAG = '<script type="module" src="/src/main.tsx"></script>';
-const VITE_CLIENT_TAG = '<script type="module" src="/@vite/client"></script>';
-const REACT_REFRESH_PREAMBLE = `<script type="module">
-import { injectIntoGlobalHook } from "/@react-refresh";
-injectIntoGlobalHook(window);
-window.$RefreshReg$ = () => {};
-window.$RefreshSig$ = () => (type) => type;
-</script>`;
-
-function injectViteDevPreamble(html: string): string {
-  let injectedHtml = html;
-  if (!injectedHtml.includes('"/@react-refresh"') && !injectedHtml.includes("'/@react-refresh'")) {
-    injectedHtml = injectedHtml.includes("</head>")
-      ? injectedHtml.replace("</head>", `    ${REACT_REFRESH_PREAMBLE}\n  </head>`)
-      : `${REACT_REFRESH_PREAMBLE}\n${injectedHtml}`;
-  }
-  if (injectedHtml.includes(VITE_CLIENT_TAG)) return injectedHtml;
-  if (injectedHtml.includes(MAIN_ENTRY_TAG)) {
-    return injectedHtml.replace(MAIN_ENTRY_TAG, `${VITE_CLIENT_TAG}\n    ${MAIN_ENTRY_TAG}`);
-  }
-  return injectedHtml.replace("</body>", `    ${VITE_CLIENT_TAG}\n  </body>`);
-}
 
 export function createCachedViteHtmlRenderer(opts: {
   vite: ViteWatcherHost;
@@ -47,18 +26,18 @@ export function createCachedViteHtmlRenderer(opts: {
   const uiRoot = path.resolve(opts.uiRoot);
   const templatePath = path.resolve(uiRoot, "index.html");
   const brandHtml = opts.brandHtml ?? ((html: string) => html);
-  let cachedHtml: string | null = null;
+  let cachedTemplate: string | null = null;
 
-  function loadHtml(): string {
-    if (cachedHtml === null) {
+  function loadTemplate(): string {
+    if (cachedTemplate === null) {
       const rawTemplate = fs.readFileSync(templatePath, "utf-8");
-      cachedHtml = injectViteDevPreamble(brandHtml(rawTemplate));
+      cachedTemplate = brandHtml(rawTemplate);
     }
-    return cachedHtml;
+    return cachedTemplate;
   }
 
   function invalidate(): void {
-    cachedHtml = null;
+    cachedTemplate = null;
   }
 
   function onWatchEvent(filePath: string): void {
@@ -73,8 +52,13 @@ export function createCachedViteHtmlRenderer(opts: {
   }
 
   return {
-    render(): Promise<string> {
-      return Promise.resolve(loadHtml());
+    render(url): Promise<string> {
+      // Vite's transform does more than inject the dev client and React
+      // refresh preamble. It also keeps entry-module timestamps aligned with
+      // the module graph after an HMR invalidation. Serving the raw entry tag
+      // can otherwise evaluate main.tsx twice (unversioned + timestamped),
+      // creating two React roots in the same container.
+      return opts.vite.transformIndexHtml(url, loadTemplate());
     },
 
     dispose(): void {

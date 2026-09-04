@@ -263,6 +263,8 @@ export interface ToolConnectionCapabilities {
  * authorization from membership roles or wait for a connection id.
  */
 export interface ToolConnectionCreateCapabilities {
+  canCreateOrganizationGrant: boolean;
+  organizationGrantReason: string | null;
   canSetCompanyInstall: boolean;
   companyInstallReason: string | null;
 }
@@ -1101,6 +1103,12 @@ export interface ToolAppConnectionActionSummary {
  */
 export type ToolOAuthClientRegistrationSource = "preconfigured" | "cimd" | "dcr" | "manual";
 
+/** Opaque managed-Cloud exchange; clients never treat the session as a URL. */
+export interface ToolOAuthHandoff {
+  kind: "paperclip_cloud";
+  session: string;
+}
+
 /**
  * What an unknown remote MCP endpoint told Paperclip it needs, so the wizard can
  * branch without re-probing. `manualClientRequired` means discovery succeeded but
@@ -1110,6 +1118,7 @@ export type ToolOAuthClientRegistrationSource = "preconfigured" | "cimd" | "dcr"
 export interface ConnectToolAppAuthChallenge {
   kind: "oauth";
   startUrl: string | null;
+  handoff?: ToolOAuthHandoff;
   issuer?: string | null;
   resource?: string | null;
   registrationSource?: ToolOAuthClientRegistrationSource | null;
@@ -1157,6 +1166,11 @@ export interface ToolOAuthStartResult {
   provider: string;
   authorizationUrl: string;
   expiresAt: string;
+  /**
+   * Opaque Paperclip Cloud authorization handoff. The board submits this only
+   * to its fixed same-origin Cloud endpoint; it is never treated as a URL.
+   */
+  handoff?: ToolOAuthHandoff;
   /** Canonical authorization-server issuer this run is bound to, when discovered. */
   issuer?: string | null;
   /** RFC 8707 resource indicator sent with the request. */
@@ -1573,11 +1587,15 @@ export interface ToolConnectionTestAgent {
   status: string;
   /** Zero-based depth in the company reporting tree; roots are highest-ranked. */
   orgDepth: number;
-  effectiveAccess: ToolConnectionAccessSummary;
 }
 
 export interface ToolConnectionTestAgentsResponse {
   agents: ToolConnectionTestAgent[];
+}
+
+/** Display summary for one selected Test-tab agent. */
+export interface ToolConnectionTestAgentAccessResponse {
+  access: ToolConnectionAccessSummary;
 }
 
 /** Result of `POST /tool-connections/:id/test-calls`. */

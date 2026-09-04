@@ -122,6 +122,7 @@ import {
   companyService,
   companySearchService,
   executionWorkspaceService,
+  enrichWorkProductMetadataWithDiff,
   goalService,
   heartbeatService,
   issueApprovalService,
@@ -144,6 +145,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
+import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
@@ -264,6 +266,11 @@ import {
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
 import {
+  getNativeSessionSteeringState,
+  NativeSessionSteeringError,
+  steerNativeSession,
+} from "../services/native-runtime/native-session-executor.js";
+import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInRunContext,
   withQueuedCommentIdsInWakePayload,
@@ -276,6 +283,9 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 const queuedCommentMutationTargetSchema = z.object({
   queueId: z.string().min(1),
   revision: z.string().min(1),
+});
+const queuedCommentSteeringTargetSchema = queuedCommentMutationTargetSchema.extend({
+  targetRunId: z.string().min(1),
 });
 const editQueuedCommentSchema = queuedCommentMutationTargetSchema.extend({
   body: z
@@ -4932,22 +4942,13 @@ export function issueRoutes(
     return { scope, discovery, sourceIssue, watchdogIssue };
   }
 
-  function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
+  function isStatusOnlyRecoveryContext(contextSnapshot: unknown) {
     if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
     const context = contextSnapshot as Record<string, unknown>;
-    return context.modelProfile === "cheap" &&
-      context.recoveryIntent === "status_only" &&
+    return context.recoveryIntent === "status_only" &&
       context.allowDeliverableWork === false &&
       context.allowDocumentUpdates === false &&
       context.resumeRequiresNormalModel === true;
-  }
-
-  function requestsCheapIssueAssigneeModelProfile(input: { assigneeAdapterOverrides?: unknown }) {
-    const overrides = input.assigneeAdapterOverrides;
-    return !!overrides &&
-      typeof overrides === "object" &&
-      !Array.isArray(overrides) &&
-      (overrides as Record<string, unknown>).modelProfile === "cheap";
   }
 
   async function loadActorRunContext(req: Request, companyId: string) {
@@ -5015,29 +5016,6 @@ export function issueRoutes(
     };
   }
 
-  async function assertCheapRecoveryIssueAssigneeProfileAllowed(
-    req: Request,
-    res: Response,
-    issue: { id?: string; companyId: string },
-    input: { assigneeAdapterOverrides?: unknown },
-  ) {
-    if (!requestsCheapIssueAssigneeModelProfile(input)) return true;
-    const run = await loadActorRunContext(req, issue.companyId);
-    if (!run || !isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
-
-    res.status(403).json({
-      error: "Cheap status-only recovery runs cannot assign downstream issue work to the cheap model profile",
-      details: {
-        issueId: issue.id ?? null,
-        runId: run.id,
-        modelProfile: "cheap",
-        recoveryIntent: "status_only",
-        resumeRequiresNormalModel: true,
-      },
-    });
-    return false;
-  }
-
   async function assertDeliverableMutationAllowedByRunContext(
     req: Request,
     res: Response,
@@ -5045,14 +5023,13 @@ export function issueRoutes(
   ) {
     const run = await loadActorRunContext(req, issue.companyId);
     if (!run) return true;
-    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+    if (!isStatusOnlyRecoveryContext(run.contextSnapshot)) return true;
 
     res.status(403).json({
-      error: "Cheap status-only recovery runs cannot update issue documents, plans, or deliverable artifacts",
+      error: "Status-only recovery runs cannot update issue documents, plans, or deliverable artifacts",
       details: {
         issueId: issue.id,
         runId: run.id,
-        modelProfile: "cheap",
         recoveryIntent: "status_only",
         resumeRequiresNormalModel: true,
       },
@@ -5067,14 +5044,13 @@ export function issueRoutes(
   ) {
     const run = await loadActorRunContext(req, issue.companyId);
     if (!run) return true;
-    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+    if (!isStatusOnlyRecoveryContext(run.contextSnapshot)) return true;
 
     res.status(403).json({
-      error: "Cheap status-only recovery runs cannot create or modify approvals",
+      error: "Status-only recovery runs cannot create or modify approvals",
       details: {
         issueId: issue.id,
         runId: run.id,
-        modelProfile: "cheap",
         recoveryIntent: "status_only",
         resumeRequiresNormalModel: true,
       },
@@ -5545,12 +5521,33 @@ export function issueRoutes(
       : input.queueState;
     const wake = queueState?.wake ?? null;
     const comments = await queueCommentsForWake(input.executor, input.issue.id, wake);
-    const protocol = input.activeRun?.runtimeMode === "native"
-      || queueState?.queueRun?.runtimeMode === "native"
+    const assignedAgent = input.issue.assigneeAgentId
+      ? await input.executor
+        .select({ adapterType: agents.adapterType })
+        .from(agents)
+        .where(and(
+          eq(agents.id, input.issue.assigneeAgentId),
+          eq(agents.companyId, input.issue.companyId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const persistedRuntimeMode = queueState?.state === "queued" && queueState.queueRun
+      ? queueState.queueRun.runtimeMode
+      : queueState?.state === "deferred" && input.activeRun
+        ? input.activeRun.runtimeMode
+        : null;
+    const protocol = persistedRuntimeMode === "native"
+      || (persistedRuntimeMode === null && assignedAgent?.adapterType === "paperclip_runner")
       ? "paperclip_runner_v1" as const
       : "legacy" as const;
     const steeringRun = queueState?.state === "deferred" ? input.activeRun : null;
-    let steeringDisposition = input.steeringDisposition ?? "unsupported" as const;
+    let steeringDisposition = input.steeringDisposition
+      ?? (protocol === "paperclip_runner_v1" && steeringRun
+        ? await getNativeSessionSteeringState(steeringRun.id)
+          .then((state) => state.disposition)
+          .catch(() => "temporarily_unavailable" as const)
+        : "unsupported" as const);
     if (protocol === "paperclip_runner_v1" && (!steeringRun || comments.length === 0)) {
       steeringDisposition = "temporarily_unavailable";
     }
@@ -5729,7 +5726,8 @@ export function issueRoutes(
     queueId: string;
     revision?: string;
   }) {
-    return db.transaction(async (tx) => {
+    let cancelledRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
+    const result = await db.transaction(async (tx) => {
       const locked = await lockQueuedCommentState({
         tx,
         issue: input.issue,
@@ -5805,13 +5803,14 @@ export function issueRoutes(
               eq(heartbeatRuns.id, locked.queueRun.id),
               eq(heartbeatRuns.status, "queued"),
             ))
-            .returning({ id: heartbeatRuns.id })
+            .returning()
             .then((rows) => rows[0] ?? null);
           if (!cancelledRun) {
             throw conflict("The queued message is already being dispatched", {
               code: "queued_comment_already_dispatching",
             });
           }
+          cancelledRunToEmit = cancelledRun;
         }
       } else {
         const updatedWake = await tx
@@ -5866,6 +5865,12 @@ export function issueRoutes(
         }),
       };
     });
+    // Telemetry is best-effort background work; it must not delay the
+    // response with a slow lookup, so fire it and do not await it.
+    if (cancelledRunToEmit) {
+      void emitAgentTaskRun(db, cancelledRunToEmit);
+    }
+    return result;
   }
 
   function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
@@ -7641,7 +7646,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const workProducts = await workProductsSvc.listForIssue(issue.id, {
+      refreshPullRequests: req.query.refreshPullRequests === "true",
+    });
     res.json(workProducts);
   });
 
@@ -8393,13 +8400,42 @@ export function issueRoutes(
     const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, issue.companyId, req.body, "create");
     if (createdByRunId === undefined) return;
     createInput.createdByRunId = createdByRunId;
+    if (createdByRunId && (createInput.type === "pull_request" || createInput.type === "commit")) {
+      const runDiffSummary = await workProductsSvc.latestRunDiffSummary(createdByRunId);
+      createInput.metadata = enrichWorkProductMetadataWithDiff(
+        createInput.metadata,
+        runDiffSummary ?? (createInput.type === "commit"
+          ? await workProductsSvc.resolveCommitDiffSummary(issue.companyId, createInput)
+          : null),
+      );
+    }
     if (requiresPaperclipAttachmentMetadata(createInput)) {
       createInput.metadata = await canonicalizePaperclipArtifactMetadata({
         issue,
         metadata: req.body.metadata ?? null,
       });
     }
-    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
+    const attachmentId = createInput.type === "artifact" && createInput.provider === "paperclip"
+      ? (createInput.metadata as Record<string, unknown> | null)?.attachmentId
+      : null;
+    const existingRunAttachmentProduct = typeof attachmentId === "string" && createdByRunId
+      ? await db
+        .select({ id: issueWorkProducts.id })
+        .from(issueWorkProducts)
+        .where(and(
+          eq(issueWorkProducts.companyId, issue.companyId),
+          eq(issueWorkProducts.issueId, issue.id),
+          eq(issueWorkProducts.type, "artifact"),
+          eq(issueWorkProducts.provider, "paperclip"),
+          eq(issueWorkProducts.externalId, attachmentId),
+          eq(issueWorkProducts.createdByRunId, createdByRunId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const product = existingRunAttachmentProduct
+      ? await workProductsSvc.update(existingRunAttachmentProduct.id, createInput)
+      : await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
     if (!product) {
       res.status(422).json({ error: "Invalid work product payload" });
       return;
@@ -9127,7 +9163,6 @@ export function issueRoutes(
         }
         : {}),
     };
-    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
         companyId,
@@ -9363,7 +9398,6 @@ export function issueRoutes(
       ...sanitizedBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
-    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
     const childAssignmentScope = {
       projectId: createBody.projectId ?? parent.projectId ?? null,
       parentIssueId: parent.id,
@@ -9542,7 +9576,6 @@ export function issueRoutes(
       };
       requestedChildren.push(childBody);
       assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(childBody));
-      if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, sourceIssue, childBody))) return;
       if (childBody.assigneeAgentId || childBody.assigneeUserId) {
         await assertCanAssignTasks(req, sourceIssue.companyId, {
           projectId: childBody.projectId ?? sourceIssue.projectId ?? null,
@@ -9913,7 +9946,6 @@ export function issueRoutes(
     const issueMutationAuthorizationReason = req.actor.type === "agent"
       ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
       : issueWriteAuthorizationReason(req, true);
-    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -10910,6 +10942,7 @@ export function issueRoutes(
             agentId: actorAgent.id,
             adapterType: actorAgent.adapterType,
             model,
+            taskId: issue.id,
           });
         }
       }
@@ -11884,6 +11917,210 @@ export function issueRoutes(
             queueRun: updatedQueueRun ?? locked.queueRun,
           },
         });
+      });
+      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
+    },
+  );
+
+  router.post(
+    "/issues/:id/queued-comments/:commentId/steer",
+    validate(queuedCommentSteeringTargetSchema),
+    async (req, res) => {
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("Board user context required");
+      const id = req.params.id as string;
+      const commentId = req.params.commentId as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+      const actor = getActorInfo(req);
+      let acknowledgedTurnId: string | null = null;
+      let duplicate = false;
+      let queue: IssueQueuedCommentQueue;
+      try {
+        queue = await db.transaction(async (tx) => {
+          // A client can lose the successful response after the final queued
+          // message cancels its wake. Lock the original queue and target run
+          // first so that the persisted acknowledgement remains a durable
+          // idempotency record even when no pending queue remains.
+          await tx
+            .select({ id: issueRows.id })
+            .from(issueRows)
+            .where(and(eq(issueRows.id, issue.id), eq(issueRows.companyId, issue.companyId)))
+            .for("update");
+          const retryWake = await tx
+            .select()
+            .from(agentWakeupRequests)
+            .where(and(
+              eq(agentWakeupRequests.id, req.body.queueId),
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              issue.assigneeAgentId
+                ? eq(agentWakeupRequests.agentId, issue.assigneeAgentId)
+                : undefined,
+            ))
+            .for("update")
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          const retryRun = retryWake && readObject(retryWake.payload).issueId === issue.id
+            ? await tx
+              .select()
+              .from(heartbeatRuns)
+              .where(and(
+                eq(heartbeatRuns.id, req.body.targetRunId),
+                eq(heartbeatRuns.companyId, issue.companyId),
+                eq(heartbeatRuns.agentId, retryWake.agentId),
+              ))
+              .for("update")
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+            : null;
+          const retryRunContext = readObject(retryRun?.contextSnapshot);
+          const retryRunResult = readObject(retryRun?.resultJson);
+          const retryAcknowledgements = readObject(
+            retryRunResult.queuedSteeringAcknowledgements,
+          );
+          const retryAcknowledgement = readObject(retryAcknowledgements[commentId]);
+          if (
+            retryRun
+            && (retryRunContext.issueId === issue.id || retryRunContext.taskId === issue.id)
+            && retryAcknowledgement.status === "acknowledged"
+            && retryAcknowledgement.queueId === req.body.queueId
+          ) {
+            duplicate = true;
+            acknowledgedTurnId = typeof retryAcknowledgement.turnId === "string"
+              ? retryAcknowledgement.turnId
+              : null;
+            return buildQueuedCommentQueue({
+              executor: tx,
+              issue,
+              activeRun: retryRun.status === "running" ? retryRun : null,
+              actor,
+            });
+          }
+
+          const locked = await lockQueuedCommentState({
+            tx,
+            issue,
+            actor,
+            queueId: req.body.queueId,
+            targetRunId: req.body.targetRunId,
+          });
+          if (!locked.activeRun) {
+            throw conflict("The queued message targets a stale run", {
+              code: "queued_comment_stale_target",
+            });
+          }
+          const runResult = readObject(locked.activeRun.resultJson);
+          const acknowledgements = readObject(runResult.queuedSteeringAcknowledgements);
+          const priorAcknowledgement = readObject(acknowledgements[commentId]);
+          if (
+            priorAcknowledgement.status === "acknowledged"
+            && priorAcknowledgement.queueId === req.body.queueId
+          ) {
+            duplicate = true;
+            acknowledgedTurnId = typeof priorAcknowledgement.turnId === "string"
+              ? priorAcknowledgement.turnId
+              : null;
+            return buildQueuedCommentQueue({
+              executor: tx,
+              issue,
+              activeRun: locked.activeRun,
+              actor,
+              queueState: locked.queueState,
+            });
+          }
+          assertQueueMutationTarget({
+            queue: locked.queue,
+            queueId: req.body.queueId,
+            revision: req.body.revision,
+          });
+          if (locked.queue.protocol !== "paperclip_runner_v1") {
+            throw conflict("This runner does not support same-turn steering", {
+              code: "steering_unsupported",
+            });
+          }
+          const entry = locked.queue.entries.find((candidate) => candidate.comment.id === commentId);
+          if (!entry) {
+            throw conflict("The queued message is no longer pending", {
+              code: "queued_comment_not_pending",
+            });
+          }
+
+          const acknowledgement = await steerNativeSession({
+            runId: locked.activeRun.id,
+            message: entry.comment.body,
+            correlationId: commentId,
+          });
+          acknowledgedTurnId = acknowledgement.turnId;
+          const remainingIds = locked.queue.entries
+            .map((candidate) => candidate.comment.id)
+            .filter((candidateId) => candidateId !== commentId);
+          const now = new Date();
+          const nextWake = remainingIds.length === 0
+            ? await tx
+              .update(agentWakeupRequests)
+              .set({ status: "cancelled", finishedAt: now, updatedAt: now })
+              .where(eq(agentWakeupRequests.id, locked.wake.id))
+              .returning()
+              .then(() => null)
+            : await tx
+              .update(agentWakeupRequests)
+              .set({
+                payload: withQueuedCommentIdsInWakePayload(locked.wake.payload, remainingIds),
+                updatedAt: now,
+              })
+              .where(eq(agentWakeupRequests.id, locked.wake.id))
+              .returning()
+              .then((rows) => rows[0] ?? locked.wake);
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              resultJson: {
+                ...runResult,
+                queuedSteeringAcknowledgements: {
+                  ...acknowledgements,
+                  [commentId]: {
+                    status: "acknowledged",
+                    queueId: req.body.queueId,
+                    turnId: acknowledgement.turnId,
+                    acknowledgedAt: now.toISOString(),
+                  },
+                },
+              },
+              updatedAt: now,
+            })
+            .where(eq(heartbeatRuns.id, locked.activeRun.id));
+          return buildQueuedCommentQueue({
+            executor: tx,
+            issue,
+            activeRun: locked.activeRun,
+            actor,
+            queueState: nextWake
+              ? { wake: nextWake, state: "deferred", queueRun: null }
+              : null,
+          });
+        });
+      } catch (error) {
+        if (error instanceof NativeSessionSteeringError) {
+          throw conflict(error.message, { code: error.code, retryable: true });
+        }
+        throw error;
+      }
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.queued_comment_steered",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          commentId,
+          targetRunId: req.body.targetRunId,
+          turnId: acknowledgedTurnId,
+          duplicate,
+        },
       });
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
@@ -13939,6 +14176,7 @@ export function issueRoutes(
       originalFilename: stored.originalFilename,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByRunId: actor.runId,
     });
 
     await logActivity(db, {
@@ -13959,7 +14197,28 @@ export function issueRoutes(
       },
     });
 
-    res.status(201).json(withContentPath(attachment));
+    if (attachment.artifactWorkProductId) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.work_product_created",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          workProductId: attachment.artifactWorkProductId,
+          type: "artifact",
+          provider: "paperclip",
+          source: "run_attachment_upload",
+        },
+      });
+    }
+
+    const { artifactWorkProductId: _artifactWorkProductId, ...attachmentResponse } = attachment;
+    res.status(201).json(withContentPath(attachmentResponse));
   });
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {

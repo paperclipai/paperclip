@@ -25,14 +25,19 @@ export function FooterNav({
   onPrimary: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between pt-6">
+    <div className="flex items-center justify-between pt-9">
       {onBack ? (
-        // has-[>svg]:pr-4 gives "Back" room from the pill's right edge,
-        // overriding size="sm"'s symmetric padding on that side only.
+        // Same size as the primary, not a tier down. Back is ghost until you
+        // point at it, and a shorter pill made the hover surface read as a
+        // different kind of control sitting slightly low in the row rather than
+        // the other half of a pair.
+        //
+        // The padding stays asymmetric against size="lg"'s symmetric px-4: the
+        // arrow needs less room on its side than the word does on its own.
         <Button
           variant="ghost"
-          size="sm"
-          className="rounded-full has-[>svg]:pr-4"
+          size="lg"
+          className="rounded-full has-[>svg]:pl-4 has-[>svg]:pr-5"
           onClick={onBack}
           disabled={loading}
         >

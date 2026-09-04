@@ -20,7 +20,6 @@ import { queryKeys } from "../lib/queryKeys";
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   adapterModels: vi.fn(),
-  adapterModelProfiles: vi.fn(),
 }));
 
 const mockProjectsApi = vi.hoisted(() => ({
@@ -28,6 +27,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
+  list: vi.fn(),
   controlRuntimeCommands: vi.fn(),
 }));
 
@@ -148,7 +148,14 @@ vi.mock("./AgentIconPicker", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to, ...props }: { children: ReactNode; to: string } & ComponentProps<"a">) => <a href={to} {...props}>{children}</a>,
+  Link: ({
+    children,
+    to,
+    state: _state,
+    disableIssueQuicklook: _disableIssueQuicklook,
+    issuePrefetch: _issuePrefetch,
+    ...props
+  }: { children: ReactNode; to: string; state?: unknown; disableIssueQuicklook?: boolean; issuePrefetch?: unknown } & ComponentProps<"a">) => <a href={to} {...props}>{children}</a>,
   useCaseHref: () => (caseId: string) => `/cases/${caseId}`,
   useLocation: () => ({ hash: "", pathname: "/", search: "", state: null, key: "test" }),
 }));
@@ -462,8 +469,8 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.getDocument.mockResolvedValue(null);
@@ -498,6 +505,7 @@ describe("IssueProperties", () => {
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableTaskWatchdogs: false,
+      enableStreamlinedUi: true,
     });
   });
 
@@ -505,9 +513,251 @@ describe("IssueProperties", () => {
     document.body.innerHTML = "";
   });
 
-  it("does not show a Plan tab for a planning-mode issue without a plan document", async () => {
+  it("marks the task-detail property typography and section rhythm", () => {
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    const surface = container.querySelector(".task-detail-properties");
+    expect(surface).not.toBeNull();
+    expect(surface?.classList).toContain("pl-4");
+    expect(surface?.querySelectorAll('[data-property-section="true"]').length).toBeGreaterThan(1);
+    expect(surface?.querySelector('[data-property-value="true"]')).not.toBeNull();
+    expect(surface?.querySelector('[data-property-section="true"] > div')?.classList)
+      .toContain("text-muted-foreground/70");
+    const projectLabel = surface?.querySelector('[data-property-label="Project"]');
+    const labelsLabel = surface?.querySelector('[data-property-label="Labels"]');
+    if (!projectLabel || !labelsLabel) throw new Error("Expected Project and Labels rows");
+    expect(projectLabel.compareDocumentPosition(labelsLabel) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+
+    act(() => root.unmount());
+  });
+
+  it("stacks property chips vertically and aligns each label with the first chip", async () => {
+    const blockedBy = Array.from({ length: 3 }, (_, index) => ({
+      id: `blocker-${index + 1}`,
+      identifier: `BLOCK-${index + 1}`,
+      title: `Blocker ${index + 1}`,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    })) as NonNullable<Issue["blockedBy"]>;
+    const blocks = Array.from({ length: 3 }, (_, index) => ({
+      id: `blocked-${index + 1}`,
+      identifier: `BLOCKED-${index + 1}`,
+      title: `Blocked task ${index + 1}`,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    })) as NonNullable<Issue["blocks"]>;
+    const labels = Array.from({ length: 3 }, (_, index) => createLabel({
+      id: `label-${index + 1}`,
+      name: `Label ${index + 1}`,
+    }));
+    const childIssues = Array.from({ length: 3 }, (_, index) => createIssue({
+      id: `child-${index + 1}`,
+      identifier: `SUB-${index + 1}`,
+      title: `Subtask ${index + 1}`,
+    }));
+    const root = renderProperties(container, {
+      issue: createIssue({
+        blockedBy,
+        blocks,
+        labels,
+        labelIds: labels.map((label) => label.id),
+      }),
+      childIssues,
+      onUpdate: vi.fn(),
+      sidePanelContentOnly: true,
+    });
+    await flush();
+
+    for (const label of ["Labels", "Blocked by", "Blocking", "Subtasks"]) {
+      const labelNode = container.querySelector(`[data-property-label="${label}"]`);
+      const row = labelNode?.closest('[data-property-row="true"]');
+      const value = row?.querySelector('[data-property-value="true"]');
+      expect(row?.classList).toContain("items-start");
+      expect(labelNode?.classList).toContain("mt-0.5");
+      expect(value?.classList).toContain("flex-col");
+      expect(value?.classList).toContain("items-start");
+    }
+
+    for (const label of ["Labels", "Blocked by", "Subtasks"]) {
+      const trigger = findRowTrigger(container, label);
+      const chipStack = trigger?.querySelector("div");
+      expect(chipStack?.classList).toContain("flex-col");
+      expect(chipStack?.classList).toContain("items-start");
+    }
+
+    const blockingValue = container
+      .querySelector('[data-property-label="Blocking"]')
+      ?.closest('[data-property-row="true"]')
+      ?.querySelector('[data-property-value="true"] > div');
+    expect(blockingValue?.classList).toContain("flex-col");
+
+    act(() => root.unmount());
+  });
+
+  it("renders the lone Properties header as the active filled tab", async () => {
+    const headerSlot = document.createElement("div");
+    headerSlot.id = "properties-pane-header-slot";
+    document.body.appendChild(headerSlot);
+
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const tab = headerSlot.querySelector<HTMLButtonElement>('[role="tab"]');
+    expect(tab?.textContent).toBe("Properties");
+    expect(tab?.getAttribute("aria-selected")).toBe("true");
+    expect(tab?.classList).toContain("bg-muted");
+    expect(tab?.classList).toContain("px-3");
+    expect(tab?.classList).toContain("inline-flex");
+
+    act(() => root.unmount());
+  });
+
+  it("uses the same filled active-tab treatment in a multi-tab pane header", async () => {
+    const headerSlot = document.createElement("div");
+    headerSlot.id = "properties-pane-header-slot";
+    document.body.appendChild(headerSlot);
+
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [createIssue({ id: "child-1", identifier: "PAP-2", title: "Child task" })],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const tabs = Array.from(headerSlot.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const propertiesTab = tabs.find((tab) => tab.textContent === "Properties");
+    const subtasksTab = tabs.find((tab) => tab.textContent?.includes("Subtasks"));
+    const tabItems = Array.from(headerSlot.querySelectorAll<HTMLElement>('[data-slot="task-detail-pane-tab"]'));
+    const tabDividers = Array.from(headerSlot.querySelectorAll<HTMLElement>('[data-slot="task-detail-pane-tab-divider"]'));
+    const subtasksLabel = subtasksTab?.querySelector<HTMLElement>('[title="Subtasks"]');
+    const subtasksCount = Array.from(subtasksTab?.querySelectorAll<HTMLElement>("span") ?? [])
+      .find((span) => span.textContent === "1");
+    const closeSubtasks = headerSlot.querySelector<HTMLButtonElement>('[aria-label="Close Subtasks tab"]');
+    const openClosedTab = headerSlot.querySelector<HTMLButtonElement>('[aria-label="Open closed sidebar tab"]');
+
+    expect(propertiesTab?.getAttribute("data-state")).toBe("active");
+    expect(subtasksTab?.getAttribute("data-state")).toBe("inactive");
+    expect(tabItems).toHaveLength(2);
+    expect(tabDividers).toHaveLength(1);
+    expect(tabDividers[0]?.classList).toContain("h-4");
+    expect(propertiesTab?.classList).toContain("mx-1.5");
+    expect(propertiesTab?.classList).toContain("px-3");
+    expect(subtasksTab?.classList).toContain("px-3");
+    expect(subtasksTab?.classList).toContain("hover:bg-accent/50");
+    expect(subtasksLabel?.classList).toContain("task-detail-pane-tab-label");
+    expect(subtasksLabel?.classList).toContain("flex-1");
+    expect(subtasksLabel?.classList).toContain("overflow-hidden");
+    expect(subtasksLabel?.classList).toContain("whitespace-nowrap");
+    expect(subtasksCount?.classList).toContain("group-hover/pane-tab:opacity-0");
+    expect(closeSubtasks?.classList).toContain("opacity-0");
+    expect(closeSubtasks?.classList).toContain("right-2.5");
+    expect(closeSubtasks?.classList).toContain("group-hover/pane-tab:opacity-100");
+    expect(openClosedTab?.classList).toContain("size-6");
+    expect(openClosedTab?.classList).not.toContain("ml-1");
+    expect(openClosedTab?.disabled).toBe(true);
+    for (const tab of tabs) {
+      expect(tab.classList).toContain("task-detail-pane-tab");
+      expect(tab.classList).toContain("h-7");
+      expect(tab.classList).toContain("rounded-md");
+    }
+
+    await act(async () => {
+      subtasksTab?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    });
+
+    expect(propertiesTab?.getAttribute("data-state")).toBe("inactive");
+    expect(subtasksTab?.getAttribute("data-state")).toBe("active");
+
+    await act(async () => closeSubtasks?.click());
+    expect(headerSlot.querySelector('[role="tab"][data-state="active"]')?.textContent).toBe("Properties");
+    expect(headerSlot.textContent).not.toContain("Subtasks");
+    expect(openClosedTab?.disabled).toBe(false);
+
+    await act(async () => {
+      openClosedTab?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      openClosedTab?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    let reopenSubtasks: HTMLElement | undefined;
+    await waitForAssertion(() => {
+      reopenSubtasks = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+        .find((item) => item.textContent === "Subtasks");
+      expect(reopenSubtasks).not.toBeUndefined();
+    });
+
+    await act(async () => {
+      reopenSubtasks?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      reopenSubtasks?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    expect(headerSlot.querySelector('[role="tab"][data-state="active"]')?.textContent).toContain("Subtasks");
+
+    act(() => root.unmount());
+  });
+
+  it("restores master's production property styling when Streamlined UI is off", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableTaskWatchdogs: false,
+      enableStreamlinedUi: false,
+      enableClassicTaskInterface: false,
+    });
+
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await waitForAssertion(() => {
+      expect(container.querySelector(".task-detail-properties")).toBeNull();
+      expect(container.querySelector('[role="tab"]')).toBeNull();
+    });
+    expect(container.textContent).toContain("Status");
+    expect(container.textContent).toContain("Triage");
+
+    act(() => root.unmount());
+  });
+
+  it("restores master's plain Properties pane header when Streamlined UI is off", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableStreamlinedUi: false,
+      enableClassicTaskInterface: false,
+    });
+    const headerSlot = document.createElement("div");
+    headerSlot.id = "properties-pane-header-slot";
+    document.body.appendChild(headerSlot);
+
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await waitForAssertion(() => {
+      expect(headerSlot.textContent).toBe("Properties");
+      expect(headerSlot.querySelector('[role="tab"]')).toBeNull();
+      expect(container.querySelector(".task-detail-properties")).toBeNull();
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("does not show a Plan tab for a planning-mode issue without a plan document", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableClassicTaskInterface: false,
     });
     const root = renderProperties(container, {
@@ -555,7 +805,6 @@ describe("IssueProperties", () => {
       latestRevisionId: "revision-evidence",
     } satisfies IssueDocument;
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: false,
     });
     mockIssuesApi.getDocument.mockResolvedValue(planDocument);
@@ -855,11 +1104,8 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("exposes the classic-layout add sub-issue pill action", async () => {
-    // The chat shell hosts the full tree in the center pane; the slim pill row
-    // + its Add sub-task button only render in the classic layout (PAP-496).
+  it("exposes the add-subtask action from the relationships picker", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
     });
     const onAddSubIssue = vi.fn();
@@ -869,16 +1115,14 @@ describe("IssueProperties", () => {
       onAddSubIssue,
       onUpdate: vi.fn(),
     });
-    // Wait for the classic-layout settings query to resolve (the pane starts in
-    // the chat shell until it does).
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Add sub-task");
+      expect(container.textContent).toContain("Add subtask");
     });
 
-    expect(container.textContent).toContain("Sub-tasks");
+    expect(container.textContent).toContain("Subtasks");
 
     const addButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Add sub-task"));
+      .find((button) => button.textContent?.includes("Add subtask"));
     expect(addButton).not.toBeUndefined();
 
     await act(async () => {
@@ -890,38 +1134,36 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("does not duplicate sub-tasks in the properties pane in the chat shell", async () => {
+  it("gives sub-tasks a dedicated chat-shell panel tab", async () => {
+    const onAddSubIssue = vi.fn();
     const root = renderProperties(container, {
       issue: createIssue(),
-      childIssues: [],
+      childIssues: [createIssue({ id: "child-2", identifier: "PAP-2", title: "Panel child" })],
+      onAddSubIssue,
       onUpdate: vi.fn(),
+      inline: true,
     });
     await flush();
 
-    expect(container.textContent).not.toContain("Add sub-task");
-    expect(container.textContent).not.toContain("Sub-tasks");
+    const subtasksTab = Array.from(container.querySelectorAll<HTMLButtonElement>('button[role="tab"]'))
+      .find((button) => button.textContent?.includes("Subtasks"));
+    expect(subtasksTab).not.toBeUndefined();
+    await act(async () => {
+      subtasksTab!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    });
+    expect(container.textContent).toContain("Panel child");
+    expect(container.textContent).toContain("0 of 1 complete");
+    expect(container.textContent).toContain("Next action");
+    expect(container.querySelector('[data-slot="task-row"]')).not.toBeNull();
+    const addButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Add subtask"));
+    await act(async () => addButton!.click());
+    expect(onAddSubIssue).toHaveBeenCalledOnce();
 
     act(() => root.unmount());
   });
 
-  it("hides watchdog setup controls while the experimental flag is off", async () => {
-    const root = renderProperties(container, {
-      issue: createIssue(),
-      childIssues: [],
-      onUpdate: vi.fn(),
-    });
-    await flush();
-
-    expect(container.textContent).not.toContain("Watchdog");
-    expect(container.textContent).not.toContain("Set watchdog");
-
-    act(() => root.unmount());
-  });
-
-  it("shows watchdog setup controls when the experimental flag is enabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
-    });
+  it("always shows watchdog setup controls", async () => {
     const root = renderProperties(container, {
       issue: createIssue(),
       childIssues: [],
@@ -964,7 +1206,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("renders blocked-by issues as direct chips and edits them from an add action", async () => {
+  it("edits blockers from the blocked-by relationship flyout", async () => {
     const onUpdate = vi.fn();
     mockIssuesApi.list.mockResolvedValue([
       createIssue({ id: "issue-3", identifier: "PAP-3", title: "New blocker", status: "todo" }),
@@ -990,24 +1232,13 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    const blockerLink = container.querySelector('a[href="/issues/PAP-2"]');
-    expect(blockerLink).not.toBeNull();
-    expect(blockerLink?.textContent).toContain("PAP-2");
-    expect(blockerLink?.closest("button")).toBeNull();
-    expect(blockerLink?.className).toContain("px-2");
-    expect(blockerLink?.className).toContain("py-0.5");
-    expect(blockerLink?.className).toContain("text-xs");
-    const removeButton = container.querySelector('button[aria-label="Remove PAP-2 as blocker"]');
-    expect(removeButton?.className).toContain("absolute");
-    expect(container.textContent).toContain("Add blocker");
+    const blockerTrigger = findRowTrigger(container, "Blocked by");
+    expect(blockerTrigger?.textContent).toContain("PAP-2");
+    expect(container.textContent).not.toContain("Add blocker");
     expect(container.querySelector('input[placeholder="Search tasks..."]')).toBeNull();
 
-    const addButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Add blocker"));
-    expect(addButton).not.toBeUndefined();
-
     await act(async () => {
-      addButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      blockerTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
@@ -1043,12 +1274,11 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    const addButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Add blocker"));
-    expect(addButton).not.toBeUndefined();
+    const blockerTrigger = findRowTrigger(container, "Blocked by");
+    expect(blockerTrigger).not.toBeUndefined();
 
     await act(async () => {
-      addButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      blockerTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
@@ -1080,7 +1310,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("removes a blocked-by issue from the chip remove action after confirmation", async () => {
+  it("removes a blocked-by issue by toggling it in the relationship flyout", async () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
       issue: createIssue({
@@ -1111,21 +1341,20 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    const removeButton = container.querySelector('button[aria-label="Remove PAP-2 as blocker"]');
-    expect(removeButton).not.toBeNull();
+    const blockerTrigger = findRowTrigger(container, "Blocked by");
+    expect(blockerTrigger).not.toBeUndefined();
 
     await act(async () => {
-      removeButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      blockerTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
-    expect(document.body.textContent).toContain("Remove PAP-2: Existing blocker as a blocker for this task.");
-    const confirmButton = Array.from(document.body.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Remove blocker"));
-    expect(confirmButton).not.toBeUndefined();
+    const selectedBlocker = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("PAP-2 Existing blocker"));
+    expect(selectedBlocker).not.toBeUndefined();
 
     await act(async () => {
-      confirmButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      selectedBlocker!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(onUpdate).toHaveBeenCalledWith({ blockedByIssueIds: ["issue-4"] });
@@ -1133,7 +1362,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("opens visit and remove actions when a blocked-by chip is tapped on mobile", async () => {
+  it("uses the same blocked-by relationship picker on mobile", async () => {
     mockSidebarState.isMobile = true;
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
@@ -1165,36 +1394,20 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.querySelector('a[href="/issues/PAP-2"]')).toBeNull();
-    expect(container.querySelector('button[aria-label="Remove PAP-2 as blocker"]')).toBeNull();
-    const blockerActions = container.querySelector('button[aria-label="Actions for blocker PAP-2"]');
-    expect(blockerActions).not.toBeNull();
+    const blockerTrigger = findRowTrigger(container, "Blocked by");
+    expect(blockerTrigger?.textContent).toContain("PAP-2");
 
     await act(async () => {
-      blockerActions!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
-      blockerActions!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      blockerTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
-    const visitLink = Array.from(document.body.querySelectorAll('a[href="/issues/PAP-2"]'))
-      .find((link) => link.textContent?.includes("Visit task"));
-    expect(visitLink).not.toBeUndefined();
-    const removeMenuItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((item) => item.textContent?.includes("Remove blocker"));
-    expect(removeMenuItem).not.toBeUndefined();
+    const selectedBlocker = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("PAP-2 Existing blocker"));
+    expect(selectedBlocker).not.toBeUndefined();
 
     await act(async () => {
-      removeMenuItem!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flush();
-
-    expect(document.body.textContent).toContain("Remove PAP-2: Existing blocker as a blocker for this task.");
-    const confirmButton = Array.from(document.body.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Remove blocker"));
-    expect(confirmButton).not.toBeUndefined();
-
-    await act(async () => {
-      confirmButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      selectedBlocker!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(onUpdate).toHaveBeenCalledWith({ blockedByIssueIds: ["issue-4"] });
@@ -1202,13 +1415,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("collapses long blocked-by and sub-task lists until the more button is clicked", async () => {
-    // The sub-task pill row (with its collapse control) is classic-layout only
-    // now — the chat shell promotes sub-tasks to their own pane tab (PAP-496).
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: false,
-      enableClassicTaskInterface: true,
-    });
+  it("summarizes long blocked-by and subtask relationships in their picker triggers", async () => {
     const blockedBy = Array.from({ length: 7 }, (_, index) => ({
       id: `blocker-${index + 1}`,
       identifier: `BLOCK-${index + 1}`,
@@ -1229,71 +1436,46 @@ describe("IssueProperties", () => {
       onUpdate: vi.fn(),
       inline: true,
     });
-    // Wait for the classic-layout settings query to resolve so the sub-task
-    // pill row renders (the pane starts in the chat shell until it does).
-    await waitForAssertion(() => {
-      expect(container.textContent).toContain("SUB-5");
-    });
+    await flush();
 
-    expect(container.textContent).toContain("BLOCK-5");
-    expect(container.textContent).not.toContain("BLOCK-6");
-    expect(container.textContent).not.toContain("SUB-6");
-    expect(
-      Array.from(container.querySelectorAll("button")).filter((button) =>
-        button.textContent?.trim() === "Show 2 more",
-      ),
-    ).toHaveLength(2);
+    const blockedByTrigger = findRowTrigger(container, "Blocked by");
+    expect(blockedByTrigger?.textContent).toContain("BLOCK-1");
+    expect(blockedByTrigger?.textContent).toContain("BLOCK-2");
+    expect(blockedByTrigger?.textContent).toContain("+5 more");
+    expect(blockedByTrigger?.textContent).not.toContain("BLOCK-7");
 
-    const expandBlockedBy = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.trim() === "Show 2 more",
-    );
-    expect(expandBlockedBy).not.toBeUndefined();
+    const subtasksTrigger = findRowTrigger(container, "Subtasks");
+    expect(subtasksTrigger?.textContent).toContain("SUB-1");
+    expect(subtasksTrigger?.textContent).toContain("SUB-2");
+    expect(subtasksTrigger?.textContent).toContain("+5 more");
+    expect(subtasksTrigger?.textContent).not.toContain("SUB-7");
+
     await act(async () => {
-      expandBlockedBy!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      blockedByTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    await flush();
 
-    expect(container.textContent).toContain("BLOCK-6");
     expect(container.textContent).toContain("BLOCK-7");
-    expect(container.textContent).not.toContain("SUB-6");
-    expect(container.textContent).toContain("Show less");
 
-    const expandSubTasks = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.trim() === "Show 2 more",
-    );
-    expect(expandSubTasks).not.toBeUndefined();
     await act(async () => {
-      expandSubTasks!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      blockedByTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    await flush();
+    await act(async () => {
+      subtasksTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
 
-    expect(container.textContent).toContain("SUB-6");
     expect(container.textContent).toContain("SUB-7");
-    expect(
-      Array.from(container.querySelectorAll("button")).filter((button) =>
-        button.textContent?.trim() === "Show 2 more",
-      ),
-    ).toHaveLength(0);
-    expect(
-      Array.from(container.querySelectorAll("button")).filter((button) =>
-        button.textContent?.trim() === "Show less",
-      ),
-    ).toHaveLength(2);
-
-    const collapseBlockedBy = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.trim() === "Show less",
-    );
-    expect(collapseBlockedBy).not.toBeUndefined();
-    await act(async () => {
-      collapseBlockedBy!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(container.textContent).not.toContain("BLOCK-6");
-    expect(container.textContent).toContain("SUB-6");
-    expect(container.textContent).toContain("Show 2 more");
 
     act(() => root.unmount());
   });
 
   it("collapses long blocking and related task lists until the more button is clicked", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableClassicTaskInterface: true,
+    });
     const blocking = Array.from({ length: 7 }, (_, index) => ({
       id: `blocking-${index + 1}`,
       identifier: `BLOCKING-${index + 1}`,
@@ -1330,9 +1512,11 @@ describe("IssueProperties", () => {
     });
     await flush();
 
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("RELATED-5");
+    });
     expect(container.textContent).toContain("BLOCKING-5");
     expect(container.textContent).not.toContain("BLOCKING-6");
-    expect(container.textContent).toContain("RELATED-5");
     expect(container.textContent).not.toContain("RELATED-6");
     expect(
       Array.from(container.querySelectorAll("button")).filter((button) =>
@@ -1417,7 +1601,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("resets expanded relation previews when the issue changes", async () => {
+  it("updates the blocked-by relationship summary when the issue changes", async () => {
     const blockedBy = Array.from({ length: 7 }, (_, index) => ({
       id: `blocker-${index + 1}`,
       identifier: `BLOCK-${index + 1}`,
@@ -1448,21 +1632,24 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    const expandBlockedBy = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.trim() === "Show 2 more",
-    );
-    expect(expandBlockedBy).not.toBeUndefined();
-    await act(async () => {
-      expandBlockedBy!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    expect(findRowTrigger(container, "Blocked by")?.textContent).toContain("BLOCK-1");
+    expect(findRowTrigger(container, "Blocked by")?.textContent).toContain("+5 more");
 
-    expect(container.textContent).toContain("BLOCK-6");
+    const nextBlockedBy = [{
+      id: "next-blocker",
+      identifier: "NEXT-1",
+      title: "Next blocker",
+      status: "todo" as const,
+      priority: "medium" as const,
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    }];
 
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <IssueProperties
-            issue={createIssue({ id: "issue-b", blockedBy })}
+            issue={createIssue({ id: "issue-b", blockedBy: nextBlockedBy })}
             childIssues={[]}
             onUpdate={vi.fn()}
             inline
@@ -1472,8 +1659,9 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.textContent).not.toContain("BLOCK-6");
-    expect(container.textContent).toContain("Show 2 more");
+    expect(findRowTrigger(container, "Blocked by")?.textContent).toContain("NEXT-1");
+    expect(findRowTrigger(container, "Blocked by")?.textContent).not.toContain("BLOCK-1");
+    expect(findRowTrigger(container, "Blocked by")?.textContent).not.toContain("more");
 
     act(() => root.unmount());
   });
@@ -1499,6 +1687,33 @@ describe("IssueProperties", () => {
     await waitForAssertion(() => {
       expect(findRowTrigger(container, "Project")?.textContent).toContain("Archived Project");
     });
+
+    act(() => root.unmount());
+  });
+
+  it("uses the configured project color and icon in the project property", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      createProject({
+        name: "Configured Project",
+        color: "#0ea5e9",
+        icon: "rocket",
+      }),
+    ]);
+
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      sidePanelContentOnly: true,
+    });
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Project")?.textContent).toContain("Configured Project");
+    });
+
+    const projectTrigger = findRowTrigger(container, "Project");
+    const projectTile = projectTrigger?.querySelector<HTMLElement>('span.inline-flex[aria-hidden="true"]');
+    expect(projectTile?.style.backgroundColor).toBe("rgb(14, 165, 233)");
+    expect(projectTile?.querySelector("svg")?.classList).toContain("lucide-rocket");
 
     act(() => root.unmount());
   });
@@ -1582,6 +1797,15 @@ describe("IssueProperties", () => {
     expect(container.textContent).toMatch(/StartedApr 6, 2026, \d{1,2}:35 (AM|PM)/);
     expect(container.textContent).toMatch(/CompletedApr 6, 2026, \d{1,2}:36 (AM|PM)/);
 
+    for (const label of ["Started", "Completed", "Created"]) {
+      const labelNode = container.querySelector(`[data-property-label="${label}"]`);
+      const value = labelNode?.parentElement?.querySelector<HTMLElement>('[data-property-value="true"] > span');
+      expect(value?.classList).toContain("min-w-0");
+      expect(value?.classList).toContain("truncate");
+      expect(value?.classList).toContain("whitespace-nowrap");
+      expect(value?.title).toBe(value?.textContent);
+    }
+
     act(() => root.unmount());
   });
 
@@ -1630,11 +1854,18 @@ describe("IssueProperties", () => {
       onUpdate: vi.fn(),
     });
     await flush();
+    await flush();
 
     const branchCopyButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Copy pap-1-workspace to clipboard"]',
     );
+    const folderCopyButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Copy /tmp/paperclip/PAP-1 to clipboard"]',
+    );
     expect(branchCopyButton).not.toBeNull();
+    expect(folderCopyButton?.querySelector('[data-middle-truncate="true"]')?.textContent)
+      .toBe("/tmp/paperclip/PAP-1");
+    expect(folderCopyButton?.title).toBe("/tmp/paperclip/PAP-1");
 
     await act(async () => {
       branchCopyButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1675,7 +1906,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows related task references below sub-issues", async () => {
+  it("separates referenced tasks from tasks that mention this task", async () => {
     const root = renderProperties(container, {
       issue: createIssue({
         relatedWork: {
@@ -1694,22 +1925,49 @@ describe("IssueProperties", () => {
               sources: [{ kind: "description", sourceRecordId: null, label: "description", matchedText: "PAP-22" }],
             },
           ],
-          inbound: [],
+          inbound: [
+            {
+              issue: {
+                id: "issue-23",
+                identifier: "PAP-23",
+                title: "Mentions this task",
+                status: "in_progress",
+                priority: "medium",
+                assigneeAgentId: null,
+                assigneeUserId: null,
+              },
+              mentionCount: 1,
+              sources: [{ kind: "description", sourceRecordId: null, label: "description", matchedText: "PAP-1" }],
+            },
+          ],
         },
       }),
       childIssues: [],
       onUpdate: vi.fn(),
+      inline: true,
     });
     await flush();
 
     expect(container.textContent).not.toContain("Task ids");
-    expect(container.textContent).toContain("Related tasks");
+    expect(container.textContent).not.toContain("Related tasks");
+    const referencesTab = Array.from(container.querySelectorAll<HTMLButtonElement>('button[role="tab"]'))
+      .find((button) => button.textContent === "References");
+    await act(async () => {
+      referencesTab!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    });
+    expect(container.textContent).toContain("Referenced");
     expect(container.textContent).toContain("PAP-22");
+    expect(container.textContent).toContain("Mentioned in");
+    expect(container.textContent).toContain("PAP-23");
 
     act(() => root.unmount());
   });
 
   it("hides related task references already covered by blockers, blocking, and sub-issues", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableClassicTaskInterface: true,
+    });
     const root = renderProperties(container, {
       issue: createIssue({
         blockedBy: [
@@ -1790,12 +2048,14 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.textContent).not.toContain("Related tasks");
+    await waitForAssertion(() => {
+      expect(container.textContent).not.toContain("Referenced");
+    });
 
     act(() => root.unmount());
   });
 
-  it("shows an add-label button when labels already exist and opens the picker", async () => {
+  it("opens the label picker from its relationship value without a redundant add button", async () => {
     const root = renderProperties(container, {
       issue: createIssue({
         labels: [{ id: "label-1", companyId: "company-1", name: "Bug", color: "#ef4444", createdAt: new Date("2026-04-06T12:00:00.000Z"), updatedAt: new Date("2026-04-06T12:00:00.000Z") }],
@@ -1807,12 +2067,17 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    const addLabelButton = container.querySelector('button[aria-label="Add label"]');
-    expect(addLabelButton).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Add label"]')).toBeNull();
     expect(container.querySelector('input[placeholder="Search labels..."]')).toBeNull();
+    const labelsTrigger = findRowTrigger(container, "Labels");
+    expect(labelsTrigger?.textContent).toContain("Bug");
+    const labelChip = labelsTrigger?.querySelector<HTMLElement>('[title="Bug"]');
+    expect(labelChip?.classList).toContain("border-0");
+    expect(labelChip?.style.borderColor).toBe("");
+    expect(labelChip?.style.color).not.toBe("");
 
     await act(async () => {
-      addLabelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      labelsTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
@@ -2000,10 +2265,10 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    const addLabelButton = container.querySelector('button[aria-label="Add label"]');
-    expect(addLabelButton).not.toBeNull();
+    const labelsTrigger = findRowTrigger(container, "Labels");
+    expect(labelsTrigger?.textContent).toContain("Bug");
     await act(async () => {
-      addLabelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      labelsTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
@@ -2517,7 +2782,6 @@ describe("IssueProperties", () => {
 
   it("shows the empty watchdog state and saves a new watchdog via the API", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
@@ -2584,7 +2848,6 @@ describe("IssueProperties", () => {
 
   it("updates cached issue detail when saving a watchdog", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const savedWatchdog = createWatchdogSummary({
@@ -2639,7 +2902,6 @@ describe("IssueProperties", () => {
 
   it("renders an existing watchdog and removes it via the API", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
@@ -2681,7 +2943,6 @@ describe("IssueProperties", () => {
 
   it("truncates the watchdog instructions one-line summary in the properties value column", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const instructions = "get greptile to stop re-reviewing the same task unless a fresh code change lands";
@@ -2720,7 +2981,6 @@ describe("IssueProperties", () => {
 
   it("links to the generated watchdog task when one exists", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableTaskWatchdogs: true,
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const root = renderProperties(container, {
@@ -3048,6 +3308,141 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(findApprovalsRow()?.textContent).toContain("Anyone else");
+
+    act(() => root.unmount());
+  });
+
+  it("hides the execution workspace picker without an enabled project policy", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({ executionWorkspacePolicy: null })]);
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await flush();
+
+    expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
+    expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
+  it("shows the workspace picker with no bound workspace", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({
+      executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
+    })]);
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(findRowTrigger(container, "Execution")?.textContent).toBe("Default");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("saves the exact isolated-workspace payload", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({
+      executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
+    })]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+
+    await waitForAssertion(() => expect(findRowTrigger(container, "Execution")).toBeDefined());
+    act(() => findRowTrigger(container, "Execution")!.click());
+    const isolatedOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("New isolated workspace"));
+    act(() => isolatedOption!.click());
+
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionWorkspacePreference: "isolated_workspace",
+      executionWorkspaceId: null,
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId: null,
+      },
+    });
+    act(() => root.unmount());
+  });
+
+  it("searches reusable workspaces and saves the selected workspace", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([createProject({
+      executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace" },
+    })]);
+    const alphaWorkspace = createExecutionWorkspace({
+      id: "workspace-alpha",
+      name: "Alpha workspace",
+      cwd: "/tmp/paperclip/alpha",
+      branchName: "alpha-branch",
+      lastUsedAt: new Date(),
+    });
+    const betaWorkspace = createExecutionWorkspace({
+      id: "workspace-beta",
+      name: "Beta workspace",
+      cwd: "/tmp/paperclip/beta",
+      branchName: "beta-branch",
+      lastUsedAt: new Date(),
+    });
+    mockExecutionWorkspacesApi.list.mockResolvedValue([alphaWorkspace, betaWorkspace]);
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ projectId: "project-1", projectWorkspaceId: "workspace-main" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+
+    await waitForAssertion(() => expect(findRowTrigger(container, "Execution")).toBeDefined());
+    act(() => findRowTrigger(container, "Execution")!.click());
+    const reuseOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Reuse existing workspace"));
+    act(() => reuseOption!.click());
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Recent");
+      expect(container.textContent).toContain("Alpha workspace");
+      expect(container.textContent).toContain("Beta workspace");
+    });
+    expect(mockExecutionWorkspacesApi.list).toHaveBeenCalledWith("company-1", {
+      projectId: "project-1",
+      projectWorkspaceId: "workspace-main",
+      reuseEligible: true,
+    });
+
+    const search = container.querySelector('input[aria-label="Search reusable workspaces"]') as HTMLInputElement;
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      nativeSetter?.call(search, "Beta");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).not.toContain("Alpha workspace");
+    expect(container.textContent).toContain("Beta workspace");
+
+    const betaOption = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Beta workspace"));
+    act(() => betaOption!.click());
+    expect(onUpdate).toHaveBeenCalledWith({
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceId: "workspace-beta",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId: null,
+      },
+    });
 
     act(() => root.unmount());
   });

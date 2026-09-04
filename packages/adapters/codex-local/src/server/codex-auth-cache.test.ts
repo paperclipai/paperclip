@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  assertAccountHomeCacheDirStillValid,
   clearCodexAuthCache,
   clearCodexAuthCacheEntry,
   ensureCodexAuthCacheEntryDir,
@@ -12,6 +13,8 @@ import {
   resolveCodexAuthCacheEntryPath,
   selectVendCredential,
   toCacheKey,
+  withAccountHomeSecretMutationLock,
+  withCodexAccountHomePromotionLock,
 } from "./codex-auth-cache.js";
 import { resolveSharedCodexHomeDir } from "./codex-home.js";
 
@@ -125,6 +128,17 @@ describe("codex auth cache store", () => {
       expect(safeDir).toBe(
         path.resolve(home, "instances", "default", "companies", "company-a", "codex-auth-cache"),
       );
+    });
+
+    it("resolveCodexAuthCacheEntryPath rejects an identifier that toAccountHandle rejects", async () => {
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      // A space, a plus sign, and a leading hyphen all fail the stricter
+      // account-handle allowlist, even though the older denylist alone would
+      // accept some of them.
+      expect(() => resolveCodexAuthCacheEntryPath(env, "acct 42", "company-a")).toThrow();
+      expect(() => resolveCodexAuthCacheEntryPath(env, "acct+42", "company-a")).toThrow();
+      expect(() => resolveCodexAuthCacheEntryPath(env, "-rf", "company-a")).toThrow();
     });
 
     it("resolveCodexAuthCacheEntryPath verifies the resolved path stays under the cache root", async () => {
@@ -333,6 +347,217 @@ describe("codex auth cache store", () => {
       expect(isCodexAuthCacheEnabled({ PAPERCLIP_CODEX_AUTH_CACHE: "false" })).toBe(false);
       expect(isCodexAuthCacheEnabled({ PAPERCLIP_CODEX_AUTH_CACHE: "off" })).toBe(false);
       expect(isCodexAuthCacheEnabled({ PAPERCLIP_CODEX_AUTH_CACHE: "no" })).toBe(false);
+    });
+  });
+
+  describe("Phase 6: whole-promotion serialization for one company", () => {
+    it("withCodexAccountHomePromotionLock never overlaps two concurrent callers for the same company", async () => {
+      // The device-login route holds this lock across its whole promotion
+      // sequence: the account-home directory decision, the credential write,
+      // and the secret bind or cleanup that follows. Two different logins for
+      // the SAME Codex account must run that whole sequence one at a time, so
+      // a login can never delete the shared account-home directory while
+      // another login's own sequence is still writing its credential or
+      // binding its own secret to that same directory. This proves the lock
+      // itself enforces that: two concurrent callers for one company never run
+      // their callbacks at the same time, whichever caller goes first.
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const events: string[] = [];
+      let releaseFirstCaller!: () => void;
+      const firstCallerGate = new Promise<void>((resolve) => {
+        releaseFirstCaller = resolve;
+      });
+
+      const firstCall = withCodexAccountHomePromotionLock(env, "company-shared", async () => {
+        events.push("first-enter");
+        await firstCallerGate;
+        events.push("first-exit");
+        return "first";
+      });
+      // Give the first caller a chance to acquire the lock and enter its
+      // callback before the second caller starts racing for the same lock.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const secondCall = withCodexAccountHomePromotionLock(env, "company-shared", async () => {
+        events.push("second-enter");
+        events.push("second-exit");
+        return "second";
+      });
+      // The second caller must stay blocked on the lock while the first
+      // caller still holds it: it must never log `second-enter` before the
+      // first caller's `first-exit`.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events).toEqual(["first-enter"]);
+
+      releaseFirstCaller();
+      const [first, second] = await Promise.all([firstCall, secondCall]);
+      expect(first).toBe("first");
+      expect(second).toBe("second");
+      expect(events).toEqual(["first-enter", "first-exit", "second-enter", "second-exit"]);
+    });
+
+    it("withCodexAccountHomePromotionLock keeps two different companies independent", async () => {
+      // The lock is per company, so two different companies' device logins
+      // never wait on each other.
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const events: string[] = [];
+      let releaseCompanyA!: () => void;
+      const companyAGate = new Promise<void>((resolve) => {
+        releaseCompanyA = resolve;
+      });
+
+      const companyACall = withCodexAccountHomePromotionLock(env, "company-a", async () => {
+        events.push("a-enter");
+        await companyAGate;
+        events.push("a-exit");
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const companyBCall = withCodexAccountHomePromotionLock(env, "company-b", async () => {
+        events.push("b-enter");
+        events.push("b-exit");
+      });
+      await companyBCall;
+      // Company B's callback ran and finished while company A's callback was
+      // still waiting on its own gate, so the two locks never contended.
+      expect(events).toEqual(["a-enter", "b-enter", "b-exit"]);
+
+      releaseCompanyA();
+      await companyACall;
+      expect(events).toEqual(["a-enter", "b-enter", "b-exit", "a-exit"]);
+    });
+  });
+
+  describe("Phase 7: account-home secret-mutation serialization for one company", () => {
+    it("withAccountHomeSecretMutationLock never overlaps two concurrent callers for the same company", async () => {
+      // The secrets service holds this lock for the whole of a `local_encrypted`
+      // secret's create or rotate call, and an account-home cleanup's claimant
+      // scan holds it for the whole of its final check-and-delete step. This
+      // proves the lock itself enforces mutual exclusion between any two
+      // holders for one company, whichever caller goes first.
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const events: string[] = [];
+      let releaseFirstCaller!: () => void;
+      const firstCallerGate = new Promise<void>((resolve) => {
+        releaseFirstCaller = resolve;
+      });
+
+      const firstCall = withAccountHomeSecretMutationLock(env, "company-shared", async () => {
+        events.push("first-enter");
+        await firstCallerGate;
+        events.push("first-exit");
+        return "first";
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const secondCall = withAccountHomeSecretMutationLock(env, "company-shared", async () => {
+        events.push("second-enter");
+        events.push("second-exit");
+        return "second";
+      });
+      // The second caller must stay blocked on the lock while the first
+      // caller still holds it: it must never log `second-enter` before the
+      // first caller's `first-exit`.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(events).toEqual(["first-enter"]);
+
+      releaseFirstCaller();
+      const [first, second] = await Promise.all([firstCall, secondCall]);
+      expect(first).toBe("first");
+      expect(second).toBe("second");
+      expect(events).toEqual(["first-enter", "first-exit", "second-enter", "second-exit"]);
+    });
+
+    it("withAccountHomeSecretMutationLock keeps two different companies independent", async () => {
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const events: string[] = [];
+      let releaseCompanyA!: () => void;
+      const companyAGate = new Promise<void>((resolve) => {
+        releaseCompanyA = resolve;
+      });
+
+      const companyACall = withAccountHomeSecretMutationLock(env, "company-a", async () => {
+        events.push("a-enter");
+        await companyAGate;
+        events.push("a-exit");
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const companyBCall = withAccountHomeSecretMutationLock(env, "company-b", async () => {
+        events.push("b-enter");
+        events.push("b-exit");
+      });
+      await companyBCall;
+      expect(events).toEqual(["a-enter", "b-enter", "b-exit"]);
+
+      releaseCompanyA();
+      await companyACall;
+      expect(events).toEqual(["a-enter", "b-enter", "b-exit", "a-exit"]);
+    });
+
+    it("withAccountHomeSecretMutationLock does not contend with withCodexAccountHomePromotionLock for the same company", async () => {
+      // The two locks use separate lock directories (Security condition: no
+      // shared lock key), so a device-login promotion that holds
+      // `withCodexAccountHomePromotionLock` for its whole sequence can still
+      // call into a secrets-service write that takes this lock without
+      // deadlocking on itself.
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const events: string[] = [];
+
+      await withCodexAccountHomePromotionLock(env, "company-shared", async () => {
+        events.push("promotion-enter");
+        await withAccountHomeSecretMutationLock(env, "company-shared", async () => {
+          events.push("mutation-enter");
+          events.push("mutation-exit");
+        });
+        events.push("promotion-exit");
+      });
+
+      expect(events).toEqual(["promotion-enter", "mutation-enter", "mutation-exit", "promotion-exit"]);
+    });
+  });
+
+  describe("Phase 8: account-home directory validity before a secret write commits", () => {
+    it("resolves for a value naming a directory that still exists under the cache root", async () => {
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const companyId = "company-still-exists";
+      const entryPath = await ensureCodexAuthCacheEntryDir(env, "acct-still-exists", companyId);
+      const accountHomeDir = path.dirname(entryPath);
+
+      await expect(
+        assertAccountHomeCacheDirStillValid(env, companyId, accountHomeDir),
+      ).resolves.toBeUndefined();
+    });
+
+    it("rejects a value naming a directory under the cache root that no longer exists", async () => {
+      // This is the shape an account-home cleanup leaves behind: a value that
+      // once named a real directory, now removed. A create or a rotate that
+      // is about to commit this exact value must fail instead of writing a
+      // secret that points at nothing.
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+      const companyId = "company-removed";
+      const entryPath = await ensureCodexAuthCacheEntryDir(env, "acct-removed", companyId);
+      const accountHomeDir = path.dirname(entryPath);
+      await rm(accountHomeDir, { recursive: true, force: true });
+
+      await expect(assertAccountHomeCacheDirStillValid(env, companyId, accountHomeDir)).rejects.toThrow(
+        /no longer exists/,
+      );
+    });
+
+    it("leaves a value alone when it does not sit under this company's cache root", async () => {
+      // Most `local_encrypted` secret values (an API key, a token, a
+      // hand-typed string) never sit under the cache root, so this check must
+      // never reject a write that only happens to name a missing path.
+      const home = await makeInstanceRoot();
+      const env = envFor(home);
+
+      await expect(
+        assertAccountHomeCacheDirStillValid(env, "company-unrelated", "/some/unrelated/missing/path"),
+      ).resolves.toBeUndefined();
     });
   });
 });

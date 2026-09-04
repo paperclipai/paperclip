@@ -35,7 +35,10 @@ vi.mock("@/hooks/useIssuePlanDocument", () => ({
   useIssuePlanDocument: () => ({ data: { ...issueDocument, key: "plan" }, isLoading: false }),
 }));
 vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: () => ({ data: [issueDocument] }) }));
-vi.mock("@/lib/router", () => ({ useLocation: () => ({ hash: "" }) }));
+vi.mock("@/lib/router", () => ({
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
+  useLocation: () => ({ hash: "" }),
+}));
 vi.mock("@/components/IssuePlanDecompositionsSection", () => ({ IssuePlanDecompositionsSection: () => null }));
 vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: string }) => <div>{children}</div> }));
 vi.mock("@/components/IssueDocumentAnnotations", () => ({

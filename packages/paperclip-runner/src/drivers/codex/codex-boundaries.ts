@@ -4,6 +4,7 @@ import {
   dirname,
   isAbsolute,
   parse,
+  posix,
   relative,
   resolve,
   sep,
@@ -18,6 +19,18 @@ import { redactCodexDiagnostic } from "./app-server-transport.js";
 
 const MAX_RETAINED_CODEX_PAYLOAD_BYTES = 64 * 1024;
 const MAX_RETAINED_CODEX_STRING_CHARS = 32 * 1024;
+const SENSITIVE_HOST_HOME_DIRECTORIES = [
+  ".aws",
+  ".azure",
+  ".codex",
+  ".config/gcloud",
+  ".gnupg",
+  ".kube",
+  ".ssh",
+] as const;
+
+export type CodexWorkingDirectoryAuthority =
+  "local_filesystem" | "remote_runner";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -28,9 +41,13 @@ function record(value: unknown): Record<string, unknown> {
 export function validateCodexWorkingDirectory(
   workingDirectory: string,
   environment: NodeJS.ProcessEnv = process.env,
+  authority: CodexWorkingDirectoryAuthority = "local_filesystem",
 ): string {
   if (workingDirectory.trim().length === 0) {
     throw new Error("Codex working directory is required");
+  }
+  if (authority === "remote_runner") {
+    return validateRemoteRunnerWorkingDirectory(workingDirectory, environment);
   }
   const requested = resolve(workingDirectory);
   let resolved: string;
@@ -51,12 +68,29 @@ export function validateCodexWorkingDirectory(
   if (resolved === parse(resolved).root) {
     throw new Error("Codex working directory cannot be a filesystem root");
   }
+  const configuredRoot = environment.PAPERCLIP_WORKSPACE_CWD;
   const hostHome = canonicalConfiguredPath(environment.HOME);
   if (hostHome && pathContains(resolved, hostHome)) {
     throw new Error("Codex working directory cannot contain the host HOME");
   }
-  if (hostHome && pathContains(hostHome, resolved)) {
-    throw new Error("Codex working directory cannot overlap the host HOME");
+  if (
+    hostHome &&
+    SENSITIVE_HOST_HOME_DIRECTORIES.some((directory) =>
+      pathContains(resolve(hostHome, directory), resolved),
+    )
+  ) {
+    throw new Error(
+      "Codex working directory cannot overlap sensitive host HOME state",
+    );
+  }
+  if (
+    hostHome &&
+    pathContains(hostHome, resolved) &&
+    (configuredRoot === undefined || configuredRoot.trim().length === 0)
+  ) {
+    throw new Error(
+      "Codex working directory inside the host HOME requires an assigned workspace",
+    );
   }
   const codexHome = canonicalConfiguredPath(environment.CODEX_HOME);
   if (codexHome) {
@@ -67,7 +101,6 @@ export function validateCodexWorkingDirectory(
       throw new Error("Codex working directory cannot overlap host CODEX_HOME");
     }
   }
-  const configuredRoot = environment.PAPERCLIP_WORKSPACE_CWD;
   if (configuredRoot !== undefined && configuredRoot.trim().length > 0) {
     const root = canonicalConfiguredPath(configuredRoot)!;
     const pathFromRoot = relative(root, resolved);
@@ -82,6 +115,47 @@ export function validateCodexWorkingDirectory(
     }
   }
   return resolved;
+}
+
+function validateRemoteRunnerWorkingDirectory(
+  workingDirectory: string,
+  environment: NodeJS.ProcessEnv,
+): string {
+  if (
+    !posix.isAbsolute(workingDirectory) ||
+    posix.normalize(workingDirectory) !== workingDirectory ||
+    /[\u0000-\u001f\u007f]/u.test(workingDirectory)
+  ) {
+    throw new Error(
+      "Remote Codex working directory must be a normalized absolute path",
+    );
+  }
+  if (workingDirectory === posix.parse(workingDirectory).root) {
+    throw new Error("Codex working directory cannot be a filesystem root");
+  }
+  const configuredRoot = environment.PAPERCLIP_WORKSPACE_CWD?.trim();
+  if (!configuredRoot) {
+    throw new Error(
+      "Remote Codex working directory requires an assigned workspace",
+    );
+  }
+  if (
+    !posix.isAbsolute(configuredRoot) ||
+    posix.normalize(configuredRoot) !== configuredRoot
+  ) {
+    throw new Error(
+      "Assigned remote workspace must be a normalized absolute path",
+    );
+  }
+  // The controller cannot inspect a provider-owned filesystem. Pin the facade
+  // to the exact remote workspace while runnerd validates existence, type, and
+  // canonical identity inside the authoritative filesystem before launch.
+  if (workingDirectory !== configuredRoot) {
+    throw new Error(
+      "Remote Codex working directory does not match the assigned workspace",
+    );
+  }
+  return workingDirectory;
 }
 
 function canonicalConfiguredPath(value: string | undefined): string | null {

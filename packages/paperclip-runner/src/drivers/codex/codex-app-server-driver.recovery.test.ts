@@ -44,6 +44,45 @@ import {
 } from "./codex-app-server-driver.test-support.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("persists and verifies the tagged runnerd provider identity on recovery", async () => {
+    const providerIdentity = {
+      kind: "acpx",
+      normalizedSessionId: "normalized-tagged-recovery",
+      acpxRecordId: "acpx-record-1",
+      backendSessionId: "backend-session-1",
+      agentSessionId: "agent-session-1",
+      profileDigest: `sha256:${"a".repeat(64)}`,
+      workspaceDigest: `sha256:${"b".repeat(64)}`,
+      requestedModel: "gpt-5.6-sol",
+      effectiveModel: "gpt-5.6-sol",
+      permissionMode: "approve-all",
+      providerLifetimeFenceCandidates: [60_001, 60_002, 60_003],
+    };
+    const first = new FakeCodexTransport(
+      "thread-1",
+      "provider-session-1",
+      providerIdentity,
+    );
+    const second = new FakeCodexTransport("thread-1", "provider-session-1", {
+      ...providerIdentity,
+      backendSessionId: "backend-session-2",
+    });
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-tagged-recovery",
+      normalizedSessionId: "normalized-tagged-recovery",
+      workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    expect(snapshot.providerIdentity).toEqual(providerIdentity);
+    await original.close({ reason: "transport lost" });
+
+    await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason: "provider resumed with a different tagged session identity",
+    });
+  });
+
   it("resumes and reconciles the exact provider thread after transport loss", async () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();
@@ -70,6 +109,42 @@ describe("Codex app-server Codex driver", () => {
       "thread/read",
     ]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
+  });
+
+  it("rejects a recovered provider thread outside the assigned workspace", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: {
+        id: "thread-1",
+        sessionId: "provider-session-1",
+        cwd: "/tmp",
+        turns: [{ id: "turn-1", status: "inProgress", items: [] }],
+      },
+    };
+    const driver = makeDriver([first, second], {
+      environment: {
+        PATH: "/bin",
+        HOME: "/isolated/home",
+        CODEX_HOME: "/isolated/codex",
+        PAPERCLIP_WORKSPACE_CWD: WORKSPACE,
+      },
+    });
+    const original = await driver.openSession({
+      runId: "run-recover-outside-workspace",
+      normalizedSessionId: "normalized-recover-outside-workspace",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Work." } });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "transport lost" });
+
+    await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason: expect.stringContaining(
+        "Codex working directory is outside the assigned workspace",
+      ),
+    });
   });
 
   it("ignores an old terminal turn when the persisted active turn is still running", async () => {

@@ -274,17 +274,23 @@ The current product behavior is encoded by `recommendedDefaultsForApp` in
 `packages/shared/src/app-definitions.ts`:
 
 - Every discovered action is enabled during successful setup.
-- S1-S3 methods default their actions to **Allowed**, including writes.
-- S4 methods default `write` and `destructive` actions to **Ask first**.
+- Every active action defaults to **Allowed**, including `write` and
+  `destructive` actions, for every connection method.
 - Permanently blocked provider actions stay disabled.
 - Provider/schema-specific changed-tool quarantine remains a separate catalog
   concern; do not turn writes Off as a substitute for correct risk
   classification.
 
-If a destructive provider cannot be safe with those defaults, classify the
-method S4 or add a narrowly reviewed provider policy with tests. Do not hide a
-dangerous tool by misclassifying it as read, and do not silently change global
-defaults in a provider PR.
+This is an opt-in restriction model. Finishing a connection is still limited to
+a board user with connection-configuration access, commits the selected action
+IDs to an auditable profile, and leaves **Ask first** available for any action.
+The open default changes the initial policy; it does not create a route around a
+policy the operator has applied.
+
+If a destructive provider cannot be safe with those defaults, add a narrowly
+reviewed provider policy with tests. Do not hide a dangerous tool by
+misclassifying it as read, and do not silently change global defaults in a
+provider PR.
 
 ## Golden-Path Agent Tutorial
 
@@ -742,13 +748,17 @@ Walk the user path:
    it returns to
    `?source=<slug>&resume=<connection-id>` without creating another draft.
 7. Complete setup. Confirm the connection is active/healthy and opens
-   `/<company-prefix>/apps/<connection-id>/test`.
+   `/<company-prefix>/apps/<connection-id>/permissions`, then use the action's
+   **Test** button.
 
 For OAuth, the instance callback must be browser-reachable and must match the
 provider registration. Loopback HTTP is acceptable only when provider and
-Paperclip redirect policies permit it. A worktree exposed through HTTPS needs a
-unique, correct `PAPERCLIP_PUBLIC_URL`; internal service hostnames are not valid
-browser callback origins.
+Paperclip redirect policies permit it. Browser-started setup on an authenticated
+private instance automatically uses the same-origin HTTPS address that served
+the setup page, including a Tailscale Serve address; the request must pass the
+hostname and board-mutation guards. An explicit `PAPERCLIP_PUBLIC_URL` remains
+available for non-browser starts and unusual proxy topologies. Internal service
+hostnames are not valid browser callback origins.
 
 Use the browser signed-in session only for an explicitly authorized live proof.
 Do not inspect cookies, storage, saved passwords, or unrelated account data.
@@ -953,7 +963,7 @@ Suggested PR verification block:
 | `consoleLinks` | Official registration, key, settings, and docs destinations. |
 | `warnings` | Plan, preview, admin, financial, production-data, or destructive-action caveats. |
 | `variants` | Legacy/simple variant metadata. Prefer explicit methods plus `capabilityProfile` for materially different endpoints/auth. |
-| `riskTier` | S1-S4 provider/method sensitivity. Drives recommended policy defaults. |
+| `riskTier` | S1-S4 provider/method sensitivity used for review and validation. |
 | `requiredResourceFilters` | Reviewed resource boundaries. Must be backed by enforcement, not only copy. |
 | `credentialSources.vercelConnect` | Reviewed services, principal modes, scopes, and header projection for the Vercel exception. |
 
@@ -1146,7 +1156,7 @@ Capture:
   `requiredResourceFilters` only when their documented semantics apply.
 - `setupPrerequisite`, `warnings`, `guidanceMd`, and `consoleLinks`: everything
   the operator must know before credentials or consent.
-- `riskTier`: the method-level S1-S4 tier that drives central access defaults.
+- `riskTier`: the method-level S1-S4 tier used for review and validation.
 - `availability`: whether the connection is usable on this instance and the
   precise reason when it is not.
 
@@ -1187,8 +1197,8 @@ Risk classes:
 | Risk | Examples | Default |
 | --- | --- | --- |
 | `read` | Search, list, fetch metadata/content inside allowed resources. | Active when profile includes the app or read risk level. |
-| `write` | Create issue, add comment, update status, append block, trigger redeploy. | Allowed for S1-S3 under the current product default; ask-first for S4. |
-| `destructive` | Delete, refund, cancel production deployment, send external message, broad tenant mutation. | Allowed for S1-S3 and ask-first for S4 under the current default. A provider with meaningful destructive capability should normally be S4 or receive a reviewed explicit policy. |
+| `write` | Create issue, add comment, update status, append block, trigger redeploy. | Allowed under the current new-connection default. Operators may narrow individual actions. |
+| `destructive` | Delete, refund, cancel production deployment, send external message, broad tenant mutation. | Allowed under the current new-connection default. A provider with meaningful destructive capability should receive an explicit security review and may receive a narrower provider policy. |
 
 Changed-action quarantine is available when a connection sets
 `quarantineNewEntries: true`. Use it for providers whose catalog can change
@@ -1236,8 +1246,8 @@ Recommended defaults for a new catalog entry:
 
 - Use the central `recommendedDefaultsForApp` policy. Do not invent a provider
   default in UI code.
-- S1-S3 actions default Allowed. S4 writes and destructive actions default Ask
-  first.
+- All active actions default Allowed for every method tier. Operators can move
+  individual actions to Ask first or Off after setup.
 - Classify a method S4 when its normal catalog includes payments, external
   sends, refunds, production deployment, deletion, tenant-wide administration,
   or comparable high-impact mutations.
@@ -1254,7 +1264,8 @@ Recommended defaults for a new catalog entry:
 - Catalog discovery produces the expected actions and the declared changed-tool
   behavior.
 - An allowed read call succeeds through the gateway.
-- A write call matches the method tier: Allowed for S1-S3, Ask first for S4.
+- A write call is Allowed by the new-connection default unless an explicit
+  provider or operator policy narrows it.
 - A blocked/quarantined action, when declared, cannot be listed or invoked by
   an agent.
 - Revocation removes tools and blocks execution immediately.
@@ -1508,7 +1519,7 @@ Copy this section into a connector proposal or implementation issue.
 - Connect evidence:
 - Catalog evidence:
 - Allowed read:
-- Governed write (Allowed for S1-S3, Ask first for S4):
+- Governed write (Allowed by default; operator policy may narrow it):
 - Denied/quarantined case:
 - Revoke:
 - Audit:
@@ -1782,8 +1793,8 @@ plain-HTTP non-loopback origins.
   loopback HTTP (Notion's redirect-URI rule). A plain-HTTP non-loopback origin
   gets "This provider requires an HTTPS or loopback origin. Configure TLS
   before connecting." — add TLS first (e.g. a tailscale cert, as
-  paperclip-dev did). The `enableApps` experimental setting must be on for
-  `/apps/*` routes. The connecting user must be allowed to install
+  paperclip-dev did). Apps is a standard product surface and `/apps/*` routes
+  are always available. The connecting user must be allowed to install
   integrations in their Notion workspace.
 - How to verify: visit `/PAP/apps/connect?source=notion`, complete the Notion
   consent flow, and land on the wizard's actions step listing `notion-*`
