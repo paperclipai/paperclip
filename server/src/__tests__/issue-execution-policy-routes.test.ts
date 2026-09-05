@@ -325,6 +325,25 @@ describe("issue execution policy routes", () => {
       missing: "review_path",
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
+
+    // This 422 is the only text an agent is guaranteed to be reading at the
+    // moment it is stuck, so it must carry a payload it can copy rather than
+    // the name of a mechanism. Naming alone demonstrably was not enough: the
+    // message already listed "set a typed executionState.currentParticipant
+    // through an execution policy" and agents still fell back to `blocked`,
+    // which wakes nobody. Extract by delimiter and parse, rather than assert a
+    // substring, so the example cannot drift into something malformed while
+    // still matching. (A brace-counting regex was tried first and was wrong.)
+    const example = res.body.error.match(/needed: (\{.*?\}) - Paperclip/)?.[1];
+    expect(example, "the 422 must embed a JSON handoff example").toBeTruthy();
+
+    const parsed = JSON.parse(example as string);
+    expect(parsed.status).toBe("in_review");
+    const stage = parsed.executionPolicy.stages[0];
+    expect(stage.type).toBe("review");
+    expect(stage.participants[0].type).toBe("agent");
+    expect(stage.participants[0]).toHaveProperty("agentId");
+    expect(res.body.error).toContain("blocked");
   });
 
   it("allows an agent-authored in_review transition with a pending confirmation interaction", async () => {
