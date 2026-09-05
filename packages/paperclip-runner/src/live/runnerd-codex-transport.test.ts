@@ -148,6 +148,26 @@ it("infers a remote provider turn until its own terminal event is durable", () =
   ).toBe(false);
 });
 
+it("accepts an observed provider start that echoes the requested turn identity", () => {
+  const turnId = "turn_lab_0123456789abcdef0123456789abcdef";
+  expect(
+    runnerdRecoveryInternals.turnStartResponseReady({
+      responseEpoch: 2,
+      observedEpoch: 2,
+      requestedTurnId: turnId,
+      boundTurnId: turnId,
+    }),
+  ).toBe(true);
+  expect(
+    runnerdRecoveryInternals.turnStartResponseReady({
+      responseEpoch: 2,
+      observedEpoch: 1,
+      requestedTurnId: turnId,
+      boundTurnId: "provider-turn-different",
+    }),
+  ).toBe(false);
+});
+
 it.each(["before", "after"] as const)(
   "retries external authority rotation after crashing %s the remote archive",
   async (crashPoint) => {

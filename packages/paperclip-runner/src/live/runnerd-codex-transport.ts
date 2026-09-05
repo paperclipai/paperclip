@@ -519,6 +519,19 @@ function providerTurnIsActiveFromCommittedEvents(
   return active;
 }
 
+function turnStartResponseReady(input: {
+  responseEpoch: number;
+  observedEpoch: number;
+  requestedTurnId: string;
+  boundTurnId: string;
+}): boolean {
+  return (
+    input.responseEpoch === input.observedEpoch &&
+    input.requestedTurnId.length > 0 &&
+    input.boundTurnId.length > 0
+  );
+}
+
 async function releaseRunnerProcessOwnership(input: {
   runnerSettled: boolean;
   checkpoint:
@@ -3466,18 +3479,22 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // the strict driver. ACPX may accept the exact requested identity, so the
       // event observation—not an ID change—is the readiness authority.
       const deadline = Date.now() + 30_000;
-      while (
-        this.#observedTurnStartEpoch !== responseEpoch &&
-        Date.now() < deadline
-      ) {
+      const providerTurnStarted = () =>
+        turnStartResponseReady({
+          responseEpoch,
+          observedEpoch: this.#observedTurnStartEpoch,
+          requestedTurnId: pendingTurnId,
+          boundTurnId: this.#turnId,
+        });
+      while (!providerTurnStarted() && Date.now() < deadline) {
         this.#throwIfFailed();
         this.#pumpEvents();
-        if (this.#observedTurnStartEpoch === responseEpoch) break;
+        if (providerTurnStarted()) break;
         if (await this.#runnerHasExited())
           throw new Error("runnerd exited before provider turn startup");
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));
       }
-      if (this.#observedTurnStartEpoch !== responseEpoch)
+      if (!providerTurnStarted())
         throw new Error("runnerd did not report the provider turn identity");
       responseReady = true;
       return { turn: { id: this.#turnId, status: "inProgress" } };
@@ -4317,4 +4334,5 @@ export const runnerdRecoveryInternals = Object.freeze({
   recoveredRunAttachment,
   releaseRunnerProcessOwnership,
   rotateExternalAuthorityEpoch,
+  turnStartResponseReady,
 });
