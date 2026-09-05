@@ -922,6 +922,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
   "POST /api/issues/{id}/interactions/{interactionId}/skip",
   "POST /api/issues/{id}/interactions/{interactionId}/withdraw",
+  // Board-only: the handler calls assertBoard and the service records the
+  // decision under a user actor, so an agent bearer token can never satisfy it.
+  "POST /api/issues/{id}/stalled-review-decision",
   "GET /api/companies/{companyId}/tools/gallery",
   "GET /api/companies/{companyId}/tools/apps/{galleryKey}/preflight",
   "POST /api/companies/{companyId}/tools/apps/connect",
