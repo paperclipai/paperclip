@@ -1,7 +1,7 @@
 diff --git a/src/manifest.ts b/src/manifest.ts
 --- a/src/manifest.ts
 +++ b/src/manifest.ts
-@@ -17,7 +17,9 @@ const manifest: PaperclipPluginManifestV1 = {
+@@ -17,6 +17,8 @@ const manifest: PaperclipPluginManifestV1 = {
      "issues.update",
      "issue.comments.read",
      "issue.comments.create",
@@ -13,7 +13,7 @@ diff --git a/src/manifest.ts b/src/manifest.ts
 diff --git a/src/worker.ts b/src/worker.ts
 --- a/src/worker.ts
 +++ b/src/worker.ts
-@@ -914,6 +914,53 @@ export const plugin = definePlugin({
+@@ -914,6 +914,60 @@ export const plugin = definePlugin({
  
        await notify(ctx, rt, event, formatIssueAssigned);
      });
@@ -74,7 +74,7 @@ diff --git a/src/worker.ts b/src/worker.ts
  
      ctx.events.on("approval.created", async (event: PluginEvent) => {
        const rt = ensureRuntime();
-@@ -1563,6 +1610,57 @@ async function handleCallbackQuery(
+@@ -1563,6 +1617,69 @@ async function handleCallbackQuery(
    const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
    const messageId = query.message?.message_id;
  
