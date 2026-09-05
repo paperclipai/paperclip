@@ -3805,28 +3805,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       {},
       { authorType: "system" },
     );
-    const issue = await db
-      .select({
-        assigneeAgentId: issues.assigneeAgentId,
-        status: issues.status,
-        identifier: issues.identifier,
-      })
-      .from(issues)
-      .where(eq(issues.id, conversation.issueId))
-      .then((rows) => rows[0] ?? null);
-    if (issue)
-      await queueIssueAssignmentWakeup({
-        heartbeat: options.heartbeat,
-        issue: {
-          id: conversation.issueId,
-          assigneeAgentId: issue.assigneeAgentId,
-          status: issue.status,
-        },
-        reason: text,
-        mutation: "chat_message_lifecycle",
-        contextSource: "chat:lifecycle",
-        taskKey: issue.identifier,
-      });
     return conversation;
   }
 
@@ -3840,8 +3818,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }) {
     const record = await endpointRecord(input.endpointId);
     if (!record) throw notFound("Chat endpoint not found");
-    if (record.endpoint.status !== "active")
-      throw forbidden("This chat connection is not active");
+    // A provider has already authenticated this callback. During setup the
+    // message can belong to the test conversation, so retain its correction.
+    // Paused or unhealthy connections acknowledge late callbacks without
+    // mutating the bound task or causing provider retry storms.
+    if (
+      record.endpoint.status !== "verifying" &&
+      record.endpoint.status !== "active"
+    )
+      return;
     const conversation = await conversationForThread(
       input.endpointId,
       input.threadId,

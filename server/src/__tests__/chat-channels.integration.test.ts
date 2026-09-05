@@ -6632,7 +6632,87 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "An external message in this conversation was deleted.",
       ].sort(),
     );
-    expect(wakeup).toHaveBeenCalledTimes(4);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+  });
+
+  it("acknowledges Telegram edits while verifying and when processing is suspended", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    const chatId = "77112234";
+    const dm = makeThread({
+      channelId: `telegram:${chatId}`,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram direct message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: `${chatId}:51`,
+        text: "Original setup request",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+
+    const sendEdit = (editDate: number, text: string) =>
+      service.handleWebhook(
+        endpoint.publicId,
+        "telegram",
+        new Request("https://paperclip.example/telegram", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            update_id: editDate,
+            edited_message: {
+              message_id: 51,
+              edit_date: editDate,
+              chat: { id: Number(chatId), type: "private" },
+              from: { id: Number(chatId), first_name: "Telegram User" },
+              text,
+            },
+          }),
+        }),
+      );
+
+    await expect(
+      sendEdit(1_788_620_100, "Edited during setup"),
+    ).resolves.toMatchObject({ ok: true });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+
+    for (const status of ["paused", "attention"] as const) {
+      await db
+        .update(chatEndpoints)
+        .set({ status, updatedAt: new Date() })
+        .where(eq(chatEndpoints.id, endpoint.id));
+      await expect(
+        sendEdit(
+          status === "paused" ? 1_788_620_101 : 1_788_620_102,
+          `Edited while ${status}`,
+        ),
+      ).resolves.toMatchObject({ ok: true });
+    }
+
+    const lifecycle = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(chatDeliveries.eventKind, "message_updated"),
+        ),
+      );
+    expect(lifecycle).toEqual([
+      expect.objectContaining({
+        providerEventId: `message_updated:telegram:${chatId}:${chatId}:51:1788620100`,
+        state: "processed",
+      }),
+    ]);
+    expect(wakeup).toHaveBeenCalledTimes(1);
   });
 
   it("records verified Telegram edited_message updates against the existing DM task", async () => {
@@ -6744,7 +6824,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ),
       );
     expect(originalDelivery.normalizedEvent.deduplication).toBeUndefined();
-    expect(wakeup).toHaveBeenCalledTimes(3);
+    expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
   it("audits reactions on linked messages without treating them as task instructions", async () => {
@@ -7068,7 +7148,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ),
       ).toHaveLength(2);
     });
-    expect(wakeup).toHaveBeenCalledTimes(11);
+    expect(wakeup).toHaveBeenCalledTimes(4);
     await service.shutdown();
   });
 });
