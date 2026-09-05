@@ -2735,6 +2735,35 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(chatDeliveries)
         .where(eq(chatDeliveries.endpointId, endpoint.id));
       expect(deliveries).toHaveLength(1);
+      expect(deliveries[0].state).toBe("processed");
+    });
+    const [initialDelivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const initialDuplicateCount = Number(
+      initialDelivery.normalizedEvent.deduplication?.duplicateCount ?? 0,
+    );
+    const acceptedRedelivery = await service.handleWebhook(
+      endpoint.publicId,
+      "slack",
+      providerRequest(true),
+    );
+    expect(acceptedRedelivery.status).toBe(200);
+    await vi.waitFor(async () => {
+      const [delivery] = await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(
+        Number(delivery.normalizedEvent.deduplication?.duplicateCount ?? 0),
+      ).toBeGreaterThan(initialDuplicateCount);
+      expect(
+        await db
+          .select()
+          .from(issues)
+          .where(eq(issues.companyId, fixture.companyId)),
+      ).toHaveLength(1);
     });
     await service.shutdown();
   });
@@ -2743,6 +2772,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service, wakeup } =
       await configuredSlackEndpoint(fixture);
+    const serializedEndpointResponses = JSON.stringify({
+      detail: await service.get(endpoint.id),
+      list: await service.list(fixture.companyId),
+    });
+    expect(serializedEndpointResponses).not.toContain("xoxb-test-token");
+    expect(serializedEndpointResponses).not.toContain("test-signing-secret");
     const first = makeThread({
       channelId: "C-ENGINEERING",
       id: "slack:C-ENGINEERING:1000.1",
