@@ -222,11 +222,6 @@ export function parseHermesStdoutLine(
     return [];
   }
 
-  // ── Session info line ────────────────────────────────────────────────
-  if (trimmed.startsWith("session_id:")) {
-    return [{ kind: "system", ts, text: trimmed }];
-  }
-
   // ── Quiet-mode tool/message lines (prefixed with ┊) ────────────────────
   if (trimmed.includes(TOOL_OUTPUT_PREFIX)) {
     // Assistant message: ┊ 💬 {text}
@@ -290,4 +285,65 @@ export function parseHermesStdoutLine(
 
   // ── Regular assistant output ───────────────────────────────────────────
   return [{ kind: "assistant", ts, text: trimmed }];
+}
+
+const CANONICAL_SESSION_LINE_REGEX =
+  /^session_id:\s*(\d{8}_\d{6}_[a-z0-9]+)$/i;
+const CONFIRMED_SESSION_LINE_REGEX =
+  /^\[hermes\]\s+Session:\s*(\d{8}_\d{6}_[a-z0-9]+)$/i;
+
+/**
+ * Delay a canonical session-shaped line by one log entry. The server emits a
+ * matching [hermes] Session confirmation immediately after trusted quiet-mode
+ * metadata; without that confirmation, the buffered line is ordinary answer
+ * text and remains visible as assistant output.
+ */
+export function createHermesStdoutParser() {
+  let pendingSessionLine: { text: string; ts: string; sessionId: string } | null = null;
+
+  return {
+    parseLine(line: string, ts: string): TranscriptEntry[] {
+      const trimmed = stripAnsi(line).trim();
+      const sessionMatch = trimmed.match(CANONICAL_SESSION_LINE_REGEX);
+
+      if (pendingSessionLine) {
+        const pending = pendingSessionLine;
+        pendingSessionLine = null;
+        const confirmationMatch = trimmed.match(CONFIRMED_SESSION_LINE_REGEX);
+        if (confirmationMatch?.[1] === pending.sessionId) {
+          return [
+            { kind: "system", ts: pending.ts, text: pending.text },
+            ...parseHermesStdoutLine(line, ts),
+          ];
+        }
+
+        const flushed: TranscriptEntry[] = [
+          { kind: "assistant", ts: pending.ts, text: pending.text },
+        ];
+        if (sessionMatch?.[1]) {
+          pendingSessionLine = {
+            text: trimmed,
+            ts,
+            sessionId: sessionMatch[1],
+          };
+          return flushed;
+        }
+        return [...flushed, ...parseHermesStdoutLine(line, ts)];
+      }
+
+      if (sessionMatch?.[1]) {
+        pendingSessionLine = {
+          text: trimmed,
+          ts,
+          sessionId: sessionMatch[1],
+        };
+        return [];
+      }
+
+      return parseHermesStdoutLine(line, ts);
+    },
+    reset() {
+      pendingSessionLine = null;
+    },
+  };
 }
