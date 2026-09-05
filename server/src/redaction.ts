@@ -1043,7 +1043,9 @@ export function redactAgentAdapterConfig(
     Object.entries(env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
   );
 
-  return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
+  const redactedRest = redactConfigurationPayload(rest, "adapter") ?? {};
+  if (typeof rest.command === "string") redactedRest.command = rest.command;
+  return { ...redactedRest, env: redactedEnv };
 }
 
 function redactConfigurationValue(
