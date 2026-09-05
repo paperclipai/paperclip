@@ -1,0 +1,5 @@
+title: Concepts
+description: "Glossary of atomic pages for domain terms and core abstractions — the vocabulary a newcomer needs. Uses the `concept-page` template: definition, why it matters, where it lives in the code. Keep pages small and densely cross-linked so concepts become hubs for everywhere they appear."
+tags:
+  - wiki
+  - concept
