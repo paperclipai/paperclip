@@ -66,6 +66,17 @@ type RunnerTransportOptions = {
     providerSessionId?: string | null;
     activeTurnId?: string | null;
   };
+  archiveExternalRunnerState?: (input: {
+    archiveKey: string;
+    priorIdentity: {
+      runnerInstanceId: string;
+      environmentLeaseId: string;
+      runId: string;
+      normalizedSessionId: string;
+      turnId: string;
+      itemId: string;
+    };
+  }) => Promise<Record<string, unknown>>;
 };
 
 const durableControlPlaneState = (identity: Record<string, unknown>) => ({
@@ -3640,6 +3651,87 @@ describe("runnerd provider runtime wiring", () => {
       }
       await rm(stateBase, { recursive: true, force: true });
     }
+  });
+
+  it("makes remote authority archival idempotent and returns the archived state", async () => {
+    const remoteExecute = vi.fn();
+    const remoteTarget = {
+      kind: "remote" as const,
+      transport: "sandbox" as const,
+      providerKey: "daytona",
+      leaseId: "lease-authority-archive",
+      remoteCwd: "/home/daytona/paperclip-workspace",
+      runner: { execute: remoteExecute },
+    } as never;
+    const archiveIdentity = {
+      runnerInstanceId: "runner-authority-archive",
+      environmentLeaseId: "lease-authority-archive",
+      runId: execution.binding.runId,
+      normalizedSessionId: execution.session.normalizedSessionId,
+      turnId: "turn-authority-archive",
+      itemId: "item-authority-archive",
+    };
+    const archivedState = {
+      schema: "paperclip.runner.durable.state.v1",
+      ...archiveIdentity,
+      lifecycle: "suspended",
+    };
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: archiveIdentity.runnerInstanceId,
+      runnerExecutionTarget: remoteTarget,
+    });
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    const archiveExternalRunnerState =
+      state.createTransport.mock.calls[0]![0].archiveExternalRunnerState;
+    expect(archiveExternalRunnerState).toBeTypeOf("function");
+    remoteExecute.mockClear();
+    remoteExecute.mockResolvedValue({
+      exitCode: 0,
+      timedOut: false,
+      stdout: Buffer.from(JSON.stringify(archivedState)).toString("base64"),
+      stderr: "",
+    });
+
+    await expect(
+      archiveExternalRunnerState!({
+        archiveKey: "a".repeat(24),
+        priorIdentity: archiveIdentity,
+      }),
+    ).resolves.toEqual(archivedState);
+    await expect(
+      archiveExternalRunnerState!({
+        archiveKey: "a".repeat(24),
+        priorIdentity: archiveIdentity,
+      }),
+    ).resolves.toEqual(archivedState);
+    expect(remoteExecute).toHaveBeenCalledTimes(2);
+    expect(remoteExecute.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({
+        command: "sh",
+        args: expect.arrayContaining([
+          expect.stringContaining(
+            'test ! -e "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3"',
+          ),
+        ]),
+      }),
+    );
+
+    remoteExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "source and archive both exist",
+    });
+    await expect(
+      archiveExternalRunnerState!({
+        archiveKey: "a".repeat(24),
+        priorIdentity: archiveIdentity,
+      }),
+    ).rejects.toThrow("runner_remote_authority_archive_failed");
   });
 
   it("uses the native execution workspace as the local provider containment root", async () => {

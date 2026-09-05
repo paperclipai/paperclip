@@ -7108,19 +7108,36 @@ async function createRunnerdBackendWithinSessionClaim(
             "authority-epochs",
             `epoch-${archive.archiveKey}`,
           );
+          const archivedStatePath = posix.join(
+            archiveDirectory,
+            "runner-state.json",
+          );
           const result = await remoteCommandRunner.execute({
             command: "sh",
             args: [
               "-c",
-              'set -eu; test -f "$1"; test ! -e "$2/runner-state.json"; umask 077; install -d -m 0700 "$2"; mv -- "$1" "$2/runner-state.json"',
+              'set -eu; if test -L "$2" || { test -e "$2" && test ! -d "$2"; }; then exit 1; fi; if test -f "$1" && test ! -L "$1" && test ! -e "$3" && test ! -L "$3"; then umask 077; install -d -m 0700 "$2"; mv -- "$1" "$3"; elif test ! -e "$1" && test ! -L "$1" && test -f "$3" && test ! -L "$3"; then :; else exit 1; fi; base64 < "$3"',
               "paperclip-runner-authority-archive",
               sourcePath,
               archiveDirectory,
+              archivedStatePath,
             ],
             bypassSession: true,
             timeoutMs: 10_000,
           });
           if (result.exitCode !== 0 || result.timedOut) {
+            throw new Error("runner_remote_authority_archive_failed");
+          }
+          try {
+            return record(
+              JSON.parse(
+                Buffer.from(
+                  result.stdout.replace(/\s+/g, ""),
+                  "base64",
+                ).toString("utf8"),
+              ),
+            );
+          } catch {
             throw new Error("runner_remote_authority_archive_failed");
           }
         }

@@ -170,6 +170,33 @@ function controlPlaneIdentity(
   );
 }
 
+function recoveryIdentityMatches(
+  value: Record<string, unknown>,
+  expected: DurableRecoveryIdentity,
+): boolean {
+  return (
+    value.runnerInstanceId === expected.runnerInstanceId &&
+    value.environmentLeaseId === expected.environmentLeaseId &&
+    value.runId === expected.runId &&
+    value.normalizedSessionId === expected.normalizedSessionId &&
+    value.turnId === expected.turnId &&
+    value.itemId === expected.itemId
+  );
+}
+
+function assertSuspendedRunnerState(
+  state: Record<string, unknown>,
+  expected: DurableRecoveryIdentity,
+): void {
+  if (
+    state.schema !== "paperclip.runner.durable.state.v1" ||
+    !recoveryIdentityMatches(state, expected) ||
+    state.lifecycle !== "suspended"
+  ) {
+    throw new Error("native_runner_authority_rotation_requires_settled_state");
+  }
+}
+
 function assertRealDirectory(path: string): void {
   const metadata = lstatSync(path);
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -316,7 +343,7 @@ async function rotateExternalAuthorityEpoch(
   archiveRunnerState: (input: {
     archiveKey: string;
     priorIdentity: DurableRecoveryIdentity;
-  }) => Promise<void>,
+  }) => Promise<Record<string, unknown>>,
 ): Promise<Record<string, unknown>> {
   const priorIdentity = controlPlaneIdentity(controlPlaneState);
   if (
@@ -329,19 +356,9 @@ async function rotateExternalAuthorityEpoch(
       "PRP recovery identity does not match the durable session binding",
     );
   }
-  const runnerState = await readRunnerState();
-  if (
-    runnerState.schema !== "paperclip.runner.durable.state.v1" ||
-    runnerState.runnerInstanceId !== priorIdentity.runnerInstanceId ||
-    runnerState.environmentLeaseId !== priorIdentity.environmentLeaseId ||
-    runnerState.runId !== priorIdentity.runId ||
-    runnerState.normalizedSessionId !== priorIdentity.normalizedSessionId ||
-    runnerState.lifecycle !== "suspended"
-  ) {
-    throw new Error("native_runner_authority_rotation_requires_settled_state");
-  }
   const archive = authorityArchiveDirectory(root, priorIdentity);
   const archivedControlPlane = resolve(archive, "control-plane");
+  const activeControlPlane = resolve(root, "control-plane");
   const archivesRoot = resolve(root, "authority-epochs");
   if (existsSync(archivesRoot)) {
     assertRealDirectory(archivesRoot);
@@ -355,18 +372,30 @@ async function rotateExternalAuthorityEpoch(
   }
   assertRealDirectory(archive);
   if (existsSync(archivedControlPlane)) {
-    throw new Error("native_runner_authority_archive_conflict");
+    // This directory is the durable transaction marker. A prior controller
+    // may have stopped before or after the remote move, so resume the same
+    // idempotent archive instead of starting a new external runner.
+    assertRealDirectory(archivedControlPlane);
+    if (existsSync(activeControlPlane)) {
+      throw new Error("native_runner_authority_archive_conflict");
+    }
+    const archivedIdentity = controlPlaneIdentity(
+      readControlPlaneState(archivedControlPlane),
+    );
+    if (!recoveryIdentityMatches(archivedIdentity, priorIdentity)) {
+      throw new Error("native_runner_authority_archive_conflict");
+    }
+  } else {
+    const runnerState = await readRunnerState();
+    assertSuspendedRunnerState(runnerState, priorIdentity);
+    assertRealDirectory(activeControlPlane);
+    renameSync(activeControlPlane, archivedControlPlane);
   }
-  await archiveRunnerState({
+  const archivedRunnerState = await archiveRunnerState({
     archiveKey: basename(archive).replace(/^epoch-/, ""),
     priorIdentity,
   });
-  const activeControlPlane = resolve(root, "control-plane");
-  assertRealDirectory(activeControlPlane);
-  renameSync(activeControlPlane, archivedControlPlane);
-  if (!existsSync(archivedControlPlane)) {
-    throw new Error("native_runner_authority_archive_incomplete");
-  }
+  assertSuspendedRunnerState(archivedRunnerState, priorIdentity);
   return controlPlaneState;
 }
 
@@ -915,11 +944,11 @@ export interface CapabilityRunnerdCodexTransportOptions {
   readRunnerState?: () => Promise<Record<string, unknown>>;
   /** Materializes a verified external checkpoint before authority rotation. */
   prepareExternalRunnerState?: () => Promise<void>;
-  /** Archives the verified suspended binding while retaining provider state. */
+  /** Idempotently archives and returns the verified suspended runner binding. */
   archiveExternalRunnerState?: (input: {
     archiveKey: string;
     priorIdentity: DurableRecoveryIdentity;
-  }) => Promise<void>;
+  }) => Promise<Record<string, unknown>>;
   /** Active-connection recovery budget. Omitted for the existing local mode. */
   runnerReconnectGraceMs?: number;
   /**
@@ -3030,24 +3059,40 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       identity.itemId === desiredIdentity.itemId;
     let rotatedAuthority = false;
     if (controlPlaneState === null) {
-      if (!localProvider || !localStateOwner) {
+      if (!localProvider) {
         throw new Error("PRP provider resume state is unavailable");
       }
-      try {
-        const archivedState = latestArchivedControlPlaneState(
-          this.#root,
-          desiredIdentity,
-        );
-        if (!archivedState) {
-          throw new Error("PRP provider resume state is unavailable");
+      const archivedState = latestArchivedControlPlaneState(
+        this.#root,
+        desiredIdentity,
+      );
+      if (!archivedState) {
+        throw new Error("PRP provider resume state is unavailable");
+      }
+      if (localStateOwner) {
+        try {
+          controlPlaneState = rotateLocalAuthorityEpoch(
+            this.#root,
+            archivedState,
+            desiredIdentity,
+          );
+        } catch (error) {
+          quarantineLocalRuntimeState(this.#root, error);
         }
-        controlPlaneState = rotateLocalAuthorityEpoch(
+      } else {
+        if (
+          this.options.readRunnerState === undefined ||
+          this.options.archiveExternalRunnerState === undefined
+        ) {
+          throw new Error("native_runner_prp_run_rotation_unavailable");
+        }
+        controlPlaneState = await rotateExternalAuthorityEpoch(
           this.#root,
           archivedState,
           desiredIdentity,
+          this.options.readRunnerState,
+          this.options.archiveExternalRunnerState,
         );
-      } catch (error) {
-        quarantineLocalRuntimeState(this.#root, error);
       }
       identity = desiredIdentity;
       rotatedAuthority = true;
@@ -4252,4 +4297,5 @@ export const runnerdRecoveryInternals = Object.freeze({
   providerTurnIsActiveFromCommittedEvents,
   recoveredRunAttachment,
   releaseRunnerProcessOwnership,
+  rotateExternalAuthorityEpoch,
 });

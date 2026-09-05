@@ -148,6 +148,99 @@ it("infers a remote provider turn until its own terminal event is durable", () =
   ).toBe(false);
 });
 
+it.each(["before", "after"] as const)(
+  "retries external authority rotation after crashing %s the remote archive",
+  async (crashPoint) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-external-rotation-"));
+    const priorIdentity = {
+      runnerInstanceId: "runner-external-rotation",
+      environmentLeaseId: "lease-external-rotation",
+      runId: "run-external-prior",
+      normalizedSessionId: "session-external-rotation",
+      turnId: "turn-external-prior",
+      itemId: "item-external-prior",
+    };
+    const desiredIdentity = {
+      ...priorIdentity,
+      runId: "run-external-next",
+      turnId: "turn-external-next",
+      itemId: "item-external-next",
+    };
+    const controlPlaneState = {
+      schema: "paperclip.runner.durable.control-plane-state.v1",
+      identity: priorIdentity,
+    };
+    let activeRunnerState: Record<string, unknown> | null = {
+      schema: "paperclip.runner.durable.state.v1",
+      ...priorIdentity,
+      lifecycle: "suspended",
+    };
+    let archivedRunnerState: Record<string, unknown> | null = null;
+    let readCount = 0;
+    let archiveCount = 0;
+    const readRunnerState = async () => {
+      readCount += 1;
+      if (activeRunnerState === null) throw new Error("runner state moved");
+      return activeRunnerState;
+    };
+    const archiveRunnerState = async () => {
+      archiveCount += 1;
+      if (archiveCount === 1) {
+        if (crashPoint === "after") {
+          archivedRunnerState = activeRunnerState;
+          activeRunnerState = null;
+        }
+        throw new Error(`crashed ${crashPoint} remote archive`);
+      }
+      if (activeRunnerState !== null) {
+        archivedRunnerState = activeRunnerState;
+        activeRunnerState = null;
+      }
+      if (archivedRunnerState === null) {
+        throw new Error("archived runner state unavailable");
+      }
+      return archivedRunnerState;
+    };
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify(controlPlaneState),
+      );
+      await expect(
+        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+          root,
+          controlPlaneState,
+          desiredIdentity,
+          readRunnerState,
+          archiveRunnerState,
+        ),
+      ).rejects.toThrow(`crashed ${crashPoint} remote archive`);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      await expect(
+        runnerdRecoveryInternals.rotateExternalAuthorityEpoch(
+          root,
+          controlPlaneState,
+          desiredIdentity,
+          readRunnerState,
+          archiveRunnerState,
+        ),
+      ).resolves.toEqual(controlPlaneState);
+      expect(readCount).toBe(1);
+      expect(archiveCount).toBe(2);
+      expect(activeRunnerState).toBeNull();
+      expect(archivedRunnerState).toEqual(
+        expect.objectContaining(priorIdentity),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
 it("quiesces the control route before checkpoint and containment regardless of process completion", async () => {
   const settledSteps: string[] = [];
   await runnerdRecoveryInternals.releaseRunnerProcessOwnership({
@@ -2174,27 +2267,77 @@ it("cold-restores a suspended provider session under its durable run binding", a
     turnId: "turn-cold-external",
     itemId: "item-cold-external",
   };
+  const rejectedExternalRotationSteps: string[] = [];
+  let externalArchiveDirectory: string | null = null;
+  const rejectedExternalRotation = createCapabilityRunnerdCodexTransport({
+    ...options,
+    runnerStateDirectory: externallyOwnedRunnerStateDirectory,
+    readRunnerState,
+    prepareExternalRunnerState: async () => {
+      rejectedExternalRotationSteps.push("prepared");
+    },
+    archiveExternalRunnerState: async ({ archiveKey }) => {
+      await expect(
+        stat(join(stateDirectory, "control-plane")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        await stat(
+          join(
+            stateDirectory,
+            "authority-epochs",
+            `epoch-${archiveKey}`,
+            "control-plane",
+          ),
+        ),
+      ).toBeDefined();
+      externalArchiveDirectory = join(
+        stateDirectory,
+        "external-authority-epochs",
+        archiveKey,
+      );
+      await mkdir(externalArchiveDirectory, { recursive: true });
+      await rename(
+        join(externallyOwnedRunnerStateDirectory, "runner-state.json"),
+        join(externalArchiveDirectory, "runner-state.json"),
+      );
+      rejectedExternalRotationSteps.push("remote-archived");
+      throw new Error("controller crashed after external archive");
+    },
+    resumeDynamicTools: dynamicTools,
+    prpIdentity: externalIdentity,
+  });
+  await expect(
+    rejectedExternalRotation.transport.request("thread/read", {}),
+  ).rejects.toThrow("controller crashed after external archive");
+  await rejectedExternalRotation.transport.close();
+  expect(rejectedExternalRotationSteps).toEqual([
+    "prepared",
+    "remote-archived",
+  ]);
+  await expect(stat(join(stateDirectory, "control-plane"))).rejects.toThrow();
+  await expect(
+    stat(join(externallyOwnedRunnerStateDirectory, "runner-state.json")),
+  ).rejects.toThrow();
+
   const externalRotationSteps: string[] = [];
   const externallyRotated = createCapabilityRunnerdCodexTransport({
     ...options,
     runnerStateDirectory: externallyOwnedRunnerStateDirectory,
     readRunnerState,
     prepareExternalRunnerState: async () => {
-      externalRotationSteps.push("prepared");
+      throw new Error("retry must not prepare a new external runner");
     },
     archiveExternalRunnerState: async ({ archiveKey }) => {
-      expect(externalRotationSteps).toEqual(["prepared"]);
-      const archiveDirectory = join(
-        stateDirectory,
-        "external-authority-epochs",
-        archiveKey,
-      );
-      await mkdir(archiveDirectory, { recursive: true });
-      await rename(
-        join(externallyOwnedRunnerStateDirectory, "runner-state.json"),
-        join(archiveDirectory, "runner-state.json"),
+      expect(externalArchiveDirectory).toBe(
+        join(stateDirectory, "external-authority-epochs", archiveKey),
       );
       externalRotationSteps.push("archived");
+      return JSON.parse(
+        await readFile(
+          join(externalArchiveDirectory!, "runner-state.json"),
+          "utf8",
+        ),
+      ) as Record<string, unknown>;
     },
     resumeDynamicTools: dynamicTools,
     resumeCompletionContract: {
@@ -2214,7 +2357,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
       sessionId: firstProviderThread.sessionId,
       cwd: tmpdir(),
     });
-    expect(externalRotationSteps).toEqual(["prepared", "archived"]);
+    expect(externalRotationSteps).toEqual(["archived"]);
   } finally {
     await externallyRotated.transport.close();
   }
