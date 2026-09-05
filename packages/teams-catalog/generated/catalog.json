@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-06-04T18:03:41.262Z",
+  "generatedAt": "2026-09-05T08:52:03.975Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -462,6 +462,195 @@
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
       "contentHash": "sha256:06822cec5f2b6910cb37ba0ebd5e04ed5c7e34f77225564ddddc2470779cdaa6"
+    },
+    {
+      "id": "paperclipai:optional:software-development:software-sdlc",
+      "key": "paperclipai/optional/software-development/software-sdlc",
+      "kind": "optional",
+      "category": "software-development",
+      "slug": "software-sdlc",
+      "name": "Software SDLC",
+      "description": "An opt-in software delivery team with reusable requirements, architecture, implementation, testing, security review, release, and retrospective templates.",
+      "path": "catalog/optional/software-development/software-sdlc",
+      "entrypoint": "TEAM.md",
+      "schema": "agentcompanies/v1",
+      "defaultInstall": false,
+      "recommendedForCompanyTypes": [
+        "software",
+        "startup",
+        "product"
+      ],
+      "tags": [
+        "sdlc",
+        "requirements",
+        "architecture",
+        "testing",
+        "security-review",
+        "release"
+      ],
+      "counts": {
+        "agents": 4,
+        "projects": 1,
+        "tasks": 0,
+        "routines": 0,
+        "localSkills": 1,
+        "catalogSkills": 3,
+        "externalSkillSources": 0
+      },
+      "rootAgentSlugs": [
+        "delivery-lead"
+      ],
+      "agentSlugs": [
+        "delivery-lead",
+        "implementer",
+        "security-reviewer",
+        "test-reviewer"
+      ],
+      "projectSlugs": [
+        "software-sdlc"
+      ],
+      "requiredSkills": [
+        {
+          "type": "catalog",
+          "ref": "github-pr-workflow",
+          "agentSlugs": [
+            "delivery-lead",
+            "implementer"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:software-development:github-pr-workflow",
+          "catalogSkillKey": "paperclipai/bundled/software-development/github-pr-workflow"
+        },
+        {
+          "type": "catalog",
+          "ref": "qa-acceptance",
+          "agentSlugs": [
+            "test-reviewer"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:quality:qa-acceptance",
+          "catalogSkillKey": "paperclipai/bundled/quality/qa-acceptance"
+        },
+        {
+          "type": "catalog",
+          "ref": "task-planning",
+          "agentSlugs": [
+            "delivery-lead"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:paperclip-operations:task-planning",
+          "catalogSkillKey": "paperclipai/bundled/paperclip-operations/task-planning"
+        },
+        {
+          "type": "local",
+          "ref": "software-sdlc",
+          "agentSlugs": [
+            "delivery-lead",
+            "implementer",
+            "security-reviewer",
+            "test-reviewer"
+          ],
+          "resolved": true,
+          "localPath": "skills/software-sdlc/SKILL.md"
+        }
+      ],
+      "envInputs": [],
+      "sourceRefs": [],
+      "files": [
+        {
+          "path": "TEAM.md",
+          "kind": "team",
+          "sizeBytes": 3430,
+          "sha256": "ab23dfed7c931a6fb775d3f798745c9eb17dbe170474dc4a7432bc85cb2d8074"
+        },
+        {
+          "path": "agents/delivery-lead/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 824,
+          "sha256": "067b9c06f4e7f9d92c4de613b881c21a50b537d8eba8e10af63faf58f8927386"
+        },
+        {
+          "path": "agents/implementer/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 768,
+          "sha256": "0aeaecfa99b214f14ca216526fcfaf6c3d9d0b6cf44f519c1dc4aaf491c91fb3"
+        },
+        {
+          "path": "agents/security-reviewer/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 902,
+          "sha256": "4fb36affe85bac7b7340219377dcd1ca5051c80b8e344e4ccfdb1049eddcb9d8"
+        },
+        {
+          "path": "agents/test-reviewer/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 793,
+          "sha256": "c300a5c5fdbe6d1c322b4e4cbfeaaf4082a68d0154e6795a346cc55cdc222579"
+        },
+        {
+          "path": "LICENSE.md",
+          "kind": "markdown",
+          "sizeBytes": 1069,
+          "sha256": "7f8a27f0979bded50e240caa8c8c29f3088ddf87032cb83e5a9732bff91d18b4"
+        },
+        {
+          "path": "projects/software-sdlc/PROJECT.md",
+          "kind": "project",
+          "sizeBytes": 616,
+          "sha256": "344f0d643ff37dc0a479553ad6df95c04f54ea2e8a347b9aead81065540b9819"
+        },
+        {
+          "path": "skills/software-sdlc/references/architecture.md",
+          "kind": "markdown",
+          "sizeBytes": 1078,
+          "sha256": "42e94f2dea63f5dadb795e7e696e647989338a89818f745e948af87726498a91"
+        },
+        {
+          "path": "skills/software-sdlc/references/implementation.md",
+          "kind": "markdown",
+          "sizeBytes": 1279,
+          "sha256": "ffa361239f1628e5225cde781f05fbdffb191b3176a997aeb1ba2d4a89d302f3"
+        },
+        {
+          "path": "skills/software-sdlc/references/release.md",
+          "kind": "markdown",
+          "sizeBytes": 1314,
+          "sha256": "daa4955651b769df9a91ab215bd332572f8781bceae096c6a7076caa949f5d06"
+        },
+        {
+          "path": "skills/software-sdlc/references/requirements.md",
+          "kind": "markdown",
+          "sizeBytes": 1225,
+          "sha256": "8bbff91a9948f3f0a42705fd46d29e8b4ad5ffe23e61cb29a53fbce9a989287d"
+        },
+        {
+          "path": "skills/software-sdlc/references/retrospective.md",
+          "kind": "markdown",
+          "sizeBytes": 1309,
+          "sha256": "2ebfa16acd3a518ee3f538adcc6cf037e69063bc9aa34ca590d2e2476f9f027d"
+        },
+        {
+          "path": "skills/software-sdlc/references/security-review.md",
+          "kind": "markdown",
+          "sizeBytes": 1488,
+          "sha256": "94c6eada3afc8d6f1790decb0bfcf5328e7c6911dabe74d56f3e6f488263c6dc"
+        },
+        {
+          "path": "skills/software-sdlc/references/testing.md",
+          "kind": "markdown",
+          "sizeBytes": 1608,
+          "sha256": "9342ee999f39cd1c363e8f69328c370c3a35d87dff8cd6d5bcbd6dd8f6416e46"
+        },
+        {
+          "path": "skills/software-sdlc/SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4839,
+          "sha256": "9a74472df7f1401c32822abd97934a62d7d1ffc025266fa1c4519cb0a418fcf4"
+        }
+      ],
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "contentHash": "sha256:0ecfe9eac9be709828ead7b164314ab26d15621c0a5c85197b92433db250d8a8"
     }
   ]
 }
