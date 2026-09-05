@@ -540,6 +540,99 @@ describe("Chat SDK endpoint runtime", () => {
     expect(onMessage).toHaveBeenCalledTimes(2);
   });
 
+  it("waits for delayed callback registration before acknowledging durable ingress", async () => {
+    const callbackGate = deferred();
+    const onMessage = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("delayed durable insert failed"));
+    const runtime = createChatSdkEndpointRuntime({
+      ...baseOptions({
+        provider: "telegram",
+        userName: "agent",
+        credentials: {
+          botToken: "token",
+          secretToken: "secret",
+        },
+      }),
+      callbacks: { onMessage },
+      webhookIngressTimeoutMs: 1_000,
+    });
+    const chat = captures.chats[0] as unknown as {
+      handlers: Record<string, (...args: unknown[]) => Promise<void>>;
+      webhooks: Record<
+        string,
+        (
+          request: Request,
+          options?: CapturedWebhookOptions,
+        ) => Promise<Response>
+      >;
+    };
+    const thread = { id: "telegram:1", channelId: "telegram:1" };
+    const message = { id: "telegram:1:1", author: { isMe: false } };
+    chat.webhooks.telegram = async (_request, options) => {
+      const delayedDispatch = (async () => {
+        await callbackGate.promise;
+        await chat.handlers.direct?.(thread, message);
+      })();
+      options?.waitUntil?.(delayedDispatch);
+      return new Response("ok", { status: 200 });
+    };
+
+    let settled = false;
+    const responsePromise = runtime
+      .handleWebhook(new Request("https://paperclip.test/telegram"))
+      .then((response) => {
+        settled = true;
+        return response;
+      });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    callbackGate.resolve();
+    const response = await responsePromise;
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("1");
+    expect(onMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a retryable response before a provider deadline when ingress work stalls", async () => {
+    const stalled = deferred();
+    const runtime = createChatSdkEndpointRuntime({
+      ...baseOptions({
+        provider: "telegram",
+        userName: "agent",
+        credentials: {
+          botToken: "token",
+          secretToken: "secret",
+        },
+      }),
+      webhookIngressTimeoutMs: 25,
+    });
+    const chat = captures.chats[0] as unknown as {
+      webhooks: Record<
+        string,
+        (
+          request: Request,
+          options?: CapturedWebhookOptions,
+        ) => Promise<Response>
+      >;
+    };
+    chat.webhooks.telegram = async (_request, options) => {
+      options?.waitUntil?.(stalled.promise);
+      return new Response("ok", { status: 200 });
+    };
+
+    const startedAt = Date.now();
+    const response = await runtime.handleWebhook(
+      new Request("https://paperclip.test/telegram"),
+    );
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("1");
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    stalled.resolve();
+    await stalled.promise;
+  });
+
   it("fails closed for unknown endpoint ids", async () => {
     const registry = createChatSdkRuntime();
     await expect(

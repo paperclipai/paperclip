@@ -311,6 +311,7 @@ export interface CreateChatSdkEndpointRuntimeOptions {
   maxStateValueBytes?: number;
   persistence: ChatSdkStatePersistence;
   providerConfig: ResolvedChatSdkProviderConfig;
+  webhookIngressTimeoutMs?: number;
 }
 
 function adapterKey(provider: ChatSdkProvider): ChatSdkAdapterKey {
@@ -705,12 +706,17 @@ export class ChatSdkEndpointRuntime {
   private readonly chat: Chat;
   private readonly webhookIngress =
     new AsyncLocalStorage<WebhookIngressAttempt>();
+  private readonly webhookIngressTimeoutMs: number;
 
   constructor(options: CreateChatSdkEndpointRuntimeOptions) {
     this.companyId = options.companyId;
     this.endpointId = options.endpointId;
     this.provider = options.providerConfig.provider;
     this.sdkAdapterKey = adapterKey(this.provider);
+    this.webhookIngressTimeoutMs = Math.max(
+      1,
+      Math.min(options.webhookIngressTimeoutMs ?? 2_500, 10_000),
+    );
     this.adapter = createProviderAdapter(
       options.providerConfig,
       options.logger,
@@ -780,21 +786,59 @@ export class ChatSdkEndpointRuntime {
       callbackPromises: new Set(),
     };
     const sdkTasks: Promise<unknown>[] = [];
-    return await this.webhookIngress.run(attempt, async () => {
-      const response = await handler(request, {
-        ...options,
-        waitUntil: (task) => {
-          sdkTasks.push(task);
-          options?.waitUntil?.(task);
+    const deadlineAt = Date.now() + this.webhookIngressTimeoutMs;
+    const retryableTimeout = () =>
+      new Response("Paperclip could not durably accept the event in time", {
+        status: 503,
+        headers: {
+          "content-type": "text/plain; charset=utf-8",
+          "retry-after": "1",
         },
       });
+    const beforeDeadline = async <T>(
+      task: Promise<T>,
+    ): Promise<
+      { completed: true; value: T } | { completed: false; value?: never }
+    > => {
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) return { completed: false };
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const timedOut = new Promise<{ completed: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ completed: false }), remaining);
+        timer.unref?.();
+      });
+      const result = await Promise.race([
+        task.then((value) => ({ completed: true as const, value })),
+        timedOut,
+      ]);
+      if (timer) clearTimeout(timer);
+      return result;
+    };
+    return await this.webhookIngress.run(attempt, async () => {
+      const handlerResult = await beforeDeadline(
+        handler(request, {
+          ...options,
+          waitUntil: (task) => {
+            sdkTasks.push(task);
+            options?.waitUntil?.(task);
+          },
+        }),
+      );
+      if (!handlerResult.completed) return retryableTimeout();
+      const response = handlerResult.value;
       // Adapters return their provider acknowledgement immediately and put
       // normalized message dispatch behind waitUntil. Production callbacks do
       // only the delivery-ledger insert here, so this wait preserves Slack's
       // response budget while guaranteeing no 2xx precedes durable receipt.
-      await Promise.allSettled(sdkTasks);
+      if (!(await beforeDeadline(Promise.allSettled(sdkTasks))).completed)
+        return retryableTimeout();
       while (attempt.callbackPromises.size > 0) {
-        await Promise.allSettled([...attempt.callbackPromises]);
+        if (
+          !(await beforeDeadline(
+            Promise.allSettled([...attempt.callbackPromises]),
+          )).completed
+        )
+          return retryableTimeout();
       }
       if (response.ok && attempt.callbackError !== undefined) {
         return new Response("Paperclip could not durably accept the event", {

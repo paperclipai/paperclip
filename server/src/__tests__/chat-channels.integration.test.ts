@@ -7442,6 +7442,185 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
+  it("coalesces one Telegram run into one provider message", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const chatId = "77112236";
+    const dm = makeThread({
+      channelId: `telegram:${chatId}`,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram direct message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: `${chatId}:71`,
+        text: "Produce one quiet Telegram response",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, chatId);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Telegram conversation");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "running",
+      contextSnapshot: { issueId: conversation.issueId },
+    });
+    for (const progressState of ["queued", "working"] as const) {
+      await db.insert(chatPublications).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        issueId: conversation.issueId,
+        idempotencyKey: `run:${runId}:${progressState}:${endpoint.id}`,
+        payload: {
+          text:
+            progressState === "queued"
+              ? "Maya is queued."
+              : "Maya is working…",
+          progressState,
+        },
+        state: "pending",
+      });
+      await service.processPendingPublications();
+    }
+    await issueService(db).addComment(
+      conversation.issueId,
+      "Final Telegram result",
+      { agentId: fixture.assignedAgentId, runId },
+      { authorType: "agent" },
+    );
+    await service.processPendingPublications();
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    expect(providerRuntime?.posts).toEqual([
+      { threadId: dm.thread.id, text: "Maya is queued." },
+    ]);
+    expect(providerRuntime?.edits).toEqual([
+      {
+        threadId: dm.thread.id,
+        messageId: "outbound-2",
+        text: "Maya is working…",
+      },
+      {
+        threadId: dm.thread.id,
+        messageId: "outbound-2",
+        text: "Final Telegram result",
+      },
+    ]);
+  });
+
+  it("audits Telegram reactions idempotently without comments or runs", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    const chatId = "77112237";
+    const dm = makeThread({
+      channelId: `telegram:${chatId}`,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram direct message",
+    });
+    const original = makeMessage({
+      id: `${chatId}:81`,
+      text: "Observe Telegram reactions",
+      userId: chatId,
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: original,
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, chatId);
+    await service.test(endpoint.id, "owner-user");
+    if (!callbacks.onReaction)
+      throw new Error("Telegram reaction callback was not registered");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const commentCount = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversation.issueId))
+      .then((rows) => rows.length);
+    const wakeupCount = wakeup.mock.calls.length;
+    const runCount = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, fixture.companyId))
+      .then((rows) => rows.length);
+    const emoji = {
+      name: "thumbs_up",
+      toJSON: () => "👍",
+      toString: () => "👍",
+    };
+    const reaction = (added: boolean, updateId: number) => ({
+      endpointId: endpoint.id,
+      provider: "telegram" as const,
+      event: {
+        adapter: {} as never,
+        added,
+        emoji,
+        message: original,
+        messageId: original.id,
+        raw: { update_id: updateId },
+        rawEmoji: "👍",
+        thread: dm.thread,
+        threadId: dm.thread.id,
+        user: original.author,
+      },
+    });
+    await callbacks.onReaction(reaction(true, 8_001));
+    await callbacks.onReaction(reaction(true, 8_001));
+    await callbacks.onReaction(reaction(false, 8_002));
+
+    const reactions = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.conversationId, conversation.id))
+      .then((rows) =>
+        rows.filter((row) => row.eventKind.startsWith("reaction_")),
+      );
+    expect(reactions).toHaveLength(2);
+    expect(reactions.map((row) => row.eventKind).sort()).toEqual([
+      "reaction_added",
+      "reaction_removed",
+    ]);
+    expect(
+      await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversation.issueId))
+        .then((rows) => rows.length),
+    ).toBe(commentCount);
+    expect(wakeup).toHaveBeenCalledTimes(wakeupCount);
+    expect(
+      await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, fixture.companyId))
+        .then((rows) => rows.length),
+    ).toBe(runCount);
+  });
+
   it("audits reactions on linked messages without treating them as task instructions", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service, wakeup } =
