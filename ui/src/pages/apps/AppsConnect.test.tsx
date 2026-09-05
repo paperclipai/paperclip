@@ -800,6 +800,43 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connect?.disabled).toBe(false);
   });
 
+  it("replaces a hidden managed method after enrollment recovery reveals an advertised PAT fallback", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+    getCloudConnectorEnrollmentMock
+      .mockRejectedValueOnce(new Error("Cloud unavailable"))
+      .mockResolvedValueOnce({
+        configured: true,
+        status: "active",
+        brokerBaseUrl: "https://my-staging.paperclip.app",
+        instanceId: "inst-test",
+        environment: "staging",
+        origins: ["https://paperclip.example.test"],
+      });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await render(queryClient);
+
+    expect(container.textContent).toContain("Paperclip couldn’t check Cloud registration. Try again.");
+    expect(container.textContent).not.toContain("Your GitHub key");
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["cloud-connector", "enrollment"] });
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Your GitHub key");
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+    expect(container.textContent).not.toContain("Continue to GitHub");
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+  });
+
   it("preserves a dedicated agent identity across the full-page enrollment callback", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({

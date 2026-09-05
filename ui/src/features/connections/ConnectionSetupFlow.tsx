@@ -1231,6 +1231,13 @@ export function ConnectionSetupFlow({
       && connectorEnrollmentQuery.isLoading
     ) return;
     const methods = connectionMethodsForCredentialSource(requestedEntry, credentialSource);
+    const initialMethod = (
+      requestedDefinitionUsesManagedConnector
+        && !requestedEntryAdvertisesManagedConnector
+        && connectorEnrollmentQuery.data?.configured !== true
+        ? recommendedManagedConnectorMethod(fullRequestedDefinition)
+        : null
+    ) ?? recommendedSetupConnectionMethod(methods);
     const method = methods.length === 1 ? methods[0]! : null;
     const automaticOAuth = credentialSource === "paperclip_vault" && Boolean(automaticOAuthMethod(requestedEntry));
     const vercelUnavailable = isVercelConnectUnavailable({
@@ -1282,13 +1289,6 @@ export function ConnectionSetupFlow({
       setCuratedOAuthClientId("");
       setCuratedOAuthClientSecret("");
       setVercelConnector("");
-      const initialMethod = (
-        requestedDefinitionUsesManagedConnector
-          && !requestedEntryAdvertisesManagedConnector
-          && connectorEnrollmentQuery.data?.configured !== true
-          ? recommendedManagedConnectorMethod(fullRequestedDefinition)
-          : null
-      ) ?? recommendedSetupConnectionMethod(methods);
       setConnectionMethodKey(initialMethod?.key ?? "");
       setConfigValues(defaultMethodConfig(initialMethod));
       setGoogleSheetsLinks("");
@@ -1312,6 +1312,16 @@ export function ConnectionSetupFlow({
         hasPrefilledLink: Boolean(prefill.link),
         zapierSource,
       }));
+    } else if (
+      connectorEnrollmentQuery.data?.configured === true
+      && connectionMethodKey
+      && !methods.some((candidate) => candidate.key === connectionMethodKey)
+    ) {
+      // A failed enrollment lookup can select the hidden pre-enrollment
+      // method. Replace it after a successful refetch proves that the instance
+      // is enrolled and the current Cloud gallery does not advertise it.
+      setConnectionMethodKey(initialMethod?.key ?? "");
+      setConfigValues(defaultMethodConfig(initialMethod));
     }
 
     if (automaticOAuth && (
@@ -1333,6 +1343,7 @@ export function ConnectionSetupFlow({
     connectionsQuery.isFetchedAfterMount,
     connectorEnrollmentQuery.data?.configured,
     connectorEnrollmentQuery.isLoading,
+    connectionMethodKey,
     credentialSource,
     entry?.slug,
     galleryQuery.data,
