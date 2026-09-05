@@ -50,10 +50,11 @@ interface CostEventRow {
   output_tokens: number;
   cache_write_tokens: number;
   cost_status: string;
-  rate_card_cents: number;
+  rate_card_cents: number | null;
+  pricing_methodology: string;
 }
 
-type Resolution = { rateCardCents: number; costStatus: string };
+type Resolution = { rateCardCents: number | null; costStatus: string; pricingMethodology: string };
 
 /**
  * Mirrors `resolveLedgerCostStatus` in the heartbeat service, reading the
@@ -84,16 +85,22 @@ export function resolveBackfill(row: {
   );
 
   // No tokens means there is nothing to price and nothing to misrepresent.
-  if (!hasTokenUsage) return { rateCardCents: 0, costStatus: "reported" };
+  if (!hasTokenUsage) return { rateCardCents: 0, costStatus: "reported", pricingMethodology: "measured" };
 
   // A provider that billed real money reported a credible cost; keep the label
-  // and populate the rate card alongside it as a cross-check.
-  if (row.costCents > 0) return { rateCardCents: derivedCents ?? 0, costStatus: "reported" };
+  // and populate the rate card alongside it as a cross-check. If the model has
+  // no rate-card entry, that cross-check figure is honestly absent — NULL,
+  // not a zero that would read as "verified free".
+  if (row.costCents > 0) {
+    return derivedCents === null
+      ? { rateCardCents: null, costStatus: "reported", pricingMethodology: "unpriced" }
+      : { rateCardCents: derivedCents, costStatus: "reported", pricingMethodology: "measured" };
+  }
 
   // Tokens but no cash and no rate for the model: an honest gap, not a zero.
-  if (derivedCents === null) return { rateCardCents: 0, costStatus: "unpriced" };
+  if (derivedCents === null) return { rateCardCents: null, costStatus: "unpriced", pricingMethodology: "unpriced" };
 
-  return { rateCardCents: derivedCents, costStatus: "derived" };
+  return { rateCardCents: derivedCents, costStatus: "derived", pricingMethodology: "measured" };
 }
 
 async function main(): Promise<void> {
@@ -105,7 +112,7 @@ async function main(): Promise<void> {
   try {
     const rows = (await sql`
       select id, model, occurred_at, cost_cents, input_tokens, cached_input_tokens,
-             output_tokens, cache_write_tokens, cost_status, rate_card_cents
+             output_tokens, cache_write_tokens, cost_status, rate_card_cents, pricing_methodology
       from cost_events
     `) as unknown as CostEventRow[];
 
@@ -125,11 +132,14 @@ async function main(): Promise<void> {
 
       const tally = byStatus.get(resolution.costStatus) ?? { rows: 0, cents: 0 };
       tally.rows += 1;
-      tally.cents += resolution.rateCardCents;
+      tally.cents += resolution.rateCardCents ?? 0;
       byStatus.set(resolution.costStatus, tally);
 
+      const existingRateCardCents = row.rate_card_cents == null ? null : Number(row.rate_card_cents);
       const unchanged =
-        resolution.costStatus === row.cost_status && resolution.rateCardCents === Number(row.rate_card_cents);
+        resolution.costStatus === row.cost_status &&
+        resolution.pricingMethodology === row.pricing_methodology &&
+        resolution.rateCardCents === existingRateCardCents;
       if (!unchanged) updates.push({ id: row.id, resolution });
     }
 
@@ -167,7 +177,8 @@ async function main(): Promise<void> {
           await tx`
             update cost_events
             set rate_card_cents = ${update.resolution.rateCardCents},
-                cost_status = ${update.resolution.costStatus}
+                cost_status = ${update.resolution.costStatus},
+                pricing_methodology = ${update.resolution.pricingMethodology}
             where id = ${update.id}
           `;
         }

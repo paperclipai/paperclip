@@ -1,7 +1,7 @@
 -- 0241_pricing_methodology.sql
 --
 -- Add `pricing_methodology` flag to `cost_events` and make `rate_card_cents`
--- nullable. Closes PHA-1654 (House-approved HYBRID from PHA-1643 research).
+-- nullable.
 --
 -- The motivation: migration 0240 added `cache_write_tokens` and
 -- `rate_card_cents` columns with default 0, plus re-classified pre-migration
@@ -16,17 +16,24 @@
 -- "measured from a full token breakdown" apart from "priced at input rate
 -- because cache-write was folded in".
 --
--- Pattern follows Jenkins's HYBRID recommendation from
--- `PHATT-TECH/Projects/paperclip-cost-ledger/PHA-1643-backfill-decision-research.md`:
--- nullable `rate_card_cents` + non-nullable `pricing_methodology` flag +
--- `cost_status='reported_pre_migration'` for the affected historical bucket.
+-- Design: nullable `rate_card_cents` + non-nullable `pricing_methodology`
+-- flag + `cost_status='reported_pre_migration'` for the affected historical
+-- bucket, rather than a heuristic backfill that would re-introduce the
+-- original bug or an unrecoverable reprocessing of raw token splits.
 --
 -- Cutoff: `2026-07-30T00:22:00+00` — the application-code deploy that started
 -- populating `cache_write_tokens` and `rate_card_cents` from real values on
--- the running server. Sourced from Vision Quest's run comment on PHA-1626
--- (`382ac350-…`, 2026-07-31T06:22:24Z): "/proc/1 boot 00:21:49Z". Rows created
--- before this moment carry the migration default of 0 for `cache_write_tokens`
--- and a backfilled `rate_card_cents`, not a measurement.
+-- the running server (observed server boot time). Rows created before this
+-- moment carry the migration default of 0 for `cache_write_tokens` and a
+-- backfilled `rate_card_cents`, not a measurement.
+--
+-- The historical backfill for pre-existing rows is a standalone script
+-- (`packages/db/src/backfill-cost-event-rate-card.ts`, run via
+-- `pnpm --filter @paperclipai/db backfill:cost-event-rate-card`) rather than
+-- SQL in this migration, because it needs the shared rate-card/model
+-- normalization logic in TypeScript. It must be run once, after this
+-- migration, against any environment with pre-cutoff rows still at the
+-- default `rate_card_cents=0`.
 
 ALTER TABLE "cost_events" ADD COLUMN IF NOT EXISTS "pricing_methodology" text DEFAULT 'measured' NOT NULL;--> statement-breakpoint
 
@@ -66,8 +73,17 @@ WHERE "cost_status" = 'reported'
 -- is not assigned by this migration; the cost service / backfill logic
 -- decides. The constraint prevents future drift if someone tries to set a
 -- fourth value.
-ALTER TABLE "cost_events" ADD CONSTRAINT IF NOT EXISTS "cost_events_pricing_methodology_check"
-  CHECK ("pricing_methodology" IN ('measured', 'pre_cache_write_aware', 'unpriced'));--> statement-breakpoint
+-- Postgres has no `ADD CONSTRAINT IF NOT EXISTS`; guard idempotency with a
+-- catalog lookup instead so re-running this migration doesn't error.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'cost_events_pricing_methodology_check'
+  ) THEN
+    ALTER TABLE "cost_events" ADD CONSTRAINT "cost_events_pricing_methodology_check"
+      CHECK ("pricing_methodology" IN ('measured', 'pre_cache_write_aware', 'unpriced'));
+  END IF;
+END $$;--> statement-breakpoint
 
 -- Backout: revert the UPDATE classifications and reapply NOT NULL on
 -- rate_card_cents. The column itself stays; dropping it is a separate,
