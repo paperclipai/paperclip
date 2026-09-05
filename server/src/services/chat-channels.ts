@@ -346,6 +346,7 @@ const DELIVERY_LEASE_TTL_MS = 90_000;
 const DELIVERY_DRAIN_LIMIT = 100;
 const SLACK_COMMAND_OWNER_WAIT_MS = 2_000;
 const SLACK_COMMAND_POST_STALE_MS = 60_000;
+const ORPHAN_FOLLOW_UP_GRACE_MS = 5_000;
 // Slack can deliver adjacent Events API callbacks on separate HTTP requests
 // out of timestamp order. Hold the first callback briefly so a rapid burst can
 // be sorted by the provider's message timestamp before any run is started.
@@ -3265,6 +3266,52 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         destinationAllowed &&
         principalAllowed &&
         activationAllowed;
+      const slackRootMessageId =
+        endpoint.provider === "slack"
+          ? /^slack:[^:]+:(.+)$/.exec(thread.id)?.[1]
+          : null;
+      const isPlausibleOrphanFollowUp =
+        endpoint.provider === "github" ||
+        (endpoint.provider === "slack" &&
+          Boolean(slackRootMessageId) &&
+          slackRootMessageId !== message.id);
+      const setupDestinationCanBeEnabledByEarlierMention =
+        endpoint.provider === "github" &&
+        !thread.isDM &&
+        endpoint.status === "verifying" &&
+        enabledResourceCount === 0 &&
+        resource.availability === "available";
+      if (
+        !allowed &&
+        isPlausibleOrphanFollowUp &&
+        !addressed &&
+        existingConversation === null &&
+        activeDelivery.attempts === 1 &&
+        endpointAllowed &&
+        principalAllowed &&
+        (destinationAllowed || setupDestinationCanBeEnabledByEarlierMention)
+      ) {
+        // GitHub and Slack can deliver a thread reply before the older root
+        // callback that creates its Paperclip task. Keep this exact delivery
+        // once, without admitting or waking it, so the durable thread drain can
+        // sort again if the root arrives shortly afterward. A standalone
+        // unaddressed message reaches the normal filtered path on attempt two.
+        await db
+          .update(chatDeliveries)
+          .set({
+            state: "retry",
+            nextAttemptAt: new Date(Date.now() + ORPHAN_FOLLOW_UP_GRACE_MS),
+            redactedError: "Waiting briefly for an earlier root mention",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatDeliveries.id, activeDelivery.id),
+              eq(chatDeliveries.state, "processing"),
+            ),
+          );
+        return;
+      }
       if (!allowed) {
         const filteredReason = !endpointAllowed
           ? "Connection is not active"
@@ -6273,7 +6320,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function listActivity(endpointId: string) {
-    const [deliveries, publications] = await Promise.all([
+    const [deliveries, publications, actions] = await Promise.all([
       db
         .select()
         .from(chatDeliveries)
@@ -6285,6 +6332,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .from(chatPublications)
         .where(eq(chatPublications.endpointId, endpointId))
         .orderBy(desc(chatPublications.createdAt))
+        .limit(100),
+      db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.endpointId, endpointId),
+            eq(chatActions.kind, "slash_task_start"),
+          ),
+        )
+        .orderBy(desc(chatActions.createdAt))
         .limit(100),
     ]);
     return [
@@ -6344,6 +6402,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               : [],
         };
       }),
+      ...actions.map((row) => ({
+        id: row.id,
+        kind: "delivery" as const,
+        status: row.status,
+        summary: `Slack slash-command task start ${row.status.replaceAll("_", " ")}`,
+        detail:
+          row.status === "delivery_unknown"
+            ? "Slack may have accepted the task-start message, so Paperclip will not replay it automatically. Check the channel before submitting a new command."
+            : row.status === "failed"
+              ? "Slack rejected the task-start message. Submit the command again to retry."
+              : null,
+        createdAt: row.createdAt.toISOString(),
+        replayable: false,
+        resolutionActions: [],
+      })),
     ]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, 100);

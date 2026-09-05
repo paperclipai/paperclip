@@ -7738,25 +7738,38 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(issueComments)
         .where(eq(issueComments.issueId, conversations[0]!.issueId)),
     ).resolves.toEqual([{ body: "investigate one retried command" }]);
-    await expect(
-      db
-        .select({
-          kind: chatActions.kind,
-          status: chatActions.status,
-          result: chatActions.result,
-        })
-        .from(chatActions)
-        .where(eq(chatActions.endpointId, endpoint.id)),
-    ).resolves.toEqual([
-      {
-        kind: "slash_task_start",
-        status: "processed",
-        result: {
-          threadId: starterThreadId,
-          providerMessageId: "6001.1",
-        },
+    const [action] = await db
+      .select()
+      .from(chatActions)
+      .where(eq(chatActions.endpointId, endpoint.id));
+    expect(action).toMatchObject({
+      kind: "slash_task_start",
+      status: "processed",
+      result: {
+        threadId: starterThreadId,
+        providerMessageId: "6001.1",
       },
-    ]);
+    });
+
+    await db
+      .update(chatActions)
+      .set({
+        status: "delivery_unknown",
+        result: { code: "slash_task_delivery_unknown" },
+      })
+      .where(eq(chatActions.id, action!.id));
+    expect(await service.listActivity(endpoint.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: action!.id,
+          kind: "delivery",
+          status: "delivery_unknown",
+          summary: "Slack slash-command task start delivery unknown",
+          detail: expect.stringContaining("will not replay it automatically"),
+          replayable: false,
+        }),
+      ]),
+    );
   });
 
   it("treats exact Slack status, new, and close text as DM task controls without issuing chat actions", async () => {
