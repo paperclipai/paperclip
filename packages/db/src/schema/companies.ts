@@ -18,6 +18,10 @@ export const companies = pgTable(
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),
+    // Company-wide ceiling on simultaneously "running" heartbeat runs across all
+    // agents. Null preserves today's behavior (only the per-agent
+    // heartbeat.maxConcurrentRuns cap applies) until an operator opts in.
+    maxConcurrentAgentRuns: integer("max_concurrent_agent_runs"),
     interactionResolverGovernance: jsonb("interaction_resolver_governance")
       .$type<InteractionResolverGovernance>()
       .notNull()
