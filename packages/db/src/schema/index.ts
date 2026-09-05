@@ -89,3 +89,4 @@ export {
   documentAccessPolicyEnum,
   documentAccessTypeEnum,
 } from "./estate_documents.js";
+export { supplements, supplementIntakes } from "./supplements.js";
