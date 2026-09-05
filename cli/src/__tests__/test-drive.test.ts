@@ -561,6 +561,24 @@ describe("test-drive foreground lifecycle", () => {
     })).rejects.toThrow("downstream rejected [REDACTED]");
   });
 
+  it("redacts a custom environment key when its option name has whitespace", async () => {
+    process.env.PAPERCLIP_HOME = "/tmp/test-drive-custom-env-redaction";
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    process.env.PAPERCLIP_IN_WORKTREE = "false";
+    process.env.CUSTOM_TEST_DRIVE_KEY = "custom-secret";
+
+    await expect(testDriveCommand({
+      apiKeyEnv: " CUSTOM_TEST_DRIVE_KEY ",
+      browser: false,
+    }, {
+      run: async () => {
+        throw new Error("downstream rejected custom-secret");
+      },
+      createApi: () => freshBootstrapApi().api,
+      openBrowser: vi.fn(async () => true),
+    })).rejects.toThrow("downstream rejected [REDACTED]");
+  });
+
   it("honors --no-browser after successful initialization", async () => {
     process.env.PAPERCLIP_HOME = "/tmp/test-drive-no-browser";
     process.env.PAPERCLIP_INSTANCE_ID = "default";

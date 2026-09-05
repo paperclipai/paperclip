@@ -419,7 +419,7 @@ export async function testDriveCommand(
   const bootstrapEnv = { ...process.env };
   const possibleCredentials = [
     options.apiKey,
-    options.apiKeyEnv ? bootstrapEnv[options.apiKeyEnv] : undefined,
+    options.apiKeyEnv ? bootstrapEnv[options.apiKeyEnv.trim()] : undefined,
     bootstrapEnv[HARNESS_DEFINITIONS[options.harness ?? "claude"].credentialTarget],
   ];
 
