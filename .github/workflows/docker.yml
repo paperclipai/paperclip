@@ -26,8 +26,45 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Multi-arch by native runner, not QEMU.
+  #
+  # This was one job building linux/amd64,linux/arm64 together on an x86
+  # runner. The arm64 half is emulated there, and it did not merely run slow:
+  # it wedged, every time, in `RUN pnpm --filter @paperclipai/server build`,
+  # emitting nothing for 38-45 minutes until `timeout-minutes: 60` killed the
+  # job. Verified across three consecutive runs on 2026-09-04; the amd64 half
+  # reached `production 5/5` minutes earlier in every one.
+  #
+  # A timed-out job is reported as *cancelled*, not failed, so the run read
+  # "cancelled" and the production image simply stopped publishing without
+  # anything going red in an obvious way.
+  #
+  # It also starved the queue. A run that burns the full hour holds the
+  # top-level concurrency slot for that hour, and `cancel-in-progress: false`
+  # keeps exactly one pending slot — so with merges arriving faster than one
+  # an hour, most runs were superseded before they ever started a job. Five of
+  # ten master commits sampled that day never produced an image at all.
+  #
+  # Each platform now builds on a runner of its own architecture and pushes by
+  # digest; `merge` assembles the manifest list. arm64 is kept rather than
+  # dropped (the cloud variant below dropped it and is amd64-only) because
+  # this is the self-hosted image, and ARM hosts consume it.
   build-and-push:
-    runs-on: ubuntu-latest
+    strategy:
+      # Independent legs: one architecture failing should still publish
+      # nothing, but it must not also hide the other's logs behind a
+      # cancellation.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    # Native builds land well inside this; it is a backstop, not a budget.
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -169,8 +206,8 @@ jobs:
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
-
-      - name: Build and push
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -182,25 +219,119 @@ jobs:
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
             CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
-          platforms: linux/amd64,linux/arm64
-          push: true
+          platforms: ${{ matrix.platform }}
+          # By digest, not by tag: two runners cannot each push the same tag
+          # and end up with a manifest list. Each leg publishes an untagged
+          # image and `merge` names them together.
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           # Registry-backed BuildKit cache instead of type=gha: the Actions
           # cache is capped at 10GB per repo, and two multi-arch mode=max jobs
           # evict each other, so most builds ran effectively cold. The cache
           # ref lives in ghcr next to the image and is written only by this
           # workflow (docker.yml runs on master/tag pushes, never on PRs).
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
-          tags: ${{ steps.meta.outputs.tags }}
+          #
+          # Per-arch refs now the legs are separate runners: a shared ref would
+          # have each leg overwrite the other's cache on every build.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }},mode=max
           labels: ${{ steps.meta.outputs.labels }}
+
+      # The digest is the only thing `merge` needs from this job. Carried as an
+      # empty file named for it, which is the upstream pattern — the name is
+      # the payload, so several legs can upload without colliding on content.
+      - name: Export digest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          test -n "$digest"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: digests-production-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Names the per-architecture digests as one manifest list under the real
+  # tags. Nothing is publicly tagged until this runs, so a half-published
+  # multi-arch image is not a state anything can pull.
+  merge-and-push:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Checked out for `packages/db` (schema labels) and the orphan-reaping
+      # script the verification step pipes in.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: /tmp/digests
+          pattern: digests-production-*
+          merge-multiple: true
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Repeated from the build job rather than passed between them: job
+      # outputs would have to survive a matrix, and this is two `ls` calls.
+      - name: Compute schema migration labels
+        id: schema
+        run: |
+          set -euo pipefail
+          last=$(ls packages/db/src/migrations/*.sql | sed 's|.*/||' | LC_ALL=C sort | tail -1)
+          count=$(ls packages/db/src/migrations/*.sql | wc -l | tr -d ' ')
+          echo "last=${last}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      # Same lane mapping as the build job; this is where it is actually
+      # applied, since the legs push untagged.
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=canary,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha
+          labels: |
+            io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
+            io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
 
       # PID 1 must be an init that reaps adopted orphans. With node there, the
       # orphans agent runs leave behind are never wait()ed and pin as zombies
       # until the cgroup pid limit is exhausted and every fork() in the
-      # container fails. Run against the pushed image rather than a local
-      # build: the step above is multi-arch with `push: true`, so nothing is
-      # loaded into the runner's daemon. The cloud variant is FROM production
-      # and inherits the same ENTRYPOINT, so checking this image covers both.
+      # container fails. Run against the pushed manifest rather than a local
+      # build: the legs push by digest, so nothing is loaded into this
+      # runner's daemon. The cloud variant is FROM production and inherits the
+      # same ENTRYPOINT, so checking this image covers both.
       - name: Verify PID 1 reaps orphaned processes
         env:
           # Through the environment, not interpolated into the script body, so
