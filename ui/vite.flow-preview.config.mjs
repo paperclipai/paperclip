@@ -61,7 +61,12 @@ export default defineConfig({
     emptyOutDir: true,
     minify: "esbuild",
     rollupOptions: {
-      input: path.resolve(__dirname, "connect-flow-preview.html"),
+      input: [
+        path.resolve(__dirname, "connect-flow-preview.html"),
+        // The same sequence rendered by the real wizard rather than a harness,
+        // so the shipped code path can be walked from the same deployment.
+        path.resolve(__dirname, "wizard-preview.html"),
+      ],
     },
   },
   esbuild: {

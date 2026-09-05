@@ -2368,6 +2368,18 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-20rem: 20rem; /* AgentSkillReleasePicker.tsx release menu width cap. */
   --sz-18px: 18px; /* Extracted from ui/src/components/ActivityFeed.tsx (p-[18px]). */
   --sz-44px: 44px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[44px]). */
+  /* The width one source tile has when the connect step's row holds two of
+     them. The row collapses to the chosen source once a sign-in starts, and the
+     survivor has to keep the width it already had — letting `flex-1` take the
+     whole row would make the tile grow as it travelled, which reads as a
+     different tile arriving rather than the one just pressed being kept. */
+  --sz-source-tile-two-up: calc((100% - 0.75rem) / 2);
+  /* The connect step's sign-in card, held at one height across its own states.
+     It opens on a spinner and then fills with an instruction and a field, and
+     the height is fixed so that arrival is the only movement — a card that grew
+     as its contents landed would push the footer twice for one event. 108px is
+     16 padding + a 16 line + a 16 gap + a 44 field + 16 padding. */
+  --sz-108px: 108px;
   --sz-88px: 88px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[88px]). */
   --sz-240px: 240px; /* Extracted from ui/src/components/AgentConfigForm.tsx (max-h-[240px]). */
   --sz-10_5rem: 10.5rem; /* Extracted from ui/src/components/BlockedInboxView.tsx (w-[10.5rem]). */

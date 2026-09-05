@@ -11,6 +11,38 @@ import type {
 } from "@paperclipai/shared";
 import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { AdapterLoginPanel } from "./AgentConfigForm";
+import {
+  CONNECT_SOURCE_NAMES,
+  OnboardingCardField,
+  OnboardingLoginCard,
+} from "./AdapterLoginChrome";
+import {
+  beatDelay,
+  CARD_ENTER,
+  CARD_EXIT,
+  CARD_EXIT_MS,
+  CONNECTED_HOLD_MS,
+  MAKE_ROOM,
+  MAKE_ROOM_MS,
+  SOURCE_COLLAPSE_MS,
+  SOURCE_LINK_EXIT,
+} from "./onboarding/onboarding-motion";
+
+/**
+ * Where the connect step's sign-in sequence is. Space and visibility land on
+ * different beats, which is why there are more of these than there are things
+ * on screen — see the derived state in the step itself.
+ */
+type ConnectPhase =
+  | "idle"
+  | "collapsing"
+  | "loading"
+  | "ready"
+  | "waiting"
+  | "connecting"
+  | "unwindCard"
+  | "unwindRoom"
+  | "unwindRow";
 import { secretsApi } from "../api/secrets";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
@@ -96,8 +128,7 @@ import {
 import { AgentPreview } from "./onboarding/AgentPreview";
 import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceTiles";
 import { CredentialModeLink } from "./onboarding/CredentialModeLink";
-import { ApiKeyField, ConnectInputCanvas } from "./onboarding/ConnectInputCanvas";
-import { FooterNav } from "./onboarding/FooterNav";
+import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion } from "./onboarding/onboarding-motion";
@@ -203,25 +234,6 @@ const MODEL_SOURCE_BRAND_MARKS: Record<string, string> = {
   claude_local: "/brands/claude-color.svg",
 };
 
-/**
- * What the connect step calls each source.
- *
- * Deliberately not the display registry's label, which ten other surfaces read.
- * This step asks which *provider* you are signing in with — the panel under the
- * row says "Sign in to Anthropic" and "Sign in to OpenAI" — while the agent
- * config screens name the tool that runs ("Codex CLI was not found on this
- * host"). One rename in the registry would make that message say OpenAI, which
- * is vaguer, not clearer.
- *
- * It is a tension worth naming rather than hiding: DESIGN.md asks for one name
- * per concept, and this is two names for one adapter. The concepts are
- * different — vendor here, tool there — but if the product decides otherwise,
- * this map is the thing to delete.
- */
-const MODEL_SOURCE_NAMES: Record<string, string> = {
-  claude_local: "Claude",
-  codex_local: "OpenAI",
-};
 
 /**
  * OpenAI's blossom, inline rather than served from `/brands`.
@@ -629,12 +641,19 @@ function OnboardingWizardInner({
    * defaulted. A customer who never touched the row could reach the end of the
    * step having chosen nothing.
    *
-   * Restored true when the draft names a source. Someone returning here has
-   * already answered, and asking again would throw that answer away.
+   * Always false on arrival, including from a draft that names a source.
+   *
+   * It used to restore, on the reasoning that someone returning had already
+   * answered and asking again threw that answer away. Picking a source is what
+   * starts the sign-in now, so a restored selection is not an answer the step
+   * can act on — it is a lit tile with nothing behind it, and the sequence has
+   * no way to begin from there without either starting a server session
+   * unbidden or leaving the button to do a job the row is supposed to do.
+   *
+   * `adapterType` still restores; it is what the hire needs. This is only about
+   * whether the row has been *answered* on this visit.
    */
-  const [sourcePicked, setSourcePicked] = useState<boolean>(
-    () => typeof saved?.adapterType === "string" && saved.adapterType.length > 0,
-  );
+  const [sourcePicked, setSourcePicked] = useState(false);
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   // Native drafts may carry provider-specific configuration that is invalid
@@ -671,26 +690,27 @@ function OnboardingWizardInner({
     (saved?.credentialMode as CredentialMode) ?? "subscription",
   );
   /**
-   * Whether Connect has been pressed for the current source.
+   * Where the connect step's sign-in sequence is.
    *
-   * The step's footer button is what starts the sign-in now, so this is the
-   * whole of the difference between the card being absent and the card running:
-   * the panel is mounted with `autoStart` the moment this is true, and it
-   * cancels back to false. Deliberately not in the draft — a login is a live
-   * server session with a deadline on it, and restoring a wizard an hour later
-   * into "connecting" would be describing a session that is long gone.
+   * Picking a source starts it now, rather than a press of the footer button:
+   * the row collapses, the card opens, and the button becomes the sign-in. The
+   * beats are ordered rather than concurrent, and each waits for the animation
+   * before it — see `onboarding-motion`, where the durations these timers use
+   * live beside the transitions they mirror.
+   *
+   * Deliberately not in the draft. A login is a live server session with a
+   * deadline on it, and restoring a wizard an hour later into "waiting for a
+   * code" would describe a session that is long gone.
    */
-  const [loginStarted, setLoginStarted] = useState(false);
+  const [connectPhase, setConnectPhase] = useState<ConnectPhase>("idle");
   /**
-   * Whether that sign-in reached its success state.
+   * The address the running login wants the customer to open.
    *
-   * Only the displayed-code login ever sits here to be read: the browser-code
-   * login advances the step from its own success, so nothing gets the chance
-   * to render this. It exists because OpenAI's login finishes in another tab,
-   * with nothing to type back — so the step has to wait, and the footer button
-   * is where the waiting shows.
+   * Reported up by the panel, because the step's own button is what opens it —
+   * the card shows the same link inline for anyone finishing in another
+   * browser. Its arrival is also what moves the step off its waiting beat.
    */
-  const [loginConnected, setLoginConnected] = useState(false);
+  const [connectAuthUrl, setConnectAuthUrl] = useState<string | null>(null);
   /**
    * The key itself, held only for as long as the wizard is open. It is written
    * into the adapter config at hire time and never into the draft — a draft is
@@ -1186,9 +1206,169 @@ function OnboardingWizardInner({
   const loginSubmitsBrowserCode =
     adapterCaps.login?.panelMode === "submitted_browser_code";
 
-  // Connect is pressed, the login is running, and it has not succeeded yet.
+  /**
+   * The one thing that can be wrong here before anything is pressed: there is
+   * no sandbox to sign in against, so Connect cannot get anywhere. Worth saying
+   * on arrival rather than after a press that goes nowhere.
+   *
+   * Its two neighbours in the old canvas are not worth the same. "Checking this
+   * source's credentials…" narrated a request nothing was waiting on, and "this
+   * source is already signed in" answered a question the customer had not asked
+   * yet — both were written for a canvas that opened on selection, and the
+   * press is what opens it now.
+   */
+  const connectStepHasNoSandbox =
+    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
+
+  /*
+    The sequence's derived state. Space and visibility are separate throughout:
+    the credential link fades on the first beat but keeps its space until the
+    second, and the card takes its space on the second but only appears on the
+    third — so the column slides once, when there is a reason for it to.
+  */
+  const connectCollapsed =
+    connectPhase !== "idle" && connectPhase !== "unwindRow" && sourceSelected;
+  const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox;
+  const connectCardLive =
+    connectHasCard &&
+    (connectPhase === "loading" ||
+    connectPhase === "ready" ||
+      connectPhase === "waiting" ||
+      connectPhase === "connecting");
+  const connectCardSpace = connectCardLive || (connectHasCard && connectPhase === "unwindCard");
+  /**
+   * Whether the card's contents are rendered at all.
+   *
+   * A beat longer than its space, and that beat matters. The height animates
+   * away over `unwindRoom`, and an element with nothing in it has no height to
+   * animate *from* — unmounting the contents when the space starts closing
+   * collapsed the column in a single frame instead, a 54px jump measured right
+   * after the fade. They stay until the room has finished closing.
+   *
+   * It cannot simply be "always", either: the panel starts a server session on
+   * mount, so rendering it at idle would open an OAuth session merely because
+   * the step was visited.
+   */
+  const connectCardMounted = connectCardSpace || connectPhase === "unwindRoom";
+  const connectLinkSpace =
+    connectPhase === "idle" ||
+    connectPhase === "collapsing" ||
+    connectPhase === "unwindRoom" ||
+    connectPhase === "unwindRow";
+  const connectLinkVisible = connectPhase === "idle" || connectPhase === "unwindRow";
+
+  /** A sign-in is running and has not succeeded. */
   const connectStepLoggingIn =
-    connectStepNeedsLogin && loginStarted && !loginConnected;
+    connectStepNeedsLogin && connectPhase !== "idle" && connectPhase !== "connecting";
+
+  /**
+   * The beats, each waiting for the animation before it.
+   *
+   * `loading` is the exception: it ends when the server produces a prompt, not
+   * on a timer, so the card waits exactly as long as the login actually takes.
+   */
+  useEffect(() => {
+    if (step !== 4) return;
+    if (connectPhase === "collapsing") {
+      const t = setTimeout(
+        // A key has nothing to fetch — the field exists the moment the source
+        // is chosen — and a source already signed in has nothing to fetch
+        // either. Only a live sign-in spends a beat waiting for its prompt;
+        // sending the others through it would stall them on a card that never
+        // opens.
+        () =>
+          setConnectPhase(
+            credentialMode === "api" || !connectStepNeedsLogin ? "ready" : "loading",
+          ),
+        beatDelay(SOURCE_COLLAPSE_MS),
+      );
+      return () => clearTimeout(t);
+    }
+    if (connectPhase === "connecting") {
+      // No success state: the step advances. The hold is so "Connecting" is
+      // legible as a state rather than a flicker on the way out — a step that
+      // left the instant a paste landed would read as the paste having gone
+      // wrong.
+      //
+      // A beat rather than a bare timer because Back stays live through it. A
+      // dropped handle hired two seconds after the customer had backed out,
+      // landing them on Review having asked for the opposite; `handleGiveHeartbeat`
+      // has no notion of the phase and could not refuse it. Leaving the phase —
+      // Back, the step changing, unmount — now cancels the hire with it.
+      const t = setTimeout(() => void handleGiveHeartbeat(), CONNECTED_HOLD_MS);
+      return () => clearTimeout(t);
+    }
+    if (connectPhase === "unwindCard") {
+      const t = setTimeout(() => setConnectPhase("unwindRoom"), beatDelay(CARD_EXIT_MS));
+      return () => clearTimeout(t);
+    }
+    if (connectPhase === "unwindRoom") {
+      const t = setTimeout(() => setConnectPhase("unwindRow"), beatDelay(MAKE_ROOM_MS));
+      return () => clearTimeout(t);
+    }
+    if (connectPhase === "unwindRow") {
+      // Let the selection go as the row starts back, not once it has arrived.
+      // Held to the end, the tile changed colour with nothing else moving —
+      // a cut rather than a release. Released here it fades across the travel
+      // and settles into its default instead of snapping to it. The tiles take
+      // the slower duration while `settling`, so the fade lasts the journey.
+      setSourcePicked(false);
+      const t = setTimeout(() => setConnectPhase("idle"), beatDelay(SOURCE_COLLAPSE_MS));
+      return () => clearTimeout(t);
+    }
+    return;
+  }, [step, connectPhase, credentialMode, connectStepNeedsLogin]);
+
+  /**
+   * The button's four faces, and which of them can be pressed.
+   *
+   * It is only live where there is something for it to do: a sign-in to open, a
+   * key to submit, or a hire to run. Through the waits it is the step reporting
+   * rather than offering — see `FooterNav`, where the label cross-fades over an
+   * easing width so those changes read as one control rather than four.
+   */
+  const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
+  const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
+    connectPhase === "waiting"
+      ? { label: "Waiting for code", icon: "spinner", disabled: true }
+      : connectPhase === "connecting"
+        ? { label: "Connecting", icon: "spinner", disabled: true }
+        : connectPhase === "ready"
+          ? connectStepNeedsLogin
+            ? {
+                label: `Sign in to ${connectSourceLabel}`,
+                icon: "none",
+                disabled: !connectAuthUrl,
+              }
+            : {
+                label: "Connect",
+                icon: "arrow",
+                disabled:
+                  !connectStepReady || (credentialMode === "api" && !apiKey.trim()),
+              }
+          : // Nothing is chosen on arrival, and the row is what chooses. Until
+            // it has been answered the button has nothing to do.
+            { label: "Next", icon: "arrow", disabled: true };
+
+  /**
+   * Back, on the connect step, unwinds the sign-in before it leaves the step.
+   *
+   * With no Cancel on the card this is the only way out, and what it undoes
+   * depends on how far in you are. Unmounting the panel is what releases the
+   * server session — see the release-on-unmount effect in `AdapterLoginPanel`
+   * — so the card leaving is the cancel, not a separate call.
+   */
+  function unwindConnectStep() {
+    setConnectAuthUrl(null);
+    // Where the reverse starts depends on how far the sequence got. Backing out
+    // during the collapse has no card to close and no room to give back, and
+    // entering `unwindCard` regardless mounted the panel — which starts a
+    // server login on mount — purely so the unmount could cancel it. Should
+    // that cancel fail, the reservation is held to the server deadline and an
+    // immediate retry cannot start. With no card open, the row is the whole of
+    // the unwind.
+    setConnectPhase(connectCardLive ? "unwindCard" : "unwindRow");
+  }
 
   /**
    * What the step's primary action does, for both the button and Cmd+Enter.
@@ -1200,10 +1380,13 @@ function OnboardingWizardInner({
    * it is meant to start, against a source with no credential.
    */
   function handleConnectStepPrimary() {
-    if (connectStepNeedsLogin && !loginStarted) {
-      setLoginStarted(true);
+    // Mid-sequence the button belongs to the sign-in, not to the step.
+    if (connectPhase === "ready" && connectStepNeedsLogin) {
+      if (connectAuthUrl) window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
+      setConnectPhase("waiting");
       return;
     }
+    if (connectStepLoggingIn) return;
     void handleGiveHeartbeat();
   }
 
@@ -1223,19 +1406,6 @@ function OnboardingWizardInner({
    * unanswered, and the visible tiles are the thing to press. `showAdapterLoginPanel`
    * still decides what goes *inside* the canvas — only not whether it exists.
    */
-  /**
-   * The one thing that can be wrong here before anything is pressed: there is
-   * no sandbox to sign in against, so Connect cannot get anywhere. Worth saying
-   * on arrival rather than after a press that goes nowhere.
-   *
-   * Its two neighbours in the old canvas are not worth the same. "Checking this
-   * source's credentials…" narrated a request nothing was waiting on, and "this
-   * source is already signed in" answered a question the customer had not asked
-   * yet — both were written for a canvas that opened on selection, and the
-   * press is what opens it now.
-   */
-  const connectStepHasNoSandbox =
-    credentialMode !== "api" && !canShowAdapterLogin && !authSignalUndecided;
 
   /**
    * Open once there is something in it: a key field, a sign-in that has been
@@ -1248,7 +1418,7 @@ function OnboardingWizardInner({
    */
   const canvasOpen =
     sourceSelected &&
-    (credentialMode === "api" || loginStarted || connectStepHasNoSandbox);
+    (credentialMode === "api" || connectCardSpace || connectStepHasNoSandbox);
 
   // The default (or a saved) adapterType can name an adapter the server has
   // since disabled — e.g. a cloud sandbox registry without claude_local. The
@@ -1320,15 +1490,26 @@ function OnboardingWizardInner({
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url, credentialMode, apiKey]);
 
-  // A login belongs to one source in one credential mode. Switching either
-  // means the card on screen is answering a question nobody asked any more, so
-  // the step goes back to offering Connect. The panel is keyed on the adapter
-  // as well, so it unmounts on the same change and releases its server session
-  // on the way out.
+  /**
+   * Leaving the step puts the row back to a question.
+   *
+   * Deliberately keyed on the step and nothing else. It used to reset on
+   * `adapterType` too, which made picking a source take two clicks: the first
+   * set the phase *and* the adapter, this effect saw the adapter change and put
+   * the phase straight back to idle, and only a second click — which changed no
+   * adapter, so woke no effect — was allowed to stand.
+   *
+   * Nothing else needs to reset it. A source can only change by being picked,
+   * and picking sets the phase itself; the credential mode can only change
+   * before the sequence starts, because its control is inert once the row has
+   * collapsed.
+   */
   useEffect(() => {
-    setLoginStarted(false);
-    setLoginConnected(false);
-  }, [adapterType, credentialMode]);
+    if (step === 4) return;
+    setConnectPhase("idle");
+    setConnectAuthUrl(null);
+    setSourcePicked(false);
+  }, [step]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =
@@ -2333,7 +2514,11 @@ function OnboardingWizardInner({
                 // tiles stretch and the name field sits under a question far
                 // narrower than itself.
                 isAgentArcStep || step === 1
-                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-(--sz-64px) sm:py-11"
+                  ? // 40px inset, not 64: the connect sequence is drawn against
+                    // a 480px column and the arc's other steps share the shell,
+                    // so they widen with it rather than sitting narrower than
+                    // the step between them.
+                    "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
             >
@@ -2814,37 +2999,20 @@ function OnboardingWizardInner({
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <div className="space-y-8">
-                  {/* The two cards are self-describing; an "Adapter type"
-                      eyebrow above them named the mechanism rather than the
-                      choice. */}
                   <div>
-                    {/* The row is `ModelSourceTiles`, the same component the
-                        connect-step prototype is drawn with, so the shipped step
-                        and the design under review cannot drift apart.
+                    {/* Sources come from `recommendedAdapters`, not a list
+                        written here — that filter is `recommended` in the
+                        display registry, so a third tile appears the day
+                        someone marks one rather than the day someone
+                        remembers to edit this file.
 
-                        Sources come from `recommendedAdapters`, not a list
-                        written here. That filter is `recommended` in the display
-                        registry, which today means Claude Code and Codex and
-                        nothing else — so the row stays two tiles because the
-                        registry says so, and a third would appear here the day
-                        someone marks one rather than the day someone remembers
-                        to edit this file. */}
+                        Picking one starts the sign-in now. The row is the
+                        question, and answering it is what opens the card. */}
                     <ModelSourceTiles
                       label="Model source"
                       sources={recommendedAdapters.map((opt) => ({
                         id: opt.type,
-                        // The vendor name where this step has one, the registry's
-                        // tool name where it does not. `MODEL_SOURCE_NAMES` was
-                        // added with the reasoning above it and then never read,
-                        // so the row went on showing "Claude Code" and "Codex"
-                        // — the tool names — under a heading asking which
-                        // provider you are signing in to.
-                        //
-                        // The fallback is what keeps the row rendering if the
-                        // registry ever marks a third adapter `recommended`:
-                        // an unnamed source gets its tool name rather than
-                        // nothing.
-                        label: MODEL_SOURCE_NAMES[opt.type] ?? opt.label,
+                        label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
                         icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
                       }))}
                       mode={credentialMode}
@@ -2854,69 +3022,112 @@ function OnboardingWizardInner({
                           ? adapterType
                           : null
                       }
+                      collapsed={connectCollapsed}
+                      settling={connectPhase === "unwindRow"}
                       onSelect={(id) => {
+                        if (connectPhase !== "idle") return;
                         setSourcePicked(true);
                         setAdapterType(id);
-                        if (id === "codex_local") return;
-                        if (id === "opencode_local") {
-                          setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                          return;
-                        }
-                        setModel("");
+                        if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                        else if (id !== "codex_local") setModel("");
+                        setConnectPhase("collapsing");
                       }}
                     />
 
-                    {/* The credential switch stands where the adapter
-                        disclosure used to. That disclosure existed to reach the
-                        adapters this step does not offer, and with the row down
-                        to the two that are supported it was a control whose
-                        whole contents were out of scope. The question actually
-                        left on this step is how the two are authenticated, so
-                        that is what the line asks.
-
-                        It names the destination rather than the state, which is
-                        what a sentence has to do where a checkbox does not —
-                        and it is only readable because the tiles' own tags,
-                        directly above, say where you are. */}
-                    <div className="-ml-3 mt-1">
-                      <CredentialModeLink
-                        mode={credentialMode}
-                        onChange={setCredentialMode}
-                      />
-                    </div>
-
+                    {/* Fades on the first beat but keeps its space until the
+                        second, so pressing a tile moves nothing vertically.
+                        Once a sign-in is running there is no switching to keys
+                        without abandoning it, so it goes rather than sitting
+                        there inviting a press that cannot be honoured. */}
+                    <motion.div
+                      className="overflow-hidden"
+                      /*
+                        Inert once it has faded. It is clipped to nothing rather
+                        than unmounted, so without this it stays clickable and
+                        focusable — a control that has stopped applying, still
+                        answering to a keyboard and still able to change the
+                        credential mode out from under a running sign-in.
+                      */
+                      inert={!connectLinkVisible}
+                      initial={false}
+                      animate={{
+                        opacity: connectLinkVisible ? 1 : 0,
+                        height: connectLinkSpace ? "auto" : 0,
+                      }}
+                      transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
+                    >
+                      <div className="-ml-3 mt-1">
+                        <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
+                      </div>
+                    </motion.div>
                   </div>
 
-                  {/* One canvas under the tiles, holding whatever the current
-                      choice needs: a browser-code login for Claude, a
-                      displayed-code login for Codex, or a key field for either
-                      when the mode is keys. Four inputs, one place — so the
-                      Connect button below does not move every time the answer
-                      changes.
+                  {/*
+                    Room first, card second. `height` opens the space — which the
+                    link's collapse shares, so the column slides once — and the
+                    opacity only starts once that has finished. Reversed on the
+                    way out: fade, then give the room back.
 
-                      Closed until a source is picked. `contentKey` is the
-                      source and the mode together, because either one changing
-                      means a different input, and that is what the canvas
-                      swaps on. */}
-                  <ConnectInputCanvas
-                    open={canvasOpen}
-                    contentKey={`${adapterType}:${credentialMode}`}
+                    Nothing mounts to make that happen. A mount changes layout in
+                    one frame, and no easing can smooth a step that has already
+                    happened. Which means the card is always in the DOM, so it is
+                    `inert` while closed: a clipped element is still focusable and
+                    still announced, and the authorization field must not be
+                    reachable inside a card nobody can see.
+                  */}
+                  <motion.div
+                    className="overflow-hidden"
+                    inert={!connectCardLive}
+                    initial={false}
+                    animate={{
+                      height: connectCardSpace ? "auto" : 0,
+                      marginTop: connectCardSpace ? 20 : 0,
+                      opacity: connectCardLive ? 1 : 0,
+                    }}
+                    transition={{
+                      height: MAKE_ROOM,
+                      marginTop: MAKE_ROOM,
+                      opacity: connectCardLive
+                        ? { ...CARD_ENTER, delay: MAKE_ROOM.duration }
+                        : CARD_EXIT,
+                    }}
                   >
-                    {credentialMode === "api" ? (
-                      <ApiKeyField
-                        envKey={apiKeyEnvKeyFor(adapterType)}
-                        value={apiKey}
-                        onChange={setApiKey}
-                      />
-                    ) : showAdapterLoginPanel &&
+                    {/*
+                      The wrapper is always rendered — that is what lets its
+                      height animate rather than jump — but its contents are
+                      not, and they outlive the space by a beat. See
+                      `connectCardMounted`.
+                    */}
+                    {!connectCardMounted ? null : credentialMode === "api" ? (
+                      <OnboardingLoginCard
+                        instruction={`Provide your ${
+                          CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
+                        } API key to connect`}
+                      >
+                        <OnboardingCardField
+                          label="API key"
+                          placeholder="Enter API key here"
+                          masked
+                          // The card is the answer to the tile just pressed, so
+                          // the field is unambiguously the next thing. Carried
+                          // over from the key field this card replaced.
+                          autoFocus
+                          value={apiKey}
+                          onChange={setApiKey}
+                          onSubmit={() => handleConnectStepPrimary()}
+                        />
+                      </OnboardingLoginCard>
+                    ) : connectStepNeedsLogin &&
                       createdCompanyId &&
                       resolvedLoginEnvironmentId ? (
                       /* The same panel the agent configuration form shows after
                          a test — see AdapterLoginPanel in AgentConfigForm.tsx —
-                         in the connect step's chrome and driven by the step's
-                         own footer button. `autoStart` is that button: mounting
-                         only happens once Connect is pressed, so the press has
-                         already been taken by the time the panel exists.
+                         in the connect step's chrome. It owns the session; the
+                         step owns the sequence around it.
+
+                         Unmounting it is the cancel: the panel releases its
+                         server session on unmount, so Back closing the card is
+                         what frees the owner's reservation.
 
                          No "Use saved login" control: the hire step already
                          applies a stored login on its own. */
@@ -2927,19 +3138,16 @@ function OnboardingWizardInner({
                         environmentId={resolvedLoginEnvironmentId}
                         chrome="onboarding"
                         autoStart
-                        onCancel={() => setLoginStarted(false)}
+                        onPromptReady={(url) => {
+                          setConnectAuthUrl(url);
+                          // The prompt arriving is what ends the waiting beat.
+                          if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
+                        }}
                         onConnected={() => {
-                          setLoginConnected(true);
-                          // The browser-code login ends here, on this screen,
-                          // so the step moves on by itself — there is no
-                          // success state to sit on, and one would be a screen
-                          // whose only content is that you may continue.
-                          //
-                          // The displayed-code login does not: it is still
-                          // running in another tab when this fires, and the
-                          // customer's attention is there. It waits for the
-                          // press, which is what the enabled Next is for.
-                          if (loginSubmitsBrowserCode) void handleGiveHeartbeat();
+                          // The hold before the step advances is the phase's own
+                          // beat, above, so that backing out during it cancels
+                          // the hire.
+                          setConnectPhase("connecting");
                         }}
                         onStored={() => {
                           queryClient.invalidateQueries({
@@ -2951,22 +3159,15 @@ function OnboardingWizardInner({
                           });
                         }}
                       />
-                    ) : (
-                      /* The canvas only opens without a panel for one reason
-                         now — `connectStepHasNoSandbox` — and it is the reason
-                         worth saying out loud, because it is the one that makes
-                         Connect a dead press.
-
-                         Its two former neighbours are gone with the canvas that
-                         opened on selection: "already signed in" reassured
-                         against a question nobody had asked, and "checking…"
-                         narrated a request the customer was not waiting on.
-                         Neither survives a canvas that opens on a press. */
+                    ) : connectStepHasNoSandbox ? (
+                      /* The one thing that can be wrong here before anything is
+                         pressed, and the one worth saying out loud: without a
+                         sandbox there is nothing to sign in against. */
                       <p className="text-xs text-muted-foreground">
                         No managed sandbox is available to sign in against yet.
                       </p>
-                    )}
-                  </ConnectInputCanvas>
+                    ) : null}
+                  </motion.div>
 
                   {/* Conditional adapter fields */}
                   {/* No model picker. Every adapter this step offers resolves
@@ -3143,7 +3344,11 @@ function OnboardingWizardInner({
               {(isAgentArcStep || step === 1) && (
                 <FooterNav
                   onBack={
-                    step === 1
+                    // On the connect step Back unwinds the sign-in first, and
+                    // only means "the previous step" once nothing is running.
+                    step === 4 && connectPhase !== "idle"
+                      ? unwindConnectStep
+                      : step === 1
                       ? () => {
                           setOnboardingPath(null);
                           setStep(0);
@@ -3162,19 +3367,10 @@ function OnboardingWizardInner({
                       : step === 5
                         ? "Get started"
                         : step === 4
-                          ? // "Connect" is the step's own verb, and it is what
-                            // starts the sign-in rather than what follows it.
-                            //
-                            // It becomes "Next" for the displayed-code login
-                            // once that is running: at that point the sign-in
-                            // is happening somewhere else, the button is not
-                            // the thing doing it, and offering to "Connect" a
-                            // second time would read as a retry.
-                            connectStepLoggingIn && !loginSubmitsBrowserCode
-                            ? "Next"
-                            : "Connect"
+                          ? connectCta.label
                           : "Next"
                   }
+                  primaryIcon={step === 4 ? connectCta.icon : undefined}
                   loadingLabel={
                     step === 1
                       ? "Creating..."
@@ -3187,28 +3383,16 @@ function OnboardingWizardInner({
                   // displayed-code login is not — see `loginSubmitsBrowserCode`
                   // — so it stays a still, disabled Next instead of spinning
                   // against work happening in another tab.
-                  loading={
-                    step === 3
-                      ? false
-                      : loading || (connectStepLoggingIn && loginSubmitsBrowserCode)
-                  }
+                  // Step 4 says what it is doing through `connectCta` instead:
+                  // it has four faces and only two of them are the step working.
+                  loading={step === 3 || step === 4 ? false : loading}
                   primaryDisabled={
                     step === 1
                       ? !companyName.trim() || loading
                       : step === 3
                         ? !agentName.trim()
                         : step === 4
-                          ? // Nothing is chosen on arrival, so the step cannot
-                            // advance until something is. Without this a customer
-                            // could pass the model step having touched none of
-                            // it, and be hired against whatever the draft
-                            // happened to carry. See `connectStepReady`, which
-                            // Cmd+Enter asks as well.
-                            !connectStepReady ||
-                            loading ||
-                            // A sign-in is running and has not landed. Nothing
-                            // to press until it does.
-                            connectStepLoggingIn
+                          ? connectCta.disabled || loading
                           : loading || launchStateIncomplete
                   }
                   onPrimary={() => {
