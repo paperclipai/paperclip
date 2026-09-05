@@ -344,7 +344,13 @@ const DELIVERY_DRAIN_LIMIT = 100;
 // Slack can deliver adjacent Events API callbacks on separate HTTP requests
 // out of timestamp order. Hold the first callback briefly so a rapid burst can
 // be sorted by the provider's message timestamp before any run is started.
-const SLACK_INGRESS_REORDER_WINDOW_MS = 750;
+const INGRESS_REORDER_WINDOW_MS: Partial<Record<ChatProvider, number>> = {
+  // Both providers deliver adjacent comments as independent HTTP requests and
+  // do not guarantee callback arrival order. A fixed, non-sliding window lets
+  // the durable drain sort a short burst before the first agent wake starts.
+  slack: 750,
+  github: 750,
+};
 
 type EndpointRow = typeof chatEndpoints.$inferSelect;
 type VerifiedProviderIdentity = {
@@ -2896,11 +2902,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         })),
       },
     };
+    const reorderWindow = INGRESS_REORDER_WINDOW_MS[endpoint.provider];
     const scheduledAt =
-      ingressOnly && endpoint.provider === "slack"
+      ingressOnly && reorderWindow
         ? (scheduledConversationDrains.get(
             conversationDrainKey(endpoint.id, thread.id),
-          ) ?? Date.now() + SLACK_INGRESS_REORDER_WINDOW_MS)
+          ) ?? Date.now() + reorderWindow)
         : null;
     const admission = await db.transaction(async (tx) => {
       const currentEndpoint = await tx
@@ -3736,6 +3743,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         asc(
           sql`coalesce(nullif(${chatDeliveries.normalizedEvent}->'message'->>'providerSentAt', '')::timestamptz, ${chatDeliveries.receivedAt})`,
         ),
+        // GitHub timestamps have one-second resolution while comment ids are
+        // monotonically increasing. Without this tie-breaker two same-second
+        // callbacks are ordered by random Paperclip UUID, which can filter an
+        // unmentioned follow-up before the root mention creates its task.
+        asc(sql`case
+          when ${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId' ~ '^[0-9]+$'
+          then (${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId')::numeric
+          else null
+        end`),
+        asc(chatDeliveries.receivedAt),
         asc(chatDeliveries.id),
       )
       .limit(1)

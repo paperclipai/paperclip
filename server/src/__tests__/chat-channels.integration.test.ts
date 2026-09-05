@@ -740,6 +740,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   async function configuredGitHubEndpoint(
     fixture: Awaited<ReturnType<typeof seedCompany>>,
+    overrides: Partial<
+      Pick<
+        ChatChannelServiceOptions,
+        "deferWebhookProcessing" | "scheduleDeferredWork" | "storage"
+      >
+    > = {},
   ) {
     let installationId = 2468;
     const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
@@ -802,7 +808,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       throw new Error(`Unexpected provider request: ${url}`);
     }) as typeof globalThis.fetch;
-    const context = createService(new FakeChatSdkRuntime(), providerFetch);
+    const context = createService(
+      new FakeChatSdkRuntime(),
+      providerFetch,
+      overrides,
+    );
     const endpoint = await context.service.create(
       fixture.companyId,
       {
@@ -1637,6 +1647,90 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         (row) => row.normalizedEvent.trigger === "subscribed_message",
       ),
     ).toHaveLength(3);
+  });
+
+  it("reorders same-second GitHub callbacks by comment id before starting the task", async () => {
+    const fixture = await seedCompany();
+    const deferred: Array<() => void> = [];
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredGitHubEndpoint(fixture, {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: (task) => deferred.push(task),
+      });
+    const thread = makeThread({
+      channelId: "github:paperclipai/paperclip",
+      id: "github:paperclipai/paperclip:issue:71",
+      name: "paperclipai/paperclip",
+    });
+    const providerSentAt = new Date("2026-09-05T18:00:00.000Z");
+    const laterReply = makeMessage({
+      id: "71002",
+      text: "unmentioned follow-up delivered first",
+    });
+    laterReply.metadata.dateSent = providerSentAt;
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: thread.thread,
+      message: laterReply,
+      trigger: "unaddressed_message",
+    });
+    const earlierMention = makeMessage({
+      id: "71001",
+      text: "@maya start the GitHub task",
+      mentioned: true,
+    });
+    earlierMention.metadata.dateSent = providerSentAt;
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: thread.thread,
+      message: earlierMention,
+      trigger: "mention",
+    });
+
+    const durable = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(durable).toHaveLength(2);
+    expect(durable.every((delivery) => delivery.nextAttemptAt !== null)).toBe(
+      true,
+    );
+    expect(
+      new Set(
+        durable.map((delivery) => delivery.nextAttemptAt?.getTime() ?? null),
+      ).size,
+    ).toBe(1);
+    expect(deferred).toHaveLength(1);
+
+    deferred.shift()?.();
+    await vi.waitFor(async () => {
+      const rows = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      expect(rows).toHaveLength(1);
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    await vi.waitFor(async () => {
+      const rows = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversation!.issueId))
+        .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+      expect(rows.map((row) => row.body)).toEqual([
+        "@maya start the GitHub task",
+        "unmentioned follow-up delivered first",
+      ]);
+    });
+    expect(wakeup).toHaveBeenCalledTimes(2);
+    await service.shutdown();
   });
 
   it("recovers a revoked GitHub installation on the same endpoint with its new installation id", async () => {
