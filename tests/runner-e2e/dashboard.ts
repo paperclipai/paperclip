@@ -196,6 +196,18 @@ function renderCase(
       </tr>`,
     )
     .join("");
+  const turnTimingRows = (entry?.result.turnTimings ?? [])
+    .map(
+      (timing) => `<tr>
+        <td>${timing.turn}</td>
+        <td><code>${html(timing.runId)}</code></td>
+        <td>${html(timing.leaseAcquisitionOutcome)}</td>
+        <td>${html(timing.schedulerLatencyMs === null ? "unavailable" : durationLabel(timing.schedulerLatencyMs))}</td>
+        <td>${html(timing.runDurationMs === null ? "unavailable" : durationLabel(timing.runDurationMs))}</td>
+        <td>${html(timing.responseLatencyMs === null ? "unavailable" : durationLabel(timing.responseLatencyMs))}</td>
+      </tr>`,
+    )
+    .join("");
   const gallery = screenshots.length
     ? `<div class="gallery" aria-label="Screenshots for ${html(execution.id)}">${screenshots
         .map(
@@ -268,6 +280,7 @@ function renderCase(
         : ""
     }
     <p class="detail">${html(detail)}</p>
+    ${turnTimingRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Turn</th><th>Run</th><th>Lease</th><th>Scheduler</th><th>Run duration</th><th>Response</th></tr></thead><tbody>${turnTimingRows}</tbody></table></div>` : ""}
     ${matcherRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Result</th><th>Matcher</th><th>Expectation</th><th>Detail</th></tr></thead><tbody>${matcherRows}</tbody></table></div>` : `<p class="detail">No matcher result was recorded.</p>`}
     ${entry ? `<details class="usage"><summary>Usage and billing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null }, null, 2))}</pre></details>` : ""}
     ${links}

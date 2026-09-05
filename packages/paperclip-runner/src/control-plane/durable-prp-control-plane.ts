@@ -939,7 +939,7 @@ class AuthorityConnection {
 
 /** Authenticated, replay-safe PRP transport authority. Business operations are caller supplied. */
 export class DurablePrpControlPlane {
-  readonly #identity: DurableRecoveryIdentity;
+  #identity: DurableRecoveryIdentity;
   readonly #store: DurableCoreStore;
   #expectedRunnerVersion: string;
   #expectedRunnerDigest: string;
@@ -1039,6 +1039,36 @@ export class DurablePrpControlPlane {
     return [...this.#connections].filter(
       (connection) => connection.secureChannel !== null,
     ).length;
+  }
+
+  /**
+   * Atomically advances a settled reusable runner to a new run authority while
+   * retaining its existing connection lease secret. The runner performs the
+   * matching state transition only after acknowledging `run.attach`.
+   */
+  rotateRunIdentity(identity: DurableRecoveryIdentity): void {
+    if (
+      !Object.values(identity).every(
+        (value) => typeof value === "string" && stableIdPattern.test(value),
+      ) ||
+      identity.runnerInstanceId !== this.#identity.runnerInstanceId ||
+      identity.environmentLeaseId !== this.#identity.environmentLeaseId ||
+      identity.normalizedSessionId !== this.#identity.normalizedSessionId ||
+      identity.runId === this.#identity.runId ||
+      this.#store.state.commands.some((command) => command.status === "pending")
+    ) {
+      throw new Error("Durable PRP run identity rotation is invalid.");
+    }
+    this.disconnectActiveRunner();
+    const leases = Object.fromEntries(
+      Object.entries(this.#store.state.leases).map(([key, lease]) => [
+        key,
+        { ...lease, identity: structuredClone(identity) },
+      ]),
+    );
+    Object.assign(this.#store.state, initialCoreState(identity), { leases });
+    this.#identity = structuredClone(identity);
+    this.#store.save();
   }
 
   issueBootstrapTicket(ttlMs = 5_000): string {

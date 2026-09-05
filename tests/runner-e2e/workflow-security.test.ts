@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const ordinaryPrTrustedWorkflowRevision =
-  "a0a78ee60946a5f79f85b2bd0584fc766fae43bb";
+  "03609aa6ecc9a047ed53d6b6469d8be554fbc46d";
 const fullStackTestNeeds =
   /needs:\s*\[\s*authorize,\s*target_lock,\s*catalog,\s*daytona_image,\s*build_runner_artifacts,\s*build_remote_provider_pack,?\s*\]/u;
 const buildRunnerNeeds =

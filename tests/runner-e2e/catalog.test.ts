@@ -10,7 +10,10 @@ import {
   runnerProfiles,
   runnerSuites,
   runnerTasks,
+  daytonaWarmContinuityTask,
+  daytonaWarmEnvironment,
   isImmutableDaytonaImage,
+  suiteDefinitionHash,
   validateRunnerCatalog,
 } from "./catalog.js";
 import {
@@ -21,7 +24,7 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
-  it("validates the core, local-integrity, and breadth suites", () => {
+  it("validates the core, local-integrity, breadth, and warm suites", () => {
     expect(runnerProfiles).toHaveLength(7);
     expect(openRouterBreadthProfiles).toHaveLength(4);
     expect(runnerEnvironments).toHaveLength(2);
@@ -29,10 +32,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      42, 14, 10,
+      42, 14, 10, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(66);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(66);
+    expect(validateRunnerCatalog()).toHaveLength(68);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(68);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(42);
@@ -47,15 +50,78 @@ describe("runner E2E catalog", () => {
       ),
     ).toHaveLength(10);
     expect(
+      runnerMatrix.filter(
+        (entry) => entry.suite.id === "daytona-warm-continuity",
+      ),
+    ).toHaveLength(2);
+    expect(
       runnerMatrix.reduce(
         (total, execution) => total + execution.task.expectedRunCount,
         0,
       ),
-    ).toBe(114);
+    ).toBe(120);
     expect(
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
     ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000 });
+  });
+
+  it("defines the warm Daytona continuity fixture as exactly two Codex cells", () => {
+    expect(daytonaWarmEnvironment).toMatchObject({
+      id: "daytona",
+      configurationKey: "warm-reuse-v1",
+      groups: ["daytona", "warm"],
+    });
+    expect(
+      daytonaWarmEnvironment.buildEnvironment({
+        secretRefs: {
+          DAYTONA_API_KEY: {
+            type: "secret_ref",
+            secretId: "22222222-2222-4222-8222-222222222222",
+            version: "latest",
+          },
+        },
+        daytonaImage: `runner@sha256:${"a".repeat(64)}`,
+        executionId: "warm",
+      }),
+    ).toMatchObject({
+      config: {
+        reuseLease: true,
+        runnerLifecycleMode: "warm",
+        autoStopInterval: 5,
+        autoArchiveInterval: 15,
+        autoDeleteInterval: 60,
+      },
+    });
+    expect(daytonaWarmContinuityTask).toMatchObject({
+      flow: "warm_three_turn",
+      expectedRunCount: 3,
+      turnTimeoutMs: 600_000,
+    });
+    expect(
+      daytonaWarmContinuityTask.buildFollowupMessages?.("nonce"),
+    ).toHaveLength(2);
+    const cells = runnerMatrix.filter(
+      (entry) => entry.suite.id === "daytona-warm-continuity",
+    );
+    expect(cells.map((entry) => entry.profile.id)).toEqual([
+      "legacy-codex",
+      "runner-codex",
+    ]);
+    expect(cells.every((entry) => entry.environment.id === "daytona")).toBe(
+      true,
+    );
+    const suite = runnerSuites.find(
+      (candidate) => candidate.id === "daytona-warm-continuity",
+    )!;
+    expect(
+      suiteDefinitionHash({
+        ...suite,
+        environments: [
+          { ...daytonaWarmEnvironment, configurationKey: "changed" },
+        ],
+      }),
+    ).not.toBe(suiteDefinitionHash(suite));
   });
 
   it("derives the qualified local native OpenCode profiles from the ranked snapshot", () => {
@@ -181,9 +247,10 @@ describe("runner E2E catalog", () => {
       question?.buildPrompt("nonce"),
       ...breadthTasks,
     ]) {
-      expect(prompt).toContain("then emit exactly");
+      const terminalTextInstruction = prompt?.match(/then emit (?:exactly|only)/)?.[0];
+      expect(terminalTextInstruction).toBeDefined();
       expect(prompt!.indexOf("paperclip_finish exactly once")).toBeLessThan(
-        prompt!.indexOf("then emit exactly"),
+        prompt!.indexOf(terminalTextInstruction!),
       );
       expect(prompt).toContain("Wait for that tool call to succeed");
     }
@@ -336,7 +403,7 @@ describe("runner E2E catalog", () => {
       "those two tool calls form one indivisible response sequence",
     );
     expect(task!.buildPrompt("nonce")).toContain(
-      "Do not emit assistant text, end the heartbeat, or stop after write_document alone",
+      "Do not emit assistant text, end the response or heartbeat, or stop after write_document alone",
     );
     expect(task!.buildPrompt("nonce")).toContain(
       "one atomic issue PATCH with status `done` and that exact comment",
@@ -433,7 +500,7 @@ describe("runner E2E selectors", () => {
       "daytona",
     ]);
     const selected = selectRunnerExecutions(options);
-    expect(selected).toHaveLength(12);
+    expect(selected).toHaveLength(13);
     expect(
       selected.every(
         (entry) =>
@@ -443,7 +510,7 @@ describe("runner E2E selectors", () => {
     ).toBe(true);
   });
 
-  it("rejects groups outside the advertised four", () => {
+  it("rejects unknown groups", () => {
     const options = parseRunnerSelectors(["--group", "codex"]);
     expect(() => selectRunnerExecutions(options)).toThrow("Unknown group");
   });
@@ -452,10 +519,10 @@ describe("runner E2E selectors", () => {
     const jobs = buildMatrixJobs(
       selectRunnerExecutions(parseRunnerSelectors(["--all"])),
     );
-    expect(jobs).toHaveLength(66);
-    expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(21);
+    expect(jobs).toHaveLength(68);
+    expect(jobs.filter((job) => job.needsDaytona)).toHaveLength(23);
     expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(45);
-    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(66);
+    expect(new Set(jobs.map((job) => job.executionId)).size).toBe(68);
     expect(
       jobs.find(
         (job) =>

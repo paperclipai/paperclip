@@ -27,6 +27,7 @@ const SELECTABLE_GROUPS = [
   "native",
   "local",
   "daytona",
+  "warm",
   "core",
   "breadth",
 ] as const;
@@ -374,6 +375,50 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
   },
 ] as const;
 
+export const daytonaWarmEnvironment: EnvironmentFixture = {
+  id: "daytona",
+  configurationKey: "warm-reuse-v1",
+  label: "Daytona warm reusable sandbox",
+  groups: ["daytona", "warm"],
+  driver: "sandbox",
+  provider: "daytona",
+  credential: "DAYTONA_API_KEY",
+  lifecycle: {
+    setup: "create_via_api",
+    probe: "run_context_via_api",
+    cleanup: "delete_via_api_and_destroy_leases",
+  },
+  expectedExecutionTarget: { kind: "remote", transport: "sandbox" },
+  buildEnvironment(input) {
+    if (!isImmutableDaytonaImage(input.daytonaImage)) {
+      throw new Error(
+        "PAPERCLIP_E2E_DAYTONA_IMAGE must be an immutable image digest",
+      );
+    }
+    return {
+      name: `Runner E2E Daytona warm ${input.executionId}`,
+      description: "Ephemeral reusable Daytona runner E2E environment",
+      driver: "sandbox",
+      config: {
+        provider: "daytona",
+        apiKey: requiredDaytonaSecret(input),
+        image: input.daytonaImage,
+        cpu: 4,
+        memory: 4,
+        disk: 10,
+        reuseLease: true,
+        runnerLifecycleMode: "warm",
+        autoStopInterval: 5,
+        autoArchiveInterval: 15,
+        autoDeleteInterval: 60,
+        timeoutMs: 300_000,
+        livenessTimeoutMs: 30_000,
+      },
+      envVars: {},
+    };
+  },
+};
+
 export const runnerTasks: readonly RunnerTaskFixture[] = [
   {
     id: "message-marker",
@@ -719,6 +764,80 @@ const localEnvironment = runnerEnvironments.find(
   (environment) => environment.id === "local",
 )!;
 
+function warmTurnMarker(turn: 1 | 2 | 3, nonce: string) {
+  return `PAPERCLIP_E2E_WARM_T${turn}_${nonce}`;
+}
+
+function warmWorkspaceLine(turn: 1 | 2 | 3, nonce: string) {
+  return `T${turn}_${nonce}`;
+}
+
+function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
+  const file = `daytona-warm-${nonce}.txt`;
+  const lines = Array.from({ length: turn }, (_, index) =>
+    warmWorkspaceLine((index + 1) as 1 | 2 | 3, nonce),
+  );
+  const marker = warmTurnMarker(turn, nonce);
+  const finalTurn = turn === 3;
+  return [
+    `This is warm Daytona continuity turn ${turn} of 3. Work only in the current execution workspace.`,
+    turn === 1
+      ? `Create ${file} with exactly this one line followed by a newline: ${lines[0]}`
+      : `Before changing anything, read ${file} and verify its content is exactly ${lines.slice(0, -1).join("\\n")} followed by a newline. Then append exactly ${lines.at(-1)} followed by a newline.`,
+    `After the write, verify ${file} contains exactly these lines, once each and in order: ${lines.join(" | ")}.`,
+    `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
+    `In a legacy runner, make exactly one public-API completion write after verification: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"${finalTurn ? "done" : "in_review"}","comment":"${marker}"}. Include Authorization and X-Paperclip-Run-Id. Do not POST a separate comment.`,
+    `Do not include ${marker} in any other visible response or write. Do not recreate, truncate, reorder, or duplicate prior lines.`,
+  ].join("\n");
+}
+
+export const daytonaWarmContinuityTask: RunnerTaskFixture = {
+  id: "warm-three-turn",
+  label: "Warm three-turn workspace continuity",
+  groups: ["warm"],
+  workMode: "standard",
+  flow: "warm_three_turn",
+  expectedRunCount: 3,
+  attemptTimeoutMs: { local: 30 * 60_000, daytona: 30 * 60_000 },
+  turnTimeoutMs: 10 * 60_000,
+  expectedTerminalState: { issue: "done", run: "succeeded" },
+  buildTitle: (nonce) => `Runner E2E warm Daytona continuity ${nonce}`,
+  buildVisibleMarker: (nonce) => warmTurnMarker(3, nonce),
+  buildPrompt: (nonce) => warmTurnInstructions(1, nonce),
+  buildFollowupMessages: (nonce) => [
+    warmTurnInstructions(2, nonce),
+    warmTurnInstructions(3, nonce),
+  ],
+  buildMatchers(nonce, execution) {
+    const markers = ([1, 2, 3] as const).map((turn) =>
+      warmTurnMarker(turn, nonce),
+    );
+    return [
+      { kind: "message_exact", expected: markers[2] },
+      ...markers.map(
+        (expected) =>
+          ({ kind: "message_occurrences", expected, count: 1 }) as const,
+      ),
+      { kind: "message_ordered", expected: markers },
+      {
+        kind: "file_exact",
+        path: `daytona-warm-${nonce}.txt`,
+        expected: `${([1, 2, 3] as const)
+          .map((turn) => warmWorkspaceLine(turn, nonce))
+          .join("\n")}\n`,
+      },
+      { kind: "issue_status", expected: "done" },
+      { kind: "run_status", expected: "succeeded" },
+      { kind: "runtime_mode", expected: execution.profile.expectedRuntimeMode },
+      { kind: "environment", expected: "daytona" },
+    ];
+  },
+};
+
+const codexContinuityProfiles = runnerProfiles.filter((profile) =>
+  ["legacy-codex", "runner-codex"].includes(profile.id),
+);
+
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
     id: "core-compatibility",
@@ -762,6 +881,17 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       excludedExecutionIds: openRouterBreadthExcludedExecutionIds,
     },
   },
+  {
+    id: "daytona-warm-continuity",
+    label: "Daytona Warm Continuity",
+    description:
+      "Three browser-driven turns on one reusable Daytona sandbox for legacy and native Codex.",
+    groups: ["daytona", "warm"],
+    profiles: codexContinuityProfiles,
+    environments: [daytonaWarmEnvironment],
+    tasks: [daytonaWarmContinuityTask],
+    expectedMatrixSize: 2,
+  },
 ] as const;
 
 export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
@@ -774,7 +904,10 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           model: profile.model,
           qualification: profile.modelQualification,
         })),
-        environments: suite.environments.map((environment) => environment.id),
+        environments: suite.environments.map((environment) => ({
+          id: environment.id,
+          configurationKey: environment.configurationKey ?? "default",
+        })),
         tasks: suite.tasks.map((task) => ({
           id: task.id,
           flow: task.flow,
@@ -869,6 +1002,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
     ...runnerTasks,
     ...localIntegrityTasks,
     ...openRouterBreadthTasks,
+    daytonaWarmContinuityTask,
   ];
   for (const [label, values] of [
     ["suite", runnerSuites],
@@ -888,6 +1022,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
     ...runnerSuites,
     ...allProfiles,
     ...runnerEnvironments,
+    daytonaWarmEnvironment,
     ...allTasks,
   ]) {
     const unknownGroups = fixture.groups.filter(
@@ -916,7 +1051,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
     ]),
   );
 
-  for (const environment of runnerEnvironments) {
+  for (const environment of [...runnerEnvironments, daytonaWarmEnvironment]) {
     const payload = environment.buildEnvironment({
       secretRefs: sampleRefs,
       daytonaImage:
@@ -968,8 +1103,8 @@ export function validateRunnerCatalog(): MatrixExecution[] {
       );
     }
   }
-  if (matrix.length !== 66)
-    throw new Error(`Expected 66 runner executions; received ${matrix.length}`);
+  if (matrix.length !== 68)
+    throw new Error(`Expected 68 runner executions; received ${matrix.length}`);
   return matrix;
 }
 

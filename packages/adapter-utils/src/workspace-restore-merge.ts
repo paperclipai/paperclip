@@ -5,7 +5,7 @@ import path from "node:path";
 import { shouldExcludePath } from "./exclude-patterns.js";
 import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 
-type SnapshotEntry =
+export type SnapshotEntry =
   | { kind: "dir" }
   | { kind: "file"; mode: number; hash: string }
   | { kind: "symlink"; target: string };
@@ -13,6 +13,87 @@ type SnapshotEntry =
 export interface DirectorySnapshot {
   exclude: string[];
   entries: Map<string, SnapshotEntry>;
+}
+
+export interface SerializedDirectorySnapshot {
+  version: 1;
+  exclude: string[];
+  entries: Array<[string, SnapshotEntry]>;
+}
+
+function isSafeSnapshotRelativePath(value: string): boolean {
+  if (!value || path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) {
+    return false;
+  }
+  return !value.split(/[\\/]/).some((segment) => segment === "..");
+}
+
+function parseSnapshotEntry(value: unknown): SnapshotEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.kind === "dir") return { kind: "dir" };
+  if (candidate.kind === "symlink" && typeof candidate.target === "string") {
+    return { kind: "symlink", target: candidate.target };
+  }
+  if (
+    candidate.kind === "file" &&
+    typeof candidate.mode === "number" &&
+    Number.isInteger(candidate.mode) &&
+    candidate.mode >= 0 &&
+    typeof candidate.hash === "string" &&
+    /^[0-9a-f]{64}$/.test(candidate.hash)
+  ) {
+    return { kind: "file", mode: candidate.mode, hash: candidate.hash };
+  }
+  return null;
+}
+
+export function serializeDirectorySnapshot(
+  snapshot: DirectorySnapshot,
+): SerializedDirectorySnapshot {
+  return {
+    version: 1,
+    exclude: [...snapshot.exclude],
+    entries: [...snapshot.entries.entries()].sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  };
+}
+
+export function parseDirectorySnapshot(
+  value: unknown,
+): DirectorySnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.version !== 1 ||
+    !Array.isArray(candidate.exclude) ||
+    !candidate.exclude.every((entry) => typeof entry === "string") ||
+    !Array.isArray(candidate.entries)
+  ) {
+    return null;
+  }
+  const entries = new Map<string, SnapshotEntry>();
+  for (const rawEntry of candidate.entries) {
+    if (!Array.isArray(rawEntry) || rawEntry.length !== 2) return null;
+    const [relative, rawSnapshotEntry] = rawEntry;
+    if (typeof relative !== "string" || !isSafeSnapshotRelativePath(relative)) {
+      return null;
+    }
+    const entry = parseSnapshotEntry(rawSnapshotEntry);
+    if (!entry || entries.has(relative)) return null;
+    entries.set(relative, entry);
+  }
+  return {
+    exclude: [...new Set(candidate.exclude as string[])],
+    entries,
+  };
+}
+
+export function directorySnapshotSha256(snapshot: DirectorySnapshot): string {
+  return createHash("sha256")
+    .update(JSON.stringify(serializeDirectorySnapshot(snapshot)))
+    .digest("hex");
 }
 
 async function hashFile(filePath: string): Promise<string> {

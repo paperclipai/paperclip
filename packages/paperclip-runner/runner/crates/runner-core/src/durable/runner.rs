@@ -116,6 +116,113 @@ impl CommandLifecycle {
     }
 }
 
+fn next_authority_config(
+    command: &Command,
+    current: &DurableRunnerConfig,
+) -> Result<Option<DurableRunnerConfig>, DurableRunnerError> {
+    if command.command_type != "run.attach" {
+        return Ok(None);
+    }
+    let Some(boundary) = command.payload.get("paperclipNextAuthority") else {
+        return Ok(None);
+    };
+    let identity = boundary
+        .get("identity")
+        .and_then(Value::as_object)
+        .ok_or_else(|| DurableRunnerError::invalid("run.attach authority identity is required"))?;
+    let read_identity = |key: &str| {
+        identity
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                DurableRunnerError::invalid(format!(
+                    "run.attach authority identity field {key} is required"
+                ))
+            })
+    };
+    let connection = boundary
+        .get("connection")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            DurableRunnerError::invalid("run.attach authority connection is required")
+        })?;
+    let connect_url = match connection.get("mode").and_then(Value::as_str) {
+        Some("connect") => connection
+            .get("connectUrl")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| DurableRunnerError::invalid("run.attach connect URL is required"))?,
+        Some("listen") => {
+            let address = connection
+                .get("listenAddress")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    DurableRunnerError::invalid("run.attach listen address is required")
+                })?;
+            let port = connection
+                .get("listenPort")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| DurableRunnerError::invalid("run.attach listen port is required"))?;
+            let path = connection
+                .get("listenPath")
+                .and_then(Value::as_str)
+                .ok_or_else(|| DurableRunnerError::invalid("run.attach listen path is required"))?;
+            format!("listen://{address}:{port}{path}")
+        }
+        _ => {
+            return Err(DurableRunnerError::invalid(
+                "run.attach authority connection mode is invalid",
+            ));
+        }
+    };
+    let mut next = current.clone();
+    next.connect_url = connect_url;
+    next.ca_bundle_path = connection
+        .get("caBundlePath")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(Into::into);
+    next.runner_instance_id = read_identity("runnerInstanceId")?;
+    next.environment_lease_id = read_identity("environmentLeaseId")?;
+    next.run_id = read_identity("runId")?;
+    next.normalized_session_id = read_identity("normalizedSessionId")?;
+    next.turn_id = read_identity("turnId")?;
+    next.item_id = read_identity("itemId")?;
+    next.validate()?;
+    if next.runner_instance_id != current.runner_instance_id
+        || next.environment_lease_id != current.environment_lease_id
+        || next.normalized_session_id != current.normalized_session_id
+        || next.run_id == current.run_id
+    {
+        return Err(DurableRunnerError::invalid(
+            "run.attach authority changed an immutable session binding",
+        ));
+    }
+    Ok(Some(next))
+}
+
+fn apply_authority_rotation(
+    state: &mut DurableState,
+    store: &DurableStateStore,
+    config: &mut DurableRunnerConfig,
+    endpoint: &mut RunnerTransportEndpoint,
+    next: DurableRunnerConfig,
+) -> Result<(), DurableRunnerError> {
+    let reconnect_count = state.reconnect_count.saturating_add(1);
+    let mut diagnostics = std::mem::take(&mut state.diagnostics);
+    *endpoint = RunnerTransportEndpoint::new(&next.connect_url, &next.run_id)?;
+    *config = next;
+    let mut rotated = DurableState::new(config);
+    rotated.reconnect_count = reconnect_count;
+    rotated.diagnostics.append(&mut diagnostics);
+    rotated.record_diagnostic("runner advanced to a new warm run authority");
+    *state = rotated;
+    store.save(state)
+}
+
 pub trait CommandExecutor {
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
@@ -136,7 +243,7 @@ pub trait CommandExecutor {
 }
 
 pub fn run_durable_runner<E: CommandExecutor>(
-    config: DurableRunnerConfig,
+    mut config: DurableRunnerConfig,
     bootstrap_ticket: BootstrapTicket,
     mut executor: E,
 ) -> Result<(), DurableRunnerError> {
@@ -162,7 +269,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
     // Bind listener mode or resolve dial mode before processing commands. Dial
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
-    let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id)?;
+    let mut endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id)?;
     let started = Instant::now();
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut lease: Option<LeaseCredential> = None;
@@ -287,8 +394,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
         let mut sent_source_seq = state.acked_source_seq;
 
         let mut lifecycle_after_reply = CommandLifecycle::Continue;
+        let mut authority_rotation = None;
         let mut disconnected = false;
         for command in welcome.pending_commands {
+            let next_authority = next_authority_config(&command, &config)?;
             let (result, lifecycle) =
                 process_command(&mut state, &store, &config, &mut executor, &command)?;
             if let Some(durable_lifecycle) = lifecycle.durable_state() {
@@ -333,6 +442,15 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 // then release the executor without observing later commands.
                 break;
             }
+            if next_authority.is_some() {
+                authority_rotation = next_authority;
+                break;
+            }
+        }
+        if let Some(next) = authority_rotation {
+            apply_authority_rotation(&mut state, &store, &mut config, &mut endpoint, next)?;
+            disconnected_since = Some(Instant::now());
+            continue;
         }
         if !disconnected {
             if let Err(error) = send_outbox(&mut transport, &state, &mut sent_source_seq) {
@@ -425,6 +543,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                         .map_err(|error| {
                             DurableRunnerError::invalid(format!("command is malformed: {error}"))
                         })?;
+                    let next_authority = next_authority_config(&command, &config)?;
                     let (result, lifecycle) =
                         process_command(&mut state, &store, &config, &mut executor, &command)?;
                     if let Some(durable_lifecycle) = lifecycle.durable_state() {
@@ -467,6 +586,17 @@ pub fn run_durable_runner<E: CommandExecutor>(
                                 error,
                             );
                         }
+                    }
+                    if let Some(next) = next_authority {
+                        apply_authority_rotation(
+                            &mut state,
+                            &store,
+                            &mut config,
+                            &mut endpoint,
+                            next,
+                        )?;
+                        disconnected_since = Some(Instant::now());
+                        break;
                     }
                     if let Err(error) = send_outbox(&mut transport, &state, &mut sent_source_seq) {
                         state.record_diagnostic(
@@ -1016,6 +1146,59 @@ mod tests {
             precondition: None,
             payload: json!({}),
         }
+    }
+
+    #[test]
+    fn warm_run_attachment_rotates_only_the_run_authority() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-warm-authority-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut current = config(directory.clone());
+        current.runner_digest = format!("sha256:{}", "a".repeat(64));
+        let mut attach = command("run.attach");
+        attach.payload = json!({
+            "paperclipNextAuthority": {
+                "identity": {
+                    "runnerInstanceId": current.runner_instance_id,
+                    "environmentLeaseId": current.environment_lease_id,
+                    "runId": "run_2",
+                    "normalizedSessionId": current.normalized_session_id,
+                    "turnId": "turn_2",
+                    "itemId": "item_2"
+                },
+                "connection": {
+                    "mode": "connect",
+                    "connectUrl": "ws://127.0.0.1:3001/path"
+                }
+            }
+        });
+
+        let next = next_authority_config(&attach, &current)
+            .unwrap()
+            .expect("attachment should carry a new authority");
+        assert_eq!(next.run_id, "run_2");
+        assert_eq!(next.connect_url, "ws://127.0.0.1:3001/path");
+
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&current).unwrap();
+        state.outbox.push(crate::durable::state::StoredOutboxEvent {
+            source_seq: 1,
+            priority: 0,
+            event_type: "run.attached".to_owned(),
+            byte_size: 1,
+            envelope: json!({}),
+        });
+        let mut endpoint =
+            RunnerTransportEndpoint::new(&current.connect_url, &current.run_id).unwrap();
+        apply_authority_rotation(&mut state, &store, &mut current, &mut endpoint, next).unwrap();
+
+        assert_eq!(state.run_id, "run_2");
+        assert_eq!(state.next_source_seq, 1);
+        assert!(state.outbox.is_empty());
+        assert_eq!(current.run_id, "run_2");
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

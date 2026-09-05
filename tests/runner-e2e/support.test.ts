@@ -341,6 +341,23 @@ describe("runner E2E matchers", () => {
     expect(result?.detail).toContain("observed 2");
   });
 
+  it("matches finalized workspace files byte-for-byte", async () => {
+    const [matched, extraLine] = await evaluateMatchers(
+      [
+        { kind: "file_exact", path: "continuity.txt", expected: "T1\nT2\n" },
+        { kind: "file_exact", path: "duplicate.txt", expected: "T1\nT2\n" },
+      ],
+      {
+        files: {
+          "continuity.txt": "T1\nT2\n",
+          "duplicate.txt": "T1\nT2\nT2\n",
+        },
+      },
+    );
+    expect(matched?.passed).toBe(true);
+    expect(extraLine?.passed).toBe(false);
+  });
+
   it("normalizes ordered fragments and evaluates nested JSON Schema", async () => {
     const results = await evaluateMatchers(
       [

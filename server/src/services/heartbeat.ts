@@ -142,6 +142,9 @@ import {
   materializeLegacyQuestionResponseWakeProjection,
   materializeNativeInteractionResponses,
   NativeCancellationPendingRecoveryError,
+  prepareNativeWorkspaceSync,
+  readNativeWorkspaceSyncReference,
+  recordNativeFinalizationFailure,
   type NativeRestartRecoveryClaim,
   rebindNativeSessionCheckpoint,
   reconcileNativeFinalizations,
@@ -1746,10 +1749,51 @@ export function leaseReleaseStatusForRunStatus(
   return status === "failed" || status === "timed_out" ? "failed" : "released";
 }
 
+export function providerResourceDispositionForTerminalRun(
+  desired: ProviderResourceDisposition | undefined,
+  status: string | null | undefined,
+): ProviderResourceDisposition | undefined {
+  return desired === "keep_running" && status !== "succeeded"
+    ? "stop_and_retain"
+    : desired;
+}
+
 export interface NativeSandboxLifecycle {
   runnerProcess: "per_turn" | "warm";
   sandboxResource: "keep_running" | "stop_and_reuse" | "destroy_after_turn";
   failoverBackup: "verified";
+}
+
+export function resolveReusableSandboxLifecycle(input: {
+  lifecyclePolicy:
+    | { mode: "per_turn"; idleTimeoutMs: null }
+    | { mode: "warm"; idleTimeoutMs: number };
+  target: {
+    kind: "local" | "remote";
+    transport?: string;
+    reusableLeaseConfigured?: boolean;
+    effectiveCapabilities?: { reusableLeases: boolean } | null;
+  } | null;
+}): NativeSandboxLifecycle | null {
+  if (input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
+    return null;
+  }
+  const reusableLease =
+    input.target.reusableLeaseConfigured === true &&
+    input.target.effectiveCapabilities?.reusableLeases === true;
+  if (input.lifecyclePolicy.mode === "warm" && !reusableLease) {
+    throw new Error("runner_warm_lifecycle_requires_reusable_provider_lease");
+  }
+  return {
+    runnerProcess: input.lifecyclePolicy.mode,
+    sandboxResource:
+      input.lifecyclePolicy.mode === "warm"
+        ? "keep_running"
+        : reusableLease
+          ? "stop_and_reuse"
+          : "destroy_after_turn",
+    failoverBackup: "verified",
+  };
 }
 
 export function resolveNativeSandboxLifecycle(input: {
@@ -1770,22 +1814,7 @@ export function resolveNativeSandboxLifecycle(input: {
     input.target.transport !== "sandbox"
   )
     return null;
-  const reusableLease =
-    input.target.reusableLeaseConfigured === true &&
-    input.target.effectiveCapabilities?.reusableLeases === true;
-  if (input.lifecyclePolicy.mode === "warm" && !reusableLease) {
-    throw new Error("runner_warm_lifecycle_requires_reusable_provider_lease");
-  }
-  return {
-    runnerProcess: input.lifecyclePolicy.mode,
-    sandboxResource:
-      input.lifecyclePolicy.mode === "warm"
-        ? "keep_running"
-        : reusableLease
-          ? "stop_and_reuse"
-          : "destroy_after_turn",
-    failoverBackup: "verified",
-  };
+  return resolveReusableSandboxLifecycle(input);
 }
 
 export function applyPersistedExecutionWorkspaceConfig(input: {
@@ -8170,6 +8199,18 @@ class NativeSessionResumeScheduledError extends Error {
   }
 }
 
+class NativeWorkspaceFinalizeScheduledError extends Error {
+  constructor(
+    readonly original: unknown,
+    readonly terminalFailure: boolean,
+    readonly reasonCode:
+      "workspace_sync_out_failed" | "workspace_sync_out_unrecoverable",
+  ) {
+    super("Native workspace finalization recovery has been scheduled.");
+    this.name = "NativeWorkspaceFinalizeScheduledError";
+  }
+}
+
 type WorkspaceReadyCommentWriter = {
   addComment: (
     issueId: string,
@@ -12945,7 +12986,10 @@ export function heartbeatService(
     // A result committed before the old controller stopped outranks process
     // recovery. Finish its durable workspace/status suffix before deciding
     // whether any provider authority needs to be reopened.
-    await reconcileNativeFinalizations(db);
+    await reconcileNativeFinalizations(db, undefined, {
+      environmentRuntime,
+      onWorkspaceSettled: settleRecoveredNativeWorkspace,
+    });
     const intent = await readHotRestartIntent().catch((error) => {
       logger.warn(
         { err: error },
@@ -16854,6 +16898,41 @@ export function heartbeatService(
     return blocked;
   }
 
+  async function settleRecoveredNativeWorkspace(input: {
+    runId: string;
+    companyId: string;
+    agentId: string;
+    succeeded: boolean;
+  }) {
+    const settledRun = await getRun(input.runId);
+    const workspaceSyncReference = readNativeWorkspaceSyncReference(
+      parseObject(settledRun?.runnerProfileJson).nativeWorkspaceSync,
+    );
+    await releaseEnvironmentLeasesForRun({
+      runId: input.runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: settledRun?.status,
+      failureReason: settledRun?.error ?? undefined,
+      providerResourceDisposition: input.succeeded
+        ? (workspaceSyncReference?.resourceDisposition ?? "stop_and_retain")
+        : "stop_and_retain",
+    });
+    await releaseRuntimeServicesForRun(input.runId).catch(() => undefined);
+    await finalizeAgentStatus(
+      input.agentId,
+      input.succeeded ? "succeeded" : "failed",
+      input.succeeded
+        ? null
+        : (settledRun?.error ?? "native_workspace_sync_out_failed"),
+      {
+        wasFirstHeartbeat: settledRun
+          ? timerClaimWasFirstHeartbeat(settledRun)
+          : undefined,
+      },
+    ).catch(() => undefined);
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -16861,7 +16940,10 @@ export function heartbeatService(
     // Complete persisted native results before generic orphan recovery. The
     // reconciler reads the durable workspace barrier and persisted runtime
     // mode, never the current feature flag.
-    await reconcileNativeFinalizations(db).catch((error) => {
+    await reconcileNativeFinalizations(db, undefined, {
+      environmentRuntime,
+      onWorkspaceSettled: settleRecoveredNativeWorkspace,
+    }).catch((error) => {
       logger.warn(
         { err: error },
         "failed to reconcile persisted native finalizations before orphan reaping",
@@ -17876,6 +17958,10 @@ export function heartbeatService(
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
     let nativeSessionResumeScheduled = false;
+    let nativeWorkspaceFinalizeScheduled = false;
+    let nativeWorkspaceSync: Awaited<
+      ReturnType<typeof prepareNativeWorkspaceSync>
+    > = null;
     let providerResourceDispositionForRun:
       ProviderResourceDisposition | undefined;
     let nativeLifecycleTelemetryForRun:
@@ -19659,6 +19745,9 @@ export function heartbeatService(
         driver: selectedEnvironment.driver,
         leaseId: activeEnvironmentLease.lease.id,
         workspaceRealization,
+        sandboxLeaseAcquisition:
+          activeEnvironmentLease.lease.metadata?.sandboxLeaseAcquisition ??
+          null,
         ...(typeof activeEnvironmentLease.lease.metadata?.remoteCwd === "string"
           ? {
               remoteCwd: activeEnvironmentLease.lease.metadata.remoteCwd,
@@ -20363,6 +20452,9 @@ export function heartbeatService(
                     agentId: heartbeatRuns.agentId,
                     runnerInstanceId: heartbeatRuns.runnerInstanceId,
                     nativeSessionId: heartbeatRuns.nativeSessionId,
+                    processPid: heartbeatRuns.processPid,
+                    processGroupId: heartbeatRuns.processGroupId,
+                    processStartedAt: heartbeatRuns.processStartedAt,
                     runnerProfileJson: heartbeatRuns.runnerProfileJson,
                   })
                   .from(heartbeatRuns)
@@ -20718,6 +20810,21 @@ export function heartbeatService(
                     ? previousNativeRun.runnerInstanceId
                     : (lockedRun.runnerInstanceId ?? nativeRunnerInstanceId),
                 nativeSessionId: lockedRun.nativeSessionId ?? nativeSessionId,
+                processPid:
+                  lockedRun.processPid ??
+                  (previousNativeRun?.nativeSessionId === nativeSessionId
+                    ? previousNativeRun.processPid
+                    : null),
+                processGroupId:
+                  lockedRun.processGroupId ??
+                  (previousNativeRun?.nativeSessionId === nativeSessionId
+                    ? previousNativeRun.processGroupId
+                    : null),
+                processStartedAt:
+                  lockedRun.processStartedAt ??
+                  (previousNativeRun?.nativeSessionId === nativeSessionId
+                    ? previousNativeRun.processStartedAt
+                    : null),
                 nativeIssueId: lockedRun.nativeIssueId ?? issueRef.id,
                 driverKind:
                   lockedRun.driverKind ??
@@ -20745,7 +20852,30 @@ export function heartbeatService(
               })
               .onConflictDoNothing();
           });
+          nativeWorkspaceSync = await prepareNativeWorkspaceSync({
+            db,
+            runId: run.id,
+            companyId: agent.companyId,
+            workspaceId: nativeExecutionWorkspaceId,
+            workspaceLocalDir: executionWorkspace.cwd,
+            target: executionTarget,
+            lease: activeEnvironmentLease.lease,
+            restartRecovery: runOptions.nativeRestartRecovery,
+            resourceDisposition: providerResourceDispositionForRun,
+          });
         } else {
+          const legacyWarmLifecycle =
+            executionTarget?.kind === "remote" &&
+            executionTarget.transport === "sandbox" &&
+            executionTarget.runnerLifecyclePolicy?.mode === "warm"
+              ? resolveReusableSandboxLifecycle({
+                  lifecyclePolicy: executionTarget.runnerLifecyclePolicy,
+                  target: executionTarget,
+                })
+              : null;
+          if (legacyWarmLifecycle?.sandboxResource === "keep_running") {
+            providerResourceDispositionForRun = "keep_running";
+          }
           await db
             .update(heartbeatRuns)
             .set({
@@ -21315,19 +21445,26 @@ export function heartbeatService(
           // If recording the barrier itself fails, propagate as a run failure
           // rather than silently leaving dependents stranded behind a missing
           // finalize row.
+          if (nativeWorkspaceSync) {
+            await nativeWorkspaceSync.restoreWorkspace();
+          }
           await recordWorkspaceFinalize("succeeded");
           if (adapterResult.nativeFinalization) {
             adapterResult.nativeFinalization.workspaceFinalizeStatus =
               "succeeded";
             try {
-              await finalizeNativeRun({
+              const finalized = await finalizeNativeRun({
                 db,
                 runId: run.id,
                 workspaceFinalizeStatus: "succeeded",
+                preserveProviderAttempt: Boolean(nativeWorkspaceSync),
               });
               await dispatchPendingNativeStatusWakeups({
                 companyId: run.companyId,
               });
+              if (finalized.phase === "committed") {
+                await nativeWorkspaceSync?.cleanup();
+              }
             } catch (finalizeErr) {
               logger.warn(
                 { err: finalizeErr, runId: run.id },
@@ -21379,6 +21516,40 @@ export function heartbeatService(
             );
           }
           if (nativeRuntimeResolution.kind === "native") {
+            const proposedResult = await db
+              .select({ resultId: nativeRunFinalizations.resultId })
+              .from(nativeRunFinalizations)
+              .where(eq(nativeRunFinalizations.runId, run.id))
+              .limit(1)
+              .then((rows) => rows[0]?.resultId ?? null);
+            if (proposedResult && nativeWorkspaceSync) {
+              const workspaceFailureMessage =
+                adapterErr instanceof Error ? adapterErr.message : "";
+              const unrecoverable =
+                workspaceFailureMessage ===
+                  "workspace_sync_out_unrecoverable" ||
+                workspaceFailureMessage.includes("daytona_sandbox_not_found");
+              const failure = await recordNativeFinalizationFailure({
+                db,
+                runId: run.id,
+                error: new Error(
+                  unrecoverable
+                    ? "native_workspace_sync_out_unrecoverable"
+                    : "native_workspace_sync_out_failed",
+                ),
+                projectRunStatus: true,
+                failureScope: "workspace",
+                permanent: unrecoverable,
+              });
+              nativeWorkspaceFinalizeScheduled = true;
+              throw new NativeWorkspaceFinalizeScheduledError(
+                adapterErr,
+                failure.phase === "terminal_failure",
+                unrecoverable
+                  ? "workspace_sync_out_unrecoverable"
+                  : "workspace_sync_out_failed",
+              );
+            }
             try {
               await finalizeNativeRun({
                 db,
@@ -22064,6 +22235,45 @@ export function heartbeatService(
           }
           return;
         }
+        if (err instanceof NativeWorkspaceFinalizeScheduledError) {
+          const coordinator = await db
+            .select({
+              nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
+              attempt: nativeRunFinalizations.attempt,
+            })
+            .from(nativeRunFinalizations)
+            .where(eq(nativeRunFinalizations.runId, run.id))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          await appendRunEvent(run, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: err.terminalFailure ? "error" : "warn",
+            message: err.terminalFailure
+              ? "native result is durable, but the sandbox containing unexported workspace changes is unrecoverable"
+              : "native result is durable; workspace copy-back will retry without another provider turn",
+            payload: {
+              attempt: coordinator?.attempt ?? null,
+              nextAttemptAt: coordinator?.nextAttemptAt?.toISOString() ?? null,
+              fallbackSuppressed: true,
+              retryReasonCode: err.reasonCode,
+            },
+          }).catch(() => undefined);
+          if (err.terminalFailure) {
+            // The durable coordinator already failed the run, blocked the
+            // issue, and cleared its execution lock. Let ordinary teardown
+            // release the now-useless lease and return the agent to service.
+            nativeWorkspaceFinalizeScheduled = false;
+            providerResourceDispositionForRun = "stop_and_retain";
+            await finalizeAgentStatus(
+              run.agentId,
+              "failed",
+              "native_workspace_sync_out_unrecoverable",
+              { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) },
+            ).catch(() => undefined);
+          }
+          return;
+        }
         const message = redactCurrentUserText(
           err instanceof Error ? err.message : "Unknown adapter failure",
           await getCurrentUserRedactionOptions(),
@@ -22456,7 +22666,11 @@ export function heartbeatService(
       // terminal". When the teardown reaches this point with the run still
       // running or queued, force a terminal status before the lease is
       // released, so the UI never shows a finished task as "Live".
-      if (latestRun && !nativeSessionResumeScheduled) {
+      if (
+        latestRun &&
+        !nativeSessionResumeScheduled &&
+        !nativeWorkspaceFinalizeScheduled
+      ) {
         latestRun = await terminalizeRunOnLeaseRelease(latestRun).catch(
           (terminalizeErr) => {
             logger.error(
@@ -22467,7 +22681,15 @@ export function heartbeatService(
           },
         );
       }
-      if (!nativeSessionResumeScheduled) {
+      // Warm retention is earned only by a fully successful turn. A failed,
+      // cancelled, or timed-out run stops the reusable sandbox so the next
+      // acquisition must revalidate and explicitly resume it.
+      providerResourceDispositionForRun =
+        providerResourceDispositionForTerminalRun(
+          providerResourceDispositionForRun,
+          latestRun?.status,
+        );
+      if (!nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled) {
         await releaseEnvironmentLeasesForRun({
           runId: run.id,
           companyId: run.companyId,
@@ -22539,7 +22761,11 @@ export function heartbeatService(
         }
       }
       activeRunExecutions.delete(run.id);
-      if (!nativeSessionResumeScheduled && !shutdownInProgress) {
+      if (
+        !nativeSessionResumeScheduled &&
+        !nativeWorkspaceFinalizeScheduled &&
+        !shutdownInProgress
+      ) {
         await startNextQueuedRunForAgent(run.agentId);
       }
     }

@@ -1675,19 +1675,40 @@ impl CodexCommandExecutor {
         next_state.active_provider_result_fingerprint = None;
         next_state.active_provider_result_disposition = None;
         next_state.last_agent_message = None;
-        if let Some(provider) = self.provider.as_mut() {
+        let provider = self.provider.as_mut().ok_or_else(|| {
+            DurableRunnerError::invalid("run.attach requires the restored Codex provider process")
+        })?;
+        let retained_provider = provider
+            .attach_run_in_place(
+                next_state.tool_bridge.authorized_tools().cloned(),
+                next_state.completion_contract.as_ref().map(|contract| {
+                    (
+                        contract.revision.as_str(),
+                        contract.criterion_ids.as_slice(),
+                    )
+                }),
+            )
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to retain Codex for warm run attachment: {error}"
+                ))
+            })?;
+        if !retained_provider {
             provider.shutdown().map_err(|error| {
                 DurableRunnerError::invalid(format!(
                     "failed to checkpoint Codex before attaching a new run: {error}"
                 ))
             })?;
+            self.provider = None;
         }
-        self.provider = None;
         next_state.pending_events.clear();
-        // Persist the checkpoint as not-open before open_session resumes it for
-        // the new authority. Otherwise recovery emits a second session.resumed
-        // notice into the provider queue in addition to the command event.
-        next_state.lifecycle = "prepared".to_owned();
+        next_state.lifecycle = if retained_provider {
+            "session_open".to_owned()
+        } else {
+            // The next provider command restores the same checkpointed session
+            // with the rotated tool/completion authority.
+            "prepared".to_owned()
+        };
         self.persist_state(&next_state)?;
         self.state = Some(next_state);
         Ok(())

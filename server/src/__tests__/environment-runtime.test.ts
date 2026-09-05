@@ -561,6 +561,18 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         mode: "shared_workspace",
       },
     });
+    const workspaceSyncStamp = {
+      schema: "paperclip.native-workspace-stamp/v1",
+      workspaceId: seeded.executionWorkspaceId,
+      providerLeaseId: "sandbox-exact-resume",
+      remoteCwd: "/workspace",
+      hostSha256: "a".repeat(64),
+      finalizedRunId: seeded.runId,
+    };
+    await environmentService(db).updateLeaseMetadata(first.lease.id, {
+      ...(first.lease.metadata ?? {}),
+      nativeWorkspaceSync: workspaceSyncStamp,
+    });
     await runtimeWithPlugin.releaseRunLeases(
       seeded.runId,
       "released",
@@ -592,9 +604,17 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     expect(first.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "created" });
     expect(acquired.lease.providerLeaseId).toBe("sandbox-exact-resume");
-    expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "resumed" });
-    expect(workerManager.call.mock.calls.filter((call) => call[1] === "environmentAcquireLease"))
-      .toHaveLength(1);
+    expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({
+      outcome: "resumed",
+    });
+    expect(acquired.lease.metadata?.nativeWorkspaceSync).toEqual(
+      workspaceSyncStamp,
+    );
+    expect(
+      workerManager.call.mock.calls.filter(
+        (call) => call[1] === "environmentAcquireLease",
+      ),
+    ).toHaveLength(1);
   });
 
   it("destroys a disposable paperclip_runner sandbox after the turn", async () => {

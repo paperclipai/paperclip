@@ -58,9 +58,13 @@ registry therefore discovers that row through the public environments API.
 This still provides full isolation because every cell starts a new Paperclip
 instance and database.
 
-Daytona creates a sandbox environment through the public API. Keep
-`reuseLease:false`, `runnerLifecycleMode:"per_turn"`, short provider cleanup
-backstops, a Daytona secret reference, and an immutable image digest. Teardown
+Daytona creates sandbox environments through the public API. The core fixture
+keeps `reuseLease:false` and `runnerLifecycleMode:"per_turn"`. The dedicated
+warm-continuity fixture uses `reuseLease:true` and
+`runnerLifecycleMode:"warm"`; its distinct `configurationKey` is part of the
+suite fingerprint even though both fixtures report `environmentId:"daytona"`.
+Keep short provider cleanup backstops, a Daytona secret reference, and an
+immutable image digest. Teardown
 must delete the environment with reusable-lease destruction and must fail the
 cell if cleanup cannot be confirmed. Keep CPU, memory, and disk explicit: lease
 metadata and the per-test public-list-price runtime estimate depend on that
@@ -93,7 +97,10 @@ marker factories. `question_resume_completion` must define the deterministic
 browser answer and prove exactly two successful runs with no pending
 interaction. `plan_approval_completion` must target the exact two-step
 canonical Plan revision, capture its pending UI, approve in the browser, and
-prove exactly two successful runs.
+prove exactly two successful runs. `warm_three_turn` provides exactly two
+browser follow-up messages, preserves one project/execution-workspace scope,
+verifies host file contents after every turn, and finishes within three
+ten-minute turn deadlines.
 
 Every selected case runs in its own isolated Paperclip process, and independent
 cases may run concurrently. Follow-up turns inside one case retain their shared

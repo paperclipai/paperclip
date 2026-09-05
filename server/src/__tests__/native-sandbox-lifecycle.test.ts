@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { resolveNativeSandboxLifecycle } from "../services/heartbeat.js";
+import {
+  providerResourceDispositionForTerminalRun,
+  resolveNativeSandboxLifecycle,
+  resolveReusableSandboxLifecycle,
+} from "../services/heartbeat.js";
 
 const reusableSandbox = {
   kind: "remote" as const,
@@ -15,6 +19,19 @@ describe("paperclip_runner sandbox lifecycle", () => {
       lifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 },
       target: reusableSandbox,
     })).toEqual({
+      runnerProcess: "warm",
+      sandboxResource: "keep_running",
+      failoverBackup: "verified",
+    });
+  });
+
+  it("keeps the same warm reusable sandbox for a legacy adapter", () => {
+    expect(
+      resolveReusableSandboxLifecycle({
+        lifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 },
+        target: reusableSandbox,
+      }),
+    ).toEqual({
       runnerProcess: "warm",
       sandboxResource: "keep_running",
       failoverBackup: "verified",
@@ -70,5 +87,23 @@ describe("paperclip_runner sandbox lifecycle", () => {
       lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
       target: { kind: "local" },
     })).toBeNull();
+  });
+
+  it("keeps a warm sandbox only after a successful turn", () => {
+    expect(
+      providerResourceDispositionForTerminalRun("keep_running", "succeeded"),
+    ).toBe("keep_running");
+    expect(
+      providerResourceDispositionForTerminalRun("keep_running", "failed"),
+    ).toBe("stop_and_retain");
+    expect(
+      providerResourceDispositionForTerminalRun("keep_running", "cancelled"),
+    ).toBe("stop_and_retain");
+    expect(
+      providerResourceDispositionForTerminalRun("keep_running", "timed_out"),
+    ).toBe("stop_and_retain");
+    expect(providerResourceDispositionForTerminalRun("destroy", "failed")).toBe(
+      "destroy",
+    );
   });
 });

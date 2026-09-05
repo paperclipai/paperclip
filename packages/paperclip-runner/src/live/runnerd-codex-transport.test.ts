@@ -1965,7 +1965,7 @@ it("steers the active provider turn through the durable PRP command path", async
   }
 }, 30_000);
 
-it("does not expose cross-run attachment before PRP authority can rotate atomically", async () => {
+it("rotates PRP authority in place for a warm cross-run attachment", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-attach-"));
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
@@ -1978,22 +1978,36 @@ it("does not expose cross-run attachment before PRP authority can rotate atomica
     success: true,
     contentItems: [],
   }));
+  const within = async <T>(label: string, promise: Promise<T>) =>
+    await Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`${label} timeout`)), 5_000),
+      ),
+    ]);
   try {
-    await bundle.transport.request("initialize", {});
-    await bundle.transport.request("thread/start", {
-      cwd: tmpdir(),
-      dynamicTools: [
-        {
-          name: "get_task_context",
-          description: "Read the active task.",
-          inputSchema: {
-            type: "object",
-            properties: {},
-            additionalProperties: false,
+    await within("initialize", bundle.transport.request("initialize", {}));
+    await within(
+      "thread start",
+      bundle.transport.request("thread/start", {
+        cwd: tmpdir(),
+        dynamicTools: [
+          {
+            name: "get_task_context",
+            description: "Read the active task.",
+            inputSchema: {
+              type: "object",
+              properties: {},
+              additionalProperties: false,
+            },
           },
+        ],
+        completionContract: {
+          revision: "sha256:warm-three-turn-contract",
+          criterionIds: ["objective"],
         },
-      ],
-    });
+      }),
+    );
     const runnerPid = bundle.evidence().runnerPid;
     const providerPid = bundle.evidence().codexPid;
     const notifications = bundle.transport
@@ -2015,12 +2029,45 @@ it("does not expose cross-run attachment before PRP authority can rotate atomica
       }
       throw new Error(`${label} completion timeout`);
     };
-    await bundle.transport.request("turn/start", {
-      input: [{ type: "text", text: "first run" }],
-    });
+    await within(
+      "first turn start",
+      bundle.transport.request("turn/start", {
+        input: [{ type: "text", text: "first run" }],
+      }),
+    );
     await waitForCompletion("first run");
 
-    expect(bundle.transport.attachRun).toBeUndefined();
+    await within(
+      "warm attach",
+      bundle.transport.attachRun!({
+        runId: "run-warm-second",
+        turnId: "turn-warm-second",
+        itemId: "item-warm-second",
+      }),
+    );
+    await within(
+      "second turn start",
+      bundle.transport.request("turn/start", {
+        input: [{ type: "text", text: "second run" }],
+      }),
+    );
+    await waitForCompletion("second run");
+
+    await within(
+      "second warm attach",
+      bundle.transport.attachRun!({
+        runId: "run-warm-third",
+        turnId: "turn-warm-third",
+        itemId: "item-warm-third",
+      }),
+    );
+    await within(
+      "third turn start",
+      bundle.transport.request("turn/start", {
+        input: [{ type: "text", text: "third run" }],
+      }),
+    );
+    await waitForCompletion("third run");
 
     expect(bundle.evidence()).toMatchObject({
       runnerPid,

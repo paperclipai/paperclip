@@ -44,6 +44,19 @@ describe("runner E2E report aggregation", () => {
         workflowRunUrl: "https://example.test/actions/runs/forged",
       },
       runIds: ["run-2"],
+      turnTimings: [
+        {
+          turn: 1,
+          submittedAt: "2026-08-26T00:00:00.000Z",
+          runStartedAt: "2026-08-26T00:00:00.100Z",
+          runFinishedAt: "2026-08-26T00:00:01.000Z",
+          schedulerLatencyMs: 100,
+          runDurationMs: 900,
+          responseLatencyMs: 1_000,
+          runId: "run-2",
+          leaseAcquisitionOutcome: "created",
+        },
+      ],
       usage: {
         inputTokens: 1_250,
         outputTokens: 75,
@@ -201,6 +214,9 @@ describe("runner E2E report aggregation", () => {
     );
     expect(dashboard).toContain("message_contains");
     expect(dashboard).toContain("Matchers and test context");
+    expect(dashboard).toContain("Scheduler");
+    expect(dashboard).toContain("Run duration");
+    expect(dashboard).toContain("100ms");
     expect(dashboard).toContain("Campaign billing summary");
     expect(dashboard).toContain("LLM reported subtotal");
     expect(dashboard).toContain("Agent execution time");

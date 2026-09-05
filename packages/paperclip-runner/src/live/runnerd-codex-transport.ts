@@ -400,7 +400,7 @@ async function rotateExternalAuthorityEpoch(
 }
 
 function rotatedRunAttachPayload(
-  state: Record<string, unknown>,
+  state: { commands?: unknown },
   desired: DurableRecoveryIdentity,
   authorizedTools: Record<string, unknown> | null,
   completionContract:
@@ -418,7 +418,22 @@ function rotatedRunAttachPayload(
     );
   if (!seed)
     throw new Error("native_runner_authority_rotation_seed_unavailable");
-  const payload = structuredClone(record(seed.payload));
+  return retargetRunAttachPayload(
+    record(seed.payload),
+    desired,
+    authorizedTools,
+    completionContract,
+  );
+}
+
+function retargetRunAttachPayload(
+  seedPayload: Record<string, unknown>,
+  desired: DurableRecoveryIdentity,
+  authorizedTools: Record<string, unknown> | null,
+  completionContract:
+    { revision: string; criterionIds: readonly string[] } | undefined,
+): Record<string, unknown> {
+  const payload = structuredClone(seedPayload);
   const provider = record(payload.provider);
   if (provider.kind === "acpx" || provider.provider === "acpx") {
     provider.runId = desired.runId;
@@ -958,7 +973,10 @@ export interface CapabilityRunnerdCodexTransportOptions {
     itemId: string;
   };
   /** Registers the run-bound PRP authority on Paperclip's shared HTTP server. */
-  controlPlaneRegistration?: (authority: DurablePrpControlPlane) => Promise<{
+  controlPlaneRegistration?: (
+    authority: DurablePrpControlPlane,
+    identity?: DurableRecoveryIdentity,
+  ) => Promise<{
     connectUrl?: string;
     connection?: RunnerProcessConnection;
     activate?: () => Promise<void> | void;
@@ -1942,6 +1960,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #expectedProviderTurnId: string | null = null;
   #durableTurnId = "";
   #authorizedTools: Record<string, unknown> | null = null;
+  #runAttachTemplate: Record<string, unknown> | null = null;
   #closed = false;
   #closePromise: Promise<void> | null = null;
   #failure: Error | null = null;
@@ -2214,6 +2233,79 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   setServerRequestHandler(handler: CodexServerRequestHandler): void {
     this.#handler = handler;
+  }
+
+  async attachRun(input: {
+    runId: string;
+    turnId: string;
+    itemId: string;
+  }): Promise<void> {
+    const core = this.#core;
+    if (!core || !this.#startupComplete) {
+      throw new Error("native_runner_prp_run_rotation_unavailable");
+    }
+    const prior = core.store.state.identity;
+    const desired: DurableRecoveryIdentity = {
+      ...prior,
+      runId: input.runId,
+      turnId: input.turnId,
+      itemId: input.itemId,
+    };
+    const registration = this.options.controlPlaneRegistration
+      ? await this.options.controlPlaneRegistration(core, desired)
+      : null;
+    const connection: RunnerProcessConnection =
+      registration?.connection ??
+      (registration?.connectUrl
+        ? { mode: "connect", connectUrl: registration.connectUrl }
+        : { mode: "connect", connectUrl: core.connectUrl });
+    const commandId = `command_attach_${createHash("sha256")
+      .update(`${prior.runId}:${desired.runId}:${desired.turnId}`)
+      .digest("hex")
+      .slice(0, 32)}`;
+    const runAttachTemplate = this.#runAttachTemplate
+      ? retargetRunAttachPayload(
+          this.#runAttachTemplate,
+          desired,
+          this.#authorizedTools,
+          this.options.resumeCompletionContract,
+        )
+      : rotatedRunAttachPayload(
+          core.store.state,
+          desired,
+          this.#authorizedTools,
+          this.options.resumeCompletionContract,
+        );
+    this.#runAttachTemplate = structuredClone(runAttachTemplate);
+    const payload = {
+      ...runAttachTemplate,
+      paperclipNextAuthority: { identity: desired, connection },
+    };
+    core.queueCommand("run.attach", payload, commandId, true);
+    await this.#waitCommand("run.attach", commandId);
+    const attached = core.store.state.commands.find(
+      (command) => command.commandId === commandId,
+    );
+    if (attached?.status !== "completed") {
+      await Promise.resolve(registration?.release()).catch(() => undefined);
+      throw new Error("native_runner_prp_run_rotation_failed");
+    }
+
+    const previousRelease = this.#controlPlaneRelease;
+    core.rotateRunIdentity(desired);
+    this.#eventIndex = 0;
+    this.#durableTurnId = desired.turnId;
+    this.#controlPlaneRelease = registration?.release ?? null;
+    await registration?.activate?.();
+    if (registration?.failure) {
+      void registration.failure.catch((error: unknown) => {
+        this.#failTransport(
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      });
+    }
+    await previousRelease?.();
+    await this.#awaitRegistrationReady(registration?.ready);
   }
 
   async resolveRuntimeRequest(input: {
@@ -3298,15 +3390,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
     this.#core = core;
     if (rotatedAuthority) {
-      core.queueCommand(
-        "run.attach",
-        rotatedRunAttachPayload(
-          controlPlaneState,
-          desiredIdentity,
-          this.#authorizedTools,
-          this.options.resumeCompletionContract,
-        ),
+      const runAttachTemplate = rotatedRunAttachPayload(
+        controlPlaneState,
+        desiredIdentity,
+        this.#authorizedTools,
+        this.options.resumeCompletionContract,
       );
+      this.#runAttachTemplate = structuredClone(runAttachTemplate);
+      core.queueCommand("run.attach", runAttachTemplate);
     }
     const committedEvents = core.store.state.committedEvents;
     const runAttachment = recoveredRunAttachment(core.store.state);

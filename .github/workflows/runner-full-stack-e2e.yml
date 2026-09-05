@@ -14,7 +14,7 @@ on:
         type: boolean
         default: true
       group:
-        description: "Comma-separated groups (AND semantics: legacy,native,local,daytona,core,breadth)"
+        description: "Comma-separated groups (AND semantics: legacy,native,local,daytona,warm,core,breadth)"
         type: string
         required: false
       suite:

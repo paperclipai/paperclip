@@ -54,7 +54,7 @@ pub(crate) const MAX_SETTLED_PROVIDER_TURN_IDS: usize = 4_096;
 type QuestionOptionLabels = BTreeMap<String, BTreeMap<String, String>>;
 type QuestionSetMapping = (String, Value, QuestionOptionLabels);
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ProviderCompletionContract {
     revision: String,
     criterion_ids: Vec<String>,
@@ -805,6 +805,46 @@ impl CodexProvider {
         // against its persisted receipt before returning a stored result.
         // Direct provider consumers retain the stricter one-shot behavior.
         self.durable_tool_call_replays = true;
+    }
+
+    pub(crate) fn attach_run_in_place(
+        &mut self,
+        authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
+        completion_contract: Option<(&str, &[String])>,
+    ) -> Result<bool, LocalRunnerError> {
+        let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
+        let completion_contract =
+            completion_contract.map(|(revision, criterion_ids)| ProviderCompletionContract {
+                revision: revision.to_owned(),
+                criterion_ids: criterion_ids.to_vec(),
+            });
+        if authorized_tools != self.authorized_tools
+            || completion_contract != self.completion_contract
+        {
+            return Ok(false);
+        }
+        if self.process.try_wait()?.is_some()
+            || self.quarantined
+            || self.active_provider_turn_id.is_some()
+            || self.ambiguous_turn_start_pending
+            || !self.pending_messages.is_empty()
+            || !self.deferred_ambiguous_messages.is_empty()
+            || !self.pending_tool_requests.is_empty()
+            || !self.pending_runtime_requests.is_empty()
+        {
+            return Err(LocalRunnerError::invalid(
+                "Codex warm run attachment requires an idle live provider with no pending work",
+            ));
+        }
+        // The provider process and its thread remain authoritative. Exact
+        // settled-turn identities stay in memory so delayed output from an
+        // earlier run cannot be accepted as the next turn. A changed semantic
+        // tool or completion contract returns false so the caller can preserve
+        // the existing cold-resume behavior for that incompatible boundary.
+        self.completed_turn_authority = None;
+        self.completion_reconciliation_pending = false;
+        self.expected_shutdown = false;
+        Ok(true)
     }
 
     pub(crate) fn restore_completed_turn_authority(
