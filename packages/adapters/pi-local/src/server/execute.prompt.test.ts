@@ -66,7 +66,7 @@ type SpawnCall = [
   string,
   string,
   string[],
-  { env: Record<string, string>; stdin?: string },
+  { env: Record<string, string>; stdin?: string; silenceTimeoutSec?: number },
 ];
 
 describe("pi local prompt delivery", () => {
@@ -151,6 +151,7 @@ describe("pi local prompt delivery", () => {
     expect(capturedArgs.join("\0")).not.toContain(hugeInstructions);
     expect(args).not.toContain(stdin);
     expect(stdin.length).toBeGreaterThan(0);
+    expect(call?.[3].silenceTimeoutSec).toBe(300);
 
     const promptFlag = args.indexOf("--append-system-prompt");
     const promptArg = promptFlag >= 0 ? args[promptFlag + 1] : "";

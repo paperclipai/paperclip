@@ -9,6 +9,7 @@ export function buildPiLocalConfig(v: CreateConfigValues): Record<string, unknow
   
   // Pi sessions can run until the CLI exits naturally; keep timeout disabled (0)
   ac.timeoutSec = 0;
+  ac.silenceTimeoutSec = 300;
   ac.graceSec = 20;
   
   const env = buildAdapterEnvConfig(v.envBindings, v.envVars);

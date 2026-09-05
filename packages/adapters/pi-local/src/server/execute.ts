@@ -52,6 +52,8 @@ import { preparePiRuntimeConfig } from "./runtime-config.js";
 import { appendPiWindowsShellGuidance, resolvePiToolAllowlist } from "./tools.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
+export const DEFAULT_PI_OUTPUT_SILENCE_TIMEOUT_SEC = 300;
+
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 const PAPERCLIP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
@@ -360,6 +362,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       asNumber(config.timeoutSec, 0),
     );
     const graceSec = asNumber(config.graceSec, 20);
+    const silenceTimeoutSec = asNumber(
+      config.silenceTimeoutSec,
+      DEFAULT_PI_OUTPUT_SILENCE_TIMEOUT_SEC,
+    );
     await ensureAdapterExecutionTargetRuntimeCommandInstalled({
       runId,
       target: executionTarget,
@@ -735,6 +741,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdin: userPrompt,
         timeoutSec,
         graceSec,
+        silenceTimeoutSec,
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
         onLog: bufferedOnLog,
@@ -755,18 +762,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const toResult = (
       attempt: {
-        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
+        proc: {
+          exitCode: number | null;
+          signal: string | null;
+          timedOut: boolean;
+          errorCode?: "timeout" | "stream_silence_timeout" | null;
+          stdout: string;
+          stderr: string;
+        };
         rawStderr: string;
         parsed: ReturnType<typeof parsePiJsonl>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
       if (attempt.proc.timedOut) {
+        const outputSilenceTimedOut = attempt.proc.errorCode === "stream_silence_timeout";
         return {
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
-          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorCode: attempt.proc.errorCode ?? "timeout",
+          errorMessage: outputSilenceTimedOut
+            ? `Pi produced no output for ${silenceTimeoutSec}s and was terminated`
+            : `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
       }

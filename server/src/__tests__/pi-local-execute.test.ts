@@ -46,7 +46,69 @@ process.exit(0);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeSilentPiCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+if (process.argv.includes("--list-models")) {
+  console.log("provider  model");
+  console.log("google    gemini-3-flash-preview");
+  process.exit(0);
+}
+setInterval(() => {}, 1000);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 describe("pi_local execute", () => {
+  it.skipIf(process.platform === "win32")("terminates a silent Pi child and returns a typed failure", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-silent-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "pi");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeSilentPiCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-pi-silent",
+        agent: {
+          id: "agent-silent",
+          companyId: "company-1",
+          name: "Pi Agent",
+          adapterType: "pi_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "google/gemini-3-flash-preview",
+          promptTemplate: "Keep working.",
+          silenceTimeoutSec: 0.2,
+          graceSec: 1,
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.timedOut).toBe(true);
+      expect(result.errorCode).toBe("stream_silence_timeout");
+      expect(result.errorMessage).toContain("no output for 0.2s");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails the run when Pi exhausts automatic retries despite exiting 0", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-execute-"));
     const workspace = path.join(root, "workspace");

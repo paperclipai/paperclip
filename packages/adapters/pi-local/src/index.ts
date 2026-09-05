@@ -35,6 +35,7 @@ Core fields:
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
+- silenceTimeoutSec (number, optional): terminate Pi after this many seconds without stdout/stderr output (defaults to 300; set to 0 to disable)
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
