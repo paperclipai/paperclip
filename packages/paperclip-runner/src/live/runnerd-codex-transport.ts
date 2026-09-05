@@ -3252,9 +3252,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         committedEvents[adoptedProviderIdentityIndex]!,
       );
     } else if (
-      this.options.adoptExistingRunner &&
       exactAuthority &&
-      adoptedProviderIdentityIndex < 0 &&
       this.options.resumeProviderSession?.driverSessionId.trim() &&
       this.options.resumeProviderSession.providerSessionId?.trim()
     ) {
@@ -3274,7 +3272,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             : structuredClone(this.#providerIdentity),
       };
       this.#diagnostic(
-        "restored adopted provider identity from the exact durable checkpoint after PRP event compaction; awaiting live confirmation",
+        this.options.adoptExistingRunner && adoptedProviderIdentityIndex < 0
+          ? "restored adopted provider identity from the exact durable checkpoint after PRP event compaction; awaiting live confirmation"
+          : "restored provider identity from the exact durable checkpoint; awaiting live confirmation",
       );
     }
     const registration = this.options.controlPlaneRegistration
@@ -3356,13 +3356,29 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (recoveryProbeCommandId !== null) {
       await this.#waitCommand("runner.drain", recoveryProbeCommandId);
+      if (this.#checkpointProviderIdentityExpectation !== null) {
+        // A replacement runner can restore the exact provider while its fresh
+        // session.resumed event is compacted or delayed behind the completed
+        // recovery barrier. Confirm the live session directly instead of
+        // waiting only on the bounded event replay. The authenticated command
+        // result is still checked against the exact database checkpoint, so a
+        // missing or changed provider identity continues to fail closed.
+        const snapshot = await this.#commandResult("session.snapshot", {});
+        this.#confirmCheckpointProviderIdentity(
+          snapshot,
+          "authenticated recovery session.snapshot",
+        );
+      }
     }
-    // A relaunched executor must prove that it restored the provider by
-    // emitting a fresh resume identity. An adopted live executor keeps the
-    // already-verified provider session, so its authenticated drain plus the
-    // committed identity above are the corresponding continuity proof.
+    // A relaunched executor proves its restored provider with either its fresh
+    // resume identity or the authenticated snapshot above. An adopted live
+    // executor keeps the already-verified provider session, so its
+    // authenticated drain plus the committed identity are the corresponding
+    // continuity proof.
     await this.#waitForProviderIdentity(
-      recoveryProbeCommandId !== null && adoptedRunner === undefined
+      recoveryProbeCommandId !== null &&
+        adoptedRunner === undefined &&
+        !this.#checkpointProviderIdentityConfirmed
         ? "session.resumed"
         : undefined,
     );

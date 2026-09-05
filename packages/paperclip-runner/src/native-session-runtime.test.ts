@@ -1388,9 +1388,9 @@ describe("executeNativeSession recovery", () => {
       // resources. A replacement bootstrap cannot start concurrently.
       await vi.advanceTimersByTimeAsync(101);
       const blockedAdmission = execute();
-      const blockedAdmissionRejection = expect(blockedAdmission).rejects.toThrow(
-        "replacement bootstrap launched",
-      );
+      const blockedAdmissionRejection = expect(
+        blockedAdmission,
+      ).rejects.toThrow("replacement bootstrap launched");
       await vi.advanceTimersByTimeAsync(1_000);
       expect(openSession).toHaveBeenCalledOnce();
 
@@ -4763,9 +4763,10 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
-  it("retries disposition recovery when the driver releases an absent bound provider turn", async () => {
+  it("only replays the original ACPX envelope for a proven effect-free initial turn", async () => {
     const checkpoint: PersistedNativeSession = {
       backendKind: "mock",
+      driverKind: "acpx_runtime",
       sessionId: "driver-recovery",
       identity,
       providerSessionId: "provider-recovery",
@@ -4880,6 +4881,51 @@ describe("executeNativeSession recovery", () => {
       async completeRun() {},
     };
 
+    const submittedTurn = runnerEvent(1, "turn.submitted");
+    delete submittedTurn.turnId;
+    const effectFreeTurn = [
+      submittedTurn,
+      {
+        ...runnerEvent(2, "turn.started", { status: "inProgress" }),
+        turnId: "turn-work",
+      },
+      { ...runnerEvent(3, "turn.accepted"), turnId: "turn-work" },
+      {
+        ...runnerEvent(4, "item.completed", {
+          kind: "usage",
+          usage: {
+            total: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              activeSeconds: 0,
+              providerCostUsd: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+            },
+            runDelta: {
+              requests: 1,
+              inputTokens: 0,
+              outputTokens: 0,
+              activeSeconds: 0,
+              providerCostUsd: 0,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+            },
+          },
+        }),
+        turnId: "turn-work",
+      },
+      {
+        ...runnerEvent(5, "turn.completed", {
+          status: "completed",
+          error: null,
+        }),
+        turnId: "turn-work",
+      },
+    ];
+    bySource.set("runner-recovery", effectFreeTurn);
+
     await expect(
       executeNativeSession({
         input,
@@ -4899,17 +4945,62 @@ describe("executeNativeSession recovery", () => {
       afterSourceSeq: 0,
       limit: 1_000,
     });
-    expect(replayedPages.every((events) => events.length === 0)).toBe(true);
+    expect(
+      replayedPages.some(
+        (events) =>
+          events.length === effectFreeTurn.length &&
+          events.every(
+            (event, index) =>
+              event.sourceSeq === effectFreeTurn[index]!.sourceSeq,
+          ),
+      ),
+    ).toBe(true);
     const recoveryEnvelope = JSON.parse(
       startTurn.mock.calls[0]![0].message.text,
     ) as { task: { prompt: string } };
-    expect(recoveryEnvelope.task.prompt).toContain(
+    expect(recoveryEnvelope.task.prompt).toBe(input.task.prompt);
+
+    startTurn.mockClear();
+    bySource.set("runner-recovery", [
+      ...effectFreeTurn.slice(0, 3),
+      {
+        ...runnerEvent(4, "item.completed", {
+          kind: "agentMessage",
+          text: "Work may already have been performed.",
+        }),
+        turnId: "turn-work",
+      },
+      {
+        ...runnerEvent(5, "turn.completed", {
+          status: "completed",
+          error: null,
+        }),
+        turnId: "turn-work",
+      },
+    ]);
+
+    await expect(
+      executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+      }),
+    ).resolves.toMatchObject({
+      turnId: "turn-continuation",
+      providerSessionId: "provider-recovery",
+    });
+    const dispositionEnvelope = JSON.parse(
+      startTurn.mock.calls[0]![0].message.text,
+    ) as { task: { prompt: string } };
+    expect(dispositionEnvelope.task.prompt).toContain(
       "semantic-result recovery for a prior completed provider turn",
     );
-    expect(recoveryEnvelope.task.prompt).toContain(
+    expect(dispositionEnvelope.task.prompt).toContain(
       "Do not repeat implementation, tests, research, or the final answer",
     );
-    expect(recoveryEnvelope.task.prompt).not.toContain(input.task.prompt);
+    expect(dispositionEnvelope.task.prompt).not.toContain(input.task.prompt);
 
     checkpoint.dispositionOnlyRecoveryTurnId = undefined;
     recoveredSnapshot.dispositionOnlyRecoveryTurnId = undefined;
@@ -5459,10 +5550,12 @@ describe("executeNativeSession recovery", () => {
       pendingRuntimeRequests: [],
       lineage: [],
     };
-    const events = [{
-      ...controlEvent(1, "run.result.accepted", { result }),
-      turnId: "turn-with-result",
-    }];
+    const events = [
+      {
+        ...controlEvent(1, "run.result.accepted", { result }),
+        turnId: "turn-with-result",
+      },
+    ];
     const checkpoints: PersistedNativeSession[] = [];
     const completeRun = vi.fn(async () => undefined);
     const startTurn = vi.fn(async () => ({ turnId: "unexpected-turn" }));

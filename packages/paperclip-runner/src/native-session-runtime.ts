@@ -769,9 +769,10 @@ async function consumeTurn(
     };
     while (true) {
       pendingNext ??= eventIterator.next();
-      const next = semanticResultDeadline === null
-        ? await pendingNext
-        : await Promise.race([pendingNext, semanticResultDeadline]);
+      const next =
+        semanticResultDeadline === null
+          ? await pendingNext
+          : await Promise.race([pendingNext, semanticResultDeadline]);
       if (next === semanticResultGraceExpired) {
         void pendingNext.catch(() => undefined);
         if (semanticResultEvent === null || governedResult === null) {
@@ -892,7 +893,10 @@ async function consumeTurn(
           // Invalid structured inputs remain rejected by the driver and never become durable questions.
         }
       }
-      if (governedResult === null && event.eventType === "run.result.proposed") {
+      if (
+        governedResult === null &&
+        event.eventType === "run.result.proposed"
+      ) {
         const validation = validatePrpStructuredRunResult(event.payload);
         if (!validation.ok) {
           throw new Error("native_semantic_result_invalid");
@@ -1182,6 +1186,151 @@ async function replayCheckpointedTurnTerminal(input: {
     }
     afterSourceSeq = pageHighWater;
   }
+}
+
+const EFFECT_FREE_ACPX_USAGE_COUNTERS = [
+  "inputTokens",
+  "outputTokens",
+  "activeSeconds",
+  "providerCostUsd",
+  "cacheReadTokens",
+  "cacheWriteTokens",
+] as const;
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function isZeroWorkAcpxUsage(payload: Record<string, unknown>): boolean {
+  if (payload.kind !== "usage") return false;
+  const usage = objectRecord(payload.usage);
+  if (
+    usage === null ||
+    Object.keys(usage).some((key) => key !== "total" && key !== "runDelta")
+  ) {
+    return false;
+  }
+  return ["total", "runDelta"].every((sectionName) => {
+    const section = objectRecord(usage[sectionName]);
+    if (
+      section === null ||
+      section.requests !== 1 ||
+      Object.keys(section).some(
+        (key) =>
+          key !== "requests" &&
+          !EFFECT_FREE_ACPX_USAGE_COUNTERS.includes(
+            key as (typeof EFFECT_FREE_ACPX_USAGE_COUNTERS)[number],
+          ),
+      )
+    ) {
+      return false;
+    }
+    return EFFECT_FREE_ACPX_USAGE_COUNTERS.every(
+      (counter) => section[counter] === 0,
+    );
+  });
+}
+
+async function replayProvesEffectFreeInitialAcpxTurn(input: {
+  controlPlane: ControlPlanePort;
+  checkpoint: PersistedNativeSession;
+  runId: string;
+  sourceInstanceId: string;
+}): Promise<boolean> {
+  const terminalTurns = input.checkpoint.terminalTurns ?? [];
+  if (
+    input.checkpoint.driverKind !== "acpx_runtime" ||
+    input.checkpoint.semanticResult ||
+    input.checkpoint.activeTurnId ||
+    terminalTurns.length !== 1 ||
+    terminalTurns[0]!.turnId.length === 0
+  ) {
+    return false;
+  }
+  const targetTurnId = terminalTurns[0]!.turnId;
+  const events: PrpEvent[] = [];
+  let afterSourceSeq = 0;
+  try {
+    while (true) {
+      const replay = await input.controlPlane.replayEvents({
+        runId: input.runId,
+        sourceInstanceId: input.sourceInstanceId,
+        afterSourceSeq,
+        limit: 1_000,
+      });
+      if (replay.events.length === 0) break;
+      for (const event of replay.events) {
+        // An incomplete or reordered replay cannot prove absence of work.
+        if (event.sourceSeq !== afterSourceSeq + 1) return false;
+        events.push(structuredClone(event));
+        afterSourceSeq = event.sourceSeq;
+        if (events.length > 10_000) return false;
+      }
+    }
+  } catch {
+    return false;
+  }
+
+  const submittedIndexes = events.flatMap((event, index) =>
+    event.eventType === "turn.submitted" ? [index] : [],
+  );
+  const startedIndexes = events.flatMap((event, index) =>
+    event.turnId === targetTurnId && event.eventType === "turn.started"
+      ? [index]
+      : [],
+  );
+  const acceptedIndexes = events.flatMap((event, index) =>
+    event.turnId === targetTurnId && event.eventType === "turn.accepted"
+      ? [index]
+      : [],
+  );
+  const completedIndexes = events.flatMap((event, index) =>
+    event.turnId === targetTurnId && event.eventType === "turn.completed"
+      ? [index]
+      : [],
+  );
+  if (
+    submittedIndexes.length !== 1 ||
+    startedIndexes.length !== 1 ||
+    acceptedIndexes.length !== 1 ||
+    completedIndexes.length !== 1
+  ) {
+    return false;
+  }
+  const submittedIndex = submittedIndexes[0]!;
+  const startedIndex = startedIndexes[0]!;
+  const acceptedIndex = acceptedIndexes[0]!;
+  const completedIndex = completedIndexes[0]!;
+  const completedPayload = objectRecord(events[completedIndex]!.payload);
+  if (
+    startedIndex !== submittedIndex + 1 ||
+    acceptedIndex !== startedIndex + 1 ||
+    completedIndex <= acceptedIndex ||
+    events[submittedIndex]!.turnId != null ||
+    completedPayload?.status !== "completed" ||
+    (completedPayload?.error !== undefined && completedPayload?.error !== null)
+  ) {
+    return false;
+  }
+  if (
+    events.some(
+      (event, index) =>
+        event.turnId === targetTurnId &&
+        (index < startedIndex || index > completedIndex),
+    )
+  ) {
+    return false;
+  }
+  return events
+    .slice(acceptedIndex + 1, completedIndex)
+    .every(
+      (event) =>
+        event.turnId === targetTurnId &&
+        event.eventType === "item.completed" &&
+        isZeroWorkAcpxUsage(event.payload),
+    );
 }
 
 function checkpointedResultlessDispositionFallback(input: {
@@ -1735,7 +1884,16 @@ export async function executeNativeSession(
             (persistedSession?.terminalTurns?.length ?? 0) > 0 &&
             !recoveredActiveTurnId,
           );
-          if (dispositionOnlyRecovery) {
+          const effectFreeInitialAcpxTurn =
+            dispositionOnlyRecovery && persistedSession
+              ? await replayProvesEffectFreeInitialAcpxTurn({
+                  controlPlane: options.controlPlane,
+                  checkpoint: persistedSession,
+                  runId: input.binding.runId,
+                  sourceInstanceId: options.runnerInstanceId,
+                })
+              : false;
+          if (dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) {
             modelEnvelope.task.prompt = [
               "Paperclip semantic-result recovery for a prior completed provider turn.",
               "The prior turn already performed the work and its user-facing final answer is recorded.",
@@ -2048,7 +2206,10 @@ function canonicalJson(value: unknown): string {
 function completedSemanticResultTurnId(
   snapshot: PersistedNativeSession,
 ): string | null {
-  if (snapshot.semanticResult === undefined || snapshot.semanticResult === null) {
+  if (
+    snapshot.semanticResult === undefined ||
+    snapshot.semanticResult === null
+  ) {
     return null;
   }
   const semanticFingerprint = canonicalJson(snapshot.semanticResult);
@@ -2056,12 +2217,12 @@ function completedSemanticResultTurnId(
     try {
       const value: unknown = JSON.parse(terminal.fingerprint);
       if (
-        typeof value === "object"
-        && value !== null
-        && !Array.isArray(value)
-        && (value as Record<string, unknown>).status === "completed"
-        && (value as Record<string, unknown>).semanticResult
-          === semanticFingerprint
+        typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        (value as Record<string, unknown>).status === "completed" &&
+        (value as Record<string, unknown>).semanticResult ===
+          semanticFingerprint
       ) {
         return terminal.turnId;
       }

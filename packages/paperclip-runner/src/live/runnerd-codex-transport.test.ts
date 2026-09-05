@@ -1870,7 +1870,7 @@ it.each([
   },
 );
 
-it("probes an exact-authority resume and requires a fresh provider identity", async () => {
+it("probes an exact-authority resume and confirms its live provider identity", async () => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-exact-authority-resume-"),
   );
@@ -1928,8 +1928,17 @@ it("probes an exact-authority resume and requires a fresh provider identity", as
   const priorResumeEvents = beforeResume.committedEvents.filter(
     (event) => event.eventType === "session.resumed",
   ).length;
+  const priorSnapshots = beforeResume.commands.filter(
+    (command) => command.type === "session.snapshot",
+  ).length;
 
-  const resumed = createCapabilityRunnerdCodexTransport(options);
+  const resumed = createCapabilityRunnerdCodexTransport({
+    ...options,
+    resumeProviderSession: {
+      driverSessionId: providerThread.id,
+      providerSessionId: providerThread.sessionId,
+    },
+  });
   resumed.transport.setServerRequestHandler(async () => ({
     success: true,
     contentItems: [],
@@ -1948,6 +1957,17 @@ it("probes an exact-authority resume and requires a fresh provider identity", as
         status: "completed",
       }),
     );
+    expect(afterResume.commands).toContainEqual(
+      expect.objectContaining({
+        type: "session.snapshot",
+        status: "completed",
+      }),
+    );
+    expect(
+      afterResume.commands.filter(
+        (command) => command.type === "session.snapshot",
+      ),
+    ).toHaveLength(priorSnapshots + 2);
     expect(
       afterResume.committedEvents.filter(
         (event) => event.eventType === "session.resumed",
