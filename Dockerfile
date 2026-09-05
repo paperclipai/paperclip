@@ -53,6 +53,16 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
+# rustup installs only the Rust toolchain -- no C compiler or linker. The
+# runner targets x86_64/aarch64-unknown-linux-gnu, where rustc shells out to
+# `cc` to link every binary (and to build any `cc`-crate build script), so
+# `cargo build` for paperclip-runnerd fails with `linker `cc` not found`
+# without a system C toolchain. build-essential provides gcc + libc6-dev
+# (the CRT objects rustc needs) and stays in this build stage only -- the
+# production image below never copies it.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends build-essential \
+  && rm -rf /var/lib/apt/lists/*
 # Debian's packaged rust lags the ecosystem (trixie ships 1.85) and the
 # runner's dependency tree now requires a newer rustc. Install rustup from a
 # version-pinned, checksum-verified installer and let the runner's own
