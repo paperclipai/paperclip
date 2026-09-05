@@ -2174,7 +2174,10 @@ export async function executeNativeSession(
       // environment until the complete close/retry owner has settled.
       const requiredClose = sessionCloseRecoveryPromise ?? sessionClosePromise;
       if (requiredClose !== null) {
-        await Promise.allSettled([requiredClose]);
+        // Unlike ordinary provider cleanup, this close owns required remote
+        // checkpoint persistence. Exhausting its bounded recovery must fail
+        // the execution instead of converting the rejection into success.
+        await requiredClose;
       }
     } else if (shouldClose && !failedCleanupDeferred) {
       // A provider that ignores close must not keep execution pending forever.
