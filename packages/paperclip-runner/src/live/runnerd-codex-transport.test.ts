@@ -2420,7 +2420,7 @@ async function verifyLiveRunnerAdoption(mismatchedCheckpoint: boolean) {
       "restored adopted provider identity from the exact durable checkpoint after PRP event compaction; awaiting live confirmation",
     );
     expect(adopted.evidence().diagnostics).toContain(
-      "confirmed adopted provider identity against authenticated session.snapshot",
+      "confirmed adopted provider identity against authenticated recovery session.snapshot",
     );
   } finally {
     await adopted?.transport.close().catch(() => undefined);
