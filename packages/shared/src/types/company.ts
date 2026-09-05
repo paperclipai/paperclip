@@ -27,6 +27,7 @@ export interface Company {
   spentMonthlyCents: number;
   defaultResponsibleUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  maxConcurrentAgentRuns?: number | null;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;
