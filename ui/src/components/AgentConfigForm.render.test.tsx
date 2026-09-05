@@ -1640,6 +1640,48 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
   });
 
+  it("shows a reachable Cancel control in the onboarding chrome and cancels the session", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const onCancel = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                chrome="onboarding"
+                autoStart
+                onCancel={onCancel}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => Boolean(findButton(container, "Cancel")));
+
+    await clickByText(container, "Cancel");
+
+    expect(mockAgentsApi.cancelAdapterAuthLogin).toHaveBeenCalledWith(
+      "company-1",
+      "codex_local",
+      "session-1",
+    );
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
   it("resumes an active login session on mount, adopting its session id and prompt", async () => {
     // A page reload loses every piece of local state, so the panel must read
     // the caller's active session and adopt it instead of starting a new one.
@@ -2147,6 +2189,46 @@ describe("AgentConfigForm environment selector", () => {
     await flushUntil(() => onStored.mock.calls.length > 0);
 
     expect(onStored).toHaveBeenCalledWith("stored-session-1");
+  });
+
+  it("shows a reachable Cancel control in the onboarding chrome and cancels the session", async () => {
+    const onCancel = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="claude_local"
+                environmentId="sandbox-1"
+                chrome="onboarding"
+                autoStart
+                onCancel={onCancel}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => Boolean(findButton(container, "Cancel")));
+
+    await clickByText(container, "Cancel");
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+    );
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
   it("offers an apply-existing affordance when the status route reports a stored value", async () => {

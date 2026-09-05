@@ -2301,6 +2301,7 @@ function DisplayedCodeLoginPanel({
     return (
       <OnboardingLoginCard
         loading={!prompt && !startError && !failed}
+        onCancel={handleCancel}
         instruction={
           <>
             {/* The same destination as the step's own button. Two ways to one
@@ -2961,6 +2962,7 @@ function SubmittedBrowserCodeLoginPanel({
     return (
       <OnboardingLoginCard
         loading={!authorizationUrl && !startError && !failedNow}
+        onCancel={handleCancel}
         instruction={
           <>
             <a
