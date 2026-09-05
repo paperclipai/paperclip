@@ -605,7 +605,7 @@ export function AppDetail({ renderActions, onReconnect }: {
                   setAudienceError(null);
                 }}
                 onConnectAsMe={() => onReconnect ? onReconnect(connection) : startPersonalAuth.mutate()}
-                onConnectOrganization={() => onReconnect ? onReconnect(connection) : startOAuth.mutate()}
+                onConnectOrganization={() => onReconnect ? onReconnect(connection) : startOAuth.mutate(undefined)}
                 onConnectAgent={(agentId) => startOAuth.mutate({ asAgentId: agentId })}
                 onRefreshAccess={() => refreshGitHubAccess.mutate()}
                 refreshAccessPending={refreshGitHubAccess.isPending}
