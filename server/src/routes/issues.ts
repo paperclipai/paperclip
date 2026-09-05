@@ -1169,6 +1169,29 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "heartbeat.disabled",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
+  "heartbeat.worktree_execution_cutoff",
+  // Native status decision committer (services/native-runtime/status-decision-committer.ts).
+  "issue_status_changed",
+  "issue_children_completed",
+  "monitor_due",
+  // Issue execution scheduling (services/heartbeat.ts).
+  "issue_execution_promoted",
+  "issue_execution_deferred",
+  "issue_execution_same_name",
+  "issue_execution_issue_not_found",
+  "issue_state_guard_mismatch",
+  "issue_rewake_throttled",
+  "workspace_worktree_requires_project",
+  "execution_review_participant_recovery",
+  // Issue monitors and the heartbeat timer (services/heartbeat.ts).
+  "heartbeat_timer",
+  "issue_monitor_recovery",
+  "issue_monitor_recovery_issue",
+  // Recovery sweeps (services/recovery/ and services/heartbeat.ts).
+  "issue_disposition_repair",
+  "provider_quota_recovery",
+  "finish_successful_run_handoff",
+  "issue_review_path_lost",
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_STATUSES = new Set([
