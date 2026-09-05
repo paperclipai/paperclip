@@ -195,9 +195,6 @@ export function IdentitiesSection({
           ) : null}
         />
         {github ? <GitHubConnectionSummary grant={agentGrant} onRefreshAccess={onRefreshAccess} refreshPending={refreshAccessPending} /> : null}
-        <InlineBanner tone="warning" compact>
-          Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls.
-        </InlineBanner>
       </section>
     );
   }

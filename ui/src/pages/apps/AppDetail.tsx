@@ -602,6 +602,11 @@ export function AppDetail() {
                 askFirstIds={askFirstIds}
                 pending={pending}
                 refreshPending={refreshTools.isPending}
+                permissionChangeWarning={
+                  connection.credentialPolicy === "per_agent" && managedIdentityGrant?.providerTenant?.github
+                    ? "Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls."
+                    : undefined
+                }
                 onSaveAccess={(next) => apply({ access: accessIncludingInstalls(next, install) })}
                 onRefreshActions={() => refreshTools.mutate()}
                 onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}

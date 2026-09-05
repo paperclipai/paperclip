@@ -1483,6 +1483,18 @@ describe("AppDetail", () => {
     expect(container.textContent).not.toContain("Webhook health");
     expect(container.textContent).not.toContain("Last event");
     expect(container.textContent).not.toContain("Last access refresh");
+    expect(container.textContent).not.toContain("Shell Git and gh use this account");
+
+    const askFirst = container.querySelector<HTMLButtonElement>('button[aria-label="Read repo: Ask first"]');
+    expect(askFirst).toBeTruthy();
+    await act(async () => {
+      askFirst!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain(
+      "Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls.",
+    );
   });
 
   it("warns about all-repository GitHub access within the repository row", async () => {
