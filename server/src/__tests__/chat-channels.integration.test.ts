@@ -2347,6 +2347,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
       );
 
+    const forged = await service.handleWebhook(
+      endpoint.publicId,
+      "slack",
+      new Request(
+        `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-slack-request-timestamp": timestamp,
+            "x-slack-signature": "v0=forged",
+          },
+          body,
+        },
+      ),
+    );
+    expect(forged.status).toBe(401);
+    expect(
+      await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id)),
+    ).toHaveLength(0);
+
     const originalInsert = db.insert.bind(db);
     let rejectDeliveryInsert = true;
     const insertSpy = vi.spyOn(db, "insert").mockImplementation(((table) => {
@@ -2403,13 +2427,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       mentioned: true,
     });
 
-    await deliverMessage({
-      callbacks,
-      endpointId: endpoint.id,
-      thread: first.thread,
-      message: firstMessage,
-      trigger: "mention",
-    });
+    await Promise.all(
+      Array.from({ length: 12 }, () =>
+        deliverMessage({
+          callbacks,
+          endpointId: endpoint.id,
+          thread: first.thread,
+          message: firstMessage,
+          trigger: "mention",
+        }),
+      ),
+    );
     await deliverMessage({
       callbacks,
       endpointId: endpoint.id,
@@ -2437,6 +2465,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(conversations).toHaveLength(1);
     expect(endpointIssues).toHaveLength(1);
     expect(deliveries).toHaveLength(1);
+    expect(deliveries[0].normalizedEvent).toMatchObject({
+      deduplication: {
+        duplicateCount: 12,
+        lastDuplicateAt: expect.any(String),
+      },
+    });
     expect(comments.map((comment) => comment.body)).toEqual([
       "@maya investigate the deploy",
     ]);

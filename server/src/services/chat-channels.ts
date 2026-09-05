@@ -2590,32 +2590,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const candidate = delivery ?? existingDelivery;
     if (!candidate) return;
     if (existingDelivery) {
-      const existingNormalized =
-        existingDelivery.normalizedEvent &&
-        typeof existingDelivery.normalizedEvent === "object" &&
-        !Array.isArray(existingDelivery.normalizedEvent)
-          ? (existingDelivery.normalizedEvent as Record<string, unknown>)
-          : {};
-      const existingDeduplication =
-        existingNormalized.deduplication &&
-        typeof existingNormalized.deduplication === "object" &&
-        !Array.isArray(existingNormalized.deduplication)
-          ? (existingNormalized.deduplication as Record<string, unknown>)
-          : {};
-      const duplicateCount =
-        typeof existingDeduplication.duplicateCount === "number"
-          ? existingDeduplication.duplicateCount + 1
-          : 1;
       await db
         .update(chatDeliveries)
         .set({
-          normalizedEvent: {
-            ...existingNormalized,
-            deduplication: {
-              duplicateCount,
-              lastDuplicateAt: new Date().toISOString(),
-            },
-          },
+          // Increment inside PostgreSQL's row lock. Reading the JSON before
+          // this update would let simultaneous provider retries overwrite one
+          // another with the same count even though task deduplication held.
+          normalizedEvent: sql`coalesce(${chatDeliveries.normalizedEvent}, '{}'::jsonb)
+            || jsonb_build_object(
+              'deduplication',
+              coalesce(${chatDeliveries.normalizedEvent}->'deduplication', '{}'::jsonb)
+                || jsonb_build_object(
+                  'duplicateCount',
+                  coalesce((${chatDeliveries.normalizedEvent}#>>'{deduplication,duplicateCount}')::integer, 0) + 1,
+                  'lastDuplicateAt',
+                  ${new Date().toISOString()}::text
+                )
+            )`,
           updatedAt: new Date(),
         })
         .where(eq(chatDeliveries.id, existingDelivery.id));
