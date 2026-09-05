@@ -432,8 +432,8 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
     flow: "plan_revision_acceptance",
     expectedRunCount: 3,
     attemptTimeoutMs: {
-      local: 20 * 60_000,
-      daytona: 35 * 60_000,
+      local: 8 * 60_000,
+      daytona: 12 * 60_000,
     },
     expectedTerminalState: { issue: "done", run: "succeeded" },
     buildTitle: (nonce) => `Runner E2E plan lifecycle ${nonce}`,

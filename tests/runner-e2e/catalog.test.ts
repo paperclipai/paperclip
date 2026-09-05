@@ -52,6 +52,10 @@ describe("runner E2E catalog", () => {
         0,
       ),
     ).toBe(114);
+    expect(
+      runnerTasks.find((task) => task.id === "plan-revise-accept")
+        ?.attemptTimeoutMs,
+    ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000 });
   });
 
   it("derives the qualified local native OpenCode profiles from the ranked snapshot", () => {
@@ -458,7 +462,7 @@ describe("runner E2E selectors", () => {
           job.executionId ===
           "core-compatibility.runner-acpx-claude.local.plan-revise-accept",
       )?.timeoutMinutes,
-    ).toBe(48);
+    ).toBe(25);
     expect(
       jobs.find(
         (job) =>
