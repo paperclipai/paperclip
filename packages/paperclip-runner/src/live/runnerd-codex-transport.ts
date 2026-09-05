@@ -171,7 +171,7 @@ function controlPlaneIdentity(
 }
 
 function recoveryIdentityMatches(
-  value: Record<string, unknown>,
+  value: DurableRecoveryIdentity | Record<string, unknown>,
   expected: DurableRecoveryIdentity,
 ): boolean {
   return (
