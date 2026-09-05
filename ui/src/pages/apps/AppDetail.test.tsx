@@ -1425,6 +1425,57 @@ describe("AppDetail", () => {
     expect(findButton("Revoke")).toBeUndefined();
   });
 
+  it("shows dedicated GitHub access as compact action rows and links to the agent", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      credentialPolicy: "per_agent",
+      authKind: "oauth",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [organizationGrant({
+        id: "grant-agent",
+        kind: "agent",
+        subjectAgentId: "agent-1",
+        subjectUserId: null,
+        isDefault: false,
+        providerTenant: {
+          github: {
+            userId: "123",
+            login: "dottabot",
+            installationCount: 1,
+            repositoryCount: 1,
+            repositorySelection: "selected",
+            installationIds: ["456"],
+            installationOwnerLogins: ["paperclipai"],
+            managementUrl: "https://github.com/settings/installations/456",
+            webhookHealth: "pending",
+            lastWebhookAt: null,
+            lastAccessRefreshAt: "2026-09-05T12:00:00.000Z",
+          },
+        },
+      })],
+      capabilities: fullCapabilities(),
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderAppDetail();
+
+    expect(container.querySelector('a[href="/agents/agent-1"]')?.textContent).toContain("Used only by Coder");
+    expect(container.textContent).toContain("Repositories");
+    expect(container.textContent).toContain("1 selected repositories");
+    expect(container.querySelector(
+      'a[href="https://github.com/settings/installations/456"]',
+    )?.textContent).toBe("Manage repositories on GitHub");
+    expect(findButton("Refresh access")).toBeTruthy();
+    expect(container.textContent).not.toContain("Installation");
+    expect(container.textContent).not.toContain("Token continuity");
+    expect(container.textContent).not.toContain("Webhook health");
+    expect(container.textContent).not.toContain("Last event");
+    expect(container.textContent).not.toContain("Last access refresh");
+  });
+
   it("persists an empty audience as all organization members", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({ createdByUserId: "user-1" }));

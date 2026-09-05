@@ -30,8 +30,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { cn } from "@/lib/utils";
+import { Link } from "@/lib/router";
 import { brandChipBadge } from "@/lib/status-colors";
+import { cn } from "@/lib/utils";
 import {
   audienceUserIds,
   grantAccountLabel,
@@ -178,7 +179,14 @@ export function IdentitiesSection({
         <IdentityRow
           title={github ? `@${github.login}` : "Dedicated GitHub account"}
           status={agentGrant?.status ?? null}
-          detail={dedicatedAgent ? `Used only by ${dedicatedAgent.name}` : "Dedicated to one agent"}
+          detail={dedicatedAgent ? (
+            <Link
+              to={`/agents/${dedicatedAgent.id}`}
+              className="transition-colors hover:text-foreground hover:underline"
+            >
+              Used only by {dedicatedAgent.name}
+            </Link>
+          ) : "Dedicated to one agent"}
           actions={!agentGrant && dedicatedAgent && capabilities?.canConfigure ? (
             <Button size="sm" disabled={connectPending} onClick={() => onConnectAgent(dedicatedAgent.id)}>
               {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
@@ -288,27 +296,27 @@ function GitHubConnectionSummary({
 }) {
   const github = grant.providerTenant?.github;
   if (!github) return null;
+  const repositorySummary = github.repositorySelection === "all"
+    ? "All repositories"
+    : `${github.repositoryCount} selected repositories`;
   return (
-    <div className="space-y-4 rounded-lg border border-border p-4">
-      <div className="grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
-        <p><span className="font-medium text-foreground">Installation</span><br />{github.installationOwnerLogins.join(", ") || "GitHub"}</p>
-        <p><span className="font-medium text-foreground">Repositories</span><br />{github.repositoryCount} · {github.repositorySelection === "all" ? "All repositories" : "Selected repositories"}</p>
-        <p><span className="font-medium text-foreground">Token continuity</span><br />{grant.providerTenant?.oauth?.accessTokenExpiresAt ? "Automatically refreshed" : "Long-lived"}</p>
-        <p><span className="font-medium text-foreground">Webhook health</span><br />{github.webhookHealth === "healthy" ? "Healthy" : github.webhookHealth === "unhealthy" ? "Needs attention" : "Pending first event"}</p>
-        <p><span className="font-medium text-foreground">Last event</span><br />{github.lastWebhookAt ? new Date(github.lastWebhookAt).toLocaleString() : "No event received yet"}</p>
-        <p><span className="font-medium text-foreground">Last access refresh</span><br />{github.lastAccessRefreshAt ? new Date(github.lastAccessRefreshAt).toLocaleString() : "Not refreshed yet"}</p>
-      </div>
-      {github.repositorySelection === "all" ? (
-        <InlineBanner tone="warning" compact>
-          This installation can access every current and future repository in its GitHub account. Selected repositories is the safer default.
-        </InlineBanner>
-      ) : null}
-      <div className="flex flex-wrap gap-2">
+    <div className="divide-y divide-border border-y border-border">
+      <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Repositories</div>
+          <div className="text-xs text-muted-foreground">{repositorySummary}</div>
+        </div>
         {github.managementUrl ? (
           <Button asChild size="sm" variant="outline">
             <a href={github.managementUrl} target="_blank" rel="noreferrer">Manage repositories on GitHub</a>
           </Button>
         ) : null}
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3 py-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Refresh access</div>
+          <div className="text-xs text-muted-foreground">Sync repository access from GitHub.</div>
+        </div>
         {onRefreshAccess ? (
           <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
             {refreshPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
@@ -398,7 +406,7 @@ function IdentityRow({
   id?: string;
   title: string;
   status: ConnectionGrant["status"] | null;
-  detail: string | null;
+  detail: ReactNode;
   actions: ReactNode;
 }) {
   return (
