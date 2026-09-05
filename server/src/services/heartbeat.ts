@@ -730,6 +730,39 @@ export class ConfigurationIncompleteFailure extends Error {
   }
 }
 
+const DETERMINISTIC_TERMINAL_ERROR_CODES = new Set(["model_not_found", "unsupported_model_backend", "context_window_exhausted"]);
+
+const FOREIGN_MODEL_FAMILY_BY_ADAPTER: Readonly<Record<string, ReadonlyArray<{ pattern: RegExp; family: string }>>> = {
+  codex_local: [
+    { pattern: /^(?:anthropic\/|claude[-\/])/i, family: "Anthropic/Claude" },
+    { pattern: /^(?:google\/|gemini[-\/])/i, family: "Google/Gemini" },
+  ],
+};
+
+/** Reject unmistakable cross-backend model IDs before adapter dispatch. */
+export function assertAdapterModelCompatibility(input: { adapterType: string; adapterConfig: Record<string, unknown> | null | undefined }) {
+  const model = readNonEmptyString(input.adapterConfig?.model);
+  if (!model) return;
+  const incompatibleFamily = FOREIGN_MODEL_FAMILY_BY_ADAPTER[input.adapterType]?.find((candidate) => candidate.pattern.test(model));
+  if (!incompatibleFamily) return;
+  throw new ConfigurationIncompleteFailure(
+    "unsupported model/backend combination: model \"" + model + "\" belongs to " + incompatibleFamily.family + ", not " + input.adapterType,
+    { configurationIncomplete: { reason: "unsupported_model_backend", adapterType: input.adapterType, model, recoveryAction: "Select a model advertised by the configured adapter before retrying." } },
+  );
+}
+
+export function classifyDeterministicTerminalErrorCode(input: { errorCode?: string | null; errorMessage?: string | null }): string | null {
+  if (input.errorCode && DETERMINISTIC_TERMINAL_ERROR_CODES.has(input.errorCode)) return input.errorCode;
+  const message = input.errorMessage ?? "";
+  if (/(?:unsupported|not available|not found|does not exist).{0,80}model|model.{0,80}(?:unsupported|not available|not found|does not exist)/i.test(message)) return "model_not_found";
+  if (/context (?:window|length).{0,80}(?:exceed|exhaust|too (?:large|long))|(?:maximum|max) context (?:window|length)|too many tokens/i.test(message)) return "context_window_exhausted";
+  return null;
+}
+
+export function isDeterministicTerminalFailedRun(run: Pick<{ errorCode: string | null }, "errorCode"> | null | undefined) {
+  return Boolean(run?.errorCode && DETERMINISTIC_TERMINAL_ERROR_CODES.has(run.errorCode));
+}
+
 // Build the configuration-incomplete result payload for a workspace base ref
 // that never resolved to a commit. The setup catch maps this to errorCode
 // `configuration_incomplete`, so the recovery path routes it to a human owner
@@ -21108,6 +21141,7 @@ export function heartbeatService(
                 endedAtMs: nativeDispatchAtMs,
               },
             );
+            assertAdapterModelCompatibility({ adapterType: agent.adapterType, adapterConfig: runtimeConfig });
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) =>
@@ -21551,13 +21585,15 @@ export function heartbeatService(
                 );
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(latestRun?.errorCode);
+        const deterministicTerminalErrorCode = classifyDeterministicTerminalErrorCode({ errorCode: adapterResult.errorCode, errorMessage: runErrorMessage });
         const runErrorCode =
           outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
               ? (latestRun?.errorCode ?? "cancelled")
               : outcome === "failed"
-                ? (adapterResult.errorCode ??
+                ? (deterministicTerminalErrorCode ??
+                  adapterResult.errorCode ??
                   recordedResponsibleUserDenialCode ??
                   "adapter_failed")
                 : null;
@@ -22678,12 +22714,13 @@ export function heartbeatService(
       // the recovery surface because the comment is attached to a single issue.
       if (
         (isWorkspaceValidationFailedRun(run) ||
-          isConfigurationIncompleteFailedRun(run)) &&
+          isConfigurationIncompleteFailedRun(run) ||
+          isDeterministicTerminalFailedRun(run)) &&
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId
       ) {
-        const configurationIncomplete = isConfigurationIncompleteFailedRun(run);
+        const configurationIncomplete = isConfigurationIncompleteFailedRun(run) || isDeterministicTerminalFailedRun(run);
         return {
           kind: "blocked" as const,
           issue,
@@ -23324,6 +23361,7 @@ export function heartbeatService(
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
+        isDeterministicTerminalFailedRun(run) ||
         didAutomaticRecoveryFail(
           run,
           issue.status === "todo"
