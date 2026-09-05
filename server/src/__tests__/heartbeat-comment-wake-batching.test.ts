@@ -601,6 +601,23 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         return statusesByRunId.get(firstRun!.id) === "succeeded" && statusesByRunId.get(secondRunId) === "succeeded";
       }, 90_000);
 
+      const promotedRun = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, secondRunId))
+        .then((rows) => rows[0]);
+      const promotedTaskMarkdown = String(
+        (promotedRun.contextSnapshot as Record<string, unknown> | null)
+          ?.paperclipTaskMarkdown ?? "",
+      );
+      expect(promotedTaskMarkdown).toContain(
+        "Pending wake comments (oldest to newest):",
+      );
+      expect(promotedTaskMarkdown.indexOf("Second comment")).toBeLessThan(
+        promotedTaskMarkdown.indexOf("Third comment"),
+      );
+      expect(promotedTaskMarkdown).not.toContain("First comment");
+
       expect(secondPayload.paperclip).toBeUndefined();
       const secondWake = parseWakePayloadFromMessage(secondPayload.message);
       expect(secondWake).toMatchObject({

@@ -7,6 +7,39 @@ import {
 } from "../services/heartbeat.js";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("surfaces every coalesced wake comment in provider order", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-burst",
+        identifier: "PAP-5000",
+        title: "Handle a chat burst",
+        workMode: "standard",
+        description: "Original request",
+      },
+      wakeComment: {
+        id: "comment-3",
+        body: "burst-four",
+      },
+      wakeComments: [
+        { id: "comment-1", body: "burst-two" },
+        { id: "comment-2", body: "burst-three" },
+        { id: "comment-3", body: "burst-four" },
+      ],
+    });
+
+    expect(markdown).toContain(
+      "Address every comment in order. You may answer them together, but do not silently omit any comment.",
+    );
+    expect(markdown).toContain("Pending wake comments (oldest to newest):");
+    expect(markdown).not.toContain("Latest wake comment:");
+    expect(markdown!.indexOf("burst-two")).toBeLessThan(
+      markdown!.indexOf("burst-three"),
+    );
+    expect(markdown!.indexOf("burst-three")).toBeLessThan(
+      markdown!.indexOf("burst-four"),
+    );
+  });
+
   it("adds planning directives for assignment and comment task context", () => {
     const assignment = buildPaperclipTaskMarkdown({
       issue: {

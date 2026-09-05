@@ -7644,6 +7644,10 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     body: string;
   } | null;
+  wakeComments?: Array<{
+    id: string;
+    body: string;
+  }> | null;
   interaction?: {
     kind?: string | null;
     status?: string | null;
@@ -7669,14 +7673,23 @@ export function buildPaperclipTaskMarkdown(input: {
   };
   const issue = input.issue;
   const ancestors = (input.ancestors ?? []).slice(0, 6);
-  const wakeComment = input.wakeComment ?? null;
+  const wakeComments = (input.wakeComments ?? [])
+    .filter((comment) => comment.body.trim().length > 0)
+    .map((comment) => ({ ...comment, body: comment.body.trim() }));
+  const wakeComment =
+    wakeComments.at(-1) ??
+    (input.wakeComment?.body.trim()
+      ? { ...input.wakeComment, body: input.wakeComment.body.trim() }
+      : null);
+  const effectiveWakeComments =
+    wakeComments.length > 0 ? wakeComments : wakeComment ? [wakeComment] : [];
   const acceptedPlanContinuation =
     !wakeComment &&
     (input.acceptedPlanContinuation ||
       (input.interaction?.kind === "request_confirmation" &&
         input.interaction.status === "accepted" &&
         issue?.workMode === "planning"));
-  if (!issue && !wakeComment) return null;
+  if (!issue && effectiveWakeComments.length === 0) return null;
 
   const lines = [
     "Paperclip task context:",
@@ -7759,15 +7772,30 @@ export function buildPaperclipTaskMarkdown(input: {
       );
     }
   }
-  if (wakeComment?.body.trim()) {
+  if (effectiveWakeComments.length === 1) {
     lines.push(
       "",
       "Follow-up directive:",
       "The latest wake comment is the immediate request for this run. Address it directly. Do not repeat an earlier requested output from the issue description unless the latest comment asks you to.",
       "",
       "Latest wake comment:",
-      fenceTaskText(wakeComment.body.trim()),
+      fenceTaskText(effectiveWakeComments[0]!.body),
     );
+  } else if (effectiveWakeComments.length > 1) {
+    lines.push(
+      "",
+      "Follow-up directive:",
+      "The pending wake comments below are the immediate requests for this run. Address every comment in order. You may answer them together, but do not silently omit any comment.",
+      "",
+      "Pending wake comments (oldest to newest):",
+    );
+    for (const [index, comment] of effectiveWakeComments.entries()) {
+      lines.push(
+        "",
+        `Wake comment ${index + 1} (${quoteTaskScalar(comment.id)}):`,
+        fenceTaskText(comment.body),
+      );
+    }
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -18497,6 +18525,12 @@ export function heartbeatService(
       } else {
         delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
       }
+      const safeWakeComments = (paperclipWakePayload?.comments ?? []).flatMap(
+        (comment) =>
+          typeof comment.id === "string" && typeof comment.body === "string"
+            ? [{ id: comment.id, body: comment.body }]
+            : [],
+      );
       const taskMarkdownInput = {
         issue: issueRef
           ? {
@@ -18509,6 +18543,7 @@ export function heartbeatService(
           : null,
         ancestors: issueAncestors,
         wakeComment: safeWakeCommentContext,
+        wakeComments: safeWakeComments,
         interaction: {
           kind: readNonEmptyString(context.interactionKind),
           status: readNonEmptyString(context.interactionStatus),
