@@ -6782,6 +6782,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       messageId: number;
       number: number;
       updatedAt: string;
+      body?: string;
       inReplyToId?: number;
       issueIsPullRequest?: boolean;
     }) => {
@@ -6801,7 +6802,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               comment: {
                 id: input.messageId,
                 in_reply_to_id: input.inReplyToId,
-                body: "@maya corrected GitHub request",
+                body: input.body ?? "@maya corrected GitHub request",
                 updated_at: input.updatedAt,
               },
               issue: {
@@ -6850,6 +6851,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         updatedAt: `2026-09-05T12:1${index}:00Z`,
       });
     }
+    const sameSecondEdit = {
+      action: "edited" as const,
+      body: "@maya corrected GitHub request again in the same second",
+      event: "issue_comment" as const,
+      messageId: 77001,
+      number: 42,
+      updatedAt: "2026-09-05T12:00:00Z",
+    };
+    await sendLifecycle(sameSecondEdit);
+    await sendLifecycle(sameSecondEdit);
     await vi.waitFor(async () => {
       const lifecycle = await db
         .select()
@@ -6859,9 +6870,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         lifecycle.filter((row) =>
           ["message_updated", "message_deleted"].includes(row.eventKind),
         ),
-      ).toHaveLength(6);
+      ).toHaveLength(7);
+      expect(
+        lifecycle.filter(
+          (row) =>
+            row.eventKind === "message_updated" &&
+            row.providerEventId.includes(":77001:"),
+        ),
+      ).toHaveLength(2);
     });
-    expect(wakeup).toHaveBeenCalledTimes(10);
+    expect(wakeup).toHaveBeenCalledTimes(11);
     await service.shutdown();
   });
 });

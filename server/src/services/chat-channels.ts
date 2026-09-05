@@ -624,13 +624,21 @@ async function githubLifecycleEventFromRequest(
     typeof payload.comment?.body === "string"
       ? payload.comment.body.slice(0, MAX_INBOUND_TEXT)
       : "";
+  const providerRevision =
+    typeof payload.comment?.updated_at === "string"
+      ? payload.comment.updated_at
+      : payload.action;
   return {
     eventKind,
     messageId: String(messageId),
+    // GitHub's updated_at value can have coarser resolution than a quick
+    // sequence of edits. Include the normalized body so distinct edits at the
+    // same timestamp remain durable while an exact webhook redelivery still
+    // deduplicates.
     revision:
-      typeof payload.comment?.updated_at === "string"
-        ? payload.comment.updated_at
-        : payload.action,
+      eventKind === "message_updated"
+        ? `${providerRevision}:${createHash("sha256").update(body).digest("hex")}`
+        : providerRevision,
     text:
       eventKind === "message_updated"
         ? `An external message was edited:\n\n${body}`
@@ -2096,6 +2104,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             );
           });
     const identity = await verifyCredentials(endpoint.provider, credentials);
+    if (input.action === "reconnect") {
+      const currentIdentity = nativeBotIdentityKey(endpoint.provider, endpoint);
+      if (
+        !currentIdentity ||
+        nativeBotIdentityKey(endpoint.provider, identity) !== currentIdentity
+      ) {
+        throw conflict(
+          "The provider credentials identify a different bot; create a new connection for that bot instead",
+          { code: "chat_bot_identity_changed" },
+        );
+      }
+    }
     await assertNativeBotIdentityAvailable(endpoint, identity);
     const prepared = await prepareProviderInventory(endpoint, credentials);
     const credentialsChangedByDiscovery =
