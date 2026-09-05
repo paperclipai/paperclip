@@ -409,7 +409,10 @@ jobs:
           NEEDS_DAYTONA: ${{ needs.catalog.outputs.needs_daytona }}
           IMAGE_CONTENT_ID: ${{ needs.catalog.outputs.daytona_image_content_id }}
           IMAGE_TAG: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${{ needs.catalog.outputs.daytona_image_content_id }}
+          IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64
           TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
+          TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           if [ "$NEEDS_DAYTONA" != true ]; then
@@ -425,12 +428,24 @@ jobs:
           if docker buildx imagetools inspect "$IMAGE_TAG" >/dev/null 2>&1; then
             digest="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           else
+            cache_args=(
+              --cache-from "type=registry,ref=${IMAGE_CACHE}"
+            )
+            if [ "$TARGET_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+              cache_args+=(
+                --cache-to "type=registry,ref=${IMAGE_CACHE},mode=max"
+              )
+              echo '::notice title=Daytona image cache::Publishing cache from the trusted default-branch target'
+            else
+              echo '::notice title=Daytona image cache::Using the default-branch cache without publishing development-branch layers'
+            fi
             docker buildx build \
               --platform linux/amd64 \
               --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}" \
               --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}" \
               --file docker/daytona-runner/Dockerfile \
               --tag "$IMAGE_TAG" \
+              "${cache_args[@]}" \
               --push \
               .
             digest="$(docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"

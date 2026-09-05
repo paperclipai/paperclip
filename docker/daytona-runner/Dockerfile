@@ -13,24 +13,17 @@ RUN cargo build --locked --release -p paperclip-runner-core --bin paperclip-runn
     && strip /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd
 
 FROM node:24-bookworm@sha256:9137a20e25879e0b557227b57e3ee4e9af4bde29eb3db66134cd1723e84f830b AS provider-pack-build
-ARG PAPERCLIP_RUNNER_SOURCE_REVISION
-RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY patches ./patches
 COPY scripts/link-plugin-dev-sdk.mjs ./scripts/link-plugin-dev-sdk.mjs
-COPY \
-    packages/paperclip-eval-kernel/package.json \
-    packages/paperclip-eval-kernel/tsconfig.json \
-    ./packages/paperclip-eval-kernel/
+COPY packages/paperclip-eval-kernel/package.json ./packages/paperclip-eval-kernel/package.json
+COPY packages/paperclip-runner/package.json ./packages/paperclip-runner/package.json
+RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
+COPY packages/paperclip-eval-kernel/tsconfig.json ./packages/paperclip-eval-kernel/tsconfig.json
 COPY packages/paperclip-eval-kernel/src ./packages/paperclip-eval-kernel/src
-COPY \
-    packages/paperclip-runner/package.json \
-    packages/paperclip-runner/styles.css \
-    packages/paperclip-runner/tsconfig.json \
-    packages/paperclip-runner/tsconfig.surfaces.json \
-    ./packages/paperclip-runner/
+COPY packages/paperclip-runner/styles.css packages/paperclip-runner/tsconfig.json packages/paperclip-runner/tsconfig.surfaces.json ./packages/paperclip-runner/
 COPY packages/paperclip-runner/protocol ./packages/paperclip-runner/protocol
 COPY packages/paperclip-runner/runner/crates/runner-core/src/generated_acpx_sidecar_contract.rs ./packages/paperclip-runner/runner/crates/runner-core/src/generated_acpx_sidecar_contract.rs
 COPY \
@@ -41,7 +34,8 @@ COPY \
     packages/paperclip-runner/scripts/generate-protocol-schema-module.mjs \
     ./packages/paperclip-runner/scripts/
 COPY packages/paperclip-runner/src ./packages/paperclip-runner/src
-RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
+ARG PAPERCLIP_RUNNER_SOURCE_REVISION
+RUN test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
 RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
       node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack
@@ -50,13 +44,6 @@ RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
 # paperclipai/paperclip-cloud/fleet-sandbox-image/Dockerfile. The only Paperclip
 # runner-specific addition is /usr/local/bin/paperclip-runnerd below.
 FROM daytonaio/sandbox:0.8.0@sha256:eadf88e4391072b7ad4bed27d9cadfc9fe9d8ed375d9219d34c2ccb518f213e3
-
-ARG PAPERCLIP_RUNNER_CONTENT_ID
-ARG PAPERCLIP_RUNNER_SOURCE_REVISION
-RUN test -n "${PAPERCLIP_RUNNER_CONTENT_ID}" \
-    && test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
-LABEL io.paperclip.runner.content-id="${PAPERCLIP_RUNNER_CONTENT_ID}" \
-      org.opencontainers.image.revision="${PAPERCLIP_RUNNER_SOURCE_REVISION}"
 
 USER root
 
@@ -104,6 +91,14 @@ RUN set -eu; \
 COPY --from=runnerd-build /workspace/packages/paperclip-runner/runner/target/release/paperclip-runnerd /usr/local/bin/paperclip-runnerd
 COPY --from=provider-pack-build /provider-pack /opt/paperclip-runner/provider-pack
 
+# Keep revision-dependent metadata below the stable agent CLI installation
+# layers. A source-only image miss can then reuse those expensive layers from
+# the trusted registry cache.
+ARG PAPERCLIP_RUNNER_CONTENT_ID
+ARG PAPERCLIP_RUNNER_SOURCE_REVISION
+RUN test -n "${PAPERCLIP_RUNNER_CONTENT_ID}" \
+    && test -n "${PAPERCLIP_RUNNER_SOURCE_REVISION}"
+
 RUN set -eu; \
     chmod -R a+rX /opt/paperclip-runner/provider-pack; \
     printf '%s\n' 'export PATH=/opt/paperclip-runner/provider-pack/node_modules/.bin:$PATH' \
@@ -132,3 +127,6 @@ RUN /bin/sh -lc 'set -eu; \
     test "$(acpx --version)" = "0.13.1"; \
     test "$(claude-agent-acp --version)" = "0.70.0"; \
     test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"'
+
+LABEL io.paperclip.runner.content-id="${PAPERCLIP_RUNNER_CONTENT_ID}" \
+      org.opencontainers.image.revision="${PAPERCLIP_RUNNER_SOURCE_REVISION}"

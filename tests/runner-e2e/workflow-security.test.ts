@@ -352,6 +352,30 @@ describe("public repository paid workflow security", () => {
     );
     expect(daytonaImageJob).toContain('echo "source_revision="');
     expect(daytonaImageJob).toContain('echo "content_id="');
+    expect(daytonaImageJob).toContain(
+      "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
+    );
+    expect(daytonaImageJob).toContain(
+      "TARGET_REF: ${{ needs.authorize.outputs.target_ref }}",
+    );
+    expect(daytonaImageJob).toContain(
+      "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
+    );
+    const cacheRead = daytonaImageJob.indexOf(
+      '--cache-from "type=registry,ref=${IMAGE_CACHE}"',
+    );
+    const trustedTargetCheck = daytonaImageJob.indexOf(
+      'if [ "$TARGET_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then',
+    );
+    const cacheWrite = daytonaImageJob.indexOf(
+      '--cache-to "type=registry,ref=${IMAGE_CACHE},mode=max"',
+    );
+    expect(cacheRead).toBeGreaterThan(0);
+    expect(trustedTargetCheck).toBeGreaterThan(cacheRead);
+    expect(cacheWrite).toBeGreaterThan(trustedTargetCheck);
+    expect(daytonaImageJob.slice(trustedTargetCheck, cacheWrite)).not.toContain(
+      "secrets.",
+    );
     const targetCodeJobs = [
       fullStack.slice(
         fullStack.indexOf("  catalog:"),
