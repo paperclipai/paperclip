@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
+  resolveAdapterRunOutcome,
   resolveHeartbeatRunTimeoutPolicy,
 } from "./heartbeat-stop-metadata.js";
 
@@ -127,6 +128,44 @@ describe("heartbeat stop metadata", () => {
       timeoutConfigured: true,
       timeoutSource: "default",
       timeoutFired: false,
+    });
+  });
+
+  describe("resolveAdapterRunOutcome", () => {
+    it("trusts the adapter's own verdict over a nonzero exit code left by our own cleanup kill", () => {
+      // Regression for SHIP-1350: terminalResultCleanup SIGTERMs a child after it
+      // already emitted a clean terminal result. The adapter treats that as not
+      // failed (no errorMessage), but the process still exits 143. Gating success
+      // on exitCode === 0 here re-introduces the misclassification the adapter
+      // layer already fixed, and it falls through inferHeartbeatRunStopReason's
+      // fallback to "adapter_failed" for a run that actually completed.
+      expect(
+        resolveAdapterRunOutcome({
+          timedOut: false,
+          exitCode: 143,
+          errorMessage: null,
+        }),
+      ).toBe("succeeded");
+    });
+
+    it("still fails a nonzero exit when the adapter reports an error", () => {
+      expect(
+        resolveAdapterRunOutcome({
+          timedOut: false,
+          exitCode: 1,
+          errorMessage: "Claude exited with code 1",
+        }),
+      ).toBe("failed");
+    });
+
+    it("prefers timed_out over exit code or error message", () => {
+      expect(
+        resolveAdapterRunOutcome({
+          timedOut: true,
+          exitCode: 143,
+          errorMessage: null,
+        }),
+      ).toBe("timed_out");
     });
   });
 });
