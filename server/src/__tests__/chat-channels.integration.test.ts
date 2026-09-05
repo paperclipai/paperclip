@@ -365,6 +365,10 @@ function makeThread(input: {
   const addReaction = vi.fn(async () => undefined);
   const startTyping = vi.fn(async () => undefined);
   const subscribe = vi.fn(async () => undefined);
+  const post = vi.fn(async () => ({
+    id: `thread-post-${randomUUID()}`,
+    threadId: input.id,
+  }));
   const thread = {
     id: input.id,
     channelId: input.channelId,
@@ -373,8 +377,9 @@ function makeThread(input: {
     adapter: { addReaction },
     startTyping,
     subscribe,
+    post,
   } as unknown as Thread;
-  return { thread, addReaction, startTyping, subscribe };
+  return { thread, addReaction, startTyping, subscribe, post };
 }
 
 function makeMessage(input: {
@@ -3560,6 +3565,86 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         replayable: false,
       }),
     ]);
+  });
+
+  it("guides empty Slack mentions once without creating a task or run", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredSlackEndpoint(fixture);
+    const configured = await service.get(endpoint.id);
+    const variants = [
+      "",
+      "   \t\n",
+      `<@${configured.botExternalId}>`,
+      ` \u200b <@${configured.botExternalId}>  @maya !!! `,
+    ];
+
+    for (const [index, text] of variants.entries()) {
+      const root = makeThread({
+        channelId: "C-EMPTY-MENTION",
+        id: `slack:C-EMPTY-MENTION:3200.${index}`,
+        name: "empty-mention",
+      });
+      const message = makeMessage({
+        id: `3200.${index}`,
+        text,
+        mentioned: true,
+        userId: "U-EMPTY-MENTION",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: root.thread,
+        message,
+        trigger: "mention",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: root.thread,
+        message,
+        trigger: "mention",
+      });
+
+      expect(root.post).toHaveBeenCalledTimes(1);
+      expect(root.post).toHaveBeenCalledWith(
+        "Please include a request after mentioning me.",
+      );
+      expect(root.addReaction).toHaveBeenCalledTimes(1);
+    }
+
+    expect(await service.listConversations(endpoint.id)).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, fixture.companyId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.companyId, fixture.companyId)),
+    ).toHaveLength(0);
+    const deliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(deliveries).toHaveLength(variants.length);
+    expect(
+      deliveries.every(
+        (delivery) =>
+          delivery.state === "processed" &&
+          delivery.normalizedEvent.deduplication?.duplicateCount === 1,
+      ),
+    ).toBe(true);
+    expect(wakeup).not.toHaveBeenCalled();
   });
 
   it("keeps one Paperclip account mapping for the same provider principal across endpoints", async () => {

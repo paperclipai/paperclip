@@ -407,6 +407,13 @@ function safeTitle(text: string, fallback: string): string {
   return (line || fallback).slice(0, 160);
 }
 
+function hasMeaningfulSlackMentionRequest(text: string): boolean {
+  const withoutMentions = text
+    .replace(/<@[^>|\s]+(?:\|[^>]+)?>/gi, " ")
+    .replace(/(^|\s)@[A-Z0-9._-]+(?=\s|$)/gi, " ");
+  return withoutMentions.replace(/[\s\p{P}\p{S}\p{Cf}]/gu, "").length > 0;
+}
+
 function sanitizeFilename(value: string | undefined): string | null {
   if (!value) return null;
   const leaf = value.replaceAll("\\", "/").split("/").pop()?.trim();
@@ -3035,6 +3042,37 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             updatedAt: new Date(),
           })
           .where(eq(chatDeliveries.id, activeDelivery.id));
+        return;
+      }
+
+      const emptySlackMention =
+        endpoint.provider === "slack" &&
+        (trigger === "mention" || message.isMention === true) &&
+        message.attachments.length === 0 &&
+        !hasMeaningfulSlackMentionRequest(message.text);
+      if (emptySlackMention) {
+        await db.transaction(async (tx) => {
+          await tx
+            .update(chatDeliveries)
+            .set({
+              state: "processed",
+              processedAt: new Date(),
+              redactedError: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(chatDeliveries.id, activeDelivery.id));
+          await tx
+            .update(chatEndpoints)
+            .set({ lastEventAt: new Date(), updatedAt: new Date() })
+            .where(eq(chatEndpoints.id, endpoint.id));
+        });
+        // Mark the durable delivery complete before provider-visible effects.
+        // An exact Slack redelivery can therefore never create duplicate
+        // guidance or accidentally fall through into task creation.
+        await Promise.allSettled([
+          thread.adapter.addReaction(thread.id, message.id, "eyes"),
+          thread.post("Please include a request after mentioning me."),
+        ]);
         return;
       }
 
