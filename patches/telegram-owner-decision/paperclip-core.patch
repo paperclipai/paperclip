@@ -1,0 +1,22 @@
+diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
+--- a/packages/shared/src/constants.ts
++++ b/packages/shared/src/constants.ts
+@@
+   "issue.document.updated",
+   "issue.document.deleted",
+   "issue.relations.updated",
++  "issue.thread_interaction.created",
+   "issue.checked_out",
+   "issue.released",
+   "issue.assignment_wakeup_requested",
+diff --git a/server/src/services/activity-log.ts b/server/src/services/activity-log.ts
+--- a/server/src/services/activity-log.ts
++++ b/server/src/services/activity-log.ts
+@@
+   issue_document_updated: "issue.document.updated",
+   issue_document_deleted: "issue.document.deleted",
+   issue_blockers_updated: "issue.relations.updated",
++  issue_thread_interaction_created: "issue.thread_interaction.created",
+   approval_approved: "approval.decided",
+   approval_rejected: "approval.decided",
+   approval_revision_requested: "approval.decided",
