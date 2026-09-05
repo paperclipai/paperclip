@@ -712,6 +712,16 @@ export function agentService(db: Db) {
         })
       : null;
 
+    // errorReason is only meaningful while status=error (see heartbeat.ts finalization);
+    // any explicit move away from error — including a caller re-affirming a non-error
+    // status on an already-clean record — must clear a stale reason too.
+    if (
+      Object.prototype.hasOwnProperty.call(normalizedPatch, "status") &&
+      normalizedPatch.status !== "error"
+    ) {
+      normalizedPatch.errorReason = null;
+    }
+
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
