@@ -118,8 +118,8 @@ async function stageDashboardBrandAssets(output: string) {
   await mkdir(assets, { recursive: true });
   await Promise.all([
     copyFile(
-      path.join(repositoryRoot, "ui/public/favicon.svg"),
-      path.join(assets, "favicon.svg"),
+      path.join(repositoryRoot, "ui/public/favicon-32x32.png"),
+      path.join(assets, "favicon-32x32.png"),
     ),
     copyFile(
       path.join(repositoryRoot, "ui/public/fonts/InterVariable.woff2"),

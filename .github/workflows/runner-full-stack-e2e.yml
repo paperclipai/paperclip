@@ -1104,21 +1104,20 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Verify history source report and private screenshot evidence
+      - name: Verify normalized history source report
         id: history_source_ready
         if: always()
         run: |
           set -euo pipefail
           dashboard_root="runner-e2e-merged-report/normalized"
-          private_screenshot="$(find "$dashboard_root" -type f -name '*.png' -print -quit 2>/dev/null || true)"
-          if [ -f "$dashboard_root/index.html" ] && [ -n "$private_screenshot" ]; then
+          if [ -f "$dashboard_root/index.html" ] && [ -f "$dashboard_root/normalized-results.json" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
 
   publish_history:
-    name: Publish pruned immutable history and landing site
+    name: Publish trusted-summary S3 history and structured Pages bundle
     needs: [authorize, catalog, report]
     if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
     runs-on: ubuntu-latest
@@ -1154,6 +1153,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Install publisher-only Chromium
+        run: pnpm exec playwright install --with-deps --only-shell chromium
+
       - name: Download access-controlled normalized campaign
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -1166,7 +1168,7 @@ jobs:
           role-to-assume: ${{ vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
           aws-region: ${{ vars.RUNNER_E2E_HISTORY_AWS_REGION }}
 
-      - name: Prune private evidence and publish immutable campaign history
+      - name: Publish trusted summary image to S3 and prune the Pages bundle
         env:
           PAPERCLIP_RUNNER_E2E_REPORT_DIR: ${{ github.workspace }}/runner-e2e-merged-report/normalized
           RUNNER_E2E_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_HISTORY_S3_BUCKET }}
@@ -1179,12 +1181,12 @@ jobs:
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         run: echo "name=github-pages-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
-      - name: Package pruned structured dashboard for GitHub Pages
+      - name: Package structured-only dashboard for GitHub Pages
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           name: ${{ steps.pages_artifact_name.outputs.name }}
-          path: runner-e2e-merged-report/normalized
+          path: runner-e2e-merged-report/pages
 
   pages:
     name: Publish latest structured dashboard

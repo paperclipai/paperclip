@@ -670,11 +670,21 @@ describe("public repository paid workflow security", () => {
     expect(publisher).not.toMatch(/AWS_(?:ACCESS|SECRET)_KEY/);
     expect(publisher).not.toMatch(/aws s3 (?:rm|sync .*--delete)/);
     expect(workflow).toContain("history_source_ready");
+    expect(workflow).toContain("Verify normalized history source report");
+    expect(workflow).not.toContain("sanitized_screenshot=");
     expect(workflow).toContain(
-      "Verify history source report and private screenshot evidence",
+      "Publish trusted-summary S3 history and structured Pages bundle",
     );
-    expect(workflow).toContain("private_screenshot=");
-    expect(workflow).toContain("Publish pruned immutable history");
+    expect(workflow).toContain(
+      "Publish trusted summary image to S3 and prune the Pages bundle",
+    );
+    expect(publisher).toContain(
+      "pnpm exec playwright install --with-deps --only-shell chromium",
+    );
+    expect(workflow).toContain(
+      "Package structured-only dashboard for GitHub Pages",
+    );
+    expect(workflow).toContain("path: runner-e2e-merged-report/pages");
     expect(workflow).toContain("Publish latest structured dashboard");
     expect(workflow).not.toContain("dashboard_ready");
     expect(workflow).not.toContain("Publish latest screenshot dashboard");

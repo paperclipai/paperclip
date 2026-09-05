@@ -10,6 +10,7 @@ import {
   createBundleManifest,
   isHistoricalBundlePathAllowed,
   prunePrivateHistoryEvidence,
+  stageTrustedHistoryAssets,
   validateHistoryDestination,
 } from "./history-publish.js";
 import {
@@ -20,6 +21,7 @@ import {
   mergeRunnerHistory,
 } from "./history.js";
 import { renderRunnerHistoryIndex } from "./history-index.js";
+import { renderPublicCampaignSummary } from "./public-summary-image.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
@@ -177,7 +179,10 @@ describe("runner E2E campaign history", () => {
     expect(dashboard).toContain("Suite pass rate");
     expect(dashboard).toContain("lines break at definition changes");
     expect(dashboard).toContain("cleanup passed");
-    const index = renderRunnerHistoryIndex(history);
+    const index = renderRunnerHistoryIndex(history, {
+      latestSummaryImageHref:
+        "campaigns/complete-red/public-images/campaign-summary.png",
+    });
     expect(index).toContain("Runner E2E campaigns");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
@@ -185,9 +190,14 @@ describe("runner E2E campaign history", () => {
     expect(index).toContain("65/66 passed");
     expect(index).toContain("Open report&nbsp;→");
     expect(index).toContain(
-      "Visual evidence remains in access-controlled workflow artifacts",
+      "campaigns/complete-red/public-images/campaign-summary.png",
     );
-    expect(index).toContain("Inert structured public evidence");
+    expect(index).toContain(
+      "Provider-produced visual evidence remains in access-controlled workflow artifacts",
+    );
+    expect(index).toContain(
+      "Trusted synthetic summary image and inert structured evidence",
+    );
     expect(index).not.toContain("data-gallery-dialog");
     expect(index).not.toContain("Configuration matrix");
   });
@@ -262,9 +272,11 @@ describe("historical publication security", () => {
     );
     expect(dashboard).toContain("Visual evidence · workflow artifact only");
     expect(dashboard).toContain(
-      "public history contains inert structured evidence only",
+      "public history contains inert structured evidence and a trusted synthetic campaign summary",
     );
-    expect(dashboard).toContain("Public history excludes visual evidence");
+    expect(dashboard).toContain(
+      "Public history excludes provider-produced visual evidence",
+    );
     await expect(
       readFile(path.join(evidenceDirectory, "final-state.png")),
     ).rejects.toThrow();
@@ -304,6 +316,160 @@ describe("historical publication security", () => {
         evidenceHrefPrefix: "../unsafe",
       }),
     ).rejects.toThrow("safe relative URL path");
+  });
+
+  it("keeps target screenshots private and admits only the trusted summary PNG", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-s3-test-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0]!;
+    const campaign = buildRunnerCampaign({
+      campaignId: "campaign-summary",
+      generatedAt: "2026-08-28T00:01:00.000Z",
+      expected: [execution.id],
+      results: [
+        {
+          ...result(execution, "passed"),
+          error: "PROVIDER_TEXT_MUST_NOT_RENDER",
+          screenshots: [
+            {
+              id: "final-state",
+              label: "PROVIDER_LABEL_MUST_NOT_RENDER",
+              file: "final-state.png",
+            },
+          ],
+        },
+      ],
+    });
+    const evidenceDirectory = path.join(
+      root,
+      "evidence",
+      execution.id,
+      "attempt-1",
+    );
+    await mkdir(evidenceDirectory, { recursive: true });
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    );
+    await Promise.all([
+      writeFile(
+        path.join(root, "normalized-results.json"),
+        JSON.stringify(campaign),
+      ),
+      writeFile(path.join(evidenceDirectory, "final-state.png"), png),
+      writeFile(path.join(evidenceDirectory, "undeclared.png"), png),
+      writeFile(path.join(evidenceDirectory, "server.log"), "sanitized\n"),
+      writeFile(path.join(evidenceDirectory, "failure.webm"), "webm"),
+      writeFile(path.join(evidenceDirectory, "unsafe.svg"), "<svg />"),
+      writeFile(path.join(evidenceDirectory, "result.json"), "{}\n"),
+    ]);
+
+    await prunePrivateHistoryEvidence(root);
+    for (const removed of [
+      "final-state.png",
+      "undeclared.png",
+      "failure.webm",
+      "unsafe.svg",
+    ]) {
+      await expect(
+        readFile(path.join(evidenceDirectory, removed)),
+      ).rejects.toThrow();
+    }
+    await expect(
+      readFile(path.join(evidenceDirectory, "server.log"), "utf8"),
+    ).resolves.toBe("sanitized\n");
+    const summaryHtml = renderPublicCampaignSummary(campaign);
+    expect(summaryHtml).toContain(execution.suite.label);
+    expect(summaryHtml).not.toContain("PROVIDER_TEXT_MUST_NOT_RENDER");
+    expect(summaryHtml).not.toContain("PROVIDER_LABEL_MUST_NOT_RENDER");
+    const incompleteSummaryHtml = renderPublicCampaignSummary({
+      ...campaign,
+      expected: [execution.id, runnerMatrix[1]!.id],
+      results: [
+        {
+          ...campaign.results[0]!,
+          cleanup: "failed",
+          durationMs: Number.MAX_VALUE,
+        },
+        result(runnerMatrix[2]!, "passed"),
+      ],
+    });
+    expect(incompleteSummaryHtml).toContain("0/2");
+    expect(incompleteSummaryHtml).toContain(">2<");
+    expect(incompleteSummaryHtml).toContain("24h 0m");
+    expect(incompleteSummaryHtml).not.toContain(String(Number.MAX_VALUE));
+
+    const summaryPath = path.join(
+      root,
+      "public-images",
+      "campaign-summary.png",
+    );
+    await mkdir(path.dirname(summaryPath), { recursive: true });
+    await writeFile(summaryPath, png);
+    expect(
+      isHistoricalBundlePathAllowed("public-images/campaign-summary.png", true),
+    ).toBe(true);
+    expect(
+      isHistoricalBundlePathAllowed(
+        `evidence/${execution.id}/attempt-1/final-state.png`,
+      ),
+    ).toBe(false);
+    await regenerateRunnerDashboard({
+      bundle: root,
+      publicSummaryImageHref: "public-images/campaign-summary.png",
+    });
+    expect(await readFile(path.join(root, "index.html"), "utf8")).toContain(
+      'src="public-images/campaign-summary.png"',
+    );
+    const manifest = await createBundleManifest(
+      root,
+      campaign.campaignId,
+      true,
+    );
+    expect(manifest.files.map((file) => file.path)).toContain(
+      "public-images/campaign-summary.png",
+    );
+    await writeFile(summaryPath, "not a png");
+    await expect(
+      createBundleManifest(root, campaign.campaignId, true),
+    ).rejects.toThrow("does not match its raster file type");
+  });
+
+  it("replaces target-supplied public assets with trusted publisher assets", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-assets-test-"));
+    const trustedRoot = await mkdtemp(
+      path.join(os.tmpdir(), "runner-trusted-assets-test-"),
+    );
+    temporaryDirectories.push(root, trustedRoot);
+    await Promise.all([
+      mkdir(path.join(root, "assets"), { recursive: true }),
+      mkdir(path.join(trustedRoot, "ui/public/fonts"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(path.join(root, "assets", "favicon-32x32.png"), "target"),
+      writeFile(path.join(root, "assets", "InterVariable.woff2"), "target"),
+      writeFile(path.join(root, "assets", "unexpected.svg"), "target"),
+      writeFile(
+        path.join(trustedRoot, "ui/public/favicon-32x32.png"),
+        "trusted-png",
+      ),
+      writeFile(
+        path.join(trustedRoot, "ui/public/fonts/InterVariable.woff2"),
+        "trusted-font",
+      ),
+    ]);
+
+    await stageTrustedHistoryAssets(root, trustedRoot);
+
+    await expect(
+      readFile(path.join(root, "assets", "favicon-32x32.png"), "utf8"),
+    ).resolves.toBe("trusted-png");
+    await expect(
+      readFile(path.join(root, "assets", "InterVariable.woff2"), "utf8"),
+    ).resolves.toBe("trusted-font");
+    await expect(
+      readFile(path.join(root, "assets", "unexpected.svg"), "utf8"),
+    ).rejects.toThrow();
   });
 
   it("requires a private-origin-compatible destination shape", () => {
@@ -384,7 +550,7 @@ describe("historical publication security", () => {
     temporaryDirectories.push(root);
     await mkdir(path.join(root, "assets"));
     await writeFile(path.join(root, "index.html"), "safe");
-    await writeFile(path.join(root, "assets", "favicon.svg"), "safe");
+    await writeFile(path.join(root, "assets", "favicon-32x32.png"), "safe");
     const first = await createBundleManifest(root, "campaign-1");
     const second = await createBundleManifest(root, "campaign-1");
     expect(first.bundleDigest).toBe(second.bundleDigest);

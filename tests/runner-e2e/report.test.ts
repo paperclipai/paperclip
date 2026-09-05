@@ -196,7 +196,9 @@ describe("runner E2E report aggregation", () => {
     expect(dashboard).toContain(
       "Visual evidence is retained in the access-controlled workflow artifact",
     );
-    expect(dashboard).toContain("Public history excludes visual evidence");
+    expect(dashboard).toContain(
+      "Public history excludes provider-produced visual evidence",
+    );
     expect(dashboard).toContain("message_contains");
     expect(dashboard).toContain("Matchers and test context");
     expect(dashboard).toContain("Campaign billing summary");
@@ -215,8 +217,8 @@ describe("runner E2E report aggregation", () => {
     expect(dashboard).not.toContain("overflow: auto; max-height: calc(100vh");
     expect(dashboard).toContain("@media (max-width: 1180px)");
     expect(
-      await readFile(path.join(output, "assets", "favicon.svg"), "utf8"),
-    ).toContain("<svg");
+      await readFile(path.join(output, "assets", "favicon-32x32.png")),
+    ).not.toHaveLength(0);
     expect(
       await readFile(path.join(output, "assets", "InterVariable.woff2")),
     ).not.toHaveLength(0);

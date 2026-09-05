@@ -36,6 +36,17 @@ function date(value: string) {
   }).format(new Date(value));
 }
 
+function safeRelativeAssetHref(relative: string | undefined) {
+  if (!relative || /^(?:[a-z]+:|\/\/|\/)/i.test(relative)) return null;
+  const segments = relative.split("/");
+  if (
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+  return segments.map(encodeURIComponent).join("/");
+}
+
 function campaignStatus(campaign: RunnerE2EHistoryCampaign) {
   return campaign.failed === 0 &&
     campaign.passed === campaign.selected &&
@@ -97,7 +108,10 @@ function campaignRow(campaign: RunnerE2EHistoryCampaign) {
   </tr>`;
 }
 
-export function renderRunnerHistoryIndex(history: RunnerE2EHistoryIndex) {
+export function renderRunnerHistoryIndex(
+  history: RunnerE2EHistoryIndex,
+  options: { latestSummaryImageHref?: string } = {},
+) {
   const campaigns = [...history.campaigns].sort((left, right) =>
     right.generatedAt.localeCompare(left.generatedAt),
   );
@@ -118,6 +132,9 @@ export function renderRunnerHistoryIndex(history: RunnerE2EHistoryIndex) {
     campaigns.length > 0
       ? campaigns.map(campaignRow).join("")
       : `<tr><td class="empty" colspan="9">No campaigns have been published yet.</td></tr>`;
+  const latestSummaryImageHref = safeRelativeAssetHref(
+    options.latestSummaryImageHref,
+  );
 
   return `<!doctype html>
 <html lang="en">
@@ -127,7 +144,7 @@ export function renderRunnerHistoryIndex(history: RunnerE2EHistoryIndex) {
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
-  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/favicon-32x32.png" type="image/png">
   <title>Runner E2E Campaigns · Paperclip</title>
   <style>
     @font-face { font-family: "Paperclip Inter"; src: url("assets/InterVariable.woff2") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }
@@ -154,6 +171,8 @@ export function renderRunnerHistoryIndex(history: RunnerE2EHistoryIndex) {
     .pointers { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
     .pointers a { padding:8px 11px; border:1px solid var(--border); border-radius:7px; background:var(--raised); font-size:12px; text-decoration:none; }
     .pointers a:hover,.campaign-link:hover,.open-cell a:hover { text-decoration:underline; }
+    .latest-summary { margin:0 0 24px; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--raised); }
+    .latest-summary img { display:block; width:100%; height:auto; border-radius:6px; }
     .table-wrap { border-top:1px solid var(--border); border-bottom:1px solid var(--border); }
     table { width:100%; border-collapse:collapse; }
     th,td { padding:14px 12px; border-bottom:1px solid var(--border); text-align:left; vertical-align:top; }
@@ -196,7 +215,7 @@ export function renderRunnerHistoryIndex(history: RunnerE2EHistoryIndex) {
       <div>
         <p class="eyebrow">Historical test reporting</p>
         <h1>Runner E2E campaigns</h1>
-        <p class="lede">Each row is one workflow campaign against a Paperclip revision. Open a report for its configuration matrices, matchers, per-test billing, and sanitized structured evidence. Visual evidence remains in access-controlled workflow artifacts.</p>
+        <p class="lede">Each row is one workflow campaign against a Paperclip revision. Open a report for its configuration matrices, matchers, per-test billing, and sanitized structured evidence. Provider-produced visual evidence remains in access-controlled workflow artifacts.</p>
       </div>
       <div class="summary" aria-label="History summary">
         <div class="metric"><strong>${campaigns.length}</strong><span>Campaigns</span></div>
@@ -204,6 +223,7 @@ export function renderRunnerHistoryIndex(history: RunnerE2EHistoryIndex) {
         <div class="metric"><strong>${html(usd(totalCost))}</strong><span>Recorded cost</span></div>
       </div>
     </header>
+    ${latestSummaryImageHref ? `<figure class="latest-summary"><img src="${html(latestSummaryImageHref)}" alt="Latest runner E2E campaign status summary"></figure>` : ""}
     <nav class="pointers" aria-label="Campaign pointers">
       ${latest ? `<a href="${html(latest.publicUrl)}">Latest run · ${html(latest.campaignId)}</a>` : ""}
       ${latestGreen ? `<a href="${html(latestGreen.publicUrl)}">Latest complete green · ${html(latestGreen.campaignId)}</a>` : ""}
@@ -214,7 +234,7 @@ export function renderRunnerHistoryIndex(history: RunnerE2EHistoryIndex) {
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <footer><span>Updated ${html(date(history.updatedAt))} UTC</span><span>Immutable campaign reports · Inert structured public evidence</span></footer>
+    <footer><span>Updated ${html(date(history.updatedAt))} UTC</span><span>Immutable campaign reports · Trusted synthetic summary image and inert structured evidence</span></footer>
   </main>
 </body>
 </html>`;

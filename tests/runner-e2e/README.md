@@ -189,9 +189,10 @@ Packaged, access-controlled evidence is written beneath
 outcomes, sanitized fixture/API metadata, a result record, JUnit, HTML, and a
 blob report. Failures additionally retain the Playwright trace/video, browser
 diagnostics, failure screenshot, and sanitized Paperclip/run logs when
-produced. PNG and WebM files are not pixel-inspected, so they are suitable only
-for the local results directory and access-controlled GitHub Actions artifacts.
-SVG is active content and is rejected from the packaged evidence entirely.
+produced. Provider/UI PNG and WebM files remain limited to the local results
+directory and access-controlled GitHub Actions artifact because secrets can be
+rendered into pixels. SVG is active content and is rejected from the packaged
+evidence entirely.
 
 Every completed local campaign also writes
 `tests/runner-e2e/results/<campaign>/dashboard.html`. The self-contained page
@@ -204,16 +205,22 @@ usage is labeled `unavailable` or `unpriced`; it is never presented as zero
 cost. The CI report job stages the same portable site at
 `normalized/index.html` inside the access-controlled merged report artifact.
 
-Permanent public history has a narrower boundary. Before uploading to S3 or
-packaging the optional GitHub Pages artifact, the publisher removes raster and
-video evidence, archives, and the generated Playwright/blob/HTML report trees.
-It then regenerates the dashboard against only the remaining allowlisted,
-inert structured per-attempt evidence (`.json`, `.log`, `.md`, and `.txt`).
-Per-attempt XML is excluded because browsers can process XML/XSLT. The root
-`junit.xml` remains public because the report aggregator builds it from fixed
-markup and XML-escaped fields. Public dashboards therefore contain results and
-accounting but no attempt screenshots, videos, traces, or generated Playwright
-reports.
+Permanent publication uses two explicit bundles. The CloudFront-backed S3
+history contains one publisher-generated `public-images/campaign-summary.png`.
+Trusted publisher code renders it offline from fixed catalog labels and
+sanitized status/count/duration fields; provider output, error text, comments,
+and target-produced pixels are never inputs. The PNG must pass a 12 MiB bound
+and signature validation before entering the immutable manifest. S3 also
+retains allowlisted inert per-attempt evidence (`.json`, `.log`, `.md`, and
+`.txt`); `.log` copies have already passed exact-value/key-shape scanning and
+redaction. The GitHub Pages bundle is regenerated separately and remains
+structured-only.
+
+Both public bundles exclude video, archives, raw/unallowlisted logs, SVG or
+other active content, generated Playwright/blob/HTML report trees, and
+per-attempt XML. The root `junit.xml` remains public because the report
+aggregator builds it from fixed markup and XML-escaped fields. Full evidence
+remains available only in the access-controlled workflow artifact.
 
 ### Billing interpretation
 
@@ -380,13 +387,10 @@ bundle digest fails closed.
 
 GitHub Pages remains the stable latest dashboard. Enable Pages with GitHub
 Actions as its source and set `RUNNER_FULL_STACK_E2E_PUBLISH_PAGES=true`.
-The publisher prunes screenshots, video, archives, and generated report trees,
-then regenerates the public dashboard before either the CloudFront-backed S3
-history or optional Pages artifact is created. Public per-attempt evidence is
-limited to allowlisted inert structured text. Databases, Paperclip homes,
-workspaces, raw/unredacted logs, credentials, and visual evidence are never
-published. Sanitized allowlisted `.log` copies may be public only after
-exact-value/key-shape scanning and redaction.
+The publisher creates an S3 stage with the trusted synthetic summary PNG and a
+separate structured-only Pages stage. Neither surface publishes provider/UI
+screenshots, video, archives, generated reports, SVG/active content, databases,
+Paperclip homes, workspaces, raw/unallowlisted logs, or credentials.
 
 See [FIXTURES.md](./FIXTURES.md) before adding or changing a profile,
 environment, task, matcher, or future Paperclip object fixture.

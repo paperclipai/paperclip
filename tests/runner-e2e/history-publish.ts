@@ -3,8 +3,11 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
+  cp,
+  copyFile,
   mkdtemp,
   lstat,
+  mkdir,
   readFile,
   readdir,
   rm,
@@ -12,6 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
+import { writePublicCampaignSummaryImage } from "./public-summary-image.js";
 import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
 import { renderRunnerHistoryIndex } from "./history-index.js";
 import {
@@ -22,6 +26,7 @@ import {
 import type { RunnerE2ECampaign, RunnerE2EHistoryIndex } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 const MUTABLE_HISTORY_FILES = new Set([
   "history.json",
   "latest.json",
@@ -35,6 +40,7 @@ const PUBLISH_ROOT_FILES = new Set([
   "summary.md",
 ]);
 const PUBLIC_EVIDENCE_EXTENSIONS = new Set([".json", ".log", ".md", ".txt"]);
+const MAX_PUBLIC_RASTER_BYTES = 12 * 1024 * 1024;
 const PRIVATE_EVIDENCE_DIRECTORIES = new Set([
   "blob-report",
   "html-report",
@@ -64,7 +70,10 @@ function publicEvidencePath(relative: string) {
   );
 }
 
-export function isHistoricalBundlePathAllowed(relative: string) {
+export function isHistoricalBundlePathAllowed(
+  relative: string,
+  allowPublicSummary = false,
+) {
   if (
     relative.includes("\\") ||
     relative.startsWith("/") ||
@@ -73,13 +82,41 @@ export function isHistoricalBundlePathAllowed(relative: string) {
     return false;
   }
   if (PUBLISH_ROOT_FILES.has(relative)) return true;
+  if (allowPublicSummary && relative === "public-images/campaign-summary.png") {
+    return true;
+  }
   if (
-    relative === "assets/favicon.svg" ||
+    relative === "assets/favicon-32x32.png" ||
     relative === "assets/InterVariable.woff2"
   ) {
     return true;
   }
   return publicEvidencePath(relative);
+}
+
+function hasPublicPngMagic(content: Buffer) {
+  return (
+    content.length >= 24 &&
+    content
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) &&
+    content.subarray(12, 16).equals(Buffer.from("IHDR", "ascii"))
+  );
+}
+
+async function validatePublicRaster(absolute: string, relative: string) {
+  const metadata = await stat(absolute);
+  if (metadata.size === 0 || metadata.size > MAX_PUBLIC_RASTER_BYTES) {
+    throw new Error(
+      `Public screenshot ${relative} exceeds the per-file size boundary`,
+    );
+  }
+  const content = await readFile(absolute);
+  if (!hasPublicPngMagic(content)) {
+    throw new Error(
+      `Public screenshot ${relative} does not match its raster file type`,
+    );
+  }
 }
 
 async function pruneEvidenceDirectory(root: string, current: string) {
@@ -108,6 +145,25 @@ export async function prunePrivateHistoryEvidence(root: string) {
     throw new Error("Historical evidence root must be a directory");
   }
   await pruneEvidenceDirectory(root, evidenceRoot);
+}
+
+export async function stageTrustedHistoryAssets(
+  root: string,
+  trustedRoot = repositoryRoot,
+) {
+  const assets = path.join(root, "assets");
+  await rm(assets, { recursive: true, force: true });
+  await mkdir(assets, { recursive: true });
+  await Promise.all([
+    copyFile(
+      path.join(trustedRoot, "ui/public/favicon-32x32.png"),
+      path.join(assets, "favicon-32x32.png"),
+    ),
+    copyFile(
+      path.join(trustedRoot, "ui/public/fonts/InterVariable.woff2"),
+      path.join(assets, "InterVariable.woff2"),
+    ),
+  ]);
 }
 
 interface BundleManifest {
@@ -155,7 +211,11 @@ export function validateHistoryDestination(input: {
   return { prefix, publicBaseUrl: publicUrl.href.replace(/\/$/, "") };
 }
 
-async function relativeFiles(root: string, current = root): Promise<string[]> {
+async function relativeFiles(
+  root: string,
+  current = root,
+  allowPublicSummary = false,
+): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true });
   const files: string[] = [];
   for (const entry of entries) {
@@ -164,11 +224,11 @@ async function relativeFiles(root: string, current = root): Promise<string[]> {
       throw new Error(`Refusing to publish symbolic link ${entry.name}`);
     }
     if (entry.isDirectory()) {
-      files.push(...(await relativeFiles(root, absolute)));
+      files.push(...(await relativeFiles(root, absolute, allowPublicSummary)));
     } else if (entry.isFile()) {
       const relative = path.relative(root, absolute).split(path.sep).join("/");
       if (MUTABLE_HISTORY_FILES.has(relative)) continue;
-      if (!isHistoricalBundlePathAllowed(relative)) {
+      if (!isHistoricalBundlePathAllowed(relative, allowPublicSummary)) {
         throw new Error(
           `Refusing non-allowlisted historical bundle path ${relative}`,
         );
@@ -182,23 +242,29 @@ async function relativeFiles(root: string, current = root): Promise<string[]> {
 export async function createBundleManifest(
   root: string,
   campaignId: string,
+  allowPublicSummary = false,
 ): Promise<BundleManifest> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(campaignId)) {
     throw new Error("Campaign ID is unsafe for immutable object storage");
   }
   const files = await Promise.all(
-    (await relativeFiles(root)).sort().map(async (relative) => {
-      const absolute = path.join(root, ...relative.split("/"));
-      const [content, metadata] = await Promise.all([
-        readFile(absolute),
-        stat(absolute),
-      ]);
-      return {
-        path: relative,
-        sha256: createHash("sha256").update(content).digest("hex"),
-        bytes: metadata.size,
-      };
-    }),
+    (await relativeFiles(root, root, allowPublicSummary))
+      .sort()
+      .map(async (relative) => {
+        const absolute = path.join(root, ...relative.split("/"));
+        if (relative === "public-images/campaign-summary.png") {
+          await validatePublicRaster(absolute, relative);
+        }
+        const [content, metadata] = await Promise.all([
+          readFile(absolute),
+          stat(absolute),
+        ]);
+        return {
+          path: relative,
+          sha256: createHash("sha256").update(content).digest("hex"),
+          bytes: metadata.size,
+        };
+      }),
   );
   const bundleDigest = createHash("sha256")
     .update(JSON.stringify(files))
@@ -323,6 +389,47 @@ async function uploadFile(
   ]);
 }
 
+async function uploadImmutableBundle(
+  bucket: string,
+  key: string,
+  directory: string,
+) {
+  const common = [
+    "--recursive",
+    "--only-show-errors",
+    "--cache-control",
+    "public,max-age=31536000,immutable",
+  ];
+  await execFileAsync("aws", [
+    "s3",
+    "cp",
+    directory,
+    awsObject(bucket, key),
+    ...common,
+    "--exclude",
+    "history.json",
+    "--exclude",
+    "latest.json",
+    "--exclude",
+    "latest-green.json",
+    "--exclude",
+    "*.png",
+  ]);
+  await execFileAsync("aws", [
+    "s3",
+    "cp",
+    directory,
+    awsObject(bucket, key),
+    ...common,
+    "--exclude",
+    "*",
+    "--include",
+    "*.png",
+    "--content-type",
+    "image/png",
+  ]);
+}
+
 async function main() {
   const reportRoot = path.resolve(
     process.env.PAPERCLIP_RUNNER_E2E_REPORT_DIR ??
@@ -361,14 +468,34 @@ async function main() {
 
   // Campaign bundles are immutable and must not capture a mutable history
   // file left in a reused local directory. The root landing page below is the
-  // only dashboard that embeds navigation across campaigns.
-  // Raster/video pixels are not OCR-scanned for secrets, and generated HTML,
-  // archives, and SVG may contain or execute active/private content. Preserve
-  // those in the access-controlled workflow artifact but remove them from the
-  // directory shared by public S3 and Pages publication.
-  await prunePrivateHistoryEvidence(reportRoot);
-  await regenerateRunnerDashboard({ bundle: reportRoot, historyFile: null });
-  const manifest = await createBundleManifest(reportRoot, campaign.campaignId);
+  // only dashboard that embeds navigation across campaigns. S3 gets its own
+  // staged copy. All target/provider-produced raster remains private. The sole
+  // public image is rendered below by trusted publisher code from fixed catalog
+  // labels and numeric/status fields while Chromium has no network access.
+  const s3ReportRoot = path.join(temporary, "s3-campaign");
+  await cp(reportRoot, s3ReportRoot, { recursive: true, errorOnExist: true });
+  await prunePrivateHistoryEvidence(s3ReportRoot);
+  await stageTrustedHistoryAssets(s3ReportRoot);
+  await rm(path.join(s3ReportRoot, "public-images"), {
+    recursive: true,
+    force: true,
+  });
+  const summaryImage = path.join(
+    s3ReportRoot,
+    "public-images",
+    "campaign-summary.png",
+  );
+  await writePublicCampaignSummaryImage(campaign, summaryImage);
+  await regenerateRunnerDashboard({
+    bundle: s3ReportRoot,
+    historyFile: null,
+    publicSummaryImageHref: "public-images/campaign-summary.png",
+  });
+  const manifest = await createBundleManifest(
+    s3ReportRoot,
+    campaign.campaignId,
+    true,
+  );
   const campaignPrefix = `${destination.prefix}/campaigns/${campaign.campaignId}`;
   const manifestKey = `${campaignPrefix}/bundle-manifest.json`;
   const existingManifest = await downloadJson<BundleManifest>(
@@ -385,22 +512,7 @@ async function main() {
     );
   }
   if (!existingManifest) {
-    await execFileAsync("aws", [
-      "s3",
-      "cp",
-      reportRoot,
-      awsObject(bucket, campaignPrefix),
-      "--recursive",
-      "--only-show-errors",
-      "--exclude",
-      "history.json",
-      "--exclude",
-      "latest.json",
-      "--exclude",
-      "latest-green.json",
-      "--cache-control",
-      "public,max-age=31536000,immutable",
-    ]);
+    await uploadImmutableBundle(bucket, campaignPrefix, s3ReportRoot);
     const manifestFile = path.join(temporary, "bundle-manifest.json");
     await writeFile(manifestFile, json(manifest), "utf8");
     await uploadJson(
@@ -411,26 +523,44 @@ async function main() {
     );
   }
 
+  // Pages intentionally remains a smaller, structured-only publication in a
+  // sibling stage. The downloaded report stays intact for this whole job.
+  const pagesRoot = path.join(path.dirname(reportRoot), "pages");
+  await rm(pagesRoot, { recursive: true, force: true });
+  await cp(reportRoot, pagesRoot, { recursive: true, errorOnExist: true });
+  await prunePrivateHistoryEvidence(pagesRoot);
+  await stageTrustedHistoryAssets(pagesRoot);
+  await rm(path.join(pagesRoot, "public-images"), {
+    recursive: true,
+    force: true,
+  });
   const pointers = buildHistoryPointers(history);
-  const historyFile = path.join(reportRoot, "history.json");
-  const latestFile = path.join(reportRoot, "latest.json");
-  const latestGreenFile = path.join(reportRoot, "latest-green.json");
+  const historyFile = path.join(pagesRoot, "history.json");
+  const latestFile = path.join(pagesRoot, "latest.json");
+  const latestGreenFile = path.join(pagesRoot, "latest-green.json");
   await Promise.all([
     writeFile(historyFile, json(history), "utf8"),
     writeFile(latestFile, json(pointers.latest), "utf8"),
     writeFile(latestGreenFile, json(pointers.latestGreen), "utf8"),
   ]);
-  await regenerateRunnerDashboard({ bundle: reportRoot, historyFile });
+  await regenerateRunnerDashboard({ bundle: pagesRoot, historyFile });
+  await createBundleManifest(pagesRoot, campaign.campaignId);
   const landingDirectory = path.join(temporary, "landing");
   await regenerateRunnerDashboard({
-    bundle: reportRoot,
+    bundle: s3ReportRoot,
     historyFile,
     outputDirectory: landingDirectory,
     evidenceHrefPrefix: `campaigns/${campaign.campaignId}`,
+    publicSummaryImageHref: `campaigns/${campaign.campaignId}/public-images/campaign-summary.png`,
   });
   await writeFile(
     path.join(landingDirectory, "index.html"),
-    renderRunnerHistoryIndex(history),
+    renderRunnerHistoryIndex(history, {
+      latestSummaryImageHref:
+        history.latestCampaignId === campaign.campaignId
+          ? `campaigns/${campaign.campaignId}/public-images/campaign-summary.png`
+          : undefined,
+    }),
     "utf8",
   );
   await Promise.all([
@@ -470,15 +600,15 @@ async function main() {
     ),
     uploadFile(
       bucket,
-      `${destination.prefix}/assets/favicon.svg`,
-      path.join(reportRoot, "assets", "favicon.svg"),
-      "image/svg+xml",
+      `${destination.prefix}/assets/favicon-32x32.png`,
+      path.join(s3ReportRoot, "assets", "favicon-32x32.png"),
+      "image/png",
       "public,max-age=86400",
     ),
     uploadFile(
       bucket,
       `${destination.prefix}/assets/InterVariable.woff2`,
-      path.join(reportRoot, "assets", "InterVariable.woff2"),
+      path.join(s3ReportRoot, "assets", "InterVariable.woff2"),
       "font/woff2",
       "public,max-age=86400",
     ),

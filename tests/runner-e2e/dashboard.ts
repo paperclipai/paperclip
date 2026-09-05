@@ -26,6 +26,7 @@ export interface RunnerDashboardInput {
   entries: readonly RunnerDashboardEntry[];
   campaign?: RunnerE2ECampaign;
   history?: RunnerE2EHistoryIndex;
+  publicSummaryImageHref?: string;
 }
 
 interface ResolvedScreenshot {
@@ -72,6 +73,17 @@ function safeEvidenceHref(base: string | undefined, relative: string) {
     .map(encodeURIComponent)
     .join("/");
   return `${cleanBase}/${cleanRelative}`;
+}
+
+function safePublicAssetHref(relative: string | undefined) {
+  if (!relative || /^(?:[a-z]+:|\/\/|\/)/i.test(relative)) return null;
+  const segments = relative.split("/");
+  if (
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+  return segments.map(encodeURIComponent).join("/");
 }
 
 function compactJson(value: unknown) {
@@ -563,6 +575,9 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     )
     .join("");
   const historySection = renderHistory(input.history);
+  const publicSummaryImageHref = safePublicAssetHref(
+    input.publicSummaryImageHref,
+  );
 
   return `<!doctype html>
 <html lang="en">
@@ -572,7 +587,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
-  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/favicon-32x32.png" type="image/png">
   <title>${html(input.title)} · Paperclip</title>
   <style>
     @font-face { font-family: "Paperclip Inter"; src: url("assets/InterVariable.woff2") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }
@@ -868,6 +883,8 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 100ms !important; }
     }
+    .public-summary { margin: 0 0 32px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--raised); }
+    .public-summary img { display: block; width: 100%; height: auto; border-radius: 6px; }
     @media print {
       .brand-bar, .gallery-launch, dialog { display: none; }
       main { width: 100%; margin: 0; }
@@ -889,7 +906,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <div>
         <p class="eyebrow">Full-stack acceptance campaign</p>
         <h1>${html(input.title)}</h1>
-        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Visual evidence is retained in the access-controlled workflow artifact; public history contains inert structured evidence only.</p>
+        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Provider-produced visual evidence remains in the access-controlled workflow artifact; public history contains inert structured evidence and a trusted synthetic campaign summary.</p>
       </div>
       <div class="report-actions">
         <div class="summary" aria-label="Campaign summary">
@@ -900,6 +917,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         <button class="gallery-launch" type="button" data-gallery-open ${screenshotCount === 0 ? "disabled" : ""}>${screenshotCount === 0 ? "Visual evidence · workflow artifact only" : `View gallery · ${screenshotCount}`}</button>
       </div>
     </header>
+    ${publicSummaryImageHref ? `<figure class="public-summary"><img src="${html(publicSummaryImageHref)}" alt="Runner E2E campaign status summary"></figure>` : ""}
     <section class="billing-overview" aria-label="Campaign billing summary">
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens))}</strong><span>Input tokens</span></div>
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens))}</strong><span>Output tokens</span></div>
@@ -918,7 +936,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </nav>
     ${suiteSections}
     ${historySection}
-    <footer><span>Generated ${html(input.generatedAt)}</span><span>${input.catalog.length} catalog executions · Public history excludes visual evidence</span></footer>
+    <footer><span>Generated ${html(input.generatedAt)}</span><span>${input.catalog.length} catalog executions · Public history excludes provider-produced visual evidence</span></footer>
   </main>
   <dialog class="gallery-dialog" data-gallery-dialog aria-labelledby="gallery-title">
     <div class="gallery-shell">
