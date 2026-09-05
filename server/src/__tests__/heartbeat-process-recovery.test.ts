@@ -1329,6 +1329,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(agent).toEqual({ status: "running", errorReason: null });
   });
 
+  it("does not immediately continue a low-trust preflight setup failure", async () => {
+    const { agentId, runId, issueId, companyId } =
+      await seedQueuedIssueRunFixture();
+    const reviewPreset = {
+      id: "low_trust_review",
+      version: 1,
+      rawOutputDisposition: "quarantine",
+    } as const;
+    await db
+      .update(issues)
+      .set({
+        sourceTrust: {
+          preset: "low_trust_review",
+          disposition: "quarantined",
+          sourceIssueId: issueId,
+        },
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          reviewPreset,
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            reviewPreset,
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId,
+              rootIssueId: issueId,
+              issueIds: [issueId],
+              allowedAgentIds: [agentId],
+              allowedToolClasses: [
+                "git.read",
+                "github.pr.read",
+                "tests.local",
+              ],
+            },
+          },
+        },
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "failed",
+      errorCode: "low_trust_isolation_unavailable",
+    });
+    expect(
+      mockAdapterExecute.mock.calls.some(
+        ([input]) =>
+          (input as { runId?: string } | undefined)?.runId === runId,
+      ),
+    ).toBe(false);
+    expect(
+      await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, runId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]?.status),
+    ).toBe("blocked");
+  });
+
   it("does not queue immediate recovery when the failed run's issue is hidden", async () => {
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 1,

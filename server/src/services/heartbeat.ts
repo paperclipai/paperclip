@@ -362,6 +362,7 @@ import {
 import { withRecoveryContext } from "./recovery/status-only-context.js";
 import {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  classifyContinuationFailure,
   recoveryService,
 } from "./recovery/service.js";
 import { collectDispositionRepairSourceState } from "./recovery/disposition-repair.js";
@@ -23697,6 +23698,7 @@ export function heartbeatService(
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
+        classifyContinuationFailure(run).kind === "non_retryable" ||
         didAutomaticRecoveryFail(
           run,
           issue.status === "todo"
