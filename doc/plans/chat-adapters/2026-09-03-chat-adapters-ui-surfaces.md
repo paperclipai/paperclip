@@ -1,6 +1,6 @@
 # Chat Adapters UI Surface Specification
 
-**Status:** historical v1 requirements inventory; current product flow is `2026-09-04-chat-adapters-ui-surfaces-v5.md`
+**Status:** historical v1 requirements inventory; current product flow is `2026-09-04-chat-adapters-ui-surfaces-v8.md`. Managed-install and helper-first concepts below are not shipped requirements.
 **Date:** 2026-09-03
 **Paperclip base:** `origin/master` at `8430bd897f01dd4b91e0970efffb71b97e5a2685` (refreshed from earlier planning references through `d593463ab6394cd356bf27448ea28bad8cccf4ec`)
 **Current wireframe viewer:** `index.html` in this directory renders the v5 step-rail package. The 19-screen inventory below is retained as architecture-coverage history, not the proposed onboarding flow.

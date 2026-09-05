@@ -441,7 +441,7 @@ Run C5 and C6 with GitHub-specific expectations:
 - long output is one GFM comment updated at a coarse cadence, not a stream of noisy comments;
 - provider edits preserve a stable message link and final content;
 - rich actions/forms fall back to explanatory text plus an authenticated Paperclip link;
-- inbound GitHub attachment links are fetched only through bounded, type-checked ingestion;
+- the current GitHub adapter is text-only: provider attachments are not ingested, and URLs in Markdown remain ordinary text links rather than fetched or stored files;
 - outbound files use safe links when native upload is unavailable;
 - there is no DM, ephemeral, modal, or native button claim in the UI;
 - asking Maya to inspect or change repository code does not grant access. Without a separate GitHub tool connection, Maya returns a safe limitation/link and no code operation occurs.
@@ -459,7 +459,7 @@ Run C5 and C6 with GitHub-specific expectations:
 
 ### G7 — GitHub evidence and cleanup
 
-Capture the App permission screen, selected repositories, issue/PR/review conversations, reaction/edit behavior, fallback link, Conversations rows, duplicate delivery, and unavailable/recovered state. Close test issues/PRs, delete uploaded fixture files where applicable, delete the disposable GitHub App, revoke identity links, and remove the Paperclip connection. Never delete a repository unless the authorization envelope explicitly names it as disposable.
+Capture the App permission screen, selected repositories, issue/PR/review conversations, reaction/edit behavior, fallback link, Conversations rows, duplicate delivery, and unavailable/recovered state. Close test issues/PRs, delete the disposable GitHub App, revoke identity links, and remove the Paperclip connection. The current GitHub adapter does not upload fixture files; URLs used in text-only fallback checks require no provider-file cleanup. Never delete a repository unless the authorization envelope explicitly names it as disposable.
 
 ## 7. Microsoft Teams live browser runbook
 
@@ -502,10 +502,11 @@ Run only after Paperclip ships a generated package or one-time Teams Developer C
 ### T3 — Team/channel reach
 
 1. Verify installation at the provider is scoped to the test team.
-2. In Paperclip Settings, confirm both team channels are available but only Enabled is on.
-3. Run C2 in the Disabled channel.
-4. Install Maya into a second disposable test team, refresh, and verify its channels appear disabled.
-5. Remove the app from that second team and verify unavailable state.
+2. Deliver at least one installation or message lifecycle event from each test channel before expecting it in Paperclip. For an untouched channel, send a benign unmentioned discovery message; Paperclip does not fetch a Teams channel inventory proactively.
+3. In Paperclip Settings, confirm both discovered team channels are available but only Enabled is on.
+4. Run C2 in the Disabled channel.
+5. Install Maya into a second disposable test team, trigger one lifecycle/message event in each channel, refresh, and verify the discovered channels appear disabled.
+6. Remove the app from that second team and verify unavailable state.
 
 **Pass:** Teams app installation is the provider ceiling; Paperclip independently enables individual channels.
 

@@ -22,6 +22,7 @@ import {
   type ChatChannelService,
   type ChatChannelServiceOptions,
 } from "../services/chat-channels.js";
+import { accessService } from "../services/access.js";
 import {
   createInviteRateLimiter,
   type InviteRateLimiter,
@@ -32,7 +33,12 @@ import {
   getAccessibleResource,
   getActorInfo,
 } from "./authz.js";
-import { badRequest, HttpError, tooManyRequests } from "../errors.js";
+import {
+  badRequest,
+  forbidden,
+  HttpError,
+  tooManyRequests,
+} from "../errors.js";
 
 type ChatChannelRouteOptions = ChatChannelServiceOptions & {
   service?: ChatChannelService;
@@ -75,6 +81,39 @@ async function assertEndpointAccess(
 export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   const router = Router();
   const service = options.service ?? chatChannelService(db, options);
+  const access = accessService(db);
+
+  async function assertConnectionManager(
+    req: ExpressRequest,
+    companyId: string,
+  ) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)
+      return;
+    const userId = req.actor.userId;
+    if (
+      userId &&
+      (await access.hasPermission(
+        companyId,
+        "user",
+        userId,
+        "tools:manage_connections",
+      ))
+    )
+      return;
+    throw forbidden("Missing permission: tools:manage_connections");
+  }
+
+  async function assertEndpointManagementAccess(
+    req: ExpressRequest,
+    res: ExpressResponse,
+  ): Promise<boolean> {
+    if (!(await assertEndpointAccess(req, res, service))) return false;
+    const endpoint = await service.get(endpointId(req));
+    await assertConnectionManager(req, endpoint.companyId);
+    return true;
+  }
 
   router.get("/companies/:companyId/chat-endpoints", async (req, res) => {
     assertBoard(req);
@@ -87,9 +126,8 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/companies/:companyId/chat-endpoints",
     validate(createChatEndpointSchema),
     async (req, res) => {
-      assertBoard(req);
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      await assertConnectionManager(req, companyId);
       res
         .status(201)
         .json(await service.create(companyId, req.body, actorUserId(req)));
@@ -105,7 +143,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/chat-endpoints/:endpointId",
     validate(updateChatEndpointSchema),
     async (req, res) => {
-      if (!(await assertEndpointAccess(req, res, service))) return;
+      if (!(await assertEndpointManagementAccess(req, res))) return;
       res.json(
         await service.update(endpointId(req), req.body, actorUserId(req)),
       );
@@ -116,7 +154,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/chat-endpoints/:endpointId/setup",
     validate(configureChatEndpointSchema),
     async (req, res) => {
-      if (!(await assertEndpointAccess(req, res, service))) return;
+      if (!(await assertEndpointManagementAccess(req, res))) return;
       res.json(
         await service.configure(endpointId(req), req.body, actorUserId(req)),
       );
@@ -124,7 +162,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   );
 
   router.post("/chat-endpoints/:endpointId/setup-secret", async (req, res) => {
-    if (!(await assertEndpointAccess(req, res, service))) return;
+    if (!(await assertEndpointManagementAccess(req, res))) return;
     res.set("Cache-Control", "no-store");
     res
       .status(201)
@@ -134,7 +172,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   });
 
   router.post("/chat-endpoints/:endpointId/test", async (req, res) => {
-    if (!(await assertEndpointAccess(req, res, service))) return;
+    if (!(await assertEndpointManagementAccess(req, res))) return;
     res.json(await service.test(endpointId(req)));
   });
 
@@ -147,7 +185,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/chat-endpoints/:endpointId/resources",
     validate(replaceChatEndpointResourcesSchema),
     async (req, res) => {
-      if (!(await assertEndpointAccess(req, res, service))) return;
+      if (!(await assertEndpointManagementAccess(req, res))) return;
       res.json(
         await service.replaceResources(endpointId(req), req.body.resources),
       );
@@ -163,7 +201,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/chat-endpoints/:endpointId/principals/:principalId/link-intent",
     validate(createChatIdentityLinkIntentSchema),
     async (req, res) => {
-      if (!(await assertEndpointAccess(req, res, service))) return;
+      if (!(await assertEndpointManagementAccess(req, res))) return;
       res
         .status(201)
         .json(
@@ -179,7 +217,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   router.delete(
     "/chat-endpoints/:endpointId/principals/:principalId/link",
     async (req, res) => {
-      if (!(await assertEndpointAccess(req, res, service))) return;
+      if (!(await assertEndpointManagementAccess(req, res))) return;
       await service.revokeLink(
         endpointId(req),
         req.params.principalId as string,
@@ -222,7 +260,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   router.post(
     "/chat-endpoints/:endpointId/deliveries/:deliveryId/replay",
     async (req, res) => {
-      if (!(await assertEndpointAccess(req, res, service))) return;
+      if (!(await assertEndpointManagementAccess(req, res))) return;
       await service.replayDelivery(
         endpointId(req),
         req.params.deliveryId as string,
@@ -234,7 +272,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   router.post(
     "/chat-endpoints/:endpointId/publications/:publicationId/replay",
     async (req, res) => {
-      if (!(await assertEndpointAccess(req, res, service))) return;
+      if (!(await assertEndpointManagementAccess(req, res))) return;
       await service.replayPublication(
         endpointId(req),
         req.params.publicationId as string,
@@ -247,7 +285,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/chat-endpoints/:endpointId/publications/:publicationId/resolve",
     validate(resolveChatPublicationSchema),
     async (req, res) => {
-      if (!(await assertEndpointAccess(req, res, service))) return;
+      if (!(await assertEndpointManagementAccess(req, res))) return;
       const userId = actorUserId(req);
       if (!userId) throw badRequest("A board user is required");
       await service.resolvePublication(

@@ -1,6 +1,6 @@
 # Paperclip Chat Adapters UI Surfaces — v6
 
-> Historical revision. The current review is [`2026-09-04-chat-adapters-ui-surfaces-v7.md`](./2026-09-04-chat-adapters-ui-surfaces-v7.md); v7 removes Overview and reduces Settings to destination reach.
+> Historical revision. The current review is [`2026-09-04-chat-adapters-ui-surfaces-v8.md`](./2026-09-04-chat-adapters-ui-surfaces-v8.md). Managed-install and helper-first concepts below are not shipped requirements.
 
 Date: 2026-09-04
 Paperclip base: `7b094724e65c04949706df638d497afb02c84b62`

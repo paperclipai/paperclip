@@ -36,6 +36,7 @@ import {
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
+  principalPermissionGrants,
   toolConnections,
 } from "@paperclipai/db";
 import type { ChatProvider } from "@paperclipai/shared";
@@ -407,22 +408,27 @@ function makeMessage(input: {
   } as unknown as Message;
 }
 
-function boardActor(companyId: string) {
+function boardActor(companyId: string, userId = "owner-user") {
   return {
     type: "board" as const,
     source: "session" as const,
-    userId: "owner-user",
+    userId,
     isInstanceAdmin: false,
     companyIds: [companyId],
     memberships: [{ companyId, status: "active", membershipRole: "operator" }],
   };
 }
 
-function routesApp(db: TestDb, companyId: string, service: ChatChannelService) {
+function routesApp(
+  db: TestDb,
+  companyId: string,
+  service: ChatChannelService,
+  userId = "owner-user",
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = boardActor(companyId);
+    req.actor = boardActor(companyId, userId);
     next();
   });
   app.use(
@@ -507,6 +513,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       principalId: "owner-user",
       status: "active",
       membershipRole: "operator",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId,
+      principalType: "user",
+      principalId: "owner-user",
+      permissionKey: "tools:manage_connections",
+      scope: null,
+      grantedByUserId: "owner-user",
     });
     await db.insert(agents).values([
       {
@@ -896,6 +910,97 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(chatEndpoints)
       .where(eq(chatEndpoints.id, createResponse.body.id));
     expect(stored.assignedAgentId).toBe(fixture.assignedAgentId);
+  });
+
+  it("requires connection-manager authority for chat connector administration", async () => {
+    const fixture = await seedCompany();
+    const { service } = createService();
+    const endpoint = await service.create(
+      fixture.companyId,
+      {
+        provider: "github",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+    const memberUserId = `member-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: memberUserId,
+      name: "Ordinary Member",
+      email: `${memberUserId}@example.com`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: memberUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const memberApp = routesApp(db, fixture.companyId, service, memberUserId);
+    await request(memberApp)
+      .get(`/api/chat-endpoints/${endpoint.id}`)
+      .expect(200);
+    await request(memberApp)
+      .get(`/api/companies/${fixture.companyId}/chat-endpoints`)
+      .expect(200);
+
+    const deniedMutations = [
+      request(memberApp)
+        .post(`/api/companies/${fixture.companyId}/chat-endpoints`)
+        .send({ provider: "slack", assignedAgentId: fixture.assignedAgentId }),
+      request(memberApp)
+        .patch(`/api/chat-endpoints/${endpoint.id}`)
+        .send({ allowDirectMessages: true }),
+      request(memberApp)
+        .post(`/api/chat-endpoints/${endpoint.id}/setup`)
+        .send({ action: "pause" }),
+      request(memberApp).post(
+        `/api/chat-endpoints/${endpoint.id}/setup-secret`,
+      ),
+      request(memberApp).post(`/api/chat-endpoints/${endpoint.id}/test`),
+      request(memberApp)
+        .put(`/api/chat-endpoints/${endpoint.id}/resources`)
+        .send({ resources: [] }),
+      request(memberApp)
+        .post(
+          `/api/chat-endpoints/${endpoint.id}/principals/${randomUUID()}/link-intent`,
+        )
+        .send({}),
+      request(memberApp).delete(
+        `/api/chat-endpoints/${endpoint.id}/principals/${randomUUID()}/link`,
+      ),
+      request(memberApp).post(
+        `/api/chat-endpoints/${endpoint.id}/deliveries/${randomUUID()}/replay`,
+      ),
+      request(memberApp).post(
+        `/api/chat-endpoints/${endpoint.id}/publications/${randomUUID()}/replay`,
+      ),
+      request(memberApp)
+        .post(
+          `/api/chat-endpoints/${endpoint.id}/publications/${randomUUID()}/resolve`,
+        )
+        .send({ action: "cancel" }),
+    ];
+    for (const mutation of deniedMutations) {
+      const response = await mutation.expect(403);
+      expect(response.body.error).toBe(
+        "Missing permission: tools:manage_connections",
+      );
+    }
+
+    const managerApp = routesApp(db, fixture.companyId, service);
+    await request(managerApp)
+      .patch(`/api/chat-endpoints/${endpoint.id}`)
+      .send({ allowDirectMessages: true })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.allowDirectMessages).toBe(true);
+      });
   });
 
   it("returns not found rather than revealing another company's chat endpoint", async () => {
