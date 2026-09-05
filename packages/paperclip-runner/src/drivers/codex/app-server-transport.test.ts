@@ -1,11 +1,7 @@
 import { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  createSanitizedCodexEnvironment,
-  ProcessCodexAppServerTransport,
-  redactCodexDiagnostic,
-} from "./app-server-transport.js";
+import { createSanitizedCodexEnvironment, ProcessCodexAppServerTransport, redactCodexDiagnostic } from "./app-server-transport.js";
 
 function nodeTransport(
   source: string,
@@ -55,24 +51,18 @@ describe("Codex app-server transport limits", () => {
   });
 
   it("redacts real Basic credentials without corrupting ordinary question copy", () => {
-    expect(redactCodexDiagnostic("Authorization: Basic dXNlcjpwYXNz")).toBe(
-      "Authorization: Basic [REDACTED]",
-    );
-    expect(redactCodexDiagnostic("Basic API foundation")).toBe(
-      "Basic API foundation",
-    );
+    expect(redactCodexDiagnostic("Authorization: Basic dXNlcjpwYXNz"))
+      .toBe("Authorization: Basic [REDACTED]");
+    expect(redactCodexDiagnostic("Basic API foundation"))
+      .toBe("Basic API foundation");
   });
 
   it("reports restart-safe process-group ownership", async () => {
-    const transport = nodeTransport("process.stdin.resume()", {
-      processGroup: true,
-    });
+    const transport = nodeTransport("process.stdin.resume()", { processGroup: true });
     const info = transport.processInfo();
 
     expect(info.pid).toBeGreaterThan(0);
-    expect(info.processGroupId).toBe(
-      process.platform === "win32" ? null : info.pid,
-    );
+    expect(info.processGroupId).toBe(process.platform === "win32" ? null : info.pid);
     expect(new Date(info.startedAt).toISOString()).toBe(info.startedAt);
 
     await transport.close();
@@ -98,18 +88,18 @@ describe("Codex app-server transport limits", () => {
           expect(spawnedProcess?.pid).toBe(info.pid);
           expect(spawnedProcess?.listenerCount("error")).toBeGreaterThan(0);
           expect(spawnedProcess?.listenerCount("exit")).toBeGreaterThan(0);
-          expect(spawnedProcess?.stdout?.listenerCount("data")).toBeGreaterThan(
-            0,
-          );
-          expect(spawnedProcess?.stdout?.listenerCount("end")).toBeGreaterThan(
-            0,
-          );
-          expect(spawnedProcess?.stderr?.listenerCount("data")).toBeGreaterThan(
-            0,
-          );
-          expect(spawnedProcess?.stdin?.listenerCount("error")).toBeGreaterThan(
-            0,
-          );
+          expect(
+            spawnedProcess?.stdout?.listenerCount("data"),
+          ).toBeGreaterThan(0);
+          expect(
+            spawnedProcess?.stdout?.listenerCount("end"),
+          ).toBeGreaterThan(0);
+          expect(
+            spawnedProcess?.stderr?.listenerCount("data"),
+          ).toBeGreaterThan(0);
+          expect(
+            spawnedProcess?.stdin?.listenerCount("error"),
+          ).toBeGreaterThan(0);
           spawnedProcess?.emit(
             "error",
             new Error("synchronous process callback cleanup"),
@@ -130,29 +120,22 @@ describe("Codex app-server transport limits", () => {
     const diagnostics: string[] = [];
     const transport = nodeTransport(
       "setTimeout(() => process.stdout.write('x'.repeat(1048576)), 50); setInterval(() => {}, 1000)",
-      {
-        maxLineBytes: 128,
-        onDiagnostic: (message) => diagnostics.push(message),
-      },
+      { maxLineBytes: 128, onDiagnostic: (message) => diagnostics.push(message) },
     );
-    await expect(
-      transport.notifications()[Symbol.asyncIterator]().next(),
-    ).rejects.toThrow("codex app-server line exceeded 128 bytes");
+    await expect(transport.notifications()[Symbol.asyncIterator]().next()).rejects.toThrow(
+      "codex app-server line exceeded 128 bytes",
+    );
     expect(diagnostics).toEqual(["codex app-server line exceeded 128 bytes"]);
     await transport.close();
   });
 
   it("bounds pending requests", async () => {
-    const transport = nodeTransport("process.stdin.resume()", {
-      maxPendingRequests: 1,
-    });
+    const transport = nodeTransport("process.stdin.resume()", { maxPendingRequests: 1 });
     const first = transport.request("first", {});
     await expect(transport.request("second", {})).rejects.toThrow(
       "codex app-server pending request limit 1 exceeded",
     );
-    const firstRejected = expect(first).rejects.toThrow(
-      "codex app-server transport closed",
-    );
+    const firstRejected = expect(first).rejects.toThrow("codex app-server transport closed");
     await transport.close();
     await firstRejected;
   });
@@ -160,14 +143,10 @@ describe("Codex app-server transport limits", () => {
   it("fails closed when queued notifications exceed their count bound", async () => {
     let transport: ProcessCodexAppServerTransport;
     const diagnostic = new Promise<string>((resolve) => {
-      const lines = [1, 2]
-        .map((id) =>
-          JSON.stringify({
-            method: "item/completed",
-            params: { threadId: "thread-1", turnId: "turn-1", item: { id } },
-          }),
-        )
-        .join("\n");
+      const lines = [1, 2].map((id) => JSON.stringify({
+        method: "item/completed",
+        params: { threadId: "thread-1", turnId: "turn-1", item: { id } },
+      })).join("\n");
       transport = nodeTransport(
         `setTimeout(() => process.stdout.write(${JSON.stringify(`${lines}\n`)}), 50); setInterval(() => {}, 1000)`,
         {
@@ -177,9 +156,7 @@ describe("Codex app-server transport limits", () => {
         },
       );
     });
-    await expect(diagnostic).resolves.toBe(
-      "codex app-server notification queue limit exceeded",
-    );
+    await expect(diagnostic).resolves.toBe("codex app-server notification queue limit exceeded");
     await transport!.close();
   });
 
@@ -211,9 +188,7 @@ describe("Codex app-server transport limits", () => {
     const transport = nodeTransport(
       'process.stdin.resume(); require("node:fs").closeSync(1); setInterval(() => {}, 1000)',
     );
-    await expect(transport.request("pending", {})).rejects.toThrow(
-      /stdout (ended|closed)/u,
-    );
+    await expect(transport.request("pending", {})).rejects.toThrow(/stdout (ended|closed)/u);
     await expect(transport.request("after-stdout-close", {})).rejects.toThrow(
       "codex app-server transport is closed",
     );
@@ -222,14 +197,11 @@ describe("Codex app-server transport limits", () => {
 
   it("fails closed when outbound buffering exceeds its bound", async () => {
     const diagnostics: string[] = [];
-    const transport = nodeTransport(
-      "process.stdin.pause(); setInterval(() => {}, 1000)",
-      {
-        maxLineBytes: 1_024,
-        maxBufferedOutputBytes: 64,
-        onDiagnostic: (message) => diagnostics.push(message),
-      },
-    );
+    const transport = nodeTransport("process.stdin.pause(); setInterval(() => {}, 1000)", {
+      maxLineBytes: 1_024,
+      maxBufferedOutputBytes: 64,
+      onDiagnostic: (message) => diagnostics.push(message),
+    });
 
     expect(() => transport.notify("large", { value: "x".repeat(100) })).toThrow(
       "outbound codex JSON-RPC buffer exceeded 64 bytes",
@@ -253,9 +225,7 @@ describe("Codex app-server transport limits", () => {
           onDiagnostic: (message) => resolve(message),
         },
       );
-      transport.setServerRequestHandler(async () => ({
-        value: "x".repeat(256),
-      }));
+      transport.setServerRequestHandler(async () => ({ value: "x".repeat(256) }));
     });
 
     await expect(diagnostic).resolves.toBe(
@@ -286,10 +256,7 @@ describe("Codex app-server transport limits", () => {
         method: "observed",
         params: {
           id: "server-1",
-          error: {
-            code: -32_000,
-            message: "Error: synchronous handler failure",
-          },
+          error: { code: -32_000, message: "Error: synchronous handler failure" },
         },
       },
     });
@@ -309,9 +276,7 @@ describe("Codex app-server transport limits", () => {
     });
 
     await expect(transport.request("after-stdin-close", {})).rejects.toThrow();
-    expect(
-      diagnostics.some((message) => /EPIPE|closed|write/u.test(message)),
-    ).toBe(true);
+    expect(diagnostics.some((message) => /EPIPE|closed|write/u.test(message))).toBe(true);
     await transport.close();
   });
 });
