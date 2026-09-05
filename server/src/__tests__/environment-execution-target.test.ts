@@ -1227,6 +1227,32 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(result).toMatchObject({ stdout: "final-out", stderr: "final-err" });
   });
 
+  it("preserves provider result metadata for the sandbox runner", async () => {
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "kubernetes",
+      tracer,
+      execute: vi.fn().mockResolvedValue({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Kubernetes exec failed before command completion.",
+        metadata: { provider: "kubernetes", backend: "sandbox-cr", execFailure: "setup_or_transport" },
+      }),
+    });
+
+    const result = await (runner as {
+      execute(input: unknown): Promise<{ metadata?: Record<string, unknown> }>;
+    }).execute({ command: "sh" });
+
+    expect(result.metadata).toEqual({
+      provider: "kubernetes",
+      backend: "sandbox-cr",
+      execFailure: "setup_or_transport",
+    });
+  });
+
   it("creates exactly one sandbox.exec span for one streamed provider call", async () => {
     const { tracer, spans } = createRecordingExecTracer();
     const runner = await runnerWithExecute({

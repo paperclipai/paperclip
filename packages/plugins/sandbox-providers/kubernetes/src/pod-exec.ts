@@ -28,6 +28,13 @@ import type { KubeConfig } from "@kubernetes/client-node";
 // importing it directly couples this file to that internal choice.
 type WebSocketLike = { close(): void };
 
+export class ExecInPodTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ExecInPodTimeoutError";
+  }
+}
+
 // Single-quote a string for safe interpolation into a sh -c script. Wraps in
 // '...' and escapes any embedded single quotes via '\'' (close, escape, reopen).
 export function shQuote(segment: string): string {
@@ -140,7 +147,7 @@ export async function execInPod(
           if (resolved) return;
           resolved = true;
           try { ws?.close(); } catch { /* ignore */ }
-          reject(new Error(
+          reject(new ExecInPodTimeoutError(
             `execInPod timed out after ${timeoutMs}ms (pod=${podName}, container=${containerName}, cmd0=${effectiveCommand[0] ?? ""}). The WebSocket likely dropped before the command produced a status frame.`,
           ));
         }, timeoutMs);

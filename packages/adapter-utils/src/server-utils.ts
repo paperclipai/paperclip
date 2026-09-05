@@ -50,6 +50,7 @@ export interface RunProcessResult {
   // The sandbox runner sets them, so the exec span records a true wall time.
   finishedAt?: string | null;
   durationMs?: number | null;
+  metadata?: Record<string, unknown>;
   // The typed error code of a transport-level failure, or absent when the
   // process result carries no such code. It follows the same additive-optional
   // convention as the timing fields: a producer that names no code leaves it
