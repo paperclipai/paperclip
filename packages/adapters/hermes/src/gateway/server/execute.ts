@@ -327,11 +327,13 @@ function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): 
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
     "Follow the Paperclip wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
+  const authToken = nonEmpty((ctx as any).authToken);
   return {
     ...payloadTemplate,
     input,
     instructions,
     ...(sessionKey ? { session_id: sessionKey } : {}),
+    ...(authToken ? { env: { PAPERCLIP_API_KEY: authToken } } : {}),
   };
 }
 
@@ -488,7 +490,6 @@ async function handleEvent(
   if (eventName === "message.delta" && delta) {
     const sanitizedDelta = redactText(delta);
     state.outputChunks.push(sanitizedDelta);
-    await ctx.onLog("stdout", sanitizedDelta);
   }
 
   const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
@@ -846,11 +847,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraHeaders,
     accept: "text/event-stream",
   });
+  const authToken = nonEmpty((ctx as any).authToken);
   const redactText = createTextRedactor([
     apiKey,
     sessionKey,
     runHeaders.Authorization,
     runHeaders["X-Hermes-Session-Key"],
+    authToken,
   ]);
   const body = buildRunBody(ctx, sessionKey);
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
