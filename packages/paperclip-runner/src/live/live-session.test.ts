@@ -662,6 +662,45 @@ describe("Capability live runnerd and Codex session", () => {
     await service.shutdown(session.id);
   });
 
+  it("attributes Claude Managed sessions to the pinned immutable Agent version", async () => {
+    const state = providerState();
+    const managedProfiles: Array<Record<string, unknown> | undefined> = [];
+    const baseFactory = fakeTransportFactory(state);
+    const service = new CapabilityLiveSessionService({
+      transportFactory: (options) => {
+        managedProfiles.push(options.managedProfile);
+        return baseFactory(options);
+      },
+    });
+    const session = await service.create({
+      provider: "claude_managed",
+      requestedModel: "claude-sonnet-5",
+      managedProfile: {
+        profileId: "managed-profile-1",
+        anthropicAgentId: "agent-1",
+        agentVersion: "17",
+        environmentId: "environment-1",
+        betaVersion: "managed-agents-2026-04-01",
+        maxSessionListCostUsd: 0.5,
+      },
+    });
+
+    expect(managedProfiles).toEqual([
+      expect.objectContaining({
+        agentVersion: "17",
+        betaVersion: "managed-agents-2026-04-01",
+        model: "claude-sonnet-5",
+      }),
+    ]);
+    expect(session.snapshot().config).toMatchObject({
+      provider: "claude_managed",
+      driver: "claude_managed_agents_api",
+      providerVersion: "17",
+      requestedModel: "claude-sonnet-5",
+    });
+    await service.shutdown(session.id);
+  });
+
   it("opens lazy sessions with core and discovery gateways instead of optional schemas", async () => {
     const state = providerState();
     const claim = "discovery:agents:read";

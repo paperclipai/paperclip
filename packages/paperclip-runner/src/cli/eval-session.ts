@@ -201,10 +201,6 @@ export async function runEvalSessionCli(
     } as unknown as CreateCapabilityLiveSessionInput;
     session = await service.create(createInput);
     turn = await session.sendMessage(request.prompt);
-    if (turn.status !== "completed") {
-      await session.completeAttempt("failed", `provider_turn_${turn.status}`);
-      throw new Error(`provider turn ended with status ${turn.status}`);
-    }
     const usage = evalSessionUsage(request.model, turn.snapshot);
     if (usage.agentTurns > request.limits.maxAgentTurns) {
       throw new Error("agent turn limit exceeded");
@@ -221,7 +217,10 @@ export async function runEvalSessionCli(
     ) {
       throw new Error("provider-reported cost limit exceeded");
     }
-    await session.completeAttempt("succeeded");
+    await session.completeAttempt(
+      turn.status === "completed" ? "succeeded" : "failed",
+      turn.status === "completed" ? null : `provider_turn_${turn.status}`,
+    );
     await closeSession(session, "eval session complete");
     snapshot = session.snapshot();
 

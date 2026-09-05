@@ -12,6 +12,11 @@ and the smaller ACPX Codex control roster. The native resume reliability gate
 is not a normal one-turn roster: it requires its separately governed external
 resource campaign and remains opt-in.
 
+Managed-provider evidence identifies the immutable deployed provider artifact:
+Claude Managed uses its Agent version, while AgentCore uses its qualification
+revision. Transport API or beta versions remain separate protocol metadata and
+must not replace that runtime identity in a report.
+
 ## Hosted campaign
 
 Use the `Runner Direct Live Protocol Evals` workflow. Dispatch the workflow
@@ -43,6 +48,13 @@ unavailable provider is retained as an infrastructure result; it is not
 silently omitted. In particular, the ACPX Pi roster remains visible while Pi
 is disabled in the current Runner. Use a roster subset only for diagnosis, not
 to claim the full campaign is green.
+
+A provider turn that reaches a durable failed, interrupted, or otherwise
+non-completed terminal still produces an attempt artifact and is scored as a
+behavior result. It is an infrastructure failure only when the harness cannot
+produce usable evidence, such as an unavailable provider, invalid profile, or
+transport failure. Automatic retries therefore never rerun a measured behavior
+failure merely to improve its score.
 
 ## Required protected configuration
 

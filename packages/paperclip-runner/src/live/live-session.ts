@@ -926,7 +926,7 @@ export class CapabilityLiveSessionService {
         providerVersion: input.provider === "opencode"
           ? "1.18.17"
           : input.provider === "claude_managed"
-            ? input.managedProfile!.betaVersion
+            ? input.managedProfile!.agentVersion
             : input.provider === "aws_agentcore"
               ? input.agentCoreProfile!.qualificationRevision
           : input.provider === "acpx" ? acpxProfile!.acpxVersion : null,
