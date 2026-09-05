@@ -1,6 +1,6 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -32,6 +32,11 @@ export function crossIssueInfluenceRunContextError() {
   // so the agent reading this 403 is told the fix, not just the refusal.
   const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required");
   return forbidden(body.error, body.details);
+}
+
+function mergeableContextSnapshot(contextSnapshot: unknown): Record<string, unknown> {
+  if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return {};
+  return contextSnapshot as Record<string, unknown>;
 }
 
 function readRunSourceIssueId(contextSnapshot: unknown) {
@@ -110,7 +115,39 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (!sourceIssueId) {
+      // Bind-on-first-write is only safe when checkout already proves that this
+      // run owns the target. This read does not lock the issue row, avoiding the
+      // reverse run-row -> issue-row lock order of the normal checkout path.
+      // Without that persisted ownership proof, retain the fail-closed 403.
+      const checkedOutTarget = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.targetIssueId),
+          eq(issues.companyId, input.companyId),
+          eq(issues.assigneeAgentId, input.agentId),
+          or(
+            eq(issues.checkoutRunId, input.runId),
+            eq(issues.executionRunId, input.runId),
+          ),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (!checkedOutTarget) throw crossIssueInfluenceRunContextError();
+
+      // Persist the proven checkout as the run's home inside this same locked
+      // transaction. Retried writes and later cross-issue writes then use the
+      // ordinary same-issue bypass and capped cross-issue path respectively.
+      const priorSnapshot = mergeableContextSnapshot(run.contextSnapshot);
+      await tx.update(heartbeatRuns)
+        .set({ contextSnapshot: { ...priorSnapshot, issueId: input.targetIssueId, source: "first_write_bind" } })
+        .where(and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+        ));
+      return null;
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
