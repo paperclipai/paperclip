@@ -5266,25 +5266,67 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         action = completedAction ?? action;
       } catch (error) {
         const disposition = classifyChatPublicationError(error, 1);
-        await db
-          .update(chatActions)
-          .set({
-            status:
-              disposition.kind === "delivery_unknown"
-                ? "delivery_unknown"
-                : "failed",
-            result: {
-              code: `slash_task_${disposition.kind}`,
-              retryable: disposition.kind === "retry",
-            },
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(chatActions.id, action.id),
-              eq(chatActions.status, "received"),
-            ),
-          );
+        const failure = redactSensitiveText(disposition.reason).slice(
+          0,
+          MAX_ERROR_TEXT,
+        );
+        await db.transaction(async (tx) => {
+          await tx
+            .update(chatActions)
+            .set({
+              status:
+                disposition.kind === "delivery_unknown"
+                  ? "delivery_unknown"
+                  : "failed",
+              result: {
+                code: `slash_task_${disposition.kind}`,
+                retryable: disposition.kind === "retry",
+              },
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(chatActions.id, action.id),
+                eq(chatActions.status, "received"),
+              ),
+            );
+          if (disposition.kind === "endpoint_attention") {
+            await tx
+              .update(chatEndpoints)
+              .set({
+                status: "attention",
+                healthMessage:
+                  "Provider credentials or permissions need attention",
+                lastError: failure,
+                updatedAt: new Date(),
+              })
+              .where(eq(chatEndpoints.id, record.endpoint.id));
+            await tx
+              .update(toolConnections)
+              .set({
+                status: "disabled",
+                enabled: false,
+                healthStatus: "degraded",
+                healthMessage:
+                  "Provider credentials or permissions need attention",
+                lastError: failure,
+                healthCheckedAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(eq(toolConnections.id, record.endpoint.connectionId));
+          } else if (
+            disposition.kind === "resource_unavailable" &&
+            resource
+          ) {
+            await tx
+              .update(chatEndpointResources)
+              .set({ availability: "unavailable", updatedAt: new Date() })
+              .where(eq(chatEndpointResources.id, resource.id));
+          }
+        });
+        if (disposition.kind === "endpoint_attention") {
+          await runtime.removeEndpoint(record.endpoint.id).catch(() => undefined);
+        }
         throw error;
       }
     }

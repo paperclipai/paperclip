@@ -3455,6 +3455,130 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it("holds a delayed Slack thread reply until its older root mention arrives", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredSlackEndpoint(fixture);
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: "C-DELAYED-ROOT",
+      label: "delayed-root",
+      availability: "available",
+      enabled: true,
+    });
+    const thread = makeThread({
+      channelId: "C-DELAYED-ROOT",
+      id: "slack:C-DELAYED-ROOT:9110.1",
+      name: "delayed-root",
+    });
+    const laterReply = makeMessage({
+      id: "9110.2",
+      text: "follow-up whose callback arrived first",
+    });
+    laterReply.metadata.dateSent = new Date("2026-09-05T18:20:02.000Z");
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: laterReply,
+      trigger: "subscribed_message",
+    });
+
+    const [deferredReply] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(deferredReply).toMatchObject({
+      state: "retry",
+      attempts: 1,
+      redactedError: "Waiting briefly for an earlier root mention",
+    });
+    expect(deferredReply.nextAttemptAt).not.toBeNull();
+    expect(await service.listConversations(endpoint.id)).toHaveLength(0);
+
+    const earlierRoot = makeMessage({
+      id: "9110.1",
+      text: "@maya keep both messages",
+      mentioned: true,
+    });
+    earlierRoot.metadata.dateSent = new Date("2026-09-05T18:20:01.000Z");
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: earlierRoot,
+      trigger: "mention",
+    });
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(chatDeliveries.id, deferredReply.id));
+    await service.processPendingDeliveries();
+
+    const [conversation] = await service.listConversations(endpoint.id);
+    expect(conversation).toMatchObject({ externalThreadId: thread.thread.id });
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversation!.issueId))
+        .orderBy(asc(issueComments.createdAt), asc(issueComments.id)),
+    ).resolves.toEqual([
+      { body: "@maya keep both messages" },
+      { body: "follow-up whose callback arrived first" },
+    ]);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+  });
+
+  it("filters a standalone unaddressed Slack thread reply after one grace attempt", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredSlackEndpoint(fixture);
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: "C-ORPHAN-ONLY",
+      label: "orphan-only",
+      availability: "available",
+      enabled: true,
+    });
+    const thread = makeThread({
+      channelId: "C-ORPHAN-ONLY",
+      id: "slack:C-ORPHAN-ONLY:9120.1",
+      name: "orphan-only",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: makeMessage({ id: "9120.2", text: "not for the bot" }),
+      trigger: "subscribed_message",
+    });
+    const [delivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
+
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(chatDeliveries.id, delivery.id));
+    await service.processPendingDeliveries();
+
+    await expect(
+      db
+        .select({ state: chatDeliveries.state, attempts: chatDeliveries.attempts })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.id, delivery.id)),
+    ).resolves.toEqual([{ state: "filtered", attempts: 2 }]);
+    expect(await service.listConversations(endpoint.id)).toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
   it("rehydrates a durable attachment descriptor after restart and stores the file on the issue", async () => {
     const fixture = await seedCompany();
     const recoveryKey = `restart-attachment-${randomUUID()}`;
