@@ -37,3 +37,8 @@ packages/paperclip-runner/scripts/*-smoke.mjs
 # now guards this in PR CI.
 !packages/paperclip-runner/generated/**
 !packages/paperclip-runner/docs/capability-contract.md
+# check:runner-workflow-traceability access()es every regression test the
+# stress-traceability spec names — those are src/**/*.test.ts files, so
+# they must survive the *.test.ts rule above.
+!packages/paperclip-runner/src/**/*.test.ts
+!packages/paperclip-runner/src/**/*.test.tsx
