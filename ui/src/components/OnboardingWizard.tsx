@@ -3189,7 +3189,20 @@ function OnboardingWizardInner({
                       step, so this block renders only when a probe has actually
                       found something: the checks the blocking error tells the
                       customer to fix have to be visible somewhere. */}
-                  {isLocalAdapter && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
+                  {/* Not while the hire is in flight. The probe's result lands
+                      before the hire it gates has finished, so a warn that does
+                      not block — the identity and target INFO checks, which
+                      every run reports — rendered a block of diagnostics for the
+                      moment between the probe returning and the step advancing.
+                      It read as an error thrown up by a sign-in that had just
+                      succeeded.
+
+                      `loading` is the right gate rather than the connect phase:
+                      it is false again by the time a blocking result has stopped
+                      the hire, because `handleGiveHeartbeat` clears it in its
+                      `finally` after the early return — so a genuine block still
+                      shows its checks, which is the whole reason this is here. */}
+                  {isLocalAdapter && !loading && (adapterEnvError || (adapterEnvResult && adapterEnvResult.status !== "pass")) && (
                     <div className="space-y-2 rounded-md border border-border p-3">
                       {adapterEnvError && (
                         <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-(length:--text-micro) text-destructive">

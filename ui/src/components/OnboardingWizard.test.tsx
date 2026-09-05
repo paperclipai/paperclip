@@ -2323,6 +2323,66 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("shows no probe diagnostics between the sign-in succeeding and the step advancing", async () => {
+      // Reported from staging: a block of amber diagnostics flashed up right
+      // after a successful sign-in. They are the identity and target INFO
+      // checks every run reports, which make the result a `warn` without
+      // blocking anything — so they rendered for the window between the probe
+      // returning and the step advancing, reading as an error thrown by the
+      // sign-in that had just succeeded.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+        sessionId: "claude-session-1",
+        status: "authenticated",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      });
+      mockAgentsApi.testEnvironment.mockResolvedValue({
+        adapterType: "claude_local",
+        status: "warn",
+        checks: [
+          {
+            code: "environment_identity",
+            level: "info",
+            message: 'Environment test identity for "Paperclip Computer".',
+            detail: "paperclipLeaseId=ff9e58e9; provider=daytona",
+          },
+        ],
+        testedAt: new Date().toISOString(),
+      });
+      // Hold the hire open, which is the window the diagnostics appeared in:
+      // the probe has returned but `loading` is not cleared until the `finally`
+      // that runs after the step advances.
+      let finishHire: (v: { agent: { id: string }; approval: null }) => void = () => {};
+      mockAgentsApi.hire.mockReturnValue(
+        new Promise((resolve) => {
+          finishHire = resolve;
+        }),
+      );
+
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      // Past the deliberate hold, so the hire is running and its probe is done.
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, CONNECTED_HOLD_MS + 400));
+      });
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      expect(mockAgentsApi.hire).toHaveBeenCalled();
+      expect(document.body.textContent).not.toContain("Environment test identity");
+      expect(document.body.textContent).not.toContain("Warnings");
+      // And the button goes on saying what is happening rather than going quiet.
+      expect(
+        [...document.body.querySelectorAll("button")].pop()?.textContent?.trim(),
+      ).toBe("Connecting");
+
+      await act(async () => finishHire({ agent: { id: "agent-1" }, approval: null }));
+      for (let i = 0; i < 6; i++) await flushReact();
+
+      await act(async () => root.unmount());
+    });
+
     it("starts no login when Back interrupts the collapse", async () => {
       // Backing out before the card has opened has nothing to close. Unwinding
       // through the card beat regardless mounted the panel — which starts a
