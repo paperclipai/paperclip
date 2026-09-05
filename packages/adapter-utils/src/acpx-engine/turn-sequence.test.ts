@@ -30,6 +30,8 @@ function baseSteps(order: string[], overrides: Partial<TurnSteps<string>> = {}):
   return {
     timeoutMs: overrides.timeoutMs,
     timeoutMessage: overrides.timeoutMessage ?? "timed out",
+    staleTimeoutMs: overrides.staleTimeoutMs,
+    staleTimeoutMessage: overrides.staleTimeoutMessage,
     promptBuild: overrides.promptBuild ?? (async () => {
       order.push("promptBuild");
     }),
@@ -122,7 +124,108 @@ describe("ACPX turn sequence", () => {
       expect(completion).toEqual({ kind: "finalized" });
       // The finalize step saw the timeout flag the sequence tracked.
       expect(finalizeInputs).toHaveLength(1);
-      expect(finalizeInputs[0]).toMatchObject({ kind: "terminal", timedOut: true });
+      expect(finalizeInputs[0]).toMatchObject({ kind: "terminal", timedOut: true, staleTimedOut: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("test_run_turn_owns_stale_watchdog_and_shared_abort", async () => {
+    vi.useFakeTimers();
+    try {
+      const captured: { signal: AbortSignal | null; cancelReason: string | null } = {
+        signal: null,
+        cancelReason: null,
+      };
+      let releaseRelay: (value: string) => void = () => {};
+      const relayPromise = new Promise<string>((resolve) => {
+        releaseRelay = resolve;
+      });
+      const finalizeInputs: TurnFinalizeInput<string>[] = [];
+      const steps = baseSteps([], {
+        staleTimeoutMs: 1000,
+        staleTimeoutMessage: "stale-turn watchdog",
+        turnStart: (signal) => {
+          captured.signal = signal;
+          return {
+            cancel: async (reason) => {
+              captured.cancelReason = reason;
+            },
+          };
+        },
+        eventRelay: async () => relayPromise,
+        turnFinalize: async (input) => {
+          finalizeInputs.push(input);
+          return input.kind === "terminal" ? finalizedTurn() : failedTurn(input.error);
+        },
+      });
+
+      const runPromise = runTurn(steps);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(captured.signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(captured.signal?.aborted).toBe(true);
+      expect(captured.cancelReason).toBe("stale-turn watchdog");
+      releaseRelay("terminal");
+      const completion = await runPromise;
+      expect(completion).toEqual({ kind: "finalized" });
+      expect(finalizeInputs).toHaveLength(1);
+      expect(finalizeInputs[0]).toMatchObject({ kind: "terminal", timedOut: false, staleTimedOut: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("test_stale_watchdog_resets_on_mark_progress", async () => {
+    vi.useFakeTimers();
+    try {
+      const captured: { cancelReason: string | null; aborted: boolean } = {
+        cancelReason: null,
+        aborted: false,
+      };
+      let releaseRelay: (value: string) => void = () => {};
+      const relayPromise = new Promise<string>((resolve) => {
+        releaseRelay = resolve;
+      });
+      const finalizeInputs: TurnFinalizeInput<string>[] = [];
+      const steps = baseSteps([], {
+        staleTimeoutMs: 1000,
+        staleTimeoutMessage: "stale-turn watchdog",
+        turnStart: (signal) => {
+          signal.addEventListener("abort", () => {
+            captured.aborted = true;
+          });
+          return {
+            cancel: async (reason) => {
+              captured.cancelReason = reason;
+            },
+          };
+        },
+        eventRelay: async (_turn, watch) => {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          watch.markProgress();
+          return relayPromise;
+        },
+        turnFinalize: async (input) => {
+          finalizeInputs.push(input);
+          return input.kind === "terminal" ? finalizedTurn() : failedTurn(input.error);
+        },
+      });
+
+      const runPromise = runTurn(steps);
+      await vi.advanceTimersByTimeAsync(0);
+      // Progress at 500ms; the 1000ms poll sees a 500ms gap and must not abort.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(captured.aborted).toBe(false);
+      expect(captured.cancelReason).toBeNull();
+      // Next poll is at 2000ms (interval is 1000ms). Gap from last progress is
+      // then 1500ms, past the threshold.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(captured.aborted).toBe(true);
+      expect(captured.cancelReason).toBe("stale-turn watchdog");
+      releaseRelay("terminal");
+      await runPromise;
+      expect(finalizeInputs[0]).toMatchObject({ kind: "terminal", timedOut: false, staleTimedOut: true });
     } finally {
       vi.useRealTimers();
     }

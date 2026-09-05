@@ -34,6 +34,11 @@ describe("run contracts", () => {
     expect(turnCause.kind).toBe("turn_failed");
   });
 
+  it("test_turn_stale_cause_is_a_turn_cause", () => {
+    const staleCause: TurnCause = { kind: "turn_stale", timeoutMs: 120_000 };
+    expect(staleCause.kind).toBe("turn_stale");
+  });
+
   it("test_only_seal_produces_ready_run_resources_and_only_take_for_settlement_produces_consumed_run_resources", () => {
     // The assertions live in an unexecuted function so tsc checks the types
     // without a runtime call on a synthetic ledger.

@@ -5,12 +5,11 @@ export const DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS = "deny";
 export const DEFAULT_ACP_ENGINE_TIMEOUT_SEC = 0;
 export const DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS = 0;
 /**
- * Stale-turn watchdog timeout. A turn that keeps emitting only non-progress
- * ACP events (e.g. `status` with tag `session_info_update` — the "session
- * updated" heartbeat codex emits while its upstream request is stuck
- * reconnecting) is treated as stalled after this many milliseconds with no
- * real progress, and aborted even though the wall-clock `timeoutSec` has not
- * elapsed. 0 disables the watchdog (wall-clock timeout only).
+ * Stale-turn watchdog timeout. A turn with no real progress (text/tool/usage
+ * events) for this many milliseconds is aborted even though the wall-clock
+ * `timeoutSec` has not elapsed. That includes a client that keeps emitting
+ * only administrative heartbeats (`session_info_update`) and one whose event
+ * stream goes fully silent. 0 disables the watchdog (wall-clock timeout only).
  */
 export const DEFAULT_ACP_ENGINE_STALE_TURN_TIMEOUT_MS = 120_000;
 

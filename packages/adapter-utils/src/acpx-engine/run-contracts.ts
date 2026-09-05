@@ -241,8 +241,14 @@ export interface TurnTimedOutCause {
   readonly timeoutSec: number;
 }
 
+/** The turn stalled: no real progress past the stale-turn watchdog. */
+export interface TurnStaleCause {
+  readonly kind: "turn_stale";
+  readonly timeoutMs: number;
+}
+
 /** A cause that the turn itself produced. Disjoint from `PreTurnFailedCause`. */
-export type TurnCause = TurnFailedCause | TurnCancelledCause | TurnTimedOutCause;
+export type TurnCause = TurnFailedCause | TurnCancelledCause | TurnTimedOutCause | TurnStaleCause;
 
 /** Any cause that leads a run into settlement. */
 export type SettlementCause = PreTurnFailedCause | TurnCause;
@@ -298,8 +304,15 @@ export interface TimedOutTurn {
   readonly resources: ConsumedRunResources;
 }
 
-/** The four ways a turn completes. Only `FinalizedTurn` is resourceless. */
-export type TurnCompletion = FinalizedTurn | FailedTurn | CancelledTurn | TimedOutTurn;
+/** The turn stalled with no real progress. Settlement releases the carried resources. */
+export interface StaleTurn {
+  readonly kind: "stale";
+  readonly cause: TurnStaleCause;
+  readonly resources: ConsumedRunResources;
+}
+
+/** The five ways a turn completes. Only `FinalizedTurn` is resourceless. */
+export type TurnCompletion = FinalizedTurn | FailedTurn | CancelledTurn | TimedOutTurn | StaleTurn;
 
 // ---------------------------------------------------------------------------
 // Run site
