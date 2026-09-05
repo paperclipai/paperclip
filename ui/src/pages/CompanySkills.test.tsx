@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps, ReactNode } from "react";
-import { flushSync } from "react-dom";
+import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -104,11 +103,9 @@ let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
 async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
+  await reactAct(async () => {
+    await callback();
   });
-  await result;
 }
 
 afterEach(() => {
@@ -1043,11 +1040,6 @@ describe("install-time agent enablement", () => {
         />,
       );
     });
-    // The dialog seeds its slug/agent state in passive effects; give them a
-    // macrotask to flush before interacting.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
 
     const node = container as ParentNode;
     expect(node.textContent).toContain("Enable for agents");
@@ -1089,15 +1081,9 @@ describe("install-time agent enablement", () => {
 
     // Dialog opens before the agents query resolves: nothing to select yet.
     await act(async () => renderDialog([]));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
 
     // The agents arrive later; the untouched selection must pick them up.
     await act(async () => renderDialog(agentOptions));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
 
     await click(buttonsNamed(container as ParentNode, "Install skill")[0] as HTMLButtonElement);
 
@@ -1128,9 +1114,6 @@ describe("install-time agent enablement", () => {
           onConfirm={onConfirm}
         />,
       );
-    });
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
     const node = container as ParentNode;
