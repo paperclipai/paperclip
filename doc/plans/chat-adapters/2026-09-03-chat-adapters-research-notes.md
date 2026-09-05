@@ -1,8 +1,8 @@
 # Chat Adapters Research Notes
 
 **Date:** 2026-09-03
-**Paperclip implementation base:** `d593463ab6394cd356bf27448ea28bad8cccf4ec`
-**Earlier planning references:** `origin/master` was initially observed at `b872cd3d1b404bdaff70af493a2973ceb7e5d6ec`, then refreshed through `112ef5beecf518ce9e0cbbead3eac297c09fc775`, `b84964e5a2fa8b1e6498a1ccb471f6adba97d470`, and `7b094724e65c04949706df638d497afb02c84b62`; this revision fast-forwarded to the implementation base above.
+**Paperclip implementation base:** `8430bd897f01dd4b91e0970efffb71b97e5a2685`
+**Earlier planning references:** `origin/master` was initially observed at `b872cd3d1b404bdaff70af493a2973ceb7e5d6ec`, then refreshed through `112ef5beecf518ce9e0cbbead3eac297c09fc775`, `b84964e5a2fa8b1e6498a1ccb471f6adba97d470`, `7b094724e65c04949706df638d497afb02c84b62`, and `d593463ab6394cd356bf27448ea28bad8cccf4ec`; the implementation branch is rebased onto the SHA above.
 **Vercel Chat SDK snapshot:** `51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c`, package `chat@4.39.0`
 **OpenTag snapshot:** `6a770d862349f8e996c23c145aef6d6275914a23`
 

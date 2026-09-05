@@ -2,7 +2,7 @@
 
 **Status:** historical v1 requirements inventory; current product flow is `2026-09-04-chat-adapters-ui-surfaces-v5.md`
 **Date:** 2026-09-03
-**Paperclip base:** `origin/master` at `d593463ab6394cd356bf27448ea28bad8cccf4ec` (refreshed from earlier planning references `b872cd3d1b404bdaff70af493a2973ceb7e5d6ec`, `112ef5beecf518ce9e0cbbead3eac297c09fc775`, `b84964e5a2fa8b1e6498a1ccb471f6adba97d470`, and `7b094724e65c04949706df638d497afb02c84b62`)
+**Paperclip base:** `origin/master` at `8430bd897f01dd4b91e0970efffb71b97e5a2685` (refreshed from earlier planning references through `d593463ab6394cd356bf27448ea28bad8cccf4ec`)
 **Current wireframe viewer:** `index.html` in this directory renders the v5 step-rail package. The 19-screen inventory below is retained as architecture-coverage history, not the proposed onboarding flow.
 
 ## 1. Information architecture

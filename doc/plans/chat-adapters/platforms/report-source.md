@@ -2,7 +2,7 @@
 
 **Internal synthesis source — do not publish as the reviewer-facing artifact.**
 **Date:** 2026-09-04
-**Paperclip base:** `origin/master` at `d593463ab6394cd356bf27448ea28bad8cccf4ec`
+**Paperclip base:** `origin/master` at `8430bd897f01dd4b91e0970efffb71b97e5a2685`
 **Chat SDK snapshot:** `51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c`
 
 ## Research question

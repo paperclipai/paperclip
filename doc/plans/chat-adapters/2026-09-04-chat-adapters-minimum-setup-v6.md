@@ -1,7 +1,7 @@
 # Paperclip Chat Adapters — Minimum Setup v6
 
 Date: 2026-09-04
-Paperclip base: `d593463ab6394cd356bf27448ea28bad8cccf4ec`
+Paperclip base: `8430bd897f01dd4b91e0970efffb71b97e5a2685`
 Viewer: [`index.html`](./index.html)
 Wireframes: [`wireframes-v6/`](./wireframes-v6/)
 
