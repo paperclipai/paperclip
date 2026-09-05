@@ -7149,6 +7149,30 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     childIssueSummaryTruncated:
       input.contextSnapshot.childIssueSummaryTruncated === true,
+    // A corrective "successful run, no disposition" handoff keeps its remediation
+    // text under handoffReason/instruction, not under recoveryActionId or
+    // recoveryCause, so the recovery block above does not see it. Only
+    // handoffRequired and handoffReason mark this wake: review-path recovery also
+    // writes a bare instruction and sourceRunId, and must not match here.
+    successfulRunHandoff:
+      input.contextSnapshot.handoffRequired === true ||
+      readNonEmptyString(input.contextSnapshot.handoffReason)
+        ? {
+            attempt: input.contextSnapshot.handoffAttempt,
+            maxAttempts: input.contextSnapshot.maxHandoffAttempts,
+            sourceRunId: readNonEmptyString(input.contextSnapshot.sourceRunId),
+            reason: readNonEmptyString(input.contextSnapshot.handoffReason),
+            missingDisposition: readNonEmptyString(
+              input.contextSnapshot.missingDisposition,
+            ),
+            validDispositionOptions: Array.isArray(
+              input.contextSnapshot.validDispositionOptions,
+            )
+              ? input.contextSnapshot.validDispositionOptions
+              : [],
+            instruction: readNonEmptyString(input.contextSnapshot.instruction),
+          }
+        : null,
     livenessContinuation:
       readNonEmptyString(input.contextSnapshot.livenessContinuationState) ||
       readNonEmptyString(
