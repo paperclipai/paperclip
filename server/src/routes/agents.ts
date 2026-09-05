@@ -4643,12 +4643,19 @@ export function agentRoutes(
         res.status(422).json({ error: "runtimeConfig must be an object" });
         return;
       }
+      // Merge before validating. runtimeConfig is one JSONB column, and the
+      // write below merges the patch onto the stored value, so a key the caller
+      // omitted keeps its stored value. The transition check must see that same
+      // merged result. Checking the raw patch would report a change to
+      // debug.providerTrace whenever the caller simply left `debug` out, and
+      // would then demand instance-admin rights for an unrelated edit.
+      const existingRuntimeConfig = asRecord(existing.runtimeConfig) ?? {};
+      requestedRuntimeConfig = { ...existingRuntimeConfig, ...runtimeConfig };
       assertProviderTraceSettingTransition(
         req,
-        runtimeConfig,
+        requestedRuntimeConfig,
         existing.runtimeConfig,
       );
-      requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
@@ -4733,7 +4740,22 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
+    if (requestedRuntimeConfig) {
+      // runtimeConfig is one JSONB column. Writing the requested object directly
+      // drops every top-level key the caller did not send. A caller that means to
+      // change one key -- for example a UI that built its patch from a snapshot it
+      // read before a concurrent change landed -- silently loses sibling keys such
+      // as `heartbeat`. adapterConfig above already merges onto the stored value.
+      // runtimeConfig now does the same.
+      //
+      // The merge reads the row and writes the whole column, so two PATCH
+      // requests that overlap can still drop one of the two changes. That
+      // window is the same one adapterConfig has on this route. Closing it
+      // needs an atomic write for both columns -- a JSONB merge in SQL or a
+      // version check -- and the config-revision snapshot reads the patch as a
+      // plain object, so that change belongs in the service layer.
+      patchData.runtimeConfig = requestedRuntimeConfig;
+    }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,
