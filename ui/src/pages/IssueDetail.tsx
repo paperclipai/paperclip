@@ -55,6 +55,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
+import { issuePostCommitWarningBody } from "../lib/issue-post-commit-warnings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import {
   assigneeValueFromSelection,
@@ -6250,12 +6251,13 @@ export function IssueDetail() {
     },
     onSuccess: (created) => {
       invalidateIssueCollections();
+      const warning = issuePostCommitWarningBody(created);
       pushToast({
-        title: "Isolated re-issue created",
-        body: created.identifier
+        title: warning ? "Isolated re-issue created with warnings" : "Isolated re-issue created",
+        body: warning ?? (created.identifier
           ? `${created.identifier} will run on a fresh isolated workspace.`
-          : "A fresh isolated re-issue was created.",
-        tone: "success",
+          : "A fresh isolated re-issue was created."),
+        tone: warning ? "warn" : "success",
       });
       if (created.identifier) {
         navigate(createIssueDetailPath(created.identifier));
