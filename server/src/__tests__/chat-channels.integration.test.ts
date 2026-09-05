@@ -3124,6 +3124,155 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await restarted.service.shutdown();
   });
 
+  it("ignores signed Slack callbacks from a different workspace before SDK dispatch", async () => {
+    const fixture = await seedCompany();
+    const runtime = new FakeChatSdkRuntime();
+    const { service } = createService(
+      runtime,
+      fakeSlackFetch("U-BOT-WORKSPACE-SCOPE") as typeof globalThis.fetch,
+    );
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    const signingSecret = "workspace-scope-signing-secret";
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-workspace-scope",
+          signingSecret,
+        },
+      },
+      "owner-user",
+    );
+    const endpointRuntime = runtime.endpoints.get(endpoint.id)!;
+    expect(endpointRuntime).toBeDefined();
+
+    const signedRequest = (body: string, contentType: string) => {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signature = `v0=${createHmac("sha256", signingSecret)
+        .update(`v0:${timestamp}:${body}`)
+        .digest("hex")}`;
+      return new Request(
+        `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": contentType,
+            "x-slack-request-timestamp": timestamp,
+            "x-slack-signature": signature,
+          },
+          body,
+        },
+      );
+    };
+    const formBody = (values: Record<string, string>) =>
+      new URLSearchParams(values).toString();
+    const cases = [
+      {
+        name: "Events API JSON",
+        contentType: "application/json",
+        foreignBody: JSON.stringify({
+          type: "event_callback",
+          team_id: "T-FOREIGN",
+          event: { type: "app_mention" },
+        }),
+        localBody: JSON.stringify({
+          type: "event_callback",
+          team_id: "T-PAPERCLIP",
+          enterprise_id: "E-PAPERCLIP",
+          event: { type: "app_mention" },
+        }),
+      },
+      {
+        name: "interactive form payload",
+        contentType: "application/x-www-form-urlencoded",
+        foreignBody: formBody({
+          payload: JSON.stringify({
+            type: "block_actions",
+            team: { id: "T-FOREIGN" },
+          }),
+        }),
+        localBody: formBody({
+          payload: JSON.stringify({
+            type: "block_actions",
+            team: { id: "T-PAPERCLIP" },
+          }),
+        }),
+      },
+      {
+        name: "slash command",
+        contentType: "application/x-www-form-urlencoded",
+        foreignBody: formBody({
+          team_id: "T-FOREIGN",
+          command: "/maya",
+          text: "status",
+        }),
+        localBody: formBody({
+          team_id: "T-PAPERCLIP",
+          command: "/maya",
+          text: "status",
+        }),
+      },
+      {
+        name: "enterprise-scoped callback",
+        contentType: "application/json",
+        foreignBody: JSON.stringify({
+          type: "event_callback",
+          enterprise_id: "E-FOREIGN",
+          event: { type: "app_mention" },
+        }),
+        localBody: JSON.stringify({
+          type: "event_callback",
+          enterprise_id: "T-PAPERCLIP",
+          event: { type: "app_mention" },
+        }),
+      },
+    ];
+
+    for (const testCase of cases) {
+      endpointRuntime.webhookRequest = null;
+      const ignored = await service.handleWebhook(
+        endpoint.publicId,
+        "slack",
+        signedRequest(testCase.foreignBody, testCase.contentType),
+      );
+      expect(ignored.status, testCase.name).toBe(200);
+      await expect(ignored.text()).resolves.toBe("ignored");
+      expect(endpointRuntime.webhookRequest, testCase.name).toBeNull();
+
+      const accepted = await service.handleWebhook(
+        endpoint.publicId,
+        "slack",
+        signedRequest(testCase.localBody, testCase.contentType),
+      );
+      expect(accepted.status, testCase.name).toBe(202);
+      expect(endpointRuntime.webhookRequest, testCase.name).not.toBeNull();
+    }
+
+    // Scope inspection is not a substitute for the adapter's signature gate.
+    // An invalid request must continue to the SDK so it receives the normal
+    // authentication failure instead of Paperclip acknowledging it as foreign.
+    endpointRuntime.webhookRequest = null;
+    const forgedForeign = signedRequest(
+      cases[0]!.foreignBody,
+      cases[0]!.contentType,
+    );
+    forgedForeign.headers.set("x-slack-signature", "v0=forged");
+    const forgedResponse = await service.handleWebhook(
+      endpoint.publicId,
+      "slack",
+      forgedForeign,
+    );
+    expect(forgedResponse.status).toBe(202);
+    expect(endpointRuntime.webhookRequest).not.toBeNull();
+
+    await service.shutdown();
+  });
+
   it("returns a retryable webhook failure when the delivery insert fails before durable receipt", async () => {
     const fixture = await seedCompany();
     const service = chatChannelService(db, {

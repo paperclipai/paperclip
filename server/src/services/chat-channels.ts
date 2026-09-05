@@ -155,6 +155,80 @@ const PROVIDER_LABELS: Record<ChatProvider, string> = {
   telegram: "Telegram",
 };
 
+function slackRequestSignatureIsValid(
+  request: Request,
+  body: string,
+  signingSecret: string,
+): boolean {
+  const timestamp = request.headers.get("x-slack-request-timestamp");
+  const signature = request.headers.get("x-slack-signature");
+  if (!timestamp || !signature) return false;
+  const timestampSeconds = Number(timestamp);
+  if (
+    !Number.isFinite(timestampSeconds) ||
+    Math.abs(Math.floor(Date.now() / 1000) - timestampSeconds) > 300
+  )
+    return false;
+  const expected = `v0=${createHmac("sha256", signingSecret)
+    .update(`v0:${timestamp}:${body}`)
+    .digest("hex")}`;
+  try {
+    return timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  } catch {
+    return false;
+  }
+}
+
+function slackRequestWorkspaceId(body: string, contentType: string): string | null {
+  let payload: unknown;
+  try {
+    if (contentType.includes("application/json")) {
+      payload = JSON.parse(body);
+    } else {
+      const form = new URLSearchParams(body);
+      const interactivePayload = form.get("payload");
+      payload = interactivePayload
+        ? JSON.parse(interactivePayload)
+        : Object.fromEntries(form.entries());
+    }
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  const nestedId = (value: unknown): string | null => {
+    if (!value || typeof value !== "object") return null;
+    const id = (value as Record<string, unknown>).id;
+    return typeof id === "string" && id.length > 0 ? id : null;
+  };
+  const stringField = (key: string): string | null => {
+    const value = record[key];
+    return typeof value === "string" && value.length > 0 ? value : null;
+  };
+  const authorization = Array.isArray(record.authorizations)
+    ? record.authorizations.find(
+        (value): value is Record<string, unknown> =>
+          Boolean(value) && typeof value === "object",
+      )
+    : null;
+  const authorizationField = (key: string): string | null => {
+    const value = authorization?.[key];
+    return typeof value === "string" && value.length > 0 ? value : null;
+  };
+
+  // A Grid event may carry both an enterprise id and the concrete workspace
+  // id. The bot identity is verified against auth.test's team_id, so prefer a
+  // team id and use the enterprise id only when Slack omitted team context.
+  return (
+    stringField("team_id") ??
+    nestedId(record.team) ??
+    authorizationField("team_id") ??
+    stringField("enterprise_id") ??
+    nestedId(record.enterprise) ??
+    authorizationField("enterprise_id")
+  );
+}
+
 const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
   slack: {
     threads: true,
@@ -5366,6 +5440,33 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       (endpoint.status === "revoked" && !recoveringRevokedGitHubInstallation)
     )
       throw notFound("Chat endpoint not found");
+    if (provider === "slack" && endpoint.providerAccountId) {
+      const inspection = request.clone();
+      const body = await inspection.text();
+      const credentials = await resolveCredentials(endpoint);
+      if (
+        slackRequestSignatureIsValid(
+          inspection,
+          body,
+          credentials.signingSecret,
+        )
+      ) {
+        const incomingWorkspaceId = slackRequestWorkspaceId(
+          body,
+          inspection.headers.get("content-type") ?? "",
+        );
+        if (
+          incomingWorkspaceId &&
+          incomingWorkspaceId !== endpoint.providerAccountId
+        ) {
+          // A Slack Request URL can be copied to another app/workspace. Even a
+          // correctly signed callback belongs only to the bot identity verified
+          // for this endpoint, so acknowledge foreign traffic without letting
+          // it reach SDK callbacks, delivery admission, principals, or lifecycle.
+          return new Response("ignored", { status: 200 });
+        }
+      }
+    }
     if (provider === "github" && !recoveringRevokedGitHubInstallation) {
       const inspection = request.clone();
       const body = await inspection.text();
