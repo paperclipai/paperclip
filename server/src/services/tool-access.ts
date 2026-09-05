@@ -8850,7 +8850,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         retainedConnection.status === "draft"
         || requestedResumeConnection
         || input.applicationId
-        || input.grantKind === undefined
       )
     );
     const retainedGrantKind = retainsIdentity ? previousGrantKind : null;
@@ -9104,6 +9103,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let applicationRow: typeof toolApplications.$inferSelect | null = null;
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = retainedConnection ?? null;
+    const revivedGrantSnapshots = revivedConnectionPrevious
+      ? await db.select().from(connectionGrants).where(and(
+          eq(connectionGrants.companyId, companyId),
+          eq(connectionGrants.connectionId, revivedConnectionPrevious.id),
+        ))
+      : [];
 
     try {
       const credentialFields = credentialSource === "vercel_connect"
@@ -9488,20 +9493,53 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       };
     } catch (error) {
       if (connectionRow && revivedConnectionPrevious) {
-        await db.update(toolConnections).set({
-          name: revivedConnectionPrevious.name,
-          transport: revivedConnectionPrevious.transport,
-          status: revivedConnectionPrevious.status,
-          enabled: revivedConnectionPrevious.enabled,
-          config: revivedConnectionPrevious.config,
-          transportConfig: revivedConnectionPrevious.transportConfig,
-          credentialRefs: revivedConnectionPrevious.credentialRefs,
-          credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
-          credentialSource: revivedConnectionPrevious.credentialSource,
-          externalCredential: revivedConnectionPrevious.externalCredential,
-          credentialPolicy: revivedConnectionPrevious.credentialPolicy,
-          updatedAt: new Date(),
-        }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).catch(() => undefined);
+        await db.transaction(async (tx) => {
+          await tx.update(toolConnections).set({
+            name: revivedConnectionPrevious.name,
+            transport: revivedConnectionPrevious.transport,
+            status: revivedConnectionPrevious.status,
+            enabled: revivedConnectionPrevious.enabled,
+            config: revivedConnectionPrevious.config,
+            transportConfig: revivedConnectionPrevious.transportConfig,
+            credentialRefs: revivedConnectionPrevious.credentialRefs,
+            credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
+            credentialSource: revivedConnectionPrevious.credentialSource,
+            externalCredential: revivedConnectionPrevious.externalCredential,
+            credentialPolicy: revivedConnectionPrevious.credentialPolicy,
+            updatedAt: new Date(),
+          }).where(eq(toolConnections.id, revivedConnectionPrevious.id));
+
+          const retainedGrantIds = new Set(revivedGrantSnapshots.map((grant) => grant.id));
+          const currentGrants = await tx.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.connectionId, revivedConnectionPrevious.id),
+          ));
+          const addedGrantIds = currentGrants
+            .map((grant) => grant.id)
+            .filter((grantId) => !retainedGrantIds.has(grantId));
+          if (addedGrantIds.length > 0) {
+            await tx.delete(connectionGrants).where(inArray(connectionGrants.id, addedGrantIds));
+          }
+          for (const grant of revivedGrantSnapshots) {
+            await tx.update(connectionGrants).set({
+              kind: grant.kind,
+              subjectUserId: grant.subjectUserId,
+              subjectAgentId: grant.subjectAgentId,
+              providerTenant: grant.providerTenant,
+              credentialSecretRefs: grant.credentialSecretRefs,
+              externalCredential: grant.externalCredential,
+              status: grant.status,
+              isDefault: grant.isDefault,
+              createdByAgentId: grant.createdByAgentId,
+              createdByUserId: grant.createdByUserId,
+              revokedAt: grant.revokedAt,
+              revokedByAgentId: grant.revokedByAgentId,
+              revokedByUserId: grant.revokedByUserId,
+              lastUsedAt: grant.lastUsedAt,
+              updatedAt: grant.updatedAt,
+            }).where(eq(connectionGrants.id, grant.id));
+          }
+        }).catch(() => undefined);
       } else if (connectionRow) {
         await db.delete(toolConnections).where(eq(toolConnections.id, connectionRow.id)).catch(() => undefined);
       }

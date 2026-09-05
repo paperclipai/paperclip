@@ -9164,7 +9164,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({ status: 404 });
   });
 
-  it("reuses and revives a removed gallery app without requiring its applicationId", async () => {
+  it("reuses a removed gallery app while applying the omitted organization identity default", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const actor = { actorType: "user" as const, actorId: "local-board" };
@@ -9185,9 +9185,54 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(second.connectionId).toBe(first.connectionId);
     expect(second.application.status).toBe("draft");
     expect(second.connection.status).toBe("draft");
-    expect(second.connection.credentialPolicy).toBe("per_user");
+    expect(second.connection.credentialPolicy).toBe("shared");
+    const grants = await service.listConnectionGrants(second.connectionId, company.id);
+    expect(grants.grants).toEqual([
+      expect.objectContaining({ kind: "organization", status: "active", isDefault: true }),
+    ]);
     await expect(db.select().from(toolApplications)).resolves.toHaveLength(1);
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(1);
+  });
+
+  it("restores grants and credential policy when an identity-changing revival fails", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      actorSource: "local_implicit" as const,
+    };
+    const fetchMock = mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "organization",
+      name: "GitHub rollback",
+      credentialValues: { "credentials.authorization": "old-organization-token" },
+    }, actor);
+    await service.archiveConnection(first.connectionId, company.id, actor);
+    const beforeConnection = await service.getConnection(first.connectionId, company.id);
+    const beforeGrants = await service.listConnectionGrants(first.connectionId, company.id);
+    fetchMock.mockRejectedValue(new Error("provider unavailable"));
+
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "user",
+      name: "GitHub rollback",
+      credentialValues: { "credentials.authorization": "new-personal-token" },
+    }, actor)).rejects.toMatchObject({ status: 502 });
+
+    await expect(service.getConnection(first.connectionId, company.id)).resolves.toMatchObject({
+      status: beforeConnection.status,
+      credentialPolicy: beforeConnection.credentialPolicy,
+      credentialSecretRefs: beforeConnection.credentialSecretRefs,
+    });
+    const afterGrants = await service.listConnectionGrants(first.connectionId, company.id);
+    expect(afterGrants.grants).toEqual(beforeGrants.grants);
   });
 
   it("automatically gives same-named connections distinct names", async () => {
