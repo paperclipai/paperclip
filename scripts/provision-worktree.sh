@@ -335,7 +335,14 @@ EOF
 if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]; then
   echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
 else
-  if paperclipai_command_available; then
+  if [[ ! -e "$source_config_path" && ! -L "$source_config_path" ]]; then
+    # "worktree init --from-config" kann ohne Quell-Config nur hart scheitern.
+    # Der Fallback schreibt die Worktree-Config selbst und braucht sie nicht.
+    # Ohne diese Pruefung haengt das Ergebnis daran, ob auf dem ausfuehrenden
+    # Rechner zufaellig eine paperclipai-CLI im PATH liegt.
+    echo "No source Paperclip config at $source_config_path; writing isolated fallback config without DB seeding." >&2
+    write_fallback_worktree_config
+  elif paperclipai_command_available; then
     run_isolated_worktree_init
   else
     echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2

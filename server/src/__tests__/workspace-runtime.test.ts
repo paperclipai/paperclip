@@ -1208,6 +1208,12 @@ describe("realizeExecutionWorkspace", () => {
       );
       await fs.chmod(fakePnpmPath, 0o755);
 
+      // Quell-Config explizit bereitstellen: Ohne sie nimmt das Skript den
+      // Fallback und "worktree init" liefe nie an — der Test wuerde dann nicht
+      // mehr pruefen, was sein Name sagt.
+      const sourceConfigPath = path.join(tempRoot, "source-config.json");
+      await fs.writeFile(sourceConfigPath, JSON.stringify({ server: { port: 3101 } }), "utf8");
+
       let caught: Error | null = null;
       try {
         await execFileAsync(scriptPath, [], {
@@ -1215,6 +1221,7 @@ describe("realizeExecutionWorkspace", () => {
           env: {
             ...process.env,
             PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+            PAPERCLIP_CONFIG: sourceConfigPath,
             PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
             PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
           },
