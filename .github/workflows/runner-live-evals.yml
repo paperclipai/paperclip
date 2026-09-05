@@ -4,6 +4,19 @@ on:
   schedule:
     - cron: "17 6 * * 0"
   workflow_dispatch:
+    inputs:
+      candidate:
+        description: "Comma-separated live candidate IDs (for example codex-luna)"
+        type: string
+        required: false
+      case:
+        description: "Comma-separated workflow case IDs"
+        type: string
+        required: false
+      limit:
+        description: "Maximum executions after candidate/case filtering"
+        type: string
+        required: false
 
 concurrency:
   group: runner-live-evals-${{ github.ref }}
@@ -17,6 +30,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      eval_runner: ${{ steps.runner.outputs.runner }}
     steps:
       - name: Require default branch and allowlisted numeric actor IDs
         env:
@@ -50,11 +65,30 @@ jobs:
             fi
           done
 
+      - name: Select paid eval runner
+        id: runner
+        env:
+          AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}
+        run: |
+          set -euo pipefail
+          github_runner='ubuntu-latest'
+          aws_runner='runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
+
+          if [ "$AWS_PAID_RUNNER_ENABLED" = true ]; then
+            echo "runner=$aws_runner" >> "$GITHUB_OUTPUT"
+            echo '::notice title=Paid eval routing::Using an ephemeral RunsOn Fleet runner'
+          else
+            echo "runner=$github_runner" >> "$GITHUB_OUTPUT"
+            echo '::notice title=Paid eval routing::RUNNER_E2E_AWS_ENABLED is not true; using the proven GitHub-hosted runner'
+          fi
+
   live_matrix:
     name: Balanced provider/model matrix
     needs: authorize
     if: github.event_name != 'schedule' || vars.RUNNER_LIVE_EVALS_NIGHTLY_ENABLED == 'true'
-    runs-on: ubuntu-latest
+    # The authorize job selects one of two literal, reviewed runner labels;
+    # dispatch inputs and repository variables cannot inject an arbitrary label.
+    runs-on: ${{ needs.authorize.outputs.eval_runner }}
     timeout-minutes: 180
     permissions:
       contents: read
@@ -80,6 +114,26 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Generate private eval-repository token
+        id: evals_token
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          token="$(node .github/scripts/get-bot-token.mjs)"
+          echo "::add-mask::$token"
+          echo "value=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout canonical Evalbook reporter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: paperclipai/paperclip-evals
+          ref: 0c8dfea0ef71a73e909b59a5c0484554cbee199b
+          path: .paperclip-evals
+          token: ${{ steps.evals_token.outputs.value }}
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -114,6 +168,10 @@ jobs:
           PAPERCLIP_EVAL_RUNNER_BUILD: ${{ github.sha }}
           PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD: "12"
           PAPERCLIP_EVAL_SCHEDULE_SEED: runner-live-seven-week-v1
+          PAPERCLIP_EVAL_CANDIDATE: ${{ inputs.candidate }}
+          PAPERCLIP_EVAL_CASE: ${{ inputs.case }}
+          PAPERCLIP_EVAL_LIMIT: ${{ inputs.limit }}
+          PAPERCLIP_EVALBOOK_PROGRAM: ${{ github.workspace }}/.paperclip-evals/evals/paperclip-runner/tools/eval_program.py
         run: pnpm --filter @paperclipai/paperclip-runner report:runner-live-evals
 
       - name: Publish job summary

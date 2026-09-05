@@ -121,15 +121,18 @@ describe("public repository paid workflow security", () => {
 
   it("gates every provider-secret job with stable actor IDs", async () => {
     const workflows = await Promise.all(
-      ["runner-full-stack-e2e.yml", "runner-live-evals.yml", "e2e.yml"].map(
-        async (name) => ({
-          name,
-          contents: await readFile(
-            path.join(repositoryRoot, ".github/workflows", name),
-            "utf8",
-          ),
-        }),
-      ),
+      [
+        "runner-full-stack-e2e.yml",
+        "runner-live-evals.yml",
+        "runner-protocol-live-evals.yml",
+        "e2e.yml",
+      ].map(async (name) => ({
+        name,
+        contents: await readFile(
+          path.join(repositoryRoot, ".github/workflows", name),
+          "utf8",
+        ),
+      })),
     );
 
     for (const { name, contents } of workflows) {
@@ -482,6 +485,7 @@ describe("public repository paid workflow security", () => {
       "e2e.yml",
       "runner-full-stack-e2e.yml",
       "runner-live-evals.yml",
+      "runner-protocol-live-evals.yml",
     ]);
     const names = (await readdir(workflowDirectory)).filter((name) =>
       /\.ya?ml$/.test(name),
@@ -508,7 +512,11 @@ describe("public repository paid workflow security", () => {
 
   it("runs paid scheduled campaigns only on Sundays", async () => {
     const workflows = await Promise.all(
-      ["runner-full-stack-e2e.yml", "runner-live-evals.yml"].map((name) =>
+      [
+        "runner-full-stack-e2e.yml",
+        "runner-live-evals.yml",
+        "runner-protocol-live-evals.yml",
+      ].map((name) =>
         readFile(path.join(repositoryRoot, ".github/workflows", name), "utf8"),
       ),
     );

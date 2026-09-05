@@ -54,6 +54,10 @@ import {
 } from "./workspace-file-reference.js";
 
 const LIVE_SESSION_SCHEMA = "paperclip.capability.live-session.v1" as const;
+const LIVE_COMPLETION_CONTRACT = Object.freeze({
+  revision: "paperclip-capability-live-v1",
+  criterionIds: ["objective"],
+});
 const LIVE_BASE_INSTRUCTIONS = [
   "You are operating one mock Paperclip issue through typed semantic tools.",
   "Use only the tools exposed in this thread; never call a Paperclip REST API.",
@@ -2269,6 +2273,15 @@ export class CapabilityLiveSession {
     const transportBundle = this.#transportFactory({
       ...this.#transportOptions,
       provider,
+      ...(provider === "opencode"
+        ? {
+            // Capability-live sessions expose only governed semantic tools and
+            // use approvalPolicy=never. Keep OpenCode's ambient shell/file
+            // tools fail-closed instead of brokering broader permissions.
+            opencodePermissionMode:
+              this.#transportOptions.opencodePermissionMode ?? "deny",
+          }
+        : {}),
       ...(provider === "acpx" && this.#config.acpxAgent ? {
         acpxAgent: this.#config.acpxAgent,
       } : {}),
@@ -2395,6 +2408,7 @@ export class CapabilityLiveSession {
         runtimeWorkspaceRoots: [this.#config.workingDirectory],
         approvalPolicy: "never",
         baseInstructions: LIVE_BASE_INSTRUCTIONS,
+        completionContract: LIVE_COMPLETION_CONTRACT,
         dynamicTools: [
           ...tools.map(dynamicToolSpec),
           ...((this.#config.toolExposure ?? "eager") === "lazy" ? discoveryToolSpecs() : []),
@@ -2554,7 +2568,15 @@ export class CapabilityLiveSession {
       this.#recordTerminalFact(this.#durableReplayTurnId(turnId), "completed");
     }
     await this.#persist();
-    return this.#codexToolResponse(result);
+    // The durable provider bridge correlates the outer semantic result with
+    // the exact dynamic tool Codex called. Keep the dispatched operation in
+    // evidence, but preserve the discovery gateway identity on the response
+    // envelope returned to runnerd.
+    const providerResult =
+      operationId === INVOKE_DISCOVERED_TOOL
+        ? { ...result, operationId, callId }
+        : result;
+    return this.#codexToolResponse(providerResult);
   }
 
   #isDurableTerminalReplay(turnId: string, input: unknown): boolean {
@@ -2579,7 +2601,7 @@ export class CapabilityLiveSession {
     return `${interruptedTurnId}:durable-duplicate-replay`;
   }
 
-  #codexToolResponse(result: CapabilitySemanticToolResult): Record<string, unknown> {
+  #codexToolResponse(result: { readonly ok: boolean }): Record<string, unknown> {
     return {
       success: result.ok,
       contentItems: [{

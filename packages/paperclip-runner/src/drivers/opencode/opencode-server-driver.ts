@@ -1866,6 +1866,8 @@ async function startRuntime(input: {
   ]);
   const instructionRoot =
     input.options.runtimeContext?.instructions.bundle.rootPath;
+  const [modelProvider, ...modelIdParts] = input.options.model.split("/");
+  const providerModelId = modelIdParts.join("/");
   const config = {
     $schema: "https://opencode.ai/config.json",
     model: input.options.model,
@@ -1875,6 +1877,16 @@ async function startRuntime(input: {
     // system prompt; siblings remain available through the read-only root.
     instructions: [],
     plugin: [],
+    // OpenCode's bundled models.dev snapshot can lag behind OpenRouter's live
+    // catalog. Bind the already-qualified exact model slug into the built-in
+    // provider instead of silently falling back or rejecting a newer model.
+    provider: {
+      [modelProvider!]: {
+        models: {
+          [providerModelId]: { name: providerModelId },
+        },
+      },
+    },
     tools: {
       question: true,
     },
