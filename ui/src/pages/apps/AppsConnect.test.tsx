@@ -725,6 +725,37 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it("keeps GitHub's personal identity defaults while its managed method awaits enrollment", async () => {
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+    getCloudConnectorEnrollmentMock.mockResolvedValueOnce({
+      configured: false,
+      status: "not_configured",
+      brokerBaseUrl: "https://my-staging.paperclip.app",
+      instanceId: null,
+      environment: "staging",
+      origins: [],
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Access   ·   Sign in");
+    expect(radioContaining("My GitHub account")?.getAttribute("aria-checked")).toBe("true");
+    expect(radioContaining("Any agent")?.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("Which agents may use your GitHub when you’re responsible?");
+
+    await passAccessStep();
+
+    expect(container.textContent).toContain("Connect with Paperclip");
+    expect(container.textContent).not.toContain("GitHub token");
+  });
+
   it("restores the setup step after the one-time enrollment callback", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({ apps: [GITHUB_MANAGED] });

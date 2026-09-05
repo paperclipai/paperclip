@@ -315,6 +315,17 @@ function recommendedSetupConnectionMethod(
     : null;
 }
 
+function recommendedManagedConnectorMethod(
+  entry: AppDefinition | null | undefined,
+): ConnectionMethodDef | null {
+  return recommendedSetupConnectionMethod(
+    (entry?.methods ?? []).filter((candidate) =>
+      candidate.oauthStrategy === "paperclip_cloud_connector"
+      || candidate.oauthStrategy === "paperclip_id_connector",
+    ),
+  );
+}
+
 function canUseAutomaticOAuthFastPath(entry: AppDefinition | null | undefined): boolean {
   if (!entry) return false;
   const methods = getAvailableConnectionMethods(entry);
@@ -745,6 +756,16 @@ export function ConnectionSetupFlow({
       || candidate.oauthStrategy === "paperclip_id_connector"
     ),
   );
+  // Before a self-hosted instance enrolls, the server intentionally withholds
+  // platform-managed methods from the advertised gallery. The setup route still
+  // needs the managed method's identity model, labels, and defaults because the
+  // next step is enrollment for that exact method—not the visible PAT/BYO
+  // compatibility fallback.
+  const preEnrollmentManagedMethod = entry
+    && requestedDefinitionUsesManagedConnector
+    && !entryAdvertisesManagedConnector
+    ? recommendedManagedConnectorMethod(fullRequestedDefinition)
+    : null;
   const connectorEnrollmentQuery = useQuery({
     queryKey: ["cloud-connector", "enrollment"],
     queryFn: () => toolsApi.getCloudConnectorEnrollment(),
@@ -1174,7 +1195,15 @@ export function ConnectionSetupFlow({
       setCuratedOAuthClientId("");
       setCuratedOAuthClientSecret("");
       setVercelConnector("");
-      const initialMethod = recommendedSetupConnectionMethod(methods);
+      const requestedEntryAdvertisesManagedConnector = requestedEntry.methods.some((candidate) =>
+        candidate.oauthStrategy === "paperclip_cloud_connector"
+        || candidate.oauthStrategy === "paperclip_id_connector"
+      );
+      const initialMethod = (
+        requestedDefinitionUsesManagedConnector && !requestedEntryAdvertisesManagedConnector
+          ? recommendedManagedConnectorMethod(fullRequestedDefinition)
+          : null
+      ) ?? recommendedSetupConnectionMethod(methods);
       setConnectionMethodKey(initialMethod?.key ?? "");
       setConfigValues(defaultMethodConfig(initialMethod));
       setGoogleSheetsLinks("");
@@ -1222,6 +1251,7 @@ export function ConnectionSetupFlow({
     reconnectConnectionId,
     reconnectSourceMatches,
     resumeConnectionId,
+    fullRequestedDefinition,
     requestedAppKey,
     requestedAgentId,
     routeStage,
@@ -1698,6 +1728,9 @@ export function ConnectionSetupFlow({
     entry?.name ??
     (linkName.trim() || defaultGenericMcpName(linkUrl) || "this app");
   const credentialSourceMethods = connectionMethodsForCredentialSource(entry, credentialSource);
+  const setupCredentialSourceMethods = preEnrollmentManagedMethod
+    ? [preEnrollmentManagedMethod]
+    : credentialSourceMethods;
   const credentialSourceApps = vercelConnectMode
     ? (galleryQuery.data?.apps ?? []).filter(
         (app) => connectionMethodsForCredentialSource(app, credentialSource).length > 0,
@@ -1708,9 +1741,9 @@ export function ConnectionSetupFlow({
     : null;
   const stepLabels = zapierSource
     ? ZAPIER_STEP_LABELS
-    : entry && credentialSourceMethods.length > 1
+    : entry && setupCredentialSourceMethods.length > 1
       ? ["Access", "Choose connection"]
-    : entry && credentialSourceMethods[0]?.auth === "oauth"
+    : entry && setupCredentialSourceMethods[0]?.auth === "oauth"
       ? ["Access", "Sign in"]
     : isGoogleSheetsRobotMethod(entry, connectionMethodKey)
       ? ["Access", "Share sheet"]
@@ -1721,8 +1754,8 @@ export function ConnectionSetupFlow({
   // credential, so it reads the selected method's auth kind.
   const accessStepMethod = entry
     ? (connectionMethodKey
-        ? credentialSourceMethods.find((m) => m.key === connectionMethodKey) ?? null
-        : credentialSourceMethods[0] ?? null)
+        ? setupCredentialSourceMethods.find((m) => m.key === connectionMethodKey) ?? null
+        : setupCredentialSourceMethods[0] ?? null)
     : null;
   const accessStepAuthKind: ToolConnectionAuthKind = entry
     ? accessStepMethod?.auth ?? "none"
