@@ -1005,6 +1005,14 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke",
   "POST /api/tool-gateway/action-requests/{id}/approve",
   "POST /api/tool-gateway/action-requests/{id}/decline",
+  // Both routes assert `assertBoard(req)` as the first line of the handler
+  // body — this set is what makes that the declared tier too, rather than
+  // leaving the spec claim `board_or_agent` while the body enforces
+  // `board`. `DELETE /api/agents/{id}` was already body-gated; it was
+  // simply never added here. `DELETE /api/labels/{labelId}` is the gate
+  // added alongside it, for the same reason (see the PR description).
+  "DELETE /api/agents/{id}",
+  "DELETE /api/labels/{labelId}",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -2808,8 +2816,26 @@ registry.registerPath({
   path: "/api/labels/{labelId}",
   tags: ["issues"],
   summary: "Delete a label",
+  description:
+    "Board-only. Deleting a label also removes it from every issue that carried it. "
+    + "The response reports that blast radius as `affectedIssueIds`.",
   request: { params: z.object({ labelId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: {
+    200: r.ok(
+      z.object({
+        id: z.string(),
+        companyId: z.string(),
+        name: z.string(),
+        color: z.string(),
+        createdAt: z.string(),
+        updatedAt: z.string(),
+        // The issues that lost this label to the delete. Declared so typed
+        // consumers can discover the cascade report instead of guessing.
+        affectedIssueIds: z.array(z.string()),
+      }),
+    ),
+    401: r.unauthorized,
+  },
 });
 
 // ─── Projects ────────────────────────────────────────────────────────────────
