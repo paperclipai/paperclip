@@ -71,7 +71,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
-import { evaluateNoLiveRunDispatchGuard, markIssueNeedsDispatch } from "./no-live-run-dispatch-guard.js";
+import { evaluateStrandedEscalationGuard } from "./stranded-escalation-guard.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -3154,37 +3154,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
-    // The absence of a live run is a dispatch gap, not a blocker. Send those
-    // escalations back to `todo` instead, until the attempt budget runs out.
-    const dispatchGuard = await evaluateNoLiveRunDispatchGuard(db, {
-      issue: input.issue,
-      notice: input.notice,
-      comment: input.comment,
-    });
-    if (dispatchGuard.decision === "skip") {
+    // The sweep picked this issue some time ago. Re-read the current state so a
+    // stale snapshot cannot write `blocked` over a newer decision.
+    const escalationGuard = await evaluateStrandedEscalationGuard(db, { issue: input.issue });
+    if (escalationGuard.decision === "skip") {
       logger.info(
-        { issueId: input.issue.id, identifier: input.issue.identifier, guard: dispatchGuard },
+        { issueId: input.issue.id, identifier: input.issue.identifier, guard: escalationGuard },
         "recovery: suppressed stranded escalation",
       );
       return null;
-    }
-    if (dispatchGuard.decision === "needs_dispatch") {
-      logger.info(
-        { issueId: input.issue.id, identifier: input.issue.identifier, guard: dispatchGuard },
-        "recovery: routed stranded issue to needs-dispatch",
-      );
-      return markIssueNeedsDispatch(db, {
-        issuesSvc: { update: (id, patch) => issuesSvc.update(id, patch) },
-        addComment: (issueId, body, presentation) =>
-          issuesSvc.addComment(issueId, body, {}, { authorType: "system", presentation }),
-        logActivity,
-      }, {
-        issue: input.issue,
-        previousStatus: input.previousStatus,
-        latestRun: input.latestRun,
-        attempts: dispatchGuard.attempts,
-        maxAttempts: dispatchGuard.maxAttempts,
-      });
     }
 
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
