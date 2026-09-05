@@ -1922,6 +1922,8 @@ export function providerSessionIdentityFromDurableProviderState(input: {
   const expectedSessionId = nativeSessionKey(input.execution);
   const nonEmptyString = (value: unknown): value is string =>
     typeof value === "string" && value.trim().length > 0;
+  const sha256 = (value: unknown): value is string =>
+    typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
   const emptyIdentity = () => ({
     providerSessionId: null,
     providerBackendSessionId: null,
@@ -1931,6 +1933,7 @@ export function providerSessionIdentityFromDurableProviderState(input: {
     case "acpx": {
       const descriptor = record(state.descriptor);
       const identity = record(state.identity);
+      const expectedModel = input.execution.provider.model;
       const requiredIdentityFields = [
         "kind",
         "normalizedSessionId",
@@ -1945,24 +1948,36 @@ export function providerSessionIdentityFromDurableProviderState(input: {
       if (
         state.schema !== ACPX_PROVIDER_STATE_SCHEMA ||
         state.lifecycle !== "suspended" ||
-        state.providerExitUnconfirmed === true ||
+        state.providerExitUnconfirmed !== false ||
         state.activeTurnId !== null ||
         descriptor.kind !== "acpx" ||
         descriptor.provider !== "acpx" ||
         descriptor.driver !== "acpx_runtime" ||
+        descriptor.agent !== input.execution.provider.agent ||
+        descriptor.model !== expectedModel ||
         descriptor.normalizedSessionId !== expectedSessionId ||
         identity.kind !== "acpx" ||
         identity.normalizedSessionId !== expectedSessionId ||
         requiredIdentityFields.some(
           (field) => !nonEmptyString(identity[field]),
         ) ||
+        !sha256(identity.profileDigest) ||
+        !sha256(identity.workspaceDigest) ||
+        identity.profileDigest !== descriptor.commandDigest ||
+        identity.requestedModel !== expectedModel ||
+        identity.effectiveModel !== expectedModel ||
+        identity.permissionMode !== input.execution.provider.permissionMode ||
         !["approve-all", "approve-reads", "deny-all"].includes(
           String(identity.permissionMode),
         ) ||
         !Array.isArray(identity.providerLifetimeFenceCandidates) ||
         identity.providerLifetimeFenceCandidates.length !== 3 ||
+        new Set(identity.providerLifetimeFenceCandidates).size !== 3 ||
         identity.providerLifetimeFenceCandidates.some(
-          (port) => !Number.isInteger(port) || Number(port) < 1,
+          (port) =>
+            !Number.isInteger(port) ||
+            Number(port) < 49_152 ||
+            Number(port) > 65_535,
         )
       ) {
         return emptyIdentity();

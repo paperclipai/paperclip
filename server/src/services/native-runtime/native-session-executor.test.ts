@@ -809,14 +809,15 @@ describe("split durable provider checkpoint identity", () => {
     }) as unknown as NativeExecutionInputV1;
 
   it("reads ACPX identity from its provider-owned state after suspension", () => {
+    const profileDigest = `sha256:${"a".repeat(64)}`;
     const identity = {
       kind: "acpx",
       normalizedSessionId: "native-session",
       acpxRecordId: "record-1",
       backendSessionId: "backend-1",
       agentSessionId: "agent-session-1",
-      profileDigest: "sha256:profile",
-      workspaceDigest: "sha256:workspace",
+      profileDigest,
+      workspaceDigest: `sha256:${"b".repeat(64)}`,
       requestedModel: "claude-sonnet-5",
       effectiveModel: "claude-sonnet-5",
       permissionMode: "approve-all",
@@ -824,7 +825,15 @@ describe("split durable provider checkpoint identity", () => {
     };
     expect(
       providerSessionIdentityFromDurableProviderState({
-        execution: execution({ kind: "acpx", agent: "claude" }, "acpx_runtime"),
+        execution: execution(
+          {
+            kind: "acpx",
+            agent: "claude",
+            model: "claude-sonnet-5",
+            permissionMode: "approve-all",
+          },
+          "acpx_runtime",
+        ),
         providerState: {
           schema: "paperclip.runner.acpx-provider-state.v3",
           lifecycle: "suspended",
@@ -834,6 +843,9 @@ describe("split durable provider checkpoint identity", () => {
             kind: "acpx",
             provider: "acpx",
             driver: "acpx_runtime",
+            agent: "claude",
+            model: "claude-sonnet-5",
+            commandDigest: profileDigest,
             normalizedSessionId: "native-session",
           },
           identity,
@@ -874,8 +886,14 @@ describe("split durable provider checkpoint identity", () => {
   );
 
   it("rejects active or scope-conflicting provider state", () => {
+    const profileDigest = `sha256:${"a".repeat(64)}`;
     const acpxExecution = execution(
-      { kind: "acpx", agent: "claude" },
+      {
+        kind: "acpx",
+        agent: "claude",
+        model: "claude-sonnet-5",
+        permissionMode: "approve-all",
+      },
       "acpx_runtime",
     );
     for (const providerState of [
@@ -888,6 +906,9 @@ describe("split durable provider checkpoint identity", () => {
           kind: "acpx",
           provider: "acpx",
           driver: "acpx_runtime",
+          agent: "claude",
+          model: "claude-sonnet-5",
+          commandDigest: profileDigest,
           normalizedSessionId: "native-session",
         },
         identity: {
@@ -896,8 +917,8 @@ describe("split durable provider checkpoint identity", () => {
           acpxRecordId: "record-1",
           backendSessionId: "backend-1",
           agentSessionId: "agent-session-1",
-          profileDigest: "sha256:profile",
-          workspaceDigest: "sha256:workspace",
+          profileDigest,
+          workspaceDigest: `sha256:${"b".repeat(64)}`,
           requestedModel: "claude-sonnet-5",
           effectiveModel: "claude-sonnet-5",
           permissionMode: "approve-all",
@@ -913,6 +934,9 @@ describe("split durable provider checkpoint identity", () => {
           kind: "acpx",
           provider: "acpx",
           driver: "acpx_runtime",
+          agent: "claude",
+          model: "claude-sonnet-5",
+          commandDigest: profileDigest,
           normalizedSessionId: "other-session",
         },
         identity: {
@@ -921,8 +945,8 @@ describe("split durable provider checkpoint identity", () => {
           acpxRecordId: "record-1",
           backendSessionId: "backend-1",
           agentSessionId: "agent-session-1",
-          profileDigest: "sha256:profile",
-          workspaceDigest: "sha256:workspace",
+          profileDigest,
+          workspaceDigest: `sha256:${"b".repeat(64)}`,
           requestedModel: "claude-sonnet-5",
           effectiveModel: "claude-sonnet-5",
           permissionMode: "approve-all",
