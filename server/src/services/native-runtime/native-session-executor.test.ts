@@ -3663,11 +3663,15 @@ describe("runnerd provider runtime wiring", () => {
       remoteCwd: "/home/daytona/paperclip-workspace",
       runner: { execute: remoteExecute },
     } as never;
+    const normalizedSessionId = execution.session.normalizedSessionId;
+    if (!normalizedSessionId) {
+      throw new Error("fixture requires a normalized native session id");
+    }
     const archiveIdentity = {
       runnerInstanceId: "runner-authority-archive",
       environmentLeaseId: "lease-authority-archive",
       runId: execution.binding.runId,
-      normalizedSessionId: execution.session.normalizedSessionId,
+      normalizedSessionId,
       turnId: "turn-authority-archive",
       itemId: "item-authority-archive",
     };
