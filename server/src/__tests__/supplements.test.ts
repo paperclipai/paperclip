@@ -396,6 +396,55 @@ describe("POST /supplements/intake/:date/:supplementId/skip", () => {
     expect(res.body.skippedAt).toBeTruthy();
     expect(res.body.takenAt).toBeNull();
   });
+
+  it("updates existing intake record to skipped (200)", async () => {
+    const sup = makeSupplement();
+    const existing = makeIntake({ takenAt: new Date("2026-09-04T08:10:00.000Z") });
+    const updated = { ...existing, skippedAt: new Date("2026-09-04T09:00:00.000Z"), takenAt: null };
+
+    let selectCall = 0;
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockImplementation(() => {
+        selectCall++;
+        if (selectCall === 1) return Promise.resolve([sup]);
+        return Promise.resolve([existing]);
+      }),
+      update: vi.fn().mockReturnThis(),
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([updated]),
+        }),
+      }),
+    } as unknown as Db;
+
+    const res = await request(createApp(db))
+      .post("/supplements/intake/2026-09-04/sup-1/skip");
+
+    expect(res.status).toBe(200);
+    expect(res.body.skippedAt).toBeTruthy();
+    expect(res.body.takenAt).toBeNull();
+  });
+
+  it("returns 404 when supplement does not exist", async () => {
+    const db = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue([]),
+    } as unknown as Db;
+
+    const res = await request(createApp(db))
+      .post("/supplements/intake/2026-09-04/not-found/skip");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 for invalid date format", async () => {
+    const db = {} as unknown as Db;
+    const res = await request(createApp(db))
+      .post("/supplements/intake/bad-date/sup-1/skip");
+    expect(res.status).toBe(400);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -415,5 +464,12 @@ describe("DELETE /supplements/intake/:date/:supplementId", () => {
 
     expect(res.status).toBe(204);
     expect(db.delete).toHaveBeenCalled();
+  });
+
+  it("returns 400 for invalid date format", async () => {
+    const db = {} as unknown as Db;
+    const res = await request(createApp(db))
+      .delete("/supplements/intake/bad-date/sup-1");
+    expect(res.status).toBe(400);
   });
 });
