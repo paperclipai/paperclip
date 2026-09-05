@@ -154,7 +154,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     return runId;
   }
 
-  it("classifies a blocked parent as covered when its child has a running execution path", async () => {
+  it("classifies a blocked aggregate parent as covered when its child has a running execution path without a direct blocker edge", async () => {
     const { companyId, agentId } = await createCompany("PBC");
     const parentId = await insertIssue({ companyId, identifier: "PBC-1", title: "Parent", status: "blocked" });
     const childId = await insertIssue({
@@ -165,7 +165,6 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       parentId,
       assigneeAgentId: agentId,
     });
-    await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
     await activeRun({ companyId, agentId, issueId: childId });
 
     const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
@@ -173,10 +172,68 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
       reason: "active_child",
-      unresolvedBlockerCount: 1,
+      unresolvedBlockerCount: 0,
       coveredBlockerCount: 1,
       attentionBlockerCount: 0,
       sampleBlockerIdentifier: "PBC-2",
+    });
+  });
+
+  it("does not project a human-owned aggregate child as active execution", async () => {
+    const { companyId } = await createCompany("PBH");
+    const parentId = await insertIssue({ companyId, identifier: "PBH-1", title: "Parent", status: "blocked" });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "PBH-2",
+      title: "Human-owned child",
+      status: "todo",
+      parentId,
+      assigneeUserId: "board-user-1",
+    });
+    await block({ companyId, blockerIssueId: childId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "human_owned_child",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBH-2",
+      blockingTreeLive: false,
+    });
+  });
+
+  it("does not let active aggregate child work hide an unattended direct blocker", async () => {
+    const { companyId, agentId } = await createCompany("PBA");
+    const parentId = await insertIssue({ companyId, identifier: "PBA-1", title: "Parent", status: "blocked" });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "PBA-2",
+      title: "Running child",
+      status: "todo",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    const directBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBA-3",
+      title: "Unassigned direct blocker",
+      status: "todo",
+    });
+    await block({ companyId, blockerIssueId: directBlockerId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: childId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBA-3",
     });
   });
 

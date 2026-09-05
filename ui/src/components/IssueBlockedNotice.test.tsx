@@ -431,6 +431,89 @@ describe("IssueBlockedNotice", () => {
     expect(node.textContent).toContain("A message won’t restart this task yet");
   });
 
+  it("renders aggregate child coverage without telling operators to move the parent back to todo", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_child",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "TASK-2",
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+
+    expect(node.querySelector('[data-testid="issue-blocked-notice-active-child"]')).not.toBeNull();
+    expect(node.textContent).toContain("Active sub-task work is in progress");
+    expect(node.textContent).toContain("no direct blocker");
+    expect(node.textContent).not.toContain("moved back to todo");
+  });
+
+  it("renders aggregate-child coverage when the API retains covered relationship summaries", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[
+          {
+            id: "covered-child-edge",
+            identifier: "TASK-3",
+            title: "Active sub-task",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_child",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "TASK-3",
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+
+    expect(node.querySelector('[data-testid="issue-blocked-notice-active-child"]')).not.toBeNull();
+    expect(node.textContent).toContain("Active sub-task work is in progress");
+    expect(node.textContent).toContain("also has a direct blocker");
+    expect(node.textContent).not.toContain("no direct blocker");
+    expect(node.textContent).not.toContain("Work on this task is blocked by the linked task");
+  });
+
+  it("renders human-owned aggregate child coverage without claiming work is in progress", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[]}
+        blockerAttention={{
+          state: "covered",
+          reason: "human_owned_child",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "TASK-4",
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+
+    expect(node.querySelector('[data-testid="issue-blocked-notice-human-owned-child"]')).not.toBeNull();
+    expect(node.textContent).toContain("Waiting on a human-owned sub-task");
+    expect(node.textContent).toContain("assigned person updates or completes the sub-task");
+    expect(node.textContent).not.toContain("Active sub-task work is in progress");
+  });
+
   it("sorts same-status live-work steps with numeric identifier ordering", () => {
     const node = render(
       <IssueBlockedNotice
