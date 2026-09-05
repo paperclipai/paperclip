@@ -1032,6 +1032,11 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       await expect(
         svc.list(companyId, { status: "todo", [name]: "bad", limit: 20 }),
       ).rejects.toThrow(`${name} must be a UUID`);
+      // A whitespace-only value is truthy, so the query builders would send it
+      // to a uuid comparison as-is. It has to be rejected, not exempted.
+      await expect(
+        svc.list(companyId, { status: "todo", [name]: " ", limit: 20 }),
+      ).rejects.toThrow(`${name} must be a UUID`);
     }
   });
 

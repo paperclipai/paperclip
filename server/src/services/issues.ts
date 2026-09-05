@@ -4249,7 +4249,13 @@ function assertValidUuidFilter(name: string, value: string | undefined) {
   // An empty value means "filter absent" — every query builder below gates on a
   // falsy filter, and `parseIssueAssigneeAgentFilter` normalizes `""` the same
   // way. Rejecting it here would disagree with both.
-  if (typeof value === "string" && value.trim() !== "" && !isUuidLike(value)) {
+  //
+  // The exemption is exactly `""`, not "blank after trimming". This function
+  // does not own the value it validates, so a whitespace-only string it waved
+  // through would still reach the query builders, which test the *original*
+  // string for truthiness and compare it against a uuid column — 22P02, the
+  // exact 500 this guard exists to prevent.
+  if (typeof value === "string" && value !== "" && !isUuidLike(value)) {
     throw unprocessable(`${name} must be a UUID`);
   }
 }
