@@ -698,6 +698,54 @@ describe("Chat SDK endpoint runtime", () => {
     expect(onMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("carries Telegram update_id into the normalized message callback", async () => {
+    const onMessage = vi.fn();
+    const runtime = createChatSdkEndpointRuntime({
+      ...baseOptions({
+        provider: "telegram",
+        userName: "agent",
+        credentials: {
+          botToken: "token",
+          secretToken: "secret",
+        },
+      }),
+      callbacks: { onMessage },
+    });
+    const chat = captures.chats[0] as unknown as {
+      handlers: Record<string, (...args: unknown[]) => Promise<void>>;
+      webhooks: Record<
+        string,
+        (
+          request: Request,
+          options?: CapturedWebhookOptions,
+        ) => Promise<Response>
+      >;
+    };
+    const thread = { id: "telegram:1", channelId: "telegram:1" };
+    const message = {
+      id: "telegram:1:42",
+      raw: { message_id: 42 },
+      author: { isMe: false },
+    };
+    chat.webhooks.telegram = async (_request, options) => {
+      options?.waitUntil?.(chat.handlers.direct?.(thread, message));
+      return new Response("ok", { status: 200 });
+    };
+
+    const response = await runtime.handleWebhook(
+      new Request("https://paperclip.test/telegram", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ update_id: 987654, message: { message_id: 42 } }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(onMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ providerUpdateId: 987654 }),
+    );
+  });
+
   it("returns a retryable response before a provider deadline when ingress work stalls", async () => {
     const stalled = deferred();
     const runtime = createChatSdkEndpointRuntime({

@@ -253,11 +253,30 @@ function parseGitHubLifecycle(
 
 function teamsResourceType(payload: Record<string, unknown>): string {
   const conversation = record(payload.conversation);
+  const conversationType = string(conversation?.conversationType)
+    ?.toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (conversationType === "personal") return "direct_message";
+  if (conversationType === "group" || conversationType === "groupchat")
+    return "group_chat";
+  if (conversationType === "channel") return "channel";
   if (conversation?.isGroup === false) return "direct_message";
   const channelData = record(payload.channelData);
   if (record(channelData?.team) || record(channelData?.channel))
     return "channel";
   return "group_chat";
+}
+
+function teamsBotIdentityMatches(
+  botExternalId: string,
+  memberId: unknown,
+): boolean {
+  const canonical = (value: unknown): string | null => {
+    const id = identifier(value)?.toLowerCase();
+    return id?.replace(/^28:/, "") ?? null;
+  };
+  const expected = canonical(botExternalId);
+  return expected !== null && canonical(memberId) === expected;
 }
 
 function teamsResourceId(payload: Record<string, unknown>): string | null {
@@ -329,11 +348,11 @@ function parseTeamsLifecycle(
     const removed = Array.isArray(payload.membersRemoved)
       ? payload.membersRemoved.map(record).filter(Boolean)
       : [];
-    const joined = added.some(
-      (member) => identifier(member?.id) === input.botExternalId,
+    const joined = added.some((member) =>
+      teamsBotIdentityMatches(input.botExternalId!, member?.id),
     );
-    const left = removed.some(
-      (member) => identifier(member?.id) === input.botExternalId,
+    const left = removed.some((member) =>
+      teamsBotIdentityMatches(input.botExternalId!, member?.id),
     );
     if (!joined && !left) return [];
     return [

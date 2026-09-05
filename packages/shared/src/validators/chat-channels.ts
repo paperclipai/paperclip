@@ -56,7 +56,20 @@ export const configureChatEndpointSchema = z
     ]),
     credentials: z.record(z.string(), z.string().min(1)).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.credentials &&
+      value.action !== "configure" &&
+      value.action !== "reconnect"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["credentials"],
+        message: `Credentials are not accepted for the ${value.action} action`,
+      });
+    }
+  });
 
 export const replaceChatEndpointResourcesSchema = z
   .object({

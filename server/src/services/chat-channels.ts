@@ -182,7 +182,10 @@ function slackRequestSignatureIsValid(
   }
 }
 
-function slackRequestWorkspaceId(body: string, contentType: string): string | null {
+function slackRequestWorkspaceId(
+  body: string,
+  contentType: string,
+): string | null {
   let payload: unknown;
   try {
     if (contentType.includes("application/json")) {
@@ -337,10 +340,23 @@ const REQUIRED_GITHUB_EVENTS = [
   "pull_request_review_comment",
 ] as const;
 
-const CREDENTIAL_ALIASES: Record<string, string> = {
-  appPassword: "clientSecret",
-  appTenantId: "tenantId",
-  secretToken: "webhookSecret",
+const REQUIRED_GITHUB_PERMISSIONS = {
+  issues: "write",
+  metadata: "read",
+  pull_requests: "write",
+} as const;
+
+const UNAVOIDABLE_GITHUB_EVENTS = [
+  "github_app_authorization",
+  "installation",
+  "installation_repositories",
+] as const;
+
+const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
+  slack: ["botToken", "signingSecret"],
+  github: ["appId", "privateKey"],
+  "microsoft-teams": ["clientId", "tenantId", "clientSecret"],
+  telegram: ["botToken"],
 };
 
 const MAX_INBOUND_TEXT = 100_000;
@@ -354,18 +370,26 @@ const ORPHAN_FOLLOW_UP_GRACE_MS = 5_000;
 const CREDENTIAL_MUTATION_LEASE_TTL_MS = 90_000;
 const CREDENTIAL_MUTATION_LEASE_WAIT_MS = 10_000;
 const CREDENTIAL_MUTATION_LEASE_POLL_MS = 25;
-// Slack can deliver adjacent Events API callbacks on separate HTTP requests
-// out of timestamp order. Hold the first callback briefly so a rapid burst can
-// be sorted by the provider's message timestamp before any run is started.
+const RECEIPT_REACTION_MAX_ATTEMPTS = 3;
+const RECEIPT_REACTION_MAX_RETRY_DELAY_MS = 2_000;
+// Providers can deliver adjacent callbacks on separate HTTP requests out of
+// order. Hold the first callback briefly so a rapid burst can be sorted by the
+// provider's own timestamp and sequence before any run is started.
 const INGRESS_REORDER_WINDOW_MS: Partial<Record<ChatProvider, number>> = {
   // Both providers deliver adjacent comments as independent HTTP requests and
   // do not guarantee callback arrival order. A fixed, non-sliding window lets
   // the durable drain sort a short burst before the first agent wake starts.
   slack: 750,
   github: 750,
+  // Telegram's webhook max_connections setting permits concurrent delivery.
+  // Its message timestamp has only one-second resolution, so the drain also
+  // uses message_id/update_id below to order callbacks within this fixed,
+  // non-sliding window without serializing separate chats.
+  telegram: 750,
 };
 
 type EndpointRow = typeof chatEndpoints.$inferSelect;
+type ResourceRow = typeof chatEndpointResources.$inferSelect;
 type VerifiedProviderIdentity = {
   providerAccountId?: string | null;
   providerAccountLabel?: string | null;
@@ -482,6 +506,26 @@ function chatSurfaceKind(
   return "native_thread";
 }
 
+/**
+ * Teams group chats are admitted as a class: installation at the provider and
+ * the endpoint's group-chat toggle are the two gates the operator can
+ * actually control. Teams channels, and every other non-DM destination,
+ * retain the explicit per-resource enablement gate shown in Settings.
+ */
+function nonDirectDestinationAllowed(
+  endpoint: EndpointRow,
+  resource: ResourceRow | null | undefined,
+): boolean {
+  if (!resource || resource.availability !== "available") return false;
+  if (
+    endpoint.provider === "microsoft-teams" &&
+    resource.type === "group_chat"
+  ) {
+    return endpoint.allowGroupChats;
+  }
+  return resource.enabled;
+}
+
 function linearControlCommand(text: string): "new" | "close" | "status" | null {
   const match = /^\/(new|close|status)(?:@[\w.-]+)?\s*$/i.exec(text.trim());
   return (
@@ -537,6 +581,56 @@ function redactError(error: unknown): string {
     .replace(/(\/bot)\d{5,}(?::|%3A)[A-Za-z0-9_-]{20,}/gi, "$1***REDACTED***")
     .replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}\b/g, "***REDACTED***");
   return redactSensitiveText(withoutTelegramBotTokens).slice(0, MAX_ERROR_TEXT);
+}
+
+function receiptReactionTransportRetryDelay(
+  error: unknown,
+  attempt: number,
+): number | null {
+  const disposition = classifyChatPublicationError(error, attempt);
+  if (disposition.kind === "retry") {
+    return Math.max(
+      1,
+      Math.min(RECEIPT_REACTION_MAX_RETRY_DELAY_MS, disposition.retryAfterMs),
+    );
+  }
+  if (disposition.kind !== "delivery_unknown") return null;
+  const value =
+    error && typeof error === "object"
+      ? (error as {
+          code?: unknown;
+          name?: unknown;
+          response?: { status?: unknown };
+          status?: unknown;
+          statusCode?: unknown;
+        })
+      : null;
+  const name = typeof value?.name === "string" ? value.name : "";
+  const code = typeof value?.code === "string" ? value.code.toUpperCase() : "";
+  const status = [
+    value?.status,
+    value?.statusCode,
+    value?.response?.status,
+  ].find((candidate): candidate is number => typeof candidate === "number");
+  const retryableTransport =
+    name === "NetworkError" ||
+    name === "FetchError" ||
+    name === "TypeError" ||
+    [
+      "EAI_AGAIN",
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "ENETUNREACH",
+      "ETIMEDOUT",
+    ].includes(code) ||
+    status === 408 ||
+    status === 425 ||
+    (status !== undefined && status >= 500 && status <= 599);
+  if (!retryableTransport) return null;
+  return Math.min(
+    RECEIPT_REACTION_MAX_RETRY_DELAY_MS,
+    100 * 2 ** Math.max(0, attempt - 1),
+  );
 }
 
 async function attemptProviderPublication<T>(
@@ -690,6 +784,14 @@ function isTelegramEditedMessageRaw(raw: unknown): boolean {
     !Array.isArray(raw) &&
     typeof (raw as { edit_date?: unknown }).edit_date === "number"
   );
+}
+
+function telegramMessageSequence(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = (raw as { message_id?: unknown }).message_id;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
 }
 
 async function githubLifecycleEventFromRequest(
@@ -924,6 +1026,76 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       backgroundMessageTasks.add(pending);
       void pending.finally(() => backgroundMessageTasks.delete(pending));
     });
+  }
+
+  async function addReceiptReaction(input: {
+    deliveryId: string;
+    endpoint: EndpointRow;
+    message: Message;
+    thread: Thread;
+  }): Promise<void> {
+    let attempts = 0;
+    let lastError: unknown = new Error("Receipt reaction was not attempted");
+    while (attempts < RECEIPT_REACTION_MAX_ATTEMPTS) {
+      attempts += 1;
+      try {
+        await input.thread.adapter.addReaction(
+          input.thread.id,
+          input.message.id,
+          "eyes",
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+        const retryDelay = receiptReactionTransportRetryDelay(error, attempts);
+        if (retryDelay === null || attempts >= RECEIPT_REACTION_MAX_ATTEMPTS) {
+          break;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, retryDelay));
+      }
+    }
+
+    const disposition = classifyChatPublicationError(lastError, attempts);
+    const diagnostic =
+      `Receipt reaction failed after ${attempts} attempt${attempts === 1 ? "" : "s"} (${disposition.kind}): ${redactError(lastError)}`.slice(
+        0,
+        MAX_ERROR_TEXT,
+      );
+    logger.warn(
+      {
+        endpointId: input.endpoint.id,
+        deliveryId: input.deliveryId,
+        provider: input.endpoint.provider,
+        attempts,
+        disposition: disposition.kind,
+      },
+      "external chat receipt reaction failed",
+    );
+    try {
+      // The inbound task/comment/wakeup is already authoritative and remains
+      // processed. Activity carries this non-fatal provider-side diagnostic
+      // without turning a cosmetic acknowledgement into a replayable message.
+      await db
+        .update(chatDeliveries)
+        .set({ redactedError: diagnostic, updatedAt: new Date() })
+        .where(
+          and(
+            eq(chatDeliveries.id, input.deliveryId),
+            eq(chatDeliveries.state, "processed"),
+          ),
+        );
+    } catch (error) {
+      // Never replay an accepted task because observability for its optional
+      // receipt reaction failed. Keep the secondary failure redacted in logs.
+      logger.error(
+        {
+          endpointId: input.endpoint.id,
+          deliveryId: input.deliveryId,
+          error: redactError(error),
+        },
+        "could not persist receipt reaction diagnostic",
+      );
+    }
   }
 
   function conversationDrainKey(endpointId: string, threadId: string) {
@@ -1233,11 +1405,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const values = await resolveCredentials(endpoint).catch(
       () => ({}) as Record<string, string>,
     );
-    for (const [rawKey, rawValue] of Object.entries(supplied ?? {})) {
-      const key =
-        endpoint.provider === "microsoft-teams" && rawKey === "appId"
-          ? "clientId"
-          : (CREDENTIAL_ALIASES[rawKey] ?? rawKey);
+    for (const [key, rawValue] of Object.entries(supplied ?? {})) {
       if (typeof rawValue === "string" && rawValue.trim())
         values[key] = key === "privateKey" ? rawValue : rawValue.trim();
     }
@@ -1352,21 +1520,44 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         throw unprocessable(
           `GitHub rejected the app credentials: ${result.message ?? response.status}`,
         );
-      const missingPermissions = ["issues", "pull_requests"].filter(
-        (permission) => result.permissions?.[permission] !== "write",
+      const missingPermissions = Object.entries(REQUIRED_GITHUB_PERMISSIONS)
+        .filter(
+          ([permission, access]) => result.permissions?.[permission] !== access,
+        )
+        .map(([permission]) => permission);
+      const excessivePermissions = Object.keys(result.permissions ?? {}).filter(
+        (permission) => !(permission in REQUIRED_GITHUB_PERMISSIONS),
       );
       const configuredEvents = new Set(result.events ?? []);
       const missingEvents = REQUIRED_GITHUB_EVENTS.filter(
         (event) => !configuredEvents.has(event),
       );
-      if (missingPermissions.length > 0 || missingEvents.length > 0) {
+      const allowedEvents = new Set<string>([
+        ...REQUIRED_GITHUB_EVENTS,
+        ...UNAVOIDABLE_GITHUB_EVENTS,
+      ]);
+      const excessiveEvents = [...configuredEvents].filter(
+        (event) => !allowedEvents.has(event),
+      );
+      if (
+        missingPermissions.length > 0 ||
+        excessivePermissions.length > 0 ||
+        missingEvents.length > 0 ||
+        excessiveEvents.length > 0
+      ) {
         throw unprocessable(
           [
             missingPermissions.length > 0
-              ? `GitHub App needs read and write access for: ${missingPermissions.join(", ")}`
+              ? `GitHub App needs the documented minimum access for: ${missingPermissions.join(", ")}`
+              : null,
+            excessivePermissions.length > 0
+              ? `GitHub App has broader permissions than Paperclip needs: ${excessivePermissions.join(", ")}`
               : null,
             missingEvents.length > 0
               ? `GitHub App must subscribe to: ${missingEvents.join(", ")}`
+              : null,
+            excessiveEvents.length > 0
+              ? `GitHub App subscribes to broader events than Paperclip needs: ${excessiveEvents.join(", ")}`
               : null,
           ]
             .filter(Boolean)
@@ -1375,7 +1566,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             code: "chat_provider_permissions_missing",
             provider: "github",
             missingPermissions,
+            excessivePermissions,
             missingEvents,
+            excessiveEvents,
           },
         );
       }
@@ -2119,6 +2312,32 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     input: ConfigureChatEndpointInput,
     actorUserId?: string | null,
   ) {
+    const record = await endpointRecord(endpointId);
+    if (!record) throw notFound("Chat endpoint not found");
+    const suppliedCredentialKeys = Object.keys(input.credentials ?? {});
+    if (suppliedCredentialKeys.length > 0) {
+      const credentialAction =
+        input.action === "configure" || input.action === "reconnect";
+      const allowedKeys = new Set(
+        credentialAction
+          ? SUPPLIED_CREDENTIAL_KEYS[record.endpoint.provider]
+          : [],
+      );
+      const unsupportedKeys = suppliedCredentialKeys.filter(
+        (key) => !allowedKeys.has(key),
+      );
+      if (unsupportedKeys.length > 0) {
+        throw unprocessable(
+          `Unsupported ${PROVIDER_LABELS[record.endpoint.provider]} credential fields for ${input.action}: ${unsupportedKeys.join(", ")}`,
+          {
+            code: "chat_endpoint_credentials_invalid",
+            provider: record.endpoint.provider,
+            action: input.action,
+            unsupportedKeys,
+          },
+        );
+      }
+    }
     if (
       input.action !== "configure" &&
       input.action !== "reconnect" &&
@@ -2127,8 +2346,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     ) {
       return configureWithoutCredentialLease(endpointId, input, actorUserId);
     }
-    const record = await endpointRecord(endpointId);
-    if (!record) throw notFound("Chat endpoint not found");
     return withCredentialMutationLease(record.endpoint, () =>
       configureWithoutCredentialLease(endpointId, input, actorUserId),
     );
@@ -2966,6 +3183,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     ingressOnly = false,
     recoveredProviderUrl: string | null = null,
     runtimeGeneration?: number,
+    providerUpdateId?: number,
   ) {
     // The Telegram adapter currently emits edited_message through the normal
     // message callback with the original message id. Paperclip records that
@@ -3043,6 +3261,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       },
       message: {
         providerMessageId: message.id,
+        providerMessageSequence:
+          endpoint.provider === "telegram"
+            ? telegramMessageSequence(message.raw)
+            : null,
+        providerUpdateId:
+          endpoint.provider === "telegram" ? (providerUpdateId ?? null) : null,
         text: message.text.slice(0, MAX_INBOUND_TEXT),
         mentionedBot: message.isMention === true,
         providerSentAt: providerSentAt?.toISOString() ?? null,
@@ -3392,11 +3616,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         endpoint.status === "verifying" || endpoint.status === "active";
       const destinationAllowed = thread.isDM
         ? endpoint.allowDirectMessages
-        : surfaceKind === "linear_group"
-          ? endpoint.allowGroupChats &&
-            resource.enabled &&
-            resource.availability === "available"
-          : resource.enabled && resource.availability === "available";
+        : nonDirectDestinationAllowed(endpoint, resource);
       const guestSponsorAllowed =
         principalResolution.userId === null &&
         !principalResolution.linkedDenied &&
@@ -3518,7 +3738,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // An exact Slack redelivery can therefore never create duplicate
         // guidance or accidentally fall through into task creation.
         await Promise.allSettled([
-          thread.adapter.addReaction(thread.id, message.id, "eyes"),
+          addReceiptReaction({
+            deliveryId: activeDelivery.id,
+            endpoint,
+            message,
+            thread,
+          }),
           thread.post("Please include a request after mentioning me."),
         ]);
         return;
@@ -3562,7 +3787,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             .where(eq(chatDeliveries.id, activeDelivery.id));
         });
         await Promise.allSettled([
-          thread.adapter.addReaction(thread.id, message.id, "eyes"),
+          addReceiptReaction({
+            deliveryId: activeDelivery.id,
+            endpoint,
+            message,
+            thread,
+          }),
           addressed && !thread.isDM ? thread.subscribe() : Promise.resolve(),
         ]);
         await thread.post(responseText);
@@ -3837,7 +4067,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // Provider-visible acknowledgement begins only after the task, external
       // comment, durable wakeup request, delivery state, and message link commit.
       await Promise.allSettled([
-        thread.adapter.addReaction(thread.id, message.id, "eyes"),
+        addReceiptReaction({
+          deliveryId: activeDelivery.id,
+          endpoint,
+          message,
+          thread,
+        }),
         // Slack implements this through assistant.threads.setStatus, which
         // requires assistant:write. The least-privilege Paperclip manifest
         // deliberately does not request that scope; the coalesced lifecycle
@@ -3949,13 +4184,26 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         asc(
           sql`coalesce(nullif(${chatDeliveries.normalizedEvent}->'message'->>'providerSentAt', '')::timestamptz, ${chatDeliveries.receivedAt})`,
         ),
-        // GitHub timestamps have one-second resolution while comment ids are
-        // monotonically increasing. Without this tie-breaker two same-second
-        // callbacks are ordered by random Paperclip UUID, which can filter an
-        // unmentioned follow-up before the root mention creates its task.
+        // GitHub timestamps and Telegram message dates have one-second
+        // resolution. GitHub's numeric comment id and Telegram's message_id
+        // are monotonic within one conversation, so use them before receipt
+        // order. The Telegram update_id is a final provider-native tie-breaker
+        // for unusual payloads that lack a usable message_id.
+        asc(sql`coalesce(
+          case
+            when ${chatDeliveries.normalizedEvent}->'message'->>'providerMessageSequence' ~ '^[0-9]+$'
+            then (${chatDeliveries.normalizedEvent}->'message'->>'providerMessageSequence')::numeric
+            else null
+          end,
+          case
+            when ${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId' ~ '^[0-9]+$'
+            then (${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId')::numeric
+            else null
+          end
+        )`),
         asc(sql`case
-          when ${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId' ~ '^[0-9]+$'
-          then (${chatDeliveries.normalizedEvent}->'message'->>'providerMessageId')::numeric
+          when ${chatDeliveries.normalizedEvent}->'message'->>'providerUpdateId' ~ '^[0-9]+$'
+          then (${chatDeliveries.normalizedEvent}->'message'->>'providerUpdateId')::numeric
           else null
         end`),
         asc(chatDeliveries.receivedAt),
@@ -4282,6 +4530,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         options.deferWebhookProcessing === true,
         null,
         runtimeGeneration,
+        event.providerUpdateId,
       );
   }
 
@@ -4544,17 +4793,82 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .onConflictDoNothing();
   }
 
+  async function denyExternalAction(
+    endpoint: EndpointRow,
+    event: ChatSdkCallbackEvent<ActionEvent>,
+    safelyKnown: {
+      conversationId?: string | null;
+      principalId?: string | null;
+    } = {},
+  ): Promise<never> {
+    const denied = forbidden(
+      "This chat action is not a current Paperclip question",
+    );
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify([
+          endpoint.id,
+          event.provider,
+          event.event.threadId,
+          event.event.messageId,
+          event.event.user.userId,
+          event.event.actionId,
+        ]),
+      )
+      .digest("hex");
+    const providerEventId = `action-denied:${fingerprint}`;
+    const processedAt = new Date();
+    try {
+      await db
+        .insert(chatDeliveries)
+        .values({
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          conversationId: safelyKnown.conversationId ?? null,
+          principalId: safelyKnown.principalId ?? null,
+          providerEventId,
+          deduplicationKey: fingerprint,
+          eventKind: "action",
+          normalizedEvent: {
+            providerEventId,
+            kind: "action",
+            authorization: { outcome: "denied" },
+          },
+          state: "filtered",
+          attempts: 1,
+          redactedError: "External action denied by Paperclip authorization",
+          processedAt,
+          updatedAt: processedAt,
+        })
+        .onConflictDoNothing();
+    } catch (error) {
+      logger.warn(
+        {
+          endpointId: endpoint.id,
+          provider: endpoint.provider,
+          error: redactError(error),
+        },
+        "could not record denied external chat action",
+      );
+    }
+    throw denied;
+  }
+
   async function handleAction(event: ChatSdkCallbackEvent<ActionEvent>) {
-    const deny = () =>
-      forbidden("This chat action is not a current Paperclip question");
     const record = await endpointRecord(event.endpointId);
+    if (!record) {
+      throw forbidden("This chat action is not a current Paperclip question");
+    }
+    const deny = (safelyKnown?: {
+      conversationId?: string | null;
+      principalId?: string | null;
+    }) => denyExternalAction(record.endpoint, event, safelyKnown);
     if (
-      !record ||
       record.endpoint.status !== "active" ||
       record.endpoint.provider !== event.provider ||
       record.endpoint.capabilities.actions !== true
     ) {
-      throw deny();
+      return deny();
     }
     const principal = await ensurePrincipal(
       record.endpoint,
@@ -4570,15 +4884,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       principal.principal.kind !== "user" ||
       principal.principal.isBot
     ) {
-      throw deny();
+      return deny({ principalId: principal.principal.id });
     }
     const conversation = await conversationForThread(
       event.endpointId,
       event.event.threadId,
     );
     if (!conversation || !["active", "waiting"].includes(conversation.state)) {
-      throw deny();
+      return deny({ principalId: principal.principal.id });
     }
+    const safelyKnown = {
+      conversationId: conversation.id,
+      principalId: principal.principal.id,
+    };
     const resource = conversation.resourceId
       ? await db
           .select()
@@ -4594,12 +4912,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       : null;
     const resourceAllowed = conversation.isDirectMessage
       ? record.endpoint.allowDirectMessages
-      : Boolean(
-          resource?.enabled &&
-          resource.availability === "available" &&
-          (resource.type !== "group_chat" || record.endpoint.allowGroupChats),
-        );
-    if (!resourceAllowed) throw deny();
+      : nonDirectDestinationAllowed(record.endpoint, resource);
+    if (!resourceAllowed) return deny(safelyKnown);
 
     const issued = await db
       .select({
@@ -4629,7 +4943,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (!issued) throw deny();
+    if (!issued) return deny(safelyKnown);
 
     const payload = issued.publication.payload as SafeChatPublicationPayload;
     if (event.provider === "telegram") {
@@ -4645,7 +4959,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         callbackData !== telegramChatSdkCallbackData(event.event.actionId) ||
         event.event.value !== undefined
       ) {
-        throw deny();
+        return deny(safelyKnown);
       }
     }
     if (
@@ -4658,7 +4972,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           action.actionId === event.event.actionId,
       )
     ) {
-      throw deny();
+      return deny(safelyKnown);
     }
 
     const interaction = (
@@ -4671,11 +4985,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       interaction.kind !== "ask_user_questions" ||
       interaction.status !== "pending"
     ) {
-      throw deny();
+      return deny(safelyKnown);
     }
     if (isChatQuestionFormOpenActionId(event.event.actionId)) {
       if (event.provider !== "slack" && event.provider !== "microsoft-teams") {
-        throw deny();
+        return deny(safelyKnown);
       }
       const resolved = await resolveChatQuestionFormOpen(db, {
         companyId: record.endpoint.companyId,
@@ -4685,10 +4999,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         openActionId: event.event.actionId,
       });
       if (!resolved || resolved.publicationId !== issued.publication.id) {
-        throw deny();
+        return deny(safelyKnown);
       }
       const opened = await event.event.openModal(resolved.modal);
-      if (!opened) throw deny();
+      if (!opened) return deny(safelyKnown);
       return;
     }
 
@@ -4705,7 +5019,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (!action || action.status !== "issued") throw deny();
+    if (!action || action.status !== "issued") return deny(safelyKnown);
     const tokenPayload = action.payload;
     const tokenExpiresAt =
       typeof tokenPayload.expiresAt === "string"
@@ -4722,7 +5036,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .where(
           and(eq(chatActions.id, action.id), eq(chatActions.status, "issued")),
         );
-      throw deny();
+      return deny(safelyKnown);
     }
     if (
       tokenPayload.version !== 1 ||
@@ -4731,7 +5045,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       typeof tokenPayload.questionId !== "string" ||
       typeof tokenPayload.optionId !== "string"
     ) {
-      throw deny();
+      return deny(safelyKnown);
     }
 
     const question = nativeChatQuestion(interaction);
@@ -4739,7 +5053,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       (candidate) => candidate.id === tokenPayload.optionId,
     );
     if (!question || question.id !== tokenPayload.questionId || !option)
-      throw deny();
+      return deny(safelyKnown);
 
     // Claim the durable token before changing the interaction. This is the
     // single-use replay barrier; concurrent callbacks can observe the same
@@ -4761,7 +5075,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         and(eq(chatActions.id, action.id), eq(chatActions.status, "issued")),
       )
       .returning();
-    if (!claimedAction) throw deny();
+    if (!claimedAction) return deny(safelyKnown);
 
     const issue = await db
       .select({
@@ -4777,7 +5091,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .then((rows) => rows[0] ?? null);
-    if (!issue) throw deny();
+    if (!issue) return deny(safelyKnown);
     try {
       const answered = await issueThreadInteractionService(db).answerQuestions(
         issue,
@@ -4941,11 +5255,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       : null;
     const resourceAllowed = conversation.isDirectMessage
       ? record.endpoint.allowDirectMessages
-      : Boolean(
-          resource?.enabled &&
-          resource.availability === "available" &&
-          (resource.type !== "group_chat" || record.endpoint.allowGroupChats),
-        );
+      : nonDirectDestinationAllowed(record.endpoint, resource);
     if (!resourceAllowed) throw deny();
 
     const issued = await db
@@ -5208,11 +5518,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .then((rows) => rows[0] ?? null);
     const destinationAllowed = event.event.channel.isDM
       ? record.endpoint.allowDirectMessages
-      : Boolean(
-          resource?.enabled === true &&
-          resource.availability === "available" &&
-          (resource.type !== "group_chat" || record.endpoint.allowGroupChats),
-        );
+      : nonDirectDestinationAllowed(record.endpoint, resource);
     const authorized =
       destinationAllowed &&
       !principal.linkedDenied &&
@@ -5468,10 +5774,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 updatedAt: new Date(),
               })
               .where(eq(toolConnections.id, record.endpoint.connectionId));
-          } else if (
-            disposition.kind === "resource_unavailable" &&
-            resource
-          ) {
+          } else if (disposition.kind === "resource_unavailable" && resource) {
             await tx
               .update(chatEndpointResources)
               .set({ availability: "unavailable", updatedAt: new Date() })
@@ -5479,7 +5782,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           }
         });
         if (disposition.kind === "endpoint_attention") {
-          await runtime.removeEndpoint(record.endpoint.id).catch(() => undefined);
+          await runtime
+            .removeEndpoint(record.endpoint.id)
+            .catch(() => undefined);
         }
         throw error;
       }
@@ -7399,11 +7704,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   )
                   .then((result) => result[0] ?? null)
               : null;
-            if (
-              !resource?.enabled ||
-              resource.availability !== "available" ||
-              (resource.type === "group_chat" && !endpoint.allowGroupChats)
-            ) {
+            if (!nonDirectDestinationAllowed(endpoint, resource)) {
               await db
                 .update(chatPublications)
                 .set({

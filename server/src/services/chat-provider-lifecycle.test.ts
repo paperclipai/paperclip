@@ -167,6 +167,67 @@ describe("chat provider lifecycle normalization", () => {
     ).toEqual([expect.objectContaining({ availability: "removed" })]);
   });
 
+  it("uses Teams conversationType for personal and group lifecycle resources", () => {
+    const personal = {
+      type: "installationUpdate",
+      id: "teams-personal-add",
+      action: "add",
+      conversation: {
+        id: "a:personal-conversation",
+        conversationType: "personal",
+      },
+    };
+    expect(
+      parseChatProviderLifecycle({
+        provider: "microsoft-teams",
+        payload: personal,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        providerResourceId: "a:personal-conversation",
+        resourceType: "direct_message",
+        availability: "available",
+      }),
+    ]);
+    expect(
+      parseChatProviderLifecycle({
+        provider: "microsoft-teams",
+        payload: {
+          ...personal,
+          id: "teams-personal-remove",
+          action: "remove",
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        resourceType: "direct_message",
+        availability: "removed",
+      }),
+    ]);
+
+    expect(
+      parseChatProviderLifecycle({
+        provider: "microsoft-teams",
+        botExternalId: "00000000-0000-4000-8000-000000000111",
+        payload: {
+          type: "conversationUpdate",
+          id: "teams-group-membership",
+          conversation: {
+            id: "19:group-conversation@unq.gbl.spaces",
+            conversationType: "group",
+          },
+          membersAdded: [{ id: "28:00000000-0000-4000-8000-000000000111" }],
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        providerResourceId: "19:group-conversation@unq.gbl.spaces",
+        resourceType: "group_chat",
+        availability: "available",
+      }),
+    ]);
+  });
+
   it("normalizes Telegram bot membership without requesting chat_member", () => {
     const effect = parseChatProviderLifecycle({
       provider: "telegram",

@@ -271,6 +271,8 @@ export interface ChatSdkMessageCallbackEvent {
   context?: MessageContext;
   endpointId: string;
   message: Message;
+  /** Telegram's monotonic webhook update id, when this callback came from a webhook. */
+  providerUpdateId?: number;
   provider: ChatSdkProvider;
   thread: Thread;
   trigger: ChatSdkMessageTrigger;
@@ -541,6 +543,24 @@ function validatedAttachmentRecoveryDescriptor(
 interface WebhookIngressAttempt {
   callbackError: unknown;
   callbackPromises: Set<Promise<unknown>>;
+  providerUpdateId?: number;
+}
+
+async function telegramWebhookUpdateId(
+  request: Request,
+): Promise<number | undefined> {
+  try {
+    const payload = (await request.clone().json()) as unknown;
+    if (!isRecord(payload)) return undefined;
+    const updateId = payload.update_id;
+    return typeof updateId === "number" &&
+      Number.isSafeInteger(updateId) &&
+      updateId >= 0
+      ? updateId
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -625,6 +645,7 @@ function registerCallbacks(
   callbacks: ChatSdkRuntimeCallbacks,
   trackCallback: <T>(callback: () => Promise<T> | T) => Promise<T>,
   acceptsProviderScope: (raw: unknown) => boolean,
+  providerUpdateId: () => number | undefined,
 ): void {
   const messageCallback =
     (trigger: ChatSdkMessageTrigger) =>
@@ -638,6 +659,7 @@ function registerCallbacks(
         async () =>
           await callbacks.onMessage({
             endpointId,
+            providerUpdateId: providerUpdateId(),
             provider,
             trigger,
             thread,
@@ -811,6 +833,7 @@ export class ChatSdkEndpointRuntime {
         }
       },
       (raw) => this.acceptsProviderScope(raw),
+      () => this.webhookIngress.getStore()?.providerUpdateId,
     );
   }
 
@@ -828,9 +851,14 @@ export class ChatSdkEndpointRuntime {
         `Chat SDK webhook handler is unavailable for ${this.provider}`,
       );
     }
+    const providerUpdateId =
+      this.provider === "telegram"
+        ? await telegramWebhookUpdateId(request)
+        : undefined;
     const attempt: WebhookIngressAttempt = {
       callbackError: undefined,
       callbackPromises: new Set(),
+      ...(providerUpdateId !== undefined ? { providerUpdateId } : {}),
     };
     const sdkTasks: Promise<unknown>[] = [];
     const deadlineAt = Date.now() + this.webhookIngressTimeoutMs;

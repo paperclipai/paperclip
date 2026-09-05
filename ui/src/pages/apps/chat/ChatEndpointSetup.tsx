@@ -425,7 +425,7 @@ features:
   slash_commands:
     - command: ${JSON.stringify(slackCommand)}
       description: Start or manage work with ${JSON.stringify(agentName)}
-      usage_hint: ${JSON.stringify("status | new <task> | <task>")}
+      usage_hint: ${JSON.stringify("status | new | <task>")}
       should_escape: false
       url: ${JSON.stringify(slackWebhookUrl)}
 oauth_config:

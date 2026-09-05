@@ -201,7 +201,7 @@ function endpointFixture(provider: ProviderCase, seed: Seed) {
       directMessages: provider.provider !== "github",
       nativeStreaming:
         provider.provider === "slack" || provider.provider === "telegram",
-      messageEdits: provider.provider !== "microsoft-teams",
+      messageEdits: true,
       messageDeletes:
         provider.provider === "slack" || provider.provider === "github",
       reactions: true,
@@ -641,7 +641,7 @@ features:
   slash_commands:
     - command: "/maya-public"
       description: Start or manage work with "Maya"
-      usage_hint: "status | new <task> | <task>"
+      usage_hint: "status | new | <task>"
       should_escape: false
       url: "${webhookUrl}"
 oauth_config:
@@ -750,7 +750,9 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
       page.getByText(/Microsoft 365 work or school organization/),
     ).toBeVisible();
     await expect(page.getByText(/teams\.live\.com/)).toBeVisible();
-    await expect(page.getByText(/^In Azure, create an Azure Bot/)).toBeVisible();
+    await expect(
+      page.getByText(/^In Azure, create an Azure Bot/),
+    ).toBeVisible();
     const manifest = await page
       .getByLabel("Required Teams app manifest settings")
       .inputValue();
