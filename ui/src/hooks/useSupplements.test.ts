@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSkipUrl, buildSupplementsIntakeUrl, buildTakeUrl, formatIntakeDate } from "./useSupplements";
+import { buildSkipUrl, buildSupplementsIntakeUrl, buildTakeUrl, buildUndoUrl, formatIntakeDate } from "./useSupplements";
 
 // Tests for URL construction — no React/DOM required.
 // Regression guard: the hook must call /supplements/intake/:date,
@@ -28,6 +28,13 @@ describe("buildSkipUrl", () => {
   it("builds the skip action URL", () => {
     const url = buildSkipUrl("https://api.example.com", "2026-09-05", "sup-123");
     expect(url).toBe("https://api.example.com/supplements/intake/2026-09-05/sup-123/skip");
+  });
+});
+
+describe("buildUndoUrl", () => {
+  it("builds the undo (DELETE) intake URL without an action suffix", () => {
+    const url = buildUndoUrl("https://api.example.com", "2026-09-05", "sup-123");
+    expect(url).toBe("https://api.example.com/supplements/intake/2026-09-05/sup-123");
   });
 });
 

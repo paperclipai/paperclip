@@ -32,6 +32,10 @@ export function buildSkipUrl(apiUrl: string, date: string, supplementId: string)
   return `${apiUrl}/supplements/intake/${date}/${supplementId}/skip`;
 }
 
+export function buildUndoUrl(apiUrl: string, date: string, supplementId: string): string {
+  return `${apiUrl}/supplements/intake/${date}/${supplementId}`;
+}
+
 const apiUrl = import.meta.env.VITE_API_URL as string | undefined;
 
 async function fetchSupplementsIntake(date: string): Promise<SupplementsIntakeResult> {
@@ -104,6 +108,27 @@ export function useSkipSupplement(date?: string) {
         throw new Error(payload?.error ?? `Failed to mark supplement skipped (${res.status})`);
       }
       return res.json() as Promise<SupplementIntake>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["supplements-intake", targetDate] });
+    },
+  });
+}
+
+export function useUndoSupplement(date?: string) {
+  const queryClient = useQueryClient();
+  const targetDate = date ?? formatIntakeDate(new Date());
+  return useMutation({
+    mutationFn: async (supplementId: string): Promise<void> => {
+      if (!apiUrl) throw new Error("VITE_API_URL not configured");
+      const res = await fetch(buildUndoUrl(apiUrl, targetDate, supplementId), {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(payload?.error ?? `Failed to undo supplement intake (${res.status})`);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["supplements-intake", targetDate] });
