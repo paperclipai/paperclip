@@ -814,7 +814,7 @@ function sanitizeValue(value: unknown): unknown {
     };
   }
   if (isPlainBinding(value))
-    return { type: "plain", value: sanitizeValue(value.value) };
+    return { type: "plain", value: REDACTED_EVENT_VALUE };
   if (!isPlainObject(value)) return value;
   return sanitizeRecord(value);
 }
@@ -842,8 +842,7 @@ function isSecretRefBinding(value: unknown): value is {
   if (!isPlainObject(value)) return false;
   return (
     value.type === "secret_ref" &&
-    typeof value.secretId === "string" &&
-    SECRET_REFERENCE_ID_RE.test(value.secretId)
+    typeof value.secretId === "string"
   );
 }
 

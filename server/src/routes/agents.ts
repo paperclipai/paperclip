@@ -109,7 +109,9 @@ import {
 import {
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
+  redactConfigurationPayload,
   redactEventPayload,
+  restoreRedactedConfigurationPayload,
 } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import {
@@ -2836,7 +2838,14 @@ export function agentRoutes(
     if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return agent;
     return {
       ...agent,
-      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
+      adapterConfig: redactConfigurationPayload(
+        agent.adapterConfig as Record<string, unknown>,
+        "adapter",
+      ),
+      runtimeConfig: redactConfigurationPayload(
+        (agent as { runtimeConfig?: unknown }).runtimeConfig as Record<string, unknown>,
+        "runtime",
+      ),
     };
   }
 
@@ -2851,8 +2860,8 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig),
-      runtimeConfig: redactEventPayload(agent.runtimeConfig),
+      adapterConfig: redactConfigurationPayload(agent.adapterConfig, "adapter") ?? {},
+      runtimeConfig: redactConfigurationPayload(agent.runtimeConfig, "runtime") ?? {},
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
     };
@@ -2885,7 +2894,7 @@ export function agentRoutes(
     const record = snapshot as Record<string, unknown>;
     return {
       ...record,
-      adapterConfig: redactAgentAdapterConfig(
+      adapterConfig: redactConfigurationPayload(
         typeof record.adapterConfig === "object" && record.adapterConfig !== null
           ? (record.adapterConfig as Record<string, unknown>)
           : {},

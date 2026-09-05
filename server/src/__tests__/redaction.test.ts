@@ -4,8 +4,10 @@ import {
   PRP_V1_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
+  redactConfigurationPayload,
   redactEventPayload,
   redactSensitiveText,
+  restoreRedactedConfigurationPayload,
   sanitizeRecord,
 } from "../redaction.js";
 
