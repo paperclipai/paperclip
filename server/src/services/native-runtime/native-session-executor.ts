@@ -5672,6 +5672,21 @@ export function resolveRemoteRunnerTransportMode(input: {
   return requiredMode;
 }
 
+export function remoteCheckpointIncompleteFailure(
+  settlement: "settled" | "unsettled",
+  incompleteReason: "unavailable" | "not_suspended" | null,
+): Error | null {
+  // A transport that never completed provider bootstrap has no provider state
+  // to preserve; its original launch failure remains authoritative. Once
+  // runnerd has proved suspension, however, an unreadable or incomplete
+  // checkpoint must fail the required close so outer sandbox release is
+  // withheld. Process containment still happens in the transport finally.
+  if (settlement === "unsettled") return null;
+  return new Error(
+    `runner_remote_checkpoint_incomplete: exact suspended harness state unavailable (${incompleteReason ?? "unknown"})`,
+  );
+}
+
 /** Production runnerd backend seam, exported so provider wiring can be regression tested. */
 export async function createRunnerdBackend(input: {
   db: Db;
@@ -6942,10 +6957,15 @@ async function createRunnerdBackendWithinSessionClaim(
       checkpointable = await inspectRemoteHarnessState();
     }
     if (!checkpointable.complete) {
+      const incompleteFailure = remoteCheckpointIncompleteFailure(
+        settlement,
+        checkpointable.incompleteReason,
+      );
       await input.onLog?.(
         "stderr",
-        `[paperclip-runner] remote checkpoint skipped: exact suspended harness state unavailable (process=${settlement} reason=${checkpointable.incompleteReason})\n`,
+        `[paperclip-runner] remote checkpoint ${incompleteFailure ? "failed" : "skipped"}: exact suspended harness state unavailable (process=${settlement} reason=${checkpointable.incompleteReason})\n`,
       );
+      if (incompleteFailure) throw incompleteFailure;
       return;
     }
     const backupSpanAttributes = {

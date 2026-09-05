@@ -273,6 +273,24 @@ it("quiesces the control route before checkpoint and containment regardless of p
     },
   });
   expect(unsettledSteps).toEqual(["release", "checkpoint", "kill"]);
+
+  const failedCheckpointSteps: string[] = [];
+  await expect(
+    runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+      runnerSettled: true,
+      checkpoint: async () => {
+        failedCheckpointSteps.push("checkpoint");
+        throw new Error("runner_remote_checkpoint_incomplete");
+      },
+      forceKill: () => {
+        failedCheckpointSteps.push("kill");
+      },
+      release: async () => {
+        failedCheckpointSteps.push("release");
+      },
+    }),
+  ).rejects.toThrow("runner_remote_checkpoint_incomplete");
+  expect(failedCheckpointSteps).toEqual(["release", "checkpoint", "kill"]);
 });
 
 it("waits for the exact durable suspension command behind prior close work", async () => {

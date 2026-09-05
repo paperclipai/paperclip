@@ -2425,7 +2425,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #closeOnce(): Promise<void> {
     this.#closed = true;
     const adoptedRunner = this.options.adoptExistingRunner;
-    let runnerSuspended = this.#handle === null && adoptedRunner === undefined;
+    // `settled` is a durable-state assertion, not merely the absence of a
+    // process handle. Registration can install a remote checkpoint callback
+    // before process launch; a synchronous launch failure must therefore stay
+    // `unsettled` and preserve its original bootstrap diagnostic.
+    let runnerSuspended = false;
     let suspensionRequired = false;
     if (
       this.#core !== null &&

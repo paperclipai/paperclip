@@ -185,6 +185,7 @@ import {
   providerSessionIdentityFromDurableProviderState,
   providerSessionIdentityTransitionIsAllowed,
   providerPlanMarkdown,
+  remoteCheckpointIncompleteFailure,
   resolveRemoteRunnerTransportMode,
   renewNativeSessionExecutionLease,
   runtimeInputLifecycleMetric,
@@ -1349,6 +1350,25 @@ describe("remote runner transport authorization", () => {
         runnerIngressAuthorized: true,
       }),
     ).toBe("listen_ws");
+  });
+});
+
+describe("required remote checkpoint completion", () => {
+  it.each(["unavailable", "not_suspended"] as const)(
+    "fails a settled runner when its checkpoint is %s",
+    (incompleteReason) => {
+      expect(
+        remoteCheckpointIncompleteFailure("settled", incompleteReason),
+      ).toMatchObject({
+        message: `runner_remote_checkpoint_incomplete: exact suspended harness state unavailable (${incompleteReason})`,
+      });
+    },
+  );
+
+  it("preserves the original startup error for a runner that never settled", () => {
+    expect(
+      remoteCheckpointIncompleteFailure("unsettled", "unavailable"),
+    ).toBeNull();
   });
 });
 
