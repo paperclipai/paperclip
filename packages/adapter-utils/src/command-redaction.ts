@@ -40,9 +40,11 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 // shell metacharacter end the word, so the following argument survives. A
 // quoted segment that opens the value may also end at a line break or at the
 // end of the input, because a truncated run log writes an argument whose
-// closing quote never arrives. The first segment of an unquoted value never
-// opens on a backslash, which leaves an escaped-quote opener such as
-// `Authorization: \"Bearer ...\"` to the caller's own rules. The unquoted
+// closing quote never arrives. The first segment of an unquoted value is a raw
+// token: it may open on an escape pair but never on an escaped quote, which
+// leaves an opener such as `Authorization: \"Bearer ...\"` to the caller's own
+// rules, and a metacharacter inside it is a credential byte rather than a
+// separator. Only a continuation segment stops at one. The unquoted
 // branch also declines a name preceded by another name character or by an
 // unescaped quote: such a name sits inside a longer name or inside a quoted
 // argument that the quoted branches already own.
@@ -56,7 +58,7 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 //
 // An optional auth scheme stays in the output. The scheme is not a secret, and
 // it tells a reader which credential form the command used. This also makes the
-// rule agree byte for byte with the bearer rule above, so
+// rule agree with the bearer rule above for a well-formed bearer header, so
 // `Authorization: Bearer <value>` produces the same output as before.
 //
 // Each branch treats the backslash the way its quoting context does. A
@@ -122,9 +124,19 @@ const COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS = [
   String.raw`\$'(?:\\.|[^'\\\r\n])*'`,
 ] as const;
 const COMMAND_SHELL_ESCAPE_PAIR_PATTERN = String.raw`\\[^\r\n]`;
-// A plain run stops at a shell metacharacter as well as at whitespace: `;`,
-// `|`, `&`, `<`, `>`, and the parentheses end the word, so a redaction never
-// swallows a separator, a redirection, or the next command.
+// An opening escape pair carries the first byte of an unquoted value, as in
+// `X-API-Key:\ abc`. It excludes the escaped quote, so a serialized `\"`
+// opener stays with the caller's own rules.
+const COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN = String.raw`\\[^"\r\n]`;
+// The first segment of an unquoted value is a raw token, bounded only by
+// whitespace, a quote, a backtick, or a backslash. A raw HTTP diagnostic
+// carries an opaque credential the same way, so a `;`, `|`, or `&` inside it
+// is a credential byte rather than a command separator.
+const COMMAND_SHELL_RAW_TOKEN_PATTERN =
+  String.raw`[^\s"'` + "`" + String.raw`\\]+`;
+// A continuation segment follows a closing quote inside one shell word, where
+// a metacharacter does end the word. Stopping there keeps a redaction from
+// swallowing a separator, a redirection, or the next command.
 const COMMAND_SHELL_PLAIN_SEGMENT_PATTERN =
   String.raw`[^\s"'` + "`" + String.raw`\\;|&<>()]+`;
 const COMMAND_SHELL_SEGMENT_PATTERN = `(?:${[
@@ -132,11 +144,10 @@ const COMMAND_SHELL_SEGMENT_PATTERN = `(?:${[
   COMMAND_SHELL_ESCAPE_PAIR_PATTERN,
   COMMAND_SHELL_PLAIN_SEGMENT_PATTERN,
 ].join("|")})`;
-// The first segment of an unquoted value never opens on a backslash, so an
-// escaped-quote opener stays with the caller's own rules.
 const COMMAND_SHELL_FIRST_SEGMENT_PATTERN = `(?:${[
   ...COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS,
-  COMMAND_SHELL_PLAIN_SEGMENT_PATTERN,
+  COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN,
+  COMMAND_SHELL_RAW_TOKEN_PATTERN,
 ].join("|")})`;
 const COMMAND_SECRET_HEADER_CONTINUATION_PATTERN = `${COMMAND_SHELL_SEGMENT_PATTERN}*`;
 const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN = `(?:${COMMAND_SECRET_HEADER_PARAM_LIST_PATTERN}|${COMMAND_SHELL_FIRST_SEGMENT_PATTERN})`;

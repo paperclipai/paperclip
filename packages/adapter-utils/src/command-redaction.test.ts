@@ -460,6 +460,46 @@ describe("redactCommandText header secrets", () => {
     );
   });
 
+  it("redacts a value that opens with an escape pair", () => {
+    // `X-API-Key:\ abc123` is one shell word whose first value byte is escaped.
+    const input = String.raw`curl -H X-API-Key:\ abc123 https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc123");
+    expect(output).toBe(
+      `curl -H X-API-Key:${REDACTED_COMMAND_TEXT_VALUE} https://example.test`,
+    );
+  });
+
+  it("redacts a raw header value that contains a shell metacharacter", () => {
+    // A raw HTTP diagnostic carries an opaque credential, so `;` inside the
+    // value is a credential byte and the whole token goes.
+    const input = "tool: X-API-Key: abc;def status=401";
+    const output = redactCommandText(input);
+    expect(output).not.toContain("def");
+    expect(output).toBe(
+      `tool: X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE} status=401`,
+    );
+    expect(redactDiagnosticText(input)).toBe(
+      `tool: X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE} status=401`,
+    );
+  });
+
+  it("takes the whole raw token when a command shares that shape", () => {
+    // The same bytes read as a shell command would end the word at `;`. The
+    // raw-token reading wins, which over-redacts here and never under-redacts.
+    expect(redactCommandText("X-API-Key:abc;echo done")).toBe(
+      `X-API-Key:${REDACTED_COMMAND_TEXT_VALUE} done`,
+    );
+  });
+
+  it("stops a continuation segment at a shell metacharacter", () => {
+    // After a closing quote the word really does end at `;`, so the next
+    // command survives.
+    expect(redactCommandText(`curl -H "X-API-Key: abc"123;echo done`)).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}";echo done`,
+    );
+  });
+
   it("keeps a shell separator after a quoted header argument", () => {
     // A metacharacter ends the shell word, so the pipeline and the next command
     // survive the redaction.
