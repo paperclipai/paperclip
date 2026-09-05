@@ -495,10 +495,10 @@ describe("native harness persistence profiles", () => {
       acpx.directories.find((directory) => directory.name === "acpx"),
     ).toMatchObject({
       excludeEntries: [
-        `${sessionDirectory}/codex-home/tmp`,
-        `${sessionDirectory}/codex-home/.tmp`,
-        `${sessionDirectory}/codex-home/auth.json`,
-        `${sessionDirectory}/codex-home/config.toml`,
+        `acpx/${sessionDirectory}/codex-home/tmp`,
+        `acpx/${sessionDirectory}/codex-home/.tmp`,
+        `acpx/${sessionDirectory}/codex-home/auth.json`,
+        `acpx/${sessionDirectory}/codex-home/config.toml`,
       ],
     });
     expect(
@@ -1098,10 +1098,10 @@ describe("remote provider checkpoint snapshots", () => {
     const syncOut = vi.fn(async () => undefined);
     const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
     const excluded = [
-      `${sessionDirectory}/codex-home/tmp`,
-      `${sessionDirectory}/codex-home/.tmp`,
-      `${sessionDirectory}/codex-home/auth.json`,
-      `${sessionDirectory}/codex-home/config.toml`,
+      `acpx/${sessionDirectory}/codex-home/tmp`,
+      `acpx/${sessionDirectory}/codex-home/.tmp`,
+      `acpx/${sessionDirectory}/codex-home/auth.json`,
+      `acpx/${sessionDirectory}/codex-home/config.toml`,
     ];
 
     await syncRemoteRunnerDirectoryOut({
