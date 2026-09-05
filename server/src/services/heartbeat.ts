@@ -365,6 +365,15 @@ import {
 } from "./recovery/service.js";
 import { collectDispositionRepairSourceState } from "./recovery/disposition-repair.js";
 import {
+  decideQueuedRunStaleness,
+  decideScheduledRetryGate,
+  type GateDecision,
+  type QueuedRunFacts,
+  type ReviewParticipantFacts,
+  type ScheduledRetryFacts,
+  type StalenessDecision,
+} from "../modules/run-dispatch/index.js";
+import {
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
   ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
@@ -13328,32 +13337,44 @@ export function heartbeatService(
     };
   }
 
-  type ScheduledRetryGate =
-    | { allowed: true }
-    | {
-        allowed: false;
-        reason: string;
-        errorCode:
-          | "agent_not_invokable"
-          | "heartbeat_wake_on_demand_disabled"
-          | "budget_blocked"
-          | "issue_not_found"
-          | "issue_reassigned"
-          | "issue_cancelled"
-          | "issue_terminal_status"
-          | "issue_not_in_progress"
-          | "issue_execution_lock_changed"
-          | "issue_review_participant_changed"
-          | "issue_paused"
-          | "issue_dependencies_blocked"
-          | "issue_disposition_repair_superseded";
-        issueId: string | null;
-        details: Record<string, unknown>;
-      };
-  type BlockedScheduledRetryGate = Extract<
-    ScheduledRetryGate,
-    { allowed: false }
-  >;
+  function buildReviewParticipantFacts(input: {
+    isInReview: boolean;
+    executionState: ReturnType<typeof parseIssueExecutionState>;
+  }): ReviewParticipantFacts {
+    const currentParticipant = input.executionState?.currentParticipant ?? null;
+    return {
+      isInReview: input.isInReview,
+      hasParticipant: currentParticipant !== null,
+      participantIsAgent: currentParticipant?.type === "agent",
+      participantAgentId:
+        currentParticipant?.type === "agent"
+          ? (currentParticipant.agentId ?? null)
+          : null,
+      currentStageType: input.executionState?.currentStageType ?? null,
+      currentParticipant: currentParticipant as Record<string, unknown> | null,
+    };
+  }
+
+  function classifyRetryReasonKind(
+    retryReason: string | null,
+  ): ScheduledRetryFacts["retryReasonKind"] {
+    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
+      return "max_turn_continuation";
+    }
+    if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) {
+      return "disposition_repair";
+    }
+    return "other";
+  }
+
+  const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
+    isInReview: false,
+    hasParticipant: false,
+    participantIsAgent: false,
+    participantAgentId: null,
+    currentStageType: null,
+    currentParticipant: null,
+  };
 
   async function evaluateScheduledRetryGate(input: {
     run: typeof heartbeatRuns.$inferSelect;
@@ -13361,7 +13382,7 @@ export function heartbeatService(
     contextSnapshot: Record<string, unknown>;
     retryReason?: string | null;
     enforceIssueExecutionLock?: boolean;
-  }): Promise<ScheduledRetryGate> {
+  }): Promise<GateDecision> {
     const { run, agent, contextSnapshot } = input;
     const retryReason =
       input.retryReason ??
@@ -13370,6 +13391,7 @@ export function heartbeatService(
       null;
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     const projectId = readNonEmptyString(contextSnapshot.projectId);
+    const retryReasonKind = classifyRetryReasonKind(retryReason);
 
     const budgetBlock = await budgets.getInvocationBlock(
       run.companyId,
@@ -13379,239 +13401,123 @@ export function heartbeatService(
         projectId,
       },
     );
-    if (budgetBlock) {
-      return {
-        allowed: false,
-        reason: budgetBlock.reason,
-        errorCode: "budget_blocked",
-        issueId,
-        details: {
-          scopeType: budgetBlock.scopeType,
-          scopeId: budgetBlock.scopeId,
-        },
-      };
-    }
-
     const agentInvokability = await getAgentInvokability(agent);
-    if (!agentInvokability.invokable) {
-      return {
-        allowed: false,
-        reason: "Scheduled retry suppressed because the agent is not invokable",
-        errorCode: "agent_not_invokable",
-        issueId,
-        details: {
-          ...agentInvokability.details,
-          invalidOrgChain: agentInvokability.invalidOrgChain,
-        },
-      };
-    }
+    const heartbeatWakeOnDemandEnabled = isHeartbeatWakeOnDemandEnabled(agent);
 
-    if (!isHeartbeatWakeOnDemandEnabled(agent)) {
-      return {
-        allowed: false,
-        reason:
-          "Scheduled retry suppressed because on-demand agent wakes are disabled",
-        errorCode: "heartbeat_wake_on_demand_disabled",
-        issueId,
-        details: { agentId: agent.id },
-      };
-    }
+    const issue = issueId
+      ? await db
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
+            executionRunId: issues.executionRunId,
+            executionPolicy: issues.executionPolicy,
+            executionState: issues.executionState,
+            monitorNextCheckAt: issues.monitorNextCheckAt,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
 
-    if (!issueId) return { allowed: true };
+    const dispositionRepair =
+      issue && retryReasonKind === "disposition_repair"
+        ? await (async () => {
+            const expectedFingerprint = readNonEmptyString(
+              contextSnapshot.dispositionRepairFingerprint,
+            );
+            const sourceState = await collectDispositionRepairSourceState(db, {
+              issue,
+              excludeRunId: run.id,
+              excludeWakeupRequestId: run.wakeupRequestId,
+            });
+            return {
+              expectedFingerprintPresent: expectedFingerprint !== null,
+              fingerprintMatches: sourceState.fingerprint === expectedFingerprint,
+              hasActiveExecutionPath: sourceState.hasActiveExecutionPath,
+              hasDurableWaitingPath: sourceState.hasDurableWaitingPath,
+              expectedFingerprint,
+              currentFingerprint: sourceState.fingerprint,
+              durablePathReason: sourceState.durablePathReason,
+            };
+          })()
+        : null;
 
-    const issue = await db
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        assigneeUserId: issues.assigneeUserId,
-        executionRunId: issues.executionRunId,
-        executionPolicy: issues.executionPolicy,
-        executionState: issues.executionState,
-        monitorNextCheckAt: issues.monitorNextCheckAt,
-      })
-      .from(issues)
-      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-      .then((rows) => rows[0] ?? null);
+    const activePauseHold =
+      issue && issueId
+        ? await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId)
+        : null;
 
-    if (!issue) {
-      return {
-        allowed: false,
-        reason:
-          "Scheduled retry suppressed because the target issue no longer exists",
-        errorCode: "issue_not_found",
-        issueId,
-        details: { issueId },
-      };
-    }
+    const dependenciesBlocked =
+      issue && issueId
+        ? await (async () => {
+            const dependencyReadiness = await issuesSvc.listDependencyReadiness(
+              run.companyId,
+              [issueId],
+            );
+            const readiness = dependencyReadiness.get(issueId);
+            return readiness && !readiness.isDependencyReady
+              ? {
+                  unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+                  unresolvedBlockerCount: readiness.unresolvedBlockerCount,
+                }
+              : null;
+          })()
+        : null;
 
-    if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) {
-      const expectedFingerprint = readNonEmptyString(
-        contextSnapshot.dispositionRepairFingerprint,
-      );
-      const sourceState = await collectDispositionRepairSourceState(db, {
-        issue,
-        excludeRunId: run.id,
-        excludeWakeupRequestId: run.wakeupRequestId,
-      });
-      if (
-        !expectedFingerprint ||
-        sourceState.fingerprint !== expectedFingerprint ||
-        sourceState.hasActiveExecutionPath ||
-        sourceState.hasDurableWaitingPath
-      ) {
-        return {
-          allowed: false,
-          reason:
-            "Scheduled disposition repair suppressed because the source state changed or gained a durable path",
-          errorCode: "issue_disposition_repair_superseded",
-          issueId,
-          details: {
-            issueId,
-            expectedFingerprint,
-            currentFingerprint: sourceState.fingerprint,
-            hasActiveExecutionPath: sourceState.hasActiveExecutionPath,
-            durablePathReason: sourceState.durablePathReason,
-          },
-        };
-      }
-    }
-
-    if (issue.assigneeAgentId !== run.agentId) {
-      if (!isNonAssigneeWorkspaceBusyRetry(retryReason, contextSnapshot)) {
-        return {
-          allowed: false,
-          reason: "Scheduled retry suppressed because issue ownership changed",
-          errorCode: "issue_reassigned",
-          issueId,
-          details: {
-            issueId,
-            previousAssigneeAgentId: run.agentId,
-            currentAssigneeAgentId: issue.assigneeAgentId,
-          },
-        };
-      }
-    }
-
-    if (issue.status === "cancelled" || issue.status === "done") {
-      return {
-        allowed: false,
-        reason: `Scheduled retry suppressed because issue reached terminal status (${issue.status})`,
-        errorCode:
-          issue.status === "cancelled"
-            ? "issue_cancelled"
-            : "issue_terminal_status",
-        issueId,
-        details: { issueId, currentStatus: issue.status },
-      };
-    }
-
-    if (
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
-      issue.status !== "in_progress"
-    ) {
-      return {
-        allowed: false,
-        reason: `Scheduled max-turn continuation suppressed because issue is no longer in_progress (current status: ${issue.status})`,
-        errorCode: "issue_not_in_progress",
-        issueId,
-        details: {
-          issueId,
-          currentStatus: issue.status,
-          requiredStatus: "in_progress",
-        },
-      };
-    }
-
-    if (
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
-      input.enforceIssueExecutionLock &&
-      issue.executionRunId !== run.id
-    ) {
-      return {
-        allowed: false,
-        reason:
-          "Scheduled max-turn continuation suppressed because the issue execution lock belongs to a different run",
-        errorCode: "issue_execution_lock_changed",
-        issueId,
-        details: {
-          issueId,
-          expectedExecutionRunId: run.id,
-          currentExecutionRunId: issue.executionRunId,
-        },
-      };
-    }
-
-    if (issue.status === "in_review") {
-      const executionState = parseIssueExecutionState(issue.executionState);
-      const currentParticipant = executionState?.currentParticipant ?? null;
-      if (currentParticipant) {
-        const participantMatches =
-          currentParticipant.type === "agent" &&
-          currentParticipant.agentId === run.agentId;
-        if (!participantMatches) {
-          return {
-            allowed: false,
-            reason:
-              "Scheduled retry suppressed because the issue is waiting on another review participant",
-            errorCode: "issue_review_participant_changed",
-            issueId,
-            details: {
-              issueId,
-              currentStageType: executionState?.currentStageType ?? null,
-              currentParticipant,
-            },
-          };
-        }
-      }
-    }
-
-    const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
-      run.companyId,
+    const facts: ScheduledRetryFacts = {
+      runId: run.id,
+      runAgentId: run.agentId,
       issueId,
-    );
-    if (activePauseHold) {
-      return {
-        allowed: false,
-        reason:
-          "Scheduled retry suppressed because the issue is held by an active subtree pause hold",
-        errorCode: "issue_paused",
-        issueId,
-        details: {
-          issueId,
-          holdId: activePauseHold.holdId,
-          rootIssueId: activePauseHold.rootIssueId,
-        },
-      };
-    }
+      retryReasonKind,
+      enforceIssueExecutionLock: Boolean(input.enforceIssueExecutionLock),
+      budgetBlock: budgetBlock
+        ? {
+            reason: budgetBlock.reason,
+            scopeType: budgetBlock.scopeType,
+            scopeId: budgetBlock.scopeId,
+          }
+        : null,
+      agentInvokable: agentInvokability.invokable,
+      agentInvokabilityDetails: agentInvokability.invokable
+        ? {}
+        : agentInvokability.details,
+      agentInvokabilityInvalidOrgChain: agentInvokability.invokable
+        ? false
+        : agentInvokability.invalidOrgChain,
+      heartbeatWakeOnDemandEnabled,
+      issueFound: issue !== null,
+      issueStatus: issue?.status ?? null,
+      issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
+      issueExecutionRunId: issue?.executionRunId ?? null,
+      isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(
+        retryReason,
+        contextSnapshot,
+      ),
+      reviewParticipant: issue
+        ? buildReviewParticipantFacts({
+            isInReview: issue.status === "in_review",
+            executionState: parseIssueExecutionState(issue.executionState),
+          })
+        : NO_REVIEW_PARTICIPANT,
+      activePauseHold: activePauseHold
+        ? {
+            holdId: activePauseHold.holdId,
+            rootIssueId: activePauseHold.rootIssueId,
+          }
+        : null,
+      dependenciesBlocked,
+      dispositionRepair,
+    };
 
-    const dependencyReadiness = await issuesSvc.listDependencyReadiness(
-      run.companyId,
-      [issueId],
-    );
-    const readiness = dependencyReadiness.get(issueId);
-    if (readiness && !readiness.isDependencyReady) {
-      return {
-        allowed: false,
-        reason:
-          "Scheduled retry suppressed because issue dependencies are still blocked",
-        errorCode: "issue_dependencies_blocked",
-        issueId,
-        details: {
-          issueId,
-          unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
-          unresolvedBlockerCount: readiness.unresolvedBlockerCount,
-        },
-      };
-    }
-
-    return { allowed: true };
+    return decideScheduledRetryGate(facts, new Date());
   }
 
   async function cancelScheduledRetryForGate(
     run: typeof heartbeatRuns.$inferSelect,
-    gate: Extract<ScheduledRetryGate, { allowed: false }>,
+    gate: Extract<GateDecision, { allowed: false }>,
     now: Date,
   ) {
     const cancelled = await db
@@ -13697,7 +13603,7 @@ export function heartbeatService(
         outcome: "gate_suppressed";
         run: typeof heartbeatRuns.$inferSelect;
         reason: string;
-        errorCode: BlockedScheduledRetryGate["errorCode"];
+        errorCode: Extract<GateDecision, { allowed: false }>["errorCode"];
       }
     | { outcome: "not_promoted"; run: typeof heartbeatRuns.$inferSelect | null }
   > {
@@ -15948,28 +15854,12 @@ export function heartbeatService(
     return cancelled;
   }
 
-  type QueuedRunStaleness =
-    | { stale: false }
-    | {
-        stale: true;
-        reason: string;
-        errorCode:
-          | "issue_not_found"
-          | "issue_assignee_changed"
-          | "issue_terminal_status"
-          | "issue_not_in_progress"
-          | "issue_execution_lock_changed"
-          | "issue_review_participant_changed"
-          | "issue_continuation_waiting_on_review";
-        details: Record<string, unknown>;
-      };
-
   async function evaluateQueuedRunStaleness(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
     context: Record<string, unknown>,
     dbOrTx: Db = db,
-  ): Promise<QueuedRunStaleness> {
+  ): Promise<StalenessDecision> {
     const issue = await dbOrTx
       .select({
         id: issues.id,
@@ -15981,15 +15871,6 @@ export function heartbeatService(
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
-
-    if (!issue) {
-      return {
-        stale: true,
-        errorCode: "issue_not_found",
-        reason: "Cancelled because the target issue no longer exists",
-        details: { issueId },
-      };
-    }
 
     const wakeCommentId = deriveCommentId(context, null);
     const isInteractionWake = allowsIssueInteractionWake(context);
@@ -16009,43 +15890,17 @@ export function heartbeatService(
     const isResolvedInteractionContinuation =
       isResolvedInteractionContinuationWakeContext(context);
 
-    if (isResolvedInteractionContinuation && issue.status !== "in_progress") {
-      return {
-        stale: true,
-        errorCode: "issue_not_in_progress",
-        reason: `Cancelled because resolved-interaction continuation issue is no longer in_progress (current status: ${issue.status}) before the queued run could start`,
-        details: {
-          issueId,
-          currentStatus: issue.status,
-          requiredStatus: "in_progress",
-        },
-      };
-    }
-
-    if (
-      isResolvedInteractionContinuation &&
-      issue.assigneeAgentId !== run.agentId
-    ) {
-      return {
-        stale: true,
-        errorCode: "issue_assignee_changed",
-        reason:
-          "Cancelled because resolved-interaction continuation issue changed assignee before the queued run could start",
-        details: {
-          issueId,
-          previousAssigneeAgentId: run.agentId,
-          currentAssigneeAgentId: issue.assigneeAgentId,
-        },
-      };
-    }
-
-    if (
-      issue.status === "in_progress" &&
-      !wakeCommentId &&
-      !hasResolvedInteractionEvidence &&
-      (wakeReason === "issue_continuation_needed" ||
-        retryReason === "issue_continuation_needed")
-    ) {
+    const continuationParkApplies = Boolean(
+      issue &&
+        issue.status === "in_progress" &&
+        !wakeCommentId &&
+        !hasResolvedInteractionEvidence &&
+        (wakeReason === "issue_continuation_needed" ||
+          retryReason === "issue_continuation_needed"),
+    );
+    let continuationSummaryBody: string | null = null;
+    let continuationParksExecutor = false;
+    if (continuationParkApplies) {
       const queuedWake = parseObject(context.paperclipWake);
       const queuedContinuationSummary =
         readNonEmptyString(
@@ -16055,36 +15910,16 @@ export function heartbeatService(
       const currentContinuationSummary = queuedContinuationSummary
         ? null
         : await getIssueContinuationSummaryDocument(dbOrTx, issueId);
-      const continuationSummaryBody =
+      continuationSummaryBody =
         queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
-      if (continuationSummaryParksExecutor(continuationSummaryBody)) {
-        return {
-          stale: true,
-          errorCode: "issue_continuation_waiting_on_review",
-          reason:
-            "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
-          details: {
-            issueId,
-            wakeReason,
-            retryReason,
-            nextAction: continuationSummaryBody,
-          },
-        };
-      }
+      continuationParksExecutor = continuationSummaryParksExecutor(
+        continuationSummaryBody,
+      );
     }
 
-    const reviewExecutionState =
-      issue.status === "in_review"
-        ? parseIssueExecutionState(issue.executionState)
-        : null;
-    const reviewParticipant = reviewExecutionState?.currentParticipant ?? null;
-    const isCurrentReviewParticipant =
-      reviewParticipant?.type === "agent" &&
-      reviewParticipant.agentId === run.agentId;
-
     const recoveryActionId = readNonEmptyString(context.recoveryActionId);
-    const authorizedSourceScopedRecovery =
-      wakeReason === "source_scoped_recovery_action" && recoveryActionId
+    const isAuthorizedSourceScopedRecovery =
+      issue && wakeReason === "source_scoped_recovery_action" && recoveryActionId
         ? await dbOrTx
             .select({ id: issueRecoveryActions.id })
             .from(issueRecoveryActions)
@@ -16101,100 +15936,47 @@ export function heartbeatService(
             .then((rows) => Boolean(rows[0]))
         : false;
 
-    if (
-      issue.assigneeAgentId !== run.agentId &&
-      !isInteractionWake &&
-      !isCurrentReviewParticipant &&
-      !authorizedSourceScopedRecovery &&
-      !isNonAssigneeWorkspaceBusyRetry(retryReason, context)
-    ) {
-      return {
-        stale: true,
-        errorCode: "issue_assignee_changed",
-        reason:
-          "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead",
-        details: {
-          issueId,
-          previousAssigneeAgentId: run.agentId,
-          currentAssigneeAgentId: issue.assigneeAgentId,
-        },
-      };
-    }
+    const facts: QueuedRunFacts = {
+      runId: run.id,
+      runAgentId: run.agentId,
+      issueId,
+      retryReasonKind: classifyRetryReasonKind(retryReason),
+      issueFound: issue !== null,
+      issueStatus: issue?.status ?? null,
+      issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
+      issueExecutionRunId: issue?.executionRunId ?? null,
+      isResolvedInteractionContinuation,
+      isInteractionWake,
+      isAuthorizedSourceScopedRecovery,
+      isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(
+        retryReason,
+        context,
+      ),
+      resumeIntent,
+      wakeCommentIdPresent: Boolean(wakeCommentId),
+      continuationParkApplies,
+      continuationParksExecutor,
+      continuationSummaryBody,
+      wakeReason,
+      retryReason,
+      reviewParticipant: issue
+        ? buildReviewParticipantFacts({
+            isInReview: issue.status === "in_review",
+            executionState:
+              issue.status === "in_review"
+                ? parseIssueExecutionState(issue.executionState)
+                : null,
+          })
+        : NO_REVIEW_PARTICIPANT,
+    };
 
-    if (issue.status === "done" || issue.status === "cancelled") {
-      if (!resumeIntent && !wakeCommentId) {
-        return {
-          stale: true,
-          errorCode: "issue_terminal_status",
-          reason: `Cancelled because issue reached terminal status (${issue.status}) before the queued run could start`,
-          details: { issueId, currentStatus: issue.status },
-        };
-      }
-    }
-
-    if (
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
-      issue.status !== "in_progress"
-    ) {
-      return {
-        stale: true,
-        errorCode: "issue_not_in_progress",
-        reason: `Cancelled because max-turn continuation issue is no longer in_progress (current status: ${issue.status}) before the queued run could start`,
-        details: {
-          issueId,
-          currentStatus: issue.status,
-          requiredStatus: "in_progress",
-        },
-      };
-    }
-
-    if (
-      retryReason === MAX_TURN_CONTINUATION_RETRY_REASON &&
-      issue.executionRunId !== run.id
-    ) {
-      return {
-        stale: true,
-        errorCode: "issue_execution_lock_changed",
-        reason:
-          "Cancelled because max-turn continuation no longer owns the issue execution lock before the queued run could start",
-        details: {
-          issueId,
-          expectedExecutionRunId: run.id,
-          currentExecutionRunId: issue.executionRunId,
-        },
-      };
-    }
-
-    if (issue.status === "in_review") {
-      const currentParticipant =
-        reviewExecutionState?.currentParticipant ?? null;
-      if (currentParticipant) {
-        const participantMatches =
-          currentParticipant.type === "agent" &&
-          currentParticipant.agentId === run.agentId;
-        if (!participantMatches && !wakeCommentId) {
-          return {
-            stale: true,
-            errorCode: "issue_review_participant_changed",
-            reason:
-              "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead",
-            details: {
-              issueId,
-              currentStageType: reviewExecutionState?.currentStageType ?? null,
-              currentParticipant,
-            },
-          };
-        }
-      }
-    }
-
-    return { stale: false };
+    return decideQueuedRunStaleness(facts, new Date());
   }
 
   async function cancelRunForStaleIssue(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
-    staleness: Extract<QueuedRunStaleness, { stale: true }>,
+    staleness: Extract<StalenessDecision, { stale: true }>,
   ) {
     const now = new Date();
     const cancelled = await setRunStatus(run.id, "cancelled", {
