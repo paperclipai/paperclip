@@ -938,6 +938,7 @@ export interface ToolCatalogRefreshResult {
   catalog: ToolCatalogEntry[];
   discoveredCount: number;
   quarantinedCount: number;
+  removedCount: number;
 }
 
 export type ToolAppAttentionReason =
