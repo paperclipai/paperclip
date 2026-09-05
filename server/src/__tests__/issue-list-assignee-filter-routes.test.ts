@@ -1128,6 +1128,12 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const app = createApp(companyId);
     const listPath = `/api/companies/${companyId}/issues`;
     const countPath = `/api/companies/${companyId}/issues/count`;
+    // `parentIssueId` is in these lists on purpose. It is not a member of
+    // `ISSUE_LIST_UUID_FILTER_NAMES` — it is the `parentId` alias, normalized by
+    // its own second `.trim()`/`isUuidLike` pair in the guard's alias branch.
+    // Nothing in the main name loop reaches that branch, so it is only pinned if
+    // the value axis walks the alias by name. It is last in each list because
+    // `parentId` must stay absent from the same request for the alias to be read.
     const listParams = [
       "assigneeAgentId",
       "participantAgentId",
@@ -1139,6 +1145,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       "parentId",
       "descendantOf",
       "labelId",
+      "parentIssueId",
     ] as const;
     const countParams = [
       "assigneeAgentId",
@@ -1149,6 +1156,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       "parentId",
       "descendantOf",
       "labelId",
+      "parentIssueId",
     ] as const;
     const errorFor = (param: string) =>
       param === "assigneeAgentId" ? "assigneeAgentId must be a UUID or 'null'" : `${param} must be a UUID`;
@@ -1179,10 +1187,12 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       }
     }
     for (const param of countParams) {
-      const res = await request(app).get(countPath).query({ attention: "blocked", [param]: " " });
-      const label = `${param}: ${JSON.stringify(res.body)}`;
-      expect(res.status, label).toBe(200);
-      expect(res.body.count, label).toBe(baselineCount);
+      for (const value of [" ", "\t\n"]) {
+        const res = await request(app).get(countPath).query({ attention: "blocked", [param]: value });
+        const label = `${param}=${JSON.stringify(value)}: ${JSON.stringify(res.body)}`;
+        expect(res.status, label).toBe(200);
+        expect(res.body.count, label).toBe(baselineCount);
+      }
     }
 
     // Class 2 — a valid UUID with surrounding whitespace. `isUuidLike` trims
@@ -1206,10 +1216,12 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       const value = randomUUID();
       const clean = await request(app).get(countPath).query({ attention: "blocked", [param]: value });
       expect(clean.status, `${param}: ${JSON.stringify(clean.body)}`).toBe(200);
-      const res = await request(app).get(countPath).query({ attention: "blocked", [param]: `${value} ` });
-      const label = `${param}=padded: ${JSON.stringify(res.body)}`;
-      expect(res.status, label).toBe(200);
-      expect(res.body, label).toEqual(clean.body);
+      for (const padded of [`${value} `, ` ${value}`]) {
+        const res = await request(app).get(countPath).query({ attention: "blocked", [param]: padded });
+        const label = `${param}=${JSON.stringify(padded)}: ${JSON.stringify(res.body)}`;
+        expect(res.status, label).toBe(200);
+        expect(res.body, label).toEqual(clean.body);
+      }
     }
 
     // Class 3 — non-empty text that is not a UUID. `"x"` is length 1 and
@@ -1255,6 +1267,24 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       expect(res.status, label).toBe(400);
       expect(res.body, label).toMatchObject({ error: errorFor(param) });
       expect(res.body, label).not.toHaveProperty("count");
+    }
+
+    // Class 5 — the `null` token is case-folded. `assigneeAgentId` is the one
+    // filter that accepts a non-UUID value, and it accepts it only through
+    // `.toLowerCase()`. Drop that call and `NULL` stops being the null token,
+    // falls through to `isUuidLike`, and 400s a request that returns 200 today.
+    // Compare against the lowercase response so the pin holds whatever the
+    // null-assignee page contains.
+    for (const path of [listPath, countPath] as const) {
+      const base = path === listPath ? { status: "todo", limit: "20" } : { attention: "blocked" };
+      const lower = await request(app).get(path).query({ ...base, assigneeAgentId: "null" });
+      expect(lower.status, `${path}: ${JSON.stringify(lower.body)}`).toBe(200);
+      for (const token of ["NULL", "Null"]) {
+        const res = await request(app).get(path).query({ ...base, assigneeAgentId: token });
+        const label = `${path} assigneeAgentId=${token}: ${JSON.stringify(res.body)}`;
+        expect(res.status, label).toBe(200);
+        expect(res.body, label).toEqual(lower.body);
+      }
     }
   });
 
