@@ -342,6 +342,59 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(consumed.status).toBe("executed");
   });
 
+  it("surfaces a stored execution failure on retry instead of creating a new approval chain", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+    const parameters = { noteId: "n1", body: "__simulate_execution_failure__" };
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters,
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    const approved = await gateway.approveActionRequest({
+      companyId: company.id,
+      actionRequestId: actionRequest.id,
+      actor: { userId: "board-user" },
+    });
+    expect(approved).toMatchObject({ status: "failed" });
+
+    const [failedRequest] = await db.select().from(toolActionRequests);
+    expect(failedRequest.status).toBe("failed");
+    const [failedInvocation] = await db.select().from(toolInvocations);
+    expect(failedInvocation.status).toBe("failed");
+    expect(failedInvocation.errorCode).toBe("simulated_execution_failure");
+    // The dispatch actually started (and then failed), unlike a
+    // pre-dispatch validation failure - this is what makes the failure
+    // eligible to be replayed on retry instead of forcing a fresh approval.
+    expect(failedInvocation.startedAt).not.toBeNull();
+
+    // A human already approved these exact arguments once; the failure
+    // happened after a real execution attempt against the provider. The
+    // retry must surface that stored failure directly, not spin up a
+    // second approval chain for the same call.
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters,
+    })).rejects.toMatchObject({ reasonCode: "simulated_execution_failure" });
+
+    expect(await db.select().from(toolActionRequests)).toHaveLength(1);
+  });
+
   it("refuses to approve an action request through a different interaction", async () => {
     const { company, agent, issue, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({
