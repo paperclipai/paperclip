@@ -46,6 +46,18 @@ tests against external or production systems without explicit authorization.
 - Any risk acceptance, authorized actor, and scope:
 - Native review decision:
 
+## Checks performed and findings
+
+- Checks performed:
+- Findings:
+- Evidence links:
+
+Summarize this phase's checks and findings, or link to its detailed results
+above. For planning phases, include document reviews and consistency checks;
+do not imply that runtime tests were executed. If no check was performed,
+record "not yet verified" and the reason. Use "none found" only for completed
+checks with evidence.
+
 ## Exit criteria
 
 Required security checks have inspectable evidence for the candidate revision. Blocking findings are resolved or handled through an explicitly authorized risk decision. No findings is not a guarantee of security or certification.

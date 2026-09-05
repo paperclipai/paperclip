@@ -36,6 +36,18 @@ Accepted requirements and an inspected target repository.
 - Rollback strategy:
 - Unresolved risks:
 
+## Checks performed and findings
+
+- Checks performed:
+- Findings:
+- Evidence links:
+
+Summarize this phase's checks and findings, or link to its detailed results
+above. For planning phases, include document reviews and consistency checks;
+do not imply that runtime tests were executed. If no check was performed,
+record "not yet verified" and the reason. Use "none found" only for completed
+checks with evidence.
+
 ## Exit criteria
 
 The design addresses acceptance criteria, compatibility, failure handling, and trust boundaries. Record the review decision. Do not begin implementation on an unapproved design where approval is required.

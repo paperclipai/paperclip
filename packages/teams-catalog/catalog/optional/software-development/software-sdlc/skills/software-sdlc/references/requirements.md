@@ -37,6 +37,18 @@ where relevant. Separate founder or stakeholder claims from verified facts.
 - Scope decision and authorized decision maker:
 - Approval record for this revision:
 
+## Checks performed and findings
+
+- Checks performed:
+- Findings:
+- Evidence links:
+
+Summarize this phase's checks and findings, or link to its detailed results
+above. For planning phases, include document reviews and consistency checks;
+do not imply that runtime tests were executed. If no check was performed,
+record "not yet verified" and the reason. Use "none found" only for completed
+checks with evidence.
+
 ## Exit criteria
 
 Each in-scope requirement has an observable acceptance condition. The owner has resolved or explicitly deferred open questions. The approved requirements revision is linked in the architecture handoff.

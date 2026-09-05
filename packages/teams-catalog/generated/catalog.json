@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-09-05T08:52:03.975Z",
+  "generatedAt": "2026-09-05T10:06:51.996Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -602,44 +602,44 @@
         {
           "path": "skills/software-sdlc/references/architecture.md",
           "kind": "markdown",
-          "sizeBytes": 1078,
-          "sha256": "42e94f2dea63f5dadb795e7e696e647989338a89818f745e948af87726498a91"
+          "sizeBytes": 1491,
+          "sha256": "c8b82ae1263a4b65a7175afa2c51fca38146190db60c11956019fa7d25e51969"
         },
         {
           "path": "skills/software-sdlc/references/implementation.md",
           "kind": "markdown",
-          "sizeBytes": 1279,
-          "sha256": "ffa361239f1628e5225cde781f05fbdffb191b3176a997aeb1ba2d4a89d302f3"
+          "sizeBytes": 1692,
+          "sha256": "92facfe07622fe0c790d7aa58a3d18974cc7b78bf594dc7e6213c99e18995c3e"
         },
         {
           "path": "skills/software-sdlc/references/release.md",
           "kind": "markdown",
-          "sizeBytes": 1314,
-          "sha256": "daa4955651b769df9a91ab215bd332572f8781bceae096c6a7076caa949f5d06"
+          "sizeBytes": 1727,
+          "sha256": "8ee4b706a222dd67c51e55ed4ff13e2a45b870cb45fe838e3da89876f0268c25"
         },
         {
           "path": "skills/software-sdlc/references/requirements.md",
           "kind": "markdown",
-          "sizeBytes": 1225,
-          "sha256": "8bbff91a9948f3f0a42705fd46d29e8b4ad5ffe23e61cb29a53fbce9a989287d"
+          "sizeBytes": 1638,
+          "sha256": "c79b8bc54bb232dcbfc8e8fb1b28e96ded78bb4b4881c1e034832d0fdf90259d"
         },
         {
           "path": "skills/software-sdlc/references/retrospective.md",
           "kind": "markdown",
-          "sizeBytes": 1309,
-          "sha256": "2ebfa16acd3a518ee3f538adcc6cf037e69063bc9aa34ca590d2e2476f9f027d"
+          "sizeBytes": 1722,
+          "sha256": "6a28d4f0353a48f984dd29758ccc357244182ead44f6c28f292c5493949512d2"
         },
         {
           "path": "skills/software-sdlc/references/security-review.md",
           "kind": "markdown",
-          "sizeBytes": 1488,
-          "sha256": "94c6eada3afc8d6f1790decb0bfcf5328e7c6911dabe74d56f3e6f488263c6dc"
+          "sizeBytes": 1901,
+          "sha256": "95d993905ba2b4a75b7fcfb8cb6d7940b76ce4f44f6973e29f6bd5cb4bd5fe70"
         },
         {
           "path": "skills/software-sdlc/references/testing.md",
           "kind": "markdown",
-          "sizeBytes": 1608,
-          "sha256": "9342ee999f39cd1c363e8f69328c370c3a35d87dff8cd6d5bcbd6dd8f6416e46"
+          "sizeBytes": 2021,
+          "sha256": "6d18bbfb8a12731698f7697db62f9b947e4ed29d1e831646cf32651385adb864"
         },
         {
           "path": "skills/software-sdlc/SKILL.md",
@@ -650,7 +650,7 @@
       ],
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
-      "contentHash": "sha256:0ecfe9eac9be709828ead7b164314ab26d15621c0a5c85197b92433db250d8a8"
+      "contentHash": "sha256:646431e9837ac95283d5ff988fb3a36ea811da4812a19bc54756d85774918a46"
     }
   ]
 }

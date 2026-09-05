@@ -51,12 +51,16 @@ describe("software-sdlc team pack", () => {
     const ref = `references/${phase}.md`;
     expect(read("skills/software-sdlc/SKILL.md")).toContain(`](${ref})`);
     const content = read(`skills/software-sdlc/${ref}`);
-    for (const heading of ["## Inputs", "## Provenance", "## Exit criteria", "## Handoff"]) {
+    for (const heading of ["## Inputs", "## Provenance", "## Checks performed and findings", "## Exit criteria", "## Handoff"]) {
       expect(content).toContain(heading);
     }
-    expect(content).toContain("Source revision:");
-    expect(content).toContain("Upstream artifact revisions:");
-    expect(content).toContain("Next owner:");
+    for (const field of [
+      "Parent delivery issue:", "Producer:", "Source revision:",
+      "Upstream artifact revisions:", "Checks performed:", "Findings:",
+      "Evidence links:", "Next owner:",
+    ]) {
+      expect(content).toContain(field);
+    }
   });
 
   it("keeps every relative Markdown link within the pack and in the manifest", () => {

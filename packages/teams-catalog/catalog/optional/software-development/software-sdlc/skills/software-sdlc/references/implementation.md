@@ -38,6 +38,18 @@ still an open release consideration, not an automatic waiver.
 - Security reviewer:
 - Native review request:
 
+## Checks performed and findings
+
+- Checks performed:
+- Findings:
+- Evidence links:
+
+Summarize this phase's checks and findings, or link to its detailed results
+above. For planning phases, include document reviews and consistency checks;
+do not imply that runtime tests were executed. If no check was performed,
+record "not yet verified" and the reason. Use "none found" only for completed
+checks with evidence.
+
 ## Exit criteria
 
 The scoped changes and tests exist at the recorded commit. Relevant checks have inspectable results. Testing and security reviewers receive the same candidate revision; no independent review is self-approved.
