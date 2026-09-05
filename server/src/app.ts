@@ -123,6 +123,8 @@ import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import { boardKeyAuthorizationMiddleware } from "./security/board-key-route-registry.js";
+import { instrumentDbForBoardKeyAudit } from "./security/board-key-audit-coupling.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -376,6 +378,12 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  // In-place, idempotent instrumentation: the board-key gate stages its allow
+  // disposition and the handle commits it inside the transaction of the
+  // mutation it authorizes. Instrumenting the handle itself keeps object
+  // identity, so `dbOrTx === db` checks in services are unaffected.
+  instrumentDbForBoardKeyAudit(db);
+  app.use(boardKeyAuthorizationMiddleware(db));
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);

@@ -1,6 +1,16 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { BOARD_API_KEY_SCOPE_PRESETS } from "@paperclipai/shared";
+
+const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
+const SCOPE_CONFIG = {
+  version: 1 as const,
+  kind: "scoped" as const,
+  companyIds: [COMPANY_ID],
+  permissions: [...BOARD_API_KEY_SCOPE_PRESETS.company_automation.permissions],
+  instanceCapabilities: [] as const,
+};
 
 const mockAccessService = vi.hoisted(() => ({
   isInstanceAdmin: vi.fn(),
@@ -118,6 +128,8 @@ describe.sequential("cli auth routes", () => {
         command: "paperclipai company import",
         clientName: "paperclipai cli",
         requestedAccess: "board",
+        requestedCompanyId: COMPANY_ID,
+        scopeConfig: SCOPE_CONFIG,
       });
 
     expect(res.status, res.text || JSON.stringify(res.body)).toBe(201);
@@ -183,10 +195,18 @@ describe.sequential("cli auth routes", () => {
       requestedAccess: "board",
       requestedCompanyId: null,
       requestedCompanyName: null,
+      requestedScopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+        permissions: ["companies:read"],
+        instanceCapabilities: [],
+      },
       approvedAt: null,
       cancelledAt: null,
       expiresAt: "2026-03-23T13:00:00.000Z",
       approvedByUser: null,
+      boardApiKeyId: null,
     });
 
     const app = await createApp({ type: "none", source: "none" });
@@ -195,6 +215,13 @@ describe.sequential("cli auth routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.requiresSignIn).toBe(true);
     expect(res.body.canApprove).toBe(false);
+    expect(res.body.requestedScopeConfig).toEqual({
+      version: 1,
+      kind: "scoped",
+      companyIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+      permissions: ["companies:read"],
+      instanceCapabilities: [],
+    });
   });
 
   it.sequential("approves a CLI auth challenge for a signed-in board user", async () => {
@@ -315,13 +342,14 @@ describe.sequential("cli auth routes", () => {
       lastUsedAt: null,
       revokedAt: null,
       expiresAt: new Date("2026-06-23T12:00:00.000Z"),
+      scopeConfig: SCOPE_CONFIG,
     });
-    mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue(["11111111-1111-4111-8111-111111111111"]);
+    mockBoardAuthService.resolveBoardActivityCompanyIds.mockResolvedValue([COMPANY_ID]);
 
     const app = await createApp({
       type: "board",
       userId: "user-1",
-      source: "board_key",
+      source: "session",
       isInstanceAdmin: false,
       companyIds: ["11111111-1111-4111-8111-111111111111"],
     });
@@ -329,8 +357,8 @@ describe.sequential("cli auth routes", () => {
       .post("/api/board-api-keys")
       .send({
         name: "external-admin",
-        requestedCompanyId: "11111111-1111-4111-8111-111111111111",
         expiresAt: "2026-06-23T12:00:00.000Z",
+        scopeConfig: SCOPE_CONFIG,
       });
 
     expect(res.status, res.text || JSON.stringify(res.body)).toBe(201);
@@ -344,6 +372,7 @@ describe.sequential("cli auth routes", () => {
       userId: "user-1",
       name: "external-admin",
       expiresAt: new Date("2026-06-23T12:00:00.000Z"),
+      scopeConfig: SCOPE_CONFIG,
     });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -382,7 +411,7 @@ describe.sequential("cli auth routes", () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
-      source: "board_key",
+      source: "session",
       isInstanceAdmin: false,
       companyIds: ["company-1"],
     });

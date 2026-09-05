@@ -7,6 +7,7 @@ import {
   agentApiKeys,
   agents,
   authUsers,
+  boardApiKeyAuthorizationEvents,
   companies,
   companyMemberships,
   heartbeatRuns,
@@ -54,12 +55,54 @@ function pruneCloudTenantWriteDebounce(
 }
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unauthorized, unprocessable } from "../errors.js";
+import { forbidden, tooManyRequests, unauthorized, unprocessable } from "../errors.js";
+import { createBoardKeyAuthFailureRateLimiter } from "../security/board-key-auth-failure-rate-limit.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+const boardKeyAuthFailureRateLimiter = createBoardKeyAuthFailureRateLimiter();
+
+function boardKeyAuthFailureSource(req: Request) {
+  return req.socket.remoteAddress || req.ip || "unknown";
+}
+
+export function resetBoardKeyAuthFailureRateLimitForTests() {
+  boardKeyAuthFailureRateLimiter.reset();
+}
+
+export function snapshotBoardKeyAuthFailureRateLimitForTests() {
+  return boardKeyAuthFailureRateLimiter.snapshot();
+}
+
+async function auditBoardKeyAuthenticationFailure(
+  db: Db,
+  req: Request,
+  input: {
+    key: { id: string; userId: string; tokenPrefix: string | null } | null;
+    reason: string;
+  },
+) {
+  if (!input.key) return;
+  try {
+    await db.insert(boardApiKeyAuthorizationEvents).values({
+      boardApiKeyId: input.key.id,
+      ownerUserId: input.key.userId,
+      tokenPrefix: input.key.tokenPrefix,
+      action: "authenticate",
+      classification: "authentication",
+      decision: "deny",
+      reason: input.reason,
+      requestId: typeof req.id === "string" ? req.id : null,
+      runId: isUuidLike(req.header("x-paperclip-run-id")) ? req.header("x-paperclip-run-id") : null,
+      details: {},
+    });
+  } catch (err) {
+    logger.warn({ err, boardApiKeyId: input.key.id }, "Failed to audit denied board-key authentication");
+  }
 }
 
 function normalizeOptionalString(value: string | null | undefined) {
@@ -303,25 +346,56 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
-    if (boardKey) {
-      const access = await boardAuth.resolveBoardAccess(boardKey.userId);
-      if (access.user) {
-        await boardAuth.touchBoardApiKey(boardKey.id);
+    if (token.startsWith("pcp_board_")) {
+      const failureIdentity = {
+        credentialId: hashToken(token),
+        sourceId: boardKeyAuthFailureSource(req),
+      };
+      if (boardKeyAuthFailureRateLimiter.isLimited(failureIdentity)) {
+        next(tooManyRequests("Too many authentication failures"));
+        return;
+      }
+      const admission = boardKeyAuthFailureRateLimiter.tryAcquire({ sourceId: failureIdentity.sourceId });
+      if (!admission) {
+        next(tooManyRequests("Too many authentication failures"));
+        return;
+      }
+      try {
+        const authentication = await boardAuth.authenticateBoardApiKey(token);
+        if (!authentication.ok) {
+          const limited = boardKeyAuthFailureRateLimiter.recordFailure(failureIdentity);
+          await auditBoardKeyAuthenticationFailure(db, req, authentication);
+          next(limited ? tooManyRequests("Too many authentication failures") : unauthorized());
+          return;
+        }
+
+        const { key: boardKey, access, scopeConfig } = authentication;
+        const effectiveCompanyIds = scopeConfig
+          ? scopeConfig.companyIds.filter((companyId) => access.companyIds.includes(companyId))
+          : access.companyIds;
         req.actor = {
           type: "board",
           userId: boardKey.userId,
-          userName: access.user?.name ?? null,
-          userEmail: access.user?.email ?? null,
-          companyIds: access.companyIds,
-          memberships: access.memberships,
+          userName: access.user.name ?? null,
+          userEmail: access.user.email ?? null,
+          companyIds: effectiveCompanyIds,
+          memberships: access.memberships.filter((membership) => effectiveCompanyIds.includes(membership.companyId)),
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
+          boardKeyOwnerId: boardKey.userId,
+          boardKeyScope: scopeConfig,
+          boardKeyPrefix: boardKey.tokenPrefix,
+          boardKeyLegacyUnrestricted: boardKey.legacyUnrestricted,
           runId: runIdHeader || undefined,
           source: "board_key",
         };
         next();
         return;
+      } finally {
+        // Authentication, failure accounting, denial auditing, principal
+        // construction, and downstream dispatch all share one release boundary.
+        // No future statement in the admitted region can leak limiter capacity.
+        admission.release();
       }
     }
 
