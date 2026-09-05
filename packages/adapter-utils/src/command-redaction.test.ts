@@ -285,6 +285,27 @@ describe("redactCommandText header secrets", () => {
     expect(redactCommandText(input)).toBe(input);
   });
 
+  it("redacts an escaped-quoted value that follows a scheme word", () => {
+    const input = String.raw`Authorization: Basic \"abc\"defg retry`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(
+      String.raw`Authorization: Basic \"` + REDACTED_COMMAND_TEXT_VALUE + String.raw`\" retry`,
+    );
+    expect(redactCommandText(output)).toBe(output);
+  });
+
+  it("reads an even backslash run before a quote as a bare quote", () => {
+    // `\\"` is an escaped backslash followed by a real quote, not an escaped
+    // quote, so the escaped branches decline it and the value still redacts.
+    const input = String.raw`foo\\"X-API-Key: abc" bar`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(
+      String.raw`foo\\"X-API-Key: ` + REDACTED_COMMAND_TEXT_VALUE + '" bar',
+    );
+  });
+
   it("redacts a bare apikey header value", () => {
     // Supabase sends the key under an unhyphenated `apikey` header.
     expect(redactCommandText("apikey: abc")).toBe(
@@ -601,6 +622,97 @@ describe("redactCommandText header secrets", () => {
       expect(() => JSON.parse(once)).not.toThrow();
       expect(redactCommandText(once)).toBe(once);
     }
+  });
+
+  it("redacts a serializer-nested value-only escaped-quoted credential", () => {
+    // `JSON.stringify` writes the inner shell's `\"` delimiter as `\\\"`. The
+    // value is delimited by the whole backslash run, so the extra layer changes
+    // nothing about which bytes belong to the credential.
+    const R = REDACTED_COMMAND_TEXT_VALUE;
+    const input = JSON.stringify({
+      command: String.raw`sh -c "curl -H Authorization:\"Digest username=alice, response=SECRETTAIL\" https://example.test"`,
+      status: "safe",
+    });
+    const output = redactCommandText(input);
+    expect(output).not.toContain("alice");
+    expect(output).not.toContain("SECRETTAIL");
+    expect(output).toContain(
+      String.raw`Authorization:\\\"Digest ` + R + String.raw`\\\"`,
+    );
+    const parsed = JSON.parse(output) as { command: string; status: string };
+    expect(parsed.status).toBe("safe");
+    expect(parsed.command).toBe(
+      String.raw`sh -c "curl -H Authorization:\"Digest ` +
+        R +
+        String.raw`\" https://example.test"`,
+    );
+    expect(redactCommandText(output)).toBe(output);
+    expect(redactDiagnosticText(output)).toBe(output);
+  });
+
+  it("redacts a serialized escaped-quoted argument one layer deeper", () => {
+    const R = REDACTED_COMMAND_TEXT_VALUE;
+    const input = JSON.stringify({
+      command: String.raw`curl -H \"X-API-Key: abc\" https://example.test`,
+      status: "safe",
+    });
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toContain(String.raw`\\\"X-API-Key: ` + R + String.raw`\\\"`);
+    const parsed = JSON.parse(output) as { command: string; status: string };
+    expect(parsed.status).toBe("safe");
+    expect(parsed.command).toBe(
+      String.raw`curl -H \"X-API-Key: ` + R + String.raw`\" https://example.test`,
+    );
+    expect(redactCommandText(output)).toBe(output);
+    expect(redactDiagnosticText(output)).toBe(output);
+  });
+
+  it("redacts an escaped-quoted argument three serialization layers deep", () => {
+    // Nothing in the rule counts layers, so a run of seven backslashes reads
+    // exactly like a run of one.
+    const R = REDACTED_COMMAND_TEXT_VALUE;
+    const input = JSON.stringify(
+      JSON.stringify({
+        command: String.raw`curl -H \"X-API-Key: abc\" https://example.test`,
+        status: "safe",
+      }),
+    );
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    const parsed = JSON.parse(JSON.parse(output) as string) as {
+      command: string;
+      status: string;
+    };
+    expect(parsed.status).toBe("safe");
+    expect(parsed.command).toBe(
+      String.raw`curl -H \"X-API-Key: ` + R + String.raw`\" https://example.test`,
+    );
+    expect(redactCommandText(output)).toBe(output);
+    expect(redactDiagnosticText(output)).toBe(output);
+  });
+
+  it("keeps a dangling trailing backslash inside an escaped-quoted value", () => {
+    // A truncated log can end mid-escape. The backslash does not begin the
+    // closer, so it belongs to the value.
+    const R = REDACTED_COMMAND_TEXT_VALUE;
+    const expected = String.raw`X-API-Key:\"` + R;
+    for (const tail of ["\\", "\\\\"]) {
+      const input = String.raw`X-API-Key:\"abc123` + tail;
+      const output = redactCommandText(input);
+      expect(output).not.toContain("abc123");
+      expect(output).toBe(expected);
+      expect(redactCommandText(output)).toBe(output);
+      expect(redactDiagnosticText(output)).toBe(output);
+    }
+  });
+
+  it("keeps an empty escaped-quoted header argument untouched", () => {
+    // The value must open with a non-blank character, so there is nothing to
+    // hide here and the argument stays byte for byte.
+    const input = String.raw`\"X-API-Key: \" https://example.test`;
+    expect(redactCommandText(input)).toBe(input);
+    expect(redactDiagnosticText(input)).toBe(input);
   });
 
   it("redacts a header secret inside a diagnostic and keeps a JSON secret field working", () => {

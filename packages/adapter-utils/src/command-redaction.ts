@@ -42,12 +42,12 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 // end of the input, because a truncated run log writes an argument whose
 // closing quote never arrives. The first segment of an unquoted value is a raw
 // token: it may open on an escape pair but never on an escaped quote, which
-// leaves an opener such as `Authorization: \"Bearer ...\"` to the caller's own
-// rules, and a metacharacter inside it is a credential byte rather than a
-// separator. Only a continuation segment stops at one. The unquoted
-// branch also declines a name preceded by another name character or by an
-// unescaped quote: such a name sits inside a longer name or inside a quoted
-// argument that the quoted branches already own.
+// leaves an escaped-quoted argument to the two escaped branches below, and a
+// metacharacter inside it is a credential byte rather than a separator. Only a
+// continuation segment stops at one. The unquoted branch also declines a name
+// preceded by another name character or by an unescaped quote: such a name sits
+// inside a longer name or inside a quoted argument that the quoted branches
+// already own.
 //
 // An unquoted value may instead open as a comma-separated `key=value` list, the
 // shape a `Digest`, `Concealed`, or `AWS4-HMAC-SHA256` credential takes. A
@@ -65,22 +65,24 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 // double-quoted value consumes escape pairs, so an escaped quote inside the
 // argument (`"X-API-Key: abc\"def"`) does not end the value early, and neither
 // does a backslash-newline line continuation. Its opening quote must itself be
-// unescaped. A serialized command writes that same argument with escaped
-// quotes, so a fourth branch mirrors the double-quoted one over `\"`
-// delimiters: it opens at an unescaped `\"`, consumes the doubled escape
-// sequences an embedded `\"` or `\\` becomes, and closes at the next bare
-// `\"`. A multi-part credential in a serialized diagnostic is therefore covered
-// end to end, not truncated at its first escape. A separate branch owns a value
-// whose own quotes are escaped after the colon, the shape an outer shell writes
-// to pass quote syntax to an inner one. It keeps those escaped quotes in the
-// output, so the caller's own authorization redaction and this rule settle on
-// the same text. A value quoted after the colon likewise keeps its own
-// delimiters, which leaves the placeholder readable as a quoted value on a
-// second pass instead of as a bare token. A single-quoted value takes a
-// backslash literally, because a shell single quote has no escapes, while an
-// ANSI-C value has escapes of its own. A quoted value must open with a
-// non-blank character, so an empty header argument such as `-H "X-API-Key: "`
-// stays as it is.
+// unescaped. A single-quoted value takes a backslash literally, because a shell
+// single quote has no escapes, while an ANSI-C value has escapes of its own. A
+// quoted value must open with a non-blank character, so an empty header
+// argument such as `-H "X-API-Key: "` stays as it is. A value quoted after the
+// colon keeps its own delimiters, which leaves the placeholder readable as a
+// quoted value on a second pass instead of as a bare token.
+//
+// An escaped-quoted argument belongs to the two escaped branches, whatever
+// serialization depth wrote it: one opens at an escaped quote before the header
+// name (`\"X-API-Key: abc\"`), the other at an escaped quote after the colon
+// (`X-API-Key:\"abc\"`). Both keep the escaped quotes in the output, so the
+// caller's own authorization redaction and this rule settle on the same text,
+// which is why the first segment of an unquoted value never opens on one. Depth
+// is read from the delimiter rather than counted: the opener is a whole run of
+// backslashes followed by a quote, and the value ends at the first repeat of
+// that run and quote which is not itself preceded by a further backslash. An
+// embedded quote from a deeper layer carries a longer run, so it stays inside
+// the value, and a dangling trailing backslash does too.
 //
 // The scheme list follows the IANA HTTP Authentication Scheme Registry as of
 // the RFC 9729 `Concealed` addition, plus `AWS4-HMAC-SHA256`, `Hawk`, and
@@ -135,8 +137,10 @@ const COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS = [
 ] as const;
 const COMMAND_SHELL_ESCAPE_PAIR_PATTERN = String.raw`\\[^\r\n]`;
 // An opening escape pair carries the first byte of an unquoted value, as in
-// `X-API-Key:\ abc`. It excludes the escaped quote, so a serialized `\"`
-// opener stays with the caller's own rules.
+// `X-API-Key:\ abc`. It excludes the escaped quote, so a `\"` opener falls to
+// the escaped branches. A deeper run such as `\\\"` opens with an escaped
+// backslash, which this pattern does accept; the escaped branches precede the
+// unquoted one in the alternation and take that value first.
 const COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN = String.raw`\\[^"\r\n]`;
 // The first segment of an unquoted value is a raw token, bounded only by
 // whitespace, a quote, a backtick, or a backslash. A raw HTTP diagnostic
@@ -159,9 +163,9 @@ const COMMAND_SECRET_HEADER_CONTINUATION_PATTERN = `${COMMAND_SHELL_SEGMENT_PATT
 // placeholder, so a second pass reads the same shape and leaves it alone. The
 // opener and the closer are captured; the body is not.
 const COMMAND_SECRET_HEADER_QUOTED_VALUE_PATTERNS = [
-  String.raw`(")(?:\\\r?\n|\\.|[^"\\\r\n])*(")`,
-  String.raw`(')[^'\r\n]*(')`,
-  String.raw`(\$')(?:\\.|[^'\\\r\n])*(')`,
+  String.raw`(?<uqDqOpen>")(?:\\\r?\n|\\.|[^"\\\r\n])*(?<uqDqClose>")`,
+  String.raw`(?<uqSqOpen>')[^'\r\n]*(?<uqSqClose>')`,
+  String.raw`(?<uqAnsiOpen>\$')(?:\\.|[^'\\\r\n])*(?<uqAnsiClose>')`,
 ] as const;
 const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN = `(?:${[
   COMMAND_SECRET_HEADER_PARAM_LIST_PATTERN,
@@ -169,25 +173,55 @@ const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN = `(?:${[
   COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN,
   COMMAND_SHELL_RAW_TOKEN_PATTERN,
 ].join("|")})`;
-// The escape units a serialized command writes inside an escaped-quoted
-// argument: an escaped backslash followed by another escape (an embedded
-// `\"` or `\\`), an escaped backslash followed by a plain character, or an
-// ordinary escape such as `\n`. A bare `\"` is not a unit, so it closes the
-// argument.
-const COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN = String.raw`\\\\\\.|\\\\[^\\]|\\[^"\\]`;
+// An escaped-quoted argument delimits its value with a whole run of backslashes
+// followed by a quote, however many serialization layers wrote that run. The
+// run is odd: each layer doubles the backslashes and adds one, so an even run
+// is an escaped backslash before a bare quote, not an escaped quote. The
+// opener captures the run so the closer can require the same one; the body
+// takes every character on the line that does not begin the closer, which
+// leaves a deeper embedded quote and a dangling trailing backslash inside the
+// value. The body must still open with a non-blank character.
+const commandSecretHeaderEscapedOpener = (run: string) =>
+  String.raw`(?<!\\)(?<${run}>(?:\\\\)*\\)"`;
+const commandSecretHeaderEscapedBody = (run: string) =>
+  String.raw`(?:(?!(?<!\\)\k<${run}>")[^\s\r\n])(?:(?!(?<!\\)\k<${run}>")[^\r\n])*`;
+const commandSecretHeaderEscapedCloser = (run: string, close: string) =>
+  String.raw`(?:(?<${close}>\k<${run}>")|(?=[\r\n]|$))`;
 const COMMAND_SECRET_HEADER_RE = new RegExp(
-  String.raw`(?<!\\)("${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\\r?\n|\\.|[^"\\\r\n])*\\?(?:(")|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
-    String.raw`|('${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'][^'\r\n]*(?:(')|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
-    String.raw`|(\$'${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s'\\])(?:\\.|[^'\\\r\n])*\\?(?:(')|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
-    String.raw`|(?<!\\)(\\"${COMMAND_SECRET_HEADER_PREFIX_PATTERN})` +
-    String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^\s"\\])` +
-    String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^"\\\r\n])*(\\")` +
-    String.raw`|(?<![A-Za-z0-9_-])(\b${COMMAND_SECRET_HEADER_NAME_PATTERN}${COMMAND_SECRET_HEADER_COLON_PATTERN}\\"${COMMAND_SECRET_HEADER_SCHEME_PATTERN})` +
-    String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^\s"\\])` +
-    String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^"\\\r\n])*(?:(\\")|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
-    String.raw`|(?<![A-Za-z0-9_-])(?<!(?<!\\)["'])(\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}`,
+  String.raw`(?<!\\)(?<dqPrefix>"${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\\r?\n|\\.|[^"\\\r\n])*\\?(?:(?<dqClose>")|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
+    String.raw`|(?<sqPrefix>'${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'][^'\r\n]*(?:(?<sqClose>')|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
+    String.raw`|(?<ansiPrefix>\$'${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s'\\])(?:\\.|[^'\\\r\n])*\\?(?:(?<ansiClose>')|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
+    `|(?<serPrefix>${commandSecretHeaderEscapedOpener("serRun")}${COMMAND_SECRET_HEADER_PREFIX_PATTERN})` +
+    `${commandSecretHeaderEscapedBody("serRun")}${commandSecretHeaderEscapedCloser("serRun", "serClose")}` +
+    String.raw`|(?<![A-Za-z0-9_-])(?<evPrefix>\b${COMMAND_SECRET_HEADER_NAME_PATTERN}${COMMAND_SECRET_HEADER_COLON_PATTERN}${COMMAND_SECRET_HEADER_SCHEME_PATTERN}${commandSecretHeaderEscapedOpener("evRun")}${COMMAND_SECRET_HEADER_SCHEME_PATTERN})` +
+    `${commandSecretHeaderEscapedBody("evRun")}${commandSecretHeaderEscapedCloser("evRun", "evClose")}${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
+    String.raw`|(?<![A-Za-z0-9_-])(?<!(?<!\\)["'])(?<uqPrefix>\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}`,
   "gi",
 );
+// The groups the callback reads back, in branch order.
+const COMMAND_SECRET_HEADER_PREFIX_GROUPS = [
+  "dqPrefix",
+  "sqPrefix",
+  "ansiPrefix",
+  "serPrefix",
+  "evPrefix",
+  "uqPrefix",
+] as const;
+const COMMAND_SECRET_HEADER_OPENER_GROUPS = [
+  "uqDqOpen",
+  "uqSqOpen",
+  "uqAnsiOpen",
+] as const;
+const COMMAND_SECRET_HEADER_CLOSER_GROUPS = [
+  "dqClose",
+  "sqClose",
+  "ansiClose",
+  "serClose",
+  "evClose",
+  "uqDqClose",
+  "uqSqClose",
+  "uqAnsiClose",
+] as const;
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
 const COMMAND_JWT_RE =
@@ -229,15 +263,17 @@ export function redactCommandText(
   return command
     .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
     .replace(COMMAND_SECRET_HEADER_RE, (...matchArgs: unknown[]) => {
-      // Each branch captures its prefix, then an optional opener for a value
-      // that keeps its own quotes, then an optional closer. Only one branch
-      // matches, so the groups it defined read in that order.
-      const captured = matchArgs
-        .slice(1, -2)
-        .filter((group): group is string => typeof group === "string");
-      const prefix = captured[0] ?? "";
-      const opener = captured.length > 2 ? captured[1] : "";
-      const closing = captured.length > 1 ? captured[captured.length - 1] : "";
+      // One branch matches, so at most one group in each list is defined.
+      const groups = (matchArgs[matchArgs.length - 1] ?? {}) as Record<
+        string,
+        string | undefined
+      >;
+      const firstDefined = (names: readonly string[]) =>
+        names.map((name) => groups[name]).find((value) => value !== undefined) ??
+        "";
+      const prefix = firstDefined(COMMAND_SECRET_HEADER_PREFIX_GROUPS);
+      const opener = firstDefined(COMMAND_SECRET_HEADER_OPENER_GROUPS);
+      const closing = firstDefined(COMMAND_SECRET_HEADER_CLOSER_GROUPS);
       return `${prefix}${opener}${redactedValue}${closing}`;
     })
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
