@@ -1,0 +1,184 @@
+[
+  {
+    "id": "4920b0be-b197-45ae-a169-54b99082c4ea",
+    "name": "Creative Director",
+    "urlKey": "creative-director",
+    "reportsToName": "CEO",
+    "melderecht": true
+  },
+  {
+    "id": "d80fe6b9-b2ac-4d58-8525-8bbbb1d0caf7",
+    "name": "Online-Rechercheur",
+    "urlKey": "online-rechercheur",
+    "reportsToName": "CRO",
+    "melderecht": false
+  },
+  {
+    "id": "506c873e-3a40-4483-9a45-0eb0fa1554bb",
+    "name": "CEO",
+    "urlKey": "ceo",
+    "reportsToName": "",
+    "melderecht": true
+  },
+  {
+    "id": "bbf38291-1129-43db-97de-c03c998b691e",
+    "name": "CMO",
+    "urlKey": "cmo",
+    "reportsToName": "CEO",
+    "melderecht": true
+  },
+  {
+    "id": "5b7cb8a7-945f-4861-b3a7-4ae84d242d1e",
+    "name": "CTO",
+    "urlKey": "cto",
+    "reportsToName": "CEO",
+    "melderecht": true
+  },
+  {
+    "id": "9d279c4d-99d6-4797-b28c-cbe5fad996d6",
+    "name": "SEO/GEO-Spezialist",
+    "urlKey": "seo-geo-spezialist",
+    "reportsToName": "CTO",
+    "melderecht": true
+  },
+  {
+    "id": "5563514c-4254-48d5-9339-802172304119",
+    "name": "VP Engineering",
+    "urlKey": "vp-engineering",
+    "reportsToName": "CTO",
+    "melderecht": false
+  },
+  {
+    "id": "3deca5b4-af4b-43a3-93f4-2cc4fc1bd08d",
+    "name": "Lektorat",
+    "urlKey": "lektorat",
+    "reportsToName": "CEO",
+    "melderecht": false
+  },
+  {
+    "id": "358a70ad-927e-499f-85fe-d823d16d76a4",
+    "name": "Adobe",
+    "urlKey": "adobe",
+    "reportsToName": "Creative Director",
+    "melderecht": false
+  },
+  {
+    "id": "408f7e88-1ab6-4c9a-988b-68040fd28c13",
+    "name": "CFO",
+    "urlKey": "cfo",
+    "reportsToName": "CEO",
+    "melderecht": true
+  },
+  {
+    "id": "478fad75-48b1-4248-9dc5-5f3980a961fd",
+    "name": "Drehbuch",
+    "urlKey": "drehbuch",
+    "reportsToName": "Creative Director",
+    "melderecht": false
+  },
+  {
+    "id": "e24b8d9d-143e-4141-b413-4361aa618771",
+    "name": "Sekretärin",
+    "urlKey": "sekret-rin",
+    "reportsToName": "CEO",
+    "melderecht": true
+  },
+  {
+    "id": "ea38630c-5da8-4719-8e4a-1f0478c4bc40",
+    "name": "Marken-Spezialist",
+    "urlKey": "marken-spezialist",
+    "reportsToName": "CMO",
+    "melderecht": false
+  },
+  {
+    "id": "410a78b9-8472-4503-8232-0ff97bafa2f8",
+    "name": "Social Media Specialist",
+    "urlKey": "social-media-specialist",
+    "reportsToName": "CMO",
+    "melderecht": false
+  },
+  {
+    "id": "6d595481-8cbb-49bf-8ffb-8685c071d557",
+    "name": "Produktentwicklung",
+    "urlKey": "produktentwicklung",
+    "reportsToName": "CPO",
+    "melderecht": false
+  },
+  {
+    "id": "c73aceb3-63a5-4927-bff4-c595b408cd83",
+    "name": "Buchhaltung",
+    "urlKey": "buchhaltung",
+    "reportsToName": "CFO",
+    "melderecht": false
+  },
+  {
+    "id": "caaeb345-9db1-41ab-95a3-115d3c70cf34",
+    "name": "Link-Detektor",
+    "urlKey": "link-detektor",
+    "reportsToName": "",
+    "melderecht": true
+  },
+  {
+    "id": "8d8ab6da-d527-408d-b78f-de16a265c4ee",
+    "name": "Blender",
+    "urlKey": "blender",
+    "reportsToName": "Creative Director",
+    "melderecht": false
+  },
+  {
+    "id": "56f7167b-b594-4533-9243-411947306907",
+    "name": "Mistika VR",
+    "urlKey": "mistika-vr",
+    "reportsToName": "Creative Director",
+    "melderecht": false
+  },
+  {
+    "id": "790bcaf2-83d8-4e04-8c43-914a96db7bd8",
+    "name": "DPO",
+    "urlKey": "dpo",
+    "reportsToName": "CEO",
+    "melderecht": true
+  },
+  {
+    "id": "d4bdef1a-84fb-4393-8491-0eeaebcb3270",
+    "name": "CPO",
+    "urlKey": "cpo",
+    "reportsToName": "CEO",
+    "melderecht": true
+  },
+  {
+    "id": "6bbbfe93-7fa8-44cb-8e21-23e81a9bb4dd",
+    "name": "Vermögensverwaltung",
+    "urlKey": "verm-gensverwaltung",
+    "reportsToName": "CFO",
+    "melderecht": false
+  },
+  {
+    "id": "3067ea1d-5050-4032-aff5-1f759f544160",
+    "name": "Vault-Maintainer",
+    "urlKey": "vault-maintainer",
+    "reportsToName": "DPO",
+    "melderecht": false
+  },
+  {
+    "id": "aa036cf5-0af7-4ed1-b04e-c7a54f71e553",
+    "name": "CRO",
+    "urlKey": "cro",
+    "reportsToName": "CEO",
+    "melderecht": true
+  },
+  {
+    "id": "605c7900-c6f7-4fb3-9bed-1fcd36fcfdca",
+    "name": "Web-Design Specialist",
+    "urlKey": "web-design-specialist",
+    "reportsToName": "CMO",
+    "melderecht": false
+  },
+  {
+    "id": "efe7168d-a813-4d82-9cfa-f1b887f1ebeb",
+    "name": "LLM-Konfigurationsanalyst",
+    "urlKey": "llm-konfigurationsanalyst",
+    "reportsToName": "CTO",
+    "melderecht": true
+  }
+]
