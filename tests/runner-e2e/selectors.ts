@@ -196,7 +196,16 @@ export function buildMatrixJobs(
       credentialName: execution.profile.credential,
       environmentId: execution.environment.id,
       caseId: execution.task.id,
-      timeoutMinutes: execution.environment.id === "daytona" ? 40 : 25,
+      timeoutMinutes: Math.max(
+        execution.environment.id === "daytona" ? 40 : 25,
+        Math.ceil(
+          (2 *
+            (execution.task.attemptTimeoutMs[execution.environment.id] +
+              90_000) +
+            5 * 60_000) /
+            60_000,
+        ),
+      ),
       needsDaytona: execution.environment.id === "daytona",
     }))
     .sort((left, right) => left.executionId.localeCompare(right.executionId));

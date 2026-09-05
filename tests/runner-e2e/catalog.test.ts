@@ -453,6 +453,20 @@ describe("runner E2E selectors", () => {
     expect(jobs.filter((job) => !job.needsDaytona)).toHaveLength(45);
     expect(new Set(jobs.map((job) => job.executionId)).size).toBe(66);
     expect(
+      jobs.find(
+        (job) =>
+          job.executionId ===
+          "core-compatibility.runner-acpx-claude.local.plan-revise-accept",
+      )?.timeoutMinutes,
+    ).toBe(48);
+    expect(
+      jobs.find(
+        (job) =>
+          job.executionId ===
+          "local-session-integrity.runner-acpx-codex.local.structured-question-restart-resume",
+      )?.timeoutMinutes,
+    ).toBe(32);
+    expect(
       jobs.every((job) =>
         runnerMatrix.some(
           (execution) =>
