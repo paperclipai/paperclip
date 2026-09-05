@@ -2128,12 +2128,22 @@ export function redactCommandTextForLogs(command: string): string {
 }
 
 // A stack frame carries no diagnosis on its own. Skip frames when picking the
-// tail of a child's stderr so the excerpt lands on the thrown message. The last
-// alternative is a Node require-stack entry (`- /app/index.js`), matched as a
-// dash plus a single bare token so a prose bullet is not mistaken for one.
+// tail of a child's output so the excerpt lands on the thrown message, and when
+// deciding which of its two streams to quote at all. The last alternative is a
+// Node require-stack entry (`- /app/index.js`), matched as a dash plus a single
+// bare token so a prose bullet is not mistaken for one.
 const STACK_FRAME_LINE_RE = /^\s*(?:at\s|\.{3}\s|Require stack:|-\s+\S+$)/;
 const PROCESS_EXIT_FAILURE_DETAIL_LINES = 2;
 const PROCESS_EXIT_FAILURE_DETAIL_CHARS = 320;
+
+/** Split one captured stream into its non-blank lines, and those that diagnose something. */
+function splitDiagnosticLines(source: string | null | undefined): { meaningful: string[]; all: string[] } {
+  const all = (source ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return { meaningful: all.filter((line) => !STACK_FRAME_LINE_RE.test(line)), all };
+}
 
 /**
  * Describe a non-zero child-process exit with the cause, not just the code.
@@ -2153,17 +2163,18 @@ export function describeProcessExitFailure(input: {
   maxDetailChars?: number;
 }): string {
   const summary = `Process exited with code ${input.exitCode ?? -1}`;
-  // stderr is where a crashing child explains itself; a child that logs its
-  // fatal error on stdout only (common for CLI tools) still gets diagnosed.
-  const source = (input.stderr?.trim() ? input.stderr : input.stdout) ?? "";
-  const lines = source
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (lines.length === 0) return summary;
-
-  const meaningful = lines.filter((line) => !STACK_FRAME_LINE_RE.test(line));
-  const tail = (meaningful.length > 0 ? meaningful : lines).slice(-PROCESS_EXIT_FAILURE_DETAIL_LINES);
+  const stderr = splitDiagnosticLines(input.stderr);
+  const stdout = splitDiagnosticLines(input.stdout);
+  // stderr is where a crashing child explains itself, so it wins whenever it
+  // carries a diagnosis. But a stream of nothing but stack frames diagnoses
+  // nothing, and a CLI that prints its fatal message on stdout while spilling
+  // frames on stderr is common enough that picking stderr on presence alone
+  // would bury the one line worth reporting. Prefer whichever stream actually
+  // says something; fall back to raw frames only when neither does.
+  const candidates = [stderr.meaningful, stdout.meaningful, stderr.all, stdout.all];
+  const selected = candidates.find((lines) => lines.length > 0);
+  if (!selected) return summary;
+  const tail = selected.slice(-PROCESS_EXIT_FAILURE_DETAIL_LINES);
 
   const maxDetailChars = input.maxDetailChars ?? PROCESS_EXIT_FAILURE_DETAIL_CHARS;
   const detail = redactDiagnosticText(tail.join(" | "), REDACTED_LOG_VALUE);

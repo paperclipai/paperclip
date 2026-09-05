@@ -53,6 +53,28 @@ describe("describeProcessExitFailure", () => {
     expect(message).toContain("at main (/app/index.js:4:3)");
   });
 
+  it("prefers a stdout diagnostic over stderr that carries only stack frames", () => {
+    const message = describeProcessExitFailure({
+      exitCode: 1,
+      stdout: "starting agent runtime\nfatal: board url resolves to a sign-in page\n",
+      stderr: "    at makeBoard (/app/board.js:12:11)\n    at main (/app/index.js:4:3)\n",
+    });
+
+    expect(message).toBe(
+      "Process exited with code 1: starting agent runtime | fatal: board url resolves to a sign-in page",
+    );
+  });
+
+  it("keeps stderr frames when stdout has no diagnostic either", () => {
+    const message = describeProcessExitFailure({
+      exitCode: 1,
+      stdout: "    at loadConfig (/app/config.js:8:2)\n",
+      stderr: "    at makeBoard (/app/board.js:12:11)\n",
+    });
+
+    expect(message).toContain("at makeBoard (/app/board.js:12:11)");
+  });
+
   it("redacts secrets that a crashing child echoed into its diagnostics", () => {
     const message = describeProcessExitFailure({
       exitCode: 1,
