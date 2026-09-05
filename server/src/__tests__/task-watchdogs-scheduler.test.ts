@@ -685,7 +685,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
 
     expect(revalidated.allowed).toBe(false);
-    // LUN-7052: the refusal has to name which issue is live and what makes it
+    // The refusal has to name which issue is live and what makes it
     // live. `GET /api/live-runs` is scoped to the caller, so a watchdog run
     // cannot otherwise see another agent's run on the watched issue, and the
     // bare "subtree is live" verdict reads as a platform bug.
@@ -797,7 +797,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdogIssues).toHaveLength(1);
   });
 
-  // LUN-7052. Measured on LUN-6807: a board comment enqueued an
+  // Measured on a live instance: a board comment enqueued an
   // `issue_commented` wake on the watched issue at 17:24:52.431Z and the
   // watchdog wake was enqueued 13 ms later, from a liveness snapshot taken
   // before that run existed. The watchdog then ran for ~9 minutes against a
@@ -817,7 +817,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     // DDL cannot carry bind parameters, and these ids are locally generated
     // UUIDs, so raw interpolation is safe here.
     await db.execute(sql.raw(`
-      CREATE FUNCTION public.lun7052_race() RETURNS trigger AS $fn$
+      CREATE FUNCTION public.watchdog_enqueue_race() RETURNS trigger AS $fn$
       BEGIN
         INSERT INTO heartbeat_runs (company_id, agent_id, status, invocation_source, context_snapshot)
         VALUES ('${companyId}'::uuid, '${agentId}'::uuid, 'running', 'assignment',
@@ -827,9 +827,9 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       $fn$ LANGUAGE plpgsql;
     `));
     await db.execute(sql.raw(`
-      CREATE TRIGGER lun7052_race AFTER INSERT ON issues
+      CREATE TRIGGER watchdog_enqueue_race AFTER INSERT ON issues
       FOR EACH ROW WHEN (NEW.origin_kind = 'task_watchdog')
-      EXECUTE FUNCTION public.lun7052_race();
+      EXECUTE FUNCTION public.watchdog_enqueue_race();
     `));
 
     try {
@@ -837,8 +837,27 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       expect(result).toMatchObject({ checked: 1, triggered: 0, live: 1 });
       expect(wakes).toHaveLength(0);
     } finally {
-      await db.execute(sql.raw("DROP TRIGGER lun7052_race ON issues; DROP FUNCTION public.lun7052_race();"));
+      await db.execute(sql.raw(
+        "DROP TRIGGER watchdog_enqueue_race ON issues; DROP FUNCTION public.watchdog_enqueue_race();",
+      ));
     }
+
+    // The review issue was published before the race was observed, so it exists
+    // in `todo` with nobody woken for it. It must not stay pinned to that stop
+    // fingerprint: a pinned artifact reads as an open same-fingerprint review
+    // and would suppress the trigger the stopped state still deserves, forever.
+    const [published] = await db
+      .select({ id: issues.id, originFingerprint: issues.originFingerprint })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
+    expect(published.originFingerprint).toMatch(/^task_watchdog_untriggered:/);
+
+    // Once the racing run is gone, the next pass triggers on the same stopped
+    // state instead of reading its own leftover artifact as a done review.
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const retry = await service.reconcileTaskWatchdogs({ companyId });
+    expect(retry).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
   });
 
   it("handles an armed cutoff when no watchdogs are active", async () => {

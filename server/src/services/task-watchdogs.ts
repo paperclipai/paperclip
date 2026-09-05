@@ -25,6 +25,11 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
+// Stamped on a review issue that was published for a stopped state no watchdog
+// was ever woken for. `origin_fingerprint` is NOT NULL, so the pin is replaced
+// rather than cleared; the prefix differs from a real stop fingerprint, so the
+// row can no longer read as an open same-fingerprint review.
+export const TASK_WATCHDOG_UNTRIGGERED_FINGERPRINT_PREFIX = "task_watchdog_untriggered:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
 const TASK_WATCHDOG_LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const TASK_WATCHDOG_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution"] as const;
@@ -1384,6 +1389,77 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return updated ?? watchdog;
   }
 
+  // Re-read the watched subtree and confirm it is still stopped on exactly the
+  // fingerprint the pending wake would carry. Anything else means the wake would
+  // hand the watchdog a state the platform will refuse to let it repair.
+  async function rereadStoppedSubtree(watchdog: IssueWatchdogRow, expectedFingerprint: string) {
+    const recheck = classifyTaskWatchdogSubtree(
+      await collectClassifierInput(watchdog.companyId, watchdog),
+    );
+    if (recheck.state !== "stopped") {
+      return {
+        ok: false as const,
+        recheck,
+        result: { state: recheck.state, reason: recheck.reason, classification: recheck },
+      };
+    }
+    if (recheck.stopFingerprint !== expectedFingerprint) {
+      // Still stopped, but on different material state than the one the wake
+      // would have carried. Let the next reconcile pass trigger on the state
+      // the watchdog would actually be handed.
+      return {
+        ok: false as const,
+        recheck,
+        result: { state: "stop_fingerprint_changed" as const, reason: recheck.reason, classification: recheck },
+      };
+    }
+    return { ok: true as const, recheck };
+  }
+
+  // Drop the fingerprint pin from a review issue that was published but never
+  // woken, so it cannot read as an open same-fingerprint review and suppress the
+  // next trigger for that same stopped state.
+  async function releaseUntriggeredWatchdogReview(input: {
+    watchdog: IssueWatchdogRow;
+    watchdogIssue: IssueRow;
+    sourceIssue: IssueRow;
+    stopFingerprint: string;
+    recheck: TaskWatchdogClassifierResult;
+    runId?: string | null;
+  }) {
+    if (input.watchdogIssue.originFingerprint !== input.stopFingerprint) return;
+    const untriggered = `${TASK_WATCHDOG_UNTRIGGERED_FINGERPRINT_PREFIX}${
+      input.stopFingerprint.slice(TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX.length)
+    }`;
+    await db
+      .update(issues)
+      .set({ originFingerprint: untriggered, updatedAt: new Date() })
+      .where(and(
+        eq(issues.companyId, input.watchdog.companyId),
+        eq(issues.id, input.watchdogIssue.id),
+        eq(issues.originFingerprint, input.stopFingerprint),
+      ));
+    input.watchdogIssue.originFingerprint = untriggered;
+    await logActivity(db, {
+      companyId: input.watchdog.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.watchdog.watchdogAgentId,
+      runId: input.runId ?? null,
+      action: "issue.task_watchdog_trigger_abandoned",
+      entityType: "issue",
+      entityId: input.sourceIssue.id,
+      details: {
+        source: "task_watchdogs.evaluate",
+        watchdogId: input.watchdog.id,
+        watchdogIssueId: input.watchdogIssue.id,
+        stopFingerprint: input.stopFingerprint,
+        recheckState: input.recheck.state,
+        recheckReason: input.recheck.reason,
+      },
+    });
+  }
+
   async function ensureReusableWatchdogIssue(input: {
     watchdog: IssueWatchdogRow;
     sourceIssue: IssueRow;
@@ -1571,11 +1647,16 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     // does several writes. A wake landing on the watched issue inside that
     // window (a board comment enqueues one) turns the subtree live before the
     // watchdog run starts, and `revalidateMutationScope` then refuses every
-    // repair for the whole run. Measured on LUN-6807: the source run and the
-    // watchdog wake were created 13 ms apart, and the watchdog stayed refused
-    // for the ~6 minutes the source run held the issue. Re-read liveness right
-    // before enqueuing so a watchdog run that is guaranteed to be a no-op is
-    // never woken at all.
+    // repair for the whole run. Measured on a live instance: the source run and
+    // the watchdog wake were created 13 ms apart, and the watchdog stayed
+    // refused for the ~6 minutes the source run held the issue. So re-read
+    // liveness twice, and never publish state a wake did not carry: once before
+    // the reusable review issue is created or reopened, so the common case
+    // leaves no artifact behind, and once immediately before the enqueue, which
+    // is the last remaining window.
+    const beforePublish = await rereadStoppedSubtree(watchdog, classification.stopFingerprint);
+    if (!beforePublish.ok) return beforePublish.result;
+
     const watchdogIssue = await ensureReusableWatchdogIssue({
       watchdog,
       sourceIssue,
@@ -1583,17 +1664,21 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       runId: opts.runId ?? null,
     });
 
-    const recheck = classifyTaskWatchdogSubtree(
-      await collectClassifierInput(watchdog.companyId, watchdog),
-    );
-    if (recheck.state !== "stopped") {
-      return { state: recheck.state, reason: recheck.reason, classification: recheck };
-    }
-    if (recheck.stopFingerprint !== classification.stopFingerprint) {
-      // Still stopped, but on different material state than the one the wake
-      // would have carried. Let the next reconcile pass trigger on the state
-      // the watchdog would actually be handed.
-      return { state: "stop_fingerprint_changed" as const, reason: recheck.reason, classification: recheck };
+    const beforeEnqueue = await rereadStoppedSubtree(watchdog, classification.stopFingerprint);
+    if (!beforeEnqueue.ok) {
+      // The review issue now exists in `todo`, pinned to a fingerprint no
+      // watchdog was ever woken for. Left pinned, the next reconcile pass reads
+      // it as an open same-fingerprint review and never enqueues the wake the
+      // stopped state still deserves. Un-pin it so that pass triggers instead.
+      await releaseUntriggeredWatchdogReview({
+        watchdog,
+        watchdogIssue,
+        sourceIssue,
+        stopFingerprint: classification.stopFingerprint,
+        recheck: beforeEnqueue.recheck,
+        runId: opts.runId ?? null,
+      });
+      return beforeEnqueue.result;
     }
 
     const now = new Date();

@@ -388,10 +388,10 @@ describe("task watchdog subtree classifier", () => {
     expect(result.state).toBe("not_applicable");
   });
 
-  // LUN-7052 hypothesis check. That ticket assumed a child's pending card masks
-  // a dead parent as `live` forever. It does not: waits are material state that
-  // feeds the stop fingerprint, and only a run or a queued wake yields `live`.
-  // Pinned so the assumption cannot come back as a "fix".
+  // Hypothesis check. A plausible reading of the refusal is that a child's
+  // pending card masks a dead parent as `live` forever. It does not: waits are
+  // material state that feeds the stop fingerprint, and only a run or a queued
+  // wake yields `live`. Pinned so the assumption cannot come back as a "fix".
   it("does not read a parent as live because children carry pending interactions", () => {
     const otherChildId = "child-2";
     const result = classify({
