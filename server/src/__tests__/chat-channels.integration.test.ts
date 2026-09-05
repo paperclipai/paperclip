@@ -30,6 +30,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  heartbeatRuns,
   issueComments,
   issueAttachments,
   issueQuestionResponseDeliveries,
@@ -91,6 +92,11 @@ class FakeEndpointRuntime {
     chunks?: string[];
     files?: unknown[];
   }> = [];
+  readonly edits: Array<{
+    threadId: string;
+    messageId: string;
+    text: string;
+  }> = [];
   readonly rehydratedAttachmentDescriptors: unknown[] = [];
   private nextPostId = 0;
   postError: Error | null = null;
@@ -120,7 +126,28 @@ class FakeEndpointRuntime {
         id: channelId,
         name: "command-thread",
       },
-      adapter: { addReaction: async () => undefined },
+      adapter: {
+        addReaction: async () => undefined,
+        editMessage: async (
+          editedThreadId: string,
+          messageId: string,
+          editedMessage: unknown,
+        ) => {
+          if (this.postError) throw this.postError;
+          const text =
+            editedMessage &&
+            typeof editedMessage === "object" &&
+            "markdown" in editedMessage
+              ? String((editedMessage as { markdown: unknown }).markdown)
+              : JSON.stringify(editedMessage);
+          this.edits.push({
+            threadId: editedThreadId,
+            messageId,
+            text,
+          });
+          return { id: messageId, threadId: editedThreadId };
+        },
+      },
       startTyping: async () => undefined,
       subscribe: async () => undefined,
       post: async (message: unknown) => {
@@ -664,6 +691,102 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     )?.callbacks;
     if (!callbacks)
       throw new Error("Fake runtime did not receive endpoint callbacks");
+    return { ...context, endpoint, callbacks };
+  }
+
+  async function configuredGitHubEndpoint(
+    fixture: Awaited<ReturnType<typeof seedCompany>>,
+  ) {
+    const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
+      .privateKey.export({ type: "pkcs8", format: "pem" })
+      .toString();
+    const providerFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://api.github.com/app") {
+        return new Response(
+          JSON.stringify({
+            id: 789,
+            slug: `maya-${fixture.companyId.slice(0, 8)}`,
+            name: "Maya Paperclip",
+            owner: { login: "paperclipai" },
+            permissions: { issues: "write", pull_requests: "write" },
+            events: ["issue_comment", "pull_request_review_comment"],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "https://api.github.com/app/installations?per_page=100") {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 2468,
+              account: { id: 1357, login: "paperclipai", type: "Organization" },
+              suspended_at: null,
+            },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (
+        url === "https://api.github.com/app/installations/2468/access_tokens"
+      ) {
+        return new Response(JSON.stringify({ token: "installation-token" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (
+        url ===
+        "https://api.github.com/installation/repositories?per_page=100&page=1"
+      ) {
+        return new Response(
+          JSON.stringify({
+            repositories: [
+              {
+                id: 97531,
+                full_name: "paperclipai/paperclip",
+                html_url: "https://github.com/paperclipai/paperclip",
+                owner: { id: 1357, login: "paperclipai" },
+                private: false,
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected provider request: ${url}`);
+    }) as typeof globalThis.fetch;
+    const context = createService(new FakeChatSdkRuntime(), providerFetch);
+    const endpoint = await context.service.create(
+      fixture.companyId,
+      {
+        provider: "github",
+        assignedAgentId: fixture.assignedAgentId,
+        name: "Maya in GitHub",
+      },
+      "owner-user",
+    );
+    await context.service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          appId: "123456",
+          privateKey,
+          webhookSecret: "github-webhook-secret",
+        },
+      },
+      "owner-user",
+    );
+    const resources = await context.service.listResources(endpoint.id);
+    await context.service.replaceResources(endpoint.id, [
+      { id: resources[0]!.id, enabled: true },
+    ]);
+    const callbacks = context.runtime.configurations.get(
+      endpoint.id,
+    )?.callbacks;
+    if (!callbacks)
+      throw new Error("Fake runtime did not receive GitHub callbacks");
     return { ...context, endpoint, callbacks };
   }
 
@@ -1375,6 +1498,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "message",
         "edited_message",
         "callback_query",
+        "message_reaction",
         "my_chat_member",
       ],
       drop_pending_updates: true,
@@ -3208,6 +3332,171 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       conversationId: conversation.id,
       assignedAgentLocked: true,
     });
+  });
+
+  it("coalesces one GitHub run's progress and final response into one provider comment", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredGitHubEndpoint(fixture);
+    const thread = makeThread({
+      channelId: "github:paperclipai/paperclip",
+      id: "github:paperclipai/paperclip:issue:417",
+      name: "paperclipai/paperclip",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "41701",
+        text: "@maya produce one quiet GitHub response",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "running",
+      contextSnapshot: { issueId: conversation.issueId },
+    });
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `run:${runId}:queued:${endpoint.id}`,
+      payload: { text: "Maya is queued.", progressState: "queued" },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `run:${runId}:working:${endpoint.id}`,
+      payload: { text: "Maya is working…", progressState: "working" },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+    const finalComment = await issueService(db).addComment(
+      conversation.issueId,
+      "Final GitHub result",
+      { agentId: fixture.assignedAgentId, runId },
+      { authorType: "agent" },
+    );
+    await service.processPendingPublications();
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    expect(providerRuntime?.posts).toEqual([
+      {
+        threadId: thread.thread.id,
+        text: "Maya is queued.",
+      },
+    ]);
+    expect(providerRuntime?.edits).toEqual([
+      {
+        threadId: thread.thread.id,
+        messageId: "outbound-1",
+        text: "Maya is working…",
+      },
+      {
+        threadId: thread.thread.id,
+        messageId: "outbound-1",
+        text: "Final GitHub result",
+      },
+    ]);
+    const publications = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.conversationId, conversation.id));
+    expect(publications).toHaveLength(3);
+    expect(
+      publications.every(
+        (publication) =>
+          publication.state === "published" &&
+          publication.providerMessageId === "outbound-1",
+      ),
+    ).toBe(true);
+    const [providerLink] = await db
+      .select()
+      .from(chatMessageLinks)
+      .where(
+        and(
+          eq(chatMessageLinks.conversationId, conversation.id),
+          eq(chatMessageLinks.direction, "outbound"),
+        ),
+      );
+    expect(providerLink).toMatchObject({
+      providerMessageId: "outbound-1",
+      commentId: finalComment.id,
+    });
+
+    await service.processPendingPublications();
+    expect(providerRuntime?.posts).toHaveLength(1);
+    expect(providerRuntime?.edits).toHaveLength(2);
+
+    const ambiguousRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: ambiguousRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "running",
+      contextSnapshot: { issueId: conversation.issueId },
+    });
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `run:${ambiguousRunId}:queued:${endpoint.id}`,
+      payload: { text: "A second run is queued.", progressState: "queued" },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+    if (!providerRuntime) throw new Error("Expected GitHub provider runtime");
+    providerRuntime.postError = new Error("socket reset after write");
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `run:${ambiguousRunId}:working:${endpoint.id}`,
+      payload: {
+        text: "A second run is working…",
+        progressState: "working",
+      },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+    const ambiguousEdit = await db
+      .select()
+      .from(chatPublications)
+      .where(
+        eq(
+          chatPublications.idempotencyKey,
+          `run:${ambiguousRunId}:working:${endpoint.id}`,
+        ),
+      )
+      .then((rows) => rows[0]);
+    expect(ambiguousEdit).toMatchObject({
+      state: "delivery_unknown",
+      providerMessageId: null,
+      attempts: 1,
+    });
+    expect(providerRuntime.posts).toHaveLength(2);
+    expect(providerRuntime.edits).toHaveLength(2);
+    await service.processPendingPublications();
+    expect(providerRuntime.posts).toHaveLength(2);
+    expect(providerRuntime.edits).toHaveLength(2);
   });
 
   it("streams long output in bounded chunks after applying the safe external projection", async () => {

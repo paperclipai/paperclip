@@ -15,6 +15,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  like,
   lt,
   lte,
   ne,
@@ -2084,6 +2085,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 "message",
                 "edited_message",
                 "callback_query",
+                "message_reaction",
                 "my_chat_member",
               ],
               drop_pending_updates:
@@ -6027,6 +6029,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     conversation: ConversationRow;
     publication: typeof chatPublications.$inferSelect;
     payload: SafeChatPublicationPayload;
+    replaceProviderMessageId?: string | null;
   }) {
     const endpointRuntime = await runtimeFor(input.endpoint);
     const thread = endpointRuntime.thread(input.conversation.externalThreadId);
@@ -6052,18 +6055,33 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
     }
     if (card && CAPABILITIES[input.endpoint.provider].cards) {
-      return await attemptProviderPublication(
-        async () =>
-          await thread.post({
-            card,
-            fallbackText: text,
-            ...(files.length ? { files } : {}),
-          }),
+      return await attemptProviderPublication(async () =>
+        input.replaceProviderMessageId
+          ? await thread.adapter.editMessage(
+              thread.id,
+              input.replaceProviderMessageId,
+              {
+                card,
+                fallbackText: text,
+                ...(files.length ? { files } : {}),
+              },
+            )
+          : await thread.post({
+              card,
+              fallbackText: text,
+              ...(files.length ? { files } : {}),
+            }),
       );
     }
     if (files.length)
-      return await attemptProviderPublication(
-        async () => await thread.post({ markdown: text, files }),
+      return await attemptProviderPublication(async () =>
+        input.replaceProviderMessageId
+          ? await thread.adapter.editMessage(
+              thread.id,
+              input.replaceProviderMessageId,
+              { markdown: text, files },
+            )
+          : await thread.post({ markdown: text, files }),
       );
     if (
       CAPABILITIES[input.endpoint.provider].nativeStreaming &&
@@ -6073,9 +6091,64 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         async () => await thread.post(streamSafePublicationText(text)),
       );
     }
-    return await attemptProviderPublication(
-      async () => await thread.post({ markdown: text }),
+    return await attemptProviderPublication(async () =>
+      input.replaceProviderMessageId
+        ? await thread.adapter.editMessage(
+            thread.id,
+            input.replaceProviderMessageId,
+            { markdown: text },
+          )
+        : await thread.post({ markdown: text }),
     );
+  }
+
+  function runIdFromMilestonePublication(
+    publication: typeof chatPublications.$inferSelect,
+  ): string | null {
+    if (!publication.payload.progressState) return null;
+    const match = /^run:([^:]+):(?:queued|working|failed):/.exec(
+      publication.idempotencyKey,
+    );
+    return match?.[1] ?? null;
+  }
+
+  async function githubPublicationToReplace(
+    publication: typeof chatPublications.$inferSelect,
+    payload: SafeChatPublicationPayload,
+  ): Promise<string | null> {
+    if (payload.attachmentIds?.length) return null;
+    const currentRunId =
+      runIdFromMilestonePublication(publication) ??
+      (publication.commentId
+        ? await db
+            .select({ runId: issueComments.createdByRunId })
+            .from(issueComments)
+            .where(eq(issueComments.id, publication.commentId))
+            .then((rows) => rows[0]?.runId ?? null)
+        : null);
+    if (!currentRunId) return null;
+    return db
+      .select({
+        providerMessageId: chatPublications.providerMessageId,
+        payload: chatPublications.payload,
+      })
+      .from(chatPublications)
+      .where(
+        and(
+          eq(chatPublications.companyId, publication.companyId),
+          eq(chatPublications.endpointId, publication.endpointId),
+          eq(chatPublications.conversationId, publication.conversationId),
+          eq(chatPublications.state, "published"),
+          isNotNull(chatPublications.providerMessageId),
+          like(chatPublications.idempotencyKey, `run:${currentRunId}:%`),
+        ),
+      )
+      .orderBy(desc(chatPublications.createdAt))
+      .then(
+        (rows) =>
+          rows.find((row) => Boolean(row.payload.progressState))
+            ?.providerMessageId ?? null,
+      );
   }
 
   async function processPendingPublications(limit = 25) {
@@ -6231,11 +6304,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           }
         }
         const payload = publication.payload as SafeChatPublicationPayload;
+        const replaceProviderMessageId =
+          endpoint.provider === "github"
+            ? await githubPublicationToReplace(publication, payload)
+            : null;
         const sent = await postSafePublication({
           endpoint,
           conversation,
           publication,
           payload,
+          replaceProviderMessageId,
         });
         await db.transaction(async (tx) => {
           await tx
@@ -6253,18 +6331,30 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 eq(chatPublications.state, "streaming"),
               ),
             );
-          await tx
-            .insert(chatMessageLinks)
-            .values({
-              companyId: publication.companyId,
-              endpointId: publication.endpointId,
-              conversationId: publication.conversationId,
-              publicationId: publication.id,
-              commentId: publication.commentId,
-              providerMessageId: sent.id,
-              direction: "outbound",
-            })
-            .onConflictDoNothing();
+          const messageLinkInsert = tx.insert(chatMessageLinks).values({
+            companyId: publication.companyId,
+            endpointId: publication.endpointId,
+            conversationId: publication.conversationId,
+            publicationId: publication.id,
+            commentId: publication.commentId,
+            providerMessageId: sent.id,
+            direction: "outbound",
+          });
+          if (replaceProviderMessageId) {
+            await messageLinkInsert.onConflictDoUpdate({
+              target: [
+                chatMessageLinks.endpointId,
+                chatMessageLinks.conversationId,
+                chatMessageLinks.providerMessageId,
+              ],
+              set: {
+                publicationId: publication.id,
+                commentId: publication.commentId,
+              },
+            });
+          } else {
+            await messageLinkInsert.onConflictDoNothing();
+          }
           await tx
             .update(chatEndpoints)
             .set({ lastPublicationAt: new Date(), updatedAt: new Date() })
