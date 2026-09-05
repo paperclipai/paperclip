@@ -326,9 +326,10 @@ does not create a goal, project, issue, task, or first heartbeat. Temporary
 directories are retained for inspection. Use `--data-dir <path>` to reuse one
 or `--no-browser` to suppress browser opening. Reused directories must use the
 embedded database: the command rejects database URL environment overrides and
-configs with `database.mode: postgres`, and it keeps the normal managed-service
-collision guard. It selects the first available loopback port at or above
-`3100`.
+configs with `database.mode: postgres`, suppresses the invocation directory's
+`.env` when the server starts, and keeps the normal managed-service collision
+guard. The selected instance's own environment file still loads. The command
+selects the first available loopback port at or above `3100`.
 
 Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
 `OPENROUTER_API_KEY` and requires an `openrouter/...` model. `--api-key-env`

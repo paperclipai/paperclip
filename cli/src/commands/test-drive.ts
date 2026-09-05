@@ -171,6 +171,7 @@ export async function prepareTestDriveEnvironment(
   process.env.PAPERCLIP_CONTEXT = resolveDefaultContextPath();
   process.env.PAPERCLIP_IN_WORKTREE = linkedWorktree ? "true" : "false";
   process.env.PAPERCLIP_OPEN_ON_LISTEN = "false";
+  process.env.PAPERCLIP_DISABLE_CWD_ENV_FILE = "true";
   process.env.PAPERCLIP_DEPLOYMENT_MODE = "local_trusted";
   process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
   process.env.PAPERCLIP_BIND = "loopback";

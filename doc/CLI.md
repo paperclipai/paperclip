@@ -179,10 +179,12 @@ directory and prints its absolute path. The directory is retained after exit
 for inspection. An explicit data directory is reused and is never reset. The
 reused directory must use Paperclip's embedded database; `DATABASE_URL`,
 `DATABASE_MIGRATION_URL`, and configs with `database.mode: postgres` are
-rejected so test-drive cannot mutate an external database. Reused directories
-also retain the normal guard against colliding with a managed Paperclip
-service. The server uses the first available loopback port at or above `3100`,
-so an unrelated local Paperclip process can remain running.
+rejected so test-drive cannot mutate an external database. The server also
+ignores the invocation directory's `.env` for test-drive launches, while still
+loading the selected instance's own environment file. Reused directories also
+retain the normal guard against colliding with a managed Paperclip service. The
+server uses the first available loopback port at or above `3100`, so an
+unrelated local Paperclip process can remain running.
 
 Harness configuration:
 

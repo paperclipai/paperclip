@@ -128,6 +128,7 @@ describe("test-drive data isolation", () => {
       path.join(path.resolve(root), "instances", "default", "config.json"),
     );
     expect(process.env.PAPERCLIP_IN_WORKTREE).toBe("false");
+    expect(process.env.PAPERCLIP_DISABLE_CWD_ENV_FILE).toBe("true");
     expect(process.env.PAPERCLIP_DEPLOYMENT_MODE).toBe("local_trusted");
     expect(process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE).toBe("private");
     expect(process.env.PAPERCLIP_BIND).toBe("loopback");
