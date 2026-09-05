@@ -593,6 +593,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
   "cancelled",
   "timed_out",
 ] as const;
+const STRANDED_DEFERRED_ISSUE_WAKE_RECOVERY_LIMIT = 500;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
@@ -15462,7 +15463,22 @@ export function heartbeatService(
 
       const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
       if (staleness.stale) {
-        await cancelRunForStaleIssue(run, issueId, staleness);
+        const cancelled = await cancelRunForStaleIssue(run, issueId, staleness);
+        if (
+          cancelled &&
+          staleness.errorCode === "issue_assignee_changed" &&
+          readNonEmptyString(context.retryReason) === "missing_issue_comment"
+        ) {
+          // A missing-comment retry owns the execution lock until its stale-claim
+          // cancellation releases it. Defer dispatch until this scheduler invocation
+          // relinquishes its per-agent start lock, otherwise a promoted follow-up for
+          // the former assignee would recursively wait on that same lock.
+          await releaseIssueExecutionAndPromote(cancelled, {
+            suppressImmediateRecovery: true,
+            deferPromotedStart: true,
+            prioritizeCurrentAssigneeWake: true,
+          });
+        }
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -17383,8 +17399,126 @@ export function heartbeatService(
     });
   }
 
+  async function promoteStrandedDeferredIssueWakes() {
+    if ((await getSchedulingSuppression()).suppressed) return;
+
+    const deferredWakes = await db
+      .select({
+        id: agentWakeupRequests.id,
+        companyId: agentWakeupRequests.companyId,
+        agentId: agentWakeupRequests.agentId,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .innerJoin(companies, eq(companies.id, agentWakeupRequests.companyId))
+      .where(
+        and(
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          eq(companies.status, "active"),
+        ),
+      )
+      .orderBy(asc(agentWakeupRequests.requestedAt))
+      .limit(STRANDED_DEFERRED_ISSUE_WAKE_RECOVERY_LIMIT);
+
+    const visitedIssueIds = new Set<string>();
+    for (const deferredWake of deferredWakes) {
+      const issueId = issueIdFromWakePayload(deferredWake.payload);
+      if (!issueId || visitedIssueIds.has(issueId)) continue;
+
+      const issue = await db
+        .select({
+          id: issues.id,
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.id, issueId),
+            eq(issues.companyId, deferredWake.companyId),
+            eq(issues.assigneeAgentId, deferredWake.agentId),
+            isNull(issues.assigneeUserId),
+            inArray(issues.status, ["todo", "in_progress", "in_review"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!issue || issue.executionRunId || issue.checkoutRunId) continue;
+      visitedIssueIds.add(issueId);
+
+      const issueRunPredicate = or(
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+        sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id}`,
+      );
+      const activeRun = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, deferredWake.companyId),
+            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+            issueRunPredicate,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (activeRun) continue;
+
+      const terminalRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, deferredWake.companyId),
+            inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+            issueRunPredicate,
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!terminalRun) continue;
+
+      try {
+        await releaseIssueExecutionAndPromote(terminalRun, {
+          deferPromotedStart: true,
+          prioritizeCurrentAssigneeWake: true,
+        });
+      } catch (error) {
+        logger.error(
+          {
+            err: error,
+            issueId: issue.id,
+            deferredWakeId: deferredWake.id,
+            terminalRunId: terminalRun.id,
+          },
+          "failed to promote stranded deferred issue wake after stale-lock sweep",
+        );
+        continue;
+      }
+
+      const wakeStatus = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWake.id))
+        .then((rows) => rows[0]?.status ?? null);
+      if (wakeStatus !== "deferred_issue_execution") {
+        logger.warn(
+          {
+            issueId: issue.id,
+            deferredWakeId: deferredWake.id,
+            terminalRunId: terminalRun.id,
+          },
+          "promoted stranded deferred issue wake after stale-lock sweep",
+        );
+      }
+    }
+  }
+
   async function sweepStaleIssueLocks() {
-    return recovery.sweepStaleIssueLocks();
+    const result = await recovery.sweepStaleIssueLocks();
+    await promoteStrandedDeferredIssueWakes();
+    return result;
   }
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -22547,7 +22681,11 @@ export function heartbeatService(
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: {
+      suppressImmediateRecovery?: boolean;
+      deferPromotedStart?: boolean;
+      prioritizeCurrentAssigneeWake?: boolean;
+    } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -22708,7 +22846,15 @@ export function heartbeatService(
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
             ),
           )
-          .orderBy(asc(agentWakeupRequests.requestedAt))
+          .orderBy(
+            sql`case
+              when ${options.prioritizeCurrentAssigneeWake === true}
+                and ${agentWakeupRequests.agentId} = ${issue.assigneeAgentId}
+              then 0
+              else 1
+            end`,
+            asc(agentWakeupRequests.requestedAt),
+          )
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
@@ -23524,6 +23670,14 @@ export function heartbeatService(
       },
     });
 
+    if (options.deferPromotedStart) {
+      queueMicrotask(() => {
+        void startNextQueuedRunForAgent(promotedRun.agentId).catch((err) => {
+          logger.error({ err, agentId: promotedRun.agentId }, "failed to start deferred promoted run");
+        });
+      });
+      return;
+    }
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
