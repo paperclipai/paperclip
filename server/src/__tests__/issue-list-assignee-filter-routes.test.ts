@@ -907,6 +907,18 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       .query({ attention: "blocked", assigneeAgentId: "null" });
     expect(nullAssigneeRes.status, JSON.stringify(nullAssigneeRes.body)).toBe(200);
     expect(nullAssigneeRes.body).toMatchObject({ count: 0 });
+
+    // Pin that asymmetry as an assertion rather than only as the comment above.
+    // Adding either name to `ISSUE_COUNT_UUID_FILTER_NAMES` turns each of these
+    // long-standing 200s into a 400 — a caller-visible contract change that has
+    // to be a deliberate edit to this test, not a silent widening.
+    for (const unguarded of ["goalId", "createdByAgentId"] as const) {
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues/count`)
+        .query({ attention: "blocked", [unguarded]: "bad" });
+      expect(res.status, `${unguarded}: ${JSON.stringify(res.body)}`).toBe(200);
+      expect(res.body).toMatchObject({ count: 0 });
+    }
   });
 
   it("treats an empty UUID filter value as absent on both routes", async () => {
@@ -1058,6 +1070,191 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       await expect(
         svc.list(companyId, { status: "todo", [name]: " ", limit: 20 }),
       ).rejects.toThrow(`${name} must be a UUID`);
+    }
+  });
+
+  it("pins every UUID filter value class on both routes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Visible issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    // The blocked-inbox count only counts issues carrying blocked attention, so
+    // the count control needs a real `blocks` edge to be non-zero.
+    await db.insert(issueRelations).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const app = createApp(companyId);
+    const listPath = `/api/companies/${companyId}/issues`;
+    const countPath = `/api/companies/${companyId}/issues/count`;
+    const listParams = [
+      "assigneeAgentId",
+      "participantAgentId",
+      "goalId",
+      "createdByAgentId",
+      "projectId",
+      "workspaceId",
+      "executionWorkspaceId",
+      "parentId",
+      "descendantOf",
+      "labelId",
+    ] as const;
+    const countParams = [
+      "assigneeAgentId",
+      "participantAgentId",
+      "projectId",
+      "workspaceId",
+      "executionWorkspaceId",
+      "parentId",
+      "descendantOf",
+      "labelId",
+    ] as const;
+    const errorFor = (param: string) =>
+      param === "assigneeAgentId" ? "assigneeAgentId must be a UUID or 'null'" : `${param} must be a UUID`;
+
+    // The name axis is already covered by the tests above. This one walks the
+    // value axis, which is where the guard actually decides: blank, padded-valid,
+    // non-empty-invalid, and non-string. Each class below kills a mutation that
+    // the name loops leave alive.
+    const listBaseline = await request(app).get(listPath).query({ status: "todo", limit: "20" });
+    expect(listBaseline.status, JSON.stringify(listBaseline.body)).toBe(200);
+    const baselineIds = listBaseline.body.map((issue: { id: string }) => issue.id);
+    expect(baselineIds).toEqual([issueId]);
+
+    const countBaseline = await request(app).get(countPath).query({ attention: "blocked" });
+    expect(countBaseline.status, JSON.stringify(countBaseline.body)).toBe(200);
+    const baselineCount = countBaseline.body.count as number;
+    expect(baselineCount).toBeGreaterThan(0);
+
+    // Class 1 — blank. These all trim to empty, so the guard must read them as
+    // "filter absent" and return the same unfiltered 200 the empty string gets.
+    // Delete the guard's `.trim()` and ` ` is a length-1 non-UUID: 400 instead.
+    for (const param of listParams) {
+      for (const value of [" ", "\t\n"]) {
+        const res = await request(app).get(listPath).query({ status: "todo", [param]: value, limit: "20" });
+        const label = `${param}=${JSON.stringify(value)}: ${JSON.stringify(res.body)}`;
+        expect(res.status, label).toBe(200);
+        expect(res.body.map((issue: { id: string }) => issue.id), label).toEqual(baselineIds);
+      }
+    }
+    for (const param of countParams) {
+      const res = await request(app).get(countPath).query({ attention: "blocked", [param]: " " });
+      const label = `${param}: ${JSON.stringify(res.body)}`;
+      expect(res.status, label).toBe(200);
+      expect(res.body.count, label).toBe(baselineCount);
+    }
+
+    // Class 2 — a valid UUID with surrounding whitespace. `isUuidLike` trims
+    // internally and returns true, so without the guard's own `.trim()` the
+    // padded string is what reaches Postgres: `22P02 invalid input syntax for
+    // type uuid`, surfaced as a 500. Compare against the unpadded response
+    // rather than an expected page, so the pin holds whatever each filter
+    // matches today.
+    for (const param of listParams) {
+      const value = randomUUID();
+      const clean = await request(app).get(listPath).query({ status: "todo", [param]: value, limit: "20" });
+      expect(clean.status, `${param}: ${JSON.stringify(clean.body)}`).toBe(200);
+      for (const padded of [`${value} `, ` ${value}`]) {
+        const res = await request(app).get(listPath).query({ status: "todo", [param]: padded, limit: "20" });
+        const label = `${param}=${JSON.stringify(padded)}: ${JSON.stringify(res.body)}`;
+        expect(res.status, label).toBe(200);
+        expect(res.body, label).toEqual(clean.body);
+      }
+    }
+    for (const param of countParams) {
+      const value = randomUUID();
+      const clean = await request(app).get(countPath).query({ attention: "blocked", [param]: value });
+      expect(clean.status, `${param}: ${JSON.stringify(clean.body)}`).toBe(200);
+      const res = await request(app).get(countPath).query({ attention: "blocked", [param]: `${value} ` });
+      const label = `${param}=padded: ${JSON.stringify(res.body)}`;
+      expect(res.status, label).toBe(200);
+      expect(res.body, label).toEqual(clean.body);
+    }
+
+    // Class 3 — non-empty text that is not a UUID. `"x"` is length 1 and
+    // `"undefined"` is the other token an over-wide empty-skip swallows; both
+    // have to 400 rather than drop the filter. (`"null"` is pinned above.)
+    for (const value of ["x", "undefined"]) {
+      for (const param of listParams) {
+        const res = await request(app).get(listPath).query({ status: "todo", [param]: value, limit: "20" });
+        const label = `${param}=${value}: ${JSON.stringify(res.body)}`;
+        expect(res.status, label).toBe(400);
+        expect(res.body, label).toMatchObject({ error: errorFor(param) });
+        expect(res.body, label).not.toHaveProperty("issues");
+      }
+      for (const param of countParams) {
+        const res = await request(app).get(countPath).query({ attention: "blocked", [param]: value });
+        const label = `${param}=${value}: ${JSON.stringify(res.body)}`;
+        expect(res.status, label).toBe(400);
+        expect(res.body, label).toMatchObject({ error: errorFor(param) });
+        expect(res.body, label).not.toHaveProperty("count");
+      }
+    }
+
+    // Class 4 — a repeated query param. Express parses `?projectId=a&projectId=b`
+    // into an array, and the non-string arm is the only thing between that array
+    // and a dropped filter: turn its 400 into a `continue` and the request comes
+    // back 200 with the filter silently gone.
+    for (const param of listParams) {
+      const res = await request(app)
+        .get(listPath)
+        .query({ status: "todo", limit: "20" })
+        .query(`${param}=${randomUUID()}&${param}=${randomUUID()}`);
+      const label = `${param} repeated: ${JSON.stringify(res.body)}`;
+      expect(res.status, label).toBe(400);
+      expect(res.body, label).toMatchObject({ error: errorFor(param) });
+      expect(res.body, label).not.toHaveProperty("issues");
+    }
+    for (const param of countParams) {
+      const res = await request(app)
+        .get(countPath)
+        .query({ attention: "blocked" })
+        .query(`${param}=${randomUUID()}&${param}=${randomUUID()}`);
+      const label = `${param} repeated: ${JSON.stringify(res.body)}`;
+      expect(res.status, label).toBe(400);
+      expect(res.body, label).toMatchObject({ error: errorFor(param) });
+      expect(res.body, label).not.toHaveProperty("count");
     }
   });
 
