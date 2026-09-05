@@ -43,6 +43,7 @@ import {
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
+import { resolveGrokCliModelId, resolveGrokReasoningEffort } from "../effort.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -205,13 +206,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "grok");
-  const model = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
+  const model = resolveGrokCliModelId(asString(config.model, DEFAULT_GROK_LOCAL_MODEL));
   // No default permission mode: Grok >= 1.0 enforces `dontAsk` as
   // deny-by-default and it overrides --always-approve, so passing it broke
   // every unattended run (the first tool call died with "User cancelled the
   // execution for tool ..."). --always-approve alone is the unattended policy.
   const permissionMode = asString(config.permissionMode, "").trim();
-  const reasoningEffort = asString(config.reasoningEffort, "").trim();
+  const requestedReasoningEffort = (
+    asString(config.reasoningEffort, "") || asString(config.effort, "")
+  ).trim();
+  const reasoningEffort = resolveGrokReasoningEffort(model, requestedReasoningEffort);
   const maxTurns = asNumber(config.maxTurns, 0);
   const alwaysApprove = asBoolean(config.alwaysApprove, true);
   const disableWebSearch = asBoolean(config.disableWebSearch, true);
@@ -500,7 +504,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["--cwd", effectiveExecutionCwd, "--output-format", "streaming-json"];
       if (resumeSessionId) args.push("--resume", resumeSessionId);
-      if (model && model !== DEFAULT_GROK_LOCAL_MODEL) args.push("--model", model);
+      if (model) args.push("--model", model);
       if (reasoningEffort) args.push("--reasoning-effort", reasoningEffort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (permissionMode) args.push("--permission-mode", permissionMode);
