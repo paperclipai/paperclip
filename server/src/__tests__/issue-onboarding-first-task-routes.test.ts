@@ -13,6 +13,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issues,
 } from "@paperclipai/db";
@@ -98,6 +99,7 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(companies);
+    await db.delete(instanceSettings);
   });
 
   afterAll(async () => {
@@ -214,5 +216,89 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
 
     for (const response of responses) expect(response.status).toBe(201);
     expect(await listOnboardingIssues(companyId)).toHaveLength(1);
+  });
+
+  it("stores the server-assembled brief as the description and ignores the client description", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const app = createApp();
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Get started",
+        description: "client supplied description that must be ignored",
+        onboardingFirstTask: true,
+        assigneeAgentId: agentId,
+      })
+      .expect(201);
+
+    expect(created.body.description).toContain("This is the user's first task in Paperclip.");
+    // Toggle defaults off → the confirmation proposal form is inlined.
+    expect(created.body.description).toContain("post ONE request_confirmation that says, in a few lines");
+    expect(created.body.description).not.toContain("treat it like the plan path");
+    expect(created.body.description).not.toContain("client supplied description");
+  });
+
+  it("uses the plan proposal brief when enableFirstTaskPlanProposal is on", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+    await db
+      .insert(instanceSettings)
+      .values({ singletonKey: "default", general: {}, experimental: { enableFirstTaskPlanProposal: true } })
+      .onConflictDoUpdate({
+        target: [instanceSettings.singletonKey],
+        set: { experimental: { enableFirstTaskPlanProposal: true } },
+      });
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Get started", onboardingFirstTask: true })
+      .expect(201);
+
+    expect(created.body.description).toContain("This is the user's first task in Paperclip.");
+    expect(created.body.description).toContain("treat it like the plan path");
+    expect(created.body.description).not.toContain("post ONE request_confirmation that says, in a few lines");
+
+    await db.delete(instanceSettings);
+  });
+
+  it("does not queue an assignment wake for the onboarding first task", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const app = createApp();
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Get started", onboardingFirstTask: true, assigneeAgentId: agentId })
+      .expect(201);
+
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakeups).toHaveLength(0);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("still queues an assignment wake for an ordinary assigned issue", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const app = createApp();
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Ordinary task", assigneeAgentId: agentId })
+      .expect(201);
+
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    // An ordinary assigned create still queues the assignment wake for the agent.
+    expect(wakeups.length).toBeGreaterThan(0);
+    expect(wakeups.some((row) => row.agentId === agentId)).toBe(true);
   });
 });
