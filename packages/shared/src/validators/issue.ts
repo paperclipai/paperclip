@@ -1057,7 +1057,12 @@ export const requestConfirmationIssueDocumentTargetSchema = requestConfirmationT
 
 export const requestConfirmationCustomTargetSchema = requestConfirmationTargetBaseSchema.extend({
   type: z.literal("custom"),
-  key: z.string().trim().min(1).max(120),
+  // 500, not 120: the server's own connection-delegation prompts
+  // (tool-access.ts / tool-gateway.ts) build keys like
+  // `connection:<connection.uid>:delegation:<userId>:<agentId>` (~150 chars),
+  // which max(120) rejected — and hydrateInteraction's hard parse then failed
+  // the whole issue's interaction scans.
+  key: z.string().trim().min(1).max(500),
   revisionId: z.string().trim().min(1).max(255).nullable().optional(),
   revisionNumber: z.number().int().positive().nullable().optional(),
 });

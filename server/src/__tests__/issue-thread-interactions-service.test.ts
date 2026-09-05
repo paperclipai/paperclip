@@ -2977,6 +2977,32 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(listed[0]?.status).toBe("cancelled");
   });
 
+  it("lists interactions whose stored payload fails its schema by dropping that row, not the whole list", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Unparseable stored payload");
+    const good = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Proceed?" },
+    }, { userId: "local-board" });
+
+    // A row whose payload never satisfied the schema (or drifted out of it):
+    // prompt is required non-empty. A hard parse here used to throw for the
+    // entire issue -- GET interactions 400, and comment posting inserted the
+    // comment but died before waking the assignee.
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: { kind: "none" },
+      payload: { version: 1, prompt: "" },
+      createdByUserId: "local-board",
+    });
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed.map((interaction) => interaction.id)).toEqual([good.id]);
+  });
+
   it("derives legacy pending interactions as expired on closed issues without mutating the GET", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Legacy pending interaction on closed issue");
     const created = await interactionsSvc.create({ id: issueId, companyId }, {
