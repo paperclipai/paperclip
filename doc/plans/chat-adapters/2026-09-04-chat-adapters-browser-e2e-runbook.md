@@ -18,12 +18,12 @@ This document is the browser acceptance contract during implementation and the s
 
 The required setup path in this runbook is deliberately the path the current branch can execute. Optional provisioning paths become blocking only after they ship:
 
-| Provider        | Required executable setup                                                                                                      | Conditional setup, test only after it ships                    |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| Slack           | Customer-owned Slack app created from Paperclip's manifest; Bot User OAuth Token and Signing Secret entered once               | Managed **Add to Slack** OAuth installation                    |
-| GitHub          | Customer-owned GitHub App; Paperclip-generated webhook secret copied to GitHub, then App ID and private key entered once       | GitHub App Manifest create-and-return exchange                 |
-| Microsoft Teams | Customer-owned single-tenant Entra app, Azure Bot, and Teams app package; client ID, tenant ID, and client secret entered once | Paperclip-generated package or Teams Developer CLI/helper flow |
-| Telegram        | BotFather bot token entered once                                                                                               | Managed bot provisioning                                       |
+| Provider        | Required executable setup                                                                                                | Conditional setup, test only after it ships     |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| Slack           | Customer-owned Slack app created from Paperclip's manifest; Bot User OAuth Token and Signing Secret entered once         | Managed **Add to Slack** OAuth installation     |
+| GitHub          | Customer-owned GitHub App; Paperclip-generated webhook secret copied to GitHub, then App ID and private key entered once | GitHub App Manifest create-and-return exchange  |
+| Microsoft Teams | Customer-owned single-tenant Entra app, Azure Bot, and Teams app; client ID, tenant ID, and client secret entered once   | Optional future Teams Developer CLI/helper flow |
+| Telegram        | BotFather bot token entered once                                                                                         | Managed bot provisioning                        |
 
 Direct public HTTPS webhooks are the required transport. A private-instance relay, Slack Socket Mode, and Telegram polling are separate conditional deployment tests; none is a choice in the endpoint wizard.
 
@@ -491,11 +491,11 @@ Run before stable release and after identity, Teams manifest, or permission chan
 
 ### T2 — Conditional guided Microsoft setup
 
-Run only after Paperclip ships a generated package or one-time Teams Developer CLI/helper flow:
+Run only after Paperclip ships a one-time Teams Developer CLI/helper flow:
 
 1. Start a separate disposable endpoint and use the one guided setup control shown by Paperclip.
 2. Complete Microsoft sign-in in the browser, restricting creation and consent to the sandbox tenant.
-3. Install the generated app into the test team and complete the T1 post/reply setup test.
+3. Install the customer-owned app created by the helper into the test team and complete the T1 post/reply setup test.
 
 **Pass:** the helper creates only the documented Entra/Azure Bot/Teams app resources and Paperclip does not expose a credential form. Until a helper exists, record T2 as **NOT SHIPPED — NON-BLOCKING**, not failed.
 
@@ -535,10 +535,9 @@ Run only after Paperclip ships a generated package or one-time Teams Developer C
 
 Run C3, C5, and C6, then verify specifically:
 
-- DM uses native streaming when the adapter and tenant support it;
-- channel/group output uses bounded buffered or edit behavior rather than claiming unsupported native streaming;
+- DM, channel, and group output use bounded post/edit behavior; the current durable webhook pipeline advertises no native Teams streaming;
 - `FORM` uses an Adaptive Card and task module where supported, with server-side reauthorization on submit;
-- files are downloaded through authenticated, bounded ingestion and safely returned;
+- native file receipt and upload work only in personal chats; channel and group-chat file references are not ingested without a separate Microsoft Graph connection and use a safe Paperclip-link fallback;
 - denials use targeted activity when supported, otherwise DM or concise text plus a Paperclip link;
 - tenant ID plus Entra object ID, not display name/email, determines identity;
 - app removal, consent revocation, or invalid bot identity appears in Activity with the correct repair action.
@@ -649,21 +648,21 @@ Slack Socket Mode and Telegram polling receive separate instance-admin smoke tes
 
 “Automatic” means the richest safe native behavior is used without an endpoint toggle. “Fallback” means the provider visibly receives the documented safe alternative.
 
-| Capability               | Slack                         | GitHub                          | Teams                                  | Telegram                               |
-| ------------------------ | ----------------------------- | ------------------------------- | -------------------------------------- | -------------------------------------- |
-| Root activation          | Native mention                | Mention in issue/PR/review      | Native mention                         | DM message or group mention/reply      |
-| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread | Channel post thread or chat generation | Chat generation or forum topic         |
-| Reaction acknowledgement | Automatic                     | Automatic                       | Automatic where supported              | Automatic where allowed                |
-| Streaming/progress       | Native stream, else post/edit | Coarse comment edit             | Native in DM; buffered/edit elsewhere  | Throttled post/edit; optional DM draft |
-| Rich cards               | Block Kit                     | GFM + Paperclip link            | Adaptive Card                          | Formatted text/inline keyboard         |
-| Buttons/selections       | Native                        | Fallback link                   | Native card action                     | Inline keyboard                        |
-| Modal/form               | Native modal                  | Fallback link                   | Task module                            | Sequential prompt/link fallback        |
-| Commands                 | Registered slash command      | Text mention vocabulary only    | Card/message vocabulary                | `/new`, `/status`, `/close`            |
-| Files                    | Native send/receive           | Ingest link + safe output link  | Native send/receive                    | Native media/document                  |
-| DM                       | Native                        | Unsupported                     | Personal scope                         | Native                                 |
-| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link           | Targeted, then DM/text                 | DM, then safe text                     |
-| Edit/delete audit        | Correction/tombstone          | Correction/tombstone            | Correction/tombstone where delivered   | Correction/tombstone where delivered   |
-| Concurrent turns         | Queue by default              | Queue by default                | Queue by default                       | Queue by default                       |
+| Capability               | Slack                         | GitHub                              | Teams                                            | Telegram                               |
+| ------------------------ | ----------------------------- | ----------------------------------- | ------------------------------------------------ | -------------------------------------- |
+| Root activation          | Native mention                | Mention in issue/PR/review          | Native mention                                   | DM message or group mention/reply      |
+| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread     | Channel post thread or chat generation           | Chat generation or forum topic         |
+| Reaction acknowledgement | Automatic                     | Automatic                           | Automatic where supported                        | Automatic where allowed                |
+| Streaming/progress       | Native stream, else post/edit | Coarse comment edit                 | Bounded post/edit; no native streaming           | Throttled post/edit; optional DM draft |
+| Rich cards               | Block Kit                     | GFM + Paperclip link                | Adaptive Card                                    | Formatted text/inline keyboard         |
+| Buttons/selections       | Native                        | Fallback link                       | Native card action                               | Inline keyboard                        |
+| Modal/form               | Native modal                  | Fallback link                       | Task module                                      | Sequential prompt/link fallback        |
+| Commands                 | Registered slash command      | Text mention vocabulary only        | Card/message vocabulary                          | `/new`, `/status`, `/close`            |
+| Files                    | Native send/receive           | Inbound URL text + safe output link | Native in personal chat; link fallback elsewhere | Native media/document                  |
+| DM                       | Native                        | Unsupported                         | Personal scope                                   | Native                                 |
+| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link               | Targeted, then DM/text                           | DM, then safe text                     |
+| Edit/delete audit        | Correction/tombstone          | Correction/tombstone                | Correction/tombstone where delivered             | Correction/tombstone where delivered   |
+| Concurrent turns         | Queue by default              | Queue by default                    | Queue by default                                 | Queue by default                       |
 
 A stable adapter fails qualification if it silently omits a supported maximal feature, exposes a feature toggle that should be automatic, claims an unsupported native behavior, or falls back without preserving task identity, authorization, and safe publication.
 

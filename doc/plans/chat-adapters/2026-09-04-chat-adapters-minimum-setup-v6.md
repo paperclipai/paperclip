@@ -63,8 +63,8 @@ The webhook secret is generated and already stored by Paperclip; it is copied ou
 
 1. Copy Paperclip's messaging endpoint.
 2. Create a single-tenant Entra App registration and client secret, then create an Azure Bot using the Application ID, enable its Microsoft Teams channel, and set Paperclip's messaging endpoint.
-3. Paste the Application ID, Directory/Tenant ID, and client-secret value into Paperclip.
-4. Install the generated Teams package and choose a team/channel if Microsoft asks.
+3. In Teams Developer Portal, create the customer-owned Teams app, add the same bot Application ID for Personal, Team, and Group chat scopes, apply the required resource-specific consent entries, and publish or download/upload that app according to tenant policy.
+4. Paste the Application ID, Directory/Tenant ID, and client-secret value into Paperclip, then install the customer-owned app in the intended scope.
 5. **Try Maya:** open an installed channel, start a new post, send `@Maya help me test this`, and reply once beneath the post.
 
 The tested Teams channel is enabled when the test succeeds. Installing Maya into another team or channel later makes that destination available but does not enable Paperclip work there.
@@ -73,7 +73,7 @@ A future helper around Microsoft's Teams Developer CLI may automate these provid
 
 If tenant policy requires administrator approval, Microsoft owns that state inside the same install step. Paperclip preserves the draft; it does not add another configuration page.
 
-Those three identity values are the minimum portable credentials for the manual customer-owned registration. Paperclip does not show authentication-strategy, cloud, webhook, relay, package, scope, or capability choices on the normal path. For tenants that require package submission rather than direct sideloading, the install step may return a Microsoft admin-approval state; Microsoft documents the [custom-app upload and approval paths](https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/deploy-and-publish/apps-upload).
+Those three identity values are the minimum portable credentials for the manual customer-owned registration. Paperclip does not show authentication-strategy, cloud, webhook, relay, package, scope, or capability choices on the normal path. For tenants that require package submission rather than direct sideloading, Microsoft's publication or installation flow may return an administrator-approval state; Microsoft documents the [custom-app upload and approval paths](https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/deploy-and-publish/apps-upload).
 
 ## Telegram
 
@@ -88,11 +88,11 @@ Group and forum installation is deliberately post-connect configuration. The min
 
 ## Resulting screen inventory
 
-| Provider        |                                                                  Normal setup screens | Advanced fallback                          |
-| --------------- | ------------------------------------------------------------------------------------: | ------------------------------------------ |
-| Slack           |                                 Create/install custom App; copy two secrets; Try Maya | Optional managed install                   |
-| GitHub          |     Generate secret; configure App; App ID/private key; choose repositories; Try Maya | Existing App uses the same credential path |
-| Microsoft Teams | Manual Entra/Azure Bot registration; three identity values; install package; Try Maya | Optional future CLI helper                 |
-| Telegram        |                                                             BotFather token; Try Maya | None in first release                      |
+| Provider        |                                                                        Normal setup screens | Advanced fallback                          |
+| --------------- | ------------------------------------------------------------------------------------------: | ------------------------------------------ |
+| Slack           |                                       Create/install custom App; copy two secrets; Try Maya | Optional managed install                   |
+| GitHub          |           Generate secret; configure App; App ID/private key; choose repositories; Try Maya | Existing App uses the same credential path |
+| Microsoft Teams | Manual Entra/Azure Bot and Teams app registration; three identity values; install; Try Maya | Optional future CLI helper                 |
+| Telegram        |                                                                   BotFather token; Try Maya | None in first release                      |
 
 The current viewer contains 14 setup phases and every provider-specific Settings, Access, Conversations, and Activity tab. The read-only Overview and non-product interaction-walkthrough pages are absent in v8.

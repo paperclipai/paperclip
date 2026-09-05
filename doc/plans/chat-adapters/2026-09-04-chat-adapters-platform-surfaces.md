@@ -36,12 +36,12 @@ The successful setup-test destination becomes the first enabled resource. Newly 
 
 Conversations is only a cross-link list. Every row shows the external conversation, Paperclip task, current state, **Open provider**, and **Open task**. There are no binding actions, detach control, detached section, or task-boundary explainer.
 
-| Platform        | External install object                                          | Default conversation boundary                              | Default activation                            | Output shape                                                             |
-| --------------- | ---------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------ |
-| Slack           | Slack app installed to workspace/Grid org                        | Root message's Slack thread; stable DM conversation        | Root `@bot`; replies continue in bound thread | Native stream or post/edit, Block Kit, files, actions, modals, ephemeral |
-| GitHub          | GitHub App installation on selected repositories                 | Existing issue, PR conversation, or inline review thread   | `@bot` comment in allowed object              | GFM comment/reaction/edit; links for files and governed actions          |
-| Microsoft Teams | Entra/bot registration plus Teams app package installed to scope | Channel post/replies; stable DM or group-chat conversation | Direct mention by default                     | DM native stream; buffered group/channel; Adaptive Cards/task modules    |
-| Telegram        | BotFather bot token plus chat membership                         | Active DM/group binding or forum topic                     | DM message; group `@bot` or reply to bot      | Throttled post/edit, optional DM drafts, inline buttons, media           |
+| Platform        | External install object                                                 | Default conversation boundary                              | Default activation                            | Output shape                                                             |
+| --------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------ |
+| Slack           | Slack app installed to workspace/Grid org                               | Root message's Slack thread; stable DM conversation        | Root `@bot`; replies continue in bound thread | Native stream or post/edit, Block Kit, files, actions, modals, ephemeral |
+| GitHub          | GitHub App installation on selected repositories                        | Existing issue, PR conversation, or inline review thread   | `@bot` comment in allowed object              | GFM comment/reaction/edit; links for files and governed actions          |
+| Microsoft Teams | Entra/bot registration plus customer-owned Teams app installed to scope | Channel post/replies; stable DM or group-chat conversation | Direct mention by default                     | Post/edit output; Adaptive Cards/task modules; native files in DMs only  |
+| Telegram        | BotFather bot token plus chat membership                                | Active DM/group binding or forum topic                     | DM message; group `@bot` or reply to bot      | Throttled post/edit, optional DM drafts, inline buttons, media           |
 
 ## 2. Slack
 
@@ -49,16 +49,18 @@ The [pinned Chat SDK Slack adapter](https://github.com/vercel/chat/blob/51322dde
 
 ### Setup and external handoff — screen 13
 
-The normal path has two screens:
+The required customer-owned-App path has two Paperclip screens:
 
-1. **Add Maya to Slack:** only the Add action and the customer-owned-App fallback. Slack owns workspace selection and approval.
+1. **Connect Slack app:** open Slack's app-from-manifest flow, create and install the prepared customer-owned App, then enter its Bot User OAuth Token and Signing Secret write-only in Paperclip.
 2. **Try Maya:** open a channel, invite Maya if Slack asks, post a root `@Maya` test message, and reply once in Maya's new thread.
 
-The customer-owned-App fallback is complete but contains only required work:
+The prepared-App flow contains only required work:
 
 1. Open Slack's app-from-manifest URL, choose the workspace, create the prepared App, then install it from **OAuth & Permissions**.
 2. Copy **Bot User OAuth Token** and **Signing Secret** from the documented Slack settings locations and paste those two values into Paperclip.
 3. Converge on the same channel mention/thread-reply test.
+
+A managed **Add to Slack** authorization flow is an optional future convenience. It is not shipped, cannot replace the customer-owned-App path, and cannot gate release.
 
 Direct callback versus relay is selected automatically from instance reachability. Socket Mode is removed from endpoint onboarding and exists only as an instance-admin escape hatch when neither a callback nor relay is available. See the minimum-setup specification for the exact effect behind every button.
 
@@ -86,15 +88,13 @@ The [pinned Chat SDK GitHub adapter](https://github.com/vercel/chat/blob/51322dd
 
 ### Setup and external handoff — screen 16
 
-The normal path has three screens:
+The required customer-owned-App path has three screens:
 
-1. **Create GitHub App:** choose the owner, keep or resolve the unique App name, and create the App from Paperclip's manifest.
-2. **Choose repositories:** use GitHub's installation UI to choose the account/organization and all or selected repositories, then install.
+1. **Create or connect GitHub App:** copy Paperclip's webhook URL and one-time generated webhook secret into a customer-owned GitHub App, grant the exact required permissions/events, then enter the App ID and private-key PEM write-only in Paperclip.
+2. **Choose repositories:** use GitHub's installation UI to choose the account/organization and all or selected repositories, then install the customer-owned App.
 3. **Try Maya:** mention the App in an installed issue or pull request and add another comment to continue the same Paperclip task.
 
-The App Manifest already contains the webhook, Issue/PR permissions, and comment/review events. GitHub returns a one-time code that Paperclip exchanges server-to-server, so there is no normal-path credential form.
-
-**Use an existing GitHub App** is the advanced branch. The operator copies Paperclip's generated webhook URL/secret into GitHub, grants the exact documented permissions/events, generates a private key, then supplies only App ID and the PEM file. A PAT is absent from the product setup flow. The chat-purpose App never requests Contents, Actions, Administration, or other code/tool permissions.
+New and existing GitHub Apps use the same manual credential path. Paperclip generates and stores the webhook secret, shows it once for copying to GitHub, and never returns it from normal endpoint reads. The operator supplies only App ID and the PEM file after configuring GitHub. A GitHub App Manifest create-and-return exchange is an optional future convenience and cannot gate release. A PAT is absent from the product setup flow. The chat-purpose App never requests Contents, Actions, Administration, or other code/tool permissions.
 
 ### Post-connect settings — screen 17
 
@@ -104,6 +104,8 @@ The App Manifest already contains the webhook, Issue/PR permissions, and comment
 - **Activity repairs:** suspended installations, invalid private keys, webhook failures, or permission drift expose contextual repair actions only when detected.
 
 GitHub host, App identity, private keys, surfaces, activation policy, delivery, reactions, GFM output, edits, attachments, and Paperclip-link fallbacks do not appear in Settings. GitHub Discussions remain outside the launch promise until implemented and tested.
+
+The current GitHub chat adapter is text-only for inbound content. A URL written in an issue, pull-request, or review comment remains ordinary comment text; Paperclip does not fetch it, ingest it as a file, or treat it as an attachment. Outbound work products use authenticated Paperclip links because GitHub chat has no native file-upload surface.
 
 ### Runtime interaction model (not a product screen)
 
@@ -115,17 +117,16 @@ GitHub host, App identity, private keys, surfaces, activation policy, delivery, 
 
 ## 4. Microsoft Teams
 
-The [pinned Chat SDK Teams adapter](https://github.com/vercel/chat/blob/51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c/packages/adapter-teams/README.md) supports personal, team, and group-chat conversations, Adaptive Cards, files, targeted messages, and DM-native streaming. Microsoft's [Teams app registration quickstart](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/get-started/quickstart-register) covers the CLI-created app/bot infrastructure, public endpoint, install link, package, and tenant sideloading requirement.
+The [pinned Chat SDK Teams adapter](https://github.com/vercel/chat/blob/51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c/packages/adapter-teams/README.md) supports personal, team, and group-chat conversations, Adaptive Cards, files, targeted messages, and request-scoped DM streaming. Paperclip's production webhook path defers work into its durable queue, so that request-scoped streamer is no longer available when output publishes: the shipped endpoint therefore advertises `nativeStreaming: false` and uses bounded post/edit behavior on every Teams surface. Native Teams file receipt and upload are supported only in personal chats; channel and group-chat files fall back to a Paperclip link and are not ingested without a separate Microsoft Graph connection. Microsoft's [Teams app registration quickstart](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/get-started/quickstart-register) covers the customer-owned app/bot infrastructure, public endpoint, Teams app configuration, and tenant installation policy.
 
 ### Setup and external handoff — screen 19
 
-The normal path has three screens:
+The required path is customer-owned and has two Paperclip screens around provider-owned registration:
 
-1. **Create Teams app:** copy and run a one-time `npx @paperclipai/teams-connect --setup …` command. The planned Paperclip helper wraps Microsoft's Teams Developer CLI, opens Microsoft sign-in, creates the app/bot registration against Paperclip's endpoint, and returns the identity to the setup draft.
-2. **Install Maya:** open the install link returned by Microsoft, click **Add**, and choose a team/channel only if Microsoft asks. Package download/upload is not the normal path.
-3. **Try Maya:** start a new channel post, mention Maya, and reply once beneath the post.
+1. **Connect Teams app:** copy Paperclip's messaging endpoint; create the single-tenant Entra App, client secret, Azure Bot, and customer-owned Teams app in Microsoft's portals; apply the displayed bot scopes and resource-specific consent entries; then enter Application/Client ID, Directory/Tenant ID, and client secret in Paperclip.
+2. **Try Maya:** publish or upload the customer-owned Teams app according to tenant policy, install it in the intended scope, start a new channel post, mention Maya, and reply once beneath the post.
 
-**Set up Microsoft manually** is the advanced fallback. It supplies the Paperclip messaging endpoint and exact Entra/Azure Bot steps, then requests Application/Client ID, Directory/Tenant ID, and client secret. Connecting creates the same install step as the guided path.
+Paperclip does not generate a Teams package or claim to create an install link. Teams Developer Portal or equivalent Microsoft tooling owns the app manifest/package, publication, approval, and installation. A future attended helper may automate some provider-owned registration steps, but it is optional and cannot gate the customer-owned path or release.
 
 The basic setup does not request organization-wide Graph directory or chat history access. Public versus sovereign cloud and advanced identity are deployment/tenant concerns surfaced only when a real incompatibility occurs. Installation policy and Microsoft admin consent stay inside Microsoft's install experience.
 
@@ -136,7 +137,7 @@ The basic setup does not request organization-wide Graph directory or chat histo
 - **Allow direct messages:** one on/off toggle.
 - **Allow group chats:** a separate on/off toggle, off by default.
 - **Fixed behavior:** a root channel mention and the replies beneath that post map to one Paperclip task. A personal or group chat has one open task at a time. The next message after completion starts a new task; **New task** starts another explicitly.
-- **Activity repairs:** package removal, consent revocation, invalid identity, or endpoint failures expose contextual repair actions only when detected.
+- **Activity repairs:** app removal, consent revocation, invalid identity, or endpoint failures expose contextual repair actions only when detected.
 
 RSC, Graph history/directory access, task boundaries, delivery, identity strategy, consent summaries, Adaptive Cards, buttons, task modules, files, reactions, typing, streaming, and buffered/edit behavior do not appear in Settings. Paperclip requests only the minimal provider permission required for the fixed addressed-thread behavior; if Microsoft cannot deliver an unmentioned reply, the conversation asks the person to mention Maya again rather than exposing a policy setting.
 
@@ -145,7 +146,7 @@ RSC, Graph history/directory access, task boundaries, delivery, identity strateg
 1. **Channel:** Ari mentions Maya in a new channel post. That root post and its replies are the native thread and bind one Paperclip issue.
 2. **DM/group chat:** the stable Teams conversation has one open Paperclip task. After it completes, the next message starts another; **New task** starts another explicitly without pretending there is a channel-style thread.
 3. Paperclip verifies the bot activity, tenant, resource, and member; resolves the external principal; checks current permission; then durably appends/wakes the issue.
-4. A DM may show native streaming. Channel/group output is buffered or edited and may use Adaptive Cards and task modules. Files follow bounded authenticated ingestion.
+4. DM, channel, and group output use bounded post/edit behavior and may use Adaptive Cards and task modules. Native file receipt/upload is DM-only; channel and group-chat files require a separate Microsoft Graph connection and otherwise use a safe Paperclip-link fallback without ingestion.
 5. Without RSC, unmentioned ambient channel/chat messages are ignored or not delivered. A denied action uses a targeted response when available, otherwise DM or text plus a Paperclip link.
 
 The exact delivery of unmentioned replies in a bound Teams channel thread must be proven against the implementation SDK/manifest. If the bot cannot receive them without RSC, the UI must say **Mention Maya on each reply** or request resource-specific consent; it must not imply a subscription it does not have.

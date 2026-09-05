@@ -24,41 +24,41 @@ The former "How conversations work" screens are removed. Provider-native activat
 
 ## Screen inventory
 
-| ID  | Group           | Surface       | Title                                 | Desktop   | Mobile   |
-| --- | --------------- | ------------- | ------------------------------------- | --------- | -------- |
-| 01  | Start           | Shared        | Connectors                            | 1280×800  | 375×812  |
-| 02  | Start           | Shared        | Choose how to connect                 | 1280×800  | 375×812  |
-| 03  | Start           | Shared        | Which agent do you want to chat with? | 1280×800  | 375×812  |
-| 13  | Slack           | Setup         | Connect a Slack app                   | 1280×800  | 375×812  |
-| 41  | Slack           | Setup         | Try Maya in Slack                     | 1280×800  | 375×944  |
-| 14  | Slack           | Settings      | Slack settings                        | 1280×984  | 375×1072 |
-| 26  | Slack           | Access        | Slack access                          | 1280×880  | 375×920  |
-| 27  | Slack           | Conversations | Slack conversations                   | 1280×800  | 375×916  |
-| 28  | Slack           | Activity      | Slack activity                        | 1280×1200 | 375×1640 |
-| 16  | GitHub          | Setup         | Create Maya in GitHub                 | 1280×800  | 375×952  |
-| 45  | GitHub          | Setup         | Choose GitHub repositories            | 1280×800  | 375×1000 |
-| 46  | GitHub          | Setup         | Try Maya in GitHub                    | 1280×800  | 375×1000 |
-| 47  | GitHub          | Custom setup  | Connect an existing GitHub App        | 1280×960  | 375×1392 |
-| 17  | GitHub          | Settings      | GitHub settings                       | 1280×816  | 375×896  |
-| 30  | GitHub          | Access        | GitHub access                         | 1280×880  | 375×920  |
-| 31  | GitHub          | Conversations | GitHub conversations                  | 1280×800  | 375×916  |
-| 32  | GitHub          | Activity      | GitHub activity                       | 1280×1200 | 375×1640 |
-| 19  | Microsoft Teams | Setup         | Create Maya for Microsoft Teams       | 1280×800  | 375×1080 |
-| 49  | Microsoft Teams | Setup         | Install Maya in Microsoft Teams       | 1280×800  | 375×888  |
-| 50  | Microsoft Teams | Setup         | Try Maya in Microsoft Teams           | 1280×800  | 375×1000 |
-| 48  | Microsoft Teams | Custom setup  | Set up Microsoft manually             | 1280×1064 | 375×1496 |
-| 20  | Microsoft Teams | Settings      | Microsoft Teams settings              | 1280×1064 | 375×1176 |
-| 34  | Microsoft Teams | Access        | Microsoft Teams access                | 1280×880  | 375×920  |
-| 35  | Microsoft Teams | Conversations | Microsoft Teams conversations         | 1280×800  | 375×916  |
-| 36  | Microsoft Teams | Activity      | Microsoft Teams activity              | 1280×1200 | 375×1640 |
-| 22  | Telegram        | Setup         | Create Maya in Telegram               | 1280×800  | 375×1128 |
-| 51  | Telegram        | Setup         | Try Maya in Telegram                  | 1280×800  | 375×832  |
-| 23  | Telegram        | Settings      | Telegram settings                     | 1280×984  | 375×1072 |
-| 38  | Telegram        | Access        | Telegram access                       | 1280×880  | 375×920  |
-| 39  | Telegram        | Conversations | Telegram conversations                | 1280×800  | 375×916  |
-| 40  | Telegram        | Activity      | Telegram activity                     | 1280×1200 | 375×1640 |
-| 11  | Paperclip       | Task          | Externally connected task             | 1280×800  | 375×812  |
-| 12  | Paperclip       | Agent         | Agent Channels                        | 1280×800  | 375×812  |
+| ID  | Group           | Surface         | Title                                 | Desktop   | Mobile   |
+| --- | --------------- | --------------- | ------------------------------------- | --------- | -------- |
+| 01  | Start           | Shared          | Connectors                            | 1280×800  | 375×812  |
+| 02  | Start           | Shared          | Choose how to connect                 | 1280×800  | 375×812  |
+| 03  | Start           | Shared          | Which agent do you want to chat with? | 1280×800  | 375×812  |
+| 13  | Slack           | Setup           | Connect a Slack app                   | 1280×800  | 375×812  |
+| 41  | Slack           | Setup           | Try Maya in Slack                     | 1280×800  | 375×944  |
+| 14  | Slack           | Settings        | Slack settings                        | 1280×984  | 375×1072 |
+| 26  | Slack           | Access          | Slack access                          | 1280×880  | 375×920  |
+| 27  | Slack           | Conversations   | Slack conversations                   | 1280×800  | 375×916  |
+| 28  | Slack           | Activity        | Slack activity                        | 1280×1200 | 375×1640 |
+| 16  | GitHub          | Setup           | Create Maya in GitHub                 | 1280×800  | 375×952  |
+| 45  | GitHub          | Setup           | Choose GitHub repositories            | 1280×800  | 375×1000 |
+| 46  | GitHub          | Setup           | Try Maya in GitHub                    | 1280×800  | 375×1000 |
+| 47  | GitHub          | Custom setup    | Connect an existing GitHub App        | 1280×960  | 375×1392 |
+| 17  | GitHub          | Settings        | GitHub settings                       | 1280×816  | 375×896  |
+| 30  | GitHub          | Access          | GitHub access                         | 1280×880  | 375×920  |
+| 31  | GitHub          | Conversations   | GitHub conversations                  | 1280×800  | 375×916  |
+| 32  | GitHub          | Activity        | GitHub activity                       | 1280×1200 | 375×1640 |
+| 19  | Microsoft Teams | Setup           | Create Maya for Microsoft Teams       | 1280×800  | 375×1080 |
+| 49  | Microsoft Teams | Setup           | Install Maya in Microsoft Teams       | 1280×800  | 375×888  |
+| 50  | Microsoft Teams | Setup           | Try Maya in Microsoft Teams           | 1280×800  | 375×1000 |
+| 48  | Microsoft Teams | Setup reference | Microsoft provider setup details      | 1280×1064 | 375×1496 |
+| 20  | Microsoft Teams | Settings        | Microsoft Teams settings              | 1280×1064 | 375×1176 |
+| 34  | Microsoft Teams | Access          | Microsoft Teams access                | 1280×880  | 375×920  |
+| 35  | Microsoft Teams | Conversations   | Microsoft Teams conversations         | 1280×800  | 375×916  |
+| 36  | Microsoft Teams | Activity        | Microsoft Teams activity              | 1280×1200 | 375×1640 |
+| 22  | Telegram        | Setup           | Create Maya in Telegram               | 1280×800  | 375×1128 |
+| 51  | Telegram        | Setup           | Try Maya in Telegram                  | 1280×800  | 375×832  |
+| 23  | Telegram        | Settings        | Telegram settings                     | 1280×984  | 375×1072 |
+| 38  | Telegram        | Access          | Telegram access                       | 1280×880  | 375×920  |
+| 39  | Telegram        | Conversations   | Telegram conversations                | 1280×800  | 375×916  |
+| 40  | Telegram        | Activity        | Telegram activity                     | 1280×1200 | 375×1640 |
+| 11  | Paperclip       | Task            | Externally connected task             | 1280×800  | 375×812  |
+| 12  | Paperclip       | Agent           | Agent Channels                        | 1280×800  | 375×812  |
 
 ## Annotation and action notes
 
@@ -286,17 +286,17 @@ Rationale: Bring-your-own credentials are sufficient to ship. A future CLI helpe
 
 ### 49 · Install Maya in Microsoft Teams
 
-Purpose: Open the Microsoft install page and add the app.
+Purpose: Publish or upload the customer-owned Teams app, then add it in Microsoft Teams.
 
-1. The install link replaces package download and upload on the normal path.
-2. The body contains only the two actions performed in Microsoft Teams.
+1. Teams Developer Portal or equivalent Microsoft tooling owns app creation, packaging, publication, and installation; Paperclip does not generate a package or promise an install link.
+2. The body contains only the actions performed in Microsoft Teams.
 3. Tenant approval is handled by Microsoft's install experience, not another Paperclip choice.
 
 Actions:
 
-- **Install Maya in Teams:** Opens the install link returned by Microsoft. Tenant policy may route the same request to an administrator for approval.
+- **Open Teams Developer Portal:** Opens the provider-owned app surface where the operator publishes or downloads the customer-owned app for installation. Tenant policy may route publication or installation to an administrator for approval.
 
-Rationale: Microsoft's CLI returns an install link, so normal setup should use it directly.
+Rationale: Bring-your-own registration is the required path; Microsoft owns the app artifact and its approval/install flow.
 
 ### 50 · Try Maya in Microsoft Teams
 
@@ -312,22 +312,22 @@ Actions:
 
 Rationale: The final provider event is the verification; no installation report is shown first.
 
-### 48 · Set up Microsoft manually
+### 48 · Microsoft provider setup details
 
-Purpose: Create the bot in Microsoft, then paste the three identity values.
+Purpose: Create the customer-owned bot and Teams app in Microsoft, then paste the three identity values.
 
 1. The copy control provides the one Paperclip value required by Microsoft.
 2. Every instruction is a portal operation the tenant administrator must perform.
 3. The three fields are the minimum identity values Paperclip needs to send as the bot.
-4. Connect verifies the identity and produces the same install step as the default flow.
+4. Connect verifies the identity; it does not generate a Teams package or install link.
 
 Actions:
 
 - **Copy Paperclip endpoint:** Copies the public messaging endpoint that must be entered on the Azure Bot resource.
-- **Connect and create Teams app:** Stores the client secret write-only, verifies Microsoft bot authentication, and creates the installable Teams app and install link.
-- **Back:** Returns to the guided one-command setup.
+- **Connect and verify:** Stores the client secret write-only and verifies Microsoft bot authentication.
+- **Back:** Returns to the primary customer-owned credential setup.
 
-Rationale: The manual fallback is longer because Microsoft has no manifest callback equivalent; no optional Azure choices are exposed.
+Rationale: Customer-owned registration is the required portable path because Microsoft has no manifest callback equivalent; this is reference detail for that path, not an advanced fallback. A future helper is optional and cannot gate release.
 
 ### 20 · Microsoft Teams settings
 

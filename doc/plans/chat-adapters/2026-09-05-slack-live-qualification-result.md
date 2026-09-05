@@ -1,5 +1,7 @@
 # Slack live qualification result — 2026-09-05
 
+> **Status: historical core-smoke evidence, not current release qualification.** This run exercised a narrow transport round trip on the older source revision named below. It did not execute every Slack case in the browser E2E runbook, and it must not be read as a full-provider PASS for the current branch.
+
 ## Scope
 
 - Paperclip release base: `342c01fee`
@@ -10,9 +12,9 @@
 
 No bot token, signing secret, webhook URL, cookie, password, or one-time identity-link URL is recorded here.
 
-## Result
+## Historical core-smoke result
 
-The Slack bring-your-own-App path passed its core live round trip:
+The Slack bring-your-own-App path passed the following core live round trip on `342c01fee`:
 
 1. The Paperclip manifest created a Slack App with the exact 16 required bot scopes, including reaction read/write support.
 2. Slack accepted the Paperclip request URL for Events API delivery and interactivity.
@@ -36,7 +38,7 @@ The isolated test instance had no sandbox workspace provider. Its automatic low-
 - Deleted the disposable Slack App, revoking its bot token and signing secret.
 - Stopped the temporary public relay and isolated Paperclip process.
 
-## Local regression evidence
+## Historical local regression evidence
 
 - Shared, server, and UI typechecks: passed.
 - Focused UI/OpenAPI/server tests: passed.
@@ -44,4 +46,4 @@ The isolated test instance had no sandbox workspace provider. Its automatic low-
 - Deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts`: 4/4 passed.
 - Token gates and `git diff --check`: passed.
 
-GitHub and Slack live qualification are complete. Microsoft Teams and Telegram remain for live qualification.
+This evidence is useful for regression comparison, but it is incomplete release evidence. In particular, the full live runbook's identity-linking and permission-revocation cases, unlinked-participant governance checks, disabled-resource matrix, DM lifecycle, file and rich-interaction paths, edit/delete behavior, failure and retry recovery, reinstall/reconnect, and cleanup assertions were not all executed in this run. Slack remains unqualified for stable release until the current source revision passes the complete live runbook.

@@ -1,5 +1,7 @@
 # GitHub live qualification result — 2026-09-05
 
+> **Status: historical core-smoke evidence, not current release qualification.** This run exercised a narrow transport round trip on the older source revision named below. Reconciliation onto another source revision was not a live rerun. The result does not represent a full-provider PASS for the current branch.
+
 ## Scope
 
 - Paperclip base used for the live run: `5da649986016e4010da8156f83f5bfc9c0128be4`
@@ -12,9 +14,9 @@
 
 No token, webhook secret, private key, cookie, password, or one-time identity-link URL is recorded here.
 
-## Result
+## Historical core-smoke result
 
-The GitHub bring-your-own-App path passed its core live round trip:
+The GitHub bring-your-own-App path passed the following core live round trip on `5da649986016e4010da8156f83f5bfc9c0128be4`:
 
 1. Paperclip generated and stored the webhook secret without exposing it through normal endpoint reads.
 2. A private GitHub App was created with Issues and Pull requests set to read/write and only the selectable `issue_comment` and `pull_request_review_comment` events requested. GitHub supplied installation lifecycle events automatically.
@@ -39,7 +41,7 @@ The isolated test instance had no sandbox workspace provider. Its automatic low-
 - Deleted the explicitly disposable private repository `paperclip-chat-e2e-enabled`.
 - Stopped the temporary registration server, public relay, and isolated Paperclip process.
 
-## Local regression evidence
+## Historical local regression evidence
 
 - Workspace build: passed.
 - Shared, server, and UI typechecks: passed.
@@ -48,4 +50,4 @@ The isolated test instance had no sandbox workspace provider. Its automatic low-
 - Deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts`: 4/4 passed.
 - Token gates and `git diff --check`: passed.
 
-Slack qualification is next and is waiting at the provider's sign-in screen. Microsoft Teams and Telegram live qualification have not started.
+This evidence is useful for regression comparison, but it is incomplete release evidence. In particular, the full live runbook's issue/PR/inline-review boundary matrix, linked and unlinked identity authorization, reaction/edit lifecycle, text-only attachment fallback, burst/redelivery behavior, installation suspension/recovery, and all cleanup assertions were not all executed in this run. GitHub remains unqualified for stable release until the current source revision passes the complete live runbook.
