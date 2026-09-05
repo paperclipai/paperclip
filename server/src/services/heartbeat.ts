@@ -9518,6 +9518,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
+    /**
+     * Laeufe pro Kalendertag (UTC) nach Ausgang gezaehlt, aelteste zuerst.
+     *
+     * `failed` fasst `failed`, `error` und `timeout` zusammen: Alle drei sind
+     * Fehlschlaege, und sie unter `other` zu fuehren wuerde die Quote schoenen.
+     * `other` sind damit die noch nicht entschiedenen Zustaende (`queued`,
+     * `running`) plus `cancelled`.
+     *
+     * Der Tag kommt aus `createdAt` (immer gesetzt) statt aus `startedAt`,
+     * das bei nie gestarteten Laeufen NULL bleibt.
+     */
+    listDailyStats: async (companyId: string, days: number, agentId?: string) => {
+      // Gleiche Regel wie in der Route: gueltige Zahl wird auf 1..90 geklemmt,
+      // alles Unbrauchbare faellt auf 14 zurueck. `0 || 14` waere hier 14
+      // gewesen und damit ein anderes Ergebnis als ueber HTTP.
+      const parsedDays = Math.trunc(days);
+      const windowDays = Number.isFinite(parsedDays) ? Math.max(1, Math.min(90, parsedDays)) : 14;
+      const dayExpr = sql<string>`to_char(${heartbeatRuns.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+      const windowStart = sql`((date_trunc('day', (now() AT TIME ZONE 'UTC')) - make_interval(days => ${windowDays - 1})) AT TIME ZONE 'UTC')`;
+
+      return await db
+        .select({
+          date: dayExpr,
+          succeeded: sql<number>`count(*) filter (where ${heartbeatRuns.status} = 'succeeded')`.mapWith(Number),
+          failed: sql<number>`count(*) filter (where ${heartbeatRuns.status} in ('failed', 'error', 'timeout'))`.mapWith(
+            Number,
+          ),
+          other: sql<number>`count(*) filter (where ${heartbeatRuns.status} not in ('succeeded', 'failed', 'error', 'timeout'))`.mapWith(
+            Number,
+          ),
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            agentId ? eq(heartbeatRuns.agentId, agentId) : undefined,
+            sql`${heartbeatRuns.createdAt} >= ${windowStart}`,
+          ),
+        )
+        .groupBy(dayExpr)
+        .orderBy(dayExpr);
+    },
+
     list: async (companyId: string, agentId?: string, limit?: number) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const query = db

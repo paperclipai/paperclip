@@ -3082,6 +3082,19 @@ export function agentRoutes(
     res.json(runs);
   });
 
+  router.get("/companies/:companyId/heartbeat-runs/daily-stats", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const agentId = req.query.agentId as string | undefined;
+    // Ungueltige Angaben fallen auf 14 Tage zurueck, gueltige werden geklemmt.
+    // `parseInt(...) || 14` waere hier falsch: days=0 muss 1 ergeben, nicht 14.
+    const daysParam = req.query.days as string | undefined;
+    const parsedDays = daysParam === undefined ? Number.NaN : Number.parseInt(daysParam, 10);
+    const days = Number.isFinite(parsedDays) ? Math.max(1, Math.min(90, parsedDays)) : 14;
+    const stats = await heartbeat.listDailyStats(companyId, days, agentId);
+    res.json(stats);
+  });
+
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
