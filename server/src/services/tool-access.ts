@@ -1769,6 +1769,22 @@ function stableHash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value, Object.keys(flattenKeys(value)).sort())).digest("hex");
 }
 
+function connectionSetupMutationFingerprint(row: typeof toolConnections.$inferSelect): string {
+  return stableHash({
+    name: row.name,
+    transport: row.transport,
+    status: row.status,
+    enabled: row.enabled,
+    config: row.config,
+    transportConfig: row.transportConfig,
+    credentialRefs: row.credentialRefs,
+    credentialSecretRefs: row.credentialSecretRefs,
+    credentialSource: row.credentialSource,
+    externalCredential: row.externalCredential,
+    credentialPolicy: row.credentialPolicy,
+  });
+}
+
 function flattenKeys(value: unknown, keys: Record<string, true> = {}): Record<string, true> {
   if (value && typeof value === "object") {
     for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
@@ -9539,22 +9555,37 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     } catch (error) {
       let identityRollbackError: unknown = null;
       if (connectionRow && revivedConnectionPrevious) {
+        const attemptedConnection = connectionRow;
         try {
           await db.transaction(async (tx) => {
-            await tx.update(toolConnections).set({
-              name: revivedConnectionPrevious.name,
-              transport: revivedConnectionPrevious.transport,
-              status: revivedConnectionPrevious.status,
-              enabled: revivedConnectionPrevious.enabled,
-              config: revivedConnectionPrevious.config,
-              transportConfig: revivedConnectionPrevious.transportConfig,
-              credentialRefs: revivedConnectionPrevious.credentialRefs,
-              credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
-              credentialSource: revivedConnectionPrevious.credentialSource,
-              externalCredential: revivedConnectionPrevious.externalCredential,
-              credentialPolicy: revivedConnectionPrevious.credentialPolicy,
-              updatedAt: new Date(),
-            }).where(eq(toolConnections.id, revivedConnectionPrevious.id));
+            const [latestConnection] = await tx.select().from(toolConnections).where(and(
+              eq(toolConnections.id, revivedConnectionPrevious.id),
+              eq(toolConnections.companyId, companyId),
+            )).limit(1).for("update");
+            // Health/catalog failures from this setup may update only health
+            // fields and `updatedAt`, so compare the identity/configuration
+            // fields this attempt owned. If another request changed any of
+            // those fields, its newer connection state is authoritative.
+            if (
+              latestConnection
+              && connectionSetupMutationFingerprint(latestConnection)
+                === connectionSetupMutationFingerprint(attemptedConnection)
+            ) {
+              await tx.update(toolConnections).set({
+                name: revivedConnectionPrevious.name,
+                transport: revivedConnectionPrevious.transport,
+                status: revivedConnectionPrevious.status,
+                enabled: revivedConnectionPrevious.enabled,
+                config: revivedConnectionPrevious.config,
+                transportConfig: revivedConnectionPrevious.transportConfig,
+                credentialRefs: revivedConnectionPrevious.credentialRefs,
+                credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
+                credentialSource: revivedConnectionPrevious.credentialSource,
+                externalCredential: revivedConnectionPrevious.externalCredential,
+                credentialPolicy: revivedConnectionPrevious.credentialPolicy,
+                updatedAt: new Date(),
+              }).where(eq(toolConnections.id, revivedConnectionPrevious.id));
+            }
 
             if (revivedGrantMutation) {
               const { previous, current } = revivedGrantMutation;
