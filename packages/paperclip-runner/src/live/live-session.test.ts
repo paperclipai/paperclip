@@ -87,6 +87,10 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
     if (method === "initialize") return { user: { sessionId: this.state.providerSessionId } };
     if (method === "thread/start") {
       expect(Array.isArray(params.dynamicTools)).toBe(true);
+      expect(params.completionContract).toEqual({
+        revision: "paperclip-capability-live-v1",
+        criterionIds: ["objective"],
+      });
       return {
         model: "gpt-eval-test",
         modelProvider: "openai",
@@ -633,10 +637,12 @@ describe("Capability live runnerd and Codex session", () => {
   it("persists the selected provider and passes it to the live runner transport", async () => {
     const state = providerState();
     const providers: Array<string | undefined> = [];
+    const permissionModes: Array<string | undefined> = [];
     const baseFactory = fakeTransportFactory(state);
     const service = new CapabilityLiveSessionService({
       transportFactory: (options) => {
         providers.push(options.provider);
+        permissionModes.push(options.opencodePermissionMode);
         return baseFactory(options);
       },
     });
@@ -646,6 +652,7 @@ describe("Capability live runnerd and Codex session", () => {
     });
 
     expect(providers).toEqual(["opencode"]);
+    expect(permissionModes).toEqual(["deny"]);
     expect(session.snapshot().config).toMatchObject({
       provider: "opencode",
       driver: "opencode_server",
@@ -670,6 +677,74 @@ describe("Capability live runnerd and Codex session", () => {
     expect(names).toContain("invoke_discovered_capability");
     expect(names).not.toContain("list_agents");
     expect(session.snapshot().config.toolExposure).toBe("lazy");
+    await service.shutdown(session.id);
+  });
+
+  it("keeps discovered invocations correlated to the provider gateway call", async () => {
+    const state = providerState();
+    const claim = "discovery:agents:read";
+    const service = new CapabilityLiveSessionService({
+      transportFactory: fakeTransportFactory(state),
+    });
+    const session = await service.create({
+      runId: "run-live-lazy-invoke",
+      sessionId: "session-live-lazy-invoke",
+      toolExposure: "lazy",
+      capabilities: [claim],
+      explicitClaims: [claim],
+      scenario: { id: "lazy-invoke", claims: [claim] },
+    });
+    let gatewayResult: Record<string, unknown> | null = null;
+    state.onTurnStart = async () => {
+      const transport = state.transports[0]!;
+      const turnId = [...state.turns.keys()].at(-1)!;
+      const discovery = await transport.invokeServerRequest({
+        id: "request-discover",
+        method: "item/tool/call",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          callId: "call-discover",
+          tool: "discover_capabilities",
+          arguments: {
+            query: "list company agents",
+            namespace: "discovery",
+            limit: 10,
+          },
+        },
+      });
+      expect(discovery.success).toBe(true);
+      const invoked = await transport.invokeServerRequest({
+        id: "request-invoke",
+        method: "item/tool/call",
+        params: {
+          threadId: state.threadId,
+          turnId,
+          callId: "call-invoke",
+          tool: "invoke_discovered_capability",
+          arguments: { operationId: "list_agents", input: {} },
+        },
+      });
+      gatewayResult = JSON.parse(
+        String(
+          (invoked.contentItems as Array<Record<string, unknown>>)[0]?.text,
+        ),
+      ) as Record<string, unknown>;
+    };
+
+    await session.sendMessage("Exercise the lazy discovery gateway.");
+
+    expect(gatewayResult).toMatchObject({
+      callId: "call-invoke",
+      operationId: "invoke_discovered_capability",
+      ok: true,
+    });
+    expect(
+      session
+        .snapshot()
+        .evidence.filter((entry) => entry.kind === "tool_call")
+        .map((entry) => entry.data.operationId),
+    ).toContain("list_agents");
     await service.shutdown(session.id);
   });
 

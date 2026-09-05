@@ -165,6 +165,11 @@ export async function runEvalSessionCli(
     new CapabilityLiveSessionService({
       transportOptions: {
         runnerBinary: runnerdPath,
+        // The transport performs the provider-specific allowlisting. Supplying
+        // the source environment here is still required: without it the
+        // isolated Codex home has no credential source and runnerd receives no
+        // executable PATH from the Evalbook CLI process.
+        environment: process.env,
         onDiagnostic: (message) => {
           process.stderr.write(`[eval-session runnerd] ${message}\n`);
         },

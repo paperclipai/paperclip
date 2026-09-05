@@ -248,6 +248,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     readWorkflow("runner-chaos-evals.yml"),
     readWorkflow("runner-full-stack-e2e.yml"),
     readWorkflow("e2e.yml"),
+    readWorkflow("runner-protocol-live-evals.yml"),
   ];
 
   for (const workflow of actionPinWorkflows) {
@@ -286,6 +287,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     "e2e.yml",
     "runner-full-stack-e2e.yml",
     "runner-live-evals.yml",
+    "runner-protocol-live-evals.yml",
   ];
   const paidWorkflowNameSet = new Set(paidWorkflowNames);
   const providerSecretReference =
@@ -322,7 +324,7 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
       assert.match(block, /\n    environment:\n      name: runner-e2e-paid\n/);
       assert.match(
         block,
-        /\n    steps:\n(?:\s*\n)*      - name: Reauthorize[^\n]*\n/,
+        /\n    steps:(?: &[A-Za-z0-9_-]+)?\n(?:\s*\n)*      - name: Reauthorize[^\n]*\n/,
         `${name} must reauthorize as the first provider-job step`,
       );
       const reauthorize = block.indexOf("      - name: Reauthorize");
@@ -357,7 +359,11 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
   );
   assert.doesNotMatch(historyPublisher, /^\s+cache: pnpm$/m);
 
-  for (const name of ["runner-full-stack-e2e.yml", "runner-live-evals.yml"]) {
+  for (const name of [
+    "runner-full-stack-e2e.yml",
+    "runner-live-evals.yml",
+    "runner-protocol-live-evals.yml",
+  ]) {
     const workflow = readWorkflow(name);
     const crons = [...workflow.matchAll(/cron:\s*"([^"]+)"/g)].map(
       (match) => match[1],

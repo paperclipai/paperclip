@@ -31,6 +31,48 @@ fn send(value: Value) -> io::Result<()> {
     stdout.flush()
 }
 
+fn send_split_event_burst(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    for index in 0..96 {
+        send(json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": state.thread_id,
+                "turnId": turn_id,
+                "itemId": "split-burst-message",
+                "delta": format!("first-{index} "),
+            }
+        }))?;
+    }
+    send(json!({
+        "id": "split-burst-tool",
+        "method": "item/tool/call",
+        "params": {
+            "threadId": state.thread_id,
+            "turnId": turn_id,
+            "callId": "split-burst-semantic-call",
+            "tool": "get_task_context",
+            "arguments": {}
+        }
+    }))
+}
+
+fn finish_split_event_burst(state: &FakeState) -> io::Result<()> {
+    let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
+    for index in 0..48 {
+        send(json!({
+            "method": "item/agentMessage/delta",
+            "params": {
+                "threadId": state.thread_id,
+                "turnId": turn_id,
+                "itemId": "split-burst-message",
+                "delta": format!("second-{index} "),
+            }
+        }))?;
+    }
+    Ok(())
+}
+
 fn load_state(path: &Path) -> FakeState {
     fs::read(path)
         .ok()
@@ -483,6 +525,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--opencode-proxy-runtime-question");
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
+    let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
     let require_skill_instructions = args
         .iter()
         .any(|value| value == "--include-skill-instructions");
@@ -700,6 +743,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 send_question(&state)?;
                 continue;
             }
+            finish_turn(&state_path, &mut state, "completed")?;
+            continue;
+        }
+        if message.get("method").is_none() && message.get("id") == Some(&json!("split-burst-tool"))
+        {
+            if message.pointer("/result/success") != Some(&json!(true)) {
+                return Err("split event burst semantic tool failed".into());
+            }
+            finish_split_event_burst(&state)?;
             finish_turn(&state_path, &mut state, "completed")?;
             continue;
         }
@@ -1110,6 +1162,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else if emit_structured_activity {
                     send_structured_activity(&state)?;
                     finish_turn(&state_path, &mut state, "completed")?;
+                } else if emit_split_event_burst {
+                    send_split_event_burst(&state)?;
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {

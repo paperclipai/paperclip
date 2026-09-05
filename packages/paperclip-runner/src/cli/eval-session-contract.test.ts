@@ -65,6 +65,21 @@ describe("eval-session request contract", () => {
     }))).toMatchObject({ provider: "acpx", acpxAgent: "claude" });
   });
 
+  it("accepts null optional fields from the original Evalbook v1 producer", () => {
+    const parsed = parseEvalSessionRequest(request({
+      acpxAgent: null,
+      agentCoreProfile: null,
+      opencodeVersion: null,
+    }));
+    expect(parsed).toMatchObject({
+      provider: "codex",
+      driver: "codex_app_server",
+    });
+    expect(parsed).not.toHaveProperty("acpxAgent");
+    expect(parsed).not.toHaveProperty("agentCoreProfile");
+    expect(parsed).not.toHaveProperty("opencodeVersion");
+  });
+
   it("rejects Pi and accepts both qualified remote provider profiles", () => {
     expect(() => parseEvalSessionRequest(request({
       provider: "acpx",
