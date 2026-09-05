@@ -1630,7 +1630,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: "verifying",
       providerAccountId: tenantId,
       botExternalId: clientId,
-      capabilities: { messageEdits: false, messageDeletes: false },
+      capabilities: { messageEdits: true, messageDeletes: false },
       setup: { step: "test" },
     });
     expect(
@@ -1644,6 +1644,125 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         appType: "SingleTenant",
       },
     });
+  });
+
+  it("coalesces one Microsoft Teams run into one provider reply", async () => {
+    const fixture = await seedCompany();
+    const context = createService(
+      new FakeChatSdkRuntime(),
+      (async () =>
+        new Response(JSON.stringify({ access_token: "teams-run-access" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as typeof globalThis.fetch,
+    );
+    const endpoint = await context.service.create(
+      fixture.companyId,
+      {
+        provider: "microsoft-teams",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+    await context.service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          clientId: "00000000-0000-4000-8000-000000000411",
+          tenantId: "00000000-0000-4000-8000-000000000422",
+          clientSecret: "teams-run-secret",
+        },
+      },
+      "owner-user",
+    );
+    const callbacks = context.runtime.configurations.get(
+      endpoint.id,
+    )?.callbacks;
+    if (!callbacks) throw new Error("Expected Teams callbacks");
+    const thread = makeThread({
+      channelId: "teams-personal-run",
+      id: "teams:personal-run:root-1",
+      isDM: true,
+      name: "Alex External",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "microsoft-teams",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "teams-run-root-1",
+        text: "@Maya produce one quiet Teams response",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected Teams conversation");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "running",
+      contextSnapshot: { issueId: conversation.issueId },
+    });
+    for (const progressState of ["queued", "working"] as const) {
+      await db.insert(chatPublications).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        issueId: conversation.issueId,
+        idempotencyKey: `run:${runId}:${progressState}:${endpoint.id}`,
+        payload: {
+          text:
+            progressState === "queued" ? "Maya is queued." : "Maya is working…",
+          progressState,
+        },
+        state: "pending",
+      });
+      await context.service.processPendingPublications();
+    }
+    await issueService(db).addComment(
+      conversation.issueId,
+      "Final Teams result",
+      { agentId: fixture.assignedAgentId, runId },
+      { authorType: "agent" },
+    );
+    await context.service.processPendingPublications();
+
+    const providerRuntime = context.runtime.endpoints.get(endpoint.id);
+    expect(providerRuntime?.posts).toEqual([
+      { threadId: thread.thread.id, text: "Maya is queued." },
+    ]);
+    expect(providerRuntime?.edits).toEqual([
+      {
+        threadId: thread.thread.id,
+        messageId: "outbound-1",
+        text: "Maya is working…",
+      },
+      {
+        threadId: thread.thread.id,
+        messageId: "outbound-1",
+        text: "Final Teams result",
+      },
+    ]);
+    const publications = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.conversationId, conversation.id));
+    expect(publications).toHaveLength(3);
+    expect(
+      publications.every(
+        (publication) =>
+          publication.state === "published" &&
+          publication.providerMessageId === "outbound-1",
+      ),
+    ).toBe(true);
   });
 
   it("configures Telegram by verifying getMe and registering the Paperclip webhook", async () => {

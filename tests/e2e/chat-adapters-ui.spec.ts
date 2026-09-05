@@ -742,7 +742,11 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
     await expect(
       page.getByText(/single-tenant app registration/),
     ).toBeVisible();
-    await expect(page.getByText(/create an Azure Bot/)).toBeVisible();
+    await expect(
+      page.getByText(/Microsoft 365 work or school organization/),
+    ).toBeVisible();
+    await expect(page.getByText(/teams\.live\.com/)).toBeVisible();
+    await expect(page.getByText(/^In Azure, create an Azure Bot/)).toBeVisible();
     const manifest = await page
       .getByLabel("Required Teams app manifest settings")
       .inputValue();

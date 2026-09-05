@@ -557,6 +557,12 @@ settings:
               : "Use your own Microsoft app credentials for this bot."}
           </p>
         </div>
+        <p className="rounded-md border border-border bg-muted/40 p-3 text-sm text-muted-foreground">
+          This setup requires a Microsoft 365 work or school organization where
+          you can register an Entra app, create an Azure Bot, and upload or
+          install a Teams app. Personal or free Teams accounts at teams.live.com
+          cannot complete this setup.
+        </p>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
           <li>
             In Microsoft Entra, create a single-tenant app registration. Copy

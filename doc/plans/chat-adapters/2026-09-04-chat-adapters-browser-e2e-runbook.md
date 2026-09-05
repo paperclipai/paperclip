@@ -465,6 +465,7 @@ Capture the App permission screen, selected repositories, issue/PR/review conver
 
 ### Teams prerequisites
 
+- Microsoft Teams personal/free accounts at `teams.live.com` cannot complete this setup. Use a Microsoft 365 work or school organization with Entra, Azure Bot, and custom Teams app access.
 - Dedicated Microsoft 365 developer tenant with Dana as permitted app installer and Ari/Jules as members.
 - Team `Paperclip Chat E2E` with the Enabled and Disabled channels.
 - Permission to create an Entra application and Azure Bot. A future guided helper is optional and does not gate the required customer-owned setup path.
@@ -475,6 +476,7 @@ Capture the App permission screen, selected repositories, issue/PR/review conver
 Run before stable release and after identity, Teams manifest, or permission changes:
 
 1. In Paperclip, perform C1 and select Microsoft Teams. Keep **Connect Maya to Microsoft Teams** open and copy the displayed Paperclip messaging endpoint.
+   Confirm the setup screen explicitly says that a Microsoft 365 work or school organization is required and that `teams.live.com` personal/free accounts are unsupported.
 2. In the sandbox tenant's Microsoft Entra admin center, create a **single-tenant** app registration. Record its Application (client) ID and Directory (tenant) ID, create one client secret, and keep the secret value available only for immediate entry.
 3. In Azure, create an **Azure Bot** using that existing Application ID and the single-tenant identity type. Set its messaging endpoint to Paperclip's displayed URL and enable its Microsoft Teams channel.
 4. In Teams Developer Portal, create a Teams app for this bot. Add a bot using the same Application ID and enable Personal, Team, and Group chat scopes.

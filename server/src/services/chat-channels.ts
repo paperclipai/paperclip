@@ -187,9 +187,10 @@ const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
     threads: true,
     directMessages: true,
     nativeStreaming: true,
-    // The pinned Teams adapter does not currently normalize Bot Framework
-    // messageUpdate/messageDelete activities into Chat SDK lifecycle events.
-    messageEdits: false,
+    // The pinned Teams adapter supports outbound editMessage, which lets one
+    // Paperclip run coalesce its progress and final response. It does not yet
+    // normalize inbound Bot Framework messageUpdate activities.
+    messageEdits: true,
     messageDeletes: false,
     reactions: true,
     files: true,

@@ -3,16 +3,12 @@
   "slug": "microsoft-teams",
   "name": "Microsoft Teams",
   "description": "Let people start and continue Paperclip work with an agent from Microsoft Teams.",
-  "categories": [
-    "communication"
-  ],
+  "categories": ["communication"],
   "featured": false,
   "branding": {
     "logoUrl": "/brands/apps/microsoft-teams.svg"
   },
-  "urlPatterns": [
-    "https://teams.microsoft.com/*"
-  ],
+  "urlPatterns": ["https://teams.microsoft.com/*"],
   "methods": [
     {
       "key": "chat-agent",
@@ -21,9 +17,7 @@
       "provider": "microsoft-teams",
       "transport": "chat_sdk",
       "auth": "api_key",
-      "ownershipModes": [
-        "customer"
-      ],
+      "ownershipModes": ["customer"],
       "whenToUse": "Let people in Microsoft Teams start and continue work with one Paperclip agent.",
       "credentialFields": [
         {
@@ -51,17 +45,13 @@
           "secret": true
         }
       ],
-      "guidanceMd": "Register one single-tenant Azure Bot, then create a Teams app whose manifest enables personal, team, and groupchat bot scopes and the ChannelMessage.Read.Group and ChatMessage.Read.Chat resource-specific permissions. Install it in each standard channel or chat where it may work.",
+      "guidanceMd": "Use a Microsoft 365 work or school organization where you can register an Entra app, create a single-tenant Azure Bot, and upload or install a Teams app. Personal or free Teams accounts at teams.live.com cannot complete this setup. Enable personal, team, and groupchat bot scopes and the ChannelMessage.Read.Group and ChatMessage.Read.Chat resource-specific permissions. Install the app in each standard channel or chat where it may work.",
       "consoleLinks": {
         "register": "https://dev.teams.microsoft.com/apps",
         "docs": "https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/create-a-bot-for-teams"
       },
       "riskTier": "S3",
-      "requiredResourceFilters": [
-        "team",
-        "channel",
-        "chat"
-      ]
+      "requiredResourceFilters": ["team", "channel", "chat"]
     }
   ]
 }

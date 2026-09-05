@@ -397,6 +397,10 @@ describe("AppDefinition catalog", () => {
     expect(channel("microsoft-teams")?.guidanceMd).toContain(
       "ChatMessage.Read.Chat",
     );
+    expect(channel("microsoft-teams")?.guidanceMd).toContain(
+      "work or school organization",
+    );
+    expect(channel("microsoft-teams")?.guidanceMd).toContain("teams.live.com");
     expect(channel("telegram")?.guidanceMd).toContain(
       "public Paperclip webhook endpoint",
     );
