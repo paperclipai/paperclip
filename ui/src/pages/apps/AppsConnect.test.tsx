@@ -348,8 +348,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
 
     expect(container.textContent).toContain("Access");
-    expect(container.textContent).toContain("Which GitHub identity should this use?");
-    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.textContent).toContain("Connect GitHub as");
+    expect(container.textContent).toContain("Which agents may use your GitHub when you’re responsible?");
     expect(container.textContent).not.toContain("Choose access before adding credentials");
     expect(container.textContent).not.toContain("Set the identity and agent reach first");
     expect(container.textContent).not.toContain("Which humans can use this credential?");
@@ -360,14 +360,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const radios = Array.from(document.body.querySelectorAll('[role="radio"]'));
     const myAccount = radios.find((r) => r.textContent?.includes("My GitHub account"));
     const dedicated = radios.find((r) => r.textContent?.includes("A dedicated account for an agent"));
-    const agentsIPick = radios.find((r) => r.textContent?.includes("Just agents I pick"));
+    const agentsIPick = radios.find((r) => r.textContent?.includes("Only agents I choose"));
     const anyAgent = radios.find((r) => r.textContent?.includes("Any agent"));
     expect(myAccount).toBeTruthy();
     expect(dedicated).toBeTruthy();
-    expect(myAccount?.textContent).toBe("My GitHub account");
-    expect(dedicated?.textContent).toBe("A dedicated account for an agent");
-    expect(agentsIPick?.textContent).toBe("Just agents I pick");
-    expect(anyAgent?.textContent).toBe("Any agent");
+    expect(myAccount?.textContent).toContain("Agents use it only for runs where you are the responsible person.");
+    expect(dedicated?.textContent).toContain("That agent always uses this account, regardless of who starts the run.");
+    expect(agentsIPick?.textContent).toContain("Only selected agents may use your GitHub when you’re responsible.");
+    expect(anyAgent?.textContent).toContain("Every agent may use your GitHub when you’re responsible.");
     expect(myAccount?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
     expect(dedicated?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
     expect(agentsIPick?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
@@ -408,7 +408,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await act(async () => {
       Array.from(document.body.querySelectorAll('[role="radio"]'))
-        .find((r) => r.textContent?.includes("Just agents I pick"))
+        .find((r) => r.textContent?.includes("Only agents I choose"))
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -703,6 +703,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await passAccessStep();
 
     expect(container.textContent).toContain("Connect with Paperclip");
+    expect(container.textContent).toContain(
+      "You must connect this instance to Paperclip to connect to Gmail (you only need to do this once).",
+    );
+    expect(buttonByText("Connect with Paperclip")?.closest(".rounded-xl")?.classList.contains("border-border")).toBe(true);
     expect(container.textContent).not.toContain("Required once for managed Google sign-in.");
     expect(container.textContent).not.toContain("Your OAuth app");
 
@@ -719,6 +723,34 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://my-staging.paperclip.app/connections/enroll?id=enroll-test",
     );
+  });
+
+  it("restores the setup step after the one-time enrollment callback", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValueOnce({ apps: [GITHUB_MANAGED] });
+
+    await render();
+
+    expect(container.textContent).toContain("Step 2 of 2");
+    expect(container.textContent).toContain("Continue to GitHub");
+    expect(container.textContent).not.toContain("Connect GitHub as");
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+  });
+
+  it("never renders self-host enrollment when the connector identity is already active", async () => {
+    mockSearch.value = "source=gmail&stage=setup";
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [{
+        ...GMAIL,
+        methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+
+    await render();
+
+    expect(container.textContent).not.toContain("You must connect this instance to Paperclip");
+    expect(container.textContent).not.toContain("Connect with Paperclip");
   });
 
   it("keeps Google Drive prerequisites off access and defaults to its write-capable method", async () => {
@@ -844,7 +876,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     // A deep-linked app lands on Access first: identity and reach are chosen
     // before the credential (PAP-17835).
-    expect(container.textContent).toContain("Which GitHub identity should this use?");
+    expect(container.textContent).toContain("Connect GitHub as");
     await passAccessStep();
 
     expect(container.textContent).toContain("Connect GitHub");
@@ -2199,7 +2231,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    expect(container.textContent).toContain("Which GitHub identity should this use?");
+    expect(container.textContent).toContain("Connect GitHub as");
 
     await act(async () => {
       buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

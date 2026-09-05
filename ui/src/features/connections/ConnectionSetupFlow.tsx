@@ -124,6 +124,19 @@ const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
   success: "complete",
 };
 
+export function requestedConnectionInitialStep(input: {
+  requestedAppKey: string | undefined;
+  routeStage: string | null;
+  resumeConnectionId: string | null;
+  hasPrefilledLink: boolean;
+  zapierSource: boolean;
+}): Step {
+  if (input.requestedAppKey) {
+    return input.resumeConnectionId || input.routeStage === "setup" ? "key" : "access";
+  }
+  return input.hasPrefilledLink || input.zapierSource ? "access" : "gallery";
+}
+
 export function requestedConnectionEntry(input: {
   requestedAppKey: string;
   galleryApps: readonly AppDefinition[];
@@ -440,6 +453,7 @@ export function ConnectionSetupFlow({
   const appKey = routeParams.appKey ?? searchParams.get("appKey") ?? undefined;
   const sourceSlug = searchParams.get("source")?.trim() || null;
   const createNewConnection = searchParams.get("new") === "1";
+  const routeStage = searchParams.get("stage")?.trim() || null;
   const resumeConnectionId = searchParams.get("resume")?.trim() || null;
   const oauthCallbackOutcome = searchParams.get("oauth");
   const oauthCallbackCode = searchParams.get("code");
@@ -476,11 +490,13 @@ export function ConnectionSetupFlow({
     };
   });
 
-  const [step, setStep] = useState<Step>(
-    requestedAppKey
-      ? resumeConnectionId ? "key" : "access"
-      : prefill.link || zapierSource ? "access" : "gallery",
-  );
+  const [step, setStep] = useState<Step>(() => requestedConnectionInitialStep({
+    requestedAppKey,
+    routeStage,
+    resumeConnectionId,
+    hasPrefilledLink: Boolean(prefill.link),
+    zapierSource,
+  }));
   const [entry, setEntry] = useState<AppDefinition | null>(null);
   const [galleryName, setGalleryName] = useState("");
   const [linkUrl, setLinkUrl] = useState(prefill.link);
@@ -1170,7 +1186,13 @@ export function ConnectionSetupFlow({
       // Route/service selection initializes the wizard once. Later renders must
       // preserve the user's current step in both hosts instead of snapping back
       // to Access after they continue.
-      setStep(resumeConnectionId ? "key" : "access");
+      setStep(requestedConnectionInitialStep({
+        requestedAppKey,
+        routeStage,
+        resumeConnectionId,
+        hasPrefilledLink: Boolean(prefill.link),
+        zapierSource,
+      }));
     }
 
     if (automaticOAuth && (
@@ -1202,6 +1224,8 @@ export function ConnectionSetupFlow({
     resumeConnectionId,
     requestedAppKey,
     requestedAgentId,
+    routeStage,
+    zapierSource,
   ]);
 
   // Resume the exact method and non-secret provider configuration that the
@@ -1781,42 +1805,47 @@ export function ConnectionSetupFlow({
 
       {step === "key" && entry && showConnectorEnrollmentStep ? (
         <div className="mx-auto max-w-xl">
-          <div className="flex items-start gap-3">
-            <div className="rounded-lg bg-muted p-2 text-muted-foreground">
-              <Cloud className="h-5 w-5" />
+          <div className="rounded-xl border border-border bg-card p-6">
+            <div className="flex items-start gap-3">
+              <div className="rounded-lg bg-muted p-2 text-muted-foreground">
+                <Cloud className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-foreground">
+                  Connect with Paperclip
+                </h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  You must connect this instance to Paperclip to connect to {entry.name} (you only need to do this once).
+                </p>
+              </div>
             </div>
-            <div className="min-w-0">
-              <h2 className="text-lg font-semibold text-foreground">
-                Connect with Paperclip
-              </h2>
+
+            {connectorEnrollmentQuery.isError || connectorEnrollmentError ? (
+              <InlineBanner tone="danger" className="mt-4">
+                {connectorEnrollmentError ?? "Paperclip couldn’t check Cloud registration. Try again."}
+              </InlineBanner>
+            ) : null}
+
+            <div className="mt-6 flex items-center justify-between gap-3">
+              <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>
+                Back
+              </Button>
+              <Button
+                type="button"
+                disabled={connectorEnrollmentQuery.isLoading || startConnectorEnrollment.isPending}
+                onClick={() => {
+                  setConnectorEnrollmentError(null);
+                  const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;
+                  if (verificationUrl) openConnectorEnrollment(verificationUrl);
+                  else startConnectorEnrollment.mutate();
+                }}
+              >
+                {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                {connectorEnrollmentQuery.data?.status === "pending"
+                  ? "Continue"
+                  : "Connect with Paperclip"}
+              </Button>
             </div>
-          </div>
-
-          {connectorEnrollmentQuery.isError || connectorEnrollmentError ? (
-            <InlineBanner tone="danger" className="mt-4">
-              {connectorEnrollmentError ?? "Paperclip couldn’t check Cloud registration. Try again."}
-            </InlineBanner>
-          ) : null}
-
-          <div className="mt-6 flex items-center justify-between gap-3">
-            <Button type="button" variant="ghost" onClick={() => setAppStep("access")}>
-              Back
-            </Button>
-            <Button
-              type="button"
-              disabled={connectorEnrollmentQuery.isLoading || startConnectorEnrollment.isPending}
-              onClick={() => {
-                setConnectorEnrollmentError(null);
-                const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;
-                if (verificationUrl) openConnectorEnrollment(verificationUrl);
-                else startConnectorEnrollment.mutate();
-              }}
-            >
-              {startConnectorEnrollment.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              {connectorEnrollmentQuery.data?.status === "pending"
-                ? "Continue"
-                : "Connect with Paperclip"}
-            </Button>
           </div>
         </div>
       ) : step === "key" && entry ? (
@@ -3236,7 +3265,9 @@ function KeyStep({
             ? "Checking…"
             : usingVercel
               ? method?.auth === "oauth" ? "Validate and continue" : "Validate and connect"
-              : method?.auth === "oauth" ? "Continue to sign in" : "Connect"}
+              : method?.auth === "oauth"
+                ? entry.slug === "github" ? "Continue to GitHub" : "Continue to sign in"
+                : "Connect"}
         </Button>
       </div>
     </div>
@@ -3449,7 +3480,7 @@ export function AccessStep({
     queryFn: () => agentsApi.list(companyId),
   });
   const allAgents: Agent[] = (agentsQuery.data ?? []).filter((a) => a.status !== "terminated");
-  // "Just agents I pick" means agents this person may actually edit. When the server
+  // "Only agents I choose" / "Just agents I pick" means agents this person may actually edit. When the server
   // has not told us, fall back to every live agent rather than an empty list —
   // an empty picker would read as "you have no agents".
   const editableAgentIds = capabilities?.editableAgentIds;
@@ -3479,13 +3510,22 @@ export function AccessStep({
   const lockedAgentName = lockedAgentId
     ? allAgents.find((agent) => agent.id === lockedAgentId)?.name ?? "the requesting agent"
     : null;
+  const identityHeading = githubIdentity ? "Connect GitHub as" : "Which humans can use this credential?";
+  const agentAccessHeading = grantKind === "agent"
+    ? "Which agent owns this GitHub account?"
+    : githubIdentity && grantKind === "user"
+      ? "Which agents may use your GitHub when you’re responsible?"
+      : githubIdentity
+        ? "Which agents may use the shared GitHub account?"
+        : "Which agents can use this connection?";
+  const agentAccessLabel = githubIdentity ? agentAccessHeading : "Which agents can use this connection?";
 
   return (
     <div className="mx-auto max-w-2xl">
       <div className="overflow-hidden rounded-xl border border-border">
         <div className="divide-y divide-border">
           <section className="p-6">
-            <h2 className="text-sm font-semibold text-foreground">{githubIdentity ? "Which GitHub identity should this use?" : "Which humans can use this credential?"}</h2>
+            <h2 className="text-sm font-semibold text-foreground">{identityHeading}</h2>
             {identityLoading ? (
               <div className="mt-4 grid gap-2 sm:grid-cols-2" aria-label="Loading connection identity">
                 <Skeleton className="h-20 w-full rounded-md" />
@@ -3500,17 +3540,28 @@ export function AccessStep({
                 ) : (
                   <UsersRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 )}
-                <div className="text-sm font-medium text-foreground">
-                  {allowedGrantKinds[0] === "user"
-                    ? githubIdentity ? "My GitHub account" : "Just me"
-                    : allowedGrantKinds[0] === "agent"
-                      ? "A dedicated account for an agent"
-                      : "Any human in the company"}
+                <div>
+                  <div className="text-sm font-medium text-foreground">
+                    {allowedGrantKinds[0] === "user"
+                      ? githubIdentity ? "My GitHub account" : "Just me"
+                      : allowedGrantKinds[0] === "agent"
+                        ? "A dedicated account for an agent"
+                        : githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company"}
+                  </div>
+                  {githubIdentity ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {allowedGrantKinds[0] === "user"
+                        ? "Agents use it only for runs where you are the responsible person."
+                        : allowedGrantKinds[0] === "agent"
+                          ? "That agent always uses this account, regardless of who starts the run."
+                          : "Eligible agents use one shared credential, regardless of who starts the run."}
+                    </p>
+                  ) : null}
                 </div>
               </div>
             ) : needsIdentityChoice ? (
               <RadioCardGroup
-                ariaLabel="Which humans can use this credential?"
+                ariaLabel={githubIdentity ? identityHeading : "Which humans can use this credential?"}
                 className="mt-4 sm:grid-cols-2"
                 value={grantKind}
                 onValueChange={(next) => {
@@ -3525,20 +3576,29 @@ export function AccessStep({
                   {
                     value: "user",
                     title: githubIdentity ? "My GitHub account" : "Just me",
+                    description: githubIdentity
+                      ? "Agents use it only for runs where you are the responsible person."
+                      : undefined,
                     icon: <UserRound className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "agent",
                     title: "A dedicated account for an agent",
+                    description: githubIdentity
+                      ? "That agent always uses this account, regardless of who starts the run."
+                      : undefined,
                     icon: <Bot className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "organization",
-                    title: "Any human in the company",
+                    title: githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company",
+                    description: githubIdentity
+                      ? "Eligible agents use one shared credential, regardless of who starts the run."
+                      : undefined,
                     icon: <UsersRound className="h-4 w-4" aria-hidden="true" />,
                     accessibleLabel: canCreateOrganizationGrant
-                      ? "Any human in the company"
-                      : `Any human in the company. Unavailable: ${capabilities?.organizationGrantReason ??
+                      ? githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company"
+                      : `${githubIdentity ? "Shared company GitHub account (advanced)" : "Any human in the company"}. Unavailable: ${capabilities?.organizationGrantReason ??
                         "Only a connection manager can share this credential with the organization."}`,
                     tooltip: canCreateOrganizationGrant
                       ? undefined
@@ -3556,7 +3616,7 @@ export function AccessStep({
           </section>
 
           <section className="p-6">
-            <h2 className="text-sm font-semibold text-foreground">{grantKind === "agent" ? "Which agent owns this GitHub account?" : "Which agents can use this connection?"}</h2>
+            <h2 className="text-sm font-semibold text-foreground">{agentAccessHeading}</h2>
             {preserveAgentAccess ? (
               <div className="mt-4 flex items-start gap-3 rounded-md border border-border bg-muted/40 p-4">
                 <UsersRound className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
@@ -3576,19 +3636,29 @@ export function AccessStep({
               grantKind === "agent" ? (
                 <p className="mt-2 text-sm text-muted-foreground">Choose exactly one agent. This identity cannot be shared with other agents.</p>
               ) : <RadioCardGroup
-                ariaLabel="Which agents can use this connection?"
+                ariaLabel={agentAccessLabel}
                 className="mt-4 sm:grid-cols-2"
                 value={installChoice}
                 onValueChange={(next) => setInstallChoice(next as "specific" | "all")}
                 options={[
                   {
                     value: "specific",
-                    title: "Just agents I pick",
+                    title: githubIdentity ? "Only agents I choose" : "Just agents I pick",
+                    description: githubIdentity
+                      ? grantKind === "user"
+                        ? "Only selected agents may use your GitHub when you’re responsible."
+                        : "Only selected agents may use the shared account."
+                      : undefined,
                     icon: <Bot className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "all",
                     title: "Any agent",
+                    description: githubIdentity
+                      ? grantKind === "user"
+                        ? "Every agent may use your GitHub when you’re responsible."
+                        : "Every agent may use the shared account."
+                      : undefined,
                     icon: <BotGroupIcon />,
                     accessibleLabel: canSetCompanyInstall
                       ? "Any agent"

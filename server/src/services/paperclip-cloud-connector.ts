@@ -93,6 +93,7 @@ type SealedEnvelope = {
 
 type ConnectorResponse = {
   confirmationUrl?: unknown;
+  authorizationUrl?: unknown;
   handoff?: unknown;
   expiresAt?: unknown;
   scopes?: unknown;
@@ -348,14 +349,44 @@ export function createPaperclipCloudConnector(input: {
       if (typeof response.confirmationUrl !== "string" || typeof response.expiresAt !== "string") {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid session", "CONNECTOR_BAD_RESPONSE");
       }
-      const confirmationUrl = new URL(response.confirmationUrl);
-      const expectedBroker = new URL(config.baseUrl);
-      if (confirmationUrl.origin !== expectedBroker.origin || confirmationUrl.pathname !== "/connections/confirm") {
+      let confirmationUrl: URL;
+      try {
+        confirmationUrl = new URL(response.confirmationUrl);
+      } catch {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid confirmation URL", "CONNECTOR_BAD_RESPONSE");
+      }
+      const expectedBroker = new URL(config.baseUrl);
+      if (
+        confirmationUrl.origin !== expectedBroker.origin
+        || confirmationUrl.pathname !== "/connections/confirm"
+        || confirmationUrl.username
+        || confirmationUrl.password
+        || confirmationUrl.hash
+      ) {
+        throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid confirmation URL", "CONNECTOR_BAD_RESPONSE");
+      }
+      let authorizationUrl: URL | undefined;
+      if (response.authorizationUrl !== undefined) {
+        if (typeof response.authorizationUrl !== "string") {
+          throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
+        }
+        try {
+          authorizationUrl = new URL(response.authorizationUrl);
+        } catch {
+          throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
+        }
+        if (
+          authorizationUrl.protocol !== "https:"
+          || authorizationUrl.username
+          || authorizationUrl.password
+          || authorizationUrl.hash
+        ) {
+          throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
+        }
       }
       const handoff = parseCloudHandoff(response.handoff);
       return {
-        authorizationUrl: confirmationUrl.toString(),
+        authorizationUrl: authorizationUrl?.toString() ?? confirmationUrl.toString(),
         expiresAt: response.expiresAt,
         ...(handoff ? { handoff } : {}),
       };
