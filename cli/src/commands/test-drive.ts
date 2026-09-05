@@ -26,7 +26,6 @@ export interface TestDriveOptions {
   harness?: TestDriveHarness;
   model?: string;
   apiKeyEnv?: string;
-  apiKey?: string;
   browser?: boolean;
 }
 
@@ -183,10 +182,6 @@ export function resolveTestDriveBootstrap(
   options: TestDriveOptions,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedTestDriveBootstrap {
-  if (options.apiKey !== undefined && options.apiKeyEnv !== undefined) {
-    throw new Error("--api-key and --api-key-env are mutually exclusive.");
-  }
-
   const harness = options.harness ?? "claude";
   const definition = HARNESS_DEFINITIONS[harness];
   if (!definition) {
@@ -215,10 +210,10 @@ export function resolveTestDriveBootstrap(
   if (options.apiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(sourceEnvName)) {
     throw new Error("--api-key-env must name a valid environment variable.");
   }
-  const credential = options.apiKey !== undefined ? options.apiKey : env[sourceEnvName];
+  const credential = env[sourceEnvName];
   if (!credential || credential.trim().length === 0) {
     throw new Error(
-      `No credential found. Set ${sourceEnvName}, pass --api-key-env <variable>, or pass --api-key <value>.`,
+      `No credential found. Set ${sourceEnvName} or pass --api-key-env <variable>.`,
     );
   }
 
@@ -228,7 +223,7 @@ export function resolveTestDriveBootstrap(
     agentName,
     ...(model ? { model } : {}),
     credential,
-    credentialSource: options.apiKey !== undefined ? "--api-key" : sourceEnvName,
+    credentialSource: sourceEnvName,
   };
 }
 
@@ -370,16 +365,12 @@ export async function testDriveCommand(
   const linkedWorktree = process.env.PAPERCLIP_IN_WORKTREE === "true";
   const instanceId = process.env.PAPERCLIP_INSTANCE_ID ?? "default";
   const possibleCredentials = [
-    options.apiKey,
     options.apiKeyEnv ? process.env[options.apiKeyEnv] : undefined,
     process.env[HARNESS_DEFINITIONS[options.harness ?? "claude"].credentialTarget],
   ];
 
   p.log.message(pc.dim(`Data directory: ${dataDir}`));
   p.log.message(pc.dim("The data directory is retained when Paperclip exits."));
-  if (options.apiKey !== undefined) {
-    p.log.warn("A key passed with --api-key may remain in shell history. Prefer --api-key-env.");
-  }
 
   try {
     await dependencies.run({
@@ -441,14 +432,7 @@ export function registerTestDriveCommand(program: Command): void {
         .default("claude"),
     )
     .option("--model <model-id>", "Initial agent model")
-    .addOption(
-      new Option("--api-key-env <variable>", "Read the provider key from an environment variable")
-        .conflicts("apiKey"),
-    )
-    .addOption(
-      new Option("--api-key <value>", "Provider key (may remain in shell history)")
-        .conflicts("apiKeyEnv"),
-    )
+    .option("--api-key-env <variable>", "Read the provider key from an environment variable")
     .option("--no-browser", "Do not open the initialized instance in a browser")
     .action(async (options: TestDriveOptions) => {
       await testDriveCommand(options);

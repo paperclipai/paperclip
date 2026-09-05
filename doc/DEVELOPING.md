@@ -330,11 +330,11 @@ loopback port at or above `3100`.
 Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
 `OPENROUTER_API_KEY` and requires an `openrouter/...` model. `--api-key-env`
 can name a different source variable while the agent still receives the
-canonical variable. `--api-key` takes a literal but can remain in shell
-history, so environment variables are preferred. In a linked Git worktree the
-command sets worktree runtime mode and safely arms **Run tasks in this
-worktree** for the current isolated instance. Primary checkouts and non-Git
-directories leave that experimental setting unchanged.
+canonical variable. Provider keys must come from environment variables because
+command-line arguments can appear in process listings and shell history. In a
+linked Git worktree the command sets worktree runtime mode and safely arms
+**Run tasks in this worktree** for the current isolated instance. Primary
+checkouts and non-Git directories leave that experimental setting unchanged.
 
 If the selected data directory already contains any company, `test-drive`
 preserves all companies, agents, and secrets and ignores the bootstrap flags.

@@ -201,14 +201,13 @@ describe("test-drive bootstrap validation", () => {
     expect(resolved.credentialTarget).toBe("OPENROUTER_API_KEY");
   });
 
-  it("rejects mutually exclusive key inputs and redacts credentials", () => {
+  it("rejects invalid key variable names and redacts credentials", () => {
     expect(() => resolveTestDriveBootstrap({
-      apiKey: "literal-secret",
-      apiKeyEnv: "ANTHROPIC_API_KEY",
-    }, { ANTHROPIC_API_KEY: "env-secret" })).toThrow(/mutually exclusive/);
+      apiKeyEnv: "NOT-A-VALID-NAME",
+    }, { ANTHROPIC_API_KEY: "env-secret" })).toThrow(/valid environment variable/);
     expect(redactTestDriveText(
-      "literal-secret and env-secret must never appear",
-      ["literal-secret", "env-secret"],
+      "custom-secret and env-secret must never appear",
+      ["custom-secret", "env-secret"],
     )).toBe("[REDACTED] and [REDACTED] must never appear");
   });
 });
@@ -290,7 +289,7 @@ describe("test-drive API bootstrap", () => {
 
     const result = await bootstrapTestDrive({
       api,
-      options: { harness: "opencode", apiKey: "", companyName: "Ignored" },
+      options: { harness: "opencode", companyName: "Ignored" },
       linkedWorktree: false,
       instanceId: "default",
       env: {},
