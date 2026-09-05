@@ -24,6 +24,12 @@ const mockNavigate = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 const mockSearch = vi.hoisted(() => ({ value: "" }));
 const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
+const mockCompany = vi.hoisted(() => ({
+  value: {
+    selectedCompanyId: "company-1" as string | undefined,
+    selectedCompany: { id: "company-1", name: "Paperclip" } as { id: string; name: string } | null,
+  },
+}));
 
 const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
 const GITHUB = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "github")!;
@@ -78,10 +84,7 @@ vi.mock("@/lib/router", () => ({
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => ({
-    selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
-  }),
+  useCompany: () => mockCompany.value,
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -200,6 +203,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     window.sessionStorage.clear();
+    mockCompany.value = {
+      selectedCompanyId: "company-1",
+      selectedCompany: { id: "company-1", name: "Paperclip" },
+    };
     mockSearch.value = "";
     mockParams.appKey = undefined;
     container = document.createElement("div");
@@ -819,8 +826,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(JSON.parse(window.sessionStorage.getItem(
-      "paperclip.connector-enrollment-access:company-1:github",
+      "paperclip.connector-enrollment-access:github",
     ) ?? "null")).toEqual({
+      companyId: "company-1",
       grantKind: "agent",
       installChoice: "specific",
       agentIds: ["agent-1"],
@@ -831,6 +839,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     container.innerHTML = "";
     mockParams.appKey = undefined;
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    mockCompany.value = { selectedCompanyId: undefined, selectedCompany: null };
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
     getCloudConnectorEnrollmentMock.mockResolvedValue({
       configured: true,
@@ -841,11 +850,27 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       origins: ["https://paperclip.example.test"],
     });
 
-    await render();
+    const coldLoadClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(coldLoadClient);
+
+    expect(window.sessionStorage.getItem("paperclip.connector-enrollment-access:github")).toBeNull();
+    mockCompany.value = {
+      selectedCompanyId: "company-1",
+      selectedCompany: { id: "company-1", name: "Paperclip" },
+    };
+    await act(async () => {
+      mountedRoot?.render(
+        <QueryClientProvider client={coldLoadClient}>
+          <AppsConnect />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
 
     expect(container.textContent).toContain("Step 2 of 2");
     expect(window.sessionStorage.getItem(
-      "paperclip.connector-enrollment-access:company-1:github",
+      "paperclip.connector-enrollment-access:github",
     )).toBeNull();
     await act(async () => {
       buttonByText("Continue to GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

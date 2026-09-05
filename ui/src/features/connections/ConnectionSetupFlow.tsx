@@ -97,18 +97,20 @@ type Step = "gallery" | "access" | "key" | "success";
 export type OAuthConnectPhase = "entry" | "starting" | "redirecting" | "error";
 
 type EnrollmentAccessState = {
+  companyId: string;
   grantKind: ConnectionGrantKind;
   installChoice: "specific" | "all";
   agentIds: string[];
 };
 
-function enrollmentAccessStorageKey(companyId: string, appKey: string): string {
-  return `paperclip.connector-enrollment-access:${companyId}:${appKey}`;
+function enrollmentAccessStorageKey(appKey: string): string {
+  return `paperclip.connector-enrollment-access:${appKey}`;
 }
 
 function validEnrollmentAccessState(value: unknown): value is EnrollmentAccessState {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
+  if (typeof candidate.companyId !== "string" || !candidate.companyId.trim()) return false;
   if (!(candidate.grantKind === "user" || candidate.grantKind === "agent" || candidate.grantKind === "organization")) {
     return false;
   }
@@ -124,17 +126,21 @@ function validEnrollmentAccessState(value: unknown): value is EnrollmentAccessSt
   return candidate.installChoice === "all" ? agentIds.size === 0 : agentIds.size > 0;
 }
 
-function saveEnrollmentAccessState(companyId: string, appKey: string, state: EnrollmentAccessState): void {
+function saveEnrollmentAccessState(
+  companyId: string,
+  appKey: string,
+  state: Omit<EnrollmentAccessState, "companyId">,
+): void {
   try {
-    window.sessionStorage.setItem(enrollmentAccessStorageKey(companyId, appKey), JSON.stringify(state));
+    window.sessionStorage.setItem(enrollmentAccessStorageKey(appKey), JSON.stringify({ ...state, companyId }));
   } catch {
     // Browser storage can be unavailable under restrictive privacy settings.
     // The callback will safely use the provider's defaults in that case.
   }
 }
 
-function consumeEnrollmentAccessState(companyId: string, appKey: string): EnrollmentAccessState | null {
-  const key = enrollmentAccessStorageKey(companyId, appKey);
+function consumeEnrollmentAccessState(appKey: string): EnrollmentAccessState | null {
+  const key = enrollmentAccessStorageKey(appKey);
   try {
     const raw = window.sessionStorage.getItem(key);
     window.sessionStorage.removeItem(key);
@@ -542,9 +548,8 @@ export function ConnectionSetupFlow({
   const [restoredEnrollmentAccess] = useState<EnrollmentAccessState | null>(() =>
     host === "page"
       && searchParams.get("cloud_connector") === "enrolled"
-      && selectedCompanyId
       && requestedAppKey
-      ? consumeEnrollmentAccessState(selectedCompanyId, requestedAppKey)
+      ? consumeEnrollmentAccessState(requestedAppKey)
       : null,
   );
 
@@ -1275,11 +1280,14 @@ export function ConnectionSetupFlow({
       setGoogleSheetsLinks("");
       setGoogleSheetsError(null);
       setConnectResult(null);
-      setGrantKind(reconnectGrantKind ?? restoredEnrollmentAccess?.grantKind ?? defaultGrantKindFor(initialMethod));
+      const matchingEnrollmentAccess = restoredEnrollmentAccess?.companyId === selectedCompanyId
+        ? restoredEnrollmentAccess
+        : null;
+      setGrantKind(reconnectGrantKind ?? matchingEnrollmentAccess?.grantKind ?? defaultGrantKindFor(initialMethod));
       setInstallAgentIds(new Set(
-        restoredEnrollmentAccess?.agentIds ?? (requestedAgentId ? [requestedAgentId] : []),
+        matchingEnrollmentAccess?.agentIds ?? (requestedAgentId ? [requestedAgentId] : []),
       ));
-      setInstallChoice(restoredEnrollmentAccess?.installChoice ?? (requestedAgentId ? "specific" : "all"));
+      setInstallChoice(matchingEnrollmentAccess?.installChoice ?? (requestedAgentId ? "specific" : "all"));
       // Route/service selection initializes the wizard once. Later renders must
       // preserve the user's current step in both hosts instead of snapping back
       // to Access after they continue.
