@@ -1915,6 +1915,91 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
+  it("rejects reconnect credentials for a different Slack bot without rotating secrets", async () => {
+    const fixture = await seedCompany();
+    let botId = "U-ORIGINAL-BOT";
+    const providerFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://slack.com/api/auth.test") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            team_id: "T-IMMUTABLE",
+            team: "Immutable Test",
+            user_id: botId,
+            user: botId === "U-ORIGINAL-BOT" ? "maya-original" : "maya-other",
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-oauth-scopes": TEST_SLACK_BOT_SCOPES,
+            },
+          },
+        );
+      }
+      if (url.startsWith("https://slack.com/api/conversations.list")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            channels: [],
+            response_metadata: { next_cursor: "" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected provider request: ${url}`);
+    }) as typeof globalThis.fetch;
+    const { service } = createService(new FakeChatSdkRuntime(), providerFetch);
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-original",
+          signingSecret: "original-secret",
+        },
+      },
+      "owner-user",
+    );
+    const [before] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+
+    botId = "U-DIFFERENT-BOT";
+    await expect(
+      service.configure(
+        endpoint.id,
+        {
+          action: "reconnect",
+          credentials: {
+            botToken: "xoxb-different",
+            signingSecret: "different-secret",
+          },
+        },
+        "owner-user",
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: { code: "chat_bot_identity_changed" },
+    });
+
+    const [after] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(after.refs).toEqual(before.refs);
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      botExternalId: "U-ORIGINAL-BOT",
+    });
+  });
+
   it("persists verified Slack membership and uninstall lifecycle before acknowledging", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
