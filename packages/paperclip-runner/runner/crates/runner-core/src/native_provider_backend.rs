@@ -35,6 +35,14 @@ impl CommandExecutor for SelectedExecutor {
         }
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        match self {
+            Self::LocalFacade(executor) => executor.rotate_authority(config),
+            Self::Acpx(executor) => executor.rotate_authority(config),
+            Self::Managed(executor) => executor.rotate_authority(config),
+        }
+    }
+
     fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
         match self {
             Self::LocalFacade(executor) => executor.acknowledge_events(count),
@@ -161,6 +169,13 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         self.selected
             .as_mut()
             .map_or_else(|| Ok(Vec::new()), CommandExecutor::poll_events)
+    }
+
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.config = config.clone();
+        if let Some(executor) = self.selected.as_mut() {
+            executor.rotate_authority(config);
+        }
     }
 
     fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {

@@ -1670,6 +1670,10 @@ impl CommandExecutor for ManagedProviderCommandExecutor {
         }
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.config = config.clone();
+    }
+
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.poll_provider()?;
         Ok(self

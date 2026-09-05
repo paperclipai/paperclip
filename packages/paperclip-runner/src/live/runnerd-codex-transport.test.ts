@@ -2080,6 +2080,99 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
   }
 }, 30_000);
 
+it("releases both PRP authorities when warm rotation activation fails", async () => {
+  const stateDirectory = await mkdtemp(
+    join(tmpdir(), "runnerd-warm-attach-activation-failure-"),
+  );
+  const server = createServer();
+  const authorities = new Map<string, DurablePrpControlPlane>();
+  const released: string[] = [];
+  server.on("upgrade", (request, socket, head) => {
+    const route = request.url ?? "";
+    const authority = authorities.get(route);
+    if (!authority) {
+      socket.destroy();
+      return;
+    }
+    authority.handleUpgrade(request, socket, route, head);
+  });
+  await new Promise<void>((resolveListen) =>
+    server.listen(0, "127.0.0.1", resolveListen),
+  );
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Expected warm activation failure test listener");
+  }
+  let registrationCount = 0;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    controlPlaneRegistration: async (authority) => {
+      registrationCount += 1;
+      const route = `/runner-${registrationCount}`;
+      authorities.set(route, authority);
+      return {
+        connectUrl: `ws://127.0.0.1:${address.port}${route}`,
+        ...(registrationCount === 1
+          ? {}
+          : {
+              activate: () => {
+                throw new Error("rotation activation failed");
+              },
+            }),
+        release: () => {
+          released.push(route);
+          if (authorities.get(route) === authority) authorities.delete(route);
+        },
+      };
+    },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  let runnerPid: number | null = null;
+  try {
+    await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: codexSemanticToolSpecs(),
+    });
+    runnerPid = bundle.evidence().runnerPid;
+
+    await expect(
+      bundle.transport.attachRun!({
+        runId: "run-warm-activation-failure",
+        turnId: "turn-warm-activation-failure",
+        itemId: "item-warm-activation-failure",
+      }),
+    ).rejects.toThrow("rotation activation failed");
+    expect(new Set(released)).toEqual(new Set(["/runner-1", "/runner-2"]));
+    expect(authorities.size).toBe(0);
+    await expect(bundle.transport.request("thread/read", {})).rejects.toThrow(
+      "rotation activation failed",
+    );
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    if (runnerPid) {
+      try {
+        process.kill(-runnerPid, "SIGKILL");
+      } catch {
+        // A successful durable close already stopped the runner process group.
+      }
+    }
+    server.closeAllConnections();
+    if (server.listening) {
+      await new Promise<void>((resolveClose) =>
+        server.close(() => resolveClose()),
+      );
+    }
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it.each([
   {
     binding: "runner instance",

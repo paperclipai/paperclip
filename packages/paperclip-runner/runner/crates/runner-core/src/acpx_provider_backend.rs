@@ -1345,6 +1345,13 @@ impl CommandExecutor for AcpxCommandExecutor {
         }
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.context.run_id = config.run_id.clone();
+        self.context.normalized_session_id = config.normalized_session_id.clone();
+        self.context.turn_id = config.turn_id.clone();
+        self.context.item_id = config.item_id.clone();
+    }
+
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.restore()?;
         if self

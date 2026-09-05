@@ -226,6 +226,11 @@ fn apply_authority_rotation(
 pub trait CommandExecutor {
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
+    /// Advances provider-side event correlation after a durable `run.attach`
+    /// has moved runnerd to the next run-bound authority. The runner validates
+    /// and persists the new authority before invoking this infallible hook.
+    fn rotate_authority(&mut self, _config: &DurableRunnerConfig) {}
+
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         Ok(Vec::new())
     }
@@ -449,6 +454,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
         }
         if let Some(next) = authority_rotation {
             apply_authority_rotation(&mut state, &store, &mut config, &mut endpoint, next)?;
+            executor.rotate_authority(&config);
             disconnected_since = Some(Instant::now());
             continue;
         }
@@ -595,6 +601,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                             &mut endpoint,
                             next,
                         )?;
+                        executor.rotate_authority(&config);
                         disconnected_since = Some(Instant::now());
                         break;
                     }

@@ -1,7 +1,7 @@
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   directorySnapshotSha256,
   serializeDirectorySnapshot,
@@ -11,6 +11,7 @@ import {
   classifyNativeWorkspaceInbound,
   nativeWorkspaceSyncInternals,
   readNativeWorkspaceSyncReference,
+  resumeNativeWorkspaceSync,
 } from "../services/native-runtime/native-workspace-sync.js";
 
 const digest = "a".repeat(64);
@@ -27,9 +28,9 @@ describe("native workspace sync durable metadata", () => {
       delete process.env.PAPERCLIP_INSTANCE_ID;
     else process.env.PAPERCLIP_INSTANCE_ID = originalPaperclipInstanceId;
     await Promise.all(
-      cleanupDirs.splice(0).map((directory) =>
-        rm(directory, { recursive: true, force: true }),
-      ),
+      cleanupDirs
+        .splice(0)
+        .map((directory) => rm(directory, { recursive: true, force: true })),
     );
   });
 
@@ -135,7 +136,10 @@ describe("native workspace sync durable metadata", () => {
     const baseline = {
       exclude: [".paperclip-runtime"],
       entries: new Map([
-        ["continuity.txt", { kind: "file" as const, mode: 0o644, hash: digest }],
+        [
+          "continuity.txt",
+          { kind: "file" as const, mode: 0o644, hash: digest },
+        ],
       ]),
     };
     const descriptor = {
@@ -160,12 +164,10 @@ describe("native workspace sync durable metadata", () => {
       resourceDisposition: "keep_running" as const,
     };
 
-    const first = await nativeWorkspaceSyncInternals.writeDescriptor(
-      descriptor,
-    );
-    const second = await nativeWorkspaceSyncInternals.writeDescriptor(
-      descriptor,
-    );
+    const first =
+      await nativeWorkspaceSyncInternals.writeDescriptor(descriptor);
+    const second =
+      await nativeWorkspaceSyncInternals.writeDescriptor(descriptor);
 
     expect(second).toEqual(first);
     const files = await readdir(
@@ -185,5 +187,111 @@ describe("native workspace sync durable metadata", () => {
         reference: first,
       }),
     ).resolves.toMatchObject({ descriptor });
+  });
+
+  it("repairs finalized remote and lease stamps after an interrupted commit", async () => {
+    const paperclipHome = await mkdtemp(
+      path.join(os.tmpdir(), "paperclip-native-workspace-sync-repair-"),
+    );
+    cleanupDirs.push(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "descriptor-repair-test";
+    const baseline = {
+      exclude: [".paperclip-runtime"],
+      entries: new Map([
+        [
+          "continuity.txt",
+          { kind: "file" as const, mode: 0o644, hash: digest },
+        ],
+      ]),
+    };
+    const finalHostSha256 = "b".repeat(64);
+    const descriptor = {
+      schema: "paperclip.native-workspace-sync/v1" as const,
+      binding: {
+        runId: "run-finalized-repair",
+        companyId: "company-1",
+        workspaceId: "workspace-1",
+        leaseId: "lease-1",
+        providerLeaseId: "sandbox-1",
+        localCwd: path.join(paperclipHome, "workspace"),
+        remoteCwd: "/workspace",
+      },
+      state: "finalized" as const,
+      baselineSha256: directorySnapshotSha256(baseline),
+      baseline: serializeDirectorySnapshot(baseline),
+      gitSnapshot: null,
+      seed: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      finalizedAt: "2026-01-01T00:01:00.000Z",
+      finalHostSha256,
+      resourceDisposition: "keep_running" as const,
+    };
+    const reference =
+      await nativeWorkspaceSyncInternals.writeDescriptor(descriptor);
+    const rows = (values: unknown[]) => {
+      const query = {
+        from: () => query,
+        where: () => query,
+        for: () => query,
+        limit: () => query,
+        then: <TResult1 = unknown, TResult2 = never>(
+          onfulfilled?:
+            ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null,
+          onrejected?:
+            ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+        ) => Promise.resolve(values).then(onfulfilled, onrejected),
+      };
+      return query;
+    };
+    let persistedLeaseMetadata: Record<string, unknown> | null = null;
+    const db = {
+      select: () =>
+        rows([{ runnerProfileJson: { nativeWorkspaceSync: reference } }]),
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) =>
+        callback({
+          select: () => rows([{ metadata: { retained: true } }]),
+          update: () => ({
+            set: (value: { metadata: Record<string, unknown> }) => ({
+              where: async () => {
+                persistedLeaseMetadata = value.metadata;
+              },
+            }),
+          }),
+        }),
+    };
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({ timedOut: false, exitCode: 1, stdout: "" })
+      .mockResolvedValueOnce({ timedOut: false, exitCode: 0, stdout: "" });
+
+    await expect(
+      resumeNativeWorkspaceSync({
+        db: db as never,
+        runId: descriptor.binding.runId,
+        target: {
+          kind: "remote",
+          transport: "sandbox",
+          remoteCwd: descriptor.binding.remoteCwd,
+          sandboxLeaseAcquisition: {
+            providerLeaseId: descriptor.binding.providerLeaseId,
+          },
+          runner: { execute },
+        } as never,
+      }),
+    ).resolves.toBe(true);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(persistedLeaseMetadata).toMatchObject({
+      retained: true,
+      nativeWorkspaceSync: {
+        schema: "paperclip.native-workspace-stamp/v1",
+        workspaceId: descriptor.binding.workspaceId,
+        providerLeaseId: descriptor.binding.providerLeaseId,
+        remoteCwd: descriptor.binding.remoteCwd,
+        hostSha256: finalHostSha256,
+        finalizedRunId: descriptor.binding.runId,
+      },
+    });
   });
 });

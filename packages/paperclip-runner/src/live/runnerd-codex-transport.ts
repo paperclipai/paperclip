@@ -2296,16 +2296,31 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#eventIndex = 0;
     this.#durableTurnId = desired.turnId;
     this.#controlPlaneRelease = registration?.release ?? null;
-    await registration?.activate?.();
-    if (registration?.failure) {
-      void registration.failure.catch((error: unknown) => {
-        this.#failTransport(
-          error instanceof Error ? error : new Error(String(error)),
-        );
-      });
+    let previousReleased = false;
+    try {
+      await registration?.activate?.();
+      if (registration?.failure) {
+        void registration.failure.catch((error: unknown) => {
+          this.#failTransport(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        });
+      }
+      await previousRelease?.();
+      previousReleased = true;
+      await this.#awaitRegistrationReady(registration?.ready);
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      this.#controlPlaneRelease = null;
+      await Promise.allSettled([
+        Promise.resolve().then(() => registration?.release()),
+        ...(previousReleased
+          ? []
+          : [Promise.resolve().then(() => previousRelease?.())]),
+      ]);
+      this.#failTransport(failure);
+      throw failure;
     }
-    await previousRelease?.();
-    await this.#awaitRegistrationReady(registration?.ready);
   }
 
   async resolveRuntimeRequest(input: {

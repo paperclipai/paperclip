@@ -652,6 +652,20 @@ function leaseStamp(input: {
   return stamp;
 }
 
+function finalizedWorkspaceStamp(input: {
+  descriptor: NativeWorkspaceSyncDescriptor;
+  hostSha256: string;
+}): Record<string, unknown> {
+  return {
+    schema: STAMP_SCHEMA,
+    workspaceId: input.descriptor.binding.workspaceId,
+    providerLeaseId: input.descriptor.binding.providerLeaseId,
+    remoteCwd: input.descriptor.binding.remoteCwd,
+    hostSha256: input.hostSha256,
+    finalizedRunId: input.descriptor.binding.runId,
+  };
+}
+
 async function prepareRuntime(input: {
   runId: string;
   target: Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
@@ -690,14 +704,10 @@ async function finalizePreparedRuntime(input: {
         }),
     );
   const finalHostSha256 = directorySnapshotSha256(finalSnapshot);
-  const stamp = {
-    schema: STAMP_SCHEMA,
-    workspaceId: input.descriptor.binding.workspaceId,
-    providerLeaseId: input.descriptor.binding.providerLeaseId,
-    remoteCwd: input.descriptor.binding.remoteCwd,
+  const stamp = finalizedWorkspaceStamp({
+    descriptor: input.descriptor,
     hostSha256: finalHostSha256,
-    finalizedRunId: input.runId,
-  };
+  });
   await writeRemoteStamp({ target: input.target, stamp });
   const finalizedDescriptor: NativeWorkspaceSyncDescriptor = {
     ...input.descriptor,
@@ -932,12 +942,6 @@ export async function resumeNativeWorkspaceSync(input: {
   );
   if (!reference) return false;
   const existing = await readDescriptor({ runId: input.runId, reference });
-  if (
-    existing.descriptor.state === "finalized" &&
-    existing.descriptor.finalHostSha256
-  ) {
-    return true;
-  }
   const providerLeaseId =
     input.target.sandboxLeaseAcquisition?.providerLeaseId ??
     reference.providerLeaseId;
@@ -946,6 +950,26 @@ export async function resumeNativeWorkspaceSync(input: {
     input.target.remoteCwd !== reference.remoteCwd
   ) {
     throw new Error("workspace_sync_out_unrecoverable");
+  }
+  if (
+    existing.descriptor.state === "finalized" &&
+    existing.descriptor.finalHostSha256
+  ) {
+    const stamp = finalizedWorkspaceStamp({
+      descriptor: existing.descriptor,
+      hostSha256: existing.descriptor.finalHostSha256,
+    });
+    if (
+      !(await remoteStampMatches({ target: input.target, expected: stamp }))
+    ) {
+      await writeRemoteStamp({ target: input.target, stamp });
+    }
+    await persistLeaseStamp({
+      db: input.db,
+      leaseId: existing.descriptor.binding.leaseId,
+      stamp,
+    });
+    return true;
   }
   const runtime = await prepareRuntime({
     runId: input.runId,

@@ -3030,6 +3030,10 @@ impl CommandExecutor for CodexCommandExecutor {
         }
     }
 
+    fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.event_identity = Some(ProviderEventIdentity::from_config(config));
+    }
+
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.poll_provider()?;
         Ok(self
