@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { PaperclipApiClient } from "./client.js";
+import { PaperclipApiClient, PaperclipApiReadbackMismatchError } from "./client.js";
 import { createToolDefinitions } from "./tools.js";
 
 function makeClient() {
@@ -23,6 +23,11 @@ function mockJsonResponse(body: unknown, status = 200) {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function parseRequestJson(body: BodyInit | null | undefined) {
+  if (!(body instanceof Uint8Array)) throw new Error("Expected UTF-8 request bytes");
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
 }
 
 describe("paperclip MCP tools", () => {
@@ -50,6 +55,74 @@ describe("paperclip MCP tools", () => {
     expect((init.headers as Record<string, string>)["X-Paperclip-Run-Id"]).toBe(
       "33333333-3333-3333-3333-333333333333",
     );
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/json; charset=utf-8");
+    expect((init.headers as Record<string, string>)["Content-Digest"]).toMatch(/^sha-256=:[A-Za-z0-9+/]+=*:/);
+    expect(init.body).toBeInstanceOf(Uint8Array);
+  });
+
+  it("sends MCP comment text as UTF-8 bytes and requires its exact readback", async () => {
+    const body = "Кириллица сохранена";
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ body }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(makeClient().requestJson("POST", "/issues/PAP-1135/comments", { body: { body } })).resolves.toEqual({ body });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe("application/json; charset=utf-8");
+    expect((init.headers as Record<string, string>)["Content-Digest"]).toMatch(/^sha-256=:[A-Za-z0-9+/]+=*:/);
+    expect(new TextDecoder("utf-8", { fatal: true }).decode(init.body as Uint8Array)).toBe(JSON.stringify({ body }));
+  });
+
+  it("stops MCP text mutations when a 200 response has no authoritative readback", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
+
+    await expect(makeClient().requestJson("POST", "/issues/PAP-1135/comments", { body: { body: "Кириллица сохранена" } }))
+      .rejects.toBeInstanceOf(PaperclipApiReadbackMismatchError);
+  });
+
+  it("checks recursive interaction and decision contract text, including arbitrary inputValues", async () => {
+    const detailsMarkdown = "\u0414\u0435\u0442\u0430\u043b\u0438 \u0432 payload";
+    const acceptLabel = "\u041f\u0440\u0438\u043d\u044f\u0442\u044c";
+    const rejectLabel = "\u041e\u0442\u043a\u043b\u043e\u043d\u0438\u0442\u044c";
+    const customField = "\u041f\u0440\u043e\u0438\u0437\u0432\u043e\u043b\u044c\u043d\u043e\u0435 \u043f\u043e\u043b\u0435";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockJsonResponse({
+        kind: "request_confirmation",
+        payload: { detailsMarkdown, acceptLabel, rejectLabel, steps: [{ message: "Первый шаг" }] },
+      }, 201))
+      .mockResolvedValueOnce(mockJsonResponse({ decision: { inputValues: { customField } } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(makeClient().requestJson("POST", "/issues/PAP-1135/interactions", {
+      body: {
+        kind: "request_confirmation",
+        idempotencyKey: "run:confirmation",
+        payload: { version: 1, detailsMarkdown, acceptLabel, rejectLabel, steps: [{ message: "Первый шаг" }] },
+      },
+    })).resolves.toBeTruthy();
+    await expect(makeClient().requestJson("POST", "/decisions/decision-1/decide", {
+      body: { optionId: "approve", idempotencyKey: "run:decision", inputValues: { customField } },
+    })).resolves.toBeTruthy();
+  });
+
+  it("stops MCP workflow when an arbitrary decision input has no exact readback", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockJsonResponse({ decision: { inputValues: {} } })));
+
+    await expect(makeClient().requestJson("POST", "/decisions/decision-1/decide", {
+      body: { optionId: "approve", inputValues: { customField: "\u041a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u0430" } },
+    })).rejects.toBeInstanceOf(PaperclipApiReadbackMismatchError);
+  });
+
+  it("rejects a structurally swapped MCP interaction text readback", async () => {
+    const title = "Заголовок";
+    const prompt = "Подтвердите действие";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockJsonResponse({
+      interaction: { title: prompt, payload: { prompt: title, steps: ["один", "два"] } },
+    }, 201)));
+
+    await expect(makeClient().requestJson("POST", "/issues/PAP-1135/interactions", {
+      body: { kind: "request_confirmation", title, payload: { prompt, steps: ["один", "два"] } },
+    })).rejects.toBeInstanceOf(PaperclipApiReadbackMismatchError);
   });
 
   it("lists the company skill library with the default company id", async () => {
@@ -98,7 +171,7 @@ describe("paperclip MCP tools", () => {
     });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(parseRequestJson(init.body)).toEqual({
       agentId: "22222222-2222-2222-2222-222222222222",
       expectedStatuses: ["todo", "backlog", "blocked"],
     });
@@ -121,12 +194,13 @@ describe("paperclip MCP tools", () => {
       "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/issues",
     );
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(parseRequestJson(init.body)).toEqual({
       title: "Assigned follow-up",
       workMode: "standard",
       priority: "medium",
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",
       requestDepth: 0,
+      allowDuplicate: false,
     });
   });
 
@@ -144,7 +218,7 @@ describe("paperclip MCP tools", () => {
     });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(parseRequestJson(init.body)).toEqual({
       format: "markdown",
       body: "# Updated",
     });
@@ -191,7 +265,7 @@ describe("paperclip MCP tools", () => {
       "http://localhost:3100/api/execution-workspaces/44444444-4444-4444-8444-444444444444/runtime-services/restart",
     );
     expect(controlInit.method).toBe("POST");
-    expect(JSON.parse(String(controlInit.body))).toEqual({
+    expect(parseRequestJson(controlInit.body)).toEqual({
       workspaceCommandId: "web",
     });
   });
@@ -244,7 +318,7 @@ describe("paperclip MCP tools", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/interactions");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(parseRequestJson(init.body)).toEqual({
       kind: "suggest_tasks",
       continuationPolicy: "wake_assignee",
       idempotencyKey: "run-1:suggest",
@@ -286,7 +360,7 @@ describe("paperclip MCP tools", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/interactions");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(parseRequestJson(init.body)).toEqual({
       kind: "request_confirmation",
       continuationPolicy: "none",
       idempotencyKey: "confirmation:PAP-1135:plan:33333333-3333-4333-8333-333333333333",
@@ -341,7 +415,7 @@ describe("paperclip MCP tools", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/interactions");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(parseRequestJson(init.body)).toEqual({
       kind: "request_checkbox_confirmation",
       continuationPolicy: "wake_assignee",
       idempotencyKey: "confirmation:PAP-1135:files",
@@ -384,7 +458,7 @@ describe("paperclip MCP tools", () => {
       "http://localhost:3100/api/companies/11111111-1111-1111-1111-111111111111/approvals",
     );
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(parseRequestJson(init.body)).toEqual({
       type: "hire_agent",
       payload: { branch: "pap-1167" },
       issueIds: ["44444444-4444-4444-4444-444444444444"],

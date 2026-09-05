@@ -1,5 +1,5 @@
 import express, { Router, type Request as ExpressRequest } from "express";
-import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,13 @@ import type { Db } from "@paperclipai/db";
 import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
-import { httpLogger, errorHandler } from "./middleware/index.js";
+import {
+  agentTextMutationContentType,
+  agentTextMutationIntegrity,
+  captureAndValidateAgentTextMutationBody,
+  httpLogger,
+  errorHandler,
+} from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
@@ -331,8 +337,8 @@ export async function createApp(
 ) {
   const app = express();
   app.locals.paperclipDb = db;
-  const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
-    (req as unknown as { rawBody: Buffer }).rawBody = buf;
+  const captureRawBody = (req: IncomingMessage, _res: ServerResponse, buf: Buffer) => {
+    captureAndValidateAgentTextMutationBody(req, buf);
   };
 
   // Respect the operator's `TRUST_PROXY` env var (see middleware/trust-proxy.ts).
@@ -340,14 +346,6 @@ export async function createApp(
   // when the server may be reachable without a known reverse proxy in front.
   applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
 
-  app.use(COMPANY_IMPORT_API_PATH, express.json({
-    limit: PORTABLE_JSON_BODY_LIMIT,
-    verify: captureRawBody,
-  }));
-  app.use(express.json({
-    limit: DEFAULT_JSON_BODY_LIMIT,
-    verify: captureRawBody,
-  }));
   app.use("/api", apiCompression());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
@@ -376,6 +374,19 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
+  // This must happen before express.json(): body-parser rejects unsupported
+  // charsets itself, which would otherwise bypass the agent integrity
+  // contract and return 415 rather than the deterministic 428.
+  app.use(agentTextMutationContentType);
+  app.use(COMPANY_IMPORT_API_PATH, express.json({
+    limit: PORTABLE_JSON_BODY_LIMIT,
+    verify: captureRawBody,
+  }));
+  app.use(express.json({
+    limit: DEFAULT_JSON_BODY_LIMIT,
+    verify: captureRawBody,
+  }));
+  app.use(agentTextMutationIntegrity);
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
