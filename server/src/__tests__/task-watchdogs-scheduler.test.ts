@@ -221,7 +221,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.watchdogIssueId).toBe(watchdogIssues[0]?.id);
     expect(watchdog?.lastObservedFingerprint).toMatch(/^task_watchdog_stop:/);
     expect(watchdog?.lastObservedStopSnapshot).toMatchObject({
-      version: 2,
+      version: 3,
       fingerprint: watchdog?.lastObservedFingerprint,
       materialLeaves: [],
       waitsByIssueId: {},
@@ -641,8 +641,8 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.lastObservedStopSnapshot).toMatchObject({
       waitsByIssueId: {
         [sourceId]: {
-          pendingInteractionIds: [interactionId],
-          pendingApprovalIds: [approvalId],
+          pendingInteractionKinds: ["request_confirmation"],
+          pendingApproval: true,
         },
       },
     });
