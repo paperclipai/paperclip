@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -470,6 +477,17 @@ describe("historical publication security", () => {
     await expect(
       readFile(path.join(root, "assets", "unexpected.svg"), "utf8"),
     ).rejects.toThrow();
+
+    const outside = path.join(trustedRoot, "outside-secret");
+    const trustedFavicon = path.join(
+      trustedRoot,
+      "ui/public/favicon-32x32.png",
+    );
+    await Promise.all([writeFile(outside, "secret"), rm(trustedFavicon)]);
+    await symlink(outside, trustedFavicon);
+    await expect(stageTrustedHistoryAssets(root, trustedRoot)).rejects.toThrow(
+      "Refusing symbolic link in trusted publisher asset path",
+    );
   });
 
   it("requires a private-origin-compatible destination shape", () => {

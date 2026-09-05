@@ -10,6 +10,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -151,18 +152,50 @@ export async function stageTrustedHistoryAssets(
   root: string,
   trustedRoot = repositoryRoot,
 ) {
+  const resolveTrustedAsset = async (segments: string[]) => {
+    const trustedRootReal = await realpath(trustedRoot);
+    let source = trustedRoot;
+    for (const [index, segment] of segments.entries()) {
+      source = path.join(source, segment);
+      const metadata = await lstat(source);
+      if (metadata.isSymbolicLink()) {
+        throw new Error(
+          `Refusing symbolic link in trusted publisher asset path ${segments.join("/")}`,
+        );
+      }
+      const final = index === segments.length - 1;
+      if (
+        (final && !metadata.isFile()) ||
+        (!final && !metadata.isDirectory())
+      ) {
+        throw new Error(
+          `Trusted publisher asset path has an invalid file type: ${segments.join("/")}`,
+        );
+      }
+    }
+    const sourceReal = await realpath(source);
+    const relative = path.relative(trustedRootReal, sourceReal);
+    if (
+      !relative ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`)
+    ) {
+      throw new Error(
+        `Trusted publisher asset escapes its checkout: ${segments.join("/")}`,
+      );
+    }
+    return sourceReal;
+  };
+  const [faviconSource, fontSource] = await Promise.all([
+    resolveTrustedAsset(["ui", "public", "favicon-32x32.png"]),
+    resolveTrustedAsset(["ui", "public", "fonts", "InterVariable.woff2"]),
+  ]);
   const assets = path.join(root, "assets");
   await rm(assets, { recursive: true, force: true });
   await mkdir(assets, { recursive: true });
   await Promise.all([
-    copyFile(
-      path.join(trustedRoot, "ui/public/favicon-32x32.png"),
-      path.join(assets, "favicon-32x32.png"),
-    ),
-    copyFile(
-      path.join(trustedRoot, "ui/public/fonts/InterVariable.woff2"),
-      path.join(assets, "InterVariable.woff2"),
-    ),
+    copyFile(faviconSource, path.join(assets, "favicon-32x32.png")),
+    copyFile(fontSource, path.join(assets, "InterVariable.woff2")),
   ]);
 }
 
