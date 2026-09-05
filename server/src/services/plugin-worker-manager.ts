@@ -1523,14 +1523,17 @@ export function createPluginWorkerHandle(
   //
   // A plugin build old enough to predate the host route identifier tags the
   // notification with only the worker session identifier, the sole routing
-  // key the previous protocol used. That identifier still resolves to exactly
-  // one route: the bind step in `openLoginPtySession` never lets two live
-  // routes share one worker session identifier, so
-  // `loginPtyRoutesByWorkerSessionId` holds at most one route per key. The
-  // host warns once for this worker — never once for each dropped message,
-  // since a live pseudo-terminal can send many — so an operator can see the
-  // build is too old, then still delivers the route's output and exit
-  // notifications instead of losing them.
+  // key the previous protocol used. The worker itself controls that
+  // identifier, so it alone cannot prove which route a message belongs to
+  // once this worker holds two or more concurrent routes: a message that
+  // omits `hostRouteId` and names a different, live route's session
+  // identifier would otherwise deliver into, or end, that other route. A
+  // build old enough to omit `hostRouteId` never ran a concurrent route, so
+  // the fallback only trusts the worker session identifier while this worker
+  // holds exactly one route. The host warns once for this worker — never
+  // once for each dropped message, since a live pseudo-terminal can send
+  // many — so an operator can see the build is too old, then still delivers
+  // the route's output and exit notifications instead of losing them.
   function resolveLoginPtyRoute(params: Record<string, unknown>): LoginPtyRoute | null {
     const hostRouteId = readNonEmptyString(params.hostRouteId);
     if (hostRouteId) {
@@ -1542,6 +1545,7 @@ export function createPluginWorkerHandle(
         "login pseudo-terminal message has no hostRouteId; the plugin build is too old",
       );
     }
+    if (loginPtyRoutesByHostRouteId.size !== 1) return null;
     const workerSessionId = readNonEmptyString(params.workerSessionId);
     if (!workerSessionId) return null;
     return loginPtyRoutesByWorkerSessionId.get(workerSessionId) ?? null;

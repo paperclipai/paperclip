@@ -1719,6 +1719,38 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
       await handle.stop().catch(() => undefined);
     }
   });
+
+  it("drops a no-hostRouteId message naming a concurrent route's session instead of cross-delivering it", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // Two live routes share this worker. A worker session id alone cannot
+      // prove which route a hostRouteId-less message belongs to once a
+      // second route is live, so the fallback must refuse to guess.
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const second = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-B",
+          outputs: [{ chunk: "cross-route", sid: "ws-A", omitHostRouteId: true }],
+        }),
+      );
+      const firstChunks: string[] = [];
+      const secondChunks: string[] = [];
+      first.onData((chunk) => firstChunks.push(chunk));
+      second.onData((chunk) => secondChunks.push(chunk));
+      // Give the ambiguous notification time to arrive and be dropped.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(firstChunks).toEqual([]);
+      expect(secondChunks).toEqual([]);
+
+      await first.close();
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
