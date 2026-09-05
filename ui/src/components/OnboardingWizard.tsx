@@ -2508,17 +2508,23 @@ function OnboardingWizardInner({
                 // narrower than the next screen's makes the whole frame jump on
                 // Continue — which is the thing that read as "off" to begin
                 // with, and is more obvious once the buttons match.
-                // 68px sides, so the column inside the 560px frame is 424px —
-                // the measure the design draws every arc step to. It was 40px
-                // (a 480px column), which is wide enough that the two model
-                // tiles stretch and the name field sits under a question far
-                // narrower than itself.
+                // 40px sides, so the column inside the 560px frame is 480px:
+                // the measure the connect sequence is drawn to. The arc shares
+                // one shell, so the other steps take that measure rather than
+                // sitting narrower than the step between them.
+                //
+                // It has been both ways, and the objection that moved it last
+                // time has not been retested since it moved back. A 64px inset
+                // (a 432px column) was chosen because at the wider measure the
+                // two model tiles stretch and the name field sits under a
+                // question far narrower than itself. The connect step is now
+                // drawn to 480px, so the shell followed it. If step 1 or step 3
+                // reads loose, that is the reason and this is the line — but
+                // narrowing the shell again would put the connect step back out
+                // of step with its own design, so the fix would belong in those
+                // steps' own content rather than here.
                 isAgentArcStep || step === 1
-                  ? // 40px inset, not 64: the connect sequence is drawn against
-                    // a 480px column and the arc's other steps share the shell,
-                    // so they widen with it rather than sitting narrower than
-                    // the step between them.
-                    "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
+                  ? "w-(--sz-560px) max-w-full px-8 py-10 sm:px-10 sm:py-11"
                   : "w-full max-w-md px-8 py-12",
               )}
             >
