@@ -800,6 +800,8 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const params = [
       "assigneeAgentId",
       "participantAgentId",
+      "goalId",
+      "createdByAgentId",
       "projectId",
       "workspaceId",
       "executionWorkspaceId",
@@ -820,6 +822,20 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
           : `${param} must be a UUID`,
       });
       expect(res.body).not.toHaveProperty("issues");
+    }
+
+    // The empty skip exempts one value and only one. `"null"` is the token most
+    // likely to be folded into it — `assigneeAgentId` genuinely does accept it —
+    // and a skip widened that far turns each of these into a silently ignored
+    // filter instead of a 400.
+    for (const param of params) {
+      if (param === "assigneeAgentId") continue;
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ status: "todo", [param]: "null", limit: "20" });
+
+      expect(res.status, `${param}: ${JSON.stringify(res.body)}`).toBe(400);
+      expect(res.body).toMatchObject({ error: `${param} must be a UUID` });
     }
   });
 
@@ -843,6 +859,9 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(baseline.status, JSON.stringify(baseline.body)).toBe(200);
     expect(baseline.body).toMatchObject({ count: 0 });
 
+    // `goalId` and `createdByAgentId` are deliberately absent: they are in
+    // `ISSUE_LIST_UUID_FILTER_NAMES` but not `ISSUE_COUNT_UUID_FILTER_NAMES`, so
+    // the count route never parses them and `?goalId=bad` is a 200 here.
     const params = [
       "assigneeAgentId",
       "participantAgentId",
@@ -946,6 +965,8 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     const params = [
       "assigneeAgentId",
       "participantAgentId",
+      "goalId",
+      "createdByAgentId",
       "projectId",
       "workspaceId",
       "executionWorkspaceId",
