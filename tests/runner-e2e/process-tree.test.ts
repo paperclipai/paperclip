@@ -50,7 +50,7 @@ describe("runner E2E process-tree cleanup", () => {
     ).toEqual([100]);
   });
 
-  it("falls back to only the directly spawned group when launcher identity is unavailable", () => {
+  it("refuses every group when launcher identity is unavailable", () => {
     const observed = observeDescendantProcessTree(
       [process(100, 10, 100), process(200, 100, 200)],
       100,
@@ -61,7 +61,23 @@ describe("runner E2E process-tree cleanup", () => {
         currentProcessGroupId: null,
         groups: observed.groups,
       }),
-    ).toEqual([100]);
+    ).toEqual([]);
+  });
+
+  it("does not add an unobserved root process group after revalidation", () => {
+    expect(
+      safeProcessGroupTerminationOrder({
+        rootProcessGroupId: 100,
+        currentProcessGroupId: 10,
+        groups: [
+          {
+            processGroupId: 200,
+            depth: 1,
+            members: [{ pid: 200, started: "start-200" }],
+          },
+        ],
+      }),
+    ).toEqual([200]);
   });
 
   it("retains a continuously live group when a cleanup helper replaces its original member", () => {

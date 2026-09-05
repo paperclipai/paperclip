@@ -66,9 +66,7 @@ export function safeProcessGroupTerminationOrder(input: {
   currentProcessGroupId: number | null;
   groups: readonly ObservedProcessGroup[];
 }) {
-  if (input.currentProcessGroupId === null) {
-    return input.rootProcessGroupId > 1 ? [input.rootProcessGroupId] : [];
-  }
+  if (input.currentProcessGroupId === null) return [];
   const safe = new Map<number, number>();
   for (const group of input.groups) {
     if (
@@ -84,7 +82,10 @@ export function safeProcessGroupTerminationOrder(input: {
   }
   if (
     input.rootProcessGroupId > 1 &&
-    input.rootProcessGroupId !== input.currentProcessGroupId
+    input.rootProcessGroupId !== input.currentProcessGroupId &&
+    input.groups.some(
+      (group) => group.processGroupId === input.rootProcessGroupId,
+    )
   ) {
     safe.set(input.rootProcessGroupId, -1);
   }

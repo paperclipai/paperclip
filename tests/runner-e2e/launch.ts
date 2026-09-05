@@ -364,6 +364,11 @@ async function runProcess(
   let postResultStallError: string | null = null;
   let completionCheckActive = false;
   let boundedCleanup: Promise<string | null> | undefined;
+  const forceStopDirectChild = () => {
+    if (!childSettled && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+    }
+  };
   const stopChildTree = (diagnostic?: ProcessTreeDiagnostic) => {
     if (boundedCleanup) return;
     const rootProcessGroupId = child.pid!;
@@ -374,17 +379,9 @@ async function runProcess(
         ? (validationTable.find((candidate) => candidate.pid === process.pid)
             ?.processGroupId ?? null)
         : null;
-      const descendantVerificationIncomplete =
-        snapshot.groups.length === 0 ||
-        ((!validationTable || currentProcessGroupId === null) &&
-          snapshot.groups.some(
-            (group) => group.processGroupId !== rootProcessGroupId,
-          ));
       const observedGroups = validationTable
         ? revalidateObservedProcessGroups(snapshot.groups, validationTable)
-        : snapshot.groups.filter(
-            (group) => group.processGroupId === rootProcessGroupId,
-          );
+        : [];
       const terminationOrder = safeProcessGroupTerminationOrder({
         rootProcessGroupId,
         currentProcessGroupId,
@@ -394,66 +391,56 @@ async function runProcess(
         observedGroups,
         terminationOrder,
       );
+      if (verifiedGroups.length === 0) {
+        forceStopDirectChild();
+        return "Could not revalidate an owned process group before cleanup";
+      }
       for (const processGroupId of terminationOrder) {
         stopProcessGroup(processGroupId, "SIGTERM");
       }
 
       let remainingGroups = verifiedGroups;
-      if (verifiedGroups.length > 0) {
-        const gracefulDeadline = Date.now() + 5_000;
-        while (remainingGroups.length > 0 && Date.now() < gracefulDeadline) {
-          const table = await readProcessTable();
-          if (!table) {
-            stopProcessGroup(rootProcessGroupId, "SIGKILL");
-            return "Could not verify descendant process identities before SIGKILL";
-          }
-          remainingGroups = refreshContinuouslyLiveProcessGroups(
-            remainingGroups,
-            table,
-          );
-          if (remainingGroups.length > 0) await wait(50);
+      const gracefulDeadline = Date.now() + 5_000;
+      while (remainingGroups.length > 0 && Date.now() < gracefulDeadline) {
+        const table = await readProcessTable();
+        if (!table) {
+          forceStopDirectChild();
+          return "Could not verify descendant process identities before SIGKILL";
         }
-        const remainingGroupIds = new Set(
-          remainingGroups.map((group) => group.processGroupId),
+        remainingGroups = refreshContinuouslyLiveProcessGroups(
+          remainingGroups,
+          table,
         );
-        const forcedOrder = safeProcessGroupTerminationOrder({
-          rootProcessGroupId,
-          currentProcessGroupId,
-          groups: remainingGroups,
-        }).filter((processGroupId) => remainingGroupIds.has(processGroupId));
-        for (const processGroupId of forcedOrder) {
-          stopProcessGroup(processGroupId, "SIGKILL");
-        }
-      } else {
-        stopProcessGroup(rootProcessGroupId, "SIGKILL");
+        if (remainingGroups.length > 0) await wait(50);
+      }
+      const remainingGroupIds = new Set(
+        remainingGroups.map((group) => group.processGroupId),
+      );
+      const forcedOrder = safeProcessGroupTerminationOrder({
+        rootProcessGroupId,
+        currentProcessGroupId,
+        groups: remainingGroups,
+      }).filter((processGroupId) => remainingGroupIds.has(processGroupId));
+      for (const processGroupId of forcedOrder) {
+        stopProcessGroup(processGroupId, "SIGKILL");
       }
 
       const forcedDeadline = Date.now() + 5_000;
       while (Date.now() < forcedDeadline) {
-        if (verifiedGroups.length === 0) {
-          if (!processGroupIsAlive(rootProcessGroupId)) {
-            return descendantVerificationIncomplete
-              ? "Could not verify every detached descendant process group during cleanup"
-              : null;
-          }
-        } else {
-          const table = await readProcessTable();
-          if (!table) {
-            return "Could not verify descendant process exit after SIGKILL";
-          }
-          remainingGroups = refreshContinuouslyLiveProcessGroups(
-            remainingGroups,
-            table,
-          );
-          if (remainingGroups.length === 0) return null;
+        const table = await readProcessTable();
+        if (!table) {
+          return "Could not verify descendant process exit after SIGKILL";
         }
+        remainingGroups = refreshContinuouslyLiveProcessGroups(
+          remainingGroups,
+          table,
+        );
+        if (remainingGroups.length === 0) return null;
         await wait(50);
       }
-      return verifiedGroups.length === 0
-        ? `Paperclip/Playwright process group ${rootProcessGroupId} survived SIGKILL`
-        : `Verified descendant process groups ${remainingGroups
-            .map((group) => group.processGroupId)
-            .join(",")} survived SIGKILL`;
+      return `Verified descendant process groups ${remainingGroups
+        .map((group) => group.processGroupId)
+        .join(",")} survived SIGKILL`;
     })();
     activeProcessCleanup.set(rootProcessGroupId, boundedCleanup);
   };
