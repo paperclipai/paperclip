@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -35,7 +35,9 @@ function safeMilestoneText(input: {
     }
   }
   return `${input.agentName} stopped before completing this turn.${
-    taskUrl ? ` Open the task in Paperclip: ${taskUrl}` : " Open the task in Paperclip for details."
+    taskUrl
+      ? ` Open the task in Paperclip: ${taskUrl}`
+      : " Open the task in Paperclip for details."
   }`;
 }
 
@@ -55,6 +57,11 @@ export async function enqueueChatRunMilestones(
   const since = input.since ?? new Date(Date.now() - 24 * 60 * 60_000);
   const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
   const issueIdFromContext = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+  const milestoneFromStatus = sql<string>`case
+    when ${heartbeatRuns.status} = 'queued' then 'queued'
+    when ${heartbeatRuns.status} = 'running' then 'working'
+    else 'failed'
+  end`;
   const rows = await db
     .select({
       runId: heartbeatRuns.id,
@@ -75,6 +82,14 @@ export async function enqueueChatRunMilestones(
       ),
     )
     .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+    .leftJoin(
+      chatPublications,
+      and(
+        eq(chatPublications.companyId, heartbeatRuns.companyId),
+        eq(chatPublications.endpointId, chatConversations.endpointId),
+        sql`${chatPublications.idempotencyKey} = 'run:' || ${heartbeatRuns.id}::text || ':' || ${milestoneFromStatus} || ':' || ${chatConversations.endpointId}::text`,
+      ),
+    )
     .where(
       and(
         inArray(heartbeatRuns.status, [
@@ -85,8 +100,10 @@ export async function enqueueChatRunMilestones(
           "cancelled",
         ]),
         gte(heartbeatRuns.updatedAt, since),
+        isNull(chatPublications.id),
       ),
     )
+    .orderBy(asc(heartbeatRuns.updatedAt), asc(heartbeatRuns.id))
     .limit(limit);
 
   let inserted = 0;

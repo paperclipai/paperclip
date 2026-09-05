@@ -187,8 +187,10 @@ const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
     threads: true,
     directMessages: true,
     nativeStreaming: true,
-    messageEdits: true,
-    messageDeletes: true,
+    // The pinned Teams adapter does not currently normalize Bot Framework
+    // messageUpdate/messageDelete activities into Chat SDK lifecycle events.
+    messageEdits: false,
+    messageDeletes: false,
     reactions: true,
     files: true,
     cards: true,
@@ -203,7 +205,9 @@ const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
     directMessages: true,
     nativeStreaming: true,
     messageEdits: true,
-    messageDeletes: true,
+    // Telegram's Bot API does not emit an update when a user deletes a
+    // message, so this capability cannot be offered truthfully.
+    messageDeletes: false,
     reactions: true,
     files: true,
     cards: true,
@@ -411,13 +415,36 @@ function sanitizeFilename(value: string | undefined): string | null {
 
 function redactError(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
-  return redactSensitiveText(text).slice(0, MAX_ERROR_TEXT);
+  // Telegram authenticates Bot API calls with a token embedded in the URL
+  // path. Generic key/value redaction cannot recognize that shape, so scrub
+  // both literal and URL-encoded forms before an error reaches logs, health
+  // state, or an HTTP response.
+  const withoutTelegramBotTokens = text
+    .replace(/(\/bot)\d{5,}(?::|%3A)[A-Za-z0-9_-]{20,}/gi, "$1***REDACTED***")
+    .replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}\b/g, "***REDACTED***");
+  return redactSensitiveText(withoutTelegramBotTokens).slice(0, MAX_ERROR_TEXT);
 }
 
 async function attemptProviderPublication<T>(
   send: () => Promise<T>,
 ): Promise<T> {
   return await send();
+}
+
+async function editOrPostProviderPublication<T>(
+  edit: () => Promise<T>,
+  post: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await edit();
+  } catch (error) {
+    // A definite 404 proves the old progress comment no longer exists. It is
+    // therefore safe to create a replacement without risking a duplicate.
+    // Ambiguous transport failures must still enter delivery_unknown.
+    if (classifyChatPublicationError(error, 1).kind !== "resource_unavailable")
+      throw error;
+    return await post();
+  }
 }
 
 function safeCardForPublication(
@@ -487,6 +514,60 @@ type GitHubLifecycleEvent = {
   text: string;
   threadId: string;
 };
+
+type TelegramLifecycleEvent = {
+  eventKind: "message_updated";
+  messageId: string;
+  revision: string;
+  text: string;
+  threadId: string;
+};
+
+function telegramLifecycleEventFromPayload(
+  payload: unknown,
+): TelegramLifecycleEvent | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload))
+    return null;
+  const edited = (payload as { edited_message?: unknown }).edited_message;
+  if (!edited || typeof edited !== "object" || Array.isArray(edited))
+    return null;
+  const message = edited as {
+    caption?: unknown;
+    chat?: { id?: unknown };
+    edit_date?: unknown;
+    message_id?: unknown;
+    message_thread_id?: unknown;
+    text?: unknown;
+  };
+  const chatId = message.chat?.id;
+  const messageId = message.message_id;
+  const editDate = message.edit_date;
+  if (
+    (typeof chatId !== "string" && typeof chatId !== "number") ||
+    typeof messageId !== "number" ||
+    typeof editDate !== "number"
+  )
+    return null;
+  const topicId = message.message_thread_id;
+  if (topicId !== undefined && typeof topicId !== "number") return null;
+  const body =
+    typeof message.text === "string"
+      ? message.text
+      : typeof message.caption === "string"
+        ? message.caption
+        : "";
+  const chat = String(chatId);
+  return {
+    eventKind: "message_updated",
+    messageId: `${chat}:${messageId}`,
+    revision: String(editDate),
+    text: `An external message was edited:\n\n${body.slice(0, MAX_INBOUND_TEXT)}`,
+    threadId:
+      topicId === undefined
+        ? `telegram:${chat}`
+        : `telegram:${chat}:${topicId}`,
+  };
+}
 
 async function githubLifecycleEventFromRequest(
   request: Request,
@@ -2128,7 +2209,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           })
           .where(eq(toolConnections.id, endpoint.connectionId)),
       ]);
-      throw error;
+      throw unprocessable(failure, { code: "chat_provider_setup_failed" });
     }
 
     await logActivity(db, {
@@ -3188,7 +3269,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // comment, durable wakeup request, delivery state, and message link commit.
       await Promise.allSettled([
         thread.adapter.addReaction(thread.id, message.id, "eyes"),
-        thread.startTyping("Working…"),
+        // Slack implements this through assistant.threads.setStatus, which
+        // requires assistant:write. The least-privilege Paperclip manifest
+        // deliberately does not request that scope; the coalesced lifecycle
+        // reply below is the visible working state instead.
+        endpoint.provider === "slack"
+          ? Promise.resolve()
+          : thread.startTyping("Working…"),
         addressed && !thread.isDM ? thread.subscribe() : Promise.resolve(),
       ]);
     } catch (error) {
@@ -4691,6 +4778,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .returning({ id: chatDeliveries.id });
     if (!claimed) return false;
 
+    let refreshRuntimeAfterLifecycle = false;
     try {
       // A recovered GitHub installation can have a different installation id
       // while retaining the same App credentials. Resolve it server-side and
@@ -4707,6 +4795,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             currentCredentials.installationId
         ) {
           await persistCredentials(endpoint, prepared.credentials);
+          refreshRuntimeAfterLifecycle = true;
         }
         if (prepared.inventory)
           await reconcileProviderResourceRows(endpoint, prepared.inventory);
@@ -4907,6 +4996,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       throw error;
     }
 
+    if (refreshRuntimeAfterLifecycle) {
+      // The verified reinstall may have assigned a new installation id. Drop
+      // the runtime that authenticated the lifecycle webhook with the prior
+      // id; the next send recreates it from the newly persisted credentials.
+      await runtime.removeEndpoint(endpoint.id).catch((error) => {
+        logger.warn(
+          { endpointId: endpoint.id, error: redactError(error) },
+          "failed to refresh recovered GitHub chat endpoint runtime",
+        );
+      });
+    }
     if (
       effect.kind === "endpoint" &&
       (effect.availability === "attention" || effect.availability === "revoked")
@@ -4946,10 +5046,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+    const recoveringRevokedGitHubInstallation =
+      endpoint?.status === "revoked" &&
+      provider === "github" &&
+      request.headers.get("x-github-event") === "installation";
     if (
       !endpoint ||
       endpoint.status === "archived" ||
-      endpoint.status === "revoked"
+      (endpoint.status === "revoked" && !recoveringRevokedGitHubInstallation)
     )
       throw notFound("Chat endpoint not found");
     const lifecycleInspection = request.clone();
@@ -5016,6 +5120,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // Ignore only malformed or unsupported supplemental payloads. Once an
         // event is recognized, its durable persistence failure must escape.
       }
+      if (lifecycle) {
+        await recordLifecycleDelivery({
+          endpointId: endpoint.id,
+          ...lifecycle,
+        });
+      }
+    }
+    if (provider === "telegram" && response.ok && lifecyclePayload) {
+      const lifecycle = telegramLifecycleEventFromPayload(lifecyclePayload);
       if (lifecycle) {
         await recordLifecycleDelivery({
           endpointId: endpoint.id,
@@ -6057,14 +6170,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (card && CAPABILITIES[input.endpoint.provider].cards) {
       return await attemptProviderPublication(async () =>
         input.replaceProviderMessageId
-          ? await thread.adapter.editMessage(
-              thread.id,
-              input.replaceProviderMessageId,
-              {
-                card,
-                fallbackText: text,
-                ...(files.length ? { files } : {}),
-              },
+          ? await editOrPostProviderPublication(
+              () =>
+                thread.adapter.editMessage(
+                  thread.id,
+                  input.replaceProviderMessageId!,
+                  {
+                    card,
+                    fallbackText: text,
+                    ...(files.length ? { files } : {}),
+                  },
+                ),
+              () =>
+                thread.post({
+                  card,
+                  fallbackText: text,
+                  ...(files.length ? { files } : {}),
+                }),
             )
           : await thread.post({
               card,
@@ -6076,14 +6198,19 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (files.length)
       return await attemptProviderPublication(async () =>
         input.replaceProviderMessageId
-          ? await thread.adapter.editMessage(
-              thread.id,
-              input.replaceProviderMessageId,
-              { markdown: text, files },
+          ? await editOrPostProviderPublication(
+              () =>
+                thread.adapter.editMessage(
+                  thread.id,
+                  input.replaceProviderMessageId!,
+                  { markdown: text, files },
+                ),
+              () => thread.post({ markdown: text, files }),
             )
           : await thread.post({ markdown: text, files }),
       );
     if (
+      !input.replaceProviderMessageId &&
       CAPABILITIES[input.endpoint.provider].nativeStreaming &&
       shouldStreamSafePublicationText(text)
     ) {
@@ -6093,10 +6220,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
     return await attemptProviderPublication(async () =>
       input.replaceProviderMessageId
-        ? await thread.adapter.editMessage(
-            thread.id,
-            input.replaceProviderMessageId,
-            { markdown: text },
+        ? await editOrPostProviderPublication(
+            () =>
+              thread.adapter.editMessage(
+                thread.id,
+                input.replaceProviderMessageId!,
+                { markdown: text },
+              ),
+            () => thread.post({ markdown: text }),
           )
         : await thread.post({ markdown: text }),
     );
@@ -6112,7 +6243,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return match?.[1] ?? null;
   }
 
-  async function githubPublicationToReplace(
+  async function runPublicationToReplace(
     publication: typeof chatPublications.$inferSelect,
     payload: SafeChatPublicationPayload,
   ): Promise<string | null> {
@@ -6133,6 +6264,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         payload: chatPublications.payload,
       })
       .from(chatPublications)
+      .leftJoin(issueComments, eq(issueComments.id, chatPublications.commentId))
       .where(
         and(
           eq(chatPublications.companyId, publication.companyId),
@@ -6140,13 +6272,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(chatPublications.conversationId, publication.conversationId),
           eq(chatPublications.state, "published"),
           isNotNull(chatPublications.providerMessageId),
-          like(chatPublications.idempotencyKey, `run:${currentRunId}:%`),
+          or(
+            like(chatPublications.idempotencyKey, `run:${currentRunId}:%`),
+            eq(issueComments.createdByRunId, currentRunId),
+          ),
         ),
       )
       .orderBy(desc(chatPublications.createdAt))
       .then(
         (rows) =>
-          rows.find((row) => Boolean(row.payload.progressState))
+          rows.find((row) => Boolean(row.providerMessageId))
             ?.providerMessageId ?? null,
       );
   }
@@ -6185,7 +6320,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           ),
         ),
       )
-      .orderBy(asc(chatPublications.createdAt))
+      .orderBy(asc(chatPublications.createdAt), asc(chatPublications.id))
       .limit(limit);
     for (const publication of rows) {
       const earlierOpenPublication = await db
@@ -6194,7 +6329,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .where(
           and(
             eq(chatPublications.conversationId, publication.conversationId),
-            lt(chatPublications.createdAt, publication.createdAt),
+            or(
+              lt(chatPublications.createdAt, publication.createdAt),
+              and(
+                eq(chatPublications.createdAt, publication.createdAt),
+                lt(chatPublications.id, publication.id),
+              ),
+            ),
             inArray(chatPublications.state, [
               "pending",
               "retry",
@@ -6304,10 +6445,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           }
         }
         const payload = publication.payload as SafeChatPublicationPayload;
-        const replaceProviderMessageId =
-          endpoint.provider === "github"
-            ? await githubPublicationToReplace(publication, payload)
-            : null;
+        const replaceProviderMessageId = CAPABILITIES[endpoint.provider]
+          .messageEdits
+          ? await runPublicationToReplace(publication, payload)
+          : null;
         const sent = await postSafePublication({
           endpoint,
           conversation,

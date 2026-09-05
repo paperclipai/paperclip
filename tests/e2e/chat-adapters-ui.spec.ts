@@ -201,8 +201,9 @@ function endpointFixture(provider: ProviderCase, seed: Seed) {
       directMessages: provider.provider !== "github",
       nativeStreaming:
         provider.provider === "slack" || provider.provider === "telegram",
-      messageEdits: true,
-      messageDeletes: true,
+      messageEdits: provider.provider !== "microsoft-teams",
+      messageDeletes:
+        provider.provider === "slack" || provider.provider === "github",
       reactions: true,
       files: true,
       cards:

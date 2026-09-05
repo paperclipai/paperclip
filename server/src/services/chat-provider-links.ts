@@ -136,12 +136,12 @@ export function chatProviderConversationUrl(
     const issue = /^github:([^/]+)\/([^:]+):issue:(\d+)$/.exec(input.threadId);
     if (issue)
       return `https://github.com/${encodeURIComponent(issue[1])}/${encodeURIComponent(issue[2])}/issues/${encodeURIComponent(issue[3])}#issuecomment-${encodeURIComponent(input.providerMessageId)}`;
-    const review = /^github:([^/]+)\/([^:]+):(\d+)(?::rc:\d+)?$/.exec(
+    const review = /^github:([^/]+)\/([^:]+):(\d+)(?::rc:(\d+))?$/.exec(
       input.threadId,
     );
     if (review) {
-      const anchor = input.threadId.includes(":rc:")
-        ? `discussion_r${input.providerMessageId}`
+      const anchor = review[4]
+        ? `discussion_r${review[4]}`
         : `issuecomment-${input.providerMessageId}`;
       return `https://github.com/${encodeURIComponent(review[1])}/${encodeURIComponent(review[2])}/pull/${encodeURIComponent(review[3])}#${anchor}`;
     }
