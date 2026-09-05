@@ -62,6 +62,7 @@ import {
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
+import { HttpError } from "../errors.js";
 import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -263,14 +264,14 @@ export interface ToolGatewaySession {
 
 export type ToolGatewayRuntimeSlot = ToolRuntimeSlotView;
 
-export class ToolGatewayHttpError extends Error {
+export class ToolGatewayHttpError extends HttpError {
   constructor(
-    public readonly status: number,
+    status: number,
     message: string,
     public readonly reasonCode: string,
     public readonly details: Record<string, unknown> = {},
   ) {
-    super(message);
+    super(status, message, details);
   }
 }
 
