@@ -50,6 +50,11 @@ import { uninstallCommand } from "./commands/uninstall.js";
 import { updateCommand } from "./commands/update.js";
 import { registerServiceCommands } from "./commands/service.js";
 import { registerConnectionIntentCommands } from "./commands/client/connections.js";
+import {
+  prepareTestDriveEnvironment,
+  registerTestDriveCommand,
+  type TestDriveOptions,
+} from "./commands/test-drive.js";
 
 const program = new Command();
 const DATA_DIR_OPTION_HELP =
@@ -92,8 +97,16 @@ program
   .option("--no-backup", "Skip the pre-update database backup")
   .action(updateCommand);
 
-program.hook("preAction", (_thisCommand, actionCommand) => {
-  const options = actionCommand.optsWithGlobals() as DataDirOptionLike;
+program.hook("preAction", async (_thisCommand, actionCommand) => {
+  const options = actionCommand.optsWithGlobals() as DataDirOptionLike & TestDriveOptions;
+  if (actionCommand.name() === "test-drive") {
+    const prepared = await prepareTestDriveEnvironment({
+      dataDir: options.dataDir,
+      apiKeyEnv: options.apiKeyEnv,
+    });
+    options.dataDir = prepared.dataDir;
+    actionCommand.setOptionValue("dataDir", prepared.dataDir);
+  }
   const optionNames = new Set(actionCommand.options.map((option) => option.attributeName()));
   applyDataDirOverride(options, {
     hasConfigOption: optionNames.has("config"),
@@ -102,6 +115,8 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
   loadPaperclipEnvFile(options.config);
   initTelemetryFromConfigFile(options.config);
 });
+
+registerTestDriveCommand(program);
 
 program
   .command("onboard")

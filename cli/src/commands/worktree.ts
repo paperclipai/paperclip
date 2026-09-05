@@ -104,6 +104,7 @@ import {
   type PlannedIssueDocumentMerge,
   type PlannedIssueInsert,
 } from "./worktree-merge-history-lib.js";
+import { detectGitWorkspaceInfo } from "./git-workspace.js";
 
 type WorktreeInitOptions = {
   name?: string;
@@ -202,13 +203,6 @@ type EmbeddedPostgresHandle = {
   port: number;
   startedByThisProcess: boolean;
   stop: () => Promise<void>;
-};
-
-type GitWorkspaceInfo = {
-  root: string;
-  commonDir: string;
-  gitDir: string;
-  hooksPath: string;
 };
 
 type CopiedGitHooksResult = {
@@ -715,39 +709,6 @@ function resolveRepairWorktreeDirName(branchName: string): string {
     .replace(/-+/g, "-")
     .replace(/^[-._]+|[-._]+$/g, "");
   return normalized || "worktree";
-}
-
-function detectGitWorkspaceInfo(cwd: string): GitWorkspaceInfo | null {
-  try {
-    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const commonDirRaw = execFileSync("git", ["rev-parse", "--git-common-dir"], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const gitDirRaw = execFileSync("git", ["rev-parse", "--git-dir"], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const hooksPathRaw = execFileSync("git", ["rev-parse", "--git-path", "hooks"], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return {
-      root: path.resolve(root),
-      commonDir: path.resolve(root, commonDirRaw),
-      gitDir: path.resolve(root, gitDirRaw),
-      hooksPath: path.resolve(root, hooksPathRaw),
-    };
-  } catch {
-    return null;
-  }
 }
 
 function copyDirectoryContents(sourceDir: string, targetDir: string): boolean {

@@ -305,6 +305,42 @@ pnpm paperclipai run
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
 
+### One-command isolated manual test drive
+
+Use `test-drive` when you want to exercise the UI from a fresh checkout or SHA
+without completing onboarding by hand:
+
+```sh
+ANTHROPIC_API_KEY=... node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive
+OPENAI_API_KEY=... node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive --harness codex --model gpt-5.4
+OPENROUTER_API_KEY=... node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive \
+  --harness opencode \
+  --model openrouter/anthropic/claude-sonnet-4.5
+```
+
+The command creates a trusted-loopback instance in a unique OS temporary data
+directory, prints the absolute directory, runs onboarding and doctor
+non-interactively, creates `Test Company` with a `CEO` agent, then opens the
+browser. It runs in the foreground, does not install a background service, and
+does not create a goal, project, issue, task, or first heartbeat. Temporary
+directories are retained for inspection. Use `--data-dir <path>` to reuse one
+or `--no-browser` to suppress browser opening. It selects the first available
+loopback port at or above `3100`.
+
+Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
+`OPENROUTER_API_KEY` and requires an `openrouter/...` model. `--api-key-env`
+can name a different source variable while the agent still receives the
+canonical variable. `--api-key` takes a literal but can remain in shell
+history, so environment variables are preferred. In a linked Git worktree the
+command sets worktree runtime mode and safely arms **Run tasks in this
+worktree** for the current isolated instance. Primary checkouts and non-Git
+directories leave that experimental setting unchanged.
+
+If the selected data directory already contains any company, `test-drive`
+preserves all companies, agents, and secrets and ignores the bootstrap flags.
+The worktree execution setting is the only value it may reconcile in that
+case.
+
 ## Docker Quickstart (No local Node install)
 
 Build and run Paperclip in Docker:
