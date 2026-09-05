@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   chatConversations,
+  chatMessageLinks,
   chatPublications,
   heartbeatRuns,
 } from "@paperclipai/db";
@@ -99,6 +100,19 @@ export async function enqueueChatRunMilestones(
           "timed_out",
           "cancelled",
         ]),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'source' like 'chat:%'`,
+        sql`exists (
+          select 1
+          from ${chatMessageLinks}
+          where ${chatMessageLinks.companyId} = ${heartbeatRuns.companyId}
+            and ${chatMessageLinks.conversationId} = ${chatConversations.id}
+            and ${chatMessageLinks.direction} = 'inbound'
+            and (
+              ${chatMessageLinks.commentId}::text = (${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId')
+              or ${chatMessageLinks.commentId}::text = (${heartbeatRuns.contextSnapshot} ->> 'commentId')
+              or (${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds') ? ${chatMessageLinks.commentId}::text
+            )
+        )`,
         gte(heartbeatRuns.updatedAt, since),
         isNull(chatPublications.id),
       ),

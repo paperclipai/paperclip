@@ -5259,7 +5259,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
-  it("drains bounded Slack run milestones without starving behind existing rows", async () => {
+  it("drains bounded Slack chat-origin milestones without admitting an internal issue run", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
@@ -5282,17 +5282,53 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
-    const runIds = [randomUUID(), randomUUID(), randomUUID()];
-    await db.insert(heartbeatRuns).values(
-      runIds.map((id, index) => ({
+    const [inboundLink] = await db
+      .select({ commentId: chatMessageLinks.commentId })
+      .from(chatMessageLinks)
+      .where(
+        and(
+          eq(chatMessageLinks.endpointId, endpoint.id),
+          eq(chatMessageLinks.providerMessageId, "4065.1"),
+          eq(chatMessageLinks.direction, "inbound"),
+        ),
+      );
+    if (!inboundLink?.commentId) {
+      throw new Error("Expected the inbound Slack comment link");
+    }
+    const runCases = [
+      { id: randomUUID(), status: "queued", milestone: "queued" },
+      { id: randomUUID(), status: "running", milestone: "working" },
+      { id: randomUUID(), status: "failed", milestone: "failed" },
+    ] as const;
+    const internalRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: internalRunId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "running",
+        contextSnapshot: {
+          issueId: conversation.issueId,
+          source: "issue.comment",
+          wakeCommentId: inboundLink.commentId,
+          wakeCommentIds: [inboundLink.commentId],
+        },
+        updatedAt: new Date("2026-09-05T14:59:59.000Z"),
+      },
+      ...runCases.map(({ id, status }, index) => ({
         id,
         companyId: fixture.companyId,
         agentId: fixture.assignedAgentId,
-        status: "failed" as const,
-        contextSnapshot: { issueId: conversation.issueId },
+        status,
+        contextSnapshot: {
+          issueId: conversation.issueId,
+          source: "chat:slack",
+          wakeCommentId: inboundLink.commentId,
+          wakeCommentIds: [inboundLink.commentId],
+        },
         updatedAt: new Date(`2026-09-05T15:00:0${index}.000Z`),
       })),
-    );
+    ]);
 
     const inserted: number[] = [];
     for (let index = 0; index < 4; index += 1) {
@@ -5311,7 +5347,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(publications).toHaveLength(3);
     expect(
       new Set(publications.map((publication) => publication.idempotencyKey)),
-    ).toEqual(new Set(runIds.map((id) => `run:${id}:failed:${endpoint.id}`)));
+    ).toEqual(
+      new Set(
+        runCases.map(
+          ({ id, milestone }) => `run:${id}:${milestone}:${endpoint.id}`,
+        ),
+      ),
+    );
+    expect(
+      publications.find((publication) =>
+        publication.idempotencyKey.startsWith(`run:${internalRunId}:`),
+      ),
+    ).toBeUndefined();
   });
 
   it("publishes equal-time Slack outbox rows once in stable order across concurrent drains", async () => {
