@@ -4862,8 +4862,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toBe(true);
   });
 
-  it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
-    const { companyId, agentId, runId, issueId } =
+  it("requeues a productive exhausted successful handoff through the bounded continuation path", async () => {
+    const { agentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
         runStatus: "succeeded",
@@ -4890,25 +4890,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
-    expect(result.continuationRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
     expect(result.successfulContinuationObserved).toBe(0);
-    expect(result.successfulRunHandoffEscalated).toBe(1);
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
 
-    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
-      companyId,
-      agentId,
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(
+      retryRun?.contextSnapshot as Record<string, unknown> | undefined,
+    ).toMatchObject({
       issueId,
-      runId,
-      previousStatus: "in_progress",
-      retryReason: null,
-      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
-      kind: "missing_disposition",
+      taskId: issueId,
+      retryReason: "issue_continuation_needed",
+      retryOfRunId: runId,
+      source: "issue.productive_terminal_continuation_recovery",
     });
-    expect(recoveryAction.evidence).toMatchObject({
-      sourceRunId,
-      latestRunStatus: "succeeded",
-      missingDisposition: "clear_next_step",
-    });
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
   });
 
   it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
