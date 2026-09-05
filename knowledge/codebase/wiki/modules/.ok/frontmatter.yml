@@ -1,0 +1,5 @@
+title: Modules
+description: "One page per package or module: purpose, responsibilities, public API / entry points, key files (linked per the source-reference convention), dependencies, and the flows it participates in. Uses the `module-page` template. At `depth: tour` these fold into the architecture pages; at `standard`+ each package gets its own page. Cross-link concepts and flows."
+tags:
+  - wiki
+  - module

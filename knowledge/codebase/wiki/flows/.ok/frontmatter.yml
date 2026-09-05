@@ -1,0 +1,5 @@
+title: Flows
+description: "Key end-to-end flows as `mermaid` sequence or flow diagrams plus narrative — how a request, job, or interaction moves through the system. Uses the `flow-page` template; record failure modes at `depth: exhaustive`. Link every module and concept the flow crosses."
+tags:
+  - wiki
+  - flow

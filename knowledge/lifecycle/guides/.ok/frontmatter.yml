@@ -1,0 +1,6 @@
+title: Guides
+description: "How-to guides, onboarding docs, and service runbooks (Diátaxis \"how-to\"). Ships `guide`, `onboarding-guide`, and `runbook` templates; carries `last_verified`."
+tags:
+  - guide
+  - how-to
+  - onboarding

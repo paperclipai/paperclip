@@ -1,0 +1,5 @@
+title: Architecture
+description: System boundaries, layers, subsystems, and cross-cutting concerns — the big-picture structure. One page per architectural area, each with a `mermaid` system-context or component diagram, the key components, and the design decisions behind them. Uses the `architecture-page` template. Cross-link the modules and flows each area touches. Reference source files per the wiki source-reference convention (relative links + symbol code-spans for `internal`; GitHub blob URLs for `public`).
+tags:
+  - wiki
+  - architecture
