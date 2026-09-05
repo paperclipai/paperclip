@@ -27,6 +27,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
 });
 import {
   buildAcpxRunSummary,
+  classifyAcpxTurnFailureErrorFamily,
   createAcpxEngineExecutor,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
@@ -6184,6 +6185,73 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     expect(fake.readDisposition().failed).toBe(false);
   });
 
+  it("tags a mid-stream transport-stall terminal with errorFamily transient_upstream", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    // The turn ends with a failed terminal whose error is the observed
+    // transport stall — the class the bounded transient-retry ladder exists for.
+    const runtime = {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: Promise.resolve({
+          status: "failed" as const,
+          error: { message: "Response stalled mid-stream", retryable: true },
+        }),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox);
+
+    expect(result.errorCode).toBe("acpx_turn_failed");
+    // The engine emits the family both at the top level (which the server
+    // merges into resultJson) and inside resultJson, so the heartbeat
+    // classifier reads it and arms the bounded retry ladder.
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.resultJson?.errorFamily).toBe("transient_upstream");
+  });
+
+  it("leaves a capacity/session-cap terminal unclassified so it keeps its own quota path", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    // A hard session cap shares the acpx_turn_failed code but must NOT become
+    // transient_upstream — it belongs on the provider_quota wait path (#10344).
+    const runtime = {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: Promise.resolve({
+          status: "failed" as const,
+          error: { message: "You've hit your session limit · resets 11pm" },
+        }),
+        cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox);
+
+    expect(result.errorCode).toBe("acpx_turn_failed");
+    expect(result.errorFamily ?? null).toBeNull();
+    expect(result.resultJson?.errorFamily ?? null).toBeNull();
+  });
+
   it("releases the runtime locally and places no remote close call once the duplex channel is lost", async () => {
     const sandbox = await setupRemoteSandbox();
     const fake = createFakeBridgeHandle();
@@ -6833,4 +6901,61 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       vi.useRealTimers();
     }
   }, 10000);
+});
+
+describe("classifyAcpxTurnFailureErrorFamily", () => {
+  it("tags the observed mid-stream transport stall as transient_upstream", () => {
+    expect(
+      classifyAcpxTurnFailureErrorFamily({ message: "Response stalled mid-stream" }),
+    ).toBe("transient_upstream");
+  });
+
+  it("tags idle-timeout / connection-reset transport stalls as transient_upstream", () => {
+    for (const message of [
+      "Stream idle timeout - partial response received",
+      "The response stream stalled before completion",
+      "connection reset by peer",
+      "socket hang up",
+      "HTTP/2 bridge session stalled: no PING ack within the stall bound.",
+    ]) {
+      expect(classifyAcpxTurnFailureErrorFamily({ message })).toBe("transient_upstream");
+    }
+  });
+
+  it("also matches a transport-stall signal carried on the runtime error code, not the message", () => {
+    expect(
+      classifyAcpxTurnFailureErrorFamily({
+        message: "turn failed",
+        detailCode: "TRANSPORT_STALL",
+      }),
+    ).toBe("transient_upstream");
+  });
+
+  it("does NOT tag a capacity / session-cap failure — it stays on its own (provider_quota) path", () => {
+    for (const message of [
+      "You've hit your session limit · resets 11pm",
+      "You've hit your usage limit for this model.",
+      "The model is at capacity for this model",
+      "weekly limit reached",
+    ]) {
+      expect(classifyAcpxTurnFailureErrorFamily({ message })).toBeNull();
+    }
+  });
+
+  it("keeps the capacity guard winning even when a cap message also mentions a stall word", () => {
+    // The two subclasses must never be lumped: a cap message is vetoed first,
+    // regardless of any stall-ish wording it happens to carry.
+    expect(
+      classifyAcpxTurnFailureErrorFamily({
+        message: "You've hit your session limit; the stream stalled. resets 11pm",
+      }),
+    ).toBeNull();
+  });
+
+  it("returns null for an unrelated failure and for an empty error", () => {
+    expect(
+      classifyAcpxTurnFailureErrorFamily({ message: "tool call raised a TypeError" }),
+    ).toBeNull();
+    expect(classifyAcpxTurnFailureErrorFamily({ message: "" })).toBeNull();
+  });
 });
