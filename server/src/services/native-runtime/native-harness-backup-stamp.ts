@@ -33,12 +33,6 @@ function stateRootFromDigest(digest: string): string | null {
   return dirname(root) === base ? root : null;
 }
 
-function legacyStateRoot(normalizedSessionId: string): string | null {
-  return stateRootFromDigest(
-    createHash("sha256").update(normalizedSessionId).digest("hex"),
-  );
-}
-
 function isRealDirectory(path: string): boolean {
   try {
     const metadata = lstatSync(path);
@@ -156,29 +150,20 @@ export function verifyNativeHarnessBackupStamp(
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const stamp = value as Record<string, unknown>;
   if (
-    (stamp.schema !== "paperclip.native-harness-backup-stamp.v1" &&
-      stamp.schema !== "paperclip.native-harness-backup-stamp.v2") ||
+    stamp.schema !== "paperclip.native-harness-backup-stamp.v2" ||
     typeof stamp.normalizedSessionId !== "string" ||
     !stamp.normalizedSessionId ||
     typeof stamp.runnerInstanceId !== "string" ||
     !stamp.runnerInstanceId ||
+    typeof stamp.sessionScopeSha256 !== "string" ||
+    typeof stamp.sourceProviderLeaseId !== "string" ||
+    !stamp.sourceProviderLeaseId ||
+    stamp.authorizedProviderLeaseId !== expectedProviderLeaseId ||
     typeof stamp.manifestSha256 !== "string" ||
     !stamp.manifestSha256.startsWith("sha256:")
   )
     return false;
-  const isV2 = stamp.schema === "paperclip.native-harness-backup-stamp.v2";
-  if (
-    isV2 &&
-    (typeof stamp.sessionScopeSha256 !== "string" ||
-      typeof stamp.sourceProviderLeaseId !== "string" ||
-      !stamp.sourceProviderLeaseId ||
-      stamp.authorizedProviderLeaseId !== expectedProviderLeaseId)
-  ) {
-    return false;
-  }
-  const root = isV2
-    ? stateRootFromDigest(String(stamp.sessionScopeSha256))
-    : legacyStateRoot(stamp.normalizedSessionId);
+  const root = stateRootFromDigest(stamp.sessionScopeSha256);
   if (!root || !isRealDirectory(root)) return false;
   const backupRoot = resolve(root, "failover-backups");
   for (const candidate of [
@@ -199,8 +184,7 @@ export function verifyNativeHarnessBackupStamp(
         manifest.schema !== "paperclip.native-harness-backup.v1" ||
         manifest.normalizedSessionId !== stamp.normalizedSessionId ||
         manifest.runnerInstanceId !== stamp.runnerInstanceId ||
-        manifest.sourceProviderLeaseId !==
-          (isV2 ? stamp.sourceProviderLeaseId : expectedProviderLeaseId) ||
+        manifest.sourceProviderLeaseId !== stamp.sourceProviderLeaseId ||
         !Array.isArray(manifest.directories) ||
         manifest.directories.length === 0
       )

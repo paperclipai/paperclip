@@ -820,6 +820,67 @@ describe("verified native harness backups", () => {
       await rm(stateBase, { recursive: true, force: true });
     }
   });
+
+  it("rejects a digest-valid legacy stamp for remote lease authorization", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-legacy-harness-stamp-"),
+    );
+    const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
+    try {
+      const legacyRoot = join(
+        stateBase,
+        createHash("sha256").update("native-session").digest("hex"),
+        "failover-backups",
+        "current",
+      );
+      await mkdir(join(legacyRoot, "runner"), { recursive: true });
+      await mkdir(join(legacyRoot, "codex-home", "sessions"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(legacyRoot, "runner", "runner-state.json"),
+        "runner-state",
+      );
+      await writeFile(
+        join(legacyRoot, "codex-home", "sessions", "thread.jsonl"),
+        "thread-state",
+      );
+      const manifest = buildNativeHarnessBackupManifest({
+        backupRoot: legacyRoot,
+        execution: backupExecution,
+        runnerInstanceId: "runner-1",
+        providerSessionIdentity: {
+          providerSessionId: "thread-1",
+          providerBackendSessionId: "session-1",
+          providerSessionIdentity: null,
+        },
+        sourceProviderLeaseId: "sandbox-1",
+      });
+      const manifestBytes = JSON.stringify(manifest);
+      await writeFile(join(legacyRoot, "manifest.json"), manifestBytes);
+
+      expect(
+        verifyNativeHarnessBackupStamp(
+          {
+            schema: "paperclip.native-harness-backup-stamp.v1",
+            normalizedSessionId: "native-session",
+            runnerInstanceId: "runner-1",
+            manifestSha256: `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`,
+            completedAt: manifest.completedAt,
+          },
+          "sandbox-1",
+        ),
+      ).toBe(false);
+    } finally {
+      if (previousStateDirectory === undefined) {
+        delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      } else {
+        process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("split durable provider checkpoint identity", () => {
