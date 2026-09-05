@@ -161,6 +161,10 @@ const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
 const RUNNERD_CONTROL_PLANE_STATE_SCHEMA =
   "paperclip.runner.durable.control-plane-state.v1";
 const RUNNERD_STATE_SCHEMA = "paperclip.runner.durable.state.v1";
+const CODEX_PROVIDER_STATE_SCHEMA = "paperclip.runner.codex-provider-state.v1";
+const ACPX_PROVIDER_STATE_SCHEMA = "paperclip.runner.acpx-provider-state.v3";
+const MANAGED_PROVIDER_STATE_SCHEMA =
+  "paperclip.runner.managed-provider-state.v1";
 const RUNNERD_STATE_LIFECYCLES = new Set([
   "connecting",
   "ready",
@@ -1892,14 +1896,132 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-function providerSessionIdentityFromRunnerState(
-  state: Record<string, unknown>,
-): Record<string, unknown> {
-  return {
-    providerSessionId: state.providerSessionId ?? null,
-    providerBackendSessionId: state.providerBackendSessionId ?? null,
-    providerSessionIdentity: state.providerSessionIdentity ?? null,
-  };
+function runnerProviderStateFilename(execution: NativeExecutionInput): string {
+  switch (execution.provider.kind) {
+    case "codex":
+    case "opencode":
+      return "codex-provider-state.json";
+    case "acpx":
+      return "acpx-provider-state.json";
+    case "claude_managed":
+    case "aws_agentcore":
+      return "managed-provider-state.json";
+  }
+}
+
+/**
+ * The v2 runner owns PRP identity/lifecycle in runner-state.json and keeps
+ * provider recovery identity in a sibling provider state file. Never infer a
+ * resumable provider from the outer PRP journal alone.
+ */
+export function providerSessionIdentityFromDurableProviderState(input: {
+  execution: NativeExecutionInput;
+  providerState: unknown;
+}): Record<string, unknown> {
+  const state = record(input.providerState);
+  const expectedSessionId = nativeSessionKey(input.execution);
+  const nonEmptyString = (value: unknown): value is string =>
+    typeof value === "string" && value.trim().length > 0;
+  const emptyIdentity = () => ({
+    providerSessionId: null,
+    providerBackendSessionId: null,
+    providerSessionIdentity: null,
+  });
+  switch (input.execution.provider.kind) {
+    case "acpx": {
+      const descriptor = record(state.descriptor);
+      const identity = record(state.identity);
+      const requiredIdentityFields = [
+        "kind",
+        "normalizedSessionId",
+        "acpxRecordId",
+        "backendSessionId",
+        "agentSessionId",
+        "profileDigest",
+        "workspaceDigest",
+        "requestedModel",
+        "effectiveModel",
+      ] as const;
+      if (
+        state.schema !== ACPX_PROVIDER_STATE_SCHEMA ||
+        state.lifecycle !== "suspended" ||
+        state.providerExitUnconfirmed === true ||
+        state.activeTurnId !== null ||
+        descriptor.kind !== "acpx" ||
+        descriptor.provider !== "acpx" ||
+        descriptor.driver !== "acpx_runtime" ||
+        descriptor.normalizedSessionId !== expectedSessionId ||
+        identity.kind !== "acpx" ||
+        identity.normalizedSessionId !== expectedSessionId ||
+        requiredIdentityFields.some(
+          (field) => !nonEmptyString(identity[field]),
+        ) ||
+        !["approve-all", "approve-reads", "deny-all"].includes(
+          String(identity.permissionMode),
+        ) ||
+        !Array.isArray(identity.providerLifetimeFenceCandidates) ||
+        identity.providerLifetimeFenceCandidates.length !== 3 ||
+        identity.providerLifetimeFenceCandidates.some(
+          (port) => !Number.isInteger(port) || Number(port) < 1,
+        )
+      ) {
+        return emptyIdentity();
+      }
+      return {
+        providerSessionId: identity.acpxRecordId ?? null,
+        providerBackendSessionId: identity.backendSessionId ?? null,
+        providerSessionIdentity: structuredClone(identity),
+      };
+    }
+    case "codex":
+    case "opencode": {
+      const config = record(state.config);
+      const expectedDriver =
+        input.execution.provider.kind === "codex"
+          ? "codex_app_server"
+          : "opencode_server";
+      if (
+        state.schema !== CODEX_PROVIDER_STATE_SCHEMA ||
+        !["prepared", "session_open", "provider_exited"].includes(
+          String(state.lifecycle),
+        ) ||
+        !nonEmptyString(state.threadId) ||
+        (state.providerSessionId !== null &&
+          state.providerSessionId !== undefined &&
+          !nonEmptyString(state.providerSessionId)) ||
+        state.activeProviderTurnId !== null ||
+        state.ambiguousTurnStartPending === true ||
+        config.provider !== input.execution.provider.kind ||
+        config.driver !== expectedDriver
+      ) {
+        return emptyIdentity();
+      }
+      return {
+        providerSessionId: state.threadId ?? null,
+        providerBackendSessionId: state.providerSessionId ?? null,
+        providerSessionIdentity: null,
+      };
+    }
+    case "claude_managed":
+    case "aws_agentcore": {
+      const descriptor = record(state.descriptor);
+      if (
+        state.schema !== MANAGED_PROVIDER_STATE_SCHEMA ||
+        state.lifecycle !== "suspended" ||
+        state.normalizedSessionId !== expectedSessionId ||
+        descriptor.kind !== input.execution.provider.kind ||
+        !nonEmptyString(state.providerSessionId) ||
+        state.activeTurnId !== null
+      ) {
+        return emptyIdentity();
+      }
+      return {
+        providerSessionId: state.providerSessionId ?? null,
+        providerBackendSessionId: state.providerSessionId ?? null,
+        providerSessionIdentity: null,
+      };
+    }
+  }
 }
 
 function providerSessionIdentityIsPresent(value: unknown): boolean {
@@ -5360,6 +5482,32 @@ async function readRemoteRunnerState(input: {
   );
 }
 
+async function readRemoteRunnerProviderState(input: {
+  runner: CommandManagedRuntimeRunner;
+  stateDirectory: string;
+  execution: NativeExecutionInput;
+}): Promise<Record<string, unknown>> {
+  const statePath = posix.join(
+    input.stateDirectory,
+    runnerProviderStateFilename(input.execution),
+  );
+  const escapedPath = statePath.replaceAll("'", "'\\''");
+  const result = await input.runner.execute({
+    command: "sh",
+    args: ["-c", `test -f '${escapedPath}' && base64 < '${escapedPath}'`],
+    bypassSession: true,
+    timeoutMs: 10_000,
+  });
+  if (result.exitCode !== 0 || result.timedOut) {
+    throw new Error("runner_remote_provider_state_unavailable");
+  }
+  return record(
+    JSON.parse(
+      Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8"),
+    ),
+  );
+}
+
 function createRemoteRunnerProcessLauncher(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
@@ -6180,12 +6328,14 @@ async function createRunnerdBackendWithinSessionClaim(
   const inspectRemoteHarnessState = async (): Promise<{
     complete: boolean;
     runnerState: Record<string, unknown> | null;
+    providerSessionIdentity: Record<string, unknown> | null;
     incompleteReason: "unavailable" | "not_suspended" | null;
   }> => {
     if (!remoteCommandRunner || !remoteStateDirectory) {
       return {
         complete: false,
         runnerState: null,
+        providerSessionIdentity: null,
         incompleteReason: "unavailable",
       };
     }
@@ -6200,11 +6350,14 @@ async function createRunnerdBackendWithinSessionClaim(
     const escapedRunnerState = posix
       .join(remoteStateDirectory, "runner-state.json")
       .replaceAll("'", "'\\''");
+    const escapedProviderState = posix
+      .join(remoteStateDirectory, runnerProviderStateFilename(input.execution))
+      .replaceAll("'", "'\\''");
     const inspected = await remoteCommandRunner.execute({
       command: "sh",
       args: [
         "-c",
-        `${requirements.join(" && ")} && base64 < '${escapedRunnerState}'`,
+        `${requirements.join(" && ")} && test -f '${escapedProviderState}' && base64 < '${escapedRunnerState}'`,
       ],
       bypassSession: true,
       timeoutMs: 10_000,
@@ -6213,6 +6366,7 @@ async function createRunnerdBackendWithinSessionClaim(
       return {
         complete: false,
         runnerState: null,
+        providerSessionIdentity: null,
         incompleteReason: "unavailable",
       };
     }
@@ -6238,11 +6392,25 @@ async function createRunnerdBackendWithinSessionClaim(
       return {
         complete: false,
         runnerState: null,
+        providerSessionIdentity: null,
         incompleteReason: "not_suspended",
       };
     }
+    let providerState: Record<string, unknown>;
+    try {
+      providerState = await readRemoteRunnerProviderState({
+        runner: remoteCommandRunner,
+        stateDirectory: remoteStateDirectory,
+        execution: input.execution,
+      });
+    } catch {
+      throw new Error("runner_harness_state_mismatch");
+    }
     const providerSessionIdentity =
-      providerSessionIdentityFromRunnerState(runnerState);
+      providerSessionIdentityFromDurableProviderState({
+        execution: input.execution,
+        providerState,
+      });
     if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
       throw new Error("runner_harness_state_mismatch");
     }
@@ -6261,11 +6429,16 @@ async function createRunnerdBackendWithinSessionClaim(
     ) {
       throw new Error("runner_harness_state_mismatch");
     }
-    return { complete: true, runnerState, incompleteReason: null };
+    return {
+      complete: true,
+      runnerState,
+      providerSessionIdentity,
+      incompleteReason: null,
+    };
   };
 
   const recordInPlaceHarnessReuse = async (
-    runnerState: Record<string, unknown>,
+    providerSessionIdentity: Record<string, unknown>,
     startedAtMs = Date.now(),
   ) => {
     const now = Date.now();
@@ -6290,7 +6463,7 @@ async function createRunnerdBackendWithinSessionClaim(
         provider: input.execution.provider.kind,
         harness: input.execution.session.driverKind,
         identityPresent: providerSessionIdentityIsPresent(
-          providerSessionIdentityFromRunnerState(runnerState),
+          providerSessionIdentity,
         ),
       },
     });
@@ -6383,9 +6556,9 @@ async function createRunnerdBackendWithinSessionClaim(
     if (
       !restored.complete ||
       !restored.runnerState ||
-      canonicalJson(
-        providerSessionIdentityFromRunnerState(restored.runnerState),
-      ) !== canonicalJson(backup.manifest.providerSessionIdentity)
+      !restored.providerSessionIdentity ||
+      canonicalJson(restored.providerSessionIdentity) !==
+        canonicalJson(backup.manifest.providerSessionIdentity)
     ) {
       throw new Error("runner_harness_state_mismatch");
     }
@@ -6515,11 +6688,15 @@ async function createRunnerdBackendWithinSessionClaim(
                         },
                       },
                     );
-                    if (!state.complete || !state.runnerState) {
+                    if (
+                      !state.complete ||
+                      !state.runnerState ||
+                      !state.providerSessionIdentity
+                    ) {
                       throw new Error("runner_harness_state_mismatch");
                     }
                     await recordInPlaceHarnessReuse(
-                      state.runnerState,
+                      state.providerSessionIdentity,
                       reuseStartedAtMs,
                     );
                   } else if (
@@ -6559,11 +6736,15 @@ async function createRunnerdBackendWithinSessionClaim(
                   } else {
                     const reuseStartedAtMs = Date.now();
                     const state = await inspectRemoteHarnessState();
-                    if (state.complete && state.runnerState) {
+                    if (
+                      state.complete &&
+                      state.runnerState &&
+                      state.providerSessionIdentity
+                    ) {
                       // Re-entry while this newly-created lease is already running (for
                       // example a transport reconnect) still uses the in-place state.
                       await recordInPlaceHarnessReuse(
-                        state.runnerState,
+                        state.providerSessionIdentity,
                         reuseStartedAtMs,
                       );
                     } else if (backupAvailable) {
@@ -6735,22 +6916,15 @@ async function createRunnerdBackendWithinSessionClaim(
           input.trace,
           "harness_state.backup.persist",
           async () => {
-            const runnerState = await readRemoteRunnerState({
-              runner: remoteCommandRunner,
-              stateDirectory: remoteStateDirectory,
-            });
+            const verified = await inspectRemoteHarnessState();
             if (
-              runnerState.runnerInstanceId !== input.runnerInstanceId ||
-              runnerState.normalizedSessionId !==
-                nativeSessionKey(input.execution)
+              !verified.complete ||
+              !verified.runnerState ||
+              !verified.providerSessionIdentity
             ) {
               throw new Error("runner_harness_state_mismatch");
             }
-            const providerSessionIdentity =
-              providerSessionIdentityFromRunnerState(runnerState);
-            if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
-              throw new Error("runner_harness_state_mismatch");
-            }
+            const providerSessionIdentity = verified.providerSessionIdentity;
 
             const backupRoot = harnessBackupRoot(root);
             mkdirSync(backupRoot, { recursive: true, mode: 0o700 });

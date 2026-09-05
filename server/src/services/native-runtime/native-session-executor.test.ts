@@ -170,6 +170,7 @@ import {
   nativeUsageCostUsd,
   normalizeNativeUsage,
   readRemoteProviderPackManifest,
+  providerSessionIdentityFromDurableProviderState,
   providerSessionIdentityTransitionIsAllowed,
   providerPlanMarkdown,
   resolveRemoteRunnerTransportMode,
@@ -785,6 +786,185 @@ describe("verified native harness backups", () => {
       await rm(stateBase, { recursive: true, force: true });
     }
   });
+});
+
+describe("split durable provider checkpoint identity", () => {
+  const execution = (provider: Record<string, unknown>, driverKind: string) =>
+    ({
+      provider,
+      binding: {
+        companyId: "company",
+        runId: "run",
+        issueId: "issue",
+        agentId: "agent",
+        executionWorkspaceId: "workspace",
+      },
+      workspace: { cwd: "/workspace" },
+      session: {
+        normalizedSessionId: "native-session",
+        driverKind,
+        protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      },
+    }) as unknown as NativeExecutionInputV1;
+
+  it("reads ACPX identity from its provider-owned state after suspension", () => {
+    const identity = {
+      kind: "acpx",
+      normalizedSessionId: "native-session",
+      acpxRecordId: "record-1",
+      backendSessionId: "backend-1",
+      agentSessionId: "agent-session-1",
+      profileDigest: "sha256:profile",
+      workspaceDigest: "sha256:workspace",
+      requestedModel: "claude-sonnet-5",
+      effectiveModel: "claude-sonnet-5",
+      permissionMode: "approve-all",
+      providerLifetimeFenceCandidates: [53001, 53002, 53003],
+    };
+    expect(
+      providerSessionIdentityFromDurableProviderState({
+        execution: execution({ kind: "acpx", agent: "claude" }, "acpx_runtime"),
+        providerState: {
+          schema: "paperclip.runner.acpx-provider-state.v3",
+          lifecycle: "suspended",
+          activeTurnId: null,
+          providerExitUnconfirmed: false,
+          descriptor: {
+            kind: "acpx",
+            provider: "acpx",
+            driver: "acpx_runtime",
+            normalizedSessionId: "native-session",
+          },
+          identity,
+        },
+      }),
+    ).toEqual({
+      providerSessionId: "record-1",
+      providerBackendSessionId: "backend-1",
+      providerSessionIdentity: identity,
+    });
+  });
+
+  it.each([
+    ["codex", "codex_app_server"],
+    ["opencode", "opencode_server"],
+  ] as const)(
+    "reads %s identity from the split Codex-provider state",
+    (provider, driverKind) => {
+      expect(
+        providerSessionIdentityFromDurableProviderState({
+          execution: execution({ kind: provider }, driverKind),
+          providerState: {
+            schema: "paperclip.runner.codex-provider-state.v1",
+            lifecycle: "prepared",
+            config: { provider, driver: driverKind },
+            threadId: "driver-session-1",
+            providerSessionId: "provider-session-1",
+            activeProviderTurnId: null,
+            ambiguousTurnStartPending: false,
+          },
+        }),
+      ).toEqual({
+        providerSessionId: "driver-session-1",
+        providerBackendSessionId: "provider-session-1",
+        providerSessionIdentity: null,
+      });
+    },
+  );
+
+  it("rejects active or scope-conflicting provider state", () => {
+    const acpxExecution = execution(
+      { kind: "acpx", agent: "claude" },
+      "acpx_runtime",
+    );
+    for (const providerState of [
+      {
+        schema: "paperclip.runner.acpx-provider-state.v3",
+        lifecycle: "turn_active",
+        activeTurnId: "turn-1",
+        providerExitUnconfirmed: false,
+        descriptor: {
+          kind: "acpx",
+          provider: "acpx",
+          driver: "acpx_runtime",
+          normalizedSessionId: "native-session",
+        },
+        identity: {
+          kind: "acpx",
+          normalizedSessionId: "native-session",
+          acpxRecordId: "record-1",
+          backendSessionId: "backend-1",
+          agentSessionId: "agent-session-1",
+          profileDigest: "sha256:profile",
+          workspaceDigest: "sha256:workspace",
+          requestedModel: "claude-sonnet-5",
+          effectiveModel: "claude-sonnet-5",
+          permissionMode: "approve-all",
+          providerLifetimeFenceCandidates: [53001, 53002, 53003],
+        },
+      },
+      {
+        schema: "paperclip.runner.acpx-provider-state.v3",
+        lifecycle: "suspended",
+        activeTurnId: null,
+        providerExitUnconfirmed: false,
+        descriptor: {
+          kind: "acpx",
+          provider: "acpx",
+          driver: "acpx_runtime",
+          normalizedSessionId: "other-session",
+        },
+        identity: {
+          kind: "acpx",
+          normalizedSessionId: "other-session",
+          acpxRecordId: "record-1",
+          backendSessionId: "backend-1",
+          agentSessionId: "agent-session-1",
+          profileDigest: "sha256:profile",
+          workspaceDigest: "sha256:workspace",
+          requestedModel: "claude-sonnet-5",
+          effectiveModel: "claude-sonnet-5",
+          permissionMode: "approve-all",
+          providerLifetimeFenceCandidates: [53001, 53002, 53003],
+        },
+      },
+    ]) {
+      expect(
+        providerSessionIdentityFromDurableProviderState({
+          execution: acpxExecution,
+          providerState,
+        }),
+      ).toEqual({
+        providerSessionId: null,
+        providerBackendSessionId: null,
+        providerSessionIdentity: null,
+      });
+    }
+  });
+
+  it.each(["claude_managed", "aws_agentcore"] as const)(
+    "reads %s identity from managed provider state",
+    (provider) => {
+      expect(
+        providerSessionIdentityFromDurableProviderState({
+          execution: execution({ kind: provider }, `${provider}_driver`),
+          providerState: {
+            schema: "paperclip.runner.managed-provider-state.v1",
+            lifecycle: "suspended",
+            normalizedSessionId: "native-session",
+            descriptor: { kind: provider, config: {} },
+            providerSessionId: "managed-session-1",
+            activeTurnId: null,
+          },
+        }),
+      ).toEqual({
+        providerSessionId: "managed-session-1",
+        providerBackendSessionId: "managed-session-1",
+        providerSessionIdentity: null,
+      });
+    },
+  );
 });
 
 describe("remote provider checkpoint snapshots", () => {
