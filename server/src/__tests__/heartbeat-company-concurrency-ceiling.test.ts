@@ -6,6 +6,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
 } from "@paperclipai/db";
 import {
@@ -85,6 +86,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
   afterEach(async () => {
     mockAdapterExecute.mockClear();
     runningProcesses.clear();
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agents);
@@ -125,7 +127,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
     return agentId;
   }
 
-  async function seedRunningRun(companyId: string, agentId: string) {
+  async function seedRunningRun(companyId: string, agentId: string, trackProcess = true) {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: runId,
@@ -137,13 +139,19 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
       startedAt: new Date(),
       contextSnapshot: {},
     });
+    if (trackProcess) {
+      runningProcesses.set(runId, {
+        child: {} as any,
+        graceSec: 1,
+        processGroupId: null,
+      });
+    }
     return runId;
   }
 
   async function seedQueuedRun(companyId: string, agentId: string) {
     const wakeupRequestId = randomUUID();
     const runId = randomUUID();
-    const issueId = randomUUID();
     await db.insert(agentWakeupRequests).values({
       id: wakeupRequestId,
       companyId,
@@ -151,7 +159,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
       source: "on_demand",
       triggerDetail: "test-fixture",
       reason: "manual",
-      payload: { issueId },
+      payload: {},
       status: "queued",
     });
     await db.insert(heartbeatRuns).values({
@@ -162,7 +170,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
       triggerDetail: "test-fixture",
       status: "queued",
       wakeupRequestId,
-      contextSnapshot: { issueId },
+      contextSnapshot: {},
     });
     await db
       .update(agentWakeupRequests)
@@ -247,7 +255,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
     const agentB = await seedAgent(companyId, "Agent-Beta");
     // agentA's running row is NOT added to runningProcesses — simulates an
     // orphaned run (died before being reaped).
-    await seedRunningRun(companyId, agentA);
+    await seedRunningRun(companyId, agentA, false);
     const agentBQueuedId = await seedQueuedRun(companyId, agentB);
 
     // Without the stale-row guard, agentA's orphaned row counts against the
