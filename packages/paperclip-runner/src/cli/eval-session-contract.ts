@@ -233,7 +233,10 @@ export function parseEvalSessionRequest(value: unknown): EvalSessionRequest {
   if (input.driver !== undefined && input.driver !== driver) {
     throw new Error("eval-session provider/driver mismatch");
   }
-  const acpxAgent = input.acpxAgent;
+  // The original Evalbook v1 producer serialized absent provider-specific
+  // options as JSON null. Preserve compatibility with those immutable request
+  // artifacts while continuing to reject non-null values for the wrong lane.
+  const acpxAgent = input.acpxAgent === null ? undefined : input.acpxAgent;
   if (acpxAgent === "pi") throw new Error("The Pi ACPX profile is not available");
   if (
     acpxAgent !== undefined &&
@@ -245,16 +248,22 @@ export function parseEvalSessionRequest(value: unknown): EvalSessionRequest {
   if (provider !== "acpx" && acpxAgent !== undefined) {
     throw new Error("eval-session acpxAgent requires provider acpx");
   }
+  const managedProfileInput = input.managedProfile === null
+    ? undefined
+    : input.managedProfile;
+  const agentCoreProfileInput = input.agentCoreProfile === null
+    ? undefined
+    : input.agentCoreProfile;
   const managedProfile = provider === "claude_managed"
-    ? parseManagedProfile(input.managedProfile)
+    ? parseManagedProfile(managedProfileInput)
     : undefined;
   const agentCoreProfile = provider === "aws_agentcore"
-    ? parseAgentCoreProfile(input.agentCoreProfile)
+    ? parseAgentCoreProfile(agentCoreProfileInput)
     : undefined;
-  if (provider !== "claude_managed" && input.managedProfile !== undefined) {
+  if (provider !== "claude_managed" && managedProfileInput !== undefined) {
     throw new Error("eval-session managedProfile requires provider claude_managed");
   }
-  if (provider !== "aws_agentcore" && input.agentCoreProfile !== undefined) {
+  if (provider !== "aws_agentcore" && agentCoreProfileInput !== undefined) {
     throw new Error("eval-session agentCoreProfile requires provider aws_agentcore");
   }
   if (input.nativeResume !== undefined) {

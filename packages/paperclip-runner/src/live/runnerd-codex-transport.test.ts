@@ -59,6 +59,11 @@ import {
   withCodexCollaborationRuntimeInstructions,
 } from "./runnerd-codex-transport.js";
 
+it("launches runnerd with its production durable outbox limits", () => {
+  expect(runnerdLaunchProfileInternals.maxOutboxBytes).toBe(16 * 1024 * 1024);
+  expect(runnerdLaunchProfileInternals.p0ReserveBytes).toBe(1024 * 1024);
+});
+
 it("replays the durable run attachment outcome and latest provider identity", () => {
   expect(
     runnerdRecoveryInternals.recoveredRunAttachment({
@@ -1419,6 +1424,75 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
     runnerExited: true,
     runnerExitCode: 0,
   });
+}, 30_000);
+
+it("continues rehydrating events after the committed-event window slides", async () => {
+  const stateDirectory = await mkdtemp(
+    join(tmpdir(), "runnerd-sliding-event-window-"),
+  );
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--split-event-burst"),
+    stateDirectory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [
+      {
+        type: "inputText",
+        text: JSON.stringify({ ok: true, result: { task: { id: "task-1" } } }),
+      },
+    ],
+  }));
+  try {
+    await bundle.transport.request("initialize", {});
+    await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: [
+        {
+          name: "get_task_context",
+          description: "Read the active task.",
+          inputSchema: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      ],
+    });
+    await bundle.transport.request("turn/start", {
+      input: [{ type: "text", text: "Emit a split event burst." }],
+    });
+    const notifications = bundle.transport
+      .notifications()
+      [Symbol.asyncIterator]();
+    const methods: string[] = [];
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      const next = await Promise.race([
+        notifications.next(),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () =>
+              reject(new Error("sliding event window notification timeout")),
+            10_000,
+          ),
+        ),
+      ]);
+      if (!next.value) break;
+      methods.push(next.value.method);
+      if (next.value.method === "turn/completed") break;
+    }
+    expect(
+      methods.filter((method) => method === "item/agentMessage/delta"),
+    ).toHaveLength(144);
+    expect(methods).toContain("turn/completed");
+  } finally {
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
 }, 30_000);
 
 it("binds an immediately failed durable turn before exposing its terminal", async () => {

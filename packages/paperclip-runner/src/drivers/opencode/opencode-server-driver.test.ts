@@ -1379,6 +1379,9 @@ describe("OpenCodeServerDriver", () => {
         "*": permissionMode,
         external_directory: "deny",
       });
+      expect(config.provider.openrouter.models).toHaveProperty(
+        "deepseek/deepseek-v4-flash-0731",
+      );
       expect(config.permission.paperclip_finish).toBeUndefined();
       expect(config.permission["paperclip_*"]).toBe("allow");
       await session.close({ reason: "permission mode test complete" });
