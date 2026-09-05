@@ -689,13 +689,20 @@ function Activity({
               Resume
             </Button>
           )}
-          {["attention", "revoked", "draft", "verifying"].includes(status) && (
+          {[
+            "active",
+            "paused",
+            "attention",
+            "revoked",
+            "draft",
+            "verifying",
+          ].includes(status) && (
             <Button
               variant="outline"
               disabled={lifecycle.isPending}
               onClick={() =>
                 navigate(
-                  `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}`,
+                  `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}&reconnect=1`,
                 )
               }
             >

@@ -1502,7 +1502,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
     }
     if (
-      !["draft", "attention", "revoked", "paused"].includes(endpoint.status)
+      ![
+        "draft",
+        "verifying",
+        "active",
+        "attention",
+        "revoked",
+        "paused",
+      ].includes(endpoint.status)
     ) {
       throw conflict(
         "The GitHub webhook secret cannot be rotated in this connection state",
@@ -1513,11 +1520,43 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const existing = await resolveCredentials(endpoint).catch(
       () => ({}) as Record<string, string>,
     );
+    const rotated = record.credentialSecretRefs.some(
+      (ref) => ref.configPath === "credentials.webhookSecret",
+    );
     await persistCredentials(
       endpoint,
       { ...existing, webhookSecret },
       actorUserId,
     );
+    if (rotated) {
+      await runtime.removeEndpoint(endpoint.id).catch(() => undefined);
+      const updatedAt = new Date();
+      await db.transaction(async (tx) => {
+        await tx
+          .update(chatEndpoints)
+          .set({
+            status: "attention",
+            healthMessage:
+              "Update the GitHub webhook secret, then reconnect this App",
+            lastError: null,
+            setup: { ...endpoint.setup, step: "provider_setup" },
+            updatedAt,
+          })
+          .where(eq(chatEndpoints.id, endpoint.id));
+        await tx
+          .update(toolConnections)
+          .set({
+            status: "disabled",
+            enabled: false,
+            healthStatus: "degraded",
+            healthMessage: "GitHub webhook secret rotation needs reconnect",
+            lastError: null,
+            healthCheckedAt: updatedAt,
+            updatedAt,
+          })
+          .where(eq(toolConnections.id, endpoint.connectionId));
+      });
+    }
     await logActivity(db, {
       companyId: endpoint.companyId,
       actorType: "user",
@@ -1528,9 +1567,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       details: {
         endpointId: endpoint.id,
         provider: endpoint.provider,
-        rotated: record.credentialSecretRefs.some(
-          (ref) => ref.configPath === "credentials.webhookSecret",
-        ),
+        rotated,
       },
     });
     return { webhookSecret };
@@ -2038,7 +2075,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
     } else if (
       input.action === "reconnect" &&
-      !["verifying", "attention", "revoked", "paused"].includes(endpoint.status)
+      !["verifying", "active", "attention", "revoked", "paused"].includes(
+        endpoint.status,
+      )
     ) {
       throw conflict(
         "This chat connection does not currently need reconnecting",
@@ -2072,7 +2111,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       await reconcileProviderResourceRows(endpoint, prepared.inventory);
     const updatedAt = new Date();
     const waitingForSlackConfiguration =
-      endpoint.provider === "slack" && input.action === "configure";
+      endpoint.provider === "slack" &&
+      (input.action === "configure" || input.action === "reconnect");
     try {
       await db.transaction(async (tx) => {
         await tx

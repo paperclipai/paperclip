@@ -1338,6 +1338,64 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toBe(true);
   });
 
+  it("rotates a live GitHub webhook secret fail-closed and reconnects with stored credentials", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service } =
+      await configuredGitHubEndpoint(fixture);
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active", setup: { step: "complete" } })
+      .where(eq(chatEndpoints.id, endpoint.id));
+
+    const { webhookSecret } = await service.generateSetupSecret(
+      endpoint.id,
+      "owner-user",
+    );
+
+    expect(webhookSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "attention",
+      healthMessage:
+        "Update the GitHub webhook secret, then reconnect this App",
+      setup: { step: "provider_setup", webhookSecretConfigured: true },
+    });
+    const [disabledConnection] = await db
+      .select({
+        status: toolConnections.status,
+        enabled: toolConnections.enabled,
+        healthStatus: toolConnections.healthStatus,
+      })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(disabledConnection).toEqual({
+      status: "disabled",
+      enabled: false,
+      healthStatus: "degraded",
+    });
+
+    const reconnected = await service.configure(
+      endpoint.id,
+      { action: "reconnect" },
+      "owner-user",
+    );
+
+    expect(reconnected).toMatchObject({
+      status: "verifying",
+      setup: { step: "test", webhookSecretConfigured: true },
+    });
+    expect(
+      runtime.configurations.get(endpoint.id)?.providerConfig,
+    ).toMatchObject({
+      provider: "github",
+      credentials: {
+        appId: "123456",
+        webhookSecret,
+      },
+    });
+    expect(JSON.stringify(reconnected)).not.toContain(webhookSecret);
+  });
+
   it("keeps GitHub issues, PR conversations, and inline review threads on distinct tasks", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint } = await configuredGitHubEndpoint(fixture);
@@ -1591,6 +1649,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       16,
     );
     const observedUrls: string[] = [];
+    let existingWebhookUrl = "";
     let observedWebhook: Record<string, unknown> | null = null;
     let observedWebhookDelete: Record<string, unknown> | null = null;
     const providerFetch = vi.fn(
@@ -1614,7 +1673,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (url.endsWith("/getWebhookInfo")) {
           expect(init).toBeUndefined();
           return new Response(
-            JSON.stringify({ ok: true, result: { url: "" } }),
+            JSON.stringify({ ok: true, result: { url: existingWebhookUrl } }),
             { status: 200, headers: { "content-type": "application/json" } },
           );
         }
@@ -1624,6 +1683,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             string,
             unknown
           >;
+          existingWebhookUrl = String(observedWebhook.url ?? "");
           return new Response(JSON.stringify({ ok: true, result: true }), {
             status: 200,
             headers: { "content-type": "application/json" },
@@ -1707,6 +1767,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "credentials.botToken",
       "credentials.webhookSecret",
     ]);
+
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active", setup: { step: "complete" } })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    existingWebhookUrl =
+      "https://expired.example/api/chat-webhooks/old-public-id/telegram";
+    observedUrls.length = 0;
+    observedWebhook = null;
+
+    const reconnected = await service.configure(
+      endpoint.id,
+      { action: "reconnect" },
+      "owner-user",
+    );
+
+    expect(reconnected).toMatchObject({
+      status: "verifying",
+      setup: { step: "test" },
+    });
+    expect(observedUrls).toEqual([
+      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/getMe`,
+      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/getWebhookInfo`,
+      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/setWebhook`,
+    ]);
+    expect(observedWebhook).toMatchObject({
+      url: `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`,
+      drop_pending_updates: true,
+    });
+
     await service.configure(endpoint.id, { action: "remove" }, "owner-user");
     expect(observedWebhookDelete).toEqual({ drop_pending_updates: false });
     expect(observedUrls.at(-1)).toBe(

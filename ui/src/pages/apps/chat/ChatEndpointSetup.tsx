@@ -87,6 +87,7 @@ export function ChatEndpointSetup() {
   const toolHref = params.get("toolHref") || "/apps";
   const preselectedAgent = params.get("agentId") ?? "";
   const resumeEndpointId = params.get("resume") ?? "";
+  const reconnectRequested = params.get("reconnect") === "1";
   const [purpose, setPurpose] = useState<"choice" | "chat">(
     params.get("purpose") === "chat" ? "chat" : "choice",
   );
@@ -257,7 +258,10 @@ export function ChatEndpointSetup() {
   const repairing = Boolean(
     resumeEndpointId &&
     endpoint &&
-    (endpoint.status === "attention" || endpoint.status === "revoked"),
+    (endpoint.status === "attention" ||
+      endpoint.status === "revoked" ||
+      (reconnectRequested &&
+        (endpoint.status === "active" || endpoint.status === "paused"))),
   );
   const step = endpoint
     ? !repairing &&
@@ -498,7 +502,9 @@ settings:
         <div>
           <h1 className="text-xl font-bold">Create {agentName} in Telegram</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Create a bot with BotFather, then paste the token it gives you.
+            {repairing
+              ? "Reconnect the existing bot. Leave the token blank to reuse the saved credential."
+              : "Create a bot with BotFather, then paste the token it gives you."}
           </p>
         </div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
@@ -525,11 +531,16 @@ settings:
         )}
         <Button
           disabled={
-            !credentials.botToken || !endpoint.setup?.webhookUrl || pending
+            (!repairing && !credentials.botToken) ||
+            !endpoint.setup?.webhookUrl ||
+            pending
           }
-          onClick={() => onAction("configure", credentials)}
+          onClick={() =>
+            onAction(repairing ? "reconnect" : "configure", credentials)
+          }
         >
-          {pending && <Loader2 className="h-4 w-4 animate-spin" />}Connect bot
+          {pending && <Loader2 className="h-4 w-4 animate-spin" />}
+          {repairing ? "Reconnect bot" : "Connect bot"}
         </Button>
       </div>
     );
@@ -541,7 +552,9 @@ settings:
             Connect {agentName} to Microsoft Teams
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Use your own Microsoft app credentials for this bot.
+            {repairing
+              ? "Reconnect the existing Microsoft app. Leave fields blank to reuse saved credentials."
+              : "Use your own Microsoft app credentials for this bot."}
           </p>
         </div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
@@ -622,16 +635,21 @@ settings:
         )}
         <Button
           disabled={
-            !credentials.clientId ||
-            !credentials.tenantId ||
-            !credentials.clientSecret ||
+            (!repairing &&
+              (!credentials.clientId ||
+                !credentials.tenantId ||
+                !credentials.clientSecret)) ||
             !endpoint.setup?.messagingEndpoint ||
             pending
           }
-          onClick={() => onAction("configure", credentials)}
+          onClick={() =>
+            onAction(repairing ? "reconnect" : "configure", credentials)
+          }
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-          Verify Microsoft credentials
+          {repairing
+            ? "Reconnect Microsoft app"
+            : "Verify Microsoft credentials"}
         </Button>
       </div>
     );
@@ -641,8 +659,9 @@ settings:
         <div>
           <h1 className="text-xl font-bold">Create or connect a GitHub App</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Configure its webhook and permissions, then verify the App with
-            Paperclip.
+            {repairing
+              ? "Reconnect the existing App. Leave App ID and private key blank to reuse saved credentials."
+              : "Configure its webhook and permissions, then verify the App with Paperclip."}
           </p>
         </div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
@@ -788,21 +807,17 @@ settings:
         )}
         <Button
           disabled={
-            !credentials.appId ||
-            !credentials.privateKey ||
+            (!repairing && (!credentials.appId || !credentials.privateKey)) ||
             !endpoint.setup?.webhookSecretConfigured ||
             !endpoint.setup?.webhookUrl ||
             pending
           }
           onClick={() =>
-            onAction("configure", {
-              appId: credentials.appId!,
-              privateKey: credentials.privateKey!,
-            })
+            onAction(repairing ? "reconnect" : "configure", credentials)
           }
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-          Connect and verify
+          {repairing ? "Reconnect and verify" : "Connect and verify"}
         </Button>
       </div>
     );
@@ -844,8 +859,9 @@ settings:
       <div>
         <h1 className="text-xl font-bold">Connect a Slack app</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Bring your own Slack app. The manifest requests the scopes Paperclip
-          needs; credentials remain write-only.
+          {repairing
+            ? "Reconnect the existing Slack app. Leave credentials blank to reuse the saved values."
+            : "Bring your own Slack app. The manifest requests the scopes Paperclip needs; credentials remain write-only."}
         </p>
       </div>
       <ol className="list-decimal space-y-2 pl-5 text-sm">
@@ -911,15 +927,17 @@ settings:
       )}
       <Button
         disabled={
-          !credentials.botToken ||
-          !credentials.signingSecret ||
+          (!repairing &&
+            (!credentials.botToken || !credentials.signingSecret)) ||
           !endpoint.setup?.webhookUrl ||
           pending
         }
-        onClick={() => onAction("configure", credentials)}
+        onClick={() =>
+          onAction(repairing ? "reconnect" : "configure", credentials)
+        }
       >
         {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-        Connect Slack app
+        {repairing ? "Reconnect Slack app" : "Connect Slack app"}
       </Button>
     </div>
   );

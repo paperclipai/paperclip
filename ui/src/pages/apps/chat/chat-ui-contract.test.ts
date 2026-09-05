@@ -42,7 +42,7 @@ describe("chat connector UI contract", () => {
     const activity = detail.slice(detail.indexOf("function Activity"));
     expect(detail).toContain('"pause" | "resume" | "remove"');
     expect(detail).toContain("Remove this connection?");
-    expect(detail).toContain("purpose=chat&resume=${endpoint.id}");
+    expect(detail).toContain("purpose=chat&resume=${endpoint.id}&reconnect=1");
     expect(detail).toContain("Finish setup");
     expect(detail).toContain("Reconnect");
     expect(detail).not.toContain("Change agent");
@@ -71,6 +71,13 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("Create a bot with BotFather");
     expect(setup).toContain("Generate webhook secret");
     expect(setup).toContain("will not show it again");
+    expect(setup).toContain('params.get("reconnect") === "1"');
+    expect(setup).toContain(
+      "Leave the token blank to reuse the saved credential",
+    );
+    expect(setup).toContain(
+      "Leave credentials blank to reuse the saved values",
+    );
     expect(setup).toContain(
       "immediately invalidates GitHub webhook signatures",
     );
