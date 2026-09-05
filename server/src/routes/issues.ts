@@ -230,6 +230,7 @@ import {
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
+  TERMINAL_REVIEW_STOP_UNBLOCK_DESCRIPTOR,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -2365,7 +2366,7 @@ function buildExecutionStageWakeup(input: {
     const executionStage = buildExecutionStageWakeContext({
       state: nextState,
       wakeRole: nextState.currentStageType === "approval" ? "approver" : "reviewer",
-      allowedActions: ["approve", "request_changes"],
+      allowedActions: ["approve", "request_changes", "stop"],
     });
 
     return {
@@ -10254,9 +10255,24 @@ export function issueRoutes(
       throw unprocessable("unblockDescriptor requires blocked status");
     }
     const descriptor = updateFields.unblockDescriptor ?? null;
+    const workflowControlledUnblockDescriptor = transition.workflowControlledUnblockDescriptor === true;
+    if (workflowControlledUnblockDescriptor && (!descriptor || typeof descriptor !== "object")) {
+      throw new Error("Execution policy stop patch is missing unblockDescriptor");
+    }
     if (descriptor && typeof descriptor === "object") {
       const owner = descriptor.owner;
-      if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
+      if (
+        workflowControlledUnblockDescriptor &&
+        (owner !== TERMINAL_REVIEW_STOP_UNBLOCK_DESCRIPTOR.owner ||
+          descriptor.action !== TERMINAL_REVIEW_STOP_UNBLOCK_DESCRIPTOR.action)
+      ) {
+        throw new Error("Execution policy stop patch has an invalid unblockDescriptor");
+      }
+      if (
+        !workflowControlledUnblockDescriptor &&
+        req.actor.type === "agent" &&
+        (owner === "board" || "userId" in owner)
+      ) {
         throw forbidden("Agents may only name themselves as an unblock owner");
       }
       if (owner !== "board" && "agentId" in owner) {
@@ -10265,7 +10281,11 @@ export function issueRoutes(
           eq(agents.companyId, existing.companyId),
         )).limit(1).then((rows) => rows[0] ?? null);
         if (!target) throw unprocessable("Unblock owner agent must belong to the issue company");
-        if (req.actor.type === "agent" && req.actor.agentId !== owner.agentId) {
+        if (
+          !workflowControlledUnblockDescriptor &&
+          req.actor.type === "agent" &&
+          req.actor.agentId !== owner.agentId
+        ) {
           throw forbidden("Agents may only name themselves as an unblock owner");
         }
       } else if (owner !== "board" && "userId" in owner) {
@@ -10290,21 +10310,23 @@ export function issueRoutes(
           notInArray(issueRows.status, ["done", "cancelled"]),
         )).limit(1).then((rows) => rows.length > 0)
         : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
-      const [pendingInteraction, pendingApproval] = await Promise.all([
-        db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
-          eq(issueThreadInteractions.companyId, existing.companyId),
-          eq(issueThreadInteractions.issueId, existing.id),
-          eq(issueThreadInteractions.status, "pending"),
-        )).limit(1).then((rows) => rows[0] ?? null),
-        db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id)).where(and(
-          eq(issueApprovals.companyId, existing.companyId),
-          eq(issueApprovals.issueId, existing.id),
-          eq(approvals.status, "pending"),
-        )).limit(1).then((rows) => rows[0] ?? null),
-      ]);
-      if (!hasUnresolvedBlocker && !pendingInteraction && !pendingApproval && !descriptor) {
-        res.status(422).json({ error: "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor" });
-        return;
+      if (!hasUnresolvedBlocker && !descriptor) {
+        const [pendingInteraction, pendingApproval] = await Promise.all([
+          db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+            eq(issueThreadInteractions.companyId, existing.companyId),
+            eq(issueThreadInteractions.issueId, existing.id),
+            eq(issueThreadInteractions.status, "pending"),
+          )).limit(1).then((rows) => rows[0] ?? null),
+          db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id)).where(and(
+            eq(issueApprovals.companyId, existing.companyId),
+            eq(issueApprovals.issueId, existing.id),
+            eq(approvals.status, "pending"),
+          )).limit(1).then((rows) => rows[0] ?? null),
+        ]);
+        if (!pendingInteraction && !pendingApproval) {
+          res.status(422).json({ error: "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor" });
+          return;
+        }
       }
     }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {

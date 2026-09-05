@@ -59,6 +59,7 @@ type TransitionResult = {
   patch: Record<string, unknown>;
   decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
   workflowControlledAssignment?: boolean;
+  workflowControlledUnblockDescriptor?: boolean;
 };
 
 /**
@@ -71,10 +72,15 @@ export const DEFAULT_MAX_REVIEW_ROUNDS = 3;
 const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
 const PENDING_STATUS: IssueExecutionState["status"] = "pending";
 const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_requested";
+const STOPPED_STATUS: IssueExecutionState["status"] = "stopped";
 const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress or in_review";
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
 const STAGE_DECISION_COMMENT_HINT = "Include the decision comment in the same PATCH request; prior comments are not considered.";
 export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
+export const TERMINAL_REVIEW_STOP_UNBLOCK_DESCRIPTOR = {
+  owner: "board",
+  action: "Board review is required before this issue can continue.",
+} as const;
 
 function normalizeMonitorNotes(notes: string | null | undefined) {
   if (typeof notes !== "string") return null;
@@ -611,6 +617,19 @@ function buildChangesRequestedState(
   };
 }
 
+function buildStoppedState(previous: IssueExecutionState): IssueExecutionState {
+  return {
+    ...previous,
+    status: STOPPED_STATUS,
+    currentStageId: null,
+    currentStageIndex: null,
+    currentStageType: null,
+    currentParticipant: null,
+    reviewRequest: null,
+    lastDecisionOutcome: "stopped",
+  };
+}
+
 function buildPendingStagePatch(input: {
   patch: Record<string, unknown>;
   previous: IssueExecutionState | null;
@@ -691,6 +710,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     requestedStatus !== "done" &&
     requestedStatus !== "cancelled"
   ) {
+    patch.executionState = null;
+    return { patch };
+  }
+
+  if (existingState?.status === STOPPED_STATUS && requestedStatus && requestedStatus !== "blocked") {
+    if (!input.allowBoardOverride) {
+      throw unprocessable("Only the board can resume a stopped execution review");
+    }
     patch.executionState = null;
     return { patch };
   }
@@ -784,6 +811,25 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     }
 
     if (principalsEqual(currentParticipant, actor)) {
+      if (requestedStatus === "blocked") {
+        if (!input.commentBody?.trim()) {
+          throw unprocessable(`Stopping a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
+        }
+        patch.status = "blocked";
+        patch.unblockDescriptor = TERMINAL_REVIEW_STOP_UNBLOCK_DESCRIPTOR;
+        patch.executionState = buildStoppedState(existingState!);
+        return {
+          patch,
+          decision: {
+            stageId: activeStage.id,
+            stageType: activeStage.type,
+            outcome: "stopped",
+            body: input.commentBody.trim(),
+          },
+          workflowControlledUnblockDescriptor: true,
+        };
+      }
+
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);

@@ -1,4 +1,4 @@
-import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
+import { getAgentWorkEligibility, isAgentInvokable, type IssueUnblockDescriptor } from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
@@ -26,6 +26,7 @@ export interface IssueLivenessIssueInput {
   createdByUserId?: string | null;
   executionPolicy?: Record<string, unknown> | null;
   executionState?: Record<string, unknown> | null;
+  unblockDescriptor?: IssueUnblockDescriptor | Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
 }
@@ -189,6 +190,12 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
   const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
   const stateMonitor = readRecord(readRecord(issue.executionState)?.monitor);
   return { policyMonitor, stateMonitor };
+}
+
+function hasTerminalReviewStopWaitingPath(issue: IssueLivenessIssueInput) {
+  const state = readRecord(issue.executionState);
+  const descriptor = readRecord(issue.unblockDescriptor);
+  return state?.status === "stopped" && descriptor?.owner === "board";
 }
 
 export function hasScheduledIssueMonitorPath(issue: IssueLivenessIssueInput, now: Date | string | number) {
@@ -512,7 +519,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
-    return Boolean(issue.assigneeUserId) ||
+    return hasTerminalReviewStopWaitingPath(issue) ||
+      Boolean(issue.assigneeUserId) ||
       hasScheduledIssueMonitorPath(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||

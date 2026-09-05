@@ -48,7 +48,7 @@ Tracks where the issue currently sits in its policy workflow:
 
 ```ts
 interface IssueExecutionState {
-  status: "idle" | "pending" | "changes_requested" | "completed";
+  status: "idle" | "pending" | "changes_requested" | "completed" | "stopped";
   currentStageId: string | null;
   currentStageIndex: number | null;
   currentStageType: "review" | "approval" | null;
@@ -56,7 +56,7 @@ interface IssueExecutionState {
   returnAssignee: IssueExecutionStagePrincipal | null;
   completedStageIds: string[];
   lastDecisionId: string | null;
-  lastDecisionOutcome: "approved" | "changes_requested" | null;
+  lastDecisionOutcome: "approved" | "changes_requested" | "stopped" | null;
 }
 ```
 
@@ -73,7 +73,7 @@ interface IssueExecutionDecision {
   stageType: "review" | "approval";
   actorAgentId: string | null;
   actorUserId: string | null;
-  outcome: "approved" | "changes_requested";
+  outcome: "approved" | "changes_requested" | "stopped";
   body: string;              // required comment explaining the decision
   createdByRunId: string | null;
   createdAt: Date;
@@ -115,7 +115,7 @@ interface IssueExecutionDecision {
 └───────────┘                       └──────────────┘               └───────────┘
 ```
 
-1. **Reviewer requests changes** by transitioning to any status other than `done` (typically `in_progress`), with a comment explaining what needs to change.
+1. **Reviewer requests changes** by transitioning to `in_progress`, with a comment explaining what needs to change.
 2. Runtime automatically:
    - Sets status to `in_progress`
    - Reassigns to the original executor (stored in `returnAssignee`)
@@ -123,6 +123,16 @@ interface IssueExecutionDecision {
 3. **Executor makes changes** and transitions to `done` again.
 4. Runtime routes back to the **same review stage** (not the beginning), with the same reviewer.
 5. This loop continues until the reviewer approves.
+
+### Terminal Stop Flow
+
+An active reviewer or approver can stop a stage when the work must not continue without a board decision.
+
+1. The participant sends `status: "blocked"` with a required decision comment.
+2. Paperclip records a `{ outcome: "stopped" }` decision.
+3. Paperclip sets `executionState.status` to `stopped` and stores a board-owned unblock descriptor.
+4. Paperclip does not wake the executor or reviewer.
+5. Only the board can resume the policy with an explicit issue update.
 
 ### Policy Variants
 
@@ -170,7 +180,8 @@ This prevents silent completions where an agent finishes work but leaves no trac
 
 ## Access Control
 
-- Only the **active reviewer/approver** (the `currentParticipant` in execution state) can advance or reject the current stage.
+- Only the **active reviewer/approver** (the `currentParticipant` in execution state) can approve, request changes, or stop the current stage.
+- Only the board can resume a stopped execution policy.
 - Non-participants who attempt to transition the issue receive a `422 Unprocessable Entity` error.
 - Both approvals and change requests **require a comment** — empty or whitespace-only comments are rejected.
 - The decision comment must be included in the same `PATCH /api/issues/{issueId}` request that changes the status. A prior `POST /api/issues/{issueId}/comments` entry remains normal discussion and does not satisfy the review/approval decision guard.
@@ -184,11 +195,18 @@ PATCH /api/issues/{issueId}
 { "status": "done", "comment": "Reviewer decision: approve - implementation and tests look good." }
 ```
 
-To request changes, send the target non-`done` status and the explanation together:
+To request changes, send `in_progress` and the explanation together:
 
 ```bash
 PATCH /api/issues/{issueId}
 { "status": "in_progress", "comment": "Reviewer decision: request changes - cover the retry edge case." }
+```
+
+To stop the stage for a board decision, send `blocked` and the explanation together:
+
+```bash
+PATCH /api/issues/{issueId}
+{ "status": "blocked", "comment": "Final mechanism failure. Board decision is required before more work." }
 ```
 
 Do not split a decision into `POST /comments` followed by a status-only `PATCH`; the runtime only records the decision from the `comment` field on the same status update.
@@ -250,7 +268,7 @@ The runtime determines whether this completes the workflow or advances to the ne
 
 ### Requesting changes
 
-The active reviewer transitions to any non-`done` status with a comment:
+The active reviewer transitions to `in_progress` with a comment:
 
 ```bash
 PATCH /api/issues/{issueId}
@@ -261,6 +279,20 @@ PATCH /api/issues/{issueId}
 ```
 
 The runtime reassigns to the original executor automatically.
+
+### Stopping a stage
+
+The active reviewer or approver can stop a stage for board action:
+
+```bash
+PATCH /api/issues/{issueId}
+{
+  "status": "blocked",
+  "comment": "The acceptance condition conflicts with the approved scope. Board decision is required."
+}
+```
+
+The runtime records a `stopped` decision. It does not wake another agent. Only the board can resume the policy.
 
 ## UI
 
