@@ -522,16 +522,38 @@ function providerTurnIsActiveFromCommittedEvents(
 function turnStartResponseReady(input: {
   responseEpoch: number;
   observedEpoch: number;
-  requestedTurnId: string;
+  expectedProviderTurnId: string;
   boundTurnId: string;
-  requireRequestedIdentity: boolean;
 }): boolean {
   return (
     input.responseEpoch === input.observedEpoch &&
+    input.expectedProviderTurnId.length > 0 &&
+    input.boundTurnId === input.expectedProviderTurnId
+  );
+}
+
+function turnStartNotificationDisposition(input: {
+  responsePending: boolean;
+  expectedProviderTurnId: string | null;
+  observedProviderTurnId: string;
+}): "accept" | "defer" | "reject" {
+  if (!input.responsePending) return "accept";
+  if (input.expectedProviderTurnId === null) return "defer";
+  return input.observedProviderTurnId === input.expectedProviderTurnId
+    ? "accept"
+    : "reject";
+}
+
+function turnStartCommandResultValid(input: {
+  requestedTurnId: string;
+  providerTurnId: string;
+  requireRequestedIdentity: boolean;
+}): boolean {
+  return (
     input.requestedTurnId.length > 0 &&
-    input.boundTurnId.length > 0 &&
+    input.providerTurnId.length > 0 &&
     (!input.requireRequestedIdentity ||
-      input.boundTurnId === input.requestedTurnId)
+      input.providerTurnId === input.requestedTurnId)
   );
 }
 
@@ -1917,6 +1939,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #turnStartResponsePending = false;
   #turnStartResponseEpoch = 0;
   #observedTurnStartEpoch = 0;
+  #expectedProviderTurnId: string | null = null;
   #durableTurnId = "";
   #authorizedTools: Record<string, unknown> | null = null;
   #closed = false;
@@ -3467,28 +3490,56 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#turnId = pendingTurnId;
     const responseEpoch = ++this.#turnStartResponseEpoch;
     this.#turnStartResponsePending = true;
+    this.#expectedProviderTurnId = null;
     let responseReady = false;
     try {
       // Persist a fresh requested identity with the durable command. ACPX uses
       // it as its provider request identity, so a same-run recovery turn cannot
       // alias an already-settled request from the retained provider session.
       // Codex and OpenCode continue to return their provider-assigned identity.
-      await this.#command("turn.start", {
+      const startResult = await this.#commandResult("turn.start", {
         text: message,
         turnId: pendingTurnId,
       });
+      const expectedProviderTurnId =
+        typeof startResult.providerTurnId === "string" &&
+        startResult.providerTurnId.length > 0
+          ? startResult.providerTurnId
+          : null;
+      if (expectedProviderTurnId === null) {
+        const error = new Error(
+          "runnerd turn.start omitted its provider turn identity",
+        );
+        this.#failTransport(error);
+        throw error;
+      }
+      if (
+        !turnStartCommandResultValid({
+          requestedTurnId: pendingTurnId,
+          providerTurnId: expectedProviderTurnId,
+          requireRequestedIdentity: this.options.provider === "acpx",
+        })
+      ) {
+        const error = new Error(
+          "runnerd ACPX turn.start changed its requested provider turn identity",
+        );
+        this.#failTransport(error);
+        throw error;
+      }
+      this.#expectedProviderTurnId = expectedProviderTurnId;
       // Command completion only means runnerd accepted the command. Bind the
       // provider turn from the subsequent turn/started event before answering
-      // the strict driver. ACPX may accept the exact requested identity, so the
-      // event observation—not an ID change—is the readiness authority.
+      // the strict driver. Correlate that event with the exact identity in this
+      // command's durable result so a delayed prior-turn event cannot satisfy
+      // the new response fence. ACPX echoes the requested identity, while
+      // Codex and OpenCode return their provider-assigned identity.
       const deadline = Date.now() + 30_000;
       const providerTurnStarted = () =>
         turnStartResponseReady({
           responseEpoch,
           observedEpoch: this.#observedTurnStartEpoch,
-          requestedTurnId: pendingTurnId,
+          expectedProviderTurnId,
           boundTurnId: this.#turnId,
-          requireRequestedIdentity: this.options.provider === "acpx",
         });
       while (!providerTurnStarted() && Date.now() < deadline) {
         this.#throwIfFailed();
@@ -3504,8 +3555,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       return { turn: { id: this.#turnId, status: "inProgress" } };
     } finally {
       if (!responseReady) {
-        if (this.#turnStartResponseEpoch === responseEpoch)
+        if (this.#turnStartResponseEpoch === responseEpoch) {
           this.#turnStartResponsePending = false;
+          this.#expectedProviderTurnId = null;
+        }
       } else {
         // Resolving this async method schedules the strict driver's response
         // continuation as a microtask. Keep terminal frames held until the
@@ -3514,6 +3567,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const release = setTimeout(() => {
           if (this.#turnStartResponseEpoch !== responseEpoch) return;
           this.#turnStartResponsePending = false;
+          this.#expectedProviderTurnId = null;
           if (!this.#closed) this.#pumpEventsSafely();
         }, 0);
         release.unref();
@@ -3624,6 +3678,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     while (this.#eventIndex < events.length) {
       const event = events[this.#eventIndex]!;
       const eventPayload = record(event.envelope.payload).payload;
+      const turnStartWhileCommandResultPending =
+        this.#turnStartResponsePending &&
+        this.#expectedProviderTurnId === null &&
+        (event.eventType === "turn.started" ||
+          (event.eventType === "provider.event" &&
+            unwrapRunnerdProviderNotifications(eventPayload).some(
+              (notification) => notification.method === "turn/started",
+            )));
+      // The durable command result is the only correlation authority for a
+      // provider-assigned turn id. Leave an early start at the cursor until
+      // that exact expected identity is installed.
+      if (turnStartWhileCommandResultPending) return;
       const terminalWhileTurnStartPending =
         this.#turnStartResponsePending &&
         ([
@@ -3748,6 +3814,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const method = payload.method;
         if (typeof method !== "string") continue;
         const rawParams = record(payload.params);
+        const rawTurn = record(rawParams.turn);
+        // Correlate starts only with an explicit provider-native identity.
+        // The later rehydration fallback may use the durable controller turn,
+        // which is not evidence that the provider accepted this command.
+        const explicitProviderTurnId =
+          method === "turn/started"
+            ? typeof rawParams.providerTurnId === "string" &&
+              rawParams.providerTurnId.length > 0
+              ? rawParams.providerTurnId
+              : typeof rawTurn.id === "string" && rawTurn.id.length > 0
+                ? rawTurn.id
+                : event.eventType === "provider.event" &&
+                    typeof rawParams.turnId === "string" &&
+                    rawParams.turnId.length > 0
+                  ? rawParams.turnId
+                  : null
+            : null;
         const params =
           method === "thread/tokenUsage/updated"
             ? rehydrateRunnerdUsageNotification(
@@ -3805,6 +3888,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // the provider-native id before its terminal is rehydrated.
         if (method === "turn/started") {
           const providerTurnId = record(params.turn).id ?? params.turnId;
+          const disposition = turnStartNotificationDisposition({
+            responsePending: this.#turnStartResponsePending,
+            expectedProviderTurnId: this.#expectedProviderTurnId,
+            observedProviderTurnId: explicitProviderTurnId ?? "",
+          });
+          if (disposition === "defer") {
+            throw new Error(
+              "turn/started advanced before its durable command result",
+            );
+          }
+          if (disposition === "reject") {
+            const error = new Error(
+              "turn/started identity disagreed with its durable command result",
+            );
+            this.#failTransport(error);
+            throw error;
+          }
           if (typeof providerTurnId === "string" && providerTurnId.length > 0) {
             this.#turnId = providerTurnId;
             if (this.#turnStartResponsePending) {
@@ -4338,5 +4438,7 @@ export const runnerdRecoveryInternals = Object.freeze({
   recoveredRunAttachment,
   releaseRunnerProcessOwnership,
   rotateExternalAuthorityEpoch,
+  turnStartCommandResultValid,
+  turnStartNotificationDisposition,
   turnStartResponseReady,
 });

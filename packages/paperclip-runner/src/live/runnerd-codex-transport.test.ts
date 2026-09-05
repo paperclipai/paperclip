@@ -148,44 +148,96 @@ it("infers a remote provider turn until its own terminal event is durable", () =
   ).toBe(false);
 });
 
-it("accepts an observed provider start that echoes the requested turn identity", () => {
-  const turnId = "turn_lab_0123456789abcdef0123456789abcdef";
+it("accepts only the observed provider start correlated by the command result", () => {
+  const requestedTurnId = "turn_lab_0123456789abcdef0123456789abcdef";
   expect(
     runnerdRecoveryInternals.turnStartResponseReady({
       responseEpoch: 2,
       observedEpoch: 2,
-      requestedTurnId: turnId,
-      boundTurnId: turnId,
-      requireRequestedIdentity: true,
+      expectedProviderTurnId: requestedTurnId,
+      boundTurnId: requestedTurnId,
     }),
   ).toBe(true);
   expect(
     runnerdRecoveryInternals.turnStartResponseReady({
       responseEpoch: 2,
       observedEpoch: 2,
-      requestedTurnId: turnId,
+      expectedProviderTurnId: requestedTurnId,
       boundTurnId: "provider-turn-different",
-      requireRequestedIdentity: true,
     }),
   ).toBe(false);
+  const providerAssignedTurnId = "provider-turn-assigned-for-this-command";
   expect(
     runnerdRecoveryInternals.turnStartResponseReady({
       responseEpoch: 2,
       observedEpoch: 2,
-      requestedTurnId: turnId,
-      boundTurnId: "provider-turn-different",
-      requireRequestedIdentity: false,
+      expectedProviderTurnId: providerAssignedTurnId,
+      boundTurnId: providerAssignedTurnId,
     }),
   ).toBe(true);
   expect(
     runnerdRecoveryInternals.turnStartResponseReady({
       responseEpoch: 2,
       observedEpoch: 1,
-      requestedTurnId: turnId,
-      boundTurnId: turnId,
+      expectedProviderTurnId: requestedTurnId,
+      boundTurnId: requestedTurnId,
+    }),
+  ).toBe(false);
+});
+
+it("defers turn starts until their command result and rejects stale identities", () => {
+  expect(
+    runnerdRecoveryInternals.turnStartNotificationDisposition({
+      responsePending: true,
+      expectedProviderTurnId: null,
+      observedProviderTurnId: "provider-turn-early",
+    }),
+  ).toBe("defer");
+  expect(
+    runnerdRecoveryInternals.turnStartNotificationDisposition({
+      responsePending: true,
+      expectedProviderTurnId: "provider-turn-current",
+      observedProviderTurnId: "provider-turn-stale",
+    }),
+  ).toBe("reject");
+  expect(
+    runnerdRecoveryInternals.turnStartNotificationDisposition({
+      responsePending: true,
+      expectedProviderTurnId: "provider-turn-current",
+      observedProviderTurnId: "",
+    }),
+  ).toBe("reject");
+  expect(
+    runnerdRecoveryInternals.turnStartNotificationDisposition({
+      responsePending: true,
+      expectedProviderTurnId: "provider-turn-current",
+      observedProviderTurnId: "provider-turn-current",
+    }),
+  ).toBe("accept");
+});
+
+it("requires ACPX command results to preserve the requested turn identity", () => {
+  expect(
+    runnerdRecoveryInternals.turnStartCommandResultValid({
+      requestedTurnId: "turn-requested",
+      providerTurnId: "turn-requested",
+      requireRequestedIdentity: true,
+    }),
+  ).toBe(true);
+  expect(
+    runnerdRecoveryInternals.turnStartCommandResultValid({
+      requestedTurnId: "turn-requested",
+      providerTurnId: "turn-different",
       requireRequestedIdentity: true,
     }),
   ).toBe(false);
+  expect(
+    runnerdRecoveryInternals.turnStartCommandResultValid({
+      requestedTurnId: "turn-requested",
+      providerTurnId: "provider-assigned-turn",
+      requireRequestedIdentity: false,
+    }),
+  ).toBe(true);
 });
 
 it.each(["before", "after"] as const)(
