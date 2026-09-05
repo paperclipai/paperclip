@@ -8309,6 +8309,39 @@ export function issueService(db: Db) {
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
+      // A run-bound agent token can outlive the heartbeat row's active state.
+      // Never report a successful checkout for such a terminal run: the stale
+      // lock sweeper would immediately clear the ownership we just wrote and
+      // the same run's follow-up policy/status mutations would then conflict.
+      // This check makes a successful agent checkout mean that its run is a
+      // live, same-company execution owner at the checkout linearization point.
+      if (checkoutRunId) {
+        const checkoutRun = await db
+          .select({
+            companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+            status: heartbeatRuns.status,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, checkoutRunId))
+          .then((rows) => rows[0] ?? null);
+        if (
+          !checkoutRun ||
+          checkoutRun.companyId !== issueCompany.companyId ||
+          checkoutRun.agentId !== agentId ||
+          TERMINAL_HEARTBEAT_RUN_STATUSES.has(checkoutRun.status)
+        ) {
+          throw conflict("Heartbeat run cannot checkout issue", {
+            issueId: id,
+            checkoutRunId,
+            runStatus:
+              checkoutRun?.companyId === issueCompany.companyId && checkoutRun.agentId === agentId
+                ? checkoutRun.status
+                : "missing",
+          });
+        }
+      }
+
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
