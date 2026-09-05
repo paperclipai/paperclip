@@ -35,6 +35,7 @@ import {
 } from "./ports.js";
 import {
   acceptedPlanSessionResetFailures,
+  hasTerminalMalformedPlanConfirmation,
   isControlPlaneGovernedResponseWait,
   isNonExecutingReviewFenceRun,
   isOpenRouterDeepSeekHelloTerminalVariance,
@@ -373,6 +374,45 @@ describe("runner E2E matchers", () => {
 });
 
 describe("runner E2E run observations", () => {
+  it("retries only terminal Plan confirmations missing a revision-bound target", () => {
+    const observation = {
+      runs: [{ status: "succeeded" }],
+      interactions: [
+        {
+          kind: "request_confirmation",
+          status: "pending",
+          payload: { version: 1, prompt: "Approve the Plan?" },
+        },
+      ],
+      minimumRunCount: 1,
+    };
+
+    expect(hasTerminalMalformedPlanConfirmation(observation)).toBe(true);
+    expect(
+      hasTerminalMalformedPlanConfirmation({
+        ...observation,
+        runs: [{ status: "running" }],
+      }),
+    ).toBe(false);
+    expect(
+      hasTerminalMalformedPlanConfirmation({
+        ...observation,
+        interactions: [
+          {
+            ...observation.interactions[0],
+            payload: {
+              target: {
+                type: "issue_document",
+                key: "plan",
+                revisionId: "revision-1",
+              },
+            },
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   it("retries only the zero-marker DeepSeek hello terminal emission variance", () => {
     const expectedMarker = "PC_H_nonce-1";
     const observation = {
