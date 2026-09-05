@@ -51,6 +51,7 @@ import { updateCommand } from "./commands/update.js";
 import { registerServiceCommands } from "./commands/service.js";
 import { registerConnectionIntentCommands } from "./commands/client/connections.js";
 import {
+  assertTestDriveDatabaseIsolation,
   prepareTestDriveEnvironment,
   registerTestDriveCommand,
   type TestDriveOptions,
@@ -99,20 +100,23 @@ program
 
 program.hook("preAction", async (_thisCommand, actionCommand) => {
   const options = actionCommand.optsWithGlobals() as DataDirOptionLike & TestDriveOptions;
+  let dataDirOptions: DataDirOptionLike = options;
   if (actionCommand.name() === "test-drive") {
     const prepared = await prepareTestDriveEnvironment({
       dataDir: options.dataDir,
       apiKeyEnv: options.apiKeyEnv,
     });
-    options.dataDir = prepared.dataDir;
-    actionCommand.setOptionValue("dataDir", prepared.dataDir);
+    dataDirOptions = { ...options, dataDir: prepared.dataDir };
   }
   const optionNames = new Set(actionCommand.options.map((option) => option.attributeName()));
-  applyDataDirOverride(options, {
+  applyDataDirOverride(dataDirOptions, {
     hasConfigOption: optionNames.has("config"),
     hasContextOption: optionNames.has("context"),
   });
   loadPaperclipEnvFile(options.config);
+  if (actionCommand.name() === "test-drive") {
+    assertTestDriveDatabaseIsolation(options.config);
+  }
   initTelemetryFromConfigFile(options.config);
 });
 

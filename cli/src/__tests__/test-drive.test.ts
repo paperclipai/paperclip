@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Company, InstanceExperimentalSettings } from "@paperclipai/shared";
 import {
+  assertTestDriveDatabaseIsolation,
   bootstrapTestDrive,
   prepareTestDriveEnvironment,
   reconcileTestDriveWorktreeExecution,
@@ -15,6 +16,7 @@ import {
   type TestDriveHarness,
 } from "../commands/test-drive.js";
 import type { RunOptions, StartedServer } from "../commands/run.js";
+import type { PaperclipConfig } from "../config/schema.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const cleanupDirectories: string[] = [];
@@ -133,6 +135,41 @@ describe("test-drive data isolation", () => {
     expect(process.env.PAPERCLIP_TEST_PROVIDER_KEY).toBe("secret-value");
     expect(process.env.DATABASE_URL).toBeUndefined();
     expect(Number(process.env.PORT)).toBeGreaterThanOrEqual(3100);
+  });
+
+  it.each(["DATABASE_URL", "DATABASE_MIGRATION_URL"])(
+    "rejects %s loaded from the isolated directory",
+    (variable) => {
+      const readConfigFile = vi.fn(() => null);
+      expect(() => assertTestDriveDatabaseIsolation(
+        undefined,
+        { [variable]: "postgres://external-database" },
+        readConfigFile,
+      )).toThrow(/requires its isolated embedded database/);
+      expect(readConfigFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an explicitly reused PostgreSQL configuration", () => {
+    const externalConfig = {
+      database: { mode: "postgres" },
+    } as PaperclipConfig;
+    expect(() => assertTestDriveDatabaseIsolation(
+      "/tmp/reused/config.json",
+      {},
+      () => externalConfig,
+    )).toThrow(/cannot reuse.*external PostgreSQL database/);
+  });
+
+  it("accepts an embedded configuration", () => {
+    const embeddedConfig = {
+      database: { mode: "embedded-postgres" },
+    } as PaperclipConfig;
+    expect(() => assertTestDriveDatabaseIsolation(
+      "/tmp/reused/config.json",
+      {},
+      () => embeddedConfig,
+    )).not.toThrow();
   });
 });
 
@@ -389,7 +426,7 @@ describe("test-drive foreground lifecycle", () => {
     listenPort: 3100,
   };
 
-  it("starts without service-manager integration and opens only after initialization", async () => {
+  it("skips service-manager integration for an auto-created directory and opens after initialization", async () => {
     process.env.PAPERCLIP_HOME = "/tmp/test-drive-lifecycle";
     process.env.PAPERCLIP_INSTANCE_ID = "default";
     process.env.PAPERCLIP_IN_WORKTREE = "false";
@@ -427,6 +464,30 @@ describe("test-drive foreground lifecycle", () => {
       introLabel: "paperclipai test-drive",
     });
     expect(events).toEqual(["listening", "initialized", "browser"]);
+  });
+
+  it("retains the managed-instance collision guard for an explicitly reused directory", async () => {
+    process.env.PAPERCLIP_HOME = "/tmp/test-drive-reused";
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    process.env.PAPERCLIP_IN_WORKTREE = "false";
+    let runOptions: RunOptions | undefined;
+    const api = {
+      get: vi.fn(async <T>() => [company("existing", "Existing")] as T),
+      post: vi.fn(),
+      patch: vi.fn(),
+      delete: vi.fn(),
+    } as unknown as TestDriveApi;
+
+    await testDriveCommand({ dataDir: "/tmp/test-drive-reused", browser: false }, {
+      run: async (options) => {
+        runOptions = options;
+        await options.afterStart?.(server);
+      },
+      createApi: () => api,
+      openBrowser: vi.fn(async () => true),
+    });
+
+    expect(runOptions?.skipServiceManagerCheck).toBe(false);
   });
 
   it("honors --no-browser after successful initialization", async () => {

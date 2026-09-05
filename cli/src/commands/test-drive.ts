@@ -13,6 +13,8 @@ import {
   resolveDefaultConfigPath,
   resolveDefaultContextPath,
 } from "../config/home.js";
+import { readConfig } from "../config/store.js";
+import type { PaperclipConfig } from "../config/schema.js";
 import { runCommand, type StartedServer } from "./run.js";
 import { isLinkedGitWorktree } from "./git-workspace.js";
 
@@ -176,6 +178,27 @@ export async function prepareTestDriveEnvironment(
   process.env.PORT = String(await resolveTestDriveServerPort());
 
   return { dataDir, linkedWorktree };
+}
+
+export function assertTestDriveDatabaseIsolation(
+  configPath?: string,
+  env: NodeJS.ProcessEnv = process.env,
+  readConfigFile: (path?: string) => PaperclipConfig | null = readConfig,
+): void {
+  if (env.DATABASE_URL?.trim() || env.DATABASE_MIGRATION_URL?.trim()) {
+    throw new Error(
+      "test-drive requires its isolated embedded database. Remove DATABASE_URL and " +
+        "DATABASE_MIGRATION_URL from the selected data directory's .env, or choose a fresh --data-dir.",
+    );
+  }
+
+  const config = readConfigFile(configPath);
+  if (config?.database.mode === "postgres") {
+    throw new Error(
+      "test-drive cannot reuse a data directory configured for an external PostgreSQL database. " +
+        "Choose a fresh data directory or change database.mode to embedded-postgres.",
+    );
+  }
 }
 
 export function resolveTestDriveBootstrap(
@@ -378,7 +401,9 @@ export async function testDriveCommand(
       yes: true,
       bind: "loopback",
       installService: false,
-      skipServiceManagerCheck: true,
+      // Auto-created directories are private to this process. Explicitly reused
+      // directories retain the normal guard against an already-managed instance.
+      skipServiceManagerCheck: !options.dataDir?.trim(),
       introLabel: "paperclipai test-drive",
       afterStart: async (server) => {
         const api = dependencies.createApi(server.apiUrl);
