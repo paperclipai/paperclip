@@ -28,8 +28,8 @@ submission.
 
 ## 3. Repo Map
 
-- `server/`: Express REST API and orchestration services
-- `ui/`: React + Vite board UI
+- `server/`: Express REST API and orchestration services (Bun/Elysia migration is planned; Express remains the active production boundary until route-by-route contract parity is proven)
+- `ui/`: React + Vite board UI (Astro is not part of the runtime migration unless a separate SSR/SSG requirement is approved)
 - `packages/db/`: Drizzle schema, migrations, DB clients
 - `packages/shared/`: shared types, constants, validators, API path constants
 - `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
@@ -43,12 +43,14 @@ submission.
 
 ## 4. Dev Setup (Auto DB)
 
-Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
+Use embedded PostgreSQL in dev by leaving `DATABASE_URL` unset. The current implementation is Node.js + Express + pnpm; do not switch the production runtime to Bun/Elysia until the migration gates in `docs/superpowers/plans/2026-09-04-bun-elysia-migration-inventory.md` pass.
 
 ```sh
 pnpm install
 pnpm dev
 ```
+
+Bun may be used for isolated compatibility probes (`bun --version`, `bun install` in a disposable worktree, and targeted runtime smoke tests), but the checked-in application scripts remain pnpm/Node until the complete migration is verified.
 
 This starts:
 
@@ -194,7 +196,24 @@ When adding endpoints:
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Pull Request Requirements
+## 10. Bun/Elysia Migration Requirements
+
+The migration target is Bun + Elysia, but it is a brownfield framework/runtime migration, not a mechanical dependency replacement. Before changing a production route, read the official Bun and Elysia documentation for the exact API being introduced and record the source/version in the migration inventory.
+
+Required sequencing:
+
+1. Preserve the existing Express server as the behavioral oracle until Elysia parity is proven.
+2. Port actor/auth middleware before porting authenticated routes; company isolation, responsible-user intersections, API-key/JWT validation, CSRF/origin checks, and audit logging are non-negotiable.
+3. Port route handlers one bounded group at a time. Preserve paths, methods, status codes, response/error shapes, validation, activity events, and side effects.
+4. Keep Drizzle schemas/migrations and domain services unchanged unless a Bun compatibility probe proves the exact used API requires adaptation.
+5. Treat `Bun.spawn`, native WebSocket, static files, embedded PostgreSQL, Better Auth, OpenTelemetry, Sentry, and native modules as separate compatibility projects.
+6. Keep Vite + React as the board UI unless a separately approved product requirement needs Astro SSR/SSG; Astro is not a backend migration dependency.
+7. Do not remove Express, Node compatibility code, Vitest, pnpm, `ws`, or any existing file until repository-wide references are gone and unit, integration, contract, E2E, security, red-team, and production-readiness gates pass.
+8. Never use a placeholder handler or omit authorization/activity logging to make a route compile.
+
+The current inventory and evidence log is `docs/superpowers/plans/2026-09-04-bun-elysia-migration-inventory.md`.
+
+## 11. Pull Request Requirements
 
 When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
 
@@ -205,7 +224,7 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
 
-## 11. Definition of Done
+## 12. Definition of Done
 
 A change is done when all are true:
 

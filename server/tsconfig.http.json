@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "bun"],
+    "noEmit": true,
+    "rootDir": "src"
+  },
+  "include": ["src/http/**/*.ts", "src/types/express.d.ts"]
+}

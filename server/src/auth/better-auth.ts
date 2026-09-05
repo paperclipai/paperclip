@@ -40,7 +40,7 @@ type BetterAuthGetSessionApi = {
 
 type BetterAuthHandlerTarget = Extract<Parameters<typeof toNodeHandler>[0], { handler: Auth["handler"] }>;
 
-type BetterAuthSessionResolver = {
+export type BetterAuthSessionResolver = {
   api?: BetterAuthGetSessionApi;
 };
 

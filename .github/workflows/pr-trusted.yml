@@ -372,6 +372,51 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  http_boundary:
+    name: Bun/Elysia HTTP boundary
+    needs: [gate, policy]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe502c0 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.0'
+
+      - name: Typecheck HTTP boundary
+        run: pnpm --filter @paperclipai/server typecheck:http
+
+      - name: Test HTTP boundary
+        run: pnpm --filter @paperclipai/server test:http
+
   typecheck_release_registry:
     name: Typecheck + Release Registry
     needs: [gate, policy]
