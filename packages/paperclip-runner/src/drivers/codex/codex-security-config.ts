@@ -1,7 +1,14 @@
 import { resolve } from "node:path";
 
-export const CODEX_SKILLLESS_PERMISSION_PROFILE = "paperclip-runner-workspace-only";
-export const CODEX_PLANNING_PERMISSION_PROFILE = "paperclip-runner-workspace-read-only";
+import {
+  githubCredentialEnvironmentKeys,
+  hasGitHubCredentialEnvironment,
+} from "../../github-credential-environment.js";
+
+export const CODEX_SKILLLESS_PERMISSION_PROFILE =
+  "paperclip-runner-workspace-only";
+export const CODEX_PLANNING_PERMISSION_PROFILE =
+  "paperclip-runner-workspace-read-only";
 
 const SKILLLESS_BASE_CONFIG = {
   "skills.include_instructions": false,
@@ -64,6 +71,8 @@ export function createIsolatedCodexAppServerArgs(
   source: NodeJS.ProcessEnv = process.env,
   readOnlyRoots: string[] = [],
 ): string[] {
+  const hasGitHubCredential = hasGitHubCredentialEnvironment(source);
+  const inheritedGitHubKeys = githubCredentialEnvironmentKeys(source);
   const deniedHostRoots = [
     ...new Set(
       [source.HOME, source.CODEX_HOME]
@@ -99,15 +108,21 @@ export function createIsolatedCodexAppServerArgs(
     "-c",
     `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.filesystem={${filesystemRules}}`,
     "-c",
-    `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.network.enabled=false`,
+    `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.network.enabled=${hasGitHubCredential}`,
     "-c",
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
     "-c",
-    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=false`,
+    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${hasGitHubCredential}`,
     "-c",
-    `shell_environment_policy.inherit="none"`,
+    `shell_environment_policy.inherit=${tomlString(hasGitHubCredential ? "all" : "none")}`,
     "-c",
-    "shell_environment_policy.ignore_default_excludes=false",
+    `shell_environment_policy.ignore_default_excludes=${hasGitHubCredential}`,
+    ...(hasGitHubCredential
+      ? [
+          "-c",
+          `shell_environment_policy.include_only=${JSON.stringify(inheritedGitHubKeys)}`,
+        ]
+      : []),
     ...(commandEnv.length > 0
       ? ["-c", `shell_environment_policy.set={${commandEnv}}`]
       : []),

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
+import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 
 export interface CodexRpcNotification {
   method: string;
@@ -223,6 +224,7 @@ export function createSanitizedCodexEnvironment(
     if (key.includes("PROXY") && proxyContainsCredentials(value)) continue;
     environment[key] = value;
   }
+  Object.assign(environment, githubCredentialEnvironment(source));
   return environment;
 }
 
