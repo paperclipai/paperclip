@@ -581,7 +581,7 @@ export function AppDetail() {
                   setAudienceError(null);
                 }}
                 onConnectAsMe={() => startPersonalAuth.mutate()}
-                onConnectOrganization={() => startOAuth.mutate()}
+                onConnectOrganization={() => startOAuth.mutate(undefined)}
                 onConnectAgent={(agentId) => startOAuth.mutate({ asAgentId: agentId })}
                 onRefreshAccess={() => refreshGitHubAccess.mutate()}
                 refreshAccessPending={refreshGitHubAccess.isPending}
