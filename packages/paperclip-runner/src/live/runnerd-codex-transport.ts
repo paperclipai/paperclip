@@ -1900,6 +1900,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #turnId = "";
   #turnStartResponsePending = false;
   #turnStartResponseEpoch = 0;
+  #observedTurnStartEpoch = 0;
   #durableTurnId = "";
   #authorizedTools: Record<string, unknown> | null = null;
   #closed = false;
@@ -3460,19 +3461,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         text: message,
         turnId: pendingTurnId,
       });
-      // Command completion only means runnerd accepted the command. Codex assigns
-      // the authoritative turn identity in the subsequent turn/started event, so
-      // do not expose the temporary transport identity to the strict driver.
+      // Command completion only means runnerd accepted the command. Bind the
+      // provider turn from the subsequent turn/started event before answering
+      // the strict driver. ACPX may accept the exact requested identity, so the
+      // event observation—not an ID change—is the readiness authority.
       const deadline = Date.now() + 30_000;
-      while (this.#turnId === pendingTurnId && Date.now() < deadline) {
+      while (
+        this.#observedTurnStartEpoch !== responseEpoch &&
+        Date.now() < deadline
+      ) {
         this.#throwIfFailed();
         this.#pumpEvents();
-        if (this.#turnId !== pendingTurnId) break;
+        if (this.#observedTurnStartEpoch === responseEpoch) break;
         if (await this.#runnerHasExited())
           throw new Error("runnerd exited before provider turn startup");
         await new Promise((resolveWait) => setTimeout(resolveWait, 10));
       }
-      if (this.#turnId === pendingTurnId)
+      if (this.#observedTurnStartEpoch !== responseEpoch)
         throw new Error("runnerd did not report the provider turn identity");
       responseReady = true;
       return { turn: { id: this.#turnId, status: "inProgress" } };
@@ -3781,6 +3786,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           const providerTurnId = record(params.turn).id ?? params.turnId;
           if (typeof providerTurnId === "string" && providerTurnId.length > 0) {
             this.#turnId = providerTurnId;
+            if (this.#turnStartResponsePending) {
+              this.#observedTurnStartEpoch = this.#turnStartResponseEpoch;
+            }
           }
         }
         this.#queue.push({
