@@ -6875,6 +6875,166 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
+  it("publishes a serialized Telegram run response after the preceding run completes the conversation", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    const dm = makeThread({
+      channelId: "77119922",
+      id: "telegram:77119922",
+      isDM: true,
+      name: "Telegram completion race",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: "77119922:1",
+        text: "Start the setup conversation",
+        userId: "77119922",
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "77119922");
+    await service.test(endpoint.id, "owner-user");
+
+    for (const [id, text] of [
+      ["77119922:2", "First queued question"],
+      ["77119922:3", "Second queued question"],
+    ] as const) {
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: dm.thread,
+        message: makeMessage({ id, text, userId: "77119922" }),
+        trigger: "direct_message",
+      });
+    }
+
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const inboundLinks = await db
+      .select()
+      .from(chatMessageLinks)
+      .where(
+        and(
+          eq(chatMessageLinks.endpointId, endpoint.id),
+          eq(chatMessageLinks.direction, "inbound"),
+          inArray(chatMessageLinks.providerMessageId, [
+            "77119922:2",
+            "77119922:3",
+          ]),
+        ),
+      );
+    const firstWakeCommentId = inboundLinks.find(
+      (link) => link.providerMessageId === "77119922:2",
+    )?.commentId;
+    const secondWakeCommentId = inboundLinks.find(
+      (link) => link.providerMessageId === "77119922:3",
+    )?.commentId;
+    if (!firstWakeCommentId || !secondWakeCommentId) {
+      throw new Error("Expected both inbound Telegram comments to be linked");
+    }
+
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: firstRunId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: {
+          issueId: conversation.issueId,
+          source: "chat:telegram",
+          wakeCommentId: firstWakeCommentId,
+          wakeCommentIds: [firstWakeCommentId],
+        },
+      },
+      {
+        id: secondRunId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: {
+          issueId: conversation.issueId,
+          source: "chat:telegram",
+          wakeCommentId: secondWakeCommentId,
+          wakeCommentIds: [secondWakeCommentId],
+        },
+      },
+    ]);
+
+    const firstResponse = await issueService(db).addComment(
+      conversation.issueId,
+      "First queued answer",
+      { agentId: fixture.assignedAgentId, runId: firstRunId },
+      { authorType: "agent" },
+    );
+    await service.processPendingPublications();
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, conversation.issueId));
+    await db
+      .update(chatConversations)
+      .set({ state: "completed" })
+      .where(eq(chatConversations.id, conversation.id));
+
+    const secondResponse = await issueService(db).addComment(
+      conversation.issueId,
+      "Second queued answer",
+      { agentId: fixture.assignedAgentId, runId: secondRunId },
+      { authorType: "agent" },
+    );
+    const lateInternalComment = await issueService(db).addComment(
+      conversation.issueId,
+      "Later internal-only note",
+      { agentId: fixture.assignedAgentId },
+      { authorType: "agent" },
+    );
+
+    const responsePublications = await db
+      .select()
+      .from(chatPublications)
+      .where(
+        inArray(chatPublications.commentId, [
+          firstResponse.id,
+          secondResponse.id,
+          lateInternalComment.id,
+        ]),
+      );
+    expect(responsePublications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          commentId: firstResponse.id,
+          conversationId: conversation.id,
+          state: "published",
+        }),
+        expect.objectContaining({
+          commentId: secondResponse.id,
+          conversationId: conversation.id,
+          state: "pending",
+        }),
+      ]),
+    );
+    expect(
+      responsePublications.find(
+        (publication) => publication.commentId === lateInternalComment.id,
+      ),
+    ).toBeUndefined();
+
+    await service.processPendingPublications();
+    expect(
+      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
+    ).toEqual(["First queued answer", "Second queued answer"]);
+  });
+
   it("holds ambiguous provider sends for an audited duplicate-risk resolution without reordering", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =

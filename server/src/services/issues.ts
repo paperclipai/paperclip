@@ -5,6 +5,7 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   chatConversations,
+  chatMessageLinks,
   chatPublications,
   agentWakeupRequests,
   agents,
@@ -446,6 +447,90 @@ async function resolveCommentCreatedByRunId(
     .where(and(eq(heartbeatRuns.id, normalized), eq(heartbeatRuns.companyId, companyId)))
     .then((rows: Array<{ id: string }>) => rows[0] ?? null);
   return existing?.id ?? null;
+}
+
+type ChatPublicationBinding = {
+  companyId: string;
+  conversationId: string;
+  endpointId: string;
+};
+
+function readChatWakeCommentIds(
+  contextSnapshot: Record<string, unknown>,
+): string[] {
+  const ids: string[] = [];
+  const append = (value: unknown) => {
+    if (typeof value !== "string") return;
+    const normalized = value.trim();
+    if (!normalized || !isUuidLike(normalized) || ids.includes(normalized)) {
+      return;
+    }
+    ids.push(normalized);
+  };
+
+  const batched = contextSnapshot.wakeCommentIds;
+  if (Array.isArray(batched)) {
+    for (const value of batched) append(value);
+  }
+  append(contextSnapshot.wakeCommentId);
+  append(contextSnapshot.commentId);
+  return ids;
+}
+
+async function resolveChatOriginPublicationBindings(
+  dbOrTx: any,
+  companyId: string,
+  issueId: string,
+  runId: string | null,
+): Promise<ChatPublicationBinding[]> {
+  if (!runId) return [];
+
+  const run = await dbOrTx
+    .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.companyId, companyId),
+      ),
+    )
+    .then(
+      (rows: Array<{ contextSnapshot: Record<string, unknown> | null }>) =>
+        rows[0] ?? null,
+    );
+  const contextSnapshot = run?.contextSnapshot;
+  if (!contextSnapshot) return [];
+
+  const contextSource = contextSnapshot.source;
+  if (typeof contextSource !== "string" || !contextSource.startsWith("chat:")) {
+    return [];
+  }
+
+  const wakeCommentIds = readChatWakeCommentIds(contextSnapshot);
+  if (wakeCommentIds.length === 0) return [];
+
+  return dbOrTx
+    .select({
+      companyId: chatConversations.companyId,
+      conversationId: chatConversations.id,
+      endpointId: chatConversations.endpointId,
+    })
+    .from(chatMessageLinks)
+    .innerJoin(
+      chatConversations,
+      and(
+        eq(chatConversations.companyId, chatMessageLinks.companyId),
+        eq(chatConversations.id, chatMessageLinks.conversationId),
+      ),
+    )
+    .where(
+      and(
+        eq(chatMessageLinks.companyId, companyId),
+        eq(chatMessageLinks.direction, "inbound"),
+        inArray(chatMessageLinks.commentId, wakeCommentIds),
+        eq(chatConversations.issueId, issueId),
+      ),
+    );
 }
 
 async function resolveCommentResponsibleUserId(
@@ -9125,7 +9210,7 @@ export function issueService(db: Db) {
       // Raw run events, internal logs, tool traces, and reasoning never enter
       // this outbox because they are not issue comments.
       if (authorType === "agent") {
-        const bindings = await dbOrTx
+        const activeBindings: ChatPublicationBinding[] = await dbOrTx
           .select({
             companyId: chatConversations.companyId,
             conversationId: chatConversations.id,
@@ -9136,7 +9221,22 @@ export function issueService(db: Db) {
             eq(chatConversations.issueId, issueId),
             inArray(chatConversations.state, ["active", "waiting"]),
           ));
-        for (const binding of bindings) {
+        // A preceding serialized run may complete the task before the next
+        // chat-originated run writes its response. Preserve that response only
+        // for the exact conversation whose inbound comment woke this run.
+        // Completed conversations are never selected for ordinary/internal
+        // agent comments.
+        const originBindings = await resolveChatOriginPublicationBindings(
+          dbOrTx,
+          issue.companyId,
+          issueId,
+          createdByRunId,
+        );
+        const bindings = new Map<string, ChatPublicationBinding>();
+        for (const binding of [...activeBindings, ...originBindings]) {
+          bindings.set(binding.conversationId, binding);
+        }
+        for (const binding of bindings.values()) {
           await dbOrTx
             .insert(chatPublications)
             .values({
