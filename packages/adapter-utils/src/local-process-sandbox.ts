@@ -48,10 +48,17 @@ interface NetworkAllowlistProxy {
   close: () => Promise<void>;
 }
 
+// "/usr" must be bound before "/bin", "/sbin", "/lib" and "/lib64". On merged-/usr
+// hosts (Debian, Ubuntu, Fedora, Arch) those four are symlinks into usr/, and the
+// sandbox recreates them as symlinks in the new root via --symlink before binding.
+// Binding "/bin" first makes bwrap resolve /newroot/bin -> /newroot/usr/bin, which
+// does not exist until "/usr" itself is bound, and bwrap aborts. Ordering "/usr"
+// first keeps the symlink destinations resolvable, and is harmless on split-/usr
+// hosts. See #10684.
 const SYSTEM_READ_PATHS = [
+  "/usr",
   "/bin",
   "/sbin",
-  "/usr",
   "/lib",
   "/lib64",
   "/etc/ca-certificates",
