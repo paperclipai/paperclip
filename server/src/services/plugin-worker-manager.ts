@@ -292,6 +292,17 @@ const MAX_DUPLEX_ROUTE_TOMBSTONES = 4096;
  * per window with a running count. */
 const EXECUTE_LOG_DROP_LOG_INTERVAL_MS = 1_000;
 
+const INSTANCE_LEVEL_BACKGROUND_HOST_METHODS = new Set<string>([
+  "companies.list",
+]);
+
+const DERIVED_SCOPE_BACKGROUND_HOST_METHODS = new Set<string>([
+  "config.get",
+  "state.get",
+  "state.set",
+  "state.delete",
+]);
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1112,6 +1123,14 @@ export function createPluginWorkerHandle(
 
     const directCompanyId = readNonEmptyString(params.companyId);
     if (directCompanyId) return { companyId: directCompanyId };
+
+    if (
+      (method === "state.get" || method === "state.set" || method === "state.delete") &&
+      params.scopeKind === "company"
+    ) {
+      const companyId = readNonEmptyString(params.scopeId);
+      return companyId ? { companyId } : null;
+    }
 
     if (method === "performAction" && isRecord(params.actorContext)) {
       const companyId = readNonEmptyString(params.actorContext.companyId);
@@ -2530,6 +2549,47 @@ export function createPluginWorkerHandle(
   }
 
   function contextForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerHostCallContext {
+    function deriveScopedContextForActiveInvocation(): WorkerHostCallContext | null {
+      if (!isJsonRpcRequest(message)) return null;
+      const derivedScope = deriveInvocationScope(message.method, message.params);
+      if (!derivedScope) return null;
+      const activeCompanyIds = new Set(
+        Array.from(activeInvocations.values())
+          .map((entry) => readNonEmptyString(entry.scope.companyId))
+          .filter((companyId): companyId is string => Boolean(companyId)),
+      );
+      if (activeCompanyIds.has(derivedScope.companyId)) {
+        return { invocationScope: derivedScope };
+      }
+      return null;
+    }
+
+    function deriveBackgroundContext(): WorkerHostCallContext | null {
+      if (!isJsonRpcRequest(message)) return null;
+      const derivedScope = deriveInvocationScope(message.method, message.params);
+      if (derivedScope && DERIVED_SCOPE_BACKGROUND_HOST_METHODS.has(message.method)) {
+        const activeCompanyIds = new Set(
+          Array.from(activeInvocations.values())
+            .map((entry) => readNonEmptyString(entry.scope.companyId))
+            .filter((companyId): companyId is string => Boolean(companyId)),
+        );
+        if (activeCompanyIds.has(derivedScope.companyId)) {
+          return { invocationScope: derivedScope };
+        }
+      }
+      if (INSTANCE_LEVEL_BACKGROUND_HOST_METHODS.has(message.method)) {
+        return {};
+      }
+      if (
+        (message.method === "state.get" || message.method === "state.set" || message.method === "state.delete") &&
+        isRecord(message.params) &&
+        message.params.scopeKind === "instance"
+      ) {
+        return {};
+      }
+      return null;
+    }
+
     const invocationId = readNonEmptyString(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
@@ -2548,12 +2608,20 @@ export function createPluginWorkerHandle(
       if (proactiveCompanyId && proactiveCompanyScopes.has(proactiveCompanyId)) {
         return { invocationScope: { companyId: proactiveCompanyId } };
       }
+      const scopedContext = deriveScopedContextForActiveInvocation();
+      if (scopedContext) return scopedContext;
+      const backgroundContext = deriveBackgroundContext();
+      if (backgroundContext) return backgroundContext;
       const hasActiveInvocation = activeInvocations.size > 0 ||
         Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};
     }
     const entry = activeInvocations.get(invocationId);
-    if (!entry) return { invalidInvocationScope: true };
+    if (!entry) {
+      const backgroundContext = deriveBackgroundContext();
+      if (backgroundContext) return backgroundContext;
+      return { invalidInvocationScope: true };
+    }
     return { invocationScope: entry.scope, traceparent: entry.traceparent };
   }
 
