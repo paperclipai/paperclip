@@ -353,6 +353,73 @@ function classifyHttpError(status: number): { code: string; family: AdapterExecu
   return { code: "hermes_gateway_protocol_error", family: null };
 }
 
+// The Hermes gateway surfaces upstream provider rate-limit exhaustion by
+// completing the run with status=failed and an error message like:
+//   "Codex provider quota exhausted (429); retry after 4825s. Credentials..."
+//   "HTTP 429: The usage limit has been reached"
+// Without special handling the adapter emits errorCode=hermes_gateway_run_failed
+// with no errorFamily / retryNotBefore, so the downstream heartbeat scheduler
+// immediately fires another run — which hits the same 429 — producing a storm
+// of failed runs during the entire cooldown window (~1h). We tag those
+// terminal-event failures with errorFamily=provider_quota and a real
+// retryNotBefore timestamp so the scheduler honours the backoff.
+const CODEX_QUOTA_MESSAGE_RE =
+  /(?:codex\s+provider\s+)?quota\s+exhausted\s*\(?\s*429\s*\)?(?:[^0-9]*?retry\s*after\s+(\d+)\s*s)?/i;
+const HTTP_429_MESSAGE_RE = /\bhttp\s*429\b|\b429\s*:/i;
+const USAGE_LIMIT_MESSAGE_RE = /\busage[-_\s]?limit(?:\s+has\s+been)?\s+reached\b/i;
+const RETRY_AFTER_HINT_RE = /retry[-_\s]?after[:\s]+(\d+)\s*s?\b/i;
+
+// Fallback cool-down (seconds) when the gateway did not include an explicit
+// retry-after. Kept modest so a real reset-time reported by a later attempt
+// can shorten it, but long enough to break the immediate hot-loop.
+const HERMES_GATEWAY_QUOTA_FALLBACK_SEC = 60;
+
+function parseHermesRetryAfterHeader(raw: string | null | undefined, now = Date.now()): string | null {
+  if (raw === null || raw === undefined) return null;
+  const value = String(raw).trim();
+  if (!value) return null;
+  // delta-seconds form (e.g. "120")
+  if (/^\d+$/.test(value)) {
+    const seconds = Number.parseInt(value, 10);
+    if (!Number.isFinite(seconds) || seconds < 0) return null;
+    return new Date(now + seconds * 1000).toISOString();
+  }
+  // HTTP-date form
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  return new Date(parsed).toISOString();
+}
+
+function detectProviderQuotaExhaustion(
+  message: string | null | undefined,
+  now = Date.now(),
+): { errorCode: string; errorFamily: AdapterExecutionResult["errorFamily"]; retryNotBefore: string | null } | null {
+  if (!message) return null;
+  const trimmed = String(message).trim();
+  if (!trimmed) return null;
+  const isQuotaExhausted =
+    CODEX_QUOTA_MESSAGE_RE.test(trimmed) ||
+    HTTP_429_MESSAGE_RE.test(trimmed) ||
+    USAGE_LIMIT_MESSAGE_RE.test(trimmed);
+  if (!isQuotaExhausted) return null;
+  const explicit = CODEX_QUOTA_MESSAGE_RE.exec(trimmed);
+  const hint = RETRY_AFTER_HINT_RE.exec(trimmed);
+  const rawSeconds = (explicit && explicit[1]) ?? (hint && hint[1]) ?? null;
+  let seconds: number | null = null;
+  if (rawSeconds !== null) {
+    const parsed = Number.parseInt(rawSeconds, 10);
+    if (Number.isFinite(parsed) && parsed > 0) seconds = parsed;
+  }
+  if (seconds === null) seconds = HERMES_GATEWAY_QUOTA_FALLBACK_SEC;
+  const retryNotBefore = new Date(now + seconds * 1000).toISOString();
+  return { errorCode: "hermes_gateway_rate_limited", errorFamily: "provider_quota", retryNotBefore };
+}
+
+export const __providerQuotaInternals = {
+  parseHermesRetryAfterHeader,
+  detectProviderQuotaExhaustion,
+};
+
 function fetchFailureMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   const cause = err instanceof Error ? (err as { cause?: unknown }).cause : null;
@@ -380,7 +447,13 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
     const err = new Error(`Hermes gateway HTTP ${response.status}`) as HermesHttpError;
     err.status = response.status;
     err.code = classified.code;
-    err.retryNotBefore = response.headers.get("retry-after");
+    // The `retry-after` header value is either delta-seconds (e.g. "120") or an
+    // HTTP-date. The downstream consumer (heartbeat.readTransientRetryNotBefore)
+    // parses via `new Date(value)`, which accepts "1653" as year 1653 → the
+    // date lands in the past and the scheduler ignores the backoff. Normalise
+    // to an absolute ISO datetime up front so the scheduler sees a real
+    // future instant.
+    err.retryNotBefore = parseHermesRetryAfterHeader(response.headers.get("retry-after"));
     err.body = body;
     throw err;
   }
@@ -671,16 +744,26 @@ export function mapFinalResultForTest(input: {
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
-  const errorMessage = mapped.errorCode
-    ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
+  const rawErrorMessage = mapped.errorCode
+    ? extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`
     : null;
+  const errorMessage = rawErrorMessage ? redactText(rawErrorMessage) : null;
+  // Detect provider-quota exhaustion (e.g. Codex 429) inside a terminal
+  // "failed" event and tag the result so the scheduler honours the backoff.
+  const quotaOverride =
+    mapped.errorCode && FAILURE_STATUSES.has(input.terminal.status)
+      ? detectProviderQuotaExhaustion(rawErrorMessage)
+      : null;
+  const finalErrorCode = quotaOverride?.errorCode ?? mapped.errorCode;
   return {
     exitCode: mapped.exitCode,
     signal: mapped.signal,
     timedOut: false,
     provider: "hermes_gateway",
     model: extractModel(payload),
-    ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
+    ...(finalErrorCode ? { errorCode: finalErrorCode } : {}),
+    ...(quotaOverride?.errorFamily ? { errorFamily: quotaOverride.errorFamily } : {}),
+    ...(quotaOverride?.retryNotBefore ? { retryNotBefore: quotaOverride.retryNotBefore } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
@@ -757,16 +840,27 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
+  const rawMessage = err instanceof Error ? err.message : String(err);
   const errorMessage = code === "hermes_gateway_auth_failed"
     ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
     : redactErrorMessage(err, redactText);
+  // On real HTTP 429s, upgrade the family to provider_quota (more specific than
+  // transient_upstream) when the message or body signals it, and synthesise
+  // retryNotBefore from the message if the header was missing.
+  const quotaOverride =
+    hermesError.status === 429 && !hermesError.retryNotBefore
+      ? detectProviderQuotaExhaustion(rawMessage)
+      : null;
   return {
     exitCode: 1,
     signal: null,
     timedOut: false,
     errorCode: code,
-    errorFamily: classified?.family ?? (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
-    retryNotBefore: hermesError.retryNotBefore ?? null,
+    errorFamily:
+      quotaOverride?.errorFamily ??
+      classified?.family ??
+      (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
+    retryNotBefore: hermesError.retryNotBefore ?? quotaOverride?.retryNotBefore ?? null,
     errorMessage,
     errorMeta: {
       ...(hermesError.status ? { status: hermesError.status } : {}),
