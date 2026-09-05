@@ -2431,9 +2431,8 @@ export async function ensureWorktreeSeeded(
 }
 
 export function resolveWorktreeSeedBackupEngine(seedPlan: WorktreeSeedPlan): "auto" | "javascript" {
-  return seedPlan.excludedTables.length === 0 && Object.keys(seedPlan.nullifyColumns).length === 0
-    ? "auto"
-    : "javascript";
+  void seedPlan;
+  return "javascript";
 }
 
 async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
@@ -4268,7 +4267,7 @@ async function backupWorktreeReseedTarget(input: {
       backupDir: path.resolve(input.targetPaths.backupDir, "repair"),
       retention: { dailyDays: 30, weeklyWeeks: 12, monthlyMonths: 12 },
       filenamePrefix: `${input.targetPaths.instanceId}-pre-repair`,
-      backupEngine: "auto",
+      backupEngine: "javascript",
       includeMigrationJournal: true,
     });
     return formatDatabaseBackupResult(result);
