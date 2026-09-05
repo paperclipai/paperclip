@@ -509,7 +509,7 @@ async function resolveChatOriginPublicationBindings(
   const wakeCommentIds = readChatWakeCommentIds(contextSnapshot);
   if (wakeCommentIds.length === 0) return [];
 
-  return dbOrTx
+  const bindings: ChatPublicationBinding[] = await dbOrTx
     .select({
       companyId: chatConversations.companyId,
       conversationId: chatConversations.id,
@@ -531,6 +531,11 @@ async function resolveChatOriginPublicationBindings(
         eq(chatConversations.issueId, issueId),
       ),
     );
+  return [
+    ...new Map(
+      bindings.map((binding) => [binding.conversationId, binding]),
+    ).values(),
+  ];
 }
 
 async function resolveCommentResponsibleUserId(
@@ -9206,37 +9211,18 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      // An agent-authored board comment is the externally publishable unit.
-      // Raw run events, internal logs, tool traces, and reasoning never enter
-      // this outbox because they are not issue comments.
+      // Only a comment from the run causally woken by an inbound chat message
+      // is automatically publishable. Recovery, automation, and ordinary
+      // internal agent comments stay in Paperclip even while a bound
+      // conversation is active.
       if (authorType === "agent") {
-        const activeBindings: ChatPublicationBinding[] = await dbOrTx
-          .select({
-            companyId: chatConversations.companyId,
-            conversationId: chatConversations.id,
-            endpointId: chatConversations.endpointId,
-          })
-          .from(chatConversations)
-          .where(and(
-            eq(chatConversations.issueId, issueId),
-            inArray(chatConversations.state, ["active", "waiting"]),
-          ));
-        // A preceding serialized run may complete the task before the next
-        // chat-originated run writes its response. Preserve that response only
-        // for the exact conversation whose inbound comment woke this run.
-        // Completed conversations are never selected for ordinary/internal
-        // agent comments.
-        const originBindings = await resolveChatOriginPublicationBindings(
+        const bindings = await resolveChatOriginPublicationBindings(
           dbOrTx,
           issue.companyId,
           issueId,
           createdByRunId,
         );
-        const bindings = new Map<string, ChatPublicationBinding>();
-        for (const binding of [...activeBindings, ...originBindings]) {
-          bindings.set(binding.conversationId, binding);
-        }
-        for (const binding of bindings.values()) {
+        for (const binding of bindings) {
           await dbOrTx
             .insert(chatPublications)
             .values({
@@ -9320,6 +9306,7 @@ export function issueService(db: Db) {
         issueId: string;
         authorType: string | null;
         authorAgentId: string | null;
+        createdByRunId: string | null;
       } | null = null;
       if (input.issueCommentId) {
         parentComment = await db
@@ -9329,6 +9316,7 @@ export function issueService(db: Db) {
             issueId: issueComments.issueId,
             authorType: issueComments.authorType,
             authorAgentId: issueComments.authorAgentId,
+            createdByRunId: issueComments.createdByRunId,
           })
           .from(issueComments)
           .where(eq(issueComments.id, input.issueCommentId))
@@ -9407,20 +9395,17 @@ export function issueService(db: Db) {
 
         if (
           input.createdByAgentId &&
+          registeredRunId &&
           parentComment?.authorType === "agent" &&
-          parentComment.authorAgentId === input.createdByAgentId
+          parentComment.authorAgentId === input.createdByAgentId &&
+          parentComment.createdByRunId === registeredRunId
         ) {
-          const bindings = await tx
-            .select({
-              endpointId: chatConversations.endpointId,
-              conversationId: chatConversations.id,
-            })
-            .from(chatConversations)
-            .where(and(
-              eq(chatConversations.companyId, issue.companyId),
-              eq(chatConversations.issueId, issue.id),
-              inArray(chatConversations.state, ["active", "waiting"]),
-            ));
+          const bindings = await resolveChatOriginPublicationBindings(
+            tx,
+            issue.companyId,
+            issue.id,
+            registeredRunId,
+          );
           for (const binding of bindings) {
             await tx
               .insert(chatPublications)

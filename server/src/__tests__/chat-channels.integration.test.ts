@@ -644,6 +644,34 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
   }
 
+  async function chatWakeContext(input: {
+    endpointId: string;
+    issueId: string;
+    provider: ChatProvider;
+    providerMessageId: string;
+  }) {
+    const wakeCommentId = await db
+      .select({ commentId: chatMessageLinks.commentId })
+      .from(chatMessageLinks)
+      .where(
+        and(
+          eq(chatMessageLinks.endpointId, input.endpointId),
+          eq(chatMessageLinks.providerMessageId, input.providerMessageId),
+          eq(chatMessageLinks.direction, "inbound"),
+        ),
+      )
+      .then((rows) => rows[0]?.commentId ?? null);
+    if (!wakeCommentId) {
+      throw new Error(`Expected inbound comment link ${input.providerMessageId}`);
+    }
+    return {
+      issueId: input.issueId,
+      source: `chat:${input.provider}`,
+      wakeCommentId,
+      wakeCommentIds: [wakeCommentId],
+    };
+  }
+
   async function qualifySetupRoundTrip(
     service: ChatChannelService,
     endpointId: string,
@@ -665,12 +693,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       isDM: conversation.isDirectMessage,
       name: conversation.externalLabel,
     });
+    const setupFollowUpMessageId = `setup-follow-up-${randomUUID()}`;
     await callbacks.onMessage({
       endpointId,
       provider: endpoint.provider,
       thread,
       message: makeMessage({
-        id: `setup-follow-up-${randomUUID()}`,
+        id: setupFollowUpMessageId,
         text: "Setup follow-up",
         userId,
       }),
@@ -679,10 +708,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           ? "direct_message"
           : "subscribed_message",
     });
+    const contextSnapshot = await chatWakeContext({
+      endpointId,
+      issueId: conversation.issueId,
+      provider: endpoint.provider,
+      providerMessageId: setupFollowUpMessageId,
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: endpoint.companyId,
+      agentId: endpoint.assignedAgentId,
+      status: "succeeded",
+      contextSnapshot,
+    });
     await issueService(db).addComment(
       conversation.issueId,
       "Setup round trip complete",
-      { agentId: endpoint.assignedAgentId },
+      { agentId: endpoint.assignedAgentId, runId },
       { authorType: "agent" },
     );
     await service.processPendingPublications();
@@ -2015,7 +2058,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       companyId: fixture.companyId,
       agentId: fixture.assignedAgentId,
       status: "running",
-      contextSnapshot: { issueId: conversation.issueId },
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: conversation.issueId,
+        provider: "microsoft-teams",
+        providerMessageId: "teams-run-root-1",
+      }),
     });
     for (const progressState of ["queued", "working"] as const) {
       await db.insert(chatPublications).values({
@@ -4857,7 +4905,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       companyId: fixture.companyId,
       agentId: fixture.assignedAgentId,
       status: "running",
-      contextSnapshot: { issueId: conversation.issueId },
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: conversation.issueId,
+        provider: "github",
+        providerMessageId: "41701",
+      }),
     });
     await db.insert(chatPublications).values({
       companyId: fixture.companyId,
@@ -5101,7 +5154,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         companyId: fixture.companyId,
         agentId: fixture.assignedAgentId,
         status: "running",
-        contextSnapshot: { issueId: conversation.issueId },
+        contextSnapshot: await chatWakeContext({
+          endpointId: endpoint.id,
+          issueId: conversation.issueId,
+          provider,
+          providerMessageId: provider === "slack" ? "4045.1" : "41801",
+        }),
       });
       await db.insert(chatPublications).values({
         companyId: fixture.companyId,
@@ -5216,7 +5274,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       companyId: fixture.companyId,
       agentId: fixture.assignedAgentId,
       status: "running",
-      contextSnapshot: { issueId: conversation.issueId },
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: conversation.issueId,
+        provider: "slack",
+        providerMessageId: "4050.1",
+      }),
     });
     for (const milestone of ["queued", "working"] as const) {
       await db.insert(chatPublications).values({
@@ -7084,6 +7147,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     const firstRunId = randomUUID();
     const secondRunId = randomUUID();
+    const internalRecoveryRunId = randomUUID();
     await db.insert(heartbeatRuns).values([
       {
         id: firstRunId,
@@ -7109,6 +7173,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           wakeCommentIds: [secondWakeCommentId],
         },
       },
+      {
+        id: internalRecoveryRunId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "succeeded",
+        contextSnapshot: {
+          issueId: conversation.issueId,
+          source: "issue.comment",
+          wakeReason: "finish_successful_run_handoff",
+          wakeSource: "automation",
+        },
+      },
     ]);
 
     const firstResponse = await issueService(db).addComment(
@@ -7118,6 +7194,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { authorType: "agent" },
     );
     await service.processPendingPublications();
+    const activeInternalComment = await issueService(db).addComment(
+      conversation.issueId,
+      "Active recovery note that must stay internal",
+      {
+        agentId: fixture.assignedAgentId,
+        runId: internalRecoveryRunId,
+      },
+      { authorType: "agent" },
+    );
+    const internalAttachment = await issueService(db).createAttachment({
+      issueId: conversation.issueId,
+      issueCommentId: activeInternalComment.id,
+      provider: "local_disk",
+      objectKey: "issues/internal-recovery.txt",
+      contentType: "text/plain",
+      byteSize: 18,
+      sha256: "a".repeat(64),
+      originalFilename: "internal-recovery.txt",
+      createdByAgentId: fixture.assignedAgentId,
+      createdByRunId: internalRecoveryRunId,
+    });
     await db
       .update(issues)
       .set({ status: "done" })
@@ -7147,6 +7244,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         inArray(chatPublications.commentId, [
           firstResponse.id,
           secondResponse.id,
+          activeInternalComment.id,
           lateInternalComment.id,
         ]),
       );
@@ -7164,16 +7262,62 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
       ]),
     );
+    for (const internalCommentId of [
+      activeInternalComment.id,
+      lateInternalComment.id,
+    ]) {
+      expect(
+        responsePublications.find(
+          (publication) => publication.commentId === internalCommentId,
+        ),
+      ).toBeUndefined();
+    }
     expect(
-      responsePublications.find(
-        (publication) => publication.commentId === lateInternalComment.id,
-      ),
-    ).toBeUndefined();
+      await db
+        .select()
+        .from(chatPublications)
+        .where(
+          eq(
+            chatPublications.idempotencyKey,
+            `attachment:${internalAttachment.id}:${endpoint.id}`,
+          ),
+        ),
+    ).toHaveLength(0);
 
     await service.processPendingPublications();
     expect(
       runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
     ).toEqual(["First queued answer", "Second queued answer"]);
+
+    const chatAttachment = await issueService(db).createAttachment({
+      issueId: conversation.issueId,
+      issueCommentId: secondResponse.id,
+      provider: "local_disk",
+      objectKey: "issues/chat-result.txt",
+      contentType: "text/plain",
+      byteSize: 11,
+      sha256: "b".repeat(64),
+      originalFilename: "chat-result.txt",
+      createdByAgentId: fixture.assignedAgentId,
+      createdByRunId: secondRunId,
+    });
+    await expect(
+      db
+        .select()
+        .from(chatPublications)
+        .where(
+          eq(
+            chatPublications.idempotencyKey,
+            `attachment:${chatAttachment.id}:${endpoint.id}`,
+          ),
+        ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        commentId: secondResponse.id,
+        conversationId: conversation.id,
+        state: "pending",
+      }),
+    ]);
   });
 
   it("holds ambiguous provider sends for an audited duplicate-risk resolution without reordering", async () => {
@@ -8306,7 +8450,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       companyId: fixture.companyId,
       agentId: fixture.assignedAgentId,
       status: "running",
-      contextSnapshot: { issueId: conversation.issueId },
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: conversation.issueId,
+        provider: "telegram",
+        providerMessageId: `${chatId}:71`,
+      }),
     });
     for (const progressState of ["queued", "working"] as const) {
       await db.insert(chatPublications).values({
