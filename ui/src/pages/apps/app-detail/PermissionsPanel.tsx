@@ -71,6 +71,7 @@ export function PermissionsPanel({
         onSave={onSaveAccess}
       />
       <ActionsSection
+        key={connectionId}
         connectionId={connectionId}
         appName={appName}
         readOnly={readOnly}
