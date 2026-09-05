@@ -174,6 +174,10 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   const [touchedNames, setTouchedNames] = useState<ReadonlySet<string>>(
     () => new Set(rowsFromValue(value).map((row) => row.name.trim()).filter(Boolean)),
   );
+  // Tracks edit intent independently from the final value. A masked value may
+  // be edited away and back to ***REDACTED***, which is equal to the committed
+  // baseline but still must be sent as an explicit literal marker.
+  const editIntentNamesRef = useRef<Set<string>>(new Set());
   const [pendingFocus, setPendingFocus] = useState<{ rowId: string; field: "name" | "value" } | null>(null);
 
   useEffect(() => {
@@ -199,6 +203,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 
   function adoptExternalValue(nextValue: Record<string, EnvBinding>): EnvRow[] {
     const nextRows = rowsFromValue(nextValue);
+    editIntentNamesRef.current.clear();
     setRows(nextRows);
     touchCommittedNames(nextRows);
     return nextRows;
@@ -228,6 +233,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     }
 
     if (matchesPendingSave || draftValueKey === incomingValueKey) {
+      editIntentNamesRef.current.clear();
       touchCommittedNames(rowsRef.current);
       markCommitted(incomingValueKey);
     }
@@ -292,7 +298,12 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 
   useImperativeHandle(ref, () => ({
     flushPendingDraft,
-    getChangedNames: () => [...changeSummary.added, ...changeSummary.changed],
+    getChangedNames: () => [...new Set([
+      ...changeSummary.added,
+      ...changeSummary.changed,
+      ...changeSummary.removed,
+      ...editIntentNamesRef.current,
+    ])],
   }), [changeSummary, flushPendingDraft]);
 
   useEffect(() => {
@@ -332,10 +343,17 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   }
 
   function patchRow(id: string, patch: Partial<EnvRow>) {
-    updateDraft(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+    const row = rows.find((candidate: EnvRow) => candidate.id === id);
+    const nextRow = row ? { ...row, ...patch } : undefined;
+    for (const name of [row?.name.trim(), nextRow?.name.trim()]) {
+      if (name) editIntentNamesRef.current.add(name);
+    }
+    updateDraft(rows.map((candidate: EnvRow) => (candidate.id === id ? nextRow! : candidate)));
   }
 
   function removeRow(id: string) {
+    const name = rows.find((row: EnvRow) => row.id === id)?.name.trim();
+    if (name) editIntentNamesRef.current.add(name);
     updateDraft(rows.filter((row) => row.id !== id));
   }
 
@@ -361,6 +379,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     if (pairs.length === 0) return false;
     // Drop the empty row that received the paste, then upsert each pair.
     const working = rows.filter((row) => row.id !== targetRowId).map((row) => ({ ...row }));
+    for (const pair of pairs) editIntentNamesRef.current.add(pair.key);
     for (const { key, value: pairValue } of pairs) {
       const existing = working.find((row) => row.name.trim() === key);
       if (existing) {
@@ -394,6 +413,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     target.secretId = secret.id;
     target.version = "latest";
     if (!target.name) target.name = envKeyFromSecretName(secret.name);
+    if (target.name.trim()) editIntentNamesRef.current.add(target.name.trim());
     updateDraft(next);
   }
 
@@ -405,6 +425,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 
   function revertDraft() {
     pendingSaveValueKeyRef.current = null;
+    editIntentNamesRef.current.clear();
     lastPropValueKeyRef.current = normalizedEnvKey(value);
     const nextRows = adoptExternalValue(value);
     markCommitted(lastPropValueKeyRef.current, nextRows);
