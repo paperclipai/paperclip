@@ -198,7 +198,15 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("counts a write as cross-issue instead of failing closed when a validated run has no source issue (RBR-1186)", async () => {
+    // A bare heartbeat-timer wake is never checked out against a single issue
+    // up front, so its contextSnapshot legitimately has neither issueId nor
+    // taskId. That is not a containment failure like a missing/wrong-agent/
+    // wrong-company run (see the "fails closed for a %s locked run" cases
+    // above, which still hard-reject) -- it is the normal shape of a
+    // multi-issue sweep run, and every write it makes falls through to the
+    // counting/cap logic below instead of being rejected before the cap is
+    // ever evaluated.
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -207,10 +215,33 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
-    });
-    expect(fake.inserted).toEqual([]);
+    })).resolves.toMatchObject({ allowed: true, count: 1 });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({
+        action: "issue.cross_issue_influence_observed",
+        details: expect.objectContaining({ sourceIssueId: null, targetIssueId: "55555555-5555-4555-8555-555555555555" }),
+      }),
+    ]);
+  });
+
+  it("a run with no source issue writing its own assigned issue still counts against the cap, not a same-issue exemption (RBR-1186)", async () => {
+    // With no home issue on the run, there is nothing to exempt a same-issue
+    // write against -- so a write to the agent's own in-progress issue from a
+    // headless heartbeat-timer run is allowed (not hard-rejected like before
+    // the fix) but still consumes one unit of the per-run cap, same as any
+    // other target.
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, { contextSnapshot: {} });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: false, mode: "enforce", count: CROSS_ISSUE_INFLUENCE_LIMIT + 1 });
+    expect(fake.inserted).toEqual([
+      expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
+    ]);
   });
 });

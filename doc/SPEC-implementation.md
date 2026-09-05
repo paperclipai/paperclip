@@ -598,8 +598,13 @@ may wake the target assignee, including an explicit `resume: true` comment on a
 `done` or `cancelled` issue, but the wake remains agent-class and is subject to
 the normal agent rewake throttle; comment presentation cannot give it human
 wake privileges. Agent issue comments and updates require a persisted heartbeat
-run bound to the authenticated agent and company; missing, invalid, or mismatched
-run context fails closed before mutation. A run may attempt at most 20 cross-issue comments, issue
+run bound to the authenticated agent and company; a run that is missing, or
+does not belong to the authenticated agent and company, fails closed before
+mutation. A run legitimately has no single source issue when it is a generic
+multi-issue heartbeat-timer invocation rather than a single-issue checkout run;
+that absence is not treated as an attribution failure — such a run has no home
+issue to exempt, so every write it makes is counted against the shared cap
+below instead of being rejected outright. A run may attempt at most 20 cross-issue comments, issue
 updates, or issue-thread interaction resolutions across one shared counter. The
 server records each attempt with its source issue, target issue, run, count, and
 rollout mode, and fails closed with the cap in the error once enforcement is

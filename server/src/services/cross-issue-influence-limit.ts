@@ -109,11 +109,21 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
+    // A run that is not in the DB, or does not belong to this agent+company,
+    // is a genuine attribution failure and stays hard-rejected above. A run
+    // that *is* validated but simply has no single source issue (a normal
+    // heartbeat-timer wake, not a single-issue checkout run — those never get
+    // an issueId/taskId populated up front because they work across whatever
+    // issues they are assigned or discover) is not a containment failure.
+    // Such a run has no home issue to exempt same-issue writes against, so it
+    // falls through to the counting/cap logic below and every write it makes
+    // is counted as cross-issue for cap purposes, instead of being
+    // unconditionally rejected before the cap is ever evaluated.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId &&
+      (sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
     }
