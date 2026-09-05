@@ -45,11 +45,17 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 // rule agree byte for byte with the bearer rule above, so
 // `Authorization: Bearer <value>` produces the same output as before.
 //
-// Every value branch excludes the backslash. That keeps the rule off an
-// escaped-quote opener such as `Authorization: \"Bearer ...\"` in a serialized
-// diagnostic, which the caller's own authorization rules already redact. A
-// quoted value must open with a non-blank character, so an empty header
-// argument such as `-H "X-API-Key: "` stays as it is.
+// Each branch treats the backslash the way its quoting context does. A
+// double-quoted value consumes escape pairs, so an escaped quote inside the
+// argument (`"X-API-Key: abc\"def"`) does not end the value early. Its opening
+// quote must itself be unescaped, which keeps the branch off a serialized
+// diagnostic such as `\"X-API-Key: ...\"`, where the closing `\"` must survive.
+// A single-quoted value takes a backslash literally, because a shell single
+// quote has no escapes. Only the unquoted branch stops at a backslash, so an
+// escaped-quote opener such as `Authorization: \"Bearer ...\"` is left to the
+// caller's own authorization rules. A quoted value must open with a non-blank
+// character, so an empty header argument such as `-H "X-API-Key: "` stays as it
+// is.
 //
 // The schemes come from the IANA HTTP Authentication Scheme Registry, plus
 // `AWS4-HMAC-SHA256` and `Token`, which are widely used but unregistered. A
@@ -89,8 +95,8 @@ const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN =
   "`" +
   String.raw`]+)`;
 const COMMAND_SECRET_HEADER_RE = new RegExp(
-  String.raw`("${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s"\\][^"\\\r\n]*(")` +
-    String.raw`|('${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'\\][^'\\\r\n]*(')` +
+  String.raw`(?<!\\)("${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\.|[^"\\\r\n])*(")` +
+    String.raw`|('${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'][^'\r\n]*(')` +
     String.raw`|(\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}`,
   "gi",
 );

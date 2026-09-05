@@ -276,6 +276,35 @@ describe("redactCommandText header secrets", () => {
     expect(redactDiagnosticText(once)).toBe(once);
   });
 
+  it("redacts past an escaped quote inside a double-quoted header value", () => {
+    // The shell escape does not end the argument, so the value runs on past it.
+    const input = String.raw`curl -H "X-API-Key: abc\"def" https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("def");
+    expect(output).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+  });
+
+  it("redacts a backslash inside a single-quoted header value", () => {
+    // A shell single quote has no escapes, so the backslash is part of the value.
+    const input = String.raw`curl -H 'X-API-Key: abc\def' https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(
+      `curl -H 'X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}' https://example.test`,
+    );
+  });
+
+  it("redacts a double-quoted value that is itself an escaped quoted string", () => {
+    const input = String.raw`curl -H "Authorization: \"Bearer nested\"" https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("nested");
+    expect(output).toBe(
+      `curl -H "Authorization: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+  });
+
   it("redacts a header secret inside a diagnostic and keeps a JSON secret field working", () => {
     const input = 'command failed: curl -H "X-API-Key: abc" -> {"token":"opaque-value"}';
     const output = redactDiagnosticText(input);
