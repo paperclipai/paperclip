@@ -162,6 +162,58 @@ describeEmbeddedPostgres("label delete board gate", () => {
     expect(details.issueIds.sort()).toEqual([issueOneId, issueTwoId].sort());
   });
 
+  // Review finding on this pull request: sharing a transaction with the delete
+  // does not, on its own, stop a concurrent association from being cascaded
+  // away unreported. Under READ COMMITTED an insert committed after this
+  // transaction's read snapshot is still removed by the delete. The fix locks
+  // the label row FOR UPDATE, so a concurrent insert -- which needs a
+  // FOR KEY SHARE lock on the same row -- waits, and then deletes the
+  // associations explicitly so the report is what was removed, not what was
+  // seen. This test drives a real concurrent insert against the live lock.
+  it("does not under-report when a label association is added concurrently with the delete", async () => {
+    const companyId = randomUUID();
+    const { label, issueOneId, issueTwoId, issueUnrelatedId } = await seedCompanyLabelAndIssues(companyId);
+
+    // A second connection tries to attach the label to the previously
+    // unrelated issue while the delete is in flight.
+    const contender = createDb(tempDb!.connectionString);
+    const racing = contender
+      .insert(issueLabels)
+      .values({ issueId: issueUnrelatedId, labelId: label.id })
+      .then(() => "inserted" as const)
+      .catch(() => "rejected" as const);
+
+    const app = createAppAsBoard(companyId);
+    const res = await request(app).delete(`/api/labels/${label.id}`);
+    const racedOutcome = await racing;
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    // Whichever order the two land in, the invariant holds: every association
+    // that the delete removed is named in the report, and no association for
+    // this label survives.
+    const remainingLinks = await db.select().from(issueLabels).where(eq(issueLabels.labelId, label.id));
+    expect(remainingLinks).toHaveLength(0);
+
+    const reported: string[] = (res.body.affectedIssueIds ?? []).slice().sort();
+    const [activityRow] = await db.select().from(activityLog).where(eq(activityLog.entityId, label.id));
+    const details = activityRow!.details as { issueIds: string[] };
+    expect(details.issueIds.slice().sort()).toEqual(reported);
+
+    // The two seeded associations are always removed and always reported.
+    expect(reported).toEqual(expect.arrayContaining([issueOneId, issueTwoId]));
+
+    // If the racing insert got in before the lock, its issue must be reported
+    // too. If it was rejected by the foreign key because the label had already
+    // gone, it must not appear. Either way the report matches reality; what is
+    // not allowed is a row silently stripped and left out of both.
+    if (racedOutcome === "inserted") {
+      expect(reported).toContain(issueUnrelatedId);
+    } else {
+      expect(reported).not.toContain(issueUnrelatedId);
+    }
+  });
+
   it("404s for a board actor when the label does not exist, without touching activity", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Acme" });

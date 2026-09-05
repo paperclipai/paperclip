@@ -2813,8 +2813,26 @@ registry.registerPath({
   path: "/api/labels/{labelId}",
   tags: ["issues"],
   summary: "Delete a label",
+  description:
+    "Board-only. Deleting a label also removes it from every issue that carried it. "
+    + "The response reports that blast radius as `affectedIssueIds`.",
   request: { params: z.object({ labelId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: {
+    200: r.ok(
+      z.object({
+        id: z.string(),
+        companyId: z.string(),
+        name: z.string(),
+        color: z.string(),
+        createdAt: z.string(),
+        updatedAt: z.string(),
+        // The issues that lost this label to the delete. Declared so typed
+        // consumers can discover the cascade report instead of guessing.
+        affectedIssueIds: z.array(z.string()),
+      }),
+    ),
+    401: r.unauthorized,
+  },
 });
 
 // ─── Projects ────────────────────────────────────────────────────────────────

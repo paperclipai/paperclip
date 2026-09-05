@@ -149,7 +149,10 @@ export const issuesApi = {
   listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
-  deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
+  // The cascade report: the ids of the issues that lost this label. Typed so
+  // consumers can read it rather than having to know it is there.
+  deleteLabel: (id: string) =>
+    api.delete<IssueLabel & { affectedIssueIds: string[] }>(`/labels/${id}`),
   get: (id: string, options?: RequestOptions) => options
     ? api.get<Issue>(`/issues/${id}`, options)
     : api.get<Issue>(`/issues/${id}`),

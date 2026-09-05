@@ -8775,14 +8775,30 @@ export function issueService(db: Db) {
       id: string,
     ): Promise<{ removed: typeof labels.$inferSelect | null; affectedIssueIds: string[] }> =>
       db.transaction(async (tx) => {
-        // Read the blast radius before the delete cascades `issue_labels` away
-        // at the foreign-key level. This runs in the same transaction as the
-        // delete so the read is consistent with what actually gets stripped,
-        // not a snapshot that a concurrent label-add could race past.
+        // Lock the label row first. Sharing a transaction with the delete is
+        // NOT enough on its own: under READ COMMITTED a concurrent insert into
+        // `issue_labels` can commit after this transaction's read snapshot and
+        // still be removed by the cascade, so it would be stripped without
+        // appearing in the reported blast radius or in the durable
+        // `label.deleted` activity row. Taking `FOR UPDATE` on the parent
+        // closes that window: inserting an `issue_labels` row referencing this
+        // label needs a `FOR KEY SHARE` lock on the same row, which conflicts,
+        // so any such insert waits for this transaction to finish.
+        const [locked] = await tx
+          .select({ id: labels.id })
+          .from(labels)
+          .where(eq(labels.id, id))
+          .for("update");
+        if (!locked) return { removed: null, affectedIssueIds: [] };
+
+        // Delete the associations explicitly rather than letting the
+        // foreign-key cascade do it silently, so the reported ids are exactly
+        // the rows this statement removed rather than rows observed by an
+        // earlier read.
         const affected = await tx
-          .select({ issueId: issueLabels.issueId })
-          .from(issueLabels)
-          .where(eq(issueLabels.labelId, id));
+          .delete(issueLabels)
+          .where(eq(issueLabels.labelId, id))
+          .returning({ issueId: issueLabels.issueId });
         const [removed] = await tx.delete(labels).where(eq(labels.id, id)).returning();
         return { removed: removed ?? null, affectedIssueIds: affected.map((row) => row.issueId) };
       }),
