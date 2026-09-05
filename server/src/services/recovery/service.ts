@@ -398,6 +398,8 @@ const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 // Bounds one repair pass so a large backlog cannot resume the whole board in a single sweep.
 const UNROUTABLE_BLOCKED_REPAIR_DEFAULT_LIMIT = 25;
+// Bounds the candidate scan itself, because startup waits on that query.
+const UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT = 500;
 
 // LUN-7056: `blocked` with no first-class blocker and no unblock descriptor is a dead end. Dependency
 // wakeups have nothing to resolve and `deliverAgentUnblockNotification` has nobody to wake, so the
@@ -3556,7 +3558,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         isNull(issues.unblockDescriptor),
         isNull(issues.hiddenAt),
         sql`${issues.assigneeAgentId} is not null`,
-      ));
+      ))
+      // Startup waits on this query, so scan a bounded page rather than every historical row.
+      .limit(UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT);
 
     for (const issue of candidates) {
       result.inspected += 1;
@@ -3581,13 +3585,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // The monitor is the only wake this repair installs, and it is only scheduled for the agent
+      // that owns the failed run. Without that match, restoring the status would swap a dead
+      // `blocked` for an idle `in_progress` with no execution path, which is strictly worse.
+      if (latestRun.agentId !== issue.assigneeAgentId) {
+        result.skipped += 1;
+        continue;
+      }
+
       const restored = await issuesSvc.update(issue.id, { status: "in_progress" });
       if (!restored) {
         result.skipped += 1;
         continue;
       }
       // Restoring alone would leave the issue idle, so re-arm the same wake the live path uses.
-      await scheduleProviderQuotaRecoveryMonitor({ issue: restored, latestRun, classification });
+      const monitored = await scheduleProviderQuotaRecoveryMonitor({ issue: restored, latestRun, classification });
+      if (!monitored) {
+        // Never leave the issue awake-less: put it back, this time routable.
+        await issuesSvc.update(issue.id, {
+          status: "blocked",
+          unblockDescriptor: recoveryUnblockDescriptor(
+            issue.assigneeAgentId,
+            "An infrastructure failure blocked this issue and the automatic retry could not be " +
+              "armed. Resume the work or record why it cannot proceed.",
+          ),
+        });
+        result.skipped += 1;
+        continue;
+      }
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -3613,11 +3638,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       result.issueIds.push(issue.id);
     }
 
-    if (result.deferred > 0) {
-      // Never let a bounded pass read as "everything was covered".
-      logger.info(
-        { deferred: result.deferred, limit },
-        "repairUnroutableBlockedIssues hit its per-pass limit; remaining issues repair on the next pass",
+    if (result.deferred > 0 || result.inspected >= UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT) {
+      // Never let a bounded pass read as "everything was covered". This pass runs at startup only,
+      // so anything left here waits for the next restart rather than for some later sweep.
+      logger.warn(
+        { ...result, limit, scanLimit: UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT },
+        "repairUnroutableBlockedIssues stopped at its bound; the remainder waits for the next startup",
       );
     }
     return result;

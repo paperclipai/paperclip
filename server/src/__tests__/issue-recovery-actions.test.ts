@@ -776,6 +776,35 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(repaired?.monitorNextCheckAt).toBeInstanceOf(Date);
     });
 
+    // Restoring without a wake would swap a dead `blocked` for an idle `in_progress` — strictly
+    // worse, because an idle in_progress ticket also drags the watchdog.
+    it("leaves the issue blocked when the failed run belongs to another agent", async () => {
+      const { companyId, coderId, managerId, sourceIssueId } = await seedCompany();
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        // Not the current assignee, so the quota monitor cannot be scheduled for it.
+        agentId: managerId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+        errorCode: "acpx_turn_failed",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, assigneeAgentId: coderId })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 0 });
+      const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(untouched?.status).toBe("blocked");
+    });
+
     it("leaves a business-blocked issue untouched", async () => {
       const { companyId, coderId, sourceIssueId } = await seedCompany();
       await db.insert(heartbeatRuns).values({
