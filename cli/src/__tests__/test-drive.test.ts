@@ -239,14 +239,30 @@ describe("test-drive bootstrap validation", () => {
     expect(resolved.credentialTarget).toBe("OPENROUTER_API_KEY");
   });
 
+  it("accepts a literal key and gives it precedence over canonical environment lookup", () => {
+    const resolved = resolveTestDriveBootstrap(
+      { apiKey: "literal-secret" },
+      { ANTHROPIC_API_KEY: "environment-secret" },
+    );
+    expect(resolved.credential).toBe("literal-secret");
+    expect(resolved.credentialSource).toBe("--api-key");
+  });
+
+  it("rejects mutually exclusive key inputs", () => {
+    expect(() => resolveTestDriveBootstrap({
+      apiKey: "literal-secret",
+      apiKeyEnv: "ANTHROPIC_API_KEY",
+    }, { ANTHROPIC_API_KEY: "environment-secret" })).toThrow(/mutually exclusive/);
+  });
+
   it("rejects invalid key variable names and redacts credentials", () => {
     expect(() => resolveTestDriveBootstrap({
       apiKeyEnv: "NOT-A-VALID-NAME",
     }, { ANTHROPIC_API_KEY: "env-secret" })).toThrow(/valid environment variable/);
     expect(redactTestDriveText(
-      "custom-secret and env-secret must never appear",
-      ["custom-secret", "env-secret"],
-    )).toBe("[REDACTED] and [REDACTED] must never appear");
+      "literal-secret, custom-secret, and env-secret must never appear",
+      ["literal-secret", "custom-secret", "env-secret"],
+    )).toBe("[REDACTED], [REDACTED], and [REDACTED] must never appear");
   });
 });
 
@@ -489,6 +505,48 @@ describe("test-drive foreground lifecycle", () => {
     });
 
     expect(runOptions?.skipServiceManagerCheck).toBe(false);
+  });
+
+  it("uses the credential snapshot captured before downstream server initialization", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-test-drive-credential-"));
+    cleanupDirectories.push(root);
+    process.env.PAPERCLIP_HOME = root;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    process.env.PAPERCLIP_IN_WORKTREE = "false";
+    process.env.ANTHROPIC_API_KEY = "upstream-secret";
+    const { api, calls } = freshBootstrapApi();
+
+    await testDriveCommand({ browser: false }, {
+      run: async (options) => {
+        delete process.env.ANTHROPIC_API_KEY;
+        await options.afterStart?.(server);
+      },
+      createApi: () => api,
+      openBrowser: vi.fn(async () => true),
+    });
+
+    const secretValueCall = calls.find((call) => call.path.endsWith("/me/user-secrets"));
+    expect(secretValueCall?.body).toEqual({
+      definitionKey: "ANTHROPIC_API_KEY",
+      value: "upstream-secret",
+    });
+  });
+
+  it("redacts a literal key from downstream errors", async () => {
+    process.env.PAPERCLIP_HOME = "/tmp/test-drive-redaction";
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    process.env.PAPERCLIP_IN_WORKTREE = "false";
+
+    await expect(testDriveCommand({
+      apiKey: "literal-secret",
+      browser: false,
+    }, {
+      run: async () => {
+        throw new Error("downstream rejected literal-secret");
+      },
+      createApi: () => freshBootstrapApi().api,
+      openBrowser: vi.fn(async () => true),
+    })).rejects.toThrow("downstream rejected [REDACTED]");
   });
 
   it("honors --no-browser after successful initialization", async () => {

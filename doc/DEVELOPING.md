@@ -334,8 +334,9 @@ selects the first available loopback port at or above `3100`.
 Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
 `OPENROUTER_API_KEY` and requires an `openrouter/...` model. `--api-key-env`
 can name a different source variable while the agent still receives the
-canonical variable. Provider keys must come from environment variables because
-command-line arguments can appear in process listings and shell history. In a
+canonical variable. `--api-key <value>` is also supported and is mutually
+exclusive with `--api-key-env`; Paperclip redacts it from its own output, but
+wrappers, process listings, and shell history may expose argument values. In a
 linked Git worktree the command sets worktree runtime mode and safely arms
 **Run tasks in this worktree** for the current isolated instance. Primary
 checkouts and non-Git directories leave that experimental setting unchanged.

@@ -169,7 +169,7 @@ npx paperclipai test-drive \
   [--agent-name <name>] \
   [--harness <claude|codex|opencode>] \
   [--model <model-id>] \
-  [--api-key-env <variable>] \
+  [--api-key-env <variable> | --api-key <value>] \
   [--no-browser]
 ```
 
@@ -203,9 +203,10 @@ OPENROUTER_API_KEY=... npx paperclipai test-drive \
   --model openrouter/anthropic/claude-sonnet-4.5
 ```
 
-Credentials come from the variable named by `--api-key-env`, or from the
-harness's canonical environment variable shown in the table. A custom source
-variable is still stored and projected under the canonical target variable:
+Credentials come from `--api-key`, the variable named by `--api-key-env`, or
+the harness's canonical environment variable shown in the table. `--api-key`
+and `--api-key-env` are mutually exclusive. A custom source variable is still
+stored and projected under the canonical target variable:
 
 ```sh
 MY_ROUTER_KEY=... npx paperclipai test-drive \
@@ -215,11 +216,12 @@ MY_ROUTER_KEY=... npx paperclipai test-drive \
 ```
 
 Credentials are stored through Paperclip's user-secret reference path and are
-redacted from command output. The command does not accept provider credentials
-in command-line arguments because process listings and shell history can expose
-them. Provider connectivity, local harness installation, credential validity,
-and model availability are intentionally checked only when the agent first
-runs.
+redacted from Paperclip command output. Paperclip does not print `--api-key`,
+but command wrappers, process listings, and shell history can expose values
+passed in arguments. Prefer an exported canonical variable or `--api-key-env`
+when that matters. Provider connectivity, local harness installation,
+credential validity, and model availability are intentionally checked only
+when the agent first runs.
 
 When invoked inside a linked Git worktree, the command ignores inherited
 `PAPERCLIP_IN_WORKTREE` state, launches in worktree mode, and verifies **Run
