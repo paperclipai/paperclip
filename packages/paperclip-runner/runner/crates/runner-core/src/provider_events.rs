@@ -46,7 +46,12 @@ pub(crate) fn normalized_codex_terminal_event_type(
 pub struct AcpxEventProjectionContext {
     pub run_id: String,
     pub normalized_session_id: String,
+    /// Immutable controller-owned turn identity used by durable PRP event
+    /// correlation. This must not be replaced by an ACP provider turn ID.
     pub turn_id: String,
+    /// Provider-owned turn identity used only to validate provider-originated
+    /// assistant and terminal events while an ACP turn is active.
+    pub provider_turn_id: Option<String>,
     pub item_id: String,
 }
 
@@ -67,7 +72,18 @@ impl AcpxEventProjectionContext {
         ] {
             validate_projection_identity(value, label, max_chars)?;
         }
+        if let Some(provider_turn_id) = self.provider_turn_id.as_deref() {
+            validate_projection_identity(
+                provider_turn_id,
+                "provider turn",
+                DURABLE_STABLE_ID_CHARS,
+            )?;
+        }
         Ok(())
+    }
+
+    fn active_provider_turn_id(&self) -> &str {
+        self.provider_turn_id.as_deref().unwrap_or(&self.turn_id)
     }
 
     fn correlation(&self) -> Value {
@@ -383,9 +399,9 @@ fn require_projected_turn(
     context: &AcpxEventProjectionContext,
     turn_id: &str,
 ) -> Result<(), LocalRunnerError> {
-    if turn_id != context.turn_id {
+    if turn_id != context.active_provider_turn_id() {
         return Err(LocalRunnerError::invalid(
-            "ACPX state event does not match its durable turn projection",
+            "ACPX state event does not match its active provider turn projection",
         ));
     }
     Ok(())

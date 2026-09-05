@@ -123,6 +123,7 @@ fn projected_request_id_resolves_the_exact_upstream_sidecar_request() {
             run_id: "run-1".to_owned(),
             normalized_session_id: "session-1".to_owned(),
             turn_id: "turn-1".to_owned(),
+            provider_turn_id: None,
             item_id: "item-1".to_owned(),
         },
         &input,

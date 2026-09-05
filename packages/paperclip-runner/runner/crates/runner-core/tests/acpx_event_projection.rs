@@ -14,6 +14,7 @@ fn context() -> AcpxEventProjectionContext {
         run_id: "run-1".to_owned(),
         normalized_session_id: "session-1".to_owned(),
         turn_id: "turn-1".to_owned(),
+        provider_turn_id: None,
         item_id: "item-1".to_owned(),
     }
 }
@@ -75,6 +76,68 @@ fn projects_authorized_tools_with_exact_durable_correlation() {
     assert!(events[0].payload["semantic_tool"]["content"]["digest"]
         .as_str()
         .is_some_and(|value| value.starts_with("sha256:")));
+}
+
+#[test]
+fn keeps_durable_correlation_separate_from_the_active_provider_turn() {
+    let mut context = context();
+    context.provider_turn_id = Some("provider-turn-1".to_owned());
+
+    let semantic = project_acpx_state_event(
+        &context,
+        &AcpxProviderStateEvent::ToolCall {
+            call_id: "call-1".to_owned(),
+            operation_id: "issues.read".to_owned(),
+            input: json!({"taskId":"task-1"}),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        semantic[0].payload["semantic_tool"]["correlation"]["turnId"],
+        "turn-1"
+    );
+
+    let request = project_acpx_state_event(
+        &context,
+        &AcpxProviderStateEvent::InputRequest {
+            request_id: "request-1".to_owned(),
+            question_set: json!({
+                "schema":"paperclip.question_set.v1",
+                "questions":[],
+            }),
+            origin: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(request[0].payload["request"]["turnId"], "turn-1");
+
+    let assistant = project_acpx_state_event(
+        &context,
+        &AcpxProviderStateEvent::AssistantMessage {
+            turn_id: "provider-turn-1".to_owned(),
+            text: "Done".to_owned(),
+        },
+    )
+    .unwrap();
+    assert_eq!(assistant[0].event_type, "item.completed");
+
+    let terminal = project_acpx_state_event(
+        &context,
+        &AcpxProviderStateEvent::TurnTerminal {
+            turn_id: "provider-turn-1".to_owned(),
+            status: AcpxTurnStatus::Completed,
+            error: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(terminal[0].event_type, "turn.completed");
+
+    let wrong_provider_turn = AcpxProviderStateEvent::TurnTerminal {
+        turn_id: "turn-1".to_owned(),
+        status: AcpxTurnStatus::Completed,
+        error: None,
+    };
+    assert!(project_acpx_state_event(&context, &wrong_provider_turn).is_err());
 }
 
 #[test]
@@ -270,7 +333,7 @@ fn projects_assistant_terminal_and_diagnostic_events_fail_closed() {
     assert!(project_acpx_state_event(&context(), &wrong_turn)
         .unwrap_err()
         .to_string()
-        .contains("durable turn projection"));
+        .contains("active provider turn projection"));
     let permission = AcpxProviderStateEvent::PermissionRequest {
         request_id: "permission-1".to_owned(),
         kind: "write".to_owned(),
@@ -300,6 +363,7 @@ fn rejects_invalid_durable_projection_identity() {
         ("run", 160),
         ("normalized session", 160),
         ("turn", 240),
+        ("provider turn", 240),
         ("item", 240),
     ] {
         let mut invalid = context();
@@ -308,6 +372,7 @@ fn rejects_invalid_durable_projection_identity() {
             "run" => invalid.run_id = oversized,
             "normalized session" => invalid.normalized_session_id = oversized,
             "turn" => invalid.turn_id = oversized,
+            "provider turn" => invalid.provider_turn_id = Some(oversized),
             "item" => invalid.item_id = oversized,
             _ => unreachable!(),
         }
@@ -332,12 +397,13 @@ fn rejects_invalid_durable_projection_identity() {
         assert!(error.contains("request identity"), "{error}");
     }
 
-    for field in ["run", "normalized session", "turn", "item"] {
+    for field in ["run", "normalized session", "turn", "provider turn", "item"] {
         let mut invalid = context();
         match field {
             "run" => invalid.run_id = "run 1".to_owned(),
             "normalized session" => invalid.normalized_session_id = "session/1".to_owned(),
             "turn" => invalid.turn_id = "turn 1".to_owned(),
+            "provider turn" => invalid.provider_turn_id = Some("turn 1".to_owned()),
             "item" => invalid.item_id = "item/1".to_owned(),
             _ => unreachable!(),
         }

@@ -492,6 +492,7 @@ impl AcpxCommandExecutor {
                 run_id: config.run_id.clone(),
                 normalized_session_id: config.normalized_session_id.clone(),
                 turn_id: config.turn_id.clone(),
+                provider_turn_id: None,
                 item_id: config.item_id.clone(),
             },
             state: None,
@@ -595,6 +596,7 @@ impl AcpxCommandExecutor {
         let unsafe_active = matches!(state.lifecycle.as_str(), "turn_starting" | "turn_active");
         let previous_turn = state.active_turn_id.clone();
         if unsafe_active {
+            self.context.provider_turn_id = None;
             let state = self
                 .state
                 .as_mut()
@@ -830,6 +832,7 @@ impl AcpxCommandExecutor {
             .as_ref()
             .and_then(|state| state.identity.as_ref())
             .is_some();
+        self.context.provider_turn_id = None;
         let state = self
             .state
             .as_mut()
@@ -900,8 +903,8 @@ impl AcpxCommandExecutor {
             state.lifecycle = "turn_starting".to_owned();
         }
         // ACPX provider events are scoped to the requested provider turn while
-        // the runner's durable command remains bound to the immutable run.
-        self.context.turn_id = provider_turn_id.clone();
+        // semantic events remain correlated to the immutable durable PRP turn.
+        self.context.provider_turn_id = Some(provider_turn_id.clone());
         self.save_state()?;
         let working_directory = self
             .state
@@ -920,6 +923,7 @@ impl AcpxCommandExecutor {
                 .expect("ACPX state remains available after failed turn start");
             state.lifecycle = "closed".to_owned();
             state.active_turn_id = None;
+            self.context.provider_turn_id = None;
             self.session = None;
             self.save_state()?;
             return Err(DurableRunnerError::invalid(format!(
@@ -1033,6 +1037,7 @@ impl AcpxCommandExecutor {
             .as_mut()
             .expect("ACPX state remains available after provider termination");
         state.active_turn_id = None;
+        self.context.provider_turn_id = None;
         // Persist a non-attachable, recoverable boundary before the fallible
         // lifetime proof. Terminal cleanup can then retry a timed-out fence
         // without reviving the stopped provider.
@@ -1148,6 +1153,7 @@ impl AcpxCommandExecutor {
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider is not prepared"))?;
         state.lifecycle = "closed".to_owned();
         state.active_turn_id = None;
+        self.context.provider_turn_id = None;
         let provider_session_id = state
             .identity
             .as_ref()
@@ -1175,6 +1181,7 @@ impl AcpxCommandExecutor {
             state.identity = Some(identity);
             state.lifecycle = "suspended".to_owned();
             state.active_turn_id = None;
+            self.context.provider_turn_id = None;
             self.session = None;
             self.save_state()?;
         } else if self.state.as_ref().is_some_and(|state| {
@@ -1218,6 +1225,7 @@ impl AcpxCommandExecutor {
                     DurableRunnerError::invalid(format!("ACPX provider failed: {error}"))
                 })?;
             let Some(events) = events else { break };
+            let mut provider_turn_settled = false;
             for event in events {
                 let normalized = project_acpx_state_event(&self.context, &event)
                     .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
@@ -1241,6 +1249,7 @@ impl AcpxCommandExecutor {
                 if let Some(event_type) = terminal {
                     state.active_turn_id = None;
                     state.lifecycle = "session_open".to_owned();
+                    provider_turn_settled = true;
                     let status = match event_type.as_str() {
                         "turn.completed" => "succeeded",
                         "turn.cancelled" => "cancelled",
@@ -1268,6 +1277,9 @@ impl AcpxCommandExecutor {
                         }),
                     })?;
                 }
+            }
+            if provider_turn_settled {
+                self.context.provider_turn_id = None;
             }
             self.save_state()?;
         }
@@ -1569,6 +1581,7 @@ mod tests {
             run_id: "run-1".to_owned(),
             normalized_session_id: "session-1".to_owned(),
             turn_id: "turn-1".to_owned(),
+            provider_turn_id: None,
             item_id: "item-1".to_owned(),
         }
     }

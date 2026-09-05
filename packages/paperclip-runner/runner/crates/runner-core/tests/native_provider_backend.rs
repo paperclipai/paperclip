@@ -10,7 +10,7 @@ use paperclip_runner_core::durable::{
     QualifiedLaunchArtifact,
 };
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
-use paperclip_runner_core::provider_bridge::authorized_tool_catalog_digest;
+use paperclip_runner_core::provider_bridge::{authorized_tool_catalog_digest, AuthorizedTool};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -364,6 +364,55 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
     executor
         .execute(&command(4, "session.close", json!({})))
         .unwrap();
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn keeps_native_acpx_semantic_events_on_the_durable_controller_turn() {
+    let directory = temporary_directory("acpx-durable-turn-correlation");
+    let config = acpx_config(&directory, "turns-tool");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    let operations = vec![AuthorizedTool {
+        operation_id: "issues.read".to_owned(),
+        version: 1,
+        description: "Read an issue.".to_owned(),
+        input_schema: json!({"type":"object"}),
+        response_schema: json!({"type":"object"}),
+    }];
+    let mut prepare = prepare_payload_with_mode(&directory, "codex", "turns-tool");
+    prepare["authorizedTools"] = json!({
+        "schema": "paperclip.runner.authorized-tools.v1",
+        "schemaVersion": 1,
+        "catalogDigest": authorized_tool_catalog_digest(&operations).unwrap(),
+        "operations": operations,
+    });
+
+    executor
+        .execute(&command(1, "run.prepare", prepare))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let started = executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Read the issue.", "turnId": "provider-turn-fresh"}),
+        ))
+        .unwrap();
+    assert_eq!(started.result["providerTurnId"], "provider-turn-fresh");
+
+    let events = executor.poll_events().unwrap();
+    let semantic = events
+        .iter()
+        .find(|event| event.event_type == "semantic_tool.input")
+        .expect("ACPX tool call must cross the native provider boundary");
+    assert_eq!(
+        semantic.payload["semantic_tool"]["correlation"]["turnId"],
+        "turn-1"
+    );
+
     executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
