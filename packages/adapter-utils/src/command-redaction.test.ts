@@ -296,14 +296,37 @@ describe("redactCommandText header secrets", () => {
   });
 
   it("reads an even backslash run before a quote as a bare quote", () => {
-    // `\\"` is an escaped backslash followed by a real quote, not an escaped
+    // `\\\\"` is an escaped backslash followed by a real quote, not an escaped
     // quote, so the escaped branches decline it and the value still redacts.
     const input = String.raw`foo\\"X-API-Key: abc" bar`;
     const output = redactCommandText(input);
     expect(output).not.toContain("abc");
-    expect(output).toBe(
-      String.raw`foo\\"X-API-Key: ` + REDACTED_COMMAND_TEXT_VALUE + '" bar',
-    );
+    expect(output).toBe(String.raw`foo\\"X-API-Key: ` + REDACTED_COMMAND_TEXT_VALUE);
+  });
+
+  it("consumes an even backslash run of any length before a segment quote", () => {
+    for (const run of ["\\\\", "\\\\\\\\", "\\\\\\\\\\\\"]) {
+      const input = `curl -H X-API-Key:SECRET${run}"TAILMARK"MORE ;echo safe`;
+      const output = redactCommandText(input);
+      expect(output).not.toContain("SECRET");
+      expect(output).not.toContain("TAILMARK");
+      expect(output).not.toContain("MORE");
+      expect(output).toBe(`curl -H X-API-Key:${REDACTED_COMMAND_TEXT_VALUE} ;echo safe`);
+      expect(redactCommandText(output)).toBe(output);
+    }
+  });
+
+  it("redacts a truncated quoted tail after a closed escaped value", () => {
+    for (const tail of ["'TAILMARK", '"TAILMARK', "$'TAILMARK"]) {
+      let text = `curl -H X-API-Key:\\"SECRET\\"${tail}`;
+      for (let depth = 0; depth <= 2; depth += 1) {
+        if (depth > 0) text = JSON.stringify(text);
+        const output = redactCommandText(text);
+        expect(output).not.toContain("SECRET");
+        expect(output).not.toContain("TAILMARK");
+        expect(redactCommandText(output)).toBe(output);
+      }
+    }
   });
 
   it("consumes a suffix segment adjacent to a serialized quoted header argument", () => {
@@ -540,13 +563,14 @@ describe("redactCommandText header secrets", () => {
     );
   });
 
-  it("keeps an unterminated quote out of the value", () => {
-    // A lone quote does not open a segment, so the word ends before it.
-    const input = String.raw`X-API-Key: abc"tail`;
-    const output = redactCommandText(input);
-    expect(output).not.toContain("abc");
-    expect(output).toBe(
-      `X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}"tail`,
+  it("redacts an unterminated quoted tail as a truncated segment", () => {
+    // A quote with no closer on the line is read as a segment of the same
+    // word cut by the log, so its text is redacted rather than kept.
+    expect(redactCommandText('X-API-Key: abc"tail')).toBe(
+      `X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}`,
+    );
+    expect(redactCommandText('curl -H "X-API-Key: abc" "other')).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}" "other`,
     );
   });
 

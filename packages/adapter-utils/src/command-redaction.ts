@@ -135,13 +135,13 @@ const COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS = [
   String.raw`'[^'\r\n]*'`,
   String.raw`\$'(?:\\.|[^'\\\r\n])*'`,
 ] as const;
-const COMMAND_SHELL_ESCAPE_PAIR_PATTERN = String.raw`(?:(?:\\\\)+[^"\r\n]|(?:\\\\)*\\[^\r\n])`;
+const COMMAND_SHELL_ESCAPE_PAIR_PATTERN = String.raw`(?:(?:\\\\)+[^"\\\r\n]|(?:\\\\)*\\[^\r\n])`;
 // An opening escape pair carries the first byte of an unquoted value, as in
 // `X-API-Key:\ abc`. The backslash run may be longer inside a serialized
 // command, where each layer doubles it. A run followed by a quote is excluded,
 // so a `\"` opener at any depth falls to the escaped branches, which precede
 // the unquoted one in the alternation.
-const COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN = String.raw`(?:(?:\\\\)+[^"\r\n]|(?:\\\\)*\\[^"\r\n])`;
+const COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN = String.raw`(?:(?:\\\\)+[^"\\\r\n]|(?:\\\\)*\\[^"\r\n])`;
 // The first segment of an unquoted value is a raw token, bounded only by
 // whitespace, a quote, a backtick, or a backslash. A raw HTTP diagnostic
 // carries an opaque credential the same way, so a `;`, `|`, or `&` inside it
@@ -158,7 +158,17 @@ const COMMAND_SHELL_SEGMENT_PATTERN = `(?:${[
   COMMAND_SHELL_ESCAPE_PAIR_PATTERN,
   COMMAND_SHELL_PLAIN_SEGMENT_PATTERN,
 ].join("|")})`;
-const COMMAND_SECRET_HEADER_CONTINUATION_PATTERN = `${COMMAND_SHELL_SEGMENT_PATTERN}*`;
+// A run log can cut a line inside the last segment of the word. A quoted
+// segment with no closer on the line is still part of the value, so the
+// continuation may end with one unterminated quoted segment that runs to the
+// end of the line.
+const COMMAND_SHELL_TRUNCATED_SEGMENT_PATTERN =
+  String.raw`(?:"(?:\.|[^"\
+])*|\$'(?:\.|[^'\
+])*|'[^'
+]*)(?=[
+]|$)`;
+const COMMAND_SECRET_HEADER_CONTINUATION_PATTERN = `${COMMAND_SHELL_SEGMENT_PATTERN}*(?:${COMMAND_SHELL_TRUNCATED_SEGMENT_PATTERN})?`;
 // A value quoted after the colon keeps its own delimiters around the
 // placeholder, so a second pass reads the same shape and leaves it alone. The
 // opener and the closer are captured; the body is not.
