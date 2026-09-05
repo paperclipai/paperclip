@@ -6933,116 +6933,132 @@ async function createRunnerdBackendWithinSessionClaim(
       stateSource: "sandbox_filesystem",
       bytesTransferred: 0,
     };
-    await measureNativeRunnerSpan(
-      input.trace,
-      "session.checkpoint.persist",
-      () =>
-        measureNativeRunnerSpan(
-          input.trace,
-          "harness_state.backup.persist",
-          async () => {
-            const verified = await inspectRemoteHarnessState();
-            if (
-              !verified.complete ||
-              !verified.runnerState ||
-              !verified.providerSessionIdentity
-            ) {
-              throw new Error("runner_harness_state_mismatch");
-            }
-            const providerSessionIdentity = verified.providerSessionIdentity;
-
-            const backupRoot = harnessBackupRoot(root);
-            mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
-            const pendingRoot = resolve(backupRoot, `.pending-${randomUUID()}`);
-            mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
-            try {
-              for (const directory of persistenceProfile.directories) {
-                const sourcePath = remotePersistencePath(directory);
-                if (!sourcePath)
-                  throw new Error("runner_harness_state_mismatch");
-                const targetPath = resolve(pendingRoot, directory.name);
-                await syncRemoteRunnerDirectoryOut({
-                  runner: remoteCommandRunner,
-                  sourcePath,
-                  targetPath,
-                  mode: 0o700,
-                  excludeTopLevelEntries: directory.excludeTopLevelEntries,
-                });
-                if (!existsSync(targetPath)) {
-                  throw new Error("runner_harness_state_mismatch");
-                }
+    try {
+      await measureNativeRunnerSpan(
+        input.trace,
+        "session.checkpoint.persist",
+        () =>
+          measureNativeRunnerSpan(
+            input.trace,
+            "harness_state.backup.persist",
+            async () => {
+              const verified = await inspectRemoteHarnessState();
+              if (
+                !verified.complete ||
+                !verified.runnerState ||
+                !verified.providerSessionIdentity
+              ) {
+                throw new Error("runner_harness_state_mismatch");
               }
-              const manifest = buildNativeHarnessBackupManifest({
-                backupRoot: pendingRoot,
-                execution: input.execution,
-                runnerInstanceId: input.runnerInstanceId,
-                providerSessionIdentity,
-                sourceProviderLeaseId:
-                  sandboxLeaseAcquisition?.providerLeaseId ??
-                  remoteTarget?.leaseId ??
-                  input.durableEnvironmentLeaseId ??
-                  "unknown",
-              });
-              backupSpanAttributes.bytesTransferred =
-                manifest.directories.reduce(
-                  (total, directory) => total + directory.bytes,
-                  0,
-                );
-              const temporaryManifest = resolve(
-                pendingRoot,
-                "manifest.json.tmp",
+              const providerSessionIdentity = verified.providerSessionIdentity;
+
+              const backupRoot = harnessBackupRoot(root);
+              mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+              const pendingRoot = resolve(
+                backupRoot,
+                `.pending-${randomUUID()}`,
               );
-              const manifestPath = resolve(pendingRoot, "manifest.json");
-              writeFileSync(temporaryManifest, JSON.stringify(manifest), {
-                encoding: "utf8",
-                mode: 0o600,
-              });
-              renameSync(temporaryManifest, manifestPath);
-
-              const currentRoot = resolve(backupRoot, "current");
-              const previousRoot = resolve(backupRoot, "previous");
-              rmSync(previousRoot, { recursive: true, force: true });
-              let movedCurrent = false;
-              if (existsSync(currentRoot)) {
-                renameSync(currentRoot, previousRoot);
-                movedCurrent = true;
-              }
+              mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
               try {
-                renameSync(pendingRoot, currentRoot);
-                if (
-                  remoteTarget?.transport === "sandbox" &&
-                  remoteTarget.leaseId
-                ) {
-                  await recordHarnessBackupStampForCurrentLease({
-                    root: currentRoot,
-                    manifest,
-                    bytes: backupSpanAttributes.bytesTransferred,
+                for (const directory of persistenceProfile.directories) {
+                  const sourcePath = remotePersistencePath(directory);
+                  if (!sourcePath)
+                    throw new Error("runner_harness_state_mismatch");
+                  const targetPath = resolve(pendingRoot, directory.name);
+                  await syncRemoteRunnerDirectoryOut({
+                    runner: remoteCommandRunner,
+                    sourcePath,
+                    targetPath,
+                    mode: 0o700,
+                    excludeTopLevelEntries: directory.excludeTopLevelEntries,
                   });
+                  if (!existsSync(targetPath)) {
+                    throw new Error("runner_harness_state_mismatch");
+                  }
                 }
-              } catch (error) {
+                const manifest = buildNativeHarnessBackupManifest({
+                  backupRoot: pendingRoot,
+                  execution: input.execution,
+                  runnerInstanceId: input.runnerInstanceId,
+                  providerSessionIdentity,
+                  sourceProviderLeaseId:
+                    sandboxLeaseAcquisition?.providerLeaseId ??
+                    remoteTarget?.leaseId ??
+                    input.durableEnvironmentLeaseId ??
+                    "unknown",
+                });
+                backupSpanAttributes.bytesTransferred =
+                  manifest.directories.reduce(
+                    (total, directory) => total + directory.bytes,
+                    0,
+                  );
+                const temporaryManifest = resolve(
+                  pendingRoot,
+                  "manifest.json.tmp",
+                );
+                const manifestPath = resolve(pendingRoot, "manifest.json");
+                writeFileSync(temporaryManifest, JSON.stringify(manifest), {
+                  encoding: "utf8",
+                  mode: 0o600,
+                });
+                renameSync(temporaryManifest, manifestPath);
+
+                const currentRoot = resolve(backupRoot, "current");
+                const previousRoot = resolve(backupRoot, "previous");
+                rmSync(previousRoot, { recursive: true, force: true });
+                let movedCurrent = false;
                 if (existsSync(currentRoot)) {
-                  rmSync(currentRoot, { recursive: true, force: true });
+                  renameSync(currentRoot, previousRoot);
+                  movedCurrent = true;
                 }
-                if (
-                  movedCurrent &&
-                  existsSync(previousRoot) &&
-                  !existsSync(currentRoot)
-                ) {
-                  renameSync(previousRoot, currentRoot);
+                try {
+                  renameSync(pendingRoot, currentRoot);
+                  if (
+                    remoteTarget?.transport === "sandbox" &&
+                    remoteTarget.leaseId
+                  ) {
+                    await recordHarnessBackupStampForCurrentLease({
+                      root: currentRoot,
+                      manifest,
+                      bytes: backupSpanAttributes.bytesTransferred,
+                    });
+                  }
+                } catch (error) {
+                  if (existsSync(currentRoot)) {
+                    rmSync(currentRoot, { recursive: true, force: true });
+                  }
+                  if (
+                    movedCurrent &&
+                    existsSync(previousRoot) &&
+                    !existsSync(currentRoot)
+                  ) {
+                    renameSync(previousRoot, currentRoot);
+                  }
+                  throw error;
                 }
-                throw error;
+                rmSync(previousRoot, { recursive: true, force: true });
+              } finally {
+                rmSync(pendingRoot, { recursive: true, force: true });
               }
-              rmSync(previousRoot, { recursive: true, force: true });
-            } finally {
-              rmSync(pendingRoot, { recursive: true, force: true });
-            }
-          },
-          {
-            attributes: backupSpanAttributes,
-          },
-        ),
-      { parentName: "task.settle" },
-    );
+            },
+            {
+              attributes: backupSpanAttributes,
+            },
+          ),
+        { parentName: "task.settle" },
+      );
+    } catch (error) {
+      const detail = redactSensitiveText(
+        error instanceof Error ? error.message : String(error),
+      )
+        .replace(/[\r\n]+/g, " ")
+        .slice(0, 512);
+      await input.onLog?.(
+        "stderr",
+        `[paperclip-runner] remote checkpoint failed: ${detail || "unknown failure"}\n`,
+      );
+      throw error;
+    }
   };
 
   const prepareExternalRunnerState =
