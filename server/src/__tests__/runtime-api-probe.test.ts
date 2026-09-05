@@ -1,0 +1,385 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  loggableApiUrl,
+  probeRuntimeApiUrl,
+  resolveVerifiedRuntimeApiUrl,
+  runtimeApiProbeUrl,
+  runtimeSelfOriginApiUrl,
+  type RuntimeApiProbeResult,
+} from "../runtime-api-probe.js";
+
+function jsonResponse(body: unknown, init: { status?: number; contentType?: string } = {}) {
+  return new Response(JSON.stringify(body), {
+    status: init.status ?? 200,
+    headers: { "content-type": init.contentType ?? "application/json; charset=utf-8" },
+  });
+}
+
+function htmlResponse(status = 200) {
+  return new Response("<!doctype html><title>Sign in</title>", {
+    status,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+describe("runtimeApiProbeUrl", () => {
+  it("targets the health route on the origin, dropping any configured path", () => {
+    expect(runtimeApiProbeUrl("http://127.0.0.1:3100")).toBe("http://127.0.0.1:3100/api/health");
+    expect(runtimeApiProbeUrl("https://board.example.com/some/path?q=1")).toBe(
+      "https://board.example.com/api/health",
+    );
+  });
+
+  it("returns null for a value that is not an absolute URL", () => {
+    expect(runtimeApiProbeUrl("127.0.0.1:3100")).toBeNull();
+    expect(runtimeApiProbeUrl("")).toBeNull();
+  });
+});
+
+describe("probeRuntimeApiUrl", () => {
+  it("accepts the redacted health response an unauthenticated caller gets", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ status: "ok", deploymentMode: "authenticated", commit: null }));
+
+    const result = await probeRuntimeApiUrl("http://127.0.0.1:3100", { fetchImpl: fetchImpl as any });
+
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(fetchImpl.mock.calls[0]![0]).toBe("http://127.0.0.1:3100/api/health");
+    expect(fetchImpl.mock.calls[0]![1]).toMatchObject({ method: "GET", redirect: "manual" });
+  });
+
+  it("accepts the full-detail health response", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        status: "ok",
+        version: "2026.9.1",
+        serverVersion: "2026.9.1",
+        commit: "abc123",
+        serverInfo: { git: { available: false } },
+      }),
+    );
+
+    await expect(probeRuntimeApiUrl("http://127.0.0.1:3100", { fetchImpl: fetchImpl as any })).resolves.toEqual({
+      ok: true,
+      status: 200,
+    });
+  });
+
+  it("accepts an unhealthy JSON response — the probe checks routing, not health", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(
+          { status: "unhealthy", serverVersion: "2026.9.1", error: "database_unreachable" },
+          { status: 503 },
+        ),
+      );
+
+    await expect(probeRuntimeApiUrl("http://127.0.0.1:3100", { fetchImpl: fetchImpl as any })).resolves.toEqual({
+      ok: true,
+      status: 503,
+    });
+  });
+
+  it("rejects an unrelated service's health route that answers a generic JSON object", async () => {
+    // Spawned runs send their bearer run token to whatever origin wins the
+    // probe, so a bare `{"status":"ok"}` from some other service must not pass.
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ status: "ok", uptime: 41 }));
+
+    const result = await probeRuntimeApiUrl("https://grafana.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("not a Paperclip /api/health response");
+  });
+
+  it("rejects a JSON object with Paperclip fields but no health status", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({ error: "unauthorized", deploymentMode: "cloud" }));
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("not a Paperclip /api/health response");
+  });
+
+  it("rejects an auth-proxy origin that answers 200 text/html", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(htmlResponse(200));
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("text/html");
+    expect(result.ok === false && result.reason).toContain("instead of JSON");
+  });
+
+  it("rejects an auth-proxy origin that redirects to a sign-in page", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://auth.example.com/cdn-cgi/access/login" },
+      }),
+    );
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("HTTP 302");
+    expect(result.ok === false && result.reason).toContain("https://auth.example.com/cdn-cgi/access/login");
+  });
+
+  it("redacts credentials an auth proxy put in its sign-in redirect", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: {
+          location:
+            "https://auth.example.com/cdn-cgi/access/login?code=oauth-grant-value&state=csrf-state-value&kid=team",
+        },
+      }),
+    );
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    const reason = result.ok === false ? result.reason : "";
+    expect(reason).not.toContain("oauth-grant-value");
+    expect(reason).not.toContain("csrf-state-value");
+    // The proxy still has to be identifiable: origin, path, and its non-secret
+    // query configuration are what name the misconfiguration.
+    expect(reason).toContain("https://auth.example.com/cdn-cgi/access/login");
+    expect(reason).toContain("kid=team");
+  });
+
+  it("resolves a relative redirect target so the path still names the front door", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "/cdn-cgi/access/login?token=proxy-ticket-value" },
+      }),
+    );
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    const reason = result.ok === false ? result.reason : "";
+    expect(reason).not.toContain("proxy-ticket-value");
+    expect(reason).toContain("https://board.example.com/cdn-cgi/access/login");
+  });
+
+  it("rejects a JSON content-type carrying a non-JSON body", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("<!doctype html>", { status: 200, headers: { "content-type": "application/json" } }),
+    );
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("unparseable body");
+  });
+
+  it("rejects a JSON array response, which no API route serves", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse([1, 2, 3]));
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("not an API response object");
+  });
+
+  it("rejects an unreachable origin", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:3100"));
+
+    const result = await probeRuntimeApiUrl("http://127.0.0.1:3100", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain("ECONNREFUSED");
+  });
+
+  it("rejects a URL that is not absolute without issuing a request", async () => {
+    const fetchImpl = vi.fn();
+
+    const result = await probeRuntimeApiUrl("board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result).toEqual({ ok: false, reason: "is not a parseable absolute URL" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("gives up on a hanging origin and names the timeout", async () => {
+    const fetchImpl = vi.fn((_url: string, init?: { signal?: AbortSignal }) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+        });
+      }),
+    );
+
+    const result = await probeRuntimeApiUrl("http://127.0.0.1:3100", {
+      fetchImpl: fetchImpl as any,
+      timeoutMs: 5,
+    });
+
+    expect(result).toEqual({ ok: false, reason: "did not answer within 5ms" });
+  });
+});
+
+describe("resolveVerifiedRuntimeApiUrl", () => {
+  const ok: RuntimeApiProbeResult = { ok: true, status: 200 };
+  const bad = (reason: string): RuntimeApiProbeResult => ({ ok: false, reason });
+
+  it("keeps the configured URL when it answers, without probing the fallback", async () => {
+    const probe = vi.fn().mockResolvedValue(ok);
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "https://board.example.com",
+      selfOriginApiUrl: "http://127.0.0.1:3100",
+      probe,
+    });
+
+    expect(resolution).toEqual({
+      apiUrl: "https://board.example.com",
+      changed: false,
+      rejected: [],
+      unverified: false,
+    });
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to this server's own bound origin when the configured URL serves HTML", async () => {
+    const probe = vi.fn(async (apiUrl: string) =>
+      apiUrl === "http://127.0.0.1:3100" ? ok : bad("answered HTTP 200 with content-type text/html instead of JSON"),
+    );
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "https://board.example.com",
+      selfOriginApiUrl: "http://127.0.0.1:3100",
+      probe,
+    });
+
+    expect(resolution.apiUrl).toBe("http://127.0.0.1:3100");
+    expect(resolution.changed).toBe(true);
+    expect(resolution.unverified).toBe(false);
+    expect(resolution.rejected.map((entry) => entry.apiUrl)).toEqual(["https://board.example.com"]);
+    expect(resolution.rejected[0]!.reason).toContain("text/html");
+  });
+
+  it("stays on the configured URL when the listener has no provable origin", async () => {
+    // A spawned run sends its bearer run token to whichever origin wins, and no
+    // response body can prove the responder is this server: every
+    // self-identifying value on the health route is readable off that same
+    // route by anything that can reach it. So when there is no provable origin
+    // — a UNIX-socket listener has none — there is no fallback at all, rather
+    // than some other origin that merely answers.
+    const probe = vi.fn(async () => bad("answered HTTP 200 with content-type text/html instead of JSON"));
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "https://board.example.com",
+      selfOriginApiUrl: null,
+      probe,
+    });
+
+    expect(resolution).toMatchObject({
+      apiUrl: "https://board.example.com",
+      changed: false,
+      unverified: true,
+    });
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports every candidate and stays on the configured URL when nothing answers", async () => {
+    const probe = vi.fn(async () => bad("could not be reached (connect ECONNREFUSED)"));
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "https://board.example.com",
+      selfOriginApiUrl: "http://127.0.0.1:3100",
+      probe,
+    });
+
+    expect(resolution).toMatchObject({
+      apiUrl: "https://board.example.com",
+      changed: false,
+      unverified: true,
+    });
+    expect(resolution.rejected.map((entry) => entry.apiUrl)).toEqual([
+      "https://board.example.com",
+      "http://127.0.0.1:3100",
+    ]);
+  });
+
+  it("does not probe the self origin twice when it is exactly the configured URL", async () => {
+    // A loopback-bound server derives its primary runtime URL from the same
+    // address it binds, so both candidates are the same string. One verdict is
+    // enough, and a second probe would only report the same rejection twice.
+    const probe = vi.fn(async () => bad("could not be reached (connect ECONNREFUSED)"));
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "http://127.0.0.1:3100",
+      selfOriginApiUrl: "http://127.0.0.1:3100",
+      probe,
+    });
+
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(resolution.rejected.map((entry) => entry.apiUrl)).toEqual(["http://127.0.0.1:3100"]);
+    expect(resolution.unverified).toBe(true);
+  });
+
+  it("skips a blank configured URL", async () => {
+    const probe = vi.fn(async (apiUrl: string) => (apiUrl === "http://127.0.0.1:3100" ? ok : bad("nope")));
+
+    const resolution = await resolveVerifiedRuntimeApiUrl({
+      configuredApiUrl: "  ",
+      selfOriginApiUrl: "http://127.0.0.1:3100",
+      probe,
+    });
+
+    expect(resolution.apiUrl).toBe("http://127.0.0.1:3100");
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runtimeSelfOriginApiUrl", () => {
+  it("uses the family's loopback address for a wildcard bind, which holds the whole port", () => {
+    expect(runtimeSelfOriginApiUrl({ address: "0.0.0.0", port: 3100 })).toBe("http://127.0.0.1:3100");
+    expect(runtimeSelfOriginApiUrl({ address: "::", port: 3100 })).toBe("http://[::1]:3100");
+  });
+
+  it("uses the bound address itself when the listener is not wildcard-bound", () => {
+    // 127.0.0.1:3100 would be free for another process to hold, so it is not
+    // this server's provable origin — the address actually bound is.
+    expect(runtimeSelfOriginApiUrl({ address: "10.0.0.5", port: 3100 })).toBe("http://10.0.0.5:3100");
+    expect(runtimeSelfOriginApiUrl({ address: "127.0.0.1", port: 3100 })).toBe("http://127.0.0.1:3100");
+  });
+
+  it("brackets a bare IPv6 address", () => {
+    expect(runtimeSelfOriginApiUrl({ address: "fd00::1", port: 3100 })).toBe("http://[fd00::1]:3100");
+    expect(runtimeSelfOriginApiUrl({ address: "[fd00::1]", port: 3100 })).toBe("http://[fd00::1]:3100");
+    expect(runtimeSelfOriginApiUrl({ address: "[::]", port: 3100 })).toBe("http://[::1]:3100");
+  });
+
+  it("has no origin for a UNIX-socket listener or an unusable port", () => {
+    expect(runtimeSelfOriginApiUrl("/run/paperclip.sock")).toBeNull();
+    expect(runtimeSelfOriginApiUrl(null)).toBeNull();
+    expect(runtimeSelfOriginApiUrl(undefined)).toBeNull();
+    expect(runtimeSelfOriginApiUrl({ address: "0.0.0.0", port: 0 })).toBeNull();
+    expect(runtimeSelfOriginApiUrl({ address: "", port: 3100 })).toBeNull();
+  });
+});
+
+describe("loggableApiUrl", () => {
+  it("names the offending URL without carrying its credentials into the log", () => {
+    // The whole point of the startup log line is to name the bad URL, but a
+    // configured API URL is operator env: it can carry userinfo or a token
+    // query value, and a startup log is durable.
+    expect(loggableApiUrl("https://user:s3cret@board.example.test/api?token=abc&region=us")).toBe(
+      "https://REDACTED@board.example.test/api?token=REDACTED&region=us",
+    );
+  });
+
+  it("leaves a credential-free URL readable", () => {
+    expect(loggableApiUrl("https://board.example.test/api")).toBe("https://board.example.test/api");
+    expect(loggableApiUrl("http://127.0.0.1:3100")).toBe("http://127.0.0.1:3100/");
+  });
+
+  it("describes an unparseable URL instead of echoing it", () => {
+    expect(loggableApiUrl("not a url")).toBe("the configured API URL");
+  });
+});
