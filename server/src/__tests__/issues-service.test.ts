@@ -668,6 +668,275 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  // ---------------------------------------------------------------------
+  // Blocked-exit interaction scope.
+  //
+  // Nothing in the schema records which interaction a block was raised for,
+  // and nothing in the code raises a block *because of* an interaction:
+  // `blocked` is written by dependency blockers, by recovery classifiers, by
+  // an operator PATCH, and by the pre-dispatch workspace guard, none of which
+  // consult the interaction table. `blockedTransitionAt` is the generic
+  // "this issue entered blocked" stamp shared with dependency wake cycles and
+  // attention dedup; it carries no interaction meaning.
+  //
+  // A pending interaction is also not orphaned by the issue leaving `blocked`.
+  // The attention feed lists pending interactions company-wide on
+  // `issue_thread_interactions.status = 'pending'` with no issue-status join,
+  // the heartbeat's pending-interaction probe has no issue-status condition,
+  // and the continuation wake is gated on `continuationPolicy` alone. Accepting
+  // an interaction on a blocked issue deliberately leaves the issue blocked,
+  // so the two lifecycles are decoupled by design.
+  //
+  // The four tests below pin that down: leaving `blocked` must not resolve a
+  // card the person who raised it, and the board's inbox, are still waiting on.
+  // Expiry also revokes whatever the card governs — a tool action request, a
+  // secret proposal, a native question run, an OAuth state — inside the same
+  // transaction as the expiry, so proving no expiry occurs proves no revocation
+  // occurs.
+  // ---------------------------------------------------------------------
+
+  it("leaves every pending interaction alone when a blocked issue carrying several of them is reset", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Blocked while carrying more than one open card",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    const blocked = await svc.update(issue.id, { status: "blocked", actorUserId: "local-board" });
+    expect(blocked?.status).toBe("blocked");
+
+    // Two cards raised while the issue is blocked. At most one of them can be
+    // "the interaction the block was raised for", and nothing records which.
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: firstId,
+        companyId,
+        issueId: issue.id,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Approve the rollout?" } as never,
+      },
+      {
+        id: secondId,
+        companyId,
+        issueId: issue.id,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "q1",
+            prompt: "Which region first?",
+            selectionMode: "single",
+            options: [{ id: "a", label: "First region" }, { id: "b", label: "Second region" }],
+          }],
+        } as never,
+      },
+    ]);
+
+    const updated = await svc.update(issue.id, { status: "todo", actorUserId: "local-board" });
+    expect(updated?.status).toBe("todo");
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issue.id));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.status).toBe("pending");
+      expect(row.resolvedAt).toBeNull();
+      expect(row.result).toBeNull();
+    }
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(logged).toHaveLength(0);
+  });
+
+  it("leaves a pending interaction created during the blocked interval alone when the issue is reset", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Blocked on a dependency while an unrelated question is raised",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    // This block has nothing to do with any interaction — it is the shape a
+    // dependency blocker or a recovery classifier produces.
+    const blocked = await svc.update(issue.id, { status: "blocked", actorUserId: "local-board" });
+    expect(blocked?.status).toBe("blocked");
+    expect(blocked?.blockedTransitionAt).not.toBeNull();
+
+    // Raised during the blocked interval, and unrelated to it. A creation
+    // timestamp inside the window is not evidence of a relationship.
+    const unrelatedId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: unrelatedId,
+      companyId,
+      issueId: issue.id,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Unrelated approval raised during the block" } as never,
+    });
+
+    const updated = await svc.update(issue.id, { status: "todo", actorUserId: "local-board" });
+    expect(updated?.status).toBe("todo");
+
+    const unrelated = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, unrelatedId))
+      .then((rows) => rows[0] ?? null);
+    expect(unrelated?.status).toBe("pending");
+    expect(unrelated?.resolvedAt).toBeNull();
+    expect(unrelated?.result).toBeNull();
+  });
+
+  // The worst case of the same defect. `blockedTransitionAt` is nullable and
+  // has no backfill, the pre-dispatch workspace guard writes `status: blocked`
+  // straight through `update(issues)` without stamping it, and a bundle import
+  // inserts a blocked row without stamping it either. Any scope derived from
+  // that column therefore has to cope with it being null, and "no scope" must
+  // mean "expire nothing", never "expire everything".
+  it("leaves pending interactions alone when a blocked issue has no blockedTransitionAt stamp", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Blocked with no transition stamp",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+    });
+
+    // Reproduce a row that entered `blocked` without going through update():
+    // pre-backfill data, the workspace guard, or a bundle import.
+    await db
+      .update(issues)
+      .set({ blockedTransitionAt: null })
+      .where(eq(issues.id, issue.id));
+
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: issue.id,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Approve the rollout?" } as never,
+    });
+
+    const updated = await svc.update(issue.id, { status: "todo", actorUserId: "local-board" });
+    expect(updated?.status).toBe("todo");
+
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction?.status).toBe("pending");
+    expect(interaction?.resolvedAt).toBeNull();
+    expect(interaction?.result).toBeNull();
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(logged).toHaveLength(0);
+  });
+
+  // A caller that owns its own transaction and moves a blocked issue to a
+  // non-terminal status must not be made to fail. `update()` only drains its
+  // own post-commit queue when it owns the connection, so a service that
+  // passes its own `tx` and no queue — the quarantine restore path is the live
+  // example — would have the whole transaction rolled back: the status change,
+  // any interaction resolution, and any coupled decision, relay-stop or review
+  // activity in the same transaction.
+  it("lets a transactional caller move a blocked issue with a pending native question to a non-terminal status", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const issue = await svc.create(companyId, {
+      title: "Blocked with a native question outstanding",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      runtimeMode: "native",
+      nativeIssueId: issue.id,
+      status: "running",
+      contextSnapshot: { issueId: issue.id },
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: issue.id,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      sourceRunId: runId,
+      // The shape `nativeQuestionCancellationIdentity` recognises: a run-bound
+      // question with the runner's own idempotency key.
+      idempotencyKey: `paperclip-runner-question:${runId}:req-1`,
+      payload: {
+        version: 1,
+        questions: [{
+          id: "q1",
+          prompt: "Which region first?",
+          selectionMode: "single",
+          options: [{ id: "a", label: "First region" }, { id: "b", label: "Second region" }],
+        }],
+        questionSet: {
+          schema: "paperclip.question_set.v1",
+          questions: [{
+            id: "q1",
+            prompt: "Which region first?",
+            required: true,
+            answerMode: "single_select",
+            options: [{ id: "a", label: "First region" }, { id: "b", label: "Second region" }],
+          }],
+        },
+      } as never,
+    });
+
+    const updated = await db.transaction(async (tx) =>
+      svc.update(issue.id, { status: "todo", actorUserId: "local-board" }, tx));
+    expect(updated?.status).toBe("todo");
+
+    // The transaction committed, so the status change survives the read-back.
+    const persisted = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.status).toBe("todo");
+  });
+
   it("expires superseded interactions when human comments are added through the service", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issue = await svc.create(companyId, {
