@@ -1413,6 +1413,7 @@ describe.sequential("issue thread interaction routes", () => {
       issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       interactionId: "interaction-secret-proposal",
       proposalId,
+      cascade: true,
       actor: { agentId: null, userId: "local-board" },
     });
     expect(mockInteractionService.recordSecretProposalExecutionResult).toHaveBeenCalledWith(
@@ -1431,6 +1432,55 @@ describe.sequential("issue thread interaction routes", () => {
             executionStatus: "executed",
             instructions: expect.stringContaining("GET /api/agents/me/secrets"),
           }),
+        }),
+      }),
+    );
+  });
+
+  it("reconciles an accepted secret-proposal confirmation that is missing its execution receipt", async () => {
+    const proposalId = "66666666-6666-4666-8666-666666666666";
+    const acceptedWithoutReceipt = {
+      id: "interaction-secret-proposal-replay",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "governed_action",
+      payload: {
+        version: 1,
+        prompt: "Create the binding?",
+        secretProposal: {
+          version: 1,
+          proposalId,
+          configPath: "access.NEW_ALIAS",
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+    };
+    mockInteractionService.getForIssue.mockResolvedValueOnce(acceptedWithoutReceipt);
+    const approveSecretProposal = vi.fn().mockResolvedValue({ status: "approved" });
+    const app = await createApp(undefined, { approveSecretProposal });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-secret-proposal-replay/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+    expect(approveSecretProposal).toHaveBeenCalledWith(expect.objectContaining({
+      proposalId,
+      cascade: true,
+    }));
+    expect(res.body.result.secretProposal).toMatchObject({ status: "executed" });
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          secretProposal: expect.objectContaining({ proposalId, executionStatus: "executed" }),
         }),
       }),
     );
