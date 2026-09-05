@@ -4887,6 +4887,10 @@ export function agentRoutes(
               asRecord(agent.adapterConfig) ?? {},
               "adapter",
             ),
+            runtimeConfig: redactConfigurationPayload(
+              asRecord(agent.runtimeConfig) ?? {},
+              "runtime",
+            ),
           }
         : redactAgentRowForResponse(agent),
     );

@@ -129,7 +129,7 @@ describe("redaction", () => {
   });
 
   it.each([
-    ["secret_ref", "secretId", "secret-id"],
+    ["secret_ref", "secretId", "11111111-1111-4111-8111-111111111111"],
     ["user_secret_ref", "key", "user-secret-key"],
   ] as const)("omits malformed version payloads from %s bindings", (type, identityKey, identityValue) => {
     const binding = { type, [identityKey]: identityValue };
@@ -149,14 +149,14 @@ describe("redaction", () => {
 
   it("preserves only supported public secret-reference versions", () => {
     expect(redactConfigurationPayload({
-      latest: { type: "secret_ref", secretId: "secret-id", version: "latest" },
+      latest: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" },
       numbered: { type: "user_secret_ref", key: "user-secret-key", version: 2 },
-      zero: { type: "secret_ref", secretId: "secret-id", version: 0 },
+      zero: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: 0 },
       fractional: { type: "user_secret_ref", key: "user-secret-key", version: 1.5 },
     })).toEqual({
-      latest: { type: "secret_ref", secretId: "secret-id", version: "latest" },
+      latest: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" },
       numbered: { type: "user_secret_ref", key: "user-secret-key", version: 2 },
-      zero: { type: "secret_ref", secretId: "secret-id" },
+      zero: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
       fractional: { type: "user_secret_ref", key: "user-secret-key" },
     });
   });
@@ -759,7 +759,7 @@ second-line\" status=401`,
     const plaintextValue = "adapter-env-value-must-not-leak";
 
     const result = redactAgentAdapterConfig({
-      command: "pnpm agent:run",
+      command: REDACTED_EVENT_VALUE,
       env: {
         EXISTING_VALUE: plaintextValue,
         NEW_VALUE: { type: "plain", value: plaintextValue },
@@ -776,7 +776,7 @@ second-line\" status=401`,
     });
 
     expect(result).toEqual({
-      command: "pnpm agent:run",
+      command: REDACTED_EVENT_VALUE,
       env: {
         EXISTING_VALUE: { type: "plain", value: REDACTED_EVENT_VALUE },
         NEW_VALUE: { type: "plain", value: REDACTED_EVENT_VALUE },
@@ -796,7 +796,7 @@ second-line\" status=401`,
 
   it("redacts non-env adapter keys while leaving env binding shapes intact", () => {
     const result = redactAgentAdapterConfig({
-      command: "pnpm agent:run",
+      command: REDACTED_EVENT_VALUE,
       apiKey: "adapter-level-secret",
       env: {
         API_KEY: "env-level-secret",
@@ -806,7 +806,7 @@ second-line\" status=401`,
 
     // Non-env keys still go through the shared payload sanitizer.
     expect(result.apiKey).toBe(REDACTED_EVENT_VALUE);
-    expect(result.command).toBe("pnpm agent:run");
+    expect(result.command).toBe(REDACTED_EVENT_VALUE);
 
     // Env bindings keep their binding shape rather than collapsing to a bare
     // sentinel string, which is what a second sanitizer pass would produce for
@@ -818,8 +818,8 @@ second-line\" status=401`,
   });
 
   it("redacts adapter configs that have no env block", () => {
-    expect(redactAgentAdapterConfig({ command: "pnpm agent:run", apiKey: "secret" })).toEqual({
-      command: "pnpm agent:run",
+    expect(redactAgentAdapterConfig({ command: REDACTED_EVENT_VALUE, apiKey: "secret" })).toEqual({
+      command: REDACTED_EVENT_VALUE,
       apiKey: REDACTED_EVENT_VALUE,
     });
   });

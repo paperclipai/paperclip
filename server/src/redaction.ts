@@ -783,7 +783,7 @@ function sanitizeValue(value: unknown): unknown {
     const version = safeSecretVersion(value.version);
     return {
       type: "secret_ref",
-      secretId: value.secretId,
+      secretId: safeSecretReferenceId(value.secretId),
       ...(version === undefined ? {} : { version }),
       ...(value.projectionClass === "unclassified" ||
       value.projectionClass === "class_3_static_lease"
@@ -846,6 +846,10 @@ function isSecretRefBinding(value: unknown): value is {
   );
 }
 
+function safeSecretReferenceId(value: string): string {
+  return SECRET_REFERENCE_ID_RE.test(value) ? value : REDACTED_EVENT_VALUE;
+}
+
 function isUserSecretRefBinding(value: unknown): value is {
   type: "user_secret_ref";
   key: string;
@@ -878,7 +882,7 @@ function redactSecretRefBinding(
 ): { type: "secret_ref"; secretId: string; version?: number | "latest" } {
   return {
     type: value.type,
-    secretId: value.secretId,
+    secretId: safeSecretReferenceId(value.secretId),
     ...(isPublicSecretVersion(value.version) ? { version: value.version } : {}),
   };
 }
@@ -1043,9 +1047,7 @@ export function redactAgentAdapterConfig(
     Object.entries(env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
   );
 
-  const redactedRest = redactConfigurationPayload(rest, "adapter") ?? {};
-  if (typeof rest.command === "string") redactedRest.command = rest.command;
-  return { ...redactedRest, env: redactedEnv };
+  return { ...(redactConfigurationPayload(rest, "adapter") ?? {}), env: redactedEnv };
 }
 
 function redactConfigurationValue(
