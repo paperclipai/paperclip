@@ -226,6 +226,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  compactIssueMonitorProjection,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -6970,6 +6971,7 @@ export function issueRoutes(
       includeForIssueComment: wakeCommentId !== null,
     });
 
+    const compactMonitor = compactIssueMonitorProjection(issue);
     const response = {
       issue: {
         id: issue.id,
@@ -6994,6 +6996,11 @@ export function issueRoutes(
         originKind: issue.originKind,
         originId: issue.originId,
         updatedAt: issue.updatedAt,
+        monitorNextCheckAt: compactMonitor.monitorNextCheckAt,
+        monitorAttemptCount: compactMonitor.monitorAttemptCount,
+        monitorEligibleLive: compactMonitor.monitorEligibleLive,
+        monitorStatus: compactMonitor.monitorStatus,
+        executionPolicy: compactMonitor.executionPolicy,
       },
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,

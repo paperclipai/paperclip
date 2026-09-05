@@ -403,6 +403,14 @@ export interface IssueBlockerAttentionIssueSummary {
   id: string;
   identifier: string | null;
   title: string;
+  status?: string;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  monitorNextCheckAt?: string | null;
+  monitorAttemptCount?: number;
+  monitorEligibleLive?: boolean;
+  monitorStatus?: IssueExecutionMonitorStateStatus | null;
+  executionPolicy?: unknown;
 }
 
 export interface IssueBlockerAttention {
