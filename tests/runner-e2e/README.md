@@ -210,8 +210,9 @@ Permanent publication uses two explicit bundles. Both retain only normalized
 result PNG files with the explicit `public-runner-fixture` publication marker,
 including marked `failure.png` captures, so every campaign dashboard has its
 screenshot thumbnails and gallery. The capture helper adds this marker only
-for the reviewed runner fixture and blocks public capture outside an issue task
-route. A blocked failure capture remains private. The CloudFront-backed S3
+for the reviewed runner fixture and blocks public capture outside the exact
+issue route for the fixture that the harness created. A blocked failure capture
+remains private. The CloudFront-backed S3
 history also contains one publisher-generated
 `public-images/campaign-summary.png`.
 Trusted publisher code renders it offline from fixed catalog labels and
@@ -398,8 +399,8 @@ Actions as its source and set `RUNNER_FULL_STACK_E2E_PUBLISH_PAGES=true`.
 The publisher creates an S3 stage with the trusted synthetic summary PNG and a
 separate Pages stage. Both surfaces publish only per-result PNG screenshots
 with the explicit `public-runner-fixture` marker alongside sanitized structured
-evidence. The runner capture helper refuses to mark a screenshot on a non-task
-route. Neither surface publishes video, archives, generated reports,
+evidence. The runner capture helper refuses to mark a screenshot outside the
+exact live fixture issue route. Neither surface publishes video, archives,
 SVG/active content, databases, Paperclip homes, workspaces, raw/unallowlisted
 logs, or credentials.
 

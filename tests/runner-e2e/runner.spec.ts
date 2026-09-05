@@ -558,12 +558,19 @@ for (const execution of executions) {
       });
     };
 
+    const isReviewedFixtureScreenshotRoute = () =>
+      isPublicRunnerScreenshotRoute(page.url(), {
+        issuePrefix: fixtures?.company.issuePrefix,
+        issueId: issue?.id,
+        issueIdentifier: issue?.identifier,
+      });
+
     const captureScreenshot = async (
       id: string,
       label: string,
       file: string,
     ) => {
-      if (!isPublicRunnerScreenshotRoute(page.url())) {
+      if (!isReviewedFixtureScreenshotRoute()) {
         throw new Error(
           `Public runner screenshot blocked on non-task route ${page.url()}`,
         );
@@ -1816,7 +1823,7 @@ for (const execution of executions) {
         }
       }
       if (!page.isClosed()) {
-        if (isPublicRunnerScreenshotRoute(page.url())) {
+        if (isReviewedFixtureScreenshotRoute()) {
           await captureScreenshot(
             "failure",
             "Task state at failure",

@@ -214,21 +214,48 @@ describe("runner E2E campaign history", () => {
 
 describe("historical publication security", () => {
   it("allows public capture only on an issue task route", () => {
+    const target = {
+      issuePrefix: "PAP",
+      issueId: "issue-id",
+      issueIdentifier: "PAP-123",
+    };
     expect(
       isPublicRunnerScreenshotRoute(
         "http://127.0.0.1:3100/PAP/issues/PAP-123",
+        target,
       ),
     ).toBe(true);
     expect(
-      isPublicRunnerScreenshotRoute("http://127.0.0.1:3100/PAP/settings"),
+      isPublicRunnerScreenshotRoute(
+        "http://127.0.0.1:3100/PAP/issues/PAP-999",
+        target,
+      ),
     ).toBe(false);
     expect(
-      isPublicRunnerScreenshotRoute("http://127.0.0.1:3100/setup/secrets"),
+      isPublicRunnerScreenshotRoute(
+        "http://127.0.0.1:3100/PAP/settings",
+        target,
+      ),
     ).toBe(false);
     expect(
-      isPublicRunnerScreenshotRoute("https://example.test/PAP/issues/PAP-123"),
+      isPublicRunnerScreenshotRoute(
+        "http://127.0.0.1:3100/setup/secrets",
+        target,
+      ),
     ).toBe(false);
-    expect(isPublicRunnerScreenshotRoute("not a URL")).toBe(false);
+    expect(
+      isPublicRunnerScreenshotRoute(
+        "https://example.test/PAP/issues/PAP-123",
+        target,
+      ),
+    ).toBe(false);
+    expect(isPublicRunnerScreenshotRoute("not a URL", target)).toBe(false);
+    expect(
+      isPublicRunnerScreenshotRoute(
+        "http://127.0.0.1:3100/PAP/issues/PAP-123",
+        { ...target, issueId: null },
+      ),
+    ).toBe(false);
   });
 
   it("publishes declared screenshots while keeping active evidence private", async () => {
