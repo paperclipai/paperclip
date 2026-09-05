@@ -250,12 +250,19 @@ function microsoftTeamsTenantIds(raw: unknown): string[] {
   const channelData = isRecord(raw.channelData) ? raw.channelData : null;
   const tenant =
     channelData && isRecord(channelData.tenant) ? channelData.tenant : null;
-  return [conversation?.tenantId, tenant?.id]
-    .filter(
-      (value): value is string =>
-        typeof value === "string" && value.trim().length > 0,
-    )
-    .map((value) => value.trim());
+  return (
+    [conversation?.tenantId, tenant?.id]
+      .filter(
+        (value): value is string =>
+          typeof value === "string" && value.trim().length > 0,
+      )
+      // Microsoft Entra tenant IDs are UUIDs (or, for some supported identity
+      // configurations, DNS-style tenant names). Both forms are
+      // case-insensitive. A user can paste a mixed-case value that the token
+      // endpoint accepts while Bot Framework emits the canonical lowercase
+      // form, so normalize before enforcing the endpoint boundary.
+      .map((value) => value.trim().toLowerCase())
+  );
 }
 
 /** Chat SDK-normalized inbound message plus Paperclip endpoint identity. */
@@ -738,7 +745,9 @@ export class ChatSdkEndpointRuntime {
     this.sdkAdapterKey = adapterKey(this.provider);
     this.microsoftTeamsTenantId =
       options.providerConfig.provider === "microsoft-teams"
-        ? (options.providerConfig.credentials.appTenantId?.trim() ?? null)
+        ? options.providerConfig.credentials.appTenantId
+            ?.trim()
+            .toLowerCase() || null
         : null;
     this.webhookIngressTimeoutMs = Math.max(
       1,

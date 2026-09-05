@@ -356,7 +356,7 @@ describe("Chat SDK endpoint runtime", () => {
         credentials: {
           appId: "app",
           appPassword: "password",
-          appTenantId: "tenant-expected",
+          appTenantId: " Tenant-Expected ",
           appType: "SingleTenant",
         },
       }),
@@ -391,7 +391,7 @@ describe("Chat SDK endpoint runtime", () => {
       expect(callback).not.toHaveBeenCalled();
 
     const expectedRaw = {
-      conversation: { tenantId: "tenant-expected" },
+      conversation: { tenantId: "TENANT-EXPECTED" },
       channelData: { tenant: { id: "tenant-expected" } },
     };
     expect(runtime.acceptsProviderScope(expectedRaw)).toBe(true);
