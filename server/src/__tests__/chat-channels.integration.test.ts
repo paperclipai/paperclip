@@ -2719,7 +2719,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
   });
 
-  it("durably receives a burst, then processes mention and reply FIFO under one conversation drain", async () => {
+  it("reorders rapid Slack callbacks by provider time before one conversation drain", async () => {
     const fixture = await seedCompany();
     const runtime = new FakeChatSdkRuntime();
     const deferred: Array<() => void> = [];
@@ -2758,33 +2758,63 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       name: "async-ingress",
     });
 
-    await deliverMessage({
-      callbacks,
-      endpointId: endpoint.id,
-      thread: thread.thread,
-      message: makeMessage({
-        id: "9100.1",
-        text: "@maya acknowledge quickly",
-        mentioned: true,
-      }),
-      trigger: "mention",
+    const laterReply = makeMessage({
+      id: "9100.2",
+      text: "and include the rollback status",
     });
+    laterReply.metadata.dateSent = new Date("2026-09-05T17:50:03.517Z");
+    // Slack Events API callbacks use independent HTTP requests. Reproduce the
+    // live failure by receiving the later provider message first.
     await deliverMessage({
       callbacks,
       endpointId: endpoint.id,
       thread: thread.thread,
-      message: makeMessage({
-        id: "9100.2",
-        text: "and include the rollback status",
-      }),
+      message: laterReply,
       trigger: "subscribed_message",
     });
+    const earlierMention = makeMessage({
+      id: "9100.1",
+      text: "@maya acknowledge quickly",
+      mentioned: true,
+    });
+    earlierMention.metadata.dateSent = new Date("2026-09-05T17:50:03.200Z");
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: earlierMention,
+      trigger: "mention",
+    });
+    for (let index = 3; index <= 8; index += 1) {
+      const followUp = makeMessage({
+        id: `9100.${index}`,
+        text: `follow-up ${index}`,
+      });
+      followUp.metadata.dateSent = new Date(`2026-09-05T17:50:03.${index}00Z`);
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: thread.thread,
+        message: followUp,
+        trigger: "subscribed_message",
+      });
+    }
 
     const durable = await db
       .select()
       .from(chatDeliveries)
       .where(eq(chatDeliveries.endpointId, endpoint.id));
-    expect(durable).toHaveLength(2);
+    expect(durable).toHaveLength(8);
+    expect(durable.every((delivery) => delivery.nextAttemptAt !== null)).toBe(
+      true,
+    );
+    // The first callback fixes one bounded batch deadline. Later arrivals do
+    // not slide it forward and therefore cannot starve a busy conversation.
+    expect(
+      new Set(
+        durable.map((delivery) => delivery.nextAttemptAt?.getTime() ?? null),
+      ).size,
+    ).toBe(1);
     expect(durable).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -2833,18 +2863,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .select({ id: issueComments.id })
         .from(issueComments)
         .where(eq(issueComments.issueId, conversation.issueId));
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(8);
     });
     const comments = await db
-      .select({ body: issueComments.body })
+      .select({ id: issueComments.id, body: issueComments.body })
       .from(issueComments)
       .where(eq(issueComments.issueId, conversation.issueId))
       .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
     expect(comments.map((comment) => comment.body)).toEqual([
       "@maya acknowledge quickly",
+      "follow-up 3",
+      "follow-up 4",
+      "follow-up 5",
       "and include the rollback status",
+      "follow-up 6",
+      "follow-up 7",
+      "follow-up 8",
     ]);
-    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect(wakeup).toHaveBeenCalledTimes(8);
+    expect(
+      wakeup.mock.calls.map((call) => call[1]?.payload?.wakeCommentId),
+    ).toEqual(comments.map((comment) => comment.id));
     expect(
       await db
         .select()
@@ -2936,6 +2975,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(deferred).toHaveLength(1);
     expect(liveFetch).not.toHaveBeenCalled();
     await first.service.shutdown();
+    // Restart after the bounded Slack reorder window has elapsed.
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date() })
+      .where(eq(chatDeliveries.id, durableDelivery.id));
 
     const restartedRuntime = new FakeChatSdkRuntime(attachmentBodies);
     const restarted = createService(
@@ -3073,15 +3117,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(chatDeliveries.endpointId, endpoint.id)),
     ).toHaveLength(0);
 
-    const originalInsert = db.insert.bind(db);
-    let rejectDeliveryInsert = true;
-    const insertSpy = vi.spyOn(db, "insert").mockImplementation(((table) => {
-      if (table === chatDeliveries && rejectDeliveryInsert) {
-        rejectDeliveryInsert = false;
-        throw new Error("injected chat_deliveries insert failure");
-      }
-      return originalInsert(table);
-    }) as typeof db.insert);
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockRejectedValueOnce(new Error("injected durable admission failure"));
 
     const rejected = await service.handleWebhook(
       endpoint.publicId,
@@ -3097,7 +3135,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(chatDeliveries.endpointId, endpoint.id)),
     ).toHaveLength(0);
 
-    insertSpy.mockRestore();
+    transactionSpy.mockRestore();
     const acceptedRetry = await service.handleWebhook(
       endpoint.publicId,
       "slack",
@@ -3140,6 +3178,269 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(eq(issues.companyId, fixture.companyId)),
       ).toHaveLength(1);
     });
+    await service.shutdown();
+  });
+
+  it("acknowledges durable Slack ingress promptly and never replays paused traffic on resume", async () => {
+    const fixture = await seedCompany();
+    const deferred: Array<() => void> = [];
+    const wakeup = vi.fn(async () => ({ accepted: true }));
+    const service = chatChannelService(db, {
+      deferWebhookProcessing: true,
+      fetch: fakeSlackFetch("U-BOT-PAUSE") as typeof globalThis.fetch,
+      heartbeat: { wakeup },
+      publicBaseUrl: "https://paperclip.example",
+      scheduleDeferredWork: (task) => deferred.push(task),
+    });
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    const signingSecret = "pause-ingress-signing-secret";
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-pause-ingress",
+          signingSecret,
+        },
+      },
+      "owner-user",
+    );
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active", setup: { step: "complete" } })
+      .where(eq(chatEndpoints.id, endpoint.id));
+
+    const signedRequest = (input: {
+      eventId: string;
+      messageId: string;
+      text: string;
+    }) => {
+      const body = JSON.stringify({
+        type: "event_callback",
+        event_id: input.eventId,
+        event_time: Math.floor(Date.now() / 1000),
+        team_id: "T-PAPERCLIP",
+        event: {
+          type: "app_mention",
+          user: "U-PAUSED-SENDER",
+          username: "alex",
+          text: input.text,
+          ts: input.messageId,
+          channel: "C-PAUSED-INGRESS",
+          channel_type: "channel",
+          team: "T-PAPERCLIP",
+        },
+      });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signature = `v0=${createHmac("sha256", signingSecret)
+        .update(`v0:${timestamp}:${body}`)
+        .digest("hex")}`;
+      return new Request(
+        `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-slack-request-timestamp": timestamp,
+            "x-slack-signature": signature,
+          },
+          body,
+        },
+      );
+    };
+
+    const activeResponse = await service.handleWebhook(
+      endpoint.publicId,
+      "slack",
+      signedRequest({
+        eventId: "Ev-before-pause",
+        messageId: "9300.1",
+        text: "@maya queued just before pause",
+      }),
+    );
+    expect(activeResponse.status).toBe(200);
+    expect(deferred).toHaveLength(1);
+    expect(wakeup).not.toHaveBeenCalled();
+
+    await service.configure(endpoint.id, { action: "pause" }, "owner-user");
+    const pausedResponse = await service.handleWebhook(
+      endpoint.publicId,
+      "slack",
+      signedRequest({
+        eventId: "Ev-during-pause",
+        messageId: "9300.2",
+        text: "@maya this must stay ignored after resume",
+      }),
+    );
+    expect(pausedResponse.status).toBe(200);
+    expect(deferred).toHaveLength(1);
+
+    await service.configure(endpoint.id, { action: "resume" }, "owner-user");
+    deferred.shift()?.();
+    await service.shutdown();
+
+    const deliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id))
+      .orderBy(asc(chatDeliveries.receivedAt));
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries.map((delivery) => delivery.state)).toEqual([
+      "filtered",
+      "filtered",
+    ]);
+    expect(deliveries.map((delivery) => delivery.redactedError)).toEqual([
+      "Connection was paused before processing",
+      "Connection is not active",
+    ]);
+    expect(deliveries.every((delivery) => delivery.processedAt)).toBe(true);
+    expect(await service.get(endpoint.id)).toMatchObject({
+      status: "active",
+      lastActivityAt: expect.any(String),
+    });
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.companyId, fixture.companyId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.companyId, fixture.companyId)),
+    ).toHaveLength(0);
+  });
+
+  it("keeps processing audit truth and rejects stale Slack runtime callbacks across resume", async () => {
+    const fixture = await seedCompany();
+    const { runtime, service, wakeup } = createService(
+      new FakeChatSdkRuntime(),
+      fakeSlackFetch() as typeof globalThis.fetch,
+      { deferWebhookProcessing: true },
+    );
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-generation-boundary",
+          signingSecret: "generation-boundary-secret",
+        },
+      },
+      "owner-user",
+    );
+    await recordSlackUrlVerification(service, endpoint.publicId);
+    await service.configure(endpoint.id, { action: "verify" }, "owner-user");
+    const staleCallbacks = runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!staleCallbacks) throw new Error("Expected endpoint callbacks");
+    await db
+      .update(chatEndpoints)
+      .set({
+        status: "active",
+        setup: { step: "complete" },
+        activatedAt: new Date(),
+      })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    const thread = makeThread({
+      channelId: "C-PAUSE-RACE",
+      id: "slack:C-PAUSE-RACE:9400.1",
+      name: "pause-race",
+    });
+    const processingMessage = makeMessage({
+      id: "9400.1",
+      text: "@maya processing before pause",
+      mentioned: true,
+    });
+    const providerEventId = `${thread.thread.id}:${processingMessage.id}`;
+    await db.insert(chatDeliveries).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      providerEventId,
+      deduplicationKey: createHash("sha256")
+        .update(providerEventId)
+        .digest("hex"),
+      eventKind: "mention",
+      normalizedEvent: {},
+      state: "processing",
+      attempts: 1,
+    });
+
+    await service.configure(endpoint.id, { action: "pause" }, "owner-user");
+    await deliverMessage({
+      callbacks: staleCallbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: processingMessage,
+      trigger: "mention",
+    });
+    const [processingDuplicate] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.providerEventId, providerEventId));
+    expect(processingDuplicate.state).toBe("processing");
+    expect(processingDuplicate.processedAt).toBeNull();
+    expect(
+      Number(
+        processingDuplicate.normalizedEvent.deduplication?.duplicateCount ?? 0,
+      ),
+    ).toBe(1);
+
+    await service.configure(endpoint.id, { action: "resume" }, "owner-user");
+    const staleMessage = makeMessage({
+      id: "9400.2",
+      text: "@maya parsed before the pause",
+      mentioned: true,
+    });
+    await deliverMessage({
+      callbacks: staleCallbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: staleMessage,
+      trigger: "mention",
+    });
+
+    const deliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id))
+      .orderBy(asc(chatDeliveries.receivedAt));
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries[0]).toMatchObject({
+      state: "processing",
+      processedAt: null,
+    });
+    expect(deliveries[1]).toMatchObject({
+      state: "filtered",
+      redactedError: "Connection activation changed before admission",
+      processedAt: expect.any(Date),
+    });
+    expect(JSON.stringify(await service.get(endpoint.id))).not.toContain(
+      "runtimeGeneration",
+    );
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(0);
     await service.shutdown();
   });
 

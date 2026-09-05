@@ -50,6 +50,7 @@ import type {
   ChatAdapterCapabilities,
   ChatEventKind,
   ChatEndpoint,
+  ChatEndpointSetupState,
   ChatProvider,
   ConfigureChatEndpointInput,
   CreateChatEndpointInput,
@@ -264,6 +265,10 @@ const MAX_ERROR_TEXT = 2_000;
 const DELIVERY_PROCESSING_STALE_MS = 60_000;
 const DELIVERY_LEASE_TTL_MS = 90_000;
 const DELIVERY_DRAIN_LIMIT = 100;
+// Slack can deliver adjacent Events API callbacks on separate HTTP requests
+// out of timestamp order. Hold the first callback briefly so a rapid burst can
+// be sorted by the provider's message timestamp before any run is started.
+const SLACK_INGRESS_REORDER_WINDOW_MS = 750;
 
 type EndpointRow = typeof chatEndpoints.$inferSelect;
 type VerifiedProviderIdentity = {
@@ -793,13 +798,14 @@ export function createChatSdkStatePersistence(db: Db): ChatSdkStatePersistence {
 
 export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const runtime = options.runtime ?? createChatSdkRuntime();
+  const runtimeGenerations = new Map<string, number>();
   const persistence = createChatSdkStatePersistence(db);
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const publicBaseUrl = absoluteBaseUrl(options.publicBaseUrl);
   const issuesSvc = issueService(db);
   const secrets = secretService(db);
   const backgroundMessageTasks = new Set<Promise<void>>();
-  const scheduledConversationDrains = new Set<string>();
+  const scheduledConversationDrains = new Map<string, number>();
   const liveInboundMessages = new Map<string, LiveInboundMessage>();
   let shuttingDown = false;
 
@@ -823,22 +829,39 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return `${endpointId}:${createHash("sha256").update(threadId).digest("hex")}`;
   }
 
-  function scheduleConversationDrain(endpointId: string, threadId: string) {
+  function scheduleConversationDrain(
+    endpointId: string,
+    threadId: string,
+    drainAt = Date.now(),
+  ) {
     if (shuttingDown) return;
     const key = conversationDrainKey(endpointId, threadId);
-    if (scheduledConversationDrains.has(key)) return;
-    scheduledConversationDrains.add(key);
+    const scheduledAt = scheduledConversationDrains.get(key);
+    if (scheduledAt !== undefined) return;
+    scheduledConversationDrains.set(key, drainAt);
     scheduleMessageProcessing(async () => {
-      let shouldContinue = false;
       try {
-        shouldContinue = await drainConversationDeliveries(
-          endpointId,
-          threadId,
-        );
+        while (!shuttingDown) {
+          const target = scheduledConversationDrains.get(key);
+          if (target === undefined) return;
+          const remaining = target - Date.now();
+          if (remaining > 0) {
+            await new Promise((resolve) => setTimeout(resolve, remaining));
+            continue;
+          }
+          const shouldContinue = await drainConversationDeliveries(
+            endpointId,
+            threadId,
+          );
+          if (shouldContinue) {
+            scheduledConversationDrains.set(key, Date.now());
+            continue;
+          }
+          return;
+        }
       } finally {
         scheduledConversationDrains.delete(key);
       }
-      if (shouldContinue) scheduleConversationDrain(endpointId, threadId);
     });
   }
 
@@ -1813,8 +1836,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function runtimeFor(
     endpoint: EndpointRow,
   ): Promise<ChatSdkEndpointRuntime> {
+    const generation = Number(
+      (
+        endpoint.setup as ChatEndpointSetupState & {
+          runtimeGeneration?: number;
+        }
+      ).runtimeGeneration ?? 0,
+    );
     const current = runtime.get(endpoint.id);
-    if (current) return current;
+    if (current && (runtimeGenerations.get(endpoint.id) ?? 0) === generation)
+      return current;
+    if (current) await runtime.removeEndpoint(endpoint.id);
     const agent = await db
       .select({ name: agents.name })
       .from(agents)
@@ -1833,7 +1865,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       persistence,
       concurrency: endpoint.concurrencyPolicy,
       callbacks: {
-        onMessage: handleSdkMessage,
+        onMessage: (event) => handleSdkMessage(event, generation),
         onAction:
           endpoint.capabilities.actions === true ? handleAction : undefined,
         onModalSubmit:
@@ -1858,9 +1890,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
     try {
       await instance.initialize();
+      runtimeGenerations.set(endpoint.id, generation);
       return instance;
     } catch (error) {
       await runtime.removeEndpoint(endpoint.id).catch(() => undefined);
+      runtimeGenerations.delete(endpoint.id);
       throw error;
     }
   }
@@ -1881,14 +1915,30 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
       await runtime.removeEndpoint(endpoint.id);
       await db.transaction(async (tx) => {
+        const pausedAt = new Date();
         await tx
           .update(chatEndpoints)
-          .set({ status: "paused", updatedAt: new Date() })
+          .set({ status: "paused", updatedAt: pausedAt })
           .where(eq(chatEndpoints.id, endpoint.id));
         await tx
           .update(toolConnections)
           .set({ status: "disabled", enabled: false, updatedAt: new Date() })
           .where(eq(toolConnections.id, endpoint.connectionId));
+        await tx
+          .update(chatDeliveries)
+          .set({
+            state: "filtered",
+            nextAttemptAt: null,
+            redactedError: "Connection was paused before processing",
+            processedAt: pausedAt,
+            updatedAt: pausedAt,
+          })
+          .where(
+            and(
+              eq(chatDeliveries.endpointId, endpoint.id),
+              inArray(chatDeliveries.state, ["received", "retry"]),
+            ),
+          );
       });
       await logActivity(db, {
         companyId: endpoint.companyId,
@@ -1939,13 +1989,43 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         await runtime.removeEndpoint(endpoint.id);
         await runtimeFor(endpoint);
         await db.transaction(async (tx) => {
+          const resumedAt = new Date();
+          // Fail closed for any legacy or racing delivery that remained open
+          // while this endpoint was paused. Resume must never execute traffic
+          // that Paperclip acknowledged during the inactive interval.
+          await tx
+            .update(chatDeliveries)
+            .set({
+              state: "filtered",
+              nextAttemptAt: null,
+              redactedError: "Connection was paused when this event arrived",
+              processedAt: resumedAt,
+              updatedAt: resumedAt,
+            })
+            .where(
+              and(
+                eq(chatDeliveries.endpointId, endpoint.id),
+                inArray(chatDeliveries.state, ["received", "retry"]),
+              ),
+            );
           await tx
             .update(chatEndpoints)
             .set({
               status: "active",
               healthMessage: "Connected",
               lastError: null,
-              updatedAt: new Date(),
+              setup: {
+                ...endpoint.setup,
+                runtimeGeneration:
+                  Number(
+                    (
+                      endpoint.setup as ChatEndpointSetupState & {
+                        runtimeGeneration?: number;
+                      }
+                    ).runtimeGeneration ?? 0,
+                  ) + 1,
+              } as ChatEndpointSetupState,
+              updatedAt: resumedAt,
             })
             .where(eq(chatEndpoints.id, endpoint.id));
           await tx
@@ -2650,6 +2730,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     trigger: ChatSdkMessageCallbackEvent["trigger"],
     ingressOnly = false,
     recoveredProviderUrl: string | null = null,
+    runtimeGeneration?: number,
   ) {
     // The Telegram adapter currently emits edited_message through the normal
     // message callback with the original message id. Paperclip records that
@@ -2682,8 +2763,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         : trigger === "mention"
           ? "mention"
           : "message";
-    const endpointRuntime =
-      runtime.get(endpoint.id) ?? (await runtimeFor(endpoint));
+    const endpointRuntime = await runtimeFor(endpoint);
+    const providerSentAt =
+      message.metadata.dateSent instanceof Date &&
+      Number.isFinite(message.metadata.dateSent.getTime())
+        ? message.metadata.dateSent
+        : null;
     const providerUrl =
       chatProviderConversationUrl({
         provider: endpoint.provider,
@@ -2725,6 +2810,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         providerMessageId: message.id,
         text: message.text.slice(0, MAX_INBOUND_TEXT),
         mentionedBot: message.isMention === true,
+        providerSentAt: providerSentAt?.toISOString() ?? null,
         attachments: message.attachments.slice(0, 20).map((attachment) => ({
           name: sanitizeFilename(attachment.name),
           mimeType: normalizeContentType(attachment.mimeType),
@@ -2733,25 +2819,67 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         })),
       },
     };
-    const inserted = await db
-      .insert(chatDeliveries)
-      .values({
-        companyId: endpoint.companyId,
-        endpointId: endpoint.id,
-        providerEventId,
-        deduplicationKey: createHash("sha256")
-          .update(providerEventId)
-          .digest("hex"),
-        eventKind,
-        normalizedEvent: normalized,
-        state: "received",
-      })
-      .onConflictDoNothing()
-      .returning();
-    const delivery = inserted[0];
-    const existingDelivery = delivery
-      ? null
-      : await db
+    const scheduledAt =
+      ingressOnly && endpoint.provider === "slack"
+        ? (scheduledConversationDrains.get(
+            conversationDrainKey(endpoint.id, thread.id),
+          ) ?? Date.now() + SLACK_INGRESS_REORDER_WINDOW_MS)
+        : null;
+    const admission = await db.transaction(async (tx) => {
+      const currentEndpoint = await tx
+        .select({
+          status: chatEndpoints.status,
+          setup: chatEndpoints.setup,
+        })
+        .from(chatEndpoints)
+        .where(eq(chatEndpoints.id, endpoint.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!currentEndpoint) return null;
+      // An SDK callback can finish parsing after a pause/resume cycle. Each
+      // runtime captures the durable endpoint generation at registration;
+      // resume advances it under the same row lock used by admission. This
+      // rejects stale callbacks without relying on provider/server clock sync.
+      const currentRuntimeGeneration = Number(
+        (
+          currentEndpoint.setup as ChatEndpointSetupState & {
+            runtimeGeneration?: number;
+          }
+        ).runtimeGeneration ?? 0,
+      );
+      const staleActivation =
+        ingressOnly &&
+        runtimeGeneration !== undefined &&
+        runtimeGeneration !== currentRuntimeGeneration;
+      const accepting =
+        ["verifying", "active"].includes(currentEndpoint.status) &&
+        !staleActivation;
+      const ignoredAt = accepting ? null : new Date();
+      const inactiveReason = staleActivation
+        ? "Connection activation changed before admission"
+        : "Connection is not active";
+      const [delivery] = await tx
+        .insert(chatDeliveries)
+        .values({
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          providerEventId,
+          deduplicationKey: createHash("sha256")
+            .update(providerEventId)
+            .digest("hex"),
+          eventKind,
+          normalizedEvent: normalized,
+          state: accepting ? "received" : "filtered",
+          nextAttemptAt:
+            accepting && scheduledAt ? new Date(scheduledAt) : null,
+          redactedError: accepting ? null : inactiveReason,
+          processedAt: ignoredAt,
+        })
+        .onConflictDoNothing()
+        .returning();
+      let candidate = delivery ?? null;
+      if (!candidate) {
+        const existingDelivery = await tx
           .select()
           .from(chatDeliveries)
           .where(
@@ -2761,29 +2889,51 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             ),
           )
           .then((rows) => rows[0] ?? null);
-    const candidate = delivery ?? existingDelivery;
-    if (!candidate) return;
-    if (existingDelivery) {
-      await db
-        .update(chatDeliveries)
-        .set({
-          // Increment inside PostgreSQL's row lock. Reading the JSON before
-          // this update would let simultaneous provider retries overwrite one
-          // another with the same count even though task deduplication held.
-          normalizedEvent: sql`coalesce(${chatDeliveries.normalizedEvent}, '{}'::jsonb)
-            || jsonb_build_object(
-              'deduplication',
-              coalesce(${chatDeliveries.normalizedEvent}->'deduplication', '{}'::jsonb)
+        if (existingDelivery) {
+          [candidate] = await tx
+            .update(chatDeliveries)
+            .set({
+              // Increment under PostgreSQL's row lock so simultaneous handler
+              // fanout and provider retries cannot lose duplicate telemetry.
+              normalizedEvent: sql`coalesce(${chatDeliveries.normalizedEvent}, '{}'::jsonb)
                 || jsonb_build_object(
-                  'duplicateCount',
-                  coalesce((${chatDeliveries.normalizedEvent}#>>'{deduplication,duplicateCount}')::integer, 0) + 1,
-                  'lastDuplicateAt',
-                  ${new Date().toISOString()}::text
-                )
-            )`,
-          updatedAt: new Date(),
-        })
-        .where(eq(chatDeliveries.id, existingDelivery.id));
+                  'deduplication',
+                  coalesce(${chatDeliveries.normalizedEvent}->'deduplication', '{}'::jsonb)
+                    || jsonb_build_object(
+                      'duplicateCount',
+                      coalesce((${chatDeliveries.normalizedEvent}#>>'{deduplication,duplicateCount}')::integer, 0) + 1,
+                      'lastDuplicateAt',
+                      ${new Date().toISOString()}::text
+                    )
+                )`,
+              ...(!accepting &&
+              ["received", "retry"].includes(existingDelivery.state)
+                ? {
+                    state: "filtered" as const,
+                    nextAttemptAt: null,
+                    redactedError: inactiveReason,
+                    processedAt: ignoredAt,
+                  }
+                : {}),
+              updatedAt: new Date(),
+            })
+            .where(eq(chatDeliveries.id, existingDelivery.id))
+            .returning();
+        }
+      }
+      if (!accepting && ignoredAt) {
+        await tx
+          .update(chatEndpoints)
+          .set({ lastEventAt: ignoredAt, updatedAt: ignoredAt })
+          .where(eq(chatEndpoints.id, endpoint.id));
+      }
+      return { accepting, candidate: candidate ?? null };
+    });
+    const candidate = admission?.candidate ?? null;
+    if (!admission || !candidate) return;
+    if (!admission.accepting) {
+      liveInboundMessages.delete(candidate.id);
+      return;
     }
     if (["processed", "filtered", "failed"].includes(candidate.state)) return;
     const now = new Date();
@@ -2809,7 +2959,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         message,
         trigger,
       });
-      scheduleConversationDrain(endpoint.id, thread.id);
+      scheduleConversationDrain(
+        endpoint.id,
+        thread.id,
+        scheduledAt ?? Date.now(),
+      );
       return;
     }
     const claimConditions = [
@@ -3472,7 +3626,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   function deliveryReady(delivery: DeliveryRow, now: Date): boolean {
-    if (delivery.state === "received") return true;
+    if (delivery.state === "received")
+      return !delivery.nextAttemptAt || delivery.nextAttemptAt <= now;
     if (delivery.state === "retry") {
       return !delivery.nextAttemptAt || delivery.nextAttemptAt <= now;
     }
@@ -3497,7 +3652,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           sql`${chatDeliveries.normalizedEvent}->'conversation'->>'externalThreadId' = ${threadId}`,
         ),
       )
-      .orderBy(asc(chatDeliveries.receivedAt), asc(chatDeliveries.id))
+      .orderBy(
+        asc(
+          sql`coalesce(nullif(${chatDeliveries.normalizedEvent}->'message'->>'providerSentAt', '')::timestamptz, ${chatDeliveries.receivedAt})`,
+        ),
+        asc(chatDeliveries.id),
+      )
       .limit(1)
       .then((rows) => rows[0] ?? null);
   }
@@ -3803,7 +3963,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return Boolean(next && deliveryReady(next, new Date()));
   }
 
-  async function handleSdkMessage(event: ChatSdkMessageCallbackEvent) {
+  async function handleSdkMessage(
+    event: ChatSdkMessageCallbackEvent,
+    runtimeGeneration?: number,
+  ) {
     const record = await endpointRecord(event.endpointId);
     if (!record) throw notFound("Chat endpoint not found");
     const messages = [...(event.context?.skipped ?? []), event.message];
@@ -3814,6 +3977,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         message,
         message === event.message ? event.trigger : "subscribed_message",
         options.deferWebhookProcessing === true,
+        null,
+        runtimeGeneration,
       );
   }
 
@@ -5297,7 +5462,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         and(
           onlyDeliveryId ? eq(chatDeliveries.id, onlyDeliveryId) : undefined,
           or(
-            eq(chatDeliveries.state, "received"),
+            and(
+              eq(chatDeliveries.state, "received"),
+              or(
+                isNull(chatDeliveries.nextAttemptAt),
+                lte(chatDeliveries.nextAttemptAt, now),
+              ),
+            ),
             and(
               eq(chatDeliveries.state, "retry"),
               or(

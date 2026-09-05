@@ -110,6 +110,9 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("- reactions:read");
     expect(setup).toContain("reaction_added");
     expect(setup).toContain("reaction_removed");
+    expect(setup).toContain("home_tab_enabled: false");
+    expect(setup).toContain("messages_tab_enabled: true");
+    expect(setup).toContain("messages_tab_read_only_enabled: false");
     expect(setup).not.toContain("No credentials");
     expect(setup).not.toContain("managed Microsoft app");
     expect(setup).toContain("endpoint.providerAccountId && !repairing");
