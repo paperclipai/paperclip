@@ -349,7 +349,10 @@ async function createTaskThroughUi(input: {
   await input.page.getByText(input.agentName, { exact: true }).last().click();
   if (input.projectName) {
     const dialog = input.page.getByRole("dialog");
-    await dialog.getByRole("button", { name: "Project", exact: true }).click();
+    // Selecting the assignee advances focus to this selector and opens it.
+    // Focus is idempotent here; clicking would toggle an already-open popover
+    // closed before the search field can be filled.
+    await dialog.getByRole("button", { name: "Project", exact: true }).focus();
     await dialog.getByPlaceholder("Search projects...").fill(input.projectName);
     await dialog.getByText(input.projectName, { exact: true }).last().click();
   }
