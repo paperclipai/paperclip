@@ -3284,6 +3284,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         !hasMeaningfulSlackMentionRequest(message.text);
       if (emptySlackMention) {
         await db.transaction(async (tx) => {
+          // Admission locks endpoint -> delivery. Keep completion in the same
+          // order so a provider redelivery cannot deadlock with the original
+          // message while both contend on the same delivery row.
+          await tx
+            .update(chatEndpoints)
+            .set({ lastEventAt: new Date(), updatedAt: new Date() })
+            .where(eq(chatEndpoints.id, endpoint.id));
           await tx
             .update(chatDeliveries)
             .set({
@@ -3293,10 +3300,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               updatedAt: new Date(),
             })
             .where(eq(chatDeliveries.id, activeDelivery.id));
-          await tx
-            .update(chatEndpoints)
-            .set({ lastEventAt: new Date(), updatedAt: new Date() })
-            .where(eq(chatEndpoints.id, endpoint.id));
         });
         // Mark the durable delivery complete before provider-visible effects.
         // An exact Slack redelivery can therefore never create duplicate
@@ -3332,6 +3335,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
         await db.transaction(async (tx) => {
           await tx
+            .update(chatEndpoints)
+            .set({ lastEventAt: new Date(), updatedAt: new Date() })
+            .where(eq(chatEndpoints.id, endpoint.id));
+          await tx
             .update(chatDeliveries)
             .set({
               conversationId: existingConversation?.id ?? null,
@@ -3340,10 +3347,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               updatedAt: new Date(),
             })
             .where(eq(chatDeliveries.id, activeDelivery.id));
-          await tx
-            .update(chatEndpoints)
-            .set({ lastEventAt: new Date(), updatedAt: new Date() })
-            .where(eq(chatEndpoints.id, endpoint.id));
         });
         await Promise.allSettled([
           thread.adapter.addReaction(thread.id, message.id, "eyes"),
@@ -3476,6 +3479,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           : "Sent an empty message.");
       let comment!: typeof issueComments.$inferSelect;
       await db.transaction(async (tx) => {
+        await tx
+          .update(chatEndpoints)
+          .set({
+            status: endpoint.status,
+            setup: endpoint.setup,
+            healthMessage:
+              endpoint.status === "verifying"
+                ? "Test conversation received"
+                : "Connected",
+            lastEventAt: new Date(),
+            activatedAt:
+              endpoint.status === "active" ? endpoint.activatedAt : null,
+            updatedAt: new Date(),
+          })
+          .where(eq(chatEndpoints.id, endpoint.id));
         comment = await issuesSvc.addComment(
           conversation!.issueId,
           body.slice(0, MAX_INBOUND_TEXT),
@@ -3553,21 +3571,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             updatedAt: new Date(),
           })
           .where(eq(chatConversations.id, conversation!.id));
-        await tx
-          .update(chatEndpoints)
-          .set({
-            status: endpoint.status,
-            setup: endpoint.setup,
-            healthMessage:
-              endpoint.status === "verifying"
-                ? "Test conversation received"
-                : "Connected",
-            lastEventAt: new Date(),
-            activatedAt:
-              endpoint.status === "active" ? endpoint.activatedAt : null,
-            updatedAt: new Date(),
-          })
-          .where(eq(chatEndpoints.id, endpoint.id));
         await tx
           .update(toolConnections)
           .set({

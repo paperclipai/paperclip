@@ -7759,12 +7759,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "direct_message",
     });
-    await expect(
-      db
-        .select({ state: chatDeliveries.state })
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id)),
-    ).resolves.toEqual([{ state: "received" }]);
+    const [originalDelivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(originalDelivery).toMatchObject({ state: "received" });
 
     const sendEdit = () =>
       service.handleWebhook(
@@ -7789,7 +7788,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(sendEdit()).rejects.toThrow(
       "Original chat message is still being durably processed",
     );
-    await service.processPendingDeliveries();
+    await service.processPendingDeliveries(25, originalDelivery.id);
     await expect(sendEdit()).resolves.toMatchObject({ ok: true });
 
     const lifecycle = await db
