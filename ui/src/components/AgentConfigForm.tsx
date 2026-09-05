@@ -477,7 +477,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         }
       : overlay;
     if (!isOverlayDirty(nextOverlay)) return;
-    await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
+    const patch = buildAgentUpdatePatch(props.agent, nextOverlay);
+    if (!patch.literalRedactedConfigPaths) {
+      delete patch.preserveRedactedConfigValues;
+    }
+    await props.onSave(patch);
   }, [isCreate, isDirty, overlay, props]);
 
   useEffect(() => {

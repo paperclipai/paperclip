@@ -2838,9 +2838,8 @@ export function agentRoutes(
     if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return agent;
     return {
       ...agent,
-      adapterConfig: redactConfigurationPayload(
+      adapterConfig: redactAgentAdapterConfig(
         agent.adapterConfig as Record<string, unknown>,
-        "adapter",
       ),
       runtimeConfig: redactConfigurationPayload(
         (agent as { runtimeConfig?: unknown }).runtimeConfig as Record<string, unknown>,
@@ -2860,7 +2859,7 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactConfigurationPayload(agent.adapterConfig, "adapter") ?? {},
+      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig) ?? {},
       runtimeConfig: redactConfigurationPayload(agent.runtimeConfig, "runtime") ?? {},
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
@@ -2894,11 +2893,10 @@ export function agentRoutes(
     const record = snapshot as Record<string, unknown>;
     return {
       ...record,
-      adapterConfig: redactConfigurationPayload(
+      adapterConfig: redactAgentAdapterConfig(
         typeof record.adapterConfig === "object" && record.adapterConfig !== null
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
-        "adapter",
       ),
       runtimeConfig: redactConfigurationPayload(
         typeof record.runtimeConfig === "object" && record.runtimeConfig !== null
