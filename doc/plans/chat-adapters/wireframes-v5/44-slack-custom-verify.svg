@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="920" viewBox="0 0 1280 920" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="1280" height="920"/><g data-region="global-sidebar"><text x="24" y="40" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="72" r="6" fill="#e6e6e6"/><text x="56" y="76" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="120" r="6" fill="#e6e6e6"/><text x="56" y="124" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="168" r="6" fill="#e6e6e6"/><text x="56" y="172" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="216" r="6" fill="#e6e6e6"/><text x="56" y="220" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="264" r="6" fill="#e6e6e6"/><text x="56" y="268" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="312" r="6" fill="#e6e6e6"/><text x="56" y="316" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="360" r="6" fill="#e6e6e6"/><text x="56" y="364" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="408" r="6" fill="#e6e6e6"/><text x="56" y="412" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="456" r="6" fill="#e6e6e6"/><text x="56" y="460" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="504" r="6" fill="#e6e6e6"/><text x="56" y="508" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="8" y="536" width="224" height="40" rx="4" fill="#e6e6e6"/><circle cx="32" cy="552" r="6" fill="#e6e6e6"/><text x="56" y="556" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="600" r="6" fill="#e6e6e6"/><text x="56" y="604" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="864" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="888" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="920" /></g><g data-region="topbar"><line x1="240" y1="64" x2="1280" y2="64" /><text x="264" y="40" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Slack  ›  Chat with an agent</text><circle cx="1240" cy="32" r="16" fill="#e6e6e6"/></g><text x="264" y="104" font-size="12" fill="#666" stroke="none" font-weight="700">ADVANCED SETUP</text>
+<text x="264" y="128" font-size="14" fill="#000" stroke="none" font-weight="700">Slack</text>
+<line x1="520" y1="64" x2="520" y2="920" />
+<line x1="288" y1="152" x2="288" y2="392" />
+<circle cx="288" cy="152" r="16" fill="#000"/>
+<text x="288" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="148" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="288" cy="232" r="16" fill="#000"/>
+<text x="288" y="237" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="228" font-size="14" fill="#000" stroke="none" >Create Slack app</text>
+<circle cx="288" cy="312" r="16" fill="#000"/>
+<text x="288" y="317" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="308" font-size="14" fill="#000" stroke="none" >Connect app</text>
+<circle cx="288" cy="392" r="16" fill="#fff"/>
+<text x="288" y="397" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="320" y="388" font-size="14" fill="#000" stroke="none" font-weight="700">Verify</text>
+<text x="264" y="872" font-size="12" fill="#666" stroke="none" >Progress is saved automatically.</text><text x="560" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Verify the custom Slack app</text>
+<text x="560" y="144" font-size="14" fill="#666" stroke="none" >Paperclip checks identity, callbacks, permissions, and installation before activation.</text>
+<text x="560" y="200" font-size="20" fill="#000" stroke="none" font-weight="700">Verification results</text>
+<text x="560" y="224" font-size="12" fill="#666" stroke="none" >Each check has one provider-specific remediation rather than another configuration panel.</text>
+<line x1="560" y1="248" x2="1224" y2="248" />
+<text x="576" y="272" font-size="14" fill="#000" stroke="none" font-weight="600">Bot identity</text>
+<text x="576" y="294" font-size="12" fill="#666" stroke="none" >auth.test returned Maya in the Acme workspace.</text>
+<text x="1208" y="276" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<line x1="576" y1="320" x2="1208" y2="320" stroke="#e6e6e6"/>
+<text x="576" y="344" font-size="14" fill="#000" stroke="none" font-weight="600">Request verification</text>
+<text x="576" y="366" font-size="12" fill="#666" stroke="none" >Signing challenge and timestamp validation succeeded.</text>
+<text x="1208" y="348" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<line x1="576" y1="392" x2="1208" y2="392" stroke="#e6e6e6"/>
+<text x="576" y="416" font-size="14" fill="#000" stroke="none" font-weight="600">Scopes and features</text>
+<text x="576" y="438" font-size="12" fill="#666" stroke="none" >Messages, threads, reactions, files, actions, modals, commands,</text>
+<text x="576" y="454" font-size="12" fill="#666" stroke="none" >and DMs.</text>
+<text x="1208" y="420" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<line x1="576" y1="464" x2="1208" y2="464" stroke="#e6e6e6"/>
+<text x="576" y="488" font-size="14" fill="#000" stroke="none" font-weight="600">Event subscriptions</text>
+<text x="576" y="510" font-size="12" fill="#666" stroke="none" >Mention, message, interaction, and command callbacks reach</text>
+<text x="576" y="526" font-size="12" fill="#666" stroke="none" >Paperclip.</text>
+<text x="1208" y="492" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<text x="560" y="568" font-size="20" fill="#000" stroke="none" font-weight="700">Delivery selected automatically</text>
+<text x="560" y="592" font-size="12" fill="#666" stroke="none" >Public instances use the verified callback directly; private instances use the configured</text>
+<text x="560" y="608" font-size="12" fill="#666" stroke="none" >outbound relay. Socket Mode is an instance-admin escape hatch only.</text>
+<line x1="560" y1="616" x2="1224" y2="616" />
+<text x="576" y="640" font-size="14" fill="#000" stroke="none" font-weight="600">This instance</text>
+<text x="576" y="662" font-size="12" fill="#666" stroke="none" >Verified public callback</text>
+<text x="1208" y="644" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Healthy</text><rect x="560" y="832" width="208" height="48" rx="4" fill="#fff"/><text x="664" y="862" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back</text><rect x="784" y="832" width="440" height="48" rx="4" fill="#000"/><text x="1004" y="862" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Activate Maya</text><g data-region="annotations"><rect x="256" y="88" width="248" height="520" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="552" y="168" width="680" height="368" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="552" y="536" width="680" height="152" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="536" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="540" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="552" y="816" width="680" height="72" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="816" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="820" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

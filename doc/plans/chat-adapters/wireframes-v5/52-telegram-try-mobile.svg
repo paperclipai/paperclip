@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1760" viewBox="0 0 375 1760" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1760"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Telegram</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="264" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#000"/>
+<text x="32" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" >Create Telegram bot</text>
+<circle cx="32" cy="208" r="16" fill="#000"/>
+<text x="32" y="213" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="213" font-size="14" fill="#000" stroke="none" >Add to chats</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#000" stroke="none" font-weight="700">Try Maya</text>
+<text x="16" y="360" font-size="20" fill="#000" stroke="none" font-weight="700">Try Maya in Telegram</text>
+<text x="16" y="392" font-size="12" fill="#666" stroke="none" >Send one addressed message so Paperclip can</text>
+<text x="16" y="408" font-size="12" fill="#666" stroke="none" >verify the bot, chat, and task boundary.</text>
+<text x="16" y="456" font-size="20" fill="#000" stroke="none" font-weight="700">Connection checks</text>
+<text x="16" y="480" font-size="12" fill="#666" stroke="none" >Provider identity, delivery, and privacy are</text>
+<text x="16" y="496" font-size="12" fill="#666" stroke="none" >ready before the first task.</text>
+<line x1="16" y1="512" x2="359" y2="512" />
+<text x="24" y="536" font-size="14" fill="#000" stroke="none" font-weight="600">Agent</text>
+<text x="24" y="558" font-size="12" fill="#666" stroke="none" >Maya · permanently assigned</text>
+<text x="351" y="608" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<line x1="24" y1="624" x2="351" y2="624" stroke="#e6e6e6"/>
+<text x="24" y="648" font-size="14" fill="#000" stroke="none" font-weight="600">Bot API</text>
+<text x="24" y="670" font-size="12" fill="#666" stroke="none" >getMe and command registration</text>
+<text x="351" y="720" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<line x1="24" y1="736" x2="351" y2="736" stroke="#e6e6e6"/>
+<text x="24" y="760" font-size="14" fill="#000" stroke="none" font-weight="600">Delivery</text>
+<text x="24" y="782" font-size="12" fill="#666" stroke="none" >Secret-token webhook · zero pending updates</text>
+<text x="351" y="832" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<line x1="24" y1="848" x2="351" y2="848" stroke="#e6e6e6"/>
+<text x="24" y="872" font-size="14" fill="#000" stroke="none" font-weight="600">First addressed update</text>
+<text x="24" y="894" font-size="12" fill="#666" stroke="none" >No test message received yet.</text>
+<text x="351" y="944" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Waiting</text>
+<text x="16" y="992" font-size="20" fill="#000" stroke="none" font-weight="700">Start the first task</text>
+<text x="16" y="1016" font-size="12" fill="#666" stroke="none" >Choose one native Telegram context.</text>
+<line x1="16" y1="1048" x2="359" y2="1048" />
+<text x="24" y="1072" font-size="14" fill="#000" stroke="none" font-weight="600">Direct message</text>
+<text x="24" y="1094" font-size="12" fill="#666" stroke="none" >Send any message; it creates Maya's active</text>
+<text x="24" y="1110" font-size="12" fill="#666" stroke="none" >Paperclip task.</text>
+<text x="351" y="1144" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">DM</text>
+<line x1="24" y1="1160" x2="351" y2="1160" stroke="#e6e6e6"/>
+<text x="24" y="1184" font-size="14" fill="#000" stroke="none" font-weight="600">Ordinary group</text>
+<text x="24" y="1206" font-size="12" fill="#666" stroke="none" >Mention @maya_acme_bot; replies to Maya</text>
+<text x="24" y="1222" font-size="12" fill="#666" stroke="none" >continue the active task.</text>
+<text x="351" y="1256" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Addressed</text>
+<line x1="24" y1="1272" x2="351" y2="1272" stroke="#e6e6e6"/>
+<text x="24" y="1296" font-size="14" fill="#000" stroke="none" font-weight="600">Forum topic</text>
+<text x="24" y="1318" font-size="12" fill="#666" stroke="none" >Mention Maya inside a topic;</text>
+<text x="24" y="1334" font-size="12" fill="#666" stroke="none" >message_thread_id becomes the issue…</text>
+<text x="351" y="1368" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Topic</text>
+<text x="16" y="1416" font-size="20" fill="#000" stroke="none" font-weight="700">Live verification</text>
+<text x="16" y="1440" font-size="12" fill="#666" stroke="none" >Paperclip records the first stable chat/user</text>
+<text x="16" y="1456" font-size="12" fill="#666" stroke="none" >IDs and verifies a safe reply, post/edit</text>
+<text x="16" y="1472" font-size="12" fill="#666" stroke="none" >behavior, and callbacks.</text>
+<line x1="16" y1="1472" x2="359" y2="1472" />
+<text x="24" y="1496" font-size="14" fill="#000" stroke="none" font-weight="600">Telegram update</text>
+<text x="24" y="1518" font-size="12" fill="#666" stroke="none" >Waiting for message or callback query.</text>
+<text x="351" y="1568" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Waiting</text>
+<rect x="16" y="1624" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1654" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Finish without testing</text>
+<rect x="16" y="1688" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1718" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open Telegram</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="272" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="424" width="359" height="536" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="424" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="428" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="960" width="359" height="624" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="960" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="964" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1616" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1616" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1620" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

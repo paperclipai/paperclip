@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1800" viewBox="0 0 375 1800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1800"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Telegram</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="264" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#fff"/>
+<text x="32" y="157" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" font-weight="700">Create Telegram bot</text>
+<circle cx="32" cy="208" r="16" fill="#fff"/>
+<text x="32" y="213" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="213" font-size="14" fill="#666" stroke="none" >Add to chats</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="360" font-size="20" fill="#000" stroke="none" font-weight="700">Create Maya with BotFather</text>
+<text x="16" y="392" font-size="12" fill="#666" stroke="none" >Create one Telegram bot and paste the token</text>
+<text x="16" y="408" font-size="12" fill="#666" stroke="none" >BotFather gives you.</text>
+<text x="24" y="448" font-size="14" fill="#000" stroke="none" font-weight="600">Bot token</text><rect x="24" y="464" width="327" height="48" rx="4" fill="#fff"/><text x="40" y="494" font-size="14" fill="#666" stroke="none" >123456:••••••••••••</text><text x="24" y="536" font-size="12" fill="#666" stroke="none" >Telegram has no installation callback; this</text>
+<text x="24" y="552" font-size="12" fill="#666" stroke="none" >one-time token is required to connect the</text>
+<text x="24" y="568" font-size="12" fill="#666" stroke="none" >bot.</text>
+<text x="16" y="608" font-size="20" fill="#000" stroke="none" font-weight="700">Agent</text>
+<text x="16" y="632" font-size="12" fill="#666" stroke="none" >The Telegram bot is permanently assigned to</text>
+<text x="16" y="648" font-size="12" fill="#666" stroke="none" >this Paperclip agent.</text>
+<line x1="16" y1="664" x2="359" y2="664" />
+<text x="24" y="688" font-size="14" fill="#000" stroke="none" font-weight="600">Maya</text>
+<text x="24" y="710" font-size="12" fill="#666" stroke="none" >Support engineer · a new connection is</text>
+<text x="24" y="726" font-size="12" fill="#666" stroke="none" >required for another agent</text>
+<text x="351" y="760" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<text x="16" y="808" font-size="20" fill="#000" stroke="none" font-weight="700">Create the bot in Telegram</text>
+<text x="16" y="832" font-size="12" fill="#666" stroke="none" >BotFather owns bot creation and username</text>
+<text x="16" y="848" font-size="12" fill="#666" stroke="none" >uniqueness.</text>
+<line x1="16" y1="864" x2="359" y2="864" />
+<text x="24" y="888" font-size="14" fill="#000" stroke="none" font-weight="600">1. Open BotFather</text>
+<text x="24" y="910" font-size="12" fill="#666" stroke="none" >Send /newbot and follow Telegram's prompts.</text>
+<text x="351" y="960" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In Telegram</text>
+<line x1="24" y1="976" x2="351" y2="976" stroke="#e6e6e6"/>
+<text x="24" y="1000" font-size="14" fill="#000" stroke="none" font-weight="600">2. Name the bot</text>
+<text x="24" y="1022" font-size="12" fill="#666" stroke="none" >Use Maya and choose an available username</text>
+<text x="24" y="1038" font-size="12" fill="#666" stroke="none" >such as @maya_acme_bot.</text>
+<text x="351" y="1072" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In Telegram</text>
+<line x1="24" y1="1088" x2="351" y2="1088" stroke="#e6e6e6"/>
+<text x="24" y="1112" font-size="14" fill="#000" stroke="none" font-weight="600">3. Copy the token</text>
+<text x="24" y="1134" font-size="12" fill="#666" stroke="none" >Treat it like a password and paste it in</text>
+<text x="24" y="1150" font-size="12" fill="#666" stroke="none" >the field above.</text>
+<text x="351" y="1184" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Required</text>
+<text x="16" y="1232" font-size="20" fill="#000" stroke="none" font-weight="700">What Paperclip handles</text>
+<text x="16" y="1256" font-size="12" fill="#666" stroke="none" >The token is enough for Paperclip to configure</text>
+<text x="16" y="1272" font-size="12" fill="#666" stroke="none" >the rest.</text>
+<line x1="16" y1="1288" x2="359" y2="1288" />
+<text x="24" y="1312" font-size="14" fill="#000" stroke="none" font-weight="600">Identity</text>
+<text x="24" y="1334" font-size="12" fill="#666" stroke="none" >Call getMe and store the stable numeric bot</text>
+<text x="24" y="1350" font-size="12" fill="#666" stroke="none" >ID and username.</text>
+<text x="351" y="1384" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<line x1="24" y1="1400" x2="351" y2="1400" stroke="#e6e6e6"/>
+<text x="24" y="1424" font-size="14" fill="#000" stroke="none" font-weight="600">Delivery</text>
+<text x="24" y="1446" font-size="12" fill="#666" stroke="none" >Configure a verified webhook or the</text>
+<text x="24" y="1462" font-size="12" fill="#666" stroke="none" >deployment's relay; local developer polling…</text>
+<text x="351" y="1496" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<line x1="24" y1="1512" x2="351" y2="1512" stroke="#e6e6e6"/>
+<text x="24" y="1536" font-size="14" fill="#000" stroke="none" font-weight="600">Commands and capabilities</text>
+<text x="24" y="1558" font-size="12" fill="#666" stroke="none" >Register commands and use the maximum safe</text>
+<text x="24" y="1574" font-size="12" fill="#666" stroke="none" >Telegram feature set.</text>
+<text x="351" y="1608" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<rect x="16" y="1664" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1694" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open BotFather</text>
+<rect x="16" y="1728" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1758" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect bot</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="272" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="424" width="359" height="152" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="424" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="428" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="576" width="359" height="1048" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="576" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="580" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1656" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1656" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1660" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

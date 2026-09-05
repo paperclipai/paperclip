@@ -20,8 +20,10 @@ vi.mock("@/api/tools", () => ({
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
-    archiveConnection: (connectionId: string, options?: { confirmComposioChildren?: boolean }) =>
-      archiveConnectionMock(connectionId, options),
+    archiveConnection: (
+      connectionId: string,
+      options?: { confirmComposioChildren?: boolean },
+    ) => archiveConnectionMock(connectionId, options),
   },
 }));
 
@@ -128,8 +130,16 @@ describe("Connectors landing page", () => {
   beforeEach(() => {
     listGalleryMock.mockResolvedValue({
       apps: [
-        galleryEntry({ key: "notion", name: "Notion", tagline: "Read and update workspace content." }),
-        galleryEntry({ key: "jira", name: "Jira", tagline: "Track projects and issues." }),
+        galleryEntry({
+          key: "notion",
+          name: "Notion",
+          tagline: "Read and update workspace content.",
+        }),
+        galleryEntry({
+          key: "jira",
+          name: "Jira",
+          tagline: "Track projects and issues.",
+        }),
         galleryEntry({
           key: "gmail",
           name: "Gmail",
@@ -175,15 +185,21 @@ describe("Connectors landing page", () => {
     await renderBrowse();
 
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Connectors" }]);
-    expect(setBreadcrumbsMock).not.toHaveBeenCalledWith(expect.arrayContaining([
-      expect.objectContaining({ href: "/dashboard" }),
-    ]));
-    expect(container.querySelector("header")?.textContent).not.toContain("Connectors");
+    expect(setBreadcrumbsMock).not.toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ href: "/dashboard" })]),
+    );
+    expect(container.querySelector("header")?.textContent).not.toContain(
+      "Connectors",
+    );
     expect(
       container.querySelector('header input[aria-label="Search connectors"]'),
     ).toBeTruthy();
-    expect(container.querySelector("header")?.classList).toContain("justify-start");
-    expect(container.querySelector("header")?.classList).not.toContain("justify-end");
+    expect(container.querySelector("header")?.classList).toContain(
+      "justify-start",
+    );
+    expect(container.querySelector("header")?.classList).not.toContain(
+      "justify-end",
+    );
     expect(container.querySelector('[aria-label="Popular apps"]')).toBeNull();
     expect(container.querySelector('[aria-label="Connected apps"]')).toBeNull();
     expect(container.querySelector('[aria-label="All apps"]')).toBeNull();
@@ -193,10 +209,23 @@ describe("Connectors landing page", () => {
           '[aria-label="Connector list"] > [data-app-slug]',
         ),
       ).map((row) => row.dataset.appSlug),
-    ).toEqual(["gmail", "jira", "notion", "custom-mcp"]);
-    expect(container.querySelector('button[aria-label="Connect Jira"]')).toBeTruthy();
+    ).toEqual([
+      "github",
+      "gmail",
+      "jira",
+      "microsoft-teams",
+      "notion",
+      "slack",
+      "telegram",
+      "custom-mcp",
+    ]);
     expect(
-      container.querySelector<HTMLButtonElement>('button[aria-label="Unavailable Gmail"]')?.disabled,
+      container.querySelector('button[aria-label="Connect Jira"]'),
+    ).toBeTruthy();
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Unavailable Gmail"]',
+      )?.disabled,
     ).toBe(true);
     expect(container.textContent).toContain("Connect your own tool");
 
@@ -213,7 +242,9 @@ describe("Connectors landing page", () => {
 
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
-        .find((button) => button.textContent?.includes("Connect your own MCP server"))
+        .find((button) =>
+          button.textContent?.includes("Connect your own MCP server"),
+        )
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(navigateMock).toHaveBeenCalledWith("/apps/byo");
@@ -268,12 +299,18 @@ describe("Connectors landing page", () => {
     expect(notion.textContent).toContain("Connected by");
     expect(notion.textContent).toContain("Dotta");
     expect(notion.textContent).toContain("The saved sign-in expired.");
-    expect(notion.querySelector('button[aria-label="Add account Notion"]')).toBeTruthy();
     expect(
-      notion.querySelector('button[aria-label="Manage devinfoley@gmail.com connection"]'),
+      notion.querySelector('button[aria-label="Add account Notion"]'),
     ).toBeTruthy();
     expect(
-      notion.querySelector('button[aria-label="Manage ops@example.com connection"]'),
+      notion.querySelector(
+        'button[aria-label="Manage devinfoley@gmail.com connection"]',
+      ),
+    ).toBeTruthy();
+    expect(
+      notion.querySelector(
+        'button[aria-label="Manage ops@example.com connection"]',
+      ),
     ).toBeTruthy();
 
     await act(async () => {
@@ -287,7 +324,9 @@ describe("Connectors landing page", () => {
 
     await act(async () => {
       notion
-        .querySelector<HTMLButtonElement>('button[aria-label="Add account Notion"]')
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Add account Notion"]',
+        )
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(navigateMock).toHaveBeenCalledWith(
@@ -315,12 +354,15 @@ describe("Connectors landing page", () => {
     expect(menuTrigger).toBeTruthy();
 
     await act(async () => {
-      menuTrigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      menuTrigger?.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true }),
+      );
     });
     await flushReact();
 
-    const removeItem = Array.from(document.body.querySelectorAll<HTMLElement>("[role=\"menuitem\"]"))
-      .find((item) => item.textContent?.trim() === "Remove connection");
+    const removeItem = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent?.trim() === "Remove connection");
     expect(removeItem).toBeTruthy();
     expect(removeItem?.getAttribute("data-variant")).toBe("destructive");
 
@@ -334,9 +376,9 @@ describe("Connectors landing page", () => {
       "Remove devinfoley@gmail.com connection?",
     );
 
-    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Remove connection",
-    );
+    const confirmButton = Array.from(
+      document.body.querySelectorAll("button"),
+    ).find((button) => button.textContent?.trim() === "Remove connection");
     expect(confirmButton).toBeTruthy();
 
     await act(async () => {
@@ -438,8 +480,10 @@ describe("Connectors landing page", () => {
     );
     expect(container.textContent).toContain("Internal search");
     expect(container.textContent).toContain("search.internal.example");
-    expect(Array.from(container.querySelectorAll("button")).some(
-      (button) => button.textContent === "Try again",
-    )).toBe(true);
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (button) => button.textContent === "Try again",
+      ),
+    ).toBe(true);
   });
 });

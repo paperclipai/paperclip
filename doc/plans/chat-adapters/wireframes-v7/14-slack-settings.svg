@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="1280" height="800"/><g data-region="global-sidebar"><text x="24" y="40" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="72" r="6" fill="#e6e6e6"/><text x="56" y="80" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="120" r="6" fill="#e6e6e6"/><text x="56" y="128" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="168" r="6" fill="#e6e6e6"/><text x="56" y="176" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="216" r="6" fill="#e6e6e6"/><text x="56" y="224" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="264" r="6" fill="#e6e6e6"/><text x="56" y="272" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="312" r="6" fill="#e6e6e6"/><text x="56" y="320" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="360" r="6" fill="#e6e6e6"/><text x="56" y="368" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="408" r="6" fill="#e6e6e6"/><text x="56" y="416" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="456" r="6" fill="#e6e6e6"/><text x="56" y="464" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="504" r="6" fill="#e6e6e6"/><text x="56" y="512" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="8" y="536" width="224" height="40" rx="4" fill="#e6e6e6"/><circle cx="32" cy="552" r="6" fill="#e6e6e6"/><text x="56" y="560" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="600" r="6" fill="#e6e6e6"/><text x="56" y="608" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="744" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="768" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="800" /></g><g data-region="topbar"><line x1="240" y1="64" x2="1280" y2="64" /><text x="264" y="40" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Maya on Slack  ›  Settings</text><circle cx="1240" cy="32" r="16" fill="#e6e6e6"/></g><g data-region="connector-navigation"><text x="264" y="96" font-size="12" fill="#666" stroke="none" >‹  All connectors</text><circle cx="280" cy="136" r="16" fill="#e6e6e6"/><text x="312" y="144" font-size="14" fill="#000" stroke="none" font-weight="700">Maya on Slack</text><rect x="256" y="168" width="208" height="40" rx="4" fill="#e6e6e6"/><text x="280" y="192" font-size="14" fill="#000" stroke="none" font-weight="600">Settings</text>
+<text x="280" y="240" font-size="14" fill="#666" stroke="none" >Access</text>
+<text x="280" y="288" font-size="14" fill="#666" stroke="none" >Conversations</text>
+<text x="280" y="336" font-size="14" fill="#666" stroke="none" >Activity</text><line x1="480" y1="64" x2="480" y2="800" /></g><text x="512" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Slack settings</text>
+<text x="512" y="144" font-size="14" fill="#666" stroke="none" >Choose where people can start conversations with Maya.</text>
+<text x="512" y="200" font-size="20" fill="#000" stroke="none" font-weight="700">Allowed channels</text>
+<text x="512" y="224" font-size="12" fill="#666" stroke="none" >Maya responds only in the selected channels.</text>
+<line x1="512" y1="248" x2="1224" y2="248" />
+<rect x="528" y="272" width="24" height="24" rx="4" fill="#000"/>
+<text x="540" y="288" font-size="12" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="568" y="280" font-size="14" fill="#000" stroke="none" font-weight="600">#customer-support · Acme</text>
+<text x="568" y="304" font-size="12" fill="#666" stroke="none" >Maya is already a member</text>
+<line x1="528" y1="328" x2="1208" y2="328" stroke="#e6e6e6"/>
+<rect x="528" y="344" width="24" height="24" rx="4" fill="#000"/>
+<text x="540" y="360" font-size="12" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="568" y="352" font-size="14" fill="#000" stroke="none" font-weight="600">#incidents · Acme</text>
+<text x="568" y="376" font-size="12" fill="#666" stroke="none" >Maya is already a member</text>
+<rect x="1000" y="416" width="224" height="48" rx="4" fill="#fff"/><text x="1112" y="448" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Edit allowed channels</text>
+<text x="512" y="520" font-size="20" fill="#000" stroke="none" font-weight="700">Direct messages</text>
+<text x="512" y="544" font-size="12" fill="#666" stroke="none" >Control whether people can start work privately.</text>
+<line x1="512" y1="568" x2="1224" y2="568" />
+<text x="528" y="600" font-size="14" fill="#000" stroke="none" font-weight="600">Allow direct messages</text>
+<text x="528" y="624" font-size="12" fill="#666" stroke="none" >A person can start a task by messaging Maya directly.</text>
+<rect x="1160" y="596" width="48" height="24" rx="4" fill="#000"/><circle cx="1192" cy="608" r="8" fill="#fff"/>
+<rect x="1016" y="704" width="208" height="48" rx="4" fill="#000"/><text x="1120" y="736" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Save changes</text><g data-region="annotations"><rect x="256" y="80" width="216" height="304" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="80" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="84" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="504" y="168" width="728" height="320" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="504" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="504" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="504" y="488" width="728" height="184" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="504" cy="488" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="504" y="492" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="1000" y="688" width="232" height="72" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="1000" cy="688" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="1000" y="692" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

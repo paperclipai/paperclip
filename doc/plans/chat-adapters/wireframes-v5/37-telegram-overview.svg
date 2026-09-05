@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1472" viewBox="0 0 1280 1472" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="1280" height="1472"/><g><text x="24" y="38" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="68" r="6" fill="#e6e6e6"/><text x="52" y="73" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="114" r="6" fill="#e6e6e6"/><text x="52" y="119" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="160" r="6" fill="#e6e6e6"/><text x="52" y="165" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="206" r="6" fill="#e6e6e6"/><text x="52" y="211" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="252" r="6" fill="#e6e6e6"/><text x="52" y="257" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="298" r="6" fill="#e6e6e6"/><text x="52" y="303" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="344" r="6" fill="#e6e6e6"/><text x="52" y="349" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="390" r="6" fill="#e6e6e6"/><text x="52" y="395" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="436" r="6" fill="#e6e6e6"/><text x="52" y="441" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="482" r="6" fill="#e6e6e6"/><text x="52" y="487" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="12" y="510" width="216" height="38" rx="6" fill="#e6e6e6"/><circle cx="32" cy="528" r="6" fill="#e6e6e6"/><text x="52" y="533" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="574" r="6" fill="#e6e6e6"/><text x="52" y="579" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="1416" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="1444" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="1472" /></g><g><line x1="240" y1="60" x2="1280" y2="60" /><text x="264" y="36" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Maya on Telegram  ›  Overview</text><circle cx="1240" cy="30" r="16" fill="#e6e6e6"/></g><g><text x="264" y="94" font-size="12" fill="#666" stroke="none" >‹  All connectors</text><circle cx="280" cy="132" r="18" fill="#e6e6e6"/><text x="308" y="138" font-size="14" fill="#000" stroke="none" font-weight="700">Maya on Telegram</text><rect x="252" y="168" width="216" height="40" rx="6" fill="#e6e6e6"/><text x="280" y="194" font-size="14" fill="#000" stroke="none" font-weight="600">Overview</text>
+<text x="280" y="242" font-size="14" fill="#666" stroke="none" >Settings</text>
+<text x="280" y="290" font-size="14" fill="#666" stroke="none" >Access</text>
+<text x="280" y="338" font-size="14" fill="#666" stroke="none" >Conversations</text>
+<text x="280" y="386" font-size="14" fill="#666" stroke="none" >Activity</text><line x1="480" y1="60" x2="480" y2="1472" /></g><text x="504" y="108" font-size="28" fill="#000" stroke="none" font-weight="700">Telegram overview</text><text x="504" y="138" font-size="14" fill="#666" stroke="none" >Identity, installation health, automatic capabilities, and connector lifecycle.</text><text x="504" y="198" font-size="20" fill="#000" stroke="none" font-weight="700">Connection</text>
+<text x="504" y="223" font-size="12" fill="#666" stroke="none" >One BotFather identity represents Maya in the allowed chats.</text>
+<line x1="504" y1="246" x2="1224" y2="246" />
+<text x="520" y="272" font-size="14" fill="#000" stroke="none" font-weight="600">Status</text>
+<text x="520" y="294" font-size="12" fill="#666" stroke="none" >Active · last update 1 minute ago</text>
+<rect x="1032" y="258" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="288" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Healthy</text>
+<line x1="520" y1="318" x2="1208" y2="318" stroke="#e6e6e6"/>
+<text x="520" y="344" font-size="14" fill="#000" stroke="none" font-weight="600">Agent</text>
+<text x="520" y="366" font-size="12" fill="#666" stroke="none" >Maya · Support engineer</text>
+<rect x="1032" y="330" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="360" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open agent</text>
+<line x1="520" y1="390" x2="1208" y2="390" stroke="#e6e6e6"/>
+<text x="520" y="416" font-size="14" fill="#000" stroke="none" font-weight="600">Telegram identity</text>
+<text x="520" y="438" font-size="12" fill="#666" stroke="none" >@maya_acme_bot</text>
+<rect x="1032" y="402" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="432" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Telegram</text>
+<text x="504" y="492" font-size="20" fill="#000" stroke="none" font-weight="700">Bot and delivery</text>
+<text x="504" y="517" font-size="12" fill="#666" stroke="none" >Webhook state and BotFather policy are monitored separately.</text>
+<line x1="504" y1="540" x2="1224" y2="540" />
+<text x="520" y="566" font-size="14" fill="#000" stroke="none" font-weight="600">Reach</text>
+<text x="520" y="588" font-size="12" fill="#666" stroke="none" >Operations group, Support forum / topic 381, DMs</text>
+<rect x="1032" y="552" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="582" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">3 scopes</text>
+<line x1="520" y1="612" x2="1208" y2="612" stroke="#e6e6e6"/>
+<text x="520" y="638" font-size="14" fill="#000" stroke="none" font-weight="600">Ingress</text>
+<text x="520" y="660" font-size="12" fill="#666" stroke="none" >Verified webhook · zero pending updates</text>
+<rect x="1032" y="624" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="654" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Healthy</text>
+<line x1="520" y1="684" x2="1208" y2="684" stroke="#e6e6e6"/>
+<text x="520" y="710" font-size="14" fill="#000" stroke="none" font-weight="600">Bot policy</text>
+<text x="520" y="732" font-size="12" fill="#666" stroke="none" >Privacy on · may join groups</text>
+<rect x="1032" y="696" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="726" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Current</text>
+<text x="504" y="786" font-size="20" fill="#000" stroke="none" font-weight="700">Available automatically</text>
+<text x="504" y="811" font-size="12" fill="#666" stroke="none" >Paperclip uses every safe Telegram capability valid for the current chat type.</text>
+<line x1="504" y1="834" x2="1224" y2="834" />
+<text x="520" y="860" font-size="14" fill="#000" stroke="none" font-weight="600">Conversation</text>
+<text x="520" y="882" font-size="12" fill="#666" stroke="none" >DM/group active task plus stable forum-topic binding.</text>
+<rect x="1032" y="846" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="876" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Included</text>
+<line x1="520" y1="906" x2="1208" y2="906" stroke="#e6e6e6"/>
+<text x="520" y="932" font-size="14" fill="#000" stroke="none" font-weight="600">Output</text>
+<text x="520" y="954" font-size="12" fill="#666" stroke="none" >Typing or reaction receipt, throttled post/edit, private-chat draft</text>
+<text x="520" y="970" font-size="12" fill="#666" stroke="none" >previews when available.</text>
+<rect x="1032" y="918" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="948" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Included</text>
+<line x1="520" y1="978" x2="1208" y2="978" stroke="#e6e6e6"/>
+<text x="520" y="1004" font-size="14" fill="#000" stroke="none" font-weight="600">Rich interaction</text>
+<text x="520" y="1026" font-size="12" fill="#666" stroke="none" >Inline callback and URL buttons, Markdown rendering, documents and media</text>
+<text x="520" y="1042" font-size="12" fill="#666" stroke="none" >groups.</text>
+<rect x="1032" y="990" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1020" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Included</text>
+<line x1="520" y1="1050" x2="1208" y2="1050" stroke="#e6e6e6"/>
+<text x="520" y="1076" font-size="14" fill="#000" stroke="none" font-weight="600">Fallback</text>
+<text x="520" y="1098" font-size="12" fill="#666" stroke="none" >Unsupported ephemeral, modal, or select interaction becomes reply or DM</text>
+<text x="520" y="1114" font-size="12" fill="#666" stroke="none" >plus link.</text>
+<rect x="1032" y="1062" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1092" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Automatic</text>
+<text x="504" y="1152" font-size="20" fill="#000" stroke="none" font-weight="700">Lifecycle</text>
+<text x="504" y="1177" font-size="12" fill="#666" stroke="none" >Operate the BotFather token and connector without changing task bindings.</text>
+<line x1="504" y1="1200" x2="1224" y2="1200" />
+<text x="520" y="1226" font-size="14" fill="#000" stroke="none" font-weight="600">Connection test</text>
+<text x="520" y="1248" font-size="12" fill="#666" stroke="none" >Verify bot, delivery mode, privacy, membership, and response.</text>
+<rect x="1032" y="1212" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1242" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Test</text>
+<line x1="520" y1="1272" x2="1208" y2="1272" stroke="#e6e6e6"/>
+<text x="520" y="1298" font-size="14" fill="#000" stroke="none" font-weight="600">Maintenance</text>
+<text x="520" y="1320" font-size="12" fill="#666" stroke="none" >Pause, rotate the token, repair membership, or remove the endpoint.</text>
+<rect x="1032" y="1284" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1314" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Manage</text><g data-region="annotations"><rect x="496" y="168" width="736" height="302" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="496" y="462" width="736" height="302" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="462" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="466" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="496" y="756" width="736" height="374" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="756" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="760" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="496" y="1122" width="736" height="230" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="1122" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="1126" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

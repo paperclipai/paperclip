@@ -241,6 +241,20 @@ import {
   claudeSetupTokenCompletionResponseSchema,
   claudeOAuthTokenStatusResponseSchema,
   startAdapterAuthSessionRequestSchema,
+  // Chat channels
+  chatDeliveryStateSchema,
+  chatEndpointStatusSchema,
+  chatIdentityLinkStatusSchema,
+  chatProviderSchema,
+  chatPublicationStateSchema,
+  chatResourceAvailabilitySchema,
+  configureChatEndpointSchema,
+  confirmChatIdentityLinkSchema,
+  createChatEndpointSchema,
+  createChatIdentityLinkIntentSchema,
+  publishChatCommentSchema,
+  replaceChatEndpointResourcesSchema,
+  updateChatEndpointSchema,
 } from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -651,6 +665,215 @@ const refreshExternalObjectsBodySchema = z.object({
   objectIds: z.array(z.string().guid()).max(50).optional(),
 }).strict();
 
+// Chat-channel response contracts live here until the shared package exposes
+// response validators. Request bodies and enum vocabularies deliberately reuse
+// the shared validators used by the handlers, so the public API cannot drift
+// from provider, lifecycle, or mutation inputs.
+const chatAdapterCapabilitiesResponseSchema = z.object({
+  threads: z.boolean(),
+  directMessages: z.boolean(),
+  nativeStreaming: z.boolean(),
+  messageEdits: z.boolean(),
+  messageDeletes: z.boolean(),
+  reactions: z.boolean(),
+  files: z.boolean(),
+  cards: z.boolean(),
+  actions: z.boolean(),
+  modals: z.boolean(),
+  slashCommands: z.boolean(),
+  ephemeralMessages: z.boolean(),
+  proactiveDirectMessages: z.boolean(),
+}).strict();
+
+const chatEndpointSetupResponseSchema = z.object({
+  step: z.enum(["choose_agent", "provider_setup", "test", "complete"]),
+  testStartedAt: z.string().datetime().nullable().optional(),
+  authorizationUrl: z.string().nullable().optional(),
+  providerUrl: z.string().nullable().optional(),
+  command: z.string().nullable().optional(),
+  webhookUrl: z.string().nullable().optional(),
+  messagingEndpoint: z.string().nullable().optional(),
+}).strict();
+
+const chatEndpointResponseSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  connectionId: z.string().uuid(),
+  provider: chatProviderSchema,
+  publicId: z.string(),
+  status: chatEndpointStatusSchema,
+  deploymentMode: z.enum(["direct", "relay"]),
+  assignedAgentId: z.string().uuid(),
+  assignedAgentName: z.string().nullable(),
+  sponsorUserId: z.string().nullable(),
+  providerAccountId: z.string().nullable(),
+  providerAccountLabel: z.string().nullable(),
+  botExternalId: z.string().nullable(),
+  botUsername: z.string().nullable(),
+  botLabel: z.string().nullable(),
+  botAvatarUrl: z.string().nullable(),
+  allowDirectMessages: z.boolean(),
+  allowGroupChats: z.boolean(),
+  allowUnlinkedPeople: z.boolean(),
+  replyMode: z.literal("subscribed"),
+  capabilities: chatAdapterCapabilitiesResponseSchema,
+  setup: chatEndpointSetupResponseSchema,
+  healthMessage: z.string().nullable(),
+  lastError: z.string().nullable(),
+  lastActivityAt: z.string().datetime().nullable(),
+  lastPublicationAt: z.string().datetime().nullable(),
+  activatedAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const chatEndpointResourceResponseSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  endpointId: z.string().uuid(),
+  type: z.string(),
+  providerResourceId: z.string(),
+  parentProviderResourceId: z.string().nullable(),
+  label: z.string(),
+  detail: z.string().nullable(),
+  providerUrl: z.string().nullable(),
+  availability: chatResourceAvailabilitySchema,
+  enabled: z.boolean(),
+  metadata: z.record(z.string(), z.unknown()),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const chatPrincipalLinkResponseSchema = z.object({
+  id: z.string().uuid(),
+  principalId: z.string().uuid(),
+  externalLabel: z.string(),
+  externalDetail: z.string(),
+  paperclipUserId: z.string().nullable(),
+  paperclipUserLabel: z.string().nullable(),
+  status: chatIdentityLinkStatusSchema,
+}).strict();
+
+const chatIdentityLinkIntentResponseSchema = z.object({
+  confirmationUrl: z.string(),
+  expiresAt: z.string().datetime(),
+}).strict();
+
+const chatIdentityLinkPreviewResponseSchema = z.object({
+  endpointId: z.string().uuid(),
+  companyId: z.string().uuid(),
+  companyName: z.string(),
+  companyPrefix: z.string(),
+  provider: chatProviderSchema,
+  providerAccountLabel: z.string().nullable(),
+  botLabel: z.string().nullable(),
+  externalLabel: z.string(),
+  externalDetail: z.string(),
+  expiresAt: z.string().datetime(),
+}).strict();
+
+const chatIdentityLinkConfirmationResponseSchema = z.object({
+  ok: z.literal(true),
+  endpointId: z.string().uuid(),
+}).strict();
+
+const chatConversationResponseSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  endpointId: z.string().uuid(),
+  resourceId: z.string().uuid().nullable(),
+  issueId: z.string().uuid(),
+  issueIdentifier: z.string().nullable(),
+  issueTitle: z.string().nullable(),
+  externalConversationId: z.string(),
+  externalThreadId: z.string(),
+  sessionGeneration: z.number().int().positive(),
+  externalLabel: z.string(),
+  externalUrl: z.string().nullable(),
+  isDirectMessage: z.boolean(),
+  state: z.enum(["active", "waiting", "completed", "unavailable", "endpoint_removed"]),
+  lastPublicationStatus: chatPublicationStateSchema.nullable(),
+  lastActivityAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const chatActivityResponseSchema = z.object({
+  id: z.string().uuid(),
+  kind: z.enum(["delivery", "publication", "health", "repair"]),
+  status: z.union([chatDeliveryStateSchema, chatPublicationStateSchema, z.string()]),
+  summary: z.string(),
+  detail: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  replayable: z.boolean(),
+}).strict();
+
+const safeExternalChatCardResponseSchema = z.object({
+  schema: z.literal("paperclip.chat.card.v1"),
+  kind: z.enum(["status", "question", "confirmation"]),
+  title: z.string(),
+  body: z.string().optional(),
+  actions: z.array(z.union([
+    z.object({
+      type: z.literal("callback"),
+      actionId: z.string(),
+      label: z.string(),
+      style: z.enum(["default", "primary", "danger"]).optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("link"),
+      label: z.string(),
+      url: z.string().url(),
+    }).strict(),
+  ])).optional(),
+}).strict();
+
+const safeChatPublicationPayloadResponseSchema = z.object({
+  text: z.string(),
+  attachmentIds: z.array(z.string().uuid()).optional(),
+  interactionId: z.string().uuid().optional(),
+  card: safeExternalChatCardResponseSchema.optional(),
+  progressState: z.enum([
+    "queued",
+    "working",
+    "waiting_for_input",
+    "approval_needed",
+    "completed",
+    "failed",
+  ]).optional(),
+}).strict();
+
+const chatPublicationResponseSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  endpointId: z.string().uuid(),
+  conversationId: z.string().uuid(),
+  issueId: z.string().uuid(),
+  commentId: z.string().uuid().nullable(),
+  idempotencyKey: z.string(),
+  payload: safeChatPublicationPayloadResponseSchema,
+  state: chatPublicationStateSchema,
+  providerMessageId: z.string().nullable(),
+  providerUrl: z.string().nullable(),
+  attempts: z.number().int().nonnegative(),
+  redactedError: z.string().nullable(),
+  nextAttemptAt: z.string().datetime().nullable(),
+  publishedAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const externalChannelBindingResponseSchema = z.object({
+  endpointId: z.string().uuid(),
+  provider: chatProviderSchema,
+  botLabel: z.string().nullable(),
+  externalLabel: z.string(),
+  externalUrl: z.string().nullable(),
+  conversationId: z.string().uuid(),
+  publicationState: chatPublicationStateSchema.nullable(),
+  assignedAgentLocked: z.literal(true),
+}).strict();
+
 // The route enforces the shared strict request schema. The route spine
 // injects the adapter type from the path, so the client body never carries
 // it; derive the documented body from the shared schema and omit that field,
@@ -1005,6 +1228,28 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke",
   "POST /api/tool-gateway/action-requests/{id}/approve",
   "POST /api/tool-gateway/action-requests/{id}/decline",
+  // Chat endpoints expose provider credentials, identity mappings, access
+  // policy, and replay controls. Every mounted handler asserts a board actor;
+  // keep the generated security contract equally restrictive.
+  "GET /api/companies/{companyId}/chat-endpoints",
+  "POST /api/companies/{companyId}/chat-endpoints",
+  "GET /api/chat-endpoints/{endpointId}",
+  "PATCH /api/chat-endpoints/{endpointId}",
+  "POST /api/chat-endpoints/{endpointId}/setup",
+  "POST /api/chat-endpoints/{endpointId}/test",
+  "GET /api/chat-endpoints/{endpointId}/resources",
+  "PUT /api/chat-endpoints/{endpointId}/resources",
+  "GET /api/chat-endpoints/{endpointId}/principals",
+  "POST /api/chat-endpoints/{endpointId}/principals/{principalId}/link-intent",
+  "DELETE /api/chat-endpoints/{endpointId}/principals/{principalId}/link",
+  "POST /api/chat-identity-links/confirm",
+  "GET /api/chat-identity-links/preview",
+  "GET /api/chat-endpoints/{endpointId}/conversations",
+  "GET /api/chat-endpoints/{endpointId}/activity",
+  "POST /api/chat-endpoints/{endpointId}/deliveries/{deliveryId}/replay",
+  "POST /api/chat-endpoints/{endpointId}/publications/{publicationId}/replay",
+  "POST /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications",
+  "GET /api/issues/{issueId}/chat-binding",
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
@@ -1488,6 +1733,372 @@ registry.registerPath({
   summary: "Apply company import",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+// ─── Chat Channels ─────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/chat-endpoints",
+  tags: ["chat-channels"],
+  summary: "List chat endpoints in a company",
+  description:
+    "Lists non-archived provider bot endpoints visible to the current board user. Endpoints are company-scoped.",
+  request: { params: z.object({ companyId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(z.array(chatEndpointResponseSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/chat-endpoints",
+  tags: ["chat-channels"],
+  summary: "Create a chat endpoint",
+  description:
+    "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls.",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(createChatEndpointSchema),
+  },
+  responses: {
+    201: r.ok(chatEndpointResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/chat-endpoints/{endpointId}",
+  tags: ["chat-channels"],
+  summary: "Get a chat endpoint",
+  description:
+    "Returns a chat endpoint only when it belongs to a company accessible to the current board user; an inaccessible endpoint is reported as not found.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(chatEndpointResponseSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/chat-endpoints/{endpointId}",
+  tags: ["chat-channels"],
+  summary: "Update chat endpoint access behavior",
+  description:
+    "Updates the small set of user-configurable access toggles. Provider identity, assigned agent, delivery mode, and maximal provider capabilities are not mutable here.",
+  request: {
+    params: z.object({ endpointId: z.string().uuid() }),
+    body: jsonBody(updateChatEndpointSchema),
+  },
+  responses: {
+    200: r.ok(chatEndpointResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/setup",
+  tags: ["chat-channels"],
+  summary: "Configure or change chat endpoint lifecycle state",
+  description:
+    "Runs a setup or lifecycle action. `configure` and `reconnect` accept provider credentials (Slack: `botToken`, `signingSecret`; GitHub: `appId`, `privateKey`, `webhookSecret`; Microsoft Teams: `clientId`, `tenantId`, `clientSecret`; Telegram: `botToken`). Credentials are stored as Paperclip secret references and are never returned. Other actions do not require credentials.",
+  request: {
+    params: z.object({ endpointId: z.string().uuid() }),
+    body: jsonBody(configureChatEndpointSchema),
+  },
+  responses: {
+    200: r.ok(chatEndpointResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/test",
+  tags: ["chat-channels"],
+  summary: "Complete a chat endpoint setup test",
+  description:
+    "Activates a verifying endpoint only after Paperclip has received a real provider event since the server-issued setup test boundary.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(chatEndpointResponseSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/chat-endpoints/{endpointId}/resources",
+  tags: ["chat-channels"],
+  summary: "List destinations discovered for a chat endpoint",
+  description:
+    "Lists provider destinations such as Slack channels, Teams channels, GitHub repositories, and Telegram chats. Direct-message resources are intentionally omitted.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(z.array(chatEndpointResourceResponseSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/chat-endpoints/{endpointId}/resources",
+  tags: ["chat-channels"],
+  summary: "Replace chat endpoint destination access",
+  description:
+    "Enables or disables known provider destinations. Every resource must belong to the endpoint, and an unavailable or removed provider destination cannot be enabled.",
+  request: {
+    params: z.object({ endpointId: z.string().uuid() }),
+    body: jsonBody(replaceChatEndpointResourcesSchema),
+  },
+  responses: {
+    200: r.ok(z.array(chatEndpointResourceResponseSchema)),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/chat-endpoints/{endpointId}/principals",
+  tags: ["chat-channels"],
+  summary: "List external identities seen by a chat endpoint",
+  description:
+    "Lists provider identities and their explicit Paperclip identity-link status for this endpoint's provider account.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(z.array(chatPrincipalLinkResponseSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/principals/{principalId}/link-intent",
+  tags: ["chat-channels"],
+  summary: "Create an external identity-link intent",
+  description:
+    "Creates a short-lived confirmation URL for a human external identity belonging to this endpoint. The signed-in Paperclip user must confirm the link separately.",
+  request: {
+    params: z.object({
+      endpointId: z.string().uuid(),
+      principalId: z.string().uuid(),
+    }),
+    body: jsonBody(createChatIdentityLinkIntentSchema),
+  },
+  responses: {
+    201: r.ok(chatIdentityLinkIntentResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/chat-endpoints/{endpointId}/principals/{principalId}/link",
+  tags: ["chat-channels"],
+  summary: "Revoke an external identity link",
+  description:
+    "Revokes the endpoint-scoped link for the external identity. An inaccessible endpoint or missing link is reported as not found.",
+  request: {
+    params: z.object({
+      endpointId: z.string().uuid(),
+      principalId: z.string().uuid(),
+    }),
+  },
+  responses: {
+    204: r.noContent,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/chat-identity-links/preview",
+  tags: ["chat-channels"],
+  summary: "Preview an external identity-link intent",
+  description:
+    "Returns the company and provider identity that a valid, unexpired confirmation token would link. Company membership is checked before returning the preview.",
+  request: {
+    query: z.object({ token: z.string().min(32).max(4096) }).strict(),
+  },
+  responses: {
+    200: r.ok(chatIdentityLinkPreviewResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-identity-links/confirm",
+  tags: ["chat-channels"],
+  summary: "Confirm an external identity link",
+  description:
+    "Links the token's external identity to the currently signed-in Paperclip user after rechecking active company membership and canonical-link conflicts.",
+  request: { body: jsonBody(confirmChatIdentityLinkSchema) },
+  responses: {
+    200: r.ok(chatIdentityLinkConfirmationResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/chat-endpoints/{endpointId}/conversations",
+  tags: ["chat-channels"],
+  summary: "List external conversations and bound tasks",
+  description:
+    "Lists each durable provider conversation-to-Paperclip-task binding for the endpoint, including provider and task links and the latest publication state.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(z.array(chatConversationResponseSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/chat-endpoints/{endpointId}/activity",
+  tags: ["chat-channels"],
+  summary: "List chat endpoint delivery and publication activity",
+  description:
+    "Returns the endpoint's recent redacted inbound-delivery and outbound-publication ledger, including whether a failed item can be replayed.",
+  request: { params: z.object({ endpointId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(z.array(chatActivityResponseSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/deliveries/{deliveryId}/replay",
+  tags: ["chat-channels"],
+  summary: "Replay a failed inbound chat delivery",
+  description:
+    "Retries a failed delivery only when it is already bound to a task. Concurrent or ineligible replay attempts return a conflict.",
+  request: {
+    params: z.object({
+      endpointId: z.string().uuid(),
+      deliveryId: z.string().uuid(),
+    }),
+  },
+  responses: {
+    204: r.noContent,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/publications/{publicationId}/replay",
+  tags: ["chat-channels"],
+  summary: "Replay a failed or unconfirmed chat publication",
+  description:
+    "Retries only a publication in `failed` or `delivery_unknown` state. Concurrent or ineligible replay attempts return a conflict.",
+  request: {
+    params: z.object({
+      endpointId: z.string().uuid(),
+      publicationId: z.string().uuid(),
+    }),
+  },
+  responses: {
+    204: r.noContent,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications",
+  tags: ["chat-channels"],
+  summary: "Publish a Paperclip task comment to an external conversation",
+  description:
+    "Explicitly projects an eligible comment from the bound Paperclip task into the provider conversation. The endpoint, conversation, and comment must belong to the same binding.",
+  request: {
+    params: z.object({
+      endpointId: z.string().uuid(),
+      conversationId: z.string().uuid(),
+    }),
+    body: jsonBody(publishChatCommentSchema),
+  },
+  responses: {
+    201: r.ok(chatPublicationResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{issueId}/chat-binding",
+  tags: ["chat-channels", "issues"],
+  summary: "Get a task's external chat binding",
+  description:
+    "Returns the task's current external conversation binding, or `null` when it has none. A binding in another company is reported as not found.",
+  request: { params: z.object({ issueId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(externalChannelBindingResponseSchema.nullable()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 // ─── Teams Catalog ──────────────────────────────────────────────────────────

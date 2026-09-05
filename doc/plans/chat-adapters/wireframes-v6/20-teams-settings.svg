@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1322" viewBox="0 0 1280 1322" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="1280" height="1322"/><g><text x="24" y="38" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="68" r="6" fill="#e6e6e6"/><text x="52" y="73" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="114" r="6" fill="#e6e6e6"/><text x="52" y="119" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="160" r="6" fill="#e6e6e6"/><text x="52" y="165" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="206" r="6" fill="#e6e6e6"/><text x="52" y="211" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="252" r="6" fill="#e6e6e6"/><text x="52" y="257" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="298" r="6" fill="#e6e6e6"/><text x="52" y="303" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="344" r="6" fill="#e6e6e6"/><text x="52" y="349" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="390" r="6" fill="#e6e6e6"/><text x="52" y="395" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="436" r="6" fill="#e6e6e6"/><text x="52" y="441" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="482" r="6" fill="#e6e6e6"/><text x="52" y="487" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="12" y="510" width="216" height="38" rx="6" fill="#e6e6e6"/><circle cx="32" cy="528" r="6" fill="#e6e6e6"/><text x="52" y="533" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="574" r="6" fill="#e6e6e6"/><text x="52" y="579" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="1266" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="1294" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="1322" /></g><g><line x1="240" y1="60" x2="1280" y2="60" /><text x="264" y="36" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Maya on Microsoft Teams  ›  Settings</text><circle cx="1240" cy="30" r="16" fill="#e6e6e6"/></g><g><text x="264" y="94" font-size="12" fill="#666" stroke="none" >‹  All connectors</text><circle cx="280" cy="132" r="18" fill="#e6e6e6"/><text x="308" y="138" font-size="14" fill="#000" stroke="none" font-weight="700">Maya on Teams</text><text x="280" y="194" font-size="14" fill="#666" stroke="none" >Overview</text>
+<rect x="252" y="216" width="216" height="40" rx="6" fill="#e6e6e6"/><text x="280" y="242" font-size="14" fill="#000" stroke="none" font-weight="600">Settings</text>
+<text x="280" y="290" font-size="14" fill="#666" stroke="none" >Access</text>
+<text x="280" y="338" font-size="14" fill="#666" stroke="none" >Conversations</text>
+<text x="280" y="386" font-size="14" fill="#666" stroke="none" >Activity</text><line x1="480" y1="60" x2="480" y2="1322" /></g><text x="504" y="108" font-size="28" fill="#000" stroke="none" font-weight="700">Microsoft Teams settings</text><text x="504" y="138" font-size="14" fill="#666" stroke="none" >Only scope, task boundaries, access, and necessary provider operations.</text><text x="504" y="198" font-size="20" fill="#000" stroke="none" font-weight="700">Tenant and conversation reach</text>
+<text x="504" y="223" font-size="12" fill="#666" stroke="none" >Paperclip narrows the scopes where the Teams app is installed.</text>
+<line x1="504" y1="246" x2="1224" y2="246" />
+<text x="520" y="272" font-size="14" fill="#000" stroke="none" font-weight="600">Tenant</text>
+<text x="520" y="294" font-size="12" fill="#666" stroke="none" >Acme · 0f3c••••</text>
+<rect x="1032" y="258" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="288" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change install</text>
+<line x1="520" y1="318" x2="1208" y2="318" stroke="#e6e6e6"/>
+<text x="520" y="344" font-size="14" fill="#000" stroke="none" font-weight="600">Teams and channels</text>
+<text x="520" y="366" font-size="12" fill="#666" stroke="none" >Support / General</text>
+<rect x="1032" y="330" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="360" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">1 channel</text>
+<line x1="520" y1="390" x2="1208" y2="390" stroke="#e6e6e6"/>
+<text x="520" y="416" font-size="14" fill="#000" stroke="none" font-weight="600">Personal scope</text>
+<text x="520" y="438" font-size="12" fill="#666" stroke="none" >Allow installed users to start work in a DM.</text>
+<rect x="1032" y="402" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="432" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Allowed</text>
+<line x1="520" y1="462" x2="1208" y2="462" stroke="#e6e6e6"/>
+<text x="520" y="488" font-size="14" fill="#000" stroke="none" font-weight="600">Group chats</text>
+<text x="520" y="510" font-size="12" fill="#666" stroke="none" >Allow installed group chats to start work.</text>
+<rect x="1032" y="474" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="504" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Allowed</text>
+<text x="504" y="564" font-size="20" fill="#000" stroke="none" font-weight="700">Task boundaries</text>
+<text x="504" y="589" font-size="12" fill="#666" stroke="none" >The Teams conversation type determines the durable issue boundary.</text>
+<line x1="504" y1="612" x2="1224" y2="612" />
+<text x="520" y="638" font-size="14" fill="#000" stroke="none" font-weight="600">Channel posts</text>
+<text x="520" y="660" font-size="12" fill="#666" stroke="none" >A root mention and the replies beneath that post map to one issue.</text>
+<rect x="1032" y="624" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="654" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Post thread</text>
+<line x1="520" y1="684" x2="1208" y2="684" stroke="#e6e6e6"/>
+<text x="520" y="710" font-size="14" fill="#000" stroke="none" font-weight="600">DM and group chat</text>
+<text x="520" y="732" font-size="12" fill="#666" stroke="none" >One active issue until a participant chooses New task.</text>
+<rect x="1032" y="696" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="726" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Active task</text>
+<line x1="520" y1="756" x2="1208" y2="756" stroke="#e6e6e6"/>
+<text x="520" y="782" font-size="14" fill="#000" stroke="none" font-weight="600">Unmentioned replies</text>
+<text x="520" y="804" font-size="12" fill="#666" stroke="none" >Consume when the installed manifest permits; otherwise ask for another</text>
+<text x="520" y="820" font-size="12" fill="#666" stroke="none" >mention.</text>
+<rect x="1032" y="768" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="798" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Detect</text>
+<text x="504" y="858" font-size="20" fill="#000" stroke="none" font-weight="700">Delivery and Microsoft consent</text>
+<text x="504" y="883" font-size="12" fill="#666" stroke="none" >Consent changes what Microsoft delivers; it does not switch rendering features on and off.</text>
+<line x1="504" y1="906" x2="1224" y2="906" />
+<text x="520" y="932" font-size="14" fill="#000" stroke="none" font-weight="600">Bot identity</text>
+<text x="520" y="954" font-size="12" fill="#666" stroke="none" >Federated workload identity · single tenant</text>
+<rect x="1032" y="918" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="948" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Manage</text>
+<line x1="520" y1="978" x2="1208" y2="978" stroke="#e6e6e6"/>
+<text x="520" y="1004" font-size="14" fill="#000" stroke="none" font-weight="600">Resource-specific consent</text>
+<text x="520" y="1026" font-size="12" fill="#666" stroke="none" >Optional all-message delivery for one installed team or chat.</text>
+<rect x="1032" y="990" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1020" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Not granted</text>
+<line x1="520" y1="1050" x2="1208" y2="1050" stroke="#e6e6e6"/>
+<text x="520" y="1076" font-size="14" fill="#000" stroke="none" font-weight="600">Graph directory/history</text>
+<text x="520" y="1098" font-size="12" fill="#666" stroke="none" >Privileged admin consent remains separate from basic live chat.</text>
+<rect x="1032" y="1062" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1092" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Not granted</text>
+<line x1="520" y1="1122" x2="1208" y2="1122" stroke="#e6e6e6"/>
+<text x="520" y="1148" font-size="14" fill="#000" stroke="none" font-weight="600">Installation drift</text>
+<text x="520" y="1170" font-size="12" fill="#666" stroke="none" >Pause an affected scope after package removal or consent revocation.</text>
+<rect x="1032" y="1134" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1164" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Automatic</text><rect x="1048" y="1250" width="176" height="48" rx="6" fill="#000"/><text x="1136" y="1280" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Save changes</text><g data-region="annotations"><rect x="496" y="168" width="736" height="374" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="496" y="534" width="736" height="302" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="534" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="538" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="496" y="828" width="736" height="374" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="828" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="832" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>

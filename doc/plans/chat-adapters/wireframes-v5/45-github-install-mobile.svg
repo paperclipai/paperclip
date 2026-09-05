@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1776" viewBox="0 0 375 1776" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1776"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  GitHub</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="264" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#000"/>
+<text x="32" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" >Create GitHub App</text>
+<circle cx="32" cy="208" r="16" fill="#fff"/>
+<text x="32" y="213" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="213" font-size="14" fill="#000" stroke="none" font-weight="700">Choose repositories</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="360" font-size="20" fill="#000" stroke="none" font-weight="700">Choose GitHub repositories</text>
+<text x="16" y="392" font-size="12" fill="#666" stroke="none" >Install Maya on an organization or account,</text>
+<text x="16" y="408" font-size="12" fill="#666" stroke="none" >then choose all or selected repositories in</text>
+<text x="16" y="424" font-size="12" fill="#666" stroke="none" >GitHub.</text>
+<text x="16" y="472" font-size="20" fill="#000" stroke="none" font-weight="700">App created</text>
+<text x="16" y="496" font-size="12" fill="#666" stroke="none" >GitHub returned the dedicated App</text>
+<text x="16" y="512" font-size="12" fill="#666" stroke="none" >configuration successfully.</text>
+<line x1="16" y1="528" x2="359" y2="528" />
+<text x="24" y="552" font-size="14" fill="#000" stroke="none" font-weight="600">Agent</text>
+<text x="24" y="574" font-size="12" fill="#666" stroke="none" >Maya · permanently assigned</text>
+<text x="351" y="624" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<line x1="24" y1="640" x2="351" y2="640" stroke="#e6e6e6"/>
+<text x="24" y="664" font-size="14" fill="#000" stroke="none" font-weight="600">GitHub App</text>
+<text x="24" y="686" font-size="12" fill="#666" stroke="none" >paperclip-maya[bot]</text>
+<text x="351" y="736" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Created</text>
+<line x1="24" y1="752" x2="351" y2="752" stroke="#e6e6e6"/>
+<text x="24" y="776" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook</text>
+<text x="24" y="798" font-size="12" fill="#666" stroke="none" >Signed delivery endpoint</text>
+<text x="351" y="848" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Verified</text>
+<text x="16" y="896" font-size="20" fill="#000" stroke="none" font-weight="700">Install it in GitHub</text>
+<text x="16" y="920" font-size="12" fill="#666" stroke="none" >GitHub owns organization approval and</text>
+<text x="16" y="936" font-size="12" fill="#666" stroke="none" >repository selection.</text>
+<line x1="16" y1="952" x2="359" y2="952" />
+<text x="24" y="976" font-size="14" fill="#000" stroke="none" font-weight="600">Account or organization</text>
+<text x="24" y="998" font-size="12" fill="#666" stroke="none" >Choose the GitHub owner where people will</text>
+<text x="24" y="1014" font-size="12" fill="#666" stroke="none" >mention Maya.</text>
+<text x="351" y="1048" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In GitHub</text>
+<line x1="24" y1="1064" x2="351" y2="1064" stroke="#e6e6e6"/>
+<text x="24" y="1088" font-size="14" fill="#000" stroke="none" font-weight="600">Repository access</text>
+<text x="24" y="1110" font-size="12" fill="#666" stroke="none" >Choose all repositories or a selected set;</text>
+<text x="24" y="1126" font-size="12" fill="#666" stroke="none" >Paperclip can narrow this later.</text>
+<text x="351" y="1160" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In GitHub</text>
+<line x1="24" y1="1176" x2="351" y2="1176" stroke="#e6e6e6"/>
+<text x="24" y="1200" font-size="14" fill="#000" stroke="none" font-weight="600">Permissions</text>
+<text x="24" y="1222" font-size="12" fill="#666" stroke="none" >Review the prepared Issues, Pull requests,</text>
+<text x="24" y="1238" font-size="12" fill="#666" stroke="none" >and Metadata grant.</text>
+<text x="351" y="1272" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In GitHub</text>
+<text x="16" y="1320" font-size="20" fill="#000" stroke="none" font-weight="700">What returns</text>
+<text x="16" y="1344" font-size="12" fill="#666" stroke="none" >The installation callback contains an</text>
+<text x="16" y="1360" font-size="12" fill="#666" stroke="none" >installation ID, not another long-lived</text>
+<text x="16" y="1376" font-size="12" fill="#666" stroke="none" >credential for the user to copy.</text>
+<line x1="16" y1="1376" x2="359" y2="1376" />
+<text x="24" y="1400" font-size="14" fill="#000" stroke="none" font-weight="600">Installation</text>
+<text x="24" y="1422" font-size="12" fill="#666" stroke="none" >Paperclip links the App installation to</text>
+<text x="24" y="1438" font-size="12" fill="#666" stroke="none" >this endpoint.</text>
+<text x="351" y="1472" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic return</text>
+<line x1="24" y1="1488" x2="351" y2="1488" stroke="#e6e6e6"/>
+<text x="24" y="1512" font-size="14" fill="#000" stroke="none" font-weight="600">Repository inventory</text>
+<text x="24" y="1534" font-size="12" fill="#666" stroke="none" >Paperclip reads the installed repository</text>
+<text x="24" y="1550" font-size="12" fill="#666" stroke="none" >IDs and labels.</text>
+<text x="351" y="1584" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<rect x="16" y="1640" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1670" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back</text>
+<rect x="16" y="1704" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1734" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Install in GitHub</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="272" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="440" width="359" height="424" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="440" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="444" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="864" width="359" height="736" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="864" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="868" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1632" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1632" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1636" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

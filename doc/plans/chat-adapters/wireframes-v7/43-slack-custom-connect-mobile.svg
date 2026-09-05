@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1176" viewBox="0 0 375 1176" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1176"/><g data-region="mobile-header"><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Slack</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text></g><text x="16" y="80" font-size="12" fill="#666" stroke="none" font-weight="700">CUSTOM SETUP</text>
+<line x1="32" y1="104" x2="32" y2="272" />
+<circle cx="32" cy="104" r="16" fill="#000"/>
+<text x="32" y="109" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="109" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="160" r="16" fill="#000"/>
+<text x="32" y="165" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="165" font-size="14" fill="#000" stroke="none" >Create Slack app</text>
+<circle cx="32" cy="216" r="16" fill="#fff"/>
+<text x="32" y="221" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="221" font-size="14" fill="#000" stroke="none" font-weight="700">Connect app</text>
+<circle cx="32" cy="272" r="16" fill="#fff"/>
+<text x="32" y="277" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="277" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="368" font-size="20" fill="#000" stroke="none" font-weight="700">Connect the Slack app</text>
+<text x="16" y="424" font-size="12" fill="#666" stroke="none" >Copy two values from the Slack app settings.</text>
+<text x="16" y="512" font-size="20" fill="#000" stroke="none" font-weight="700">Do this</text>
+<circle cx="32" cy="568" r="16" fill="#fff"/>
+<text x="32" y="573" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<text x="64" y="564" font-size="14" fill="#000" stroke="none" font-weight="600">Copy the bot token</text>
+<text x="64" y="588" font-size="12" fill="#666" stroke="none" >Open OAuth &amp; Permissions and copy Bot</text>
+<text x="64" y="604" font-size="12" fill="#666" stroke="none" >User OAuth Token. It begins with</text>
+<text x="64" y="620" font-size="12" fill="#666" stroke="none" >xoxb-.</text>
+<line x1="64" y1="640" x2="359" y2="640" stroke="#e6e6e6"/>
+<circle cx="32" cy="680" r="16" fill="#fff"/>
+<text x="32" y="685" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="676" font-size="14" fill="#000" stroke="none" font-weight="600">Copy the signing secret</text>
+<text x="64" y="700" font-size="12" fill="#666" stroke="none" >Open Basic Information, expand App</text>
+<text x="64" y="716" font-size="12" fill="#666" stroke="none" >Credentials, and copy Signing Secret.</text>
+<text x="16" y="800" font-size="14" fill="#000" stroke="none" font-weight="600">Bot User OAuth Token</text>
+<rect x="16" y="816" width="343" height="48" rx="4" fill="#fff"/>
+<text x="32" y="846" font-size="14" fill="#666" stroke="none" >xoxb-••••••••••••</text>
+<text x="16" y="904" font-size="14" fill="#000" stroke="none" font-weight="600">Signing Secret</text>
+<rect x="16" y="920" width="343" height="48" rx="4" fill="#fff"/>
+<text x="32" y="950" font-size="14" fill="#666" stroke="none" >••••••••••••</text>
+<rect x="16" y="1024" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1054" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back</text>
+<rect x="16" y="1088" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1118" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect Slack app</text><g data-region="annotations"><rect x="8" y="64" width="359" height="256" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="336" width="359" height="664" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="336" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="340" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="1016" width="359" height="128" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1016" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1020" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>

@@ -27,7 +27,9 @@ const mockPluginSlots = vi.hoisted(() => ({
   slots: [] as Array<Record<string, unknown>>,
 }));
 const mockUsePluginSlots = vi.hoisted(() => vi.fn());
-const mockPluginSlotContexts = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+const mockPluginSlotContexts = vi.hoisted(
+  () => [] as Array<Record<string, unknown>>,
+);
 const mockSetPeeking = vi.hoisted(() => vi.fn());
 const mockSetForceCollapsed = vi.hoisted(() => vi.fn());
 const mockSidebarState = vi.hoisted(() => ({
@@ -40,11 +42,18 @@ let currentPathname = "/PAP/dashboard";
 
 vi.mock("@/lib/router", () => ({
   Outlet: () => <div>Outlet content</div>,
-  useLocation: () => ({ pathname: currentPathname, search: "", hash: "", state: null }),
+  useLocation: () => ({
+    pathname: currentPathname,
+    search: "",
+    hash: "",
+    state: null,
+  }),
   useNavigate: () => mockNavigate,
   useNavigationType: () => "PUSH",
   useParams: () => {
-    const [firstSegment, secondSegment, entityId] = currentPathname.split("/").filter(Boolean);
+    const [firstSegment, secondSegment, entityId] = currentPathname
+      .split("/")
+      .filter(Boolean);
     return {
       companyPrefix: firstSegment ?? "PAP",
       pluginRoutePath: secondSegment,
@@ -56,7 +65,9 @@ vi.mock("@/lib/router", () => ({
 
 vi.mock("./Sidebar", () => ({
   Sidebar: ({ contentHeaderControls }: { contentHeaderControls?: boolean }) => (
-    <div data-content-header-controls={String(contentHeaderControls ?? false)}>Main company nav</div>
+    <div data-content-header-controls={String(contentHeaderControls ?? false)}>
+      Main company nav
+    </div>
   ),
 }));
 
@@ -69,11 +80,15 @@ vi.mock("./AppsSidebar", () => ({
 }));
 
 vi.mock("./AgentContextualSidebar", () => ({
-  AgentContextualSidebar: ({ agentRef }: { agentRef: string }) => <div>Agent sidebar {agentRef}</div>,
+  AgentContextualSidebar: ({ agentRef }: { agentRef: string }) => (
+    <div>Agent sidebar {agentRef}</div>
+  ),
 }));
 
 vi.mock("./RoutineContextualSidebar", () => ({
-  RoutineContextualSidebar: ({ routineId }: { routineId: string }) => <div>Routine sidebar {routineId}</div>,
+  RoutineContextualSidebar: ({ routineId }: { routineId: string }) => (
+    <div>Routine sidebar {routineId}</div>
+  ),
 }));
 
 vi.mock("./SkillsContextualSidebar", () => ({
@@ -81,7 +96,11 @@ vi.mock("./SkillsContextualSidebar", () => ({
 }));
 
 vi.mock("./AppConnectionSidebar", () => ({
-  AppDetailSidebar: (props: { kind: "connection"; connectionId: string } | { kind: "application"; applicationId: string }) => (
+  AppDetailSidebar: (
+    props:
+      | { kind: "connection"; connectionId: string }
+      | { kind: "application"; applicationId: string },
+  ) => (
     <div>
       {props.kind === "connection"
         ? `App detail sidebar connection ${props.connectionId}`
@@ -143,7 +162,10 @@ vi.mock("./SidebarAccountMenu", () => ({
 }));
 
 vi.mock("../plugins/slots", async () => {
-  const actual = await vi.importActual<typeof import("../plugins/slots")>("../plugins/slots");
+  const actual =
+    await vi.importActual<typeof import("../plugins/slots")>(
+      "../plugins/slots",
+    );
   return {
     resolveRouteSidebarSlot: actual.resolveRouteSidebarSlot,
     usePluginSlots: (params: Record<string, unknown>) => {
@@ -164,7 +186,11 @@ vi.mock("../plugins/slots", async () => {
       className?: string;
     }) => {
       mockPluginSlotContexts.push(context);
-      return <div data-plugin-slot-class={className}>Plugin route sidebar: {slot.displayName}</div>;
+      return (
+        <div data-plugin-slot-class={className}>
+          Plugin route sidebar: {slot.displayName}
+        </div>
+      );
     },
   };
 });
@@ -266,8 +292,14 @@ describe("Layout", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     currentPathname = "/PAP/dashboard";
-    mockCompanyState.companies = [{ id: "company-1", issuePrefix: "PAP", name: "Paperclip" }];
-    mockCompanyState.selectedCompany = { id: "company-1", issuePrefix: "PAP", name: "Paperclip" };
+    mockCompanyState.companies = [
+      { id: "company-1", issuePrefix: "PAP", name: "Paperclip" },
+    ];
+    mockCompanyState.selectedCompany = {
+      id: "company-1",
+      issuePrefix: "PAP",
+      name: "Paperclip",
+    };
     mockCompanyState.selectedCompanyId = "company-1";
     mockHealthApi.get.mockResolvedValue({
       status: "ok",
@@ -278,7 +310,9 @@ describe("Layout", () => {
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       keyboardShortcuts: false,
     });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableApps: true,
+    });
     mockPluginSlots.slots = [];
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;
@@ -332,7 +366,9 @@ describe("Layout", () => {
       enableStreamlinedUi: true,
     });
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
 
     await act(async () => {
       root.render(
@@ -344,13 +380,27 @@ describe("Layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.querySelector(".streamlined-task-detail-surface")).not.toBeNull();
-    expect(container.querySelector("#main-content")?.classList.contains("pt-0")).toBe(true);
-    expect(container.querySelector("#main-content")?.classList.contains("md:pt-0")).toBe(true);
-    expect(container.querySelector("#main-content")?.classList.contains("p-4")).toBe(true);
-    expect(container.querySelector("#main-content")?.classList.contains("md:p-6")).toBe(true);
-    expect(container.querySelector("#main-content")?.classList.contains("pr-0")).toBe(false);
-    expect(container.querySelector("#main-content")?.classList.contains("md:pr-0")).toBe(false);
+    expect(
+      container.querySelector(".streamlined-task-detail-surface"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector("#main-content")?.classList.contains("pt-0"),
+    ).toBe(true);
+    expect(
+      container.querySelector("#main-content")?.classList.contains("md:pt-0"),
+    ).toBe(true);
+    expect(
+      container.querySelector("#main-content")?.classList.contains("p-4"),
+    ).toBe(true);
+    expect(
+      container.querySelector("#main-content")?.classList.contains("md:p-6"),
+    ).toBe(true);
+    expect(
+      container.querySelector("#main-content")?.classList.contains("pr-0"),
+    ).toBe(false);
+    expect(
+      container.querySelector("#main-content")?.classList.contains("md:pr-0"),
+    ).toBe(false);
 
     await act(async () => {
       root.unmount();
@@ -359,7 +409,9 @@ describe("Layout", () => {
 
   it("collapses atomically when the pointer is still over the sidebar (no re-peek) — PAP-10676", async () => {
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
 
     const renderLayout = async () => {
       await act(async () => {
@@ -375,18 +427,27 @@ describe("Layout", () => {
     // The SidebarShell overlay panel carries the peek mouse handlers.
     const panel = () =>
       [...container.querySelectorAll<HTMLElement>("div")].find(
-        (el) => el.className.includes("inset-y-0") && el.className.includes("overflow-hidden"),
+        (el) =>
+          el.className.includes("inset-y-0") &&
+          el.className.includes("overflow-hidden"),
       );
     const hover = (el: HTMLElement) => {
       // React derives onMouseEnter from a mouseover crossing in from outside.
-      el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body }));
+      el.dispatchEvent(
+        new MouseEvent("mouseover", {
+          bubbles: true,
+          relatedTarget: document.body,
+        }),
+      );
     };
 
     // Expanded, then hover the panel so the pointer is registered as inside.
     await renderLayout();
     const expandedPanel = panel();
     expect(expandedPanel).toBeTruthy();
-    await act(async () => { hover(expandedPanel!); });
+    await act(async () => {
+      hover(expandedPanel!);
+    });
 
     // Collapse while the pointer is still over the panel.
     mockSidebarState.collapsed = true;
@@ -397,17 +458,25 @@ describe("Layout", () => {
     // A lingering/spurious hover while collapsed must NOT re-open the peek.
     mockSetPeeking.mockClear();
     const railPanel = panel();
-    await act(async () => { hover(railPanel!); });
-    await act(async () => { await new Promise((r) => setTimeout(r, 80)); });
+    await act(async () => {
+      hover(railPanel!);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 80));
+    });
     expect(mockSetPeeking).not.toHaveBeenCalledWith(true);
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("opens the peek when hovering a collapsed rail (positive control for the hover sim)", async () => {
     mockSidebarState.collapsed = true;
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -418,17 +487,28 @@ describe("Layout", () => {
     await flushReact();
 
     const panel = [...container.querySelectorAll<HTMLElement>("div")].find(
-      (el) => el.className.includes("inset-y-0") && el.className.includes("overflow-hidden"),
+      (el) =>
+        el.className.includes("inset-y-0") &&
+        el.className.includes("overflow-hidden"),
     );
     expect(panel).toBeTruthy();
     await act(async () => {
-      panel!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body }));
+      panel!.dispatchEvent(
+        new MouseEvent("mouseover", {
+          bubbles: true,
+          relatedTarget: document.body,
+        }),
+      );
     });
-    await act(async () => { await new Promise((r) => setTimeout(r, 80)); });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 80));
+    });
     // A normal collapsed-rail hover (not just-collapsed) opens the peek.
     expect(mockSetPeeking).toHaveBeenCalledWith(true);
 
-    await act(async () => { root.unmount(); });
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("replaces the app sidebar with settings navigation on Streamlined settings routes", async () => {
@@ -493,7 +573,9 @@ describe("Layout", () => {
       enableStreamlinedUi: false,
     });
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
 
     await act(async () => {
       root.render(
@@ -638,7 +720,9 @@ describe("Layout", () => {
 
   it("mounts the Apps secondary sidebar regardless of the retired experimental flag", async () => {
     currentPathname = "/PAP/apps";
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableApps: false,
+    });
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -717,34 +801,40 @@ describe("Layout", () => {
 
   // Reserved Apps subroutes are not connection ids. They must keep the
   // top-level Apps sidebar, never mount a detail sidebar for a phantom app.
-  it.each(["browse", "connections", "vercel-connect", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
-    currentPathname = `/PAP/apps/${route}`;
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
+  it.each(["browse", "connections", "vercel-connect", "review", "chat"])(
+    "keeps the Apps sidebar on the %s surface",
+    async (route) => {
+      currentPathname = `/PAP/apps/${route}`;
+      const root = createRoot(container);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
 
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Layout />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-    await flushReact();
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Layout />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
 
-    expect(container.textContent).toContain("Apps sidebar");
-    expect(container.textContent).toContain("Main company nav");
-    expect(container.textContent).not.toContain("App detail sidebar");
+      expect(container.textContent).toContain("Apps sidebar");
+      expect(container.textContent).toContain("Main company nav");
+      expect(container.textContent).not.toContain("App detail sidebar");
 
-    await act(async () => {
-      root.unmount();
-    });
-  });
+      await act(async () => {
+        root.unmount();
+      });
+    },
+  );
 
   it("keeps the Apps sidebar on the gateways list and detail routes", async () => {
-    for (const pathname of ["/PAP/apps/gateways", "/PAP/apps/gateways/gw-1/overview"]) {
+    for (const pathname of [
+      "/PAP/apps/gateways",
+      "/PAP/apps/gateways/gw-1/overview",
+    ]) {
       currentPathname = pathname;
       const root = createRoot(container);
       const queryClient = new QueryClient({
@@ -788,7 +878,9 @@ describe("Layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("App detail sidebar connection conn-1");
+    expect(container.textContent).toContain(
+      "App detail sidebar connection conn-1",
+    );
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).not.toContain("Apps sidebar");
 
@@ -814,7 +906,9 @@ describe("Layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("App detail sidebar application app-1");
+    expect(container.textContent).toContain(
+      "App detail sidebar application app-1",
+    );
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).not.toContain("Apps sidebar");
 
@@ -846,7 +940,10 @@ describe("Layout", () => {
     for (const [pathname, sidebarText] of [
       ["/PAP/skills/studio", "Skills sidebar"],
       ["/PAP/agents/briefing-analyst/skills", "Agent sidebar briefing-analyst"],
-      ["/PAP/agents/briefing-analyst/runs/run-1", "Agent sidebar briefing-analyst"],
+      [
+        "/PAP/agents/briefing-analyst/runs/run-1",
+        "Agent sidebar briefing-analyst",
+      ],
       ["/PAP/routines/routine-1/overview", "Routine sidebar routine-1"],
     ] as const) {
       const root = await renderAt(pathname);
@@ -855,12 +952,14 @@ describe("Layout", () => {
       const secondaryRail = container.querySelector("[data-secondary-sidebar]");
       expect(secondaryRail?.classList.contains("w-60")).toBe(true);
       expect(secondaryRail?.classList.contains("bg-background")).toBe(true);
-      const breadcrumb = Array.from(container.querySelectorAll("div"))
-        .find((element) => element.textContent === "Breadcrumbs");
+      const breadcrumb = Array.from(container.querySelectorAll("div")).find(
+        (element) => element.textContent === "Breadcrumbs",
+      );
       expect(breadcrumb).toBeDefined();
       expect(
         breadcrumb && secondaryRail
-          ? breadcrumb.compareDocumentPosition(secondaryRail) & Node.DOCUMENT_POSITION_FOLLOWING
+          ? breadcrumb.compareDocumentPosition(secondaryRail) &
+              Node.DOCUMENT_POSITION_FOLLOWING
           : 0,
       ).not.toBe(0);
       await act(async () => {
@@ -882,7 +981,9 @@ describe("Layout", () => {
     ]) {
       currentPathname = pathname;
       const root = createRoot(container);
-      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
 
       await act(async () => {
         root.render(
@@ -912,7 +1013,9 @@ describe("Layout", () => {
       enableStreamlinedUi: false,
     });
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
 
     await act(async () => {
       root.render(
@@ -934,10 +1037,16 @@ describe("Layout", () => {
   });
 
   it("keeps Agent and Routine collection routes in global navigation", async () => {
-    for (const pathname of ["/PAP/agents/all", "/PAP/agents/new", "/PAP/routines"]) {
+    for (const pathname of [
+      "/PAP/agents/all",
+      "/PAP/agents/new",
+      "/PAP/routines",
+    ]) {
       currentPathname = pathname;
       const root = createRoot(container);
-      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
 
       await act(async () => {
         root.render(
@@ -1001,8 +1110,12 @@ describe("Layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Plugin route sidebar: Wiki Sidebar");
-    expect(container.querySelector("[data-plugin-slot-class='min-h-0 flex-1']")).not.toBeNull();
+    expect(container.textContent).toContain(
+      "Plugin route sidebar: Wiki Sidebar",
+    );
+    expect(
+      container.querySelector("[data-plugin-slot-class='min-h-0 flex-1']"),
+    ).not.toBeNull();
     expect(container.textContent).not.toContain("Main company nav");
     expect(container.textContent).not.toContain("Company settings sidebar");
     expect(container.textContent).not.toContain("Instance sidebar");
@@ -1059,7 +1172,9 @@ describe("Layout", () => {
         enabled: true,
       }),
     );
-    expect(container.textContent).toContain("Plugin route sidebar: Wiki Sidebar");
+    expect(container.textContent).toContain(
+      "Plugin route sidebar: Wiki Sidebar",
+    );
     expect(container.textContent).not.toContain("Main company nav");
 
     await act(async () => {
@@ -1073,7 +1188,11 @@ describe("Layout", () => {
       { id: "company-1", issuePrefix: "PAP", name: "Paperclip" },
       { id: "company-2", issuePrefix: "ALT", name: "Alternate" },
     ];
-    mockCompanyState.selectedCompany = { id: "company-1", issuePrefix: "PAP", name: "Paperclip" };
+    mockCompanyState.selectedCompany = {
+      id: "company-1",
+      issuePrefix: "PAP",
+      name: "Paperclip",
+    };
     mockCompanyState.selectedCompanyId = "company-1";
     mockPluginSlots.slots = [
       {
@@ -1194,7 +1313,10 @@ describe("Layout", () => {
     });
   });
 
-  async function renderLayoutRoot(): Promise<{ root: ReturnType<typeof createRoot>; rootEl: HTMLElement }> {
+  async function renderLayoutRoot(): Promise<{
+    root: ReturnType<typeof createRoot>;
+    rootEl: HTMLElement;
+  }> {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

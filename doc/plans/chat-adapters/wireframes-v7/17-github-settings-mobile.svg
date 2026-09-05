@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="812"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="32" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Maya on GitHub</text><text x="359" y="32" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><rect x="16" y="72" width="343" height="48" rx="4" fill="#fff"/><text x="32" y="104" font-size="14" fill="#000" stroke="none" font-weight="600">Settings</text><text x="343" y="104" font-size="14" fill="#666" stroke="none" text-anchor="end">⌄</text>
+<text x="16" y="160" font-size="20" fill="#000" stroke="none" font-weight="700">GitHub settings</text>
+<text x="16" y="192" font-size="12" fill="#666" stroke="none" >Choose the repositories where people can</text>
+<text x="16" y="208" font-size="12" fill="#666" stroke="none" >mention Maya.</text>
+<text x="16" y="256" font-size="20" fill="#000" stroke="none" font-weight="700">Allowed repositories</text>
+<text x="16" y="280" font-size="12" fill="#666" stroke="none" >Paperclip can narrow, but not exceed, the</text>
+<text x="16" y="296" font-size="12" fill="#666" stroke="none" >GitHub App installation.</text>
+<line x1="16" y1="336" x2="359" y2="336" />
+<rect x="24" y="368" width="24" height="24" rx="4" fill="#000"/>
+<text x="36" y="384" font-size="12" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="376" font-size="14" fill="#000" stroke="none" font-weight="600">acme/api · GitHub</text>
+<text x="64" y="400" font-size="12" fill="#666" stroke="none" >Installed and allowed</text>
+<line x1="24" y1="432" x2="351" y2="432" stroke="#e6e6e6"/>
+<rect x="24" y="448" width="24" height="24" rx="4" fill="#000"/>
+<text x="36" y="464" font-size="12" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="456" font-size="14" fill="#000" stroke="none" font-weight="600">acme/web · GitHub</text>
+<text x="64" y="480" font-size="12" fill="#666" stroke="none" >Installed and allowed</text>
+<rect x="16" y="528" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="560" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Edit allowed repositories</text>
+<rect x="16" y="632" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="664" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Save changes</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="64" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="224" width="359" height="368" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="224" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="228" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="624" width="359" height="64" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="624" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="628" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>

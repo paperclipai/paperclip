@@ -30,7 +30,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
 describe("AppDefinition catalog",()=>{
  it("validates all Wave 1 definitions",()=>expect(()=>appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
  it("contains every established provider plus the reviewed self-serve catalog",()=>{
- expect(APP_DEFINITIONS.map((app)=>app.slug)).toEqual(expect.arrayContaining(["zapier","github","slack","notion","posthog","linear","google-sheets","context7","composio","oauth-generic","api-key-generic","sentry","vercel","anthropic","gmail","google-drive","google-docs","google-slides","google-calendar","google-chat","google-people","google-workspace-search"]));
+ expect(APP_DEFINITIONS.map((app)=>app.slug)).toEqual(expect.arrayContaining(["zapier","github","slack","microsoft-teams","telegram","notion","posthog","linear","google-sheets","context7","composio","oauth-generic","api-key-generic","sentry","vercel","anthropic","gmail","google-drive","google-docs","google-slides","google-calendar","google-chat","google-people","google-workspace-search"]));
   expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(43);
   expect(BLOCKED_MCP_PROVIDERS.map((entry)=>entry.slug)).toEqual(["g2","vercel","zomato"]);
   const definitionSlugs=new Set(APP_DEFINITIONS.map((app)=>app.slug));
@@ -38,6 +38,53 @@ describe("AppDefinition catalog",()=>{
   expect(SELF_SERVE_MCP_CANDIDATES.filter((entry)=>!definitionSlugs.has(entry.slug))).toEqual([]);
   expect(SELF_SERVE_MCP_CANDIDATES.filter((entry)=>!connectableSlugs.has(entry.slug))).toEqual([]);
   for(const entry of BLOCKED_MCP_PROVIDERS)expect(connectableSlugs.has(entry.slug)).toBe(false);
+ });
+ it("registers the four native chat providers with only required setup credentials",()=>{
+ const expected={
+   slack:{credentials:["botToken","signingSecret"],publicFields:[],resources:["workspace","channel"],tool:true},
+   github:{credentials:["appId","privateKey","webhookSecret"],publicFields:["appId"],resources:["organization","repository"],tool:true},
+   "microsoft-teams":{credentials:["clientId","tenantId","clientSecret"],publicFields:["clientId","tenantId"],resources:["team","channel","chat"],tool:false},
+   telegram:{credentials:["botToken"],publicFields:[],resources:["chat","group","topic"],tool:false},
+  } as const;
+  for(const [slug,contract] of Object.entries(expected)){
+   const app=CONNECTABLE_APP_DEFINITIONS.find((candidate)=>candidate.slug===slug);
+   const channel=app?.methods.find((candidate)=>candidate.purpose==="channel");
+   expect(app,slug).toBeTruthy();
+   expect(channel,slug).toMatchObject({
+    key:"chat-agent",
+    label:"Chat with an agent",
+    purpose:"channel",
+    provider:slug,
+    transport:"chat_sdk",
+    auth:"api_key",
+    ownershipModes:["customer"],
+    requiredResourceFilters:contract.resources,
+   });
+   expect(channel?.credentialFields?.map((field)=>field.key),slug).toEqual(contract.credentials);
+   expect(channel?.credentialFields?.every((field)=>field.required),slug).toBe(true);
+   for(const field of channel?.credentialFields??[]){
+    if((contract.publicFields as readonly string[]).includes(field.key))expect(field,`${slug}/${field.key}`).toMatchObject({type:"text",secret:false});
+    else expect(field.secret,`${slug}/${field.key}`).toBe(true);
+   }
+   expect(channel?.keyPlacement,slug).toBeUndefined();
+   const toolMethods=app?.methods.filter((candidate)=>(candidate.purpose??"tool")==="tool")??[];
+   expect(toolMethods.length>0,`${slug}: tool surface`).toBe(contract.tool);
+   if(contract.tool)expect(toolMethods.some((candidate)=>candidate.label==="Use this connection as an agent tool"),slug).toBe(true);
+  }
+ });
+ it("documents the minimum provider-owned chat app setup without broader permissions",()=>{
+  const channel=(slug:string)=>APP_DEFINITIONS.find((app)=>app.slug===slug)?.methods.find((method)=>method.purpose==="channel");
+  expect(channel("github")?.guidanceMd).toContain("issue_comment");
+  expect(channel("github")?.guidanceMd).toContain("pull_request");
+  expect(channel("github")?.guidanceMd).toContain("pull_request_review_comment");
+  expect(channel("github")?.guidanceMd).toContain("SSL-verified");
+  expect(channel("microsoft-teams")?.guidanceMd).toContain("resource-specific");
+  expect(channel("microsoft-teams")?.guidanceMd).toContain("ChannelMessage.Read.Group");
+  expect(channel("microsoft-teams")?.guidanceMd).toContain("ChatMessage.Read.Chat");
+  expect(channel("telegram")?.guidanceMd).toContain("replaces any existing webhook");
+  expect(channel("telegram")?.guidanceMd).toContain("supergroups");
+  expect(channel("slack")?.guidanceMd).toContain("reactions");
+  expect(channel("slack")?.guidanceMd).toContain("direct messages");
  });
  it("keeps a complete, unique, dated evidence ledger for all 46 researched MCP providers",()=>{
   expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
@@ -140,9 +187,9 @@ describe("AppDefinition catalog",()=>{
  });
  it("withholds unverified and reserved providers from the app store without deleting their definitions",()=>{
   expect([...APP_STORE_HIDDEN_SLUGS].sort()).toEqual([
-   "beehiiv","bitly","brex","candid","coda","composio","context7","egnyte","embat","kernel","local-falcon","make","manufact","oreilly","planetscale","razorpay","sanity","similarweb","slack","ticket-tailor","ticktick","xero",
+   "beehiiv","bitly","brex","candid","coda","composio","context7","egnyte","embat","kernel","local-falcon","make","manufact","oreilly","planetscale","razorpay","sanity","similarweb","ticket-tailor","ticktick","xero",
   ]);
-  expect(APP_STORE_DEFINITIONS).toHaveLength(36);
+  expect(APP_STORE_DEFINITIONS).toHaveLength(39);
   const connectableSlugs=new Set(CONNECTABLE_APP_DEFINITIONS.map((entry)=>entry.slug));
   const storeSlugs=new Set(APP_STORE_DEFINITIONS.map((entry)=>entry.slug));
   for(const slug of APP_STORE_HIDDEN_SLUGS){
@@ -150,13 +197,13 @@ describe("AppDefinition catalog",()=>{
    expect(storeSlugs.has(slug),slug).toBe(false);
   }
  });
- it("ships complete local branding provenance for all 36 store-visible providers",()=>{
+ it("ships complete local branding provenance for all 39 store-visible providers",()=>{
   const uiPublic=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../../../ui/public");
   const manifest=JSON.parse(fs.readFileSync(path.join(uiPublic,"brands/apps/manifest.json"),"utf8")) as {providers:Array<{slug:string;catalogVisible:boolean;localAsset:string;darkAsset?:string;officialSourceUrl:string;upstreamAssetUrl:string;assetType:"svg"|"png";darkVariantRequired:boolean}>};
   const visible=manifest.providers.filter((entry)=>entry.catalogVisible);
-  expect(visible).toHaveLength(36);
-  expect(new Set(visible.map((entry)=>entry.slug))).toHaveProperty("size",36);
-  expect(new Set(visible.map((entry)=>entry.localAsset))).toHaveProperty("size",36);
+  expect(visible).toHaveLength(39);
+  expect(new Set(visible.map((entry)=>entry.slug))).toHaveProperty("size",39);
+  expect(new Set(visible.map((entry)=>entry.localAsset))).toHaveProperty("size",39);
   expect(new Set(APP_STORE_DEFINITIONS.map((entry)=>entry.slug))).toEqual(new Set(visible.map((entry)=>entry.slug)));
   for(const app of APP_STORE_DEFINITIONS){
    const provenance=visible.find((entry)=>entry.slug===app.slug)!;
@@ -233,5 +280,5 @@ describe("AppDefinition catalog",()=>{
   expect(reviewed.find(({slug,key})=>slug==="posthog"&&key==="mcp-api-key")?.review.principalModes).toEqual(["app"]);
   expect(APP_DEFINITIONS.find((app)=>app.slug==="vercel")?.availability?.available).toBe(false);
  });
- it("enforces method and field invariants",()=>{for(const app of APP_DEFINITIONS)for(const method of app.methods){if(method.auth==="api_key")expect(method.keyPlacement).toBeTruthy();if(method.auth==="oauth")expect(method.ownershipModes.length).toBeGreaterThan(0);for(const field of method.credentialFields??[])if(field.required&&field.type!=="checkbox")expect(field.placeholder).toBeTruthy()}});
+ it("enforces method and field invariants",()=>{for(const app of APP_DEFINITIONS)for(const method of app.methods){if(method.auth==="api_key"&&(method.purpose??"tool")!=="channel")expect(method.keyPlacement).toBeTruthy();if(method.auth==="oauth")expect(method.ownershipModes.length).toBeGreaterThan(0);for(const field of method.credentialFields??[])if(field.required&&field.type!=="checkbox")expect(field.placeholder).toBeTruthy()}});
 });

@@ -41,7 +41,8 @@ import { objectWithoutDefaults } from "./partial.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
 export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
-export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio"]);
+export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio", "chat_sdk"]);
+export const toolConnectionPurposeSchema = z.enum(["tool", "channel"]);
 export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
 export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
 export const toolConnectionCredentialSourceSchema = z.enum(["paperclip_vault", "vercel_connect"]);
@@ -179,6 +180,7 @@ export const createToolConnectionSchema = z.object({
   applicationId: z.string().guid().optional(),
   applicationName: z.string().trim().min(1).max(160).optional(),
   name: z.string().trim().min(1).max(160),
+  connectionPurpose: toolConnectionPurposeSchema.default("tool"),
   transport: toolConnectionTransportSchema.optional(),
   authKind: toolConnectionAuthKindSchema.default("none"),
   credentialPolicy: toolConnectionCredentialPolicySchema.optional(),

@@ -1667,6 +1667,34 @@
       "when": 1788557575279,
       "tag": "0239_sturdy_santa_claus",
       "breakpoints": true
+    },
+    {
+      "idx": 240,
+      "version": "7",
+      "when": 1788580015986,
+      "tag": "0240_previous_captain_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1788581746772,
+      "tag": "0241_married_king_cobra",
+      "breakpoints": true
+    },
+    {
+      "idx": 242,
+      "version": "7",
+      "when": 1788582768429,
+      "tag": "0242_bizarre_the_hunter",
+      "breakpoints": true
+    },
+    {
+      "idx": 243,
+      "version": "7",
+      "when": 1788585030341,
+      "tag": "0243_typical_sauron",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1536" viewBox="0 0 375 1536" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1536"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Teams</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="320" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#000"/>
+<text x="32" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" >Register Teams bot</text>
+<circle cx="32" cy="208" r="16" fill="#fff"/>
+<text x="32" y="213" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="213" font-size="14" fill="#000" stroke="none" font-weight="700">Connect identity</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#666" stroke="none" >Install app</text>
+<circle cx="32" cy="320" r="16" fill="#fff"/>
+<text x="32" y="325" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">5</text>
+<text x="64" y="325" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="416" font-size="20" fill="#000" stroke="none" font-weight="700">Connect the Microsoft bot identity</text>
+<text x="16" y="448" font-size="12" fill="#666" stroke="none" >Paste the three values created by Microsoft so</text>
+<text x="16" y="464" font-size="12" fill="#666" stroke="none" >Paperclip can authenticate as Maya.</text>
+<text x="24" y="504" font-size="14" fill="#000" stroke="none" font-weight="600">Application (client) ID</text><rect x="24" y="520" width="327" height="48" rx="4" fill="#fff"/><text x="40" y="550" font-size="14" fill="#666" stroke="none" >00000000-0000-0000-0000-000000000000</text><text x="24" y="592" font-size="12" fill="#666" stroke="none" >Identifies Maya's Entra application and</text>
+<text x="24" y="608" font-size="12" fill="#666" stroke="none" >Azure Bot.</text>
+<text x="24" y="656" font-size="14" fill="#000" stroke="none" font-weight="600">Directory (tenant) ID</text><rect x="24" y="672" width="327" height="48" rx="4" fill="#fff"/><text x="40" y="702" font-size="14" fill="#666" stroke="none" >00000000-0000-0000-0000-000000000000</text><text x="24" y="744" font-size="12" fill="#666" stroke="none" >Limits the bot to the company tenant.</text>
+<text x="24" y="808" font-size="14" fill="#000" stroke="none" font-weight="600">Client secret</text><rect x="24" y="824" width="327" height="48" rx="4" fill="#fff"/><text x="40" y="854" font-size="14" fill="#666" stroke="none" >••••••••••••</text><text x="24" y="896" font-size="12" fill="#666" stroke="none" >Lets Paperclip authenticate outbound bot</text>
+<text x="24" y="912" font-size="12" fill="#666" stroke="none" >messages; stored write-only.</text>
+<text x="16" y="968" font-size="20" fill="#000" stroke="none" font-weight="700">Why these values are visible</text>
+<text x="16" y="992" font-size="12" fill="#666" stroke="none" >Microsoft created a customer-owned identity.</text>
+<text x="16" y="1008" font-size="12" fill="#666" stroke="none" >It does not send those credentials to</text>
+<text x="16" y="1024" font-size="12" fill="#666" stroke="none" >Paperclip through an installation callback.</text>
+<line x1="16" y1="1024" x2="359" y2="1024" />
+<text x="24" y="1048" font-size="14" fill="#000" stroke="none" font-weight="600">Storage</text>
+<text x="24" y="1070" font-size="12" fill="#666" stroke="none" >Client secret enters Paperclip's secret</text>
+<text x="24" y="1086" font-size="12" fill="#666" stroke="none" >store; configuration keeps only its…</text>
+<text x="351" y="1120" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Write only</text>
+<line x1="24" y1="1136" x2="351" y2="1136" stroke="#e6e6e6"/>
+<text x="24" y="1160" font-size="14" fill="#000" stroke="none" font-weight="600">Rotation</text>
+<text x="24" y="1182" font-size="12" fill="#666" stroke="none" >A replacement secret can be saved later</text>
+<text x="24" y="1198" font-size="12" fill="#666" stroke="none" >without changing task bindings.</text>
+<text x="351" y="1232" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Supported</text>
+<line x1="24" y1="1248" x2="351" y2="1248" stroke="#e6e6e6"/>
+<text x="24" y="1272" font-size="14" fill="#000" stroke="none" font-weight="600">Managed identity</text>
+<text x="24" y="1294" font-size="12" fill="#666" stroke="none" >Available only when the Paperclip</text>
+<text x="24" y="1310" font-size="12" fill="#666" stroke="none" >deployment already runs with a compatible…</text>
+<text x="351" y="1344" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Instance advanced</text>
+<rect x="16" y="1400" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1430" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back</text>
+<rect x="16" y="1464" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1494" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Save and verify</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="328" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="480" width="359" height="456" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="480" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="484" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="936" width="359" height="424" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="936" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="940" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1392" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1392" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1396" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

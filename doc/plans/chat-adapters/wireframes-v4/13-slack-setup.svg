@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1694" viewBox="0 0 1280 1694" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="1280" height="1694"/><g><text x="24" y="38" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="68" r="6" fill="#e6e6e6"/><text x="52" y="73" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="114" r="6" fill="#e6e6e6"/><text x="52" y="119" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="160" r="6" fill="#e6e6e6"/><text x="52" y="165" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="206" r="6" fill="#e6e6e6"/><text x="52" y="211" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="252" r="6" fill="#e6e6e6"/><text x="52" y="257" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="298" r="6" fill="#e6e6e6"/><text x="52" y="303" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="344" r="6" fill="#e6e6e6"/><text x="52" y="349" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="390" r="6" fill="#e6e6e6"/><text x="52" y="395" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="436" r="6" fill="#e6e6e6"/><text x="52" y="441" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="482" r="6" fill="#e6e6e6"/><text x="52" y="487" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="12" y="510" width="216" height="38" rx="6" fill="#e6e6e6"/><circle cx="32" cy="528" r="6" fill="#e6e6e6"/><text x="52" y="533" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="574" r="6" fill="#e6e6e6"/><text x="52" y="579" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="1638" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="1666" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="1694" /></g><g><line x1="240" y1="60" x2="1280" y2="60" /><text x="264" y="36" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Slack  ›  Chat with an agent</text><circle cx="1240" cy="30" r="16" fill="#e6e6e6"/></g><text x="288" y="108" font-size="28" fill="#000" stroke="none" font-weight="700">Invite Maya to Slack</text><text x="288" y="138" font-size="14" fill="#666" stroke="none" >Create or select one Slack app, install it, and verify the workspace connection.</text><line x1="264" y1="160" x2="1224" y2="160" /><g transform="translate(-216,0)"><text x="504" y="198" font-size="20" fill="#000" stroke="none" font-weight="700">Agent and Slack identity</text>
+<text x="504" y="223" font-size="12" fill="#666" stroke="none" >This endpoint represents exactly one Paperclip agent.</text>
+<line x1="504" y1="246" x2="1224" y2="246" />
+<text x="520" y="272" font-size="14" fill="#000" stroke="none" font-weight="600">Paperclip agent</text>
+<text x="520" y="294" font-size="12" fill="#666" stroke="none" >Maya · Support engineer</text>
+<rect x="1032" y="258" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="288" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change agent</text>
+<line x1="520" y1="318" x2="1208" y2="318" stroke="#e6e6e6"/>
+<text x="520" y="344" font-size="14" fill="#000" stroke="none" font-weight="600">Slack bot</text>
+<text x="520" y="366" font-size="12" fill="#666" stroke="none" >Maya · @maya · avatar preview</text>
+<rect x="1032" y="330" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="360" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Preview</text>
+<text x="504" y="420" font-size="20" fill="#000" stroke="none" font-weight="700">Choose delivery</text>
+<text x="504" y="445" font-size="12" fill="#666" stroke="none" >Paperclip generates the callback address before the Slack app is created.</text>
+<line x1="504" y1="468" x2="1224" y2="468" />
+<text x="520" y="494" font-size="14" fill="#000" stroke="none" font-weight="600">Recommended</text>
+<text x="520" y="516" font-size="12" fill="#666" stroke="none" >Direct signed webhook for cloud or public self-hosted Paperclip.</text>
+<rect x="1032" y="480" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="510" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Direct webhook</text>
+<line x1="520" y1="540" x2="1208" y2="540" stroke="#e6e6e6"/>
+<text x="520" y="566" font-size="14" fill="#000" stroke="none" font-weight="600">Private Paperclip</text>
+<text x="520" y="588" font-size="12" fill="#666" stroke="none" >Use the outbound authenticated relay when this instance is not publicly</text>
+<text x="520" y="604" font-size="12" fill="#666" stroke="none" >reachable.</text>
+<rect x="1032" y="552" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="582" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Use relay</text>
+<line x1="520" y1="612" x2="1208" y2="612" stroke="#e6e6e6"/>
+<text x="520" y="638" font-size="14" fill="#000" stroke="none" font-weight="600">Slack alternative</text>
+<text x="520" y="660" font-size="12" fill="#666" stroke="none" >Socket Mode uses an app token and one persistent listener.</text>
+<rect x="1032" y="624" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="654" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Advanced</text>
+<text x="504" y="714" font-size="20" fill="#000" stroke="none" font-weight="700">Create and install the Slack app</text>
+<text x="504" y="739" font-size="12" fill="#666" stroke="none" >The generated manifest contains the exact URLs, events, scopes, interactivity, and command</text>
+<text x="504" y="755" font-size="12" fill="#666" stroke="none" >declarations.</text>
+<line x1="504" y1="762" x2="1224" y2="762" />
+<text x="520" y="788" font-size="14" fill="#000" stroke="none" font-weight="600">1. Copy app manifest</text>
+<text x="520" y="810" font-size="12" fill="#666" stroke="none" >Create a new Slack app from this versioned manifest.</text>
+<rect x="1032" y="774" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="804" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy manifest</text>
+<line x1="520" y1="834" x2="1208" y2="834" stroke="#e6e6e6"/>
+<text x="520" y="860" font-size="14" fill="#000" stroke="none" font-weight="600">2. Install to workspace</text>
+<text x="520" y="882" font-size="12" fill="#666" stroke="none" >Slack owns workspace approval, OAuth, and Enterprise Grid policy.</text>
+<rect x="1032" y="846" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="876" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Slack</text>
+<line x1="520" y1="906" x2="1208" y2="906" stroke="#e6e6e6"/>
+<text x="520" y="932" font-size="14" fill="#000" stroke="none" font-weight="600">3. Invite Maya</text>
+<text x="520" y="954" font-size="12" fill="#666" stroke="none" >Add @maya to each channel where people should be able to start work.</text>
+<rect x="1032" y="918" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="948" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Instructions</text>
+<text x="504" y="1008" font-size="20" fill="#000" stroke="none" font-weight="700">Connect credentials</text>
+<text x="504" y="1033" font-size="12" fill="#666" stroke="none" >Paperclip stores secret references, never raw values in endpoint configuration.</text>
+<line x1="504" y1="1056" x2="1224" y2="1056" />
+<text x="520" y="1082" font-size="14" fill="#000" stroke="none" font-weight="600">Bot or OAuth token</text>
+<text x="520" y="1104" font-size="12" fill="#666" stroke="none" >Secret ref · slack/maya-bot ·•••• 8F2A</text>
+<rect x="1032" y="1068" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1098" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Replace</text>
+<line x1="520" y1="1128" x2="1208" y2="1128" stroke="#e6e6e6"/>
+<text x="520" y="1154" font-size="14" fill="#000" stroke="none" font-weight="600">Signing secret</text>
+<text x="520" y="1176" font-size="12" fill="#666" stroke="none" >Secret ref · slack/maya-signing ·•••• 0C91</text>
+<rect x="1032" y="1140" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1170" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Replace</text>
+<line x1="520" y1="1200" x2="1208" y2="1200" stroke="#e6e6e6"/>
+<text x="520" y="1226" font-size="14" fill="#000" stroke="none" font-weight="600">App token</text>
+<text x="520" y="1248" font-size="12" fill="#666" stroke="none" >Required only when Socket Mode is selected.</text>
+<rect x="1032" y="1212" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1242" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Not set</text>
+<text x="504" y="1302" font-size="20" fill="#000" stroke="none" font-weight="700">Verify and activate</text>
+<text x="504" y="1327" font-size="12" fill="#666" stroke="none" >Each check fails independently so the operator knows where to fix the Slack app.</text>
+<line x1="504" y1="1350" x2="1224" y2="1350" />
+<text x="520" y="1376" font-size="14" fill="#000" stroke="none" font-weight="600">Identity and install</text>
+<text x="520" y="1398" font-size="12" fill="#666" stroke="none" >Bot @maya · Acme workspace · membership detected</text>
+<rect x="1032" y="1362" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1392" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="520" y1="1422" x2="1208" y2="1422" stroke="#e6e6e6"/>
+<text x="520" y="1448" font-size="14" fill="#000" stroke="none" font-weight="600">Security and events</text>
+<text x="520" y="1470" font-size="12" fill="#666" stroke="none" >Signature challenge · scopes · subscriptions · interactivity</text>
+<rect x="1032" y="1434" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1464" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="520" y1="1494" x2="1208" y2="1494" stroke="#e6e6e6"/>
+<text x="520" y="1520" font-size="14" fill="#000" stroke="none" font-weight="600">Test message</text>
+<text x="520" y="1542" font-size="12" fill="#666" stroke="none" >Send a private setup check before activation.</text>
+<rect x="1032" y="1506" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1536" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Send test</text><g data-region="annotations"><rect x="496" y="168" width="736" height="230" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="496" y="390" width="736" height="302" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="390" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="394" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="496" y="684" width="736" height="302" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="684" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="688" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="496" y="978" width="736" height="302" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="978" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="982" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<rect x="496" y="1272" width="736" height="302" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="1272" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="1276" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">5</text></g></g><rect x="1008" y="1622" width="216" height="48" rx="6" fill="#000"/><text x="1116" y="1652" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Activate Slack</text><text x="288" y="1652" font-size="12" fill="#666" stroke="none" >All provider-owned approvals and installation steps stay visible and resumable.</text></svg>

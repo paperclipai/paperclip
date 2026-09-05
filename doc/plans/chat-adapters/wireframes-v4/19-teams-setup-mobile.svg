@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="2488" viewBox="0 0 375 2488" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="375" height="2488"/><rect x="0" y="0" width="375" height="56" rx="6" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Teams</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><text x="16" y="88" font-size="20" fill="#000" stroke="none" font-weight="700">Invite Maya to Teams</text><text x="16" y="116" font-size="12" fill="#666" stroke="none" >Register the bot, package the Teams app, install</text>
+<text x="16" y="132" font-size="12" fill="#666" stroke="none" >it to the intended scopes, and verify delivery.</text><text x="16" y="194" font-size="20" fill="#000" stroke="none" font-weight="700">Agent and Teams identity</text>
+<text x="16" y="220" font-size="12" fill="#666" stroke="none" >One Teams bot application represents exactly</text>
+<text x="16" y="236" font-size="12" fill="#666" stroke="none" >one Paperclip agent.</text>
+<line x1="16" y1="248" x2="359" y2="248" />
+<text x="24" y="272" font-size="14" fill="#000" stroke="none" font-weight="600">Paperclip agent</text>
+<text x="24" y="294" font-size="12" fill="#666" stroke="none" >Maya · Support engineer</text>
+<rect x="223" y="304" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="334" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change agent</text>
+<line x1="24" y1="360" x2="351" y2="360" stroke="#e6e6e6"/>
+<text x="24" y="384" font-size="14" fill="#000" stroke="none" font-weight="600">Teams bot</text>
+<text x="24" y="406" font-size="12" fill="#666" stroke="none" >Maya · app and avatar preview</text>
+<rect x="223" y="416" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="446" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Preview</text>
+<line x1="24" y1="472" x2="351" y2="472" stroke="#e6e6e6"/>
+<text x="24" y="496" font-size="14" fill="#000" stroke="none" font-weight="600">Messaging endpoint</text>
+<text x="24" y="518" font-size="12" fill="#666" stroke="none" >https://chat.paperclip.app/in/••••/teams</text>
+<rect x="223" y="528" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="558" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy</text>
+<text x="16" y="614" font-size="20" fill="#000" stroke="none" font-weight="700">Choose Microsoft environment</text>
+<text x="16" y="640" font-size="12" fill="#666" stroke="none" >Tenant and identity model must be known before</text>
+<text x="16" y="656" font-size="12" fill="#666" stroke="none" >app registration.</text>
+<line x1="16" y1="668" x2="359" y2="668" />
+<text x="24" y="692" font-size="14" fill="#000" stroke="none" font-weight="600">Cloud</text>
+<text x="24" y="714" font-size="12" fill="#666" stroke="none" >Microsoft commercial cloud</text>
+<rect x="223" y="724" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="754" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change</text>
+<line x1="24" y1="780" x2="351" y2="780" stroke="#e6e6e6"/>
+<text x="24" y="804" font-size="14" fill="#000" stroke="none" font-weight="600">Tenant mode</text>
+<text x="24" y="826" font-size="12" fill="#666" stroke="none" >Single tenant · Acme</text>
+<rect x="223" y="836" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="866" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change</text>
+<line x1="24" y1="892" x2="351" y2="892" stroke="#e6e6e6"/>
+<text x="24" y="916" font-size="14" fill="#000" stroke="none" font-weight="600">Bot authentication</text>
+<text x="24" y="938" font-size="12" fill="#666" stroke="none" >Federated workload identity</text>
+<rect x="223" y="948" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="978" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Recommended</text>
+<text x="16" y="1034" font-size="20" fill="#000" stroke="none" font-weight="700">Register and package the Teams app</text>
+<text x="16" y="1060" font-size="12" fill="#666" stroke="none" >Teams Developer CLI is the shortest supported</text>
+<text x="16" y="1076" font-size="12" fill="#666" stroke="none" >handoff; manual registration remains available.</text>
+<line x1="16" y1="1088" x2="359" y2="1088" />
+<text x="24" y="1112" font-size="14" fill="#000" stroke="none" font-weight="600">1. Verify tenant policy</text>
+<text x="24" y="1134" font-size="12" fill="#666" stroke="none" >Custom app upload or tenant-admin</text>
+<text x="24" y="1150" font-size="12" fill="#666" stroke="none" >distribution must be allowed.</text>
+<rect x="223" y="1144" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1174" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open policy</text>
+<line x1="24" y1="1200" x2="351" y2="1200" stroke="#e6e6e6"/>
+<text x="24" y="1224" font-size="14" fill="#000" stroke="none" font-weight="600">2. Create app and bot</text>
+<text x="24" y="1246" font-size="12" fill="#666" stroke="none" >Use the copied endpoint and generated</text>
+<text x="24" y="1262" font-size="12" fill="#666" stroke="none" >manifest values.</text>
+<rect x="223" y="1256" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1286" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy command</text>
+<line x1="24" y1="1312" x2="351" y2="1312" stroke="#e6e6e6"/>
+<text x="24" y="1336" font-size="14" fill="#000" stroke="none" font-weight="600">3. Download app package</text>
+<text x="24" y="1358" font-size="12" fill="#666" stroke="none" >Paperclip validates scopes, IDs, endpoint,</text>
+<text x="24" y="1374" font-size="12" fill="#666" stroke="none" >and package consistency.</text>
+<rect x="223" y="1368" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1398" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Download</text>
+<text x="16" y="1454" font-size="20" fill="#000" stroke="none" font-weight="700">Install in Teams</text>
+<text x="16" y="1480" font-size="12" fill="#666" stroke="none" >Microsoft owns tenant approval and the</text>
+<text x="16" y="1496" font-size="12" fill="#666" stroke="none" >personal, team, channel, or group-chat…</text>
+<line x1="16" y1="1508" x2="359" y2="1508" />
+<text x="24" y="1532" font-size="14" fill="#000" stroke="none" font-weight="600">Install link</text>
+<text x="24" y="1554" font-size="12" fill="#666" stroke="none" >Open the Teams client installation flow.</text>
+<rect x="223" y="1564" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1594" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Teams</text>
+<line x1="24" y1="1620" x2="351" y2="1620" stroke="#e6e6e6"/>
+<text x="24" y="1644" font-size="14" fill="#000" stroke="none" font-weight="600">Admin-managed tenant</text>
+<text x="24" y="1666" font-size="12" fill="#666" stroke="none" >Export the package for the Teams</text>
+<text x="24" y="1682" font-size="12" fill="#666" stroke="none" >administrator when sideloading is blocked.</text>
+<rect x="223" y="1676" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1706" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Export package</text>
+<line x1="24" y1="1732" x2="351" y2="1732" stroke="#e6e6e6"/>
+<text x="24" y="1756" font-size="14" fill="#000" stroke="none" font-weight="600">Credentials</text>
+<text x="24" y="1778" font-size="12" fill="#666" stroke="none" >Client/app ID and federated identity</text>
+<text x="24" y="1794" font-size="12" fill="#666" stroke="none" >metadata; secret ref only if client secret…</text>
+<rect x="223" y="1788" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1818" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Review</text>
+<text x="16" y="1874" font-size="20" fill="#000" stroke="none" font-weight="700">Verify and activate</text>
+<text x="16" y="1900" font-size="12" fill="#666" stroke="none" >Basic mention-based chat does not require broad</text>
+<text x="16" y="1916" font-size="12" fill="#666" stroke="none" >Graph directory or history consent.</text>
+<line x1="16" y1="1928" x2="359" y2="1928" />
+<text x="24" y="1952" font-size="14" fill="#000" stroke="none" font-weight="600">Registration</text>
+<text x="24" y="1974" font-size="12" fill="#666" stroke="none" >Entra app, bot ID, tenant, and messaging</text>
+<text x="24" y="1990" font-size="12" fill="#666" stroke="none" >endpoint</text>
+<rect x="223" y="1984" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2014" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="24" y1="2040" x2="351" y2="2040" stroke="#e6e6e6"/>
+<text x="24" y="2064" font-size="14" fill="#000" stroke="none" font-weight="600">Manifest and install</text>
+<text x="24" y="2086" font-size="12" fill="#666" stroke="none" >Personal/team/group scopes and installed</text>
+<text x="24" y="2102" font-size="12" fill="#666" stroke="none" >package version</text>
+<rect x="223" y="2096" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2126" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="24" y1="2152" x2="351" y2="2152" stroke="#e6e6e6"/>
+<text x="24" y="2176" font-size="14" fill="#000" stroke="none" font-weight="600">Teams doctor</text>
+<text x="24" y="2198" font-size="12" fill="#666" stroke="none" >Package and endpoint checks</text>
+<rect x="223" y="2208" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2238" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="24" y1="2264" x2="351" y2="2264" stroke="#e6e6e6"/>
+<text x="24" y="2288" font-size="14" fill="#000" stroke="none" font-weight="600">Test message</text>
+<text x="24" y="2310" font-size="12" fill="#666" stroke="none" >Send a private installation check before</text>
+<text x="24" y="2326" font-size="12" fill="#666" stroke="none" >activation.</text>
+<rect x="223" y="2320" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2350" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Send test</text><rect x="16" y="2416" width="343" height="48" rx="6" fill="#000"/><text x="187.5" y="2446" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Activate Teams</text><g data-region="annotations"><rect x="8" y="164" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="164" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="168" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="584" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="584" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="588" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="1004" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1004" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1008" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1424" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1424" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1428" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<rect x="8" y="1844" width="359" height="540" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1844" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1848" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">5</text></g></svg>

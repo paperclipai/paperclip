@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="2376" viewBox="0 0 375 2376" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="375" height="2376"/><rect x="0" y="0" width="375" height="56" rx="6" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Telegram</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><text x="16" y="88" font-size="20" fill="#000" stroke="none" font-weight="700">Invite Maya to Telegram</text><text x="16" y="116" font-size="12" fill="#666" stroke="none" >Create one BotFather bot, choose a delivery</text>
+<text x="16" y="132" font-size="12" fill="#666" stroke="none" >mode, add it to chats, and verify privacy…</text><text x="16" y="194" font-size="20" fill="#000" stroke="none" font-weight="700">Agent and Telegram identity</text>
+<text x="16" y="220" font-size="12" fill="#666" stroke="none" >One Telegram username represents exactly one</text>
+<text x="16" y="236" font-size="12" fill="#666" stroke="none" >Paperclip agent.</text>
+<line x1="16" y1="248" x2="359" y2="248" />
+<text x="24" y="272" font-size="14" fill="#000" stroke="none" font-weight="600">Paperclip agent</text>
+<text x="24" y="294" font-size="12" fill="#666" stroke="none" >Maya · Support engineer</text>
+<rect x="223" y="304" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="334" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change agent</text>
+<line x1="24" y1="360" x2="351" y2="360" stroke="#e6e6e6"/>
+<text x="24" y="384" font-size="14" fill="#000" stroke="none" font-weight="600">Telegram bot</text>
+<text x="24" y="406" font-size="12" fill="#666" stroke="none" >Maya · @maya_acme_bot · avatar/about</text>
+<text x="24" y="422" font-size="12" fill="#666" stroke="none" >preview</text>
+<rect x="223" y="416" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="446" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Preview</text>
+<text x="16" y="502" font-size="20" fill="#000" stroke="none" font-weight="700">Create the bot with BotFather</text>
+<text x="16" y="528" font-size="12" fill="#666" stroke="none" >Telegram owns username uniqueness, profile,</text>
+<text x="16" y="544" font-size="12" fill="#666" stroke="none" >group eligibility, and token issuance.</text>
+<line x1="16" y1="556" x2="359" y2="556" />
+<text x="24" y="580" font-size="14" fill="#000" stroke="none" font-weight="600">1. Create bot</text>
+<text x="24" y="602" font-size="12" fill="#666" stroke="none" >Use /newbot, then set display name and</text>
+<text x="24" y="618" font-size="12" fill="#666" stroke="none" >unique username.</text>
+<rect x="223" y="612" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="642" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Telegram</text>
+<line x1="24" y1="668" x2="351" y2="668" stroke="#e6e6e6"/>
+<text x="24" y="692" font-size="14" fill="#000" stroke="none" font-weight="600">2. Configure profile</text>
+<text x="24" y="714" font-size="12" fill="#666" stroke="none" >Set avatar, about text, and group-joining</text>
+<text x="24" y="730" font-size="12" fill="#666" stroke="none" >policy.</text>
+<rect x="223" y="724" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="754" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy values</text>
+<line x1="24" y1="780" x2="351" y2="780" stroke="#e6e6e6"/>
+<text x="24" y="804" font-size="14" fill="#000" stroke="none" font-weight="600">3. Keep privacy mode on</text>
+<text x="24" y="826" font-size="12" fill="#666" stroke="none" >The bot sees addressed group messages</text>
+<text x="24" y="842" font-size="12" fill="#666" stroke="none" >without consuming ambient traffic.</text>
+<rect x="223" y="836" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="866" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Required</text>
+<text x="16" y="922" font-size="20" fill="#000" stroke="none" font-weight="700">Choose delivery</text>
+<text x="16" y="948" font-size="12" fill="#666" stroke="none" >Webhook and polling are mutually exclusive.</text>
+<line x1="16" y1="976" x2="359" y2="976" />
+<text x="24" y="1000" font-size="14" fill="#000" stroke="none" font-weight="600">Production</text>
+<text x="24" y="1022" font-size="12" fill="#666" stroke="none" >HTTPS webhook with Telegram secret-token</text>
+<text x="24" y="1038" font-size="12" fill="#666" stroke="none" >verification.</text>
+<rect x="223" y="1032" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1062" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Webhook</text>
+<line x1="24" y1="1088" x2="351" y2="1088" stroke="#e6e6e6"/>
+<text x="24" y="1112" font-size="14" fill="#000" stroke="none" font-weight="600">Private Paperclip</text>
+<text x="24" y="1134" font-size="12" fill="#666" stroke="none" >Use the outbound relay to reach the same</text>
+<text x="24" y="1150" font-size="12" fill="#666" stroke="none" >verified webhook handler.</text>
+<rect x="223" y="1144" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1174" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Use relay</text>
+<line x1="24" y1="1200" x2="351" y2="1200" stroke="#e6e6e6"/>
+<text x="24" y="1224" font-size="14" fill="#000" stroke="none" font-weight="600">Local development</text>
+<text x="24" y="1246" font-size="12" fill="#666" stroke="none" >One long-running poller; Paperclip removes</text>
+<text x="24" y="1262" font-size="12" fill="#666" stroke="none" >any webhook first.</text>
+<rect x="223" y="1256" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1286" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Advanced</text>
+<text x="16" y="1342" font-size="20" fill="#000" stroke="none" font-weight="700">Connect token and chats</text>
+<text x="16" y="1368" font-size="12" fill="#666" stroke="none" >The bot token is a Paperclip secret reference</text>
+<text x="16" y="1384" font-size="12" fill="#666" stroke="none" >and can be rotated independently.</text>
+<line x1="16" y1="1396" x2="359" y2="1396" />
+<text x="24" y="1420" font-size="14" fill="#000" stroke="none" font-weight="600">Bot token</text>
+<text x="24" y="1442" font-size="12" fill="#666" stroke="none" >Secret ref · telegram/maya-bot ·•••• 471A</text>
+<rect x="223" y="1452" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1482" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Replace</text>
+<line x1="24" y1="1508" x2="351" y2="1508" stroke="#e6e6e6"/>
+<text x="24" y="1532" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook URL and secret</text>
+<text x="24" y="1554" font-size="12" fill="#666" stroke="none" >Generated endpoint and secret-token header</text>
+<text x="24" y="1570" font-size="12" fill="#666" stroke="none" >value.</text>
+<rect x="223" y="1564" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1594" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy</text>
+<line x1="24" y1="1620" x2="351" y2="1620" stroke="#e6e6e6"/>
+<text x="24" y="1644" font-size="14" fill="#000" stroke="none" font-weight="600">Add Maya to chats</text>
+<text x="24" y="1666" font-size="12" fill="#666" stroke="none" >Invite the bot to groups or forums; topic</text>
+<text x="24" y="1682" font-size="12" fill="#666" stroke="none" >administration is optional.</text>
+<rect x="223" y="1676" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1706" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Instructions</text>
+<text x="16" y="1762" font-size="20" fill="#000" stroke="none" font-weight="700">Verify and activate</text>
+<text x="16" y="1788" font-size="12" fill="#666" stroke="none" >Verification checks both provider state and the</text>
+<text x="16" y="1804" font-size="12" fill="#666" stroke="none" >expected addressed-message behavior.</text>
+<line x1="16" y1="1816" x2="359" y2="1816" />
+<text x="24" y="1840" font-size="14" fill="#000" stroke="none" font-weight="600">Bot identity</text>
+<text x="24" y="1862" font-size="12" fill="#666" stroke="none" >getMe → @maya_acme_bot</text>
+<rect x="223" y="1872" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1902" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="24" y1="1928" x2="351" y2="1928" stroke="#e6e6e6"/>
+<text x="24" y="1952" font-size="14" fill="#000" stroke="none" font-weight="600">Delivery</text>
+<text x="24" y="1974" font-size="12" fill="#666" stroke="none" >getWebhookInfo · URL · secret · zero</text>
+<text x="24" y="1990" font-size="12" fill="#666" stroke="none" >pending updates</text>
+<rect x="223" y="1984" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2014" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="24" y1="2040" x2="351" y2="2040" stroke="#e6e6e6"/>
+<text x="24" y="2064" font-size="14" fill="#000" stroke="none" font-weight="600">Privacy and membership</text>
+<text x="24" y="2086" font-size="12" fill="#666" stroke="none" >Privacy on · 2 allowed chats · forum topic</text>
+<text x="24" y="2102" font-size="12" fill="#666" stroke="none" >access</text>
+<rect x="223" y="2096" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2126" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="24" y1="2152" x2="351" y2="2152" stroke="#e6e6e6"/>
+<text x="24" y="2176" font-size="14" fill="#000" stroke="none" font-weight="600">Test message</text>
+<text x="24" y="2198" font-size="12" fill="#666" stroke="none" >Send a DM or addressed group message before</text>
+<text x="24" y="2214" font-size="12" fill="#666" stroke="none" >activation.</text>
+<rect x="223" y="2208" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2238" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Send test</text><rect x="16" y="2304" width="343" height="48" rx="6" fill="#000"/><text x="187.5" y="2334" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Activate Telegram</text><g data-region="annotations"><rect x="8" y="164" width="359" height="316" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="164" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="168" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="472" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="472" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="476" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="892" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="892" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="896" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1312" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1312" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1316" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<rect x="8" y="1732" width="359" height="540" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1732" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1736" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">5</text></g></svg>

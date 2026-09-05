@@ -45,6 +45,10 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1122.0",
+    "@chat-adapter/github": "4.39.0",
+    "@chat-adapter/slack": "4.39.0",
+    "@chat-adapter/teams": "4.39.0",
+    "@chat-adapter/telegram": "4.39.0",
     "@opentelemetry/api": "^1.9.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
@@ -67,6 +71,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-auth": "1.7.2",
+    "chat": "4.39.0",
     "chokidar": "^5.0.0",
     "detect-port": "^2.1.0",
     "dompurify": "^3.4.14",

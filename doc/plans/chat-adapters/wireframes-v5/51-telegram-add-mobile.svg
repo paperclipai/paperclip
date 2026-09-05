@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1760" viewBox="0 0 375 1760" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1760"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Telegram</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="264" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#000"/>
+<text x="32" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" >Create Telegram bot</text>
+<circle cx="32" cy="208" r="16" fill="#fff"/>
+<text x="32" y="213" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="213" font-size="14" fill="#000" stroke="none" font-weight="700">Add to chats</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="360" font-size="20" fill="#000" stroke="none" font-weight="700">Add Maya to Telegram chats</text>
+<text x="16" y="392" font-size="12" fill="#666" stroke="none" >Open Maya's Telegram profile, then add the bot</text>
+<text x="16" y="408" font-size="12" fill="#666" stroke="none" >wherever people should start tasks.</text>
+<text x="16" y="456" font-size="20" fill="#000" stroke="none" font-weight="700">Bot connected</text>
+<text x="16" y="480" font-size="12" fill="#666" stroke="none" >Paperclip verified the BotFather token and</text>
+<text x="16" y="496" font-size="12" fill="#666" stroke="none" >configured delivery automatically.</text>
+<line x1="16" y1="512" x2="359" y2="512" />
+<text x="24" y="536" font-size="14" fill="#000" stroke="none" font-weight="600">Agent</text>
+<text x="24" y="558" font-size="12" fill="#666" stroke="none" >Maya · permanently assigned</text>
+<text x="351" y="608" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<line x1="24" y1="624" x2="351" y2="624" stroke="#e6e6e6"/>
+<text x="24" y="648" font-size="14" fill="#000" stroke="none" font-weight="600">Telegram identity</text>
+<text x="24" y="670" font-size="12" fill="#666" stroke="none" >@maya_acme_bot · numeric ID verified</text>
+<text x="351" y="720" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Connected</text>
+<line x1="24" y1="736" x2="351" y2="736" stroke="#e6e6e6"/>
+<text x="24" y="760" font-size="14" fill="#000" stroke="none" font-weight="600">Delivery</text>
+<text x="24" y="782" font-size="12" fill="#666" stroke="none" >Verified webhook selected for this</text>
+<text x="24" y="798" font-size="12" fill="#666" stroke="none" >deployment</text>
+<text x="351" y="832" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Healthy</text>
+<text x="16" y="880" font-size="20" fill="#000" stroke="none" font-weight="700">Choose reach in Telegram</text>
+<text x="16" y="904" font-size="12" fill="#666" stroke="none" >Telegram owns chat membership; Paperclip</text>
+<text x="16" y="920" font-size="12" fill="#666" stroke="none" >learns stable IDs when the bot receives an</text>
+<text x="16" y="936" font-size="12" fill="#666" stroke="none" >addressed message.</text>
+<line x1="16" y1="936" x2="359" y2="936" />
+<text x="24" y="960" font-size="14" fill="#000" stroke="none" font-weight="600">Direct messages</text>
+<text x="24" y="982" font-size="12" fill="#666" stroke="none" >Anyone who opens the bot can start an</text>
+<text x="24" y="998" font-size="12" fill="#666" stroke="none" >active task, subject to Paperclip access…</text>
+<text x="351" y="1032" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Available</text>
+<line x1="24" y1="1048" x2="351" y2="1048" stroke="#e6e6e6"/>
+<text x="24" y="1072" font-size="14" fill="#000" stroke="none" font-weight="600">Groups</text>
+<text x="24" y="1094" font-size="12" fill="#666" stroke="none" >Add Maya to a group; keep BotFather privacy</text>
+<text x="24" y="1110" font-size="12" fill="#666" stroke="none" >mode on.</text>
+<text x="351" y="1144" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In Telegram</text>
+<line x1="24" y1="1160" x2="351" y2="1160" stroke="#e6e6e6"/>
+<text x="24" y="1184" font-size="14" fill="#000" stroke="none" font-weight="600">Forum topics</text>
+<text x="24" y="1206" font-size="12" fill="#666" stroke="none" >Add Maya to the forum; an addressed topic</text>
+<text x="24" y="1222" font-size="12" fill="#666" stroke="none" >message establishes the stable topic…</text>
+<text x="351" y="1256" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In Telegram</text>
+<text x="16" y="1304" font-size="20" fill="#000" stroke="none" font-weight="700">No admin rights by default</text>
+<text x="16" y="1328" font-size="12" fill="#666" stroke="none" >Ordinary conversation does not need topic</text>
+<text x="16" y="1344" font-size="12" fill="#666" stroke="none" >creation, member management, or broad group</text>
+<text x="16" y="1360" font-size="12" fill="#666" stroke="none" >visibility.</text>
+<line x1="16" y1="1360" x2="359" y2="1360" />
+<text x="24" y="1384" font-size="14" fill="#000" stroke="none" font-weight="600">Privacy mode</text>
+<text x="24" y="1406" font-size="12" fill="#666" stroke="none" >Unrelated group traffic is not delivered to</text>
+<text x="24" y="1422" font-size="12" fill="#666" stroke="none" >Maya.</text>
+<text x="351" y="1456" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Keep on</text>
+<line x1="24" y1="1472" x2="351" y2="1472" stroke="#e6e6e6"/>
+<text x="24" y="1496" font-size="14" fill="#000" stroke="none" font-weight="600">Admin upgrade</text>
+<text x="24" y="1518" font-size="12" fill="#666" stroke="none" >Request only later if a separately planned</text>
+<text x="24" y="1534" font-size="12" fill="#666" stroke="none" >capability truly requires it.</text>
+<text x="351" y="1568" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Not requested</text>
+<rect x="16" y="1624" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1654" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Continue</text>
+<rect x="16" y="1688" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1718" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open Maya in Telegram</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="272" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="424" width="359" height="424" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="424" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="428" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="848" width="359" height="736" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="848" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="852" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1616" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1616" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1620" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

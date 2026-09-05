@@ -67,6 +67,9 @@ import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
 import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
 import { Browse } from "./pages/apps/Browse";
 import { AppsConnect } from "./pages/apps/AppsConnect";
+import { ChatEndpointSetup } from "./pages/apps/chat/ChatEndpointSetup";
+import { ChatEndpointDetail } from "./pages/apps/chat/ChatEndpointDetail";
+import { ChatIdentityConfirm } from "./pages/apps/chat/ChatIdentityConfirm";
 import { canEnterAppsConnect } from "./pages/apps/app-connect-policy";
 import { AppsReview } from "./pages/apps/AppsReview";
 import { AppDetail } from "./pages/apps/AppDetail";
@@ -198,6 +201,9 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         element={<AppsConnectEntryRoute credentialSource="vercel_connect" />}
       />
       <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
+      <Route path="apps/chat/connect" element={<ChatEndpointSetup />} />
+      <Route path="apps/chat/:endpointId" element={<Navigate to="settings" replace />} />
+      <Route path="apps/chat/:endpointId/:tab" element={<ChatEndpointDetail />} />
       <Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />
       <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />
       <Route path="apps/review" element={<AppsReview />} />
@@ -735,6 +741,9 @@ export function App() {
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
+        <Route element={streamlinedUiLoaded ? <CloudAccessGate /> : <PaperclipLoading />}>
+          <Route path="chat-identity/confirm" element={<ChatIdentityConfirm />} />
+        </Route>
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
         <Route path="ux-lab/bootstrap-setup" element={<BootstrapSetupUxLab />} />
         <Route path="ux-lab/responsible-user-denial" element={<ResponsibleUserDenialUxLab />} />

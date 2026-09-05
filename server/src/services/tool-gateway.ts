@@ -1030,8 +1030,8 @@ export function createToolGatewayService(
     }, new Map());
 
     return eligibleRows.map(({ catalogEntry, connection, application }, index) => {
-      if (connection.transport === "rest_api") {
-        throw new Error(`REST API connection ${connection.id} cannot be exposed through the MCP gateway`);
+      if (connection.transport !== "mcp_remote" && connection.transport !== "local_stdio") {
+        throw new Error(`Non-MCP connection ${connection.id} cannot be exposed through the MCP gateway`);
       }
       const baseName = baseNames[index]!;
       const gatewayToolName = baseNameCounts.get(baseName)! > 1

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "slug": "github",
   "name": "GitHub",
-  "description": "Read code and pull requests, and coordinate repository work.",
+  "description": "Give agents repository tools or let people work with an agent from GitHub issues and pull requests.",
   "categories": [
     "developer"
   ],
@@ -12,20 +12,14 @@
     "darkLogoUrl": "/brands/apps/github-dark.svg"
   },
   "urlPatterns": [
-    "https://api.githubcopilot.com/mcp/*"
+    "https://api.githubcopilot.com/mcp/*",
+    "https://github.com/*"
   ],
   "methods": [
     {
       "key": "managed",
-      "label": "Connect with GitHub",
       "transport": "mcp_remote",
       "auth": "oauth",
-      "oauthStrategy": "paperclip_cloud_connector",
-      "connectorProfile": "github.code",
-      "grantKinds": [
-        "user",
-        "agent"
-      ],
       "ownershipModes": [
         "platform_shared"
       ],
@@ -34,10 +28,18 @@
         "serverUrl": "https://api.githubcopilot.com/mcp/"
       },
       "guidanceMd": "Authorize Paperclip, then choose selected repositories in GitHub. You can edit repository access later from GitHub's installation settings.",
+      "riskTier": "S3",
+      "label": "Use this connection as an agent tool",
+      "purpose": "tool",
+      "oauthStrategy": "paperclip_cloud_connector",
+      "connectorProfile": "github.code",
+      "grantKinds": [
+        "user",
+        "agent"
+      ],
       "warnings": [
         "Shell Git and gh receive this identity for the run and are not constrained by per-tool Ask-first controls."
       ],
-      "riskTier": "S3",
       "requiredResourceFilters": [
         "organization",
         "repository"
@@ -45,7 +47,6 @@
     },
     {
       "key": "mcp-key",
-      "label": "Personal access token (advanced)",
       "transport": "mcp_remote",
       "auth": "api_key",
       "ownershipModes": [
@@ -57,6 +58,8 @@
       },
       "guidanceMd": "Create a fine-grained token limited to the repositories agents should use.",
       "riskTier": "S3",
+      "label": "Personal access token (advanced)",
+      "purpose": "tool",
       "credentialFields": [
         {
           "key": "authorization",
@@ -72,6 +75,54 @@
         "name": "Authorization",
         "prefix": "Bearer "
       },
+      "requiredResourceFilters": [
+        "organization",
+        "repository"
+      ]
+    },
+    {
+      "key": "chat-agent",
+      "label": "Chat with an agent",
+      "purpose": "channel",
+      "provider": "github",
+      "transport": "chat_sdk",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Let people in GitHub start and continue work with one Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "appId",
+          "label": "GitHub App ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "123456",
+          "secret": false
+        },
+        {
+          "key": "privateKey",
+          "label": "Private key (PEM)",
+          "type": "textarea",
+          "required": true,
+          "placeholder": "-----BEGIN RSA PRIVATE KEY-----",
+          "secret": true
+        },
+        {
+          "key": "webhookSecret",
+          "label": "Webhook secret",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the secret configured on the GitHub App webhook",
+          "secret": true
+        }
+      ],
+      "guidanceMd": "Create one private GitHub App with active SSL-verified webhooks, Issues and Pull requests read/write permission, and the issue_comment and pull_request_review_comment events. Install it only on the repositories where people may mention the agent.",
+      "consoleLinks": {
+        "register": "https://github.com/settings/apps/new",
+        "docs": "https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app"
+      },
+      "riskTier": "S3",
       "requiredResourceFilters": [
         "organization",
         "repository"

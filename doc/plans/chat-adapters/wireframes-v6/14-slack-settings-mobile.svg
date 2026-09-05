@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1676" viewBox="0 0 375 1676" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="375" height="1676"/><rect x="0" y="0" width="375" height="56" rx="6" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Maya on Slack</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><rect x="16" y="72" width="343" height="48" rx="6" fill="#fff"/><text x="32" y="102" font-size="14" fill="#000" stroke="none" font-weight="600">Settings</text><text x="343" y="102" font-size="14" fill="#666" stroke="none" text-anchor="end">⌄</text><text x="16" y="152" font-size="20" fill="#000" stroke="none" font-weight="700">Slack settings</text><text x="16" y="176" font-size="12" fill="#666" stroke="none" >Only scope, task boundaries, access, and</text>
+<text x="16" y="192" font-size="12" fill="#666" stroke="none" >necessary provider operations.</text><text x="16" y="222" font-size="20" fill="#000" stroke="none" font-weight="700">Conversation reach</text>
+<text x="16" y="248" font-size="12" fill="#666" stroke="none" >Paperclip can narrow reach but cannot exceed</text>
+<text x="16" y="264" font-size="12" fill="#666" stroke="none" >Slack installation and channel membership.</text>
+<line x1="16" y1="276" x2="359" y2="276" />
+<text x="24" y="300" font-size="14" fill="#000" stroke="none" font-weight="600">Workspace</text>
+<text x="24" y="322" font-size="12" fill="#666" stroke="none" >Acme · T02ACME</text>
+<rect x="223" y="332" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="362" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change install</text>
+<line x1="24" y1="388" x2="351" y2="388" stroke="#e6e6e6"/>
+<text x="24" y="412" font-size="14" fill="#000" stroke="none" font-weight="600">Allowed channels</text>
+<text x="24" y="434" font-size="12" fill="#666" stroke="none" >#customer-support, #incidents</text>
+<rect x="223" y="444" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="474" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">2 channels</text>
+<line x1="24" y1="500" x2="351" y2="500" stroke="#e6e6e6"/>
+<text x="24" y="524" font-size="14" fill="#000" stroke="none" font-weight="600">Direct messages</text>
+<text x="24" y="546" font-size="12" fill="#666" stroke="none" >People in this workspace may start a task</text>
+<text x="24" y="562" font-size="12" fill="#666" stroke="none" >in DM.</text>
+<rect x="223" y="556" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="586" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Allowed</text>
+<text x="16" y="642" font-size="20" fill="#000" stroke="none" font-weight="700">Task boundaries</text>
+<text x="16" y="668" font-size="12" fill="#666" stroke="none" >Slack's native thread is the task boundary for</text>
+<text x="16" y="684" font-size="12" fill="#666" stroke="none" >channel work.</text>
+<line x1="16" y1="696" x2="359" y2="696" />
+<text x="24" y="720" font-size="14" fill="#000" stroke="none" font-weight="600">New channel work</text>
+<text x="24" y="742" font-size="12" fill="#666" stroke="none" >A root @maya mention creates the Slack</text>
+<text x="24" y="758" font-size="12" fill="#666" stroke="none" >thread and one Paperclip issue.</text>
+<rect x="223" y="752" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="782" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Fixed</text>
+<line x1="24" y1="808" x2="351" y2="808" stroke="#e6e6e6"/>
+<text x="24" y="832" font-size="14" fill="#000" stroke="none" font-weight="600">Bound-thread replies</text>
+<text x="24" y="854" font-size="12" fill="#666" stroke="none" >Human replies continue without another</text>
+<text x="24" y="870" font-size="12" fill="#666" stroke="none" >mention.</text>
+<rect x="223" y="864" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="894" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Subscribed</text>
+<line x1="24" y1="920" x2="351" y2="920" stroke="#e6e6e6"/>
+<text x="24" y="944" font-size="14" fill="#000" stroke="none" font-weight="600">Existing thread</text>
+<text x="24" y="966" font-size="12" fill="#666" stroke="none" >The first @maya mention may claim an</text>
+<text x="24" y="982" font-size="12" fill="#666" stroke="none" >unbound thread once.</text>
+<rect x="223" y="976" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1006" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Allow</text>
+<line x1="24" y1="1032" x2="351" y2="1032" stroke="#e6e6e6"/>
+<text x="24" y="1056" font-size="14" fill="#000" stroke="none" font-weight="600">Direct messages</text>
+<text x="24" y="1078" font-size="12" fill="#666" stroke="none" >One active issue; New task starts another.</text>
+<rect x="223" y="1088" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1118" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Active task</text>
+<text x="16" y="1174" font-size="20" fill="#000" stroke="none" font-weight="700">Security and delivery</text>
+<text x="16" y="1200" font-size="12" fill="#666" stroke="none" >Paperclip reports the deployment-selected path;</text>
+<text x="16" y="1216" font-size="12" fill="#666" stroke="none" >it is not an endpoint setting.</text>
+<line x1="16" y1="1228" x2="359" y2="1228" />
+<text x="24" y="1252" font-size="14" fill="#000" stroke="none" font-weight="600">Delivery path</text>
+<text x="24" y="1274" font-size="12" fill="#666" stroke="none" >Selected from instance reachability and</text>
+<text x="24" y="1290" font-size="12" fill="#666" stroke="none" >verified continuously.</text>
+<rect x="223" y="1284" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1314" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Automatic</text>
+<line x1="24" y1="1340" x2="351" y2="1340" stroke="#e6e6e6"/>
+<text x="24" y="1364" font-size="14" fill="#000" stroke="none" font-weight="600">Credential rotation</text>
+<text x="24" y="1386" font-size="12" fill="#666" stroke="none" >Replace token or signing-secret references</text>
+<text x="24" y="1402" font-size="12" fill="#666" stroke="none" >without changing bindings.</text>
+<rect x="223" y="1396" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1426" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Manage secrets</text>
+<line x1="24" y1="1452" x2="351" y2="1452" stroke="#e6e6e6"/>
+<text x="24" y="1476" font-size="14" fill="#000" stroke="none" font-weight="600">Installation drift</text>
+<text x="24" y="1498" font-size="12" fill="#666" stroke="none" >Pause affected resources when membership,</text>
+<text x="24" y="1514" font-size="12" fill="#666" stroke="none" >scopes, or OAuth are revoked.</text>
+<rect x="223" y="1508" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1538" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Automatic</text><rect x="16" y="1604" width="343" height="48" rx="6" fill="#000"/><text x="187.5" y="1634" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Save changes</text><g data-region="annotations"><rect x="8" y="192" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="192" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="196" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="612" width="359" height="540" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="612" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="616" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="1144" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1144" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1148" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>

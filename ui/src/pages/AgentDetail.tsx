@@ -89,6 +89,7 @@ import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { AgentToolsTab } from "./AgentToolsTab";
+import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
 import {
   appendCapped,
   LIVE_TRANSCRIPT_RENDER_LIMIT,
@@ -1505,6 +1506,10 @@ export function AgentDetail() {
 
       {activeView === "tools" && resolvedCompanyId && (
         <AgentToolsTab agent={agent} companyId={resolvedCompanyId} />
+      )}
+
+      {activeView === "channels" && resolvedCompanyId && (
+        <AgentChannelsPanel agentId={agent.id} companyId={resolvedCompanyId} />
       )}
 
       {activeView === "permissions" && (

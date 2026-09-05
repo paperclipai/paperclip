@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1392" viewBox="0 0 375 1392" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1392"/><g data-region="mobile-header"><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  GitHub</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text></g><text x="16" y="80" font-size="12" fill="#666" stroke="none" font-weight="700">CUSTOM SETUP</text>
+<line x1="32" y1="104" x2="32" y2="272" />
+<circle cx="32" cy="104" r="16" fill="#000"/>
+<text x="32" y="109" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="109" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="160" r="16" fill="#fff"/>
+<text x="32" y="165" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="165" font-size="14" fill="#000" stroke="none" font-weight="700">Configure existing App</text>
+<circle cx="32" cy="216" r="16" fill="#fff"/>
+<text x="32" y="221" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="221" font-size="14" fill="#666" stroke="none" >Choose repositories</text>
+<circle cx="32" cy="272" r="16" fill="#fff"/>
+<text x="32" y="277" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="277" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="368" font-size="20" fill="#000" stroke="none" font-weight="700">Connect an existing GitHub App</text>
+<text x="16" y="424" font-size="12" fill="#666" stroke="none" >Update the App in GitHub, then provide its</text>
+<text x="16" y="440" font-size="12" fill="#666" stroke="none" >identity credentials.</text>
+<text x="16" y="504" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook URL and secret</text>
+<rect x="16" y="520" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="550" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy Paperclip webhook settings</text>
+<text x="16" y="616" font-size="20" fill="#000" stroke="none" font-weight="700">Do this</text>
+<circle cx="32" cy="672" r="16" fill="#fff"/>
+<text x="32" y="677" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<text x="64" y="668" font-size="14" fill="#000" stroke="none" font-weight="600">Update the webhook</text>
+<text x="64" y="692" font-size="12" fill="#666" stroke="none" >In the GitHub App settings, paste</text>
+<text x="64" y="708" font-size="12" fill="#666" stroke="none" >Paperclip's URL and generated secret,</text>
+<text x="64" y="724" font-size="12" fill="#666" stroke="none" >then make the webhook active.</text>
+<line x1="64" y1="744" x2="359" y2="744" stroke="#e6e6e6"/>
+<circle cx="32" cy="784" r="16" fill="#fff"/>
+<text x="32" y="789" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="780" font-size="14" fill="#000" stroke="none" font-weight="600">Set permissions and events</text>
+<text x="64" y="804" font-size="12" fill="#666" stroke="none" >Grant Issues: write, Pull requests:</text>
+<text x="64" y="820" font-size="12" fill="#666" stroke="none" >write, Metadata: read; subscribe to</text>
+<text x="64" y="836" font-size="12" fill="#666" stroke="none" >Issue comment and Pull request review…</text>
+<line x1="64" y1="856" x2="359" y2="856" stroke="#e6e6e6"/>
+<circle cx="32" cy="896" r="16" fill="#fff"/>
+<text x="32" y="901" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="892" font-size="14" fill="#000" stroke="none" font-weight="600">Create a private key</text>
+<text x="64" y="916" font-size="12" fill="#666" stroke="none" >In the App settings, click Generate a</text>
+<text x="64" y="932" font-size="12" fill="#666" stroke="none" >private key and download the PEM file.</text>
+<text x="16" y="1016" font-size="14" fill="#000" stroke="none" font-weight="600">GitHub App ID</text>
+<rect x="16" y="1032" width="343" height="48" rx="4" fill="#fff"/>
+<text x="32" y="1062" font-size="14" fill="#666" stroke="none" >123456</text>
+<text x="16" y="1120" font-size="14" fill="#000" stroke="none" font-weight="600">Private key</text>
+<rect x="16" y="1136" width="343" height="48" rx="4" fill="#fff"/>
+<text x="32" y="1166" font-size="14" fill="#666" stroke="none" >Choose PEM file</text>
+<rect x="16" y="1240" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1270" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back</text>
+<rect x="16" y="1304" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1334" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect and verify</text><g data-region="annotations"><rect x="8" y="64" width="359" height="256" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="480" width="359" height="96" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="480" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="484" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="992" width="359" height="200" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="992" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="996" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1232" width="359" height="128" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1232" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1236" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

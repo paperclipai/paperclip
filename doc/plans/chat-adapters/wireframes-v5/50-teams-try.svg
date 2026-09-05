@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="984" viewBox="0 0 1280 984" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="1280" height="984"/><g data-region="global-sidebar"><text x="24" y="40" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="72" r="6" fill="#e6e6e6"/><text x="56" y="76" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="120" r="6" fill="#e6e6e6"/><text x="56" y="124" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="168" r="6" fill="#e6e6e6"/><text x="56" y="172" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="216" r="6" fill="#e6e6e6"/><text x="56" y="220" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="264" r="6" fill="#e6e6e6"/><text x="56" y="268" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="312" r="6" fill="#e6e6e6"/><text x="56" y="316" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="360" r="6" fill="#e6e6e6"/><text x="56" y="364" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="408" r="6" fill="#e6e6e6"/><text x="56" y="412" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="456" r="6" fill="#e6e6e6"/><text x="56" y="460" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="504" r="6" fill="#e6e6e6"/><text x="56" y="508" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="8" y="536" width="224" height="40" rx="4" fill="#e6e6e6"/><circle cx="32" cy="552" r="6" fill="#e6e6e6"/><text x="56" y="556" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="600" r="6" fill="#e6e6e6"/><text x="56" y="604" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="928" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="952" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="984" /></g><g data-region="topbar"><line x1="240" y1="64" x2="1280" y2="64" /><text x="264" y="40" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Microsoft Teams  ›  Chat with an agent</text><circle cx="1240" cy="32" r="16" fill="#e6e6e6"/></g><text x="264" y="104" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<text x="264" y="128" font-size="14" fill="#000" stroke="none" font-weight="700">Microsoft Teams</text>
+<line x1="520" y1="64" x2="520" y2="984" />
+<line x1="288" y1="152" x2="288" y2="472" />
+<circle cx="288" cy="152" r="16" fill="#000"/>
+<text x="288" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="148" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="288" cy="232" r="16" fill="#000"/>
+<text x="288" y="237" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="228" font-size="14" fill="#000" stroke="none" >Register Teams bot</text>
+<circle cx="288" cy="312" r="16" fill="#000"/>
+<text x="288" y="317" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="308" font-size="14" fill="#000" stroke="none" >Connect identity</text>
+<circle cx="288" cy="392" r="16" fill="#000"/>
+<text x="288" y="397" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="388" font-size="14" fill="#000" stroke="none" >Install app</text>
+<circle cx="288" cy="472" r="16" fill="#fff"/>
+<text x="288" y="477" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">5</text>
+<text x="320" y="468" font-size="14" fill="#000" stroke="none" font-weight="700">Try Maya</text>
+<text x="264" y="936" font-size="12" fill="#666" stroke="none" >Progress is saved automatically.</text><text x="560" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Try Maya in Microsoft Teams</text>
+<text x="560" y="144" font-size="14" fill="#666" stroke="none" >Mention Maya in an installed channel post or start a personal chat.</text>
+<text x="560" y="200" font-size="20" fill="#000" stroke="none" font-weight="700">Installation checks</text>
+<text x="560" y="224" font-size="12" fill="#666" stroke="none" >Paperclip verifies Microsoft identity and waits for the installed package to deliver a real</text>
+<text x="560" y="240" font-size="12" fill="#666" stroke="none" >activity.</text>
+<line x1="560" y1="248" x2="1224" y2="248" />
+<text x="576" y="272" font-size="14" fill="#000" stroke="none" font-weight="600">Agent</text>
+<text x="576" y="294" font-size="12" fill="#666" stroke="none" >Maya · permanently assigned</text>
+<text x="1208" y="276" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<line x1="576" y1="320" x2="1208" y2="320" stroke="#e6e6e6"/>
+<text x="576" y="344" font-size="14" fill="#000" stroke="none" font-weight="600">Bot authentication</text>
+<text x="576" y="366" font-size="12" fill="#666" stroke="none" >Single tenant · Acme</text>
+<text x="1208" y="348" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<line x1="576" y1="392" x2="1208" y2="392" stroke="#e6e6e6"/>
+<text x="576" y="416" font-size="14" fill="#000" stroke="none" font-weight="600">Messaging endpoint</text>
+<text x="576" y="438" font-size="12" fill="#666" stroke="none" >Authenticated Bot Framework activity</text>
+<text x="1208" y="420" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<line x1="576" y1="464" x2="1208" y2="464" stroke="#e6e6e6"/>
+<text x="576" y="488" font-size="14" fill="#000" stroke="none" font-weight="600">Teams installation</text>
+<text x="576" y="510" font-size="12" fill="#666" stroke="none" >No message received from an installed scope yet.</text>
+<text x="1208" y="492" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Waiting</text>
+<text x="560" y="568" font-size="20" fill="#000" stroke="none" font-weight="700">Start the first task</text>
+<text x="560" y="592" font-size="12" fill="#666" stroke="none" >The test reflects the conversation type people will use.</text>
+<line x1="560" y1="616" x2="1224" y2="616" />
+<text x="576" y="640" font-size="14" fill="#000" stroke="none" font-weight="600">Channel</text>
+<text x="576" y="662" font-size="12" fill="#666" stroke="none" >Create a new post with @Maya; its replies become one Paperclip</text>
+<text x="576" y="678" font-size="12" fill="#666" stroke="none" >task.</text>
+<text x="1208" y="644" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Post thread</text>
+<line x1="576" y1="688" x2="1208" y2="688" stroke="#e6e6e6"/>
+<text x="576" y="712" font-size="14" fill="#000" stroke="none" font-weight="600">Personal or group chat</text>
+<text x="576" y="734" font-size="12" fill="#666" stroke="none" >Send a message; the conversation exposes one active Paperclip</text>
+<text x="576" y="750" font-size="12" fill="#666" stroke="none" >task.</text>
+<text x="1208" y="716" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Active task</text>
+<line x1="576" y1="760" x2="1208" y2="760" stroke="#e6e6e6"/>
+<text x="576" y="784" font-size="14" fill="#000" stroke="none" font-weight="600">Unmentioned channel replies</text>
+<text x="576" y="806" font-size="12" fill="#666" stroke="none" >Paperclip detects actual manifest/RSC delivery and explains if</text>
+<text x="576" y="822" font-size="12" fill="#666" stroke="none" >another mention is required.</text>
+<text x="1208" y="788" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Verified live</text><rect x="560" y="896" width="208" height="48" rx="4" fill="#fff"/><text x="664" y="926" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Finish without testing</text><rect x="784" y="896" width="440" height="48" rx="4" fill="#000"/><text x="1004" y="926" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open Microsoft Teams</text><g data-region="annotations"><rect x="256" y="88" width="248" height="520" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="552" y="168" width="680" height="368" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="552" y="536" width="680" height="296" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="536" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="540" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="552" y="880" width="680" height="72" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="880" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="884" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

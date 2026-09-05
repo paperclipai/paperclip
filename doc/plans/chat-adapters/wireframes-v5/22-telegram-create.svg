@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1200" viewBox="0 0 1280 1200" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="1280" height="1200"/><g data-region="global-sidebar"><text x="24" y="40" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="72" r="6" fill="#e6e6e6"/><text x="56" y="76" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="120" r="6" fill="#e6e6e6"/><text x="56" y="124" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="168" r="6" fill="#e6e6e6"/><text x="56" y="172" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="216" r="6" fill="#e6e6e6"/><text x="56" y="220" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="264" r="6" fill="#e6e6e6"/><text x="56" y="268" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="312" r="6" fill="#e6e6e6"/><text x="56" y="316" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="360" r="6" fill="#e6e6e6"/><text x="56" y="364" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="408" r="6" fill="#e6e6e6"/><text x="56" y="412" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="456" r="6" fill="#e6e6e6"/><text x="56" y="460" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="504" r="6" fill="#e6e6e6"/><text x="56" y="508" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="8" y="536" width="224" height="40" rx="4" fill="#e6e6e6"/><circle cx="32" cy="552" r="6" fill="#e6e6e6"/><text x="56" y="556" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="600" r="6" fill="#e6e6e6"/><text x="56" y="604" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="1144" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="1168" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="1200" /></g><g data-region="topbar"><line x1="240" y1="64" x2="1280" y2="64" /><text x="264" y="40" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Telegram  ›  Chat with an agent</text><circle cx="1240" cy="32" r="16" fill="#e6e6e6"/></g><text x="264" y="104" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<text x="264" y="128" font-size="14" fill="#000" stroke="none" font-weight="700">Telegram</text>
+<line x1="520" y1="64" x2="520" y2="1200" />
+<line x1="288" y1="152" x2="288" y2="392" />
+<circle cx="288" cy="152" r="16" fill="#000"/>
+<text x="288" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="148" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="288" cy="232" r="16" fill="#fff"/>
+<text x="288" y="237" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="320" y="228" font-size="14" fill="#000" stroke="none" font-weight="700">Create Telegram bot</text>
+<circle cx="288" cy="312" r="16" fill="#fff"/>
+<text x="288" y="317" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="320" y="308" font-size="14" fill="#666" stroke="none" >Add to chats</text>
+<circle cx="288" cy="392" r="16" fill="#fff"/>
+<text x="288" y="397" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="320" y="388" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="264" y="1152" font-size="12" fill="#666" stroke="none" >Progress is saved automatically.</text><text x="560" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Create Maya with BotFather</text>
+<text x="560" y="144" font-size="14" fill="#666" stroke="none" >Create one Telegram bot and paste the token BotFather gives you.</text>
+<text x="560" y="192" font-size="14" fill="#000" stroke="none" font-weight="600">Bot token</text><rect x="560" y="208" width="640" height="48" rx="4" fill="#fff"/><text x="576" y="238" font-size="14" fill="#666" stroke="none" >123456:••••••••••••</text><text x="560" y="280" font-size="12" fill="#666" stroke="none" >Telegram has no installation callback; this one-time token is required to connect the</text>
+<text x="560" y="296" font-size="12" fill="#666" stroke="none" >bot.</text>
+<text x="560" y="336" font-size="20" fill="#000" stroke="none" font-weight="700">Agent</text>
+<text x="560" y="360" font-size="12" fill="#666" stroke="none" >The Telegram bot is permanently assigned to this Paperclip agent.</text>
+<line x1="560" y1="384" x2="1224" y2="384" />
+<text x="576" y="408" font-size="14" fill="#000" stroke="none" font-weight="600">Maya</text>
+<text x="576" y="430" font-size="12" fill="#666" stroke="none" >Support engineer · a new connection is required for another agent</text>
+<text x="1208" y="412" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<text x="560" y="488" font-size="20" fill="#000" stroke="none" font-weight="700">Create the bot in Telegram</text>
+<text x="560" y="512" font-size="12" fill="#666" stroke="none" >BotFather owns bot creation and username uniqueness.</text>
+<line x1="560" y1="536" x2="1224" y2="536" />
+<text x="576" y="560" font-size="14" fill="#000" stroke="none" font-weight="600">1. Open BotFather</text>
+<text x="576" y="582" font-size="12" fill="#666" stroke="none" >Send /newbot and follow Telegram's prompts.</text>
+<text x="1208" y="564" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In Telegram</text>
+<line x1="576" y1="608" x2="1208" y2="608" stroke="#e6e6e6"/>
+<text x="576" y="632" font-size="14" fill="#000" stroke="none" font-weight="600">2. Name the bot</text>
+<text x="576" y="654" font-size="12" fill="#666" stroke="none" >Use Maya and choose an available username such as @maya_acme_bot.</text>
+<text x="1208" y="636" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In Telegram</text>
+<line x1="576" y1="680" x2="1208" y2="680" stroke="#e6e6e6"/>
+<text x="576" y="704" font-size="14" fill="#000" stroke="none" font-weight="600">3. Copy the token</text>
+<text x="576" y="726" font-size="12" fill="#666" stroke="none" >Treat it like a password and paste it in the field above.</text>
+<text x="1208" y="708" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Required</text>
+<text x="560" y="784" font-size="20" fill="#000" stroke="none" font-weight="700">What Paperclip handles</text>
+<text x="560" y="808" font-size="12" fill="#666" stroke="none" >The token is enough for Paperclip to configure the rest.</text>
+<line x1="560" y1="832" x2="1224" y2="832" />
+<text x="576" y="856" font-size="14" fill="#000" stroke="none" font-weight="600">Identity</text>
+<text x="576" y="878" font-size="12" fill="#666" stroke="none" >Call getMe and store the stable numeric bot ID and username.</text>
+<text x="1208" y="860" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<line x1="576" y1="904" x2="1208" y2="904" stroke="#e6e6e6"/>
+<text x="576" y="928" font-size="14" fill="#000" stroke="none" font-weight="600">Delivery</text>
+<text x="576" y="950" font-size="12" fill="#666" stroke="none" >Configure a verified webhook or the deployment's relay; local</text>
+<text x="576" y="966" font-size="12" fill="#666" stroke="none" >developer polling is automatic.</text>
+<text x="1208" y="932" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<line x1="576" y1="976" x2="1208" y2="976" stroke="#e6e6e6"/>
+<text x="576" y="1000" font-size="14" fill="#000" stroke="none" font-weight="600">Commands and capabilities</text>
+<text x="576" y="1022" font-size="12" fill="#666" stroke="none" >Register commands and use the maximum safe Telegram feature set.</text>
+<text x="1208" y="1004" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text><rect x="560" y="1112" width="208" height="48" rx="4" fill="#fff"/><text x="664" y="1142" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open BotFather</text><rect x="784" y="1112" width="440" height="48" rx="4" fill="#000"/><text x="1004" y="1142" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect bot</text><g data-region="annotations"><rect x="256" y="88" width="248" height="520" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="552" y="168" width="680" height="136" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="552" y="304" width="680" height="744" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="304" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="308" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="552" y="1096" width="680" height="72" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="1096" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="1100" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

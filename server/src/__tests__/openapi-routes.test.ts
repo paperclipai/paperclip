@@ -22,6 +22,7 @@ const apiPrefixes: Record<string, string> = {
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
   "built-in-agents.ts": "/api",
+  "chat-channels.ts": "/api",
   "cloud.ts": "/api/cloud",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -77,6 +78,13 @@ const explicitOpenApiCoverageExclusions = new Set([
   "smoke-lab.ts",
 ]);
 
+const explicitOpenApiOperationCoverageExclusions = new Set([
+  // This endpoint is authenticated by the provider signature rather than by a
+  // Paperclip board/agent credential. It intentionally stays out of the public
+  // board API document, while this exact exclusion keeps route coverage honest.
+  "POST /api/chat-webhooks/{publicId}/{provider}",
+]);
+
 // The set of contract-first routes whose OpenAPI document leads the mounted
 // request handler. The company-and-environment Claude setup-token login routes
 // now have request handlers, so the set is empty. A new contract-first route
@@ -108,6 +116,9 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "chat-channels.ts" && routePath.startsWith("/api/chat-webhooks/")) {
+    return routePath;
+  }
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
     return routePath;
   }
@@ -131,6 +142,7 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
 
 function loadActualRoutes() {
   const routes = new Set<string>();
+  const excludedRoutes = new Set<string>();
   const unknownRouteFiles: string[] = [];
 
   for (const file of fs.readdirSync(ROUTES_DIR).filter((entry) => entry.endsWith(".ts"))) {
@@ -147,7 +159,12 @@ function loadActualRoutes() {
     for (const match of source.matchAll(ROUTE_LITERAL_PATTERN)) {
       const method = match[1].toUpperCase();
       const routePath = match[2];
-      routes.add(`${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`);
+      const operation = `${method} ${normalizeExpressPath(resolveMountedPath(file, prefix, routePath))}`;
+      if (explicitOpenApiOperationCoverageExclusions.has(operation)) {
+        excludedRoutes.add(operation);
+      } else {
+        routes.add(operation);
+      }
     }
 
     if (file === "companies.ts" && source.includes("router.post(COMPANY_IMPORT_ROUTE_PATH")) {
@@ -158,7 +175,7 @@ function loadActualRoutes() {
     }
   }
 
-  return { routes, unknownRouteFiles: unknownRouteFiles.sort() };
+  return { routes, excludedRoutes, unknownRouteFiles: unknownRouteFiles.sort() };
 }
 
 function loadSpecRoutes() {
@@ -268,8 +285,128 @@ describe("openapi routes", () => {
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });
 
+  it("publishes the complete board contract for chat channels", () => {
+    const { spec } = loadSpecRoutes();
+    const boardSecurity = [{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }];
+    const operations = [
+      ["get", "/api/companies/{companyId}/chat-endpoints"],
+      ["post", "/api/companies/{companyId}/chat-endpoints"],
+      ["get", "/api/chat-endpoints/{endpointId}"],
+      ["patch", "/api/chat-endpoints/{endpointId}"],
+      ["post", "/api/chat-endpoints/{endpointId}/setup"],
+      ["post", "/api/chat-endpoints/{endpointId}/test"],
+      ["get", "/api/chat-endpoints/{endpointId}/resources"],
+      ["put", "/api/chat-endpoints/{endpointId}/resources"],
+      ["get", "/api/chat-endpoints/{endpointId}/principals"],
+      ["post", "/api/chat-endpoints/{endpointId}/principals/{principalId}/link-intent"],
+      ["delete", "/api/chat-endpoints/{endpointId}/principals/{principalId}/link"],
+      ["get", "/api/chat-identity-links/preview"],
+      ["post", "/api/chat-identity-links/confirm"],
+      ["get", "/api/chat-endpoints/{endpointId}/conversations"],
+      ["get", "/api/chat-endpoints/{endpointId}/activity"],
+      ["post", "/api/chat-endpoints/{endpointId}/deliveries/{deliveryId}/replay"],
+      ["post", "/api/chat-endpoints/{endpointId}/publications/{publicationId}/replay"],
+      ["post", "/api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications"],
+      ["get", "/api/issues/{issueId}/chat-binding"],
+    ] as const;
+
+    for (const [method, routePath] of operations) {
+      const operation = spec.paths[routePath]?.[method];
+      expect(operation, `${method.toUpperCase()} ${routePath} is documented`).toBeDefined();
+      expect(operation.security, `${method.toUpperCase()} ${routePath} is board-only`).toEqual(
+        boardSecurity,
+      );
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.tags).toContain("chat-channels");
+    }
+
+    const create = spec.paths["/api/companies/{companyId}/chat-endpoints"].post;
+    expect(create.responses["201"]).toBeDefined();
+    expect(create.requestBody.content["application/json"].schema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        provider: {
+          type: "string",
+          enum: ["slack", "github", "microsoft-teams", "telegram"],
+        },
+        assignedAgentId: { type: "string", format: "uuid" },
+      },
+      required: ["provider", "assignedAgentId"],
+    });
+
+    const endpointResponse =
+      spec.paths["/api/chat-endpoints/{endpointId}"].get.responses["200"].content[
+        "application/json"
+      ].schema;
+    expect(endpointResponse).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        assignedAgentId: { type: "string", format: "uuid" },
+        status: {
+          type: "string",
+          enum: ["draft", "verifying", "active", "paused", "attention", "revoked", "archived"],
+        },
+        capabilities: { type: "object", additionalProperties: false },
+        setup: { type: "object", additionalProperties: false },
+      },
+    });
+    expect(JSON.stringify(endpointResponse)).not.toContain("credentials");
+    expect(JSON.stringify(endpointResponse)).not.toContain("privateKey");
+    expect(JSON.stringify(endpointResponse)).not.toContain("signingSecret");
+
+    const setup = spec.paths["/api/chat-endpoints/{endpointId}/setup"].post;
+    expect(setup.requestBody.content["application/json"].schema.properties.action.enum).toEqual([
+      "configure",
+      "verify",
+      "pause",
+      "resume",
+      "reconnect",
+      "remove",
+    ]);
+    expect(setup.responses["409"]).toBeDefined();
+    expect(setup.responses["422"]).toBeDefined();
+
+    const replaceResources = spec.paths["/api/chat-endpoints/{endpointId}/resources"].put;
+    expect(replaceResources.requestBody.content["application/json"].schema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["resources"],
+    });
+    expect(replaceResources.responses["409"]).toBeDefined();
+    expect(replaceResources.responses["422"]).toBeDefined();
+
+    expect(
+      spec.paths["/api/chat-endpoints/{endpointId}/principals/{principalId}/link"].delete.responses[
+        "204"
+      ],
+    ).toBeDefined();
+    expect(
+      spec.paths["/api/chat-endpoints/{endpointId}/deliveries/{deliveryId}/replay"].post.responses[
+        "204"
+      ],
+    ).toBeDefined();
+    expect(
+      spec.paths["/api/chat-endpoints/{endpointId}/publications/{publicationId}/replay"].post
+        .responses["204"],
+    ).toBeDefined();
+
+    const endpointScopedOperations = operations.filter(([, routePath]) =>
+      routePath.includes("{endpointId}") || routePath === "/api/issues/{issueId}/chat-binding",
+    );
+    for (const [method, routePath] of endpointScopedOperations) {
+      expect(
+        spec.paths[routePath][method].responses["404"],
+        `${method.toUpperCase()} ${routePath} preserves the non-member 404 boundary`,
+      ).toBeDefined();
+    }
+
+    expect(spec.paths["/api/chat-webhooks/{publicId}/{provider}"]).toBeUndefined();
+  });
+
   it("covers the mounted server routes exactly", () => {
-    const { routes: actualRoutes, unknownRouteFiles } = loadActualRoutes();
+    const { routes: actualRoutes, excludedRoutes, unknownRouteFiles } = loadActualRoutes();
     const { routes: specRoutes } = loadSpecRoutes();
 
     const missingInSpec = [...actualRoutes].filter((route) => !specRoutes.has(route)).sort();
@@ -277,10 +414,16 @@ describe("openapi routes", () => {
       .filter((route) => !actualRoutes.has(route) && !specOnlyContractFirstRoutes.has(route))
       .sort();
 
-    expect({ unknownRouteFiles, missingInSpec, extraInSpec }).toEqual({
+    expect({
+      unknownRouteFiles,
+      missingInSpec,
+      extraInSpec,
+      excludedRoutes: [...excludedRoutes].sort(),
+    }).toEqual({
       unknownRouteFiles: [],
       missingInSpec: [],
       extraInSpec: [],
+      excludedRoutes: [...explicitOpenApiOperationCoverageExclusions].sort(),
     });
   });
 

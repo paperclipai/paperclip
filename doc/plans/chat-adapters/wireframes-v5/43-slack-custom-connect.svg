@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1112" viewBox="0 0 1280 1112" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="1280" height="1112"/><g data-region="global-sidebar"><text x="24" y="40" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="72" r="6" fill="#e6e6e6"/><text x="56" y="76" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="120" r="6" fill="#e6e6e6"/><text x="56" y="124" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="168" r="6" fill="#e6e6e6"/><text x="56" y="172" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="216" r="6" fill="#e6e6e6"/><text x="56" y="220" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="264" r="6" fill="#e6e6e6"/><text x="56" y="268" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="312" r="6" fill="#e6e6e6"/><text x="56" y="316" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="360" r="6" fill="#e6e6e6"/><text x="56" y="364" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="408" r="6" fill="#e6e6e6"/><text x="56" y="412" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="456" r="6" fill="#e6e6e6"/><text x="56" y="460" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="504" r="6" fill="#e6e6e6"/><text x="56" y="508" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="8" y="536" width="224" height="40" rx="4" fill="#e6e6e6"/><circle cx="32" cy="552" r="6" fill="#e6e6e6"/><text x="56" y="556" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="600" r="6" fill="#e6e6e6"/><text x="56" y="604" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="1056" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="1080" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="1112" /></g><g data-region="topbar"><line x1="240" y1="64" x2="1280" y2="64" /><text x="264" y="40" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Slack  ›  Chat with an agent</text><circle cx="1240" cy="32" r="16" fill="#e6e6e6"/></g><text x="264" y="104" font-size="12" fill="#666" stroke="none" font-weight="700">ADVANCED SETUP</text>
+<text x="264" y="128" font-size="14" fill="#000" stroke="none" font-weight="700">Slack</text>
+<line x1="520" y1="64" x2="520" y2="1112" />
+<line x1="288" y1="152" x2="288" y2="392" />
+<circle cx="288" cy="152" r="16" fill="#000"/>
+<text x="288" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="148" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="288" cy="232" r="16" fill="#000"/>
+<text x="288" y="237" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="228" font-size="14" fill="#000" stroke="none" >Create Slack app</text>
+<circle cx="288" cy="312" r="16" fill="#fff"/>
+<text x="288" y="317" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="320" y="308" font-size="14" fill="#000" stroke="none" font-weight="700">Connect app</text>
+<circle cx="288" cy="392" r="16" fill="#fff"/>
+<text x="288" y="397" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="320" y="388" font-size="14" fill="#666" stroke="none" >Verify</text>
+<text x="264" y="1064" font-size="12" fill="#666" stroke="none" >Progress is saved automatically.</text><text x="560" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Connect the custom Slack app</text>
+<text x="560" y="144" font-size="14" fill="#666" stroke="none" >Provide only the two secrets Slack cannot return to Paperclip for a customer-owned app.</text>
+<text x="560" y="192" font-size="14" fill="#000" stroke="none" font-weight="600">Bot token</text><rect x="560" y="208" width="640" height="48" rx="4" fill="#fff"/><text x="576" y="238" font-size="14" fill="#666" stroke="none" >xoxb-••••••••</text><text x="560" y="280" font-size="12" fill="#666" stroke="none" >Used to publish as Maya and call the Slack Web API.</text>
+<text x="560" y="328" font-size="14" fill="#000" stroke="none" font-weight="600">Signing secret</text><rect x="560" y="344" width="640" height="48" rx="4" fill="#fff"/><text x="576" y="374" font-size="14" fill="#666" stroke="none" >••••••••••••</text><text x="560" y="416" font-size="12" fill="#666" stroke="none" >Used to verify that inbound HTTP events and interactions came from Slack.</text>
+<text x="560" y="472" font-size="20" fill="#000" stroke="none" font-weight="700">Stored securely</text>
+<text x="560" y="496" font-size="12" fill="#666" stroke="none" >Values are submitted once into Paperclip's secret store. Connector rows retain only secret</text>
+<text x="560" y="512" font-size="12" fill="#666" stroke="none" >references and redacted suffixes.</text>
+<line x1="560" y1="520" x2="1224" y2="520" />
+<text x="576" y="544" font-size="14" fill="#000" stroke="none" font-weight="600">Who can view them</text>
+<text x="576" y="566" font-size="12" fill="#666" stroke="none" >No user can reveal the stored value from this connector after</text>
+<text x="576" y="582" font-size="12" fill="#666" stroke="none" >saving.</text>
+<text x="1208" y="548" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Write only</text>
+<line x1="576" y1="592" x2="1208" y2="592" stroke="#e6e6e6"/>
+<text x="576" y="616" font-size="14" fill="#000" stroke="none" font-weight="600">Rotation</text>
+<text x="576" y="638" font-size="12" fill="#666" stroke="none" >Replace either secret later without changing Maya's tasks or Slack</text>
+<text x="576" y="654" font-size="12" fill="#666" stroke="none" >thread bindings.</text>
+<text x="1208" y="620" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Supported</text>
+<text x="560" y="696" font-size="20" fill="#000" stroke="none" font-weight="700">Not requested</text>
+<text x="560" y="720" font-size="12" fill="#666" stroke="none" >The manifest already configured these values at Slack.</text>
+<line x1="560" y1="744" x2="1224" y2="744" />
+<text x="576" y="768" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook URL</text>
+<text x="576" y="790" font-size="12" fill="#666" stroke="none" >Generated and embedded automatically.</text>
+<text x="1208" y="772" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Hidden</text>
+<line x1="576" y1="816" x2="1208" y2="816" stroke="#e6e6e6"/>
+<text x="576" y="840" font-size="14" fill="#000" stroke="none" font-weight="600">Delivery mode</text>
+<text x="576" y="862" font-size="12" fill="#666" stroke="none" >Chosen from instance reachability; not an endpoint preference.</text>
+<text x="1208" y="844" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<line x1="576" y1="888" x2="1208" y2="888" stroke="#e6e6e6"/>
+<text x="576" y="912" font-size="14" fill="#000" stroke="none" font-weight="600">App token</text>
+<text x="576" y="934" font-size="12" fill="#666" stroke="none" >Not needed for the normal webhook/relay path.</text>
+<text x="1208" y="916" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Not requested</text><rect x="560" y="1024" width="208" height="48" rx="4" fill="#fff"/><text x="664" y="1054" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back</text><rect x="784" y="1024" width="440" height="48" rx="4" fill="#000"/><text x="1004" y="1054" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Save and verify</text><g data-region="annotations"><rect x="256" y="88" width="248" height="520" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="552" y="168" width="680" height="272" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="552" y="440" width="680" height="520" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="440" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="444" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="552" y="1008" width="680" height="72" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="1008" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="1012" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

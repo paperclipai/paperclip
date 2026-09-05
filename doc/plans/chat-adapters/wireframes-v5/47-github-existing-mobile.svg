@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1632" viewBox="0 0 375 1632" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1632"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  GitHub</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">ADVANCED SETUP</text>
+<line x1="32" y1="96" x2="32" y2="264" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#fff"/>
+<text x="32" y="157" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" font-weight="700">Connect existing App</text>
+<circle cx="32" cy="208" r="16" fill="#fff"/>
+<text x="32" y="213" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="213" font-size="14" fill="#666" stroke="none" >Choose repositories</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="360" font-size="20" fill="#000" stroke="none" font-weight="700">Connect an existing GitHub App</text>
+<text x="16" y="392" font-size="12" fill="#666" stroke="none" >Advanced path for organizations that already</text>
+<text x="16" y="408" font-size="12" fill="#666" stroke="none" >own and govern the dedicated chat App.</text>
+<text x="24" y="448" font-size="14" fill="#000" stroke="none" font-weight="600">GitHub App ID</text><rect x="24" y="464" width="327" height="48" rx="4" fill="#fff"/><text x="40" y="494" font-size="14" fill="#666" stroke="none" >123456</text><text x="24" y="536" font-size="12" fill="#666" stroke="none" >Identifies the customer-owned App</text>
+<text x="24" y="552" font-size="12" fill="#666" stroke="none" >registration.</text>
+<text x="24" y="600" font-size="14" fill="#000" stroke="none" font-weight="600">Private key</text><rect x="24" y="616" width="327" height="48" rx="4" fill="#fff"/><text x="40" y="646" font-size="14" fill="#666" stroke="none" >Choose PEM file</text><text x="24" y="688" font-size="12" fill="#666" stroke="none" >Signs installation-token requests; uploaded</text>
+<text x="24" y="704" font-size="12" fill="#666" stroke="none" >once into the secret store.</text>
+<text x="24" y="752" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook secret</text><rect x="24" y="768" width="327" height="48" rx="4" fill="#fff"/><text x="40" y="798" font-size="14" fill="#666" stroke="none" >••••••••••••</text><text x="24" y="840" font-size="12" fill="#666" stroke="none" >Verifies inbound GitHub webhook signatures.</text>
+<text x="24" y="904" font-size="14" fill="#000" stroke="none" font-weight="600">GitHub host</text><rect x="24" y="920" width="327" height="48" rx="4" fill="#fff"/><text x="40" y="950" font-size="14" fill="#666" stroke="none" >https://github.com</text><text x="24" y="992" font-size="12" fill="#666" stroke="none" >Change only for GitHub Enterprise Server.</text>
+<text x="16" y="1064" font-size="20" fill="#000" stroke="none" font-weight="700">Required App configuration</text>
+<text x="16" y="1088" font-size="12" fill="#666" stroke="none" >Paperclip verifies rather than asks the user</text>
+<text x="16" y="1104" font-size="12" fill="#666" stroke="none" >to re-enter provider configuration.</text>
+<line x1="16" y1="1120" x2="359" y2="1120" />
+<text x="24" y="1144" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook and events</text>
+<text x="24" y="1166" font-size="12" fill="#666" stroke="none" >Paperclip callback · issue comments · PR</text>
+<text x="24" y="1182" font-size="12" fill="#666" stroke="none" >review comments</text>
+<text x="351" y="1216" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Will verify</text>
+<line x1="24" y1="1232" x2="351" y2="1232" stroke="#e6e6e6"/>
+<text x="24" y="1256" font-size="14" fill="#000" stroke="none" font-weight="600">Permissions</text>
+<text x="24" y="1278" font-size="12" fill="#666" stroke="none" >Issues write · Pull requests write ·</text>
+<text x="24" y="1294" font-size="12" fill="#666" stroke="none" >Metadata read</text>
+<text x="351" y="1328" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Will verify</text>
+<line x1="24" y1="1344" x2="351" y2="1344" stroke="#e6e6e6"/>
+<text x="24" y="1368" font-size="14" fill="#000" stroke="none" font-weight="600">Code access</text>
+<text x="24" y="1390" font-size="12" fill="#666" stroke="none" >Contents and Actions remain a separate tool</text>
+<text x="24" y="1406" font-size="12" fill="#666" stroke="none" >connection.</text>
+<text x="351" y="1440" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Not used</text>
+<rect x="16" y="1496" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1526" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back to manifest flow</text>
+<rect x="16" y="1560" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1590" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect and verify</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="272" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="424" width="359" height="608" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="424" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="428" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="1032" width="359" height="424" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1032" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1036" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1488" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1488" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1492" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

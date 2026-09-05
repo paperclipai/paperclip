@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1256" viewBox="0 0 1280 1256" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="1280" height="1256"/><g><text x="24" y="38" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="68" r="6" fill="#e6e6e6"/><text x="52" y="73" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="114" r="6" fill="#e6e6e6"/><text x="52" y="119" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="160" r="6" fill="#e6e6e6"/><text x="52" y="165" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="206" r="6" fill="#e6e6e6"/><text x="52" y="211" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="252" r="6" fill="#e6e6e6"/><text x="52" y="257" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="298" r="6" fill="#e6e6e6"/><text x="52" y="303" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="344" r="6" fill="#e6e6e6"/><text x="52" y="349" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="390" r="6" fill="#e6e6e6"/><text x="52" y="395" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="436" r="6" fill="#e6e6e6"/><text x="52" y="441" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="482" r="6" fill="#e6e6e6"/><text x="52" y="487" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="12" y="510" width="216" height="38" rx="6" fill="#e6e6e6"/><circle cx="32" cy="528" r="6" fill="#e6e6e6"/><text x="52" y="533" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="574" r="6" fill="#e6e6e6"/><text x="52" y="579" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="1200" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="1228" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="1256" /></g><g><line x1="240" y1="60" x2="1280" y2="60" /><text x="264" y="36" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Maya on GitHub  ›  Access</text><circle cx="1240" cy="30" r="16" fill="#e6e6e6"/></g><g data-region="connector-navigation"><text x="264" y="96" font-size="12" fill="#666" stroke="none" >‹  All connectors</text><circle cx="280" cy="136" r="16" fill="#e6e6e6"/><text x="312" y="144" font-size="14" fill="#000" stroke="none" font-weight="700">Maya on GitHub</text><text x="280" y="192" font-size="14" fill="#666" stroke="none" >Settings</text>
+<rect x="256" y="216" width="208" height="40" rx="4" fill="#e6e6e6"/><text x="280" y="240" font-size="14" fill="#000" stroke="none" font-weight="600">Access</text>
+<text x="280" y="288" font-size="14" fill="#666" stroke="none" >Conversations</text>
+<text x="280" y="336" font-size="14" fill="#666" stroke="none" >Activity</text><line x1="480" y1="64" x2="480" y2="1256" /></g><text x="504" y="108" font-size="28" fill="#000" stroke="none" font-weight="700">GitHub access</text><text x="504" y="138" font-size="14" fill="#666" stroke="none" >External identities, linked Paperclip users, sponsored guests, and effective authority.</text><text x="504" y="198" font-size="20" fill="#000" stroke="none" font-weight="700">Endpoint sponsor</text>
+<text x="504" y="223" font-size="12" fill="#666" stroke="none" >Sponsored authority is restricted to this installation and repository allowlist.</text>
+<line x1="504" y1="246" x2="1224" y2="246" />
+<text x="520" y="272" font-size="14" fill="#000" stroke="none" font-weight="600">Sponsor</text>
+<text x="520" y="294" font-size="12" fill="#666" stroke="none" >Dana · Company admin</text>
+<rect x="1032" y="258" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="288" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change sponsor</text>
+<line x1="520" y1="318" x2="1208" y2="318" stroke="#e6e6e6"/>
+<text x="520" y="344" font-size="14" fill="#000" stroke="none" font-weight="600">Endpoint scope</text>
+<text x="520" y="366" font-size="12" fill="#666" stroke="none" >Support project · acme/api and acme/web</text>
+<rect x="1032" y="330" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="360" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">View scope</text>
+<text x="504" y="420" font-size="20" fill="#000" stroke="none" font-weight="700">Linked GitHub people</text>
+<text x="504" y="445" font-size="12" fill="#666" stroke="none" >The durable GitHub numeric user ID is linked after Paperclip authentication.</text>
+<line x1="504" y1="468" x2="1224" y2="468" />
+<text x="520" y="494" font-size="14" fill="#000" stroke="none" font-weight="600">arichen · 184201</text>
+<text x="520" y="516" font-size="12" fill="#666" stroke="none" >ari@acme.com · Member · confirmed Sep 3</text>
+<rect x="1032" y="480" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="510" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Revoke</text>
+<line x1="520" y1="540" x2="1208" y2="540" stroke="#e6e6e6"/>
+<text x="520" y="566" font-size="14" fill="#000" stroke="none" font-weight="600">sam-r · 194118</text>
+<text x="520" y="588" font-size="12" fill="#666" stroke="none" >sam@acme.com · Viewer · confirmed Sep 4</text>
+<rect x="1032" y="552" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="582" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Revoke</text>
+<line x1="520" y1="612" x2="1208" y2="612" stroke="#e6e6e6"/>
+<text x="520" y="638" font-size="14" fill="#000" stroke="none" font-weight="600">Link another person</text>
+<text x="520" y="660" font-size="12" fill="#666" stroke="none" >Create an expiring company-confirmation link.</text>
+<rect x="1032" y="624" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="654" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Create link</text>
+<text x="504" y="714" font-size="20" fill="#000" stroke="none" font-weight="700">Unlinked contributors</text>
+<text x="504" y="739" font-size="12" fill="#666" stroke="none" >Public or outside contributors never inherit repository or company governance authority.</text>
+<line x1="504" y1="762" x2="1224" y2="762" />
+<text x="520" y="788" font-size="14" fill="#000" stroke="none" font-weight="600">Restricted guest profile</text>
+<text x="520" y="810" font-size="12" fill="#666" stroke="none" >Comment and receive safe output only inside an allowed bound issue.</text>
+<rect x="1032" y="774" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="804" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Default</text>
+<line x1="520" y1="834" x2="1208" y2="834" stroke="#e6e6e6"/>
+<text x="520" y="860" font-size="14" fill="#000" stroke="none" font-weight="600">Governance</text>
+<text x="520" y="882" font-size="12" fill="#666" stroke="none" >No approvals, budgets, hiring, permissions, connection management, or</text>
+<text x="520" y="898" font-size="12" fill="#666" stroke="none" >reassignment.</text>
+<rect x="1032" y="846" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="876" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Denied</text>
+<text x="504" y="936" font-size="20" fill="#000" stroke="none" font-weight="700">GitHub identity rules</text>
+<text x="504" y="961" font-size="12" fill="#666" stroke="none" >Login names may change; installation ID and numeric actor ID remain authoritative.</text>
+<line x1="504" y1="984" x2="1224" y2="984" />
+<text x="520" y="1010" font-size="14" fill="#000" stroke="none" font-weight="600">Bot comments</text>
+<text x="520" y="1032" font-size="12" fill="#666" stroke="none" >Self-authored comments and duplicate webhook deliveries are suppressed.</text>
+<rect x="1032" y="996" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1026" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Ignored</text>
+<line x1="520" y1="1056" x2="1208" y2="1056" stroke="#e6e6e6"/>
+<text x="520" y="1082" font-size="14" fill="#000" stroke="none" font-weight="600">Code access</text>
+<text x="520" y="1104" font-size="12" fill="#666" stroke="none" >This chat identity does not grant Maya repository Contents or Actions</text>
+<text x="520" y="1120" font-size="12" fill="#666" stroke="none" >access.</text>
+<rect x="1032" y="1068" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1098" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Separate</text><g data-region="annotations"><rect x="496" y="168" width="736" height="230" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="496" y="390" width="736" height="302" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="390" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="394" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="496" y="684" width="736" height="230" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="684" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="688" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="496" y="906" width="736" height="230" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="906" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="910" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

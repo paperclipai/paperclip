@@ -1230,6 +1230,7 @@ function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection 
     name: row.name,
     uid: row.uid,
     connectionKind: row.connectionKind,
+    connectionPurpose: row.connectionPurpose,
     ownership: row.ownership,
     transport: row.transport,
     authKind: row.authKind,

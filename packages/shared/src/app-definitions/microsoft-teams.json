@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "slug": "microsoft-teams",
+  "name": "Microsoft Teams",
+  "description": "Let people start and continue Paperclip work with an agent from Microsoft Teams.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/microsoft-teams.svg"
+  },
+  "urlPatterns": [
+    "https://teams.microsoft.com/*"
+  ],
+  "methods": [
+    {
+      "key": "chat-agent",
+      "label": "Chat with an agent",
+      "purpose": "channel",
+      "provider": "microsoft-teams",
+      "transport": "chat_sdk",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Let people in Microsoft Teams start and continue work with one Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "clientId",
+          "label": "Application / Client ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "00000000-0000-0000-0000-000000000000",
+          "secret": false
+        },
+        {
+          "key": "tenantId",
+          "label": "Directory / Tenant ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "00000000-0000-0000-0000-000000000000",
+          "secret": false
+        },
+        {
+          "key": "clientSecret",
+          "label": "Client secret",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the client-secret value",
+          "secret": true
+        }
+      ],
+      "guidanceMd": "Register one single-tenant Azure Bot, then create a Teams app whose manifest enables personal, team, and groupchat bot scopes and the ChannelMessage.Read.Group and ChatMessage.Read.Chat resource-specific permissions. Install it in each standard channel or chat where it may work.",
+      "consoleLinks": {
+        "register": "https://dev.teams.microsoft.com/apps",
+        "docs": "https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/create-a-bot-for-teams"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "team",
+        "channel",
+        "chat"
+      ]
+    }
+  ]
+}

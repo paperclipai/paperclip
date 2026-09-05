@@ -1,0 +1,5321 @@
+import {
+  createHash,
+  createHmac,
+  generateKeyPairSync,
+  randomUUID,
+} from "node:crypto";
+import { mkdirSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { Readable } from "node:stream";
+import express from "express";
+import request from "supertest";
+import { and, asc, eq } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  agents,
+  activityLog,
+  assets,
+  authUsers,
+  chatActions,
+  chatConversations,
+  chatDeliveries,
+  chatEndpointLeases,
+  chatEndpointResources,
+  chatEndpoints,
+  chatExternalPrincipals,
+  chatMessageLinks,
+  chatPublications,
+  companySecrets,
+  companies,
+  companyMemberships,
+  createDb,
+  issueComments,
+  issueAttachments,
+  issueQuestionResponseDeliveries,
+  issueThreadInteractions,
+  issues,
+  toolConnections,
+} from "@paperclipai/db";
+import type { ChatProvider } from "@paperclipai/shared";
+import type { Attachment, Author, Message, Thread } from "chat";
+import { errorHandler } from "../middleware/index.js";
+import {
+  chatChannelRoutes,
+  chatWebhookRoutes,
+} from "../routes/chat-channels.js";
+import {
+  chatChannelService,
+  type ChatChannelServiceOptions,
+  type ChatChannelService,
+} from "../services/chat-channels.js";
+import type {
+  CreateChatSdkEndpointRuntimeOptions,
+  ChatSdkMessageTrigger,
+  ChatSdkRuntime,
+} from "../services/chat-sdk-runtime.js";
+import { issueService } from "../services/issues.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import type { StorageService } from "../storage/types.js";
+import {
+  TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
+  telegramChatSdkCallbackData,
+} from "../services/chat-interaction-publications.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const embeddedPostgresSupport = externalTestDatabaseUrl
+  ? { supported: true }
+  : await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported
+  ? describe.sequential
+  : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping chat-channel integration tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+type TestDb = ReturnType<typeof createDb>;
+
+class FakeEndpointRuntime {
+  readonly initialize = vi.fn(async () => undefined);
+  readonly shutdown = vi.fn(async () => undefined);
+  readonly posts: Array<{
+    threadId: string;
+    text: string;
+    chunks?: string[];
+    files?: unknown[];
+  }> = [];
+  readonly rehydratedAttachmentDescriptors: unknown[] = [];
+  private nextPostId = 0;
+  postError: Error | null = null;
+  webhookRequest: Request | null = null;
+  webhookResponse = new Response("accepted", {
+    status: 202,
+    headers: { "x-chat-test": "accepted" },
+  });
+
+  constructor(
+    private readonly options: CreateChatSdkEndpointRuntimeOptions,
+    private readonly attachmentBodies: Map<string, Buffer>,
+  ) {}
+
+  async handleWebhook(request: Request) {
+    this.webhookRequest = request;
+    return this.webhookResponse;
+  }
+
+  thread(threadId: string) {
+    const channelId = threadId.split(":")[1] ?? threadId;
+    return {
+      id: threadId,
+      channelId,
+      isDM: /^D[A-Z0-9-]*$/i.test(channelId),
+      channel: {
+        id: channelId,
+        name: "command-thread",
+      },
+      adapter: { addReaction: async () => undefined },
+      startTyping: async () => undefined,
+      subscribe: async () => undefined,
+      post: async (message: unknown) => {
+        if (this.postError) throw this.postError;
+        let text: string;
+        let chunks: string[] | undefined;
+        let files: unknown[] | undefined;
+        if (typeof message === "string") text = message;
+        else if (
+          message &&
+          typeof message === "object" &&
+          Symbol.asyncIterator in message
+        ) {
+          chunks = [];
+          for await (const chunk of message as AsyncIterable<unknown>)
+            chunks.push(String(chunk));
+          text = chunks.join("");
+        } else if (
+          message &&
+          typeof message === "object" &&
+          "markdown" in message
+        ) {
+          text = String((message as { markdown: unknown }).markdown);
+        } else text = JSON.stringify(message);
+        if (
+          message &&
+          typeof message === "object" &&
+          "files" in message &&
+          Array.isArray((message as { files?: unknown }).files)
+        ) {
+          files = (message as { files: unknown[] }).files;
+        }
+        this.posts.push({
+          threadId,
+          text,
+          ...(chunks ? { chunks } : {}),
+          ...(files ? { files } : {}),
+        });
+        this.nextPostId += 1;
+        return { id: `outbound-${this.nextPostId}`, threadId };
+      },
+    };
+  }
+
+  attachmentRecoveryDescriptor(attachment: Attachment) {
+    const recoveryKey = attachment.fetchMetadata?.testRecoveryKey;
+    if (typeof recoveryKey !== "string") return null;
+    return {
+      version: 1,
+      provider: this.options.providerConfig.provider,
+      attachment: {
+        type: attachment.type,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+      },
+      locator: { kind: "test_attachment", recoveryKey },
+    };
+  }
+
+  rehydrateAttachment(descriptor: unknown): Attachment | null {
+    this.rehydratedAttachmentDescriptors.push(descriptor);
+    if (!descriptor || typeof descriptor !== "object") return null;
+    const value = descriptor as {
+      version?: unknown;
+      provider?: unknown;
+      attachment?: Attachment;
+      locator?: { kind?: unknown; recoveryKey?: unknown };
+    };
+    if (
+      value.version !== 1 ||
+      value.provider !== this.options.providerConfig.provider ||
+      value.locator?.kind !== "test_attachment" ||
+      typeof value.locator.recoveryKey !== "string" ||
+      !value.attachment
+    ) {
+      return null;
+    }
+    const body = this.attachmentBodies.get(value.locator.recoveryKey);
+    if (!body) return null;
+    return {
+      ...value.attachment,
+      fetchData: async () => body,
+      fetchMetadata: { testRecoveryKey: value.locator.recoveryKey },
+    } as Attachment;
+  }
+}
+
+class FakeChatSdkRuntime {
+  readonly endpoints = new Map<string, FakeEndpointRuntime>();
+  readonly configurations = new Map<
+    string,
+    CreateChatSdkEndpointRuntimeOptions
+  >();
+
+  constructor(readonly attachmentBodies: Map<string, Buffer> = new Map()) {}
+
+  get(endpointId: string) {
+    return this.endpoints.get(endpointId) ?? null;
+  }
+
+  async replaceEndpoint(options: CreateChatSdkEndpointRuntimeOptions) {
+    this.configurations.set(options.endpointId, options);
+    const endpoint = new FakeEndpointRuntime(options, this.attachmentBodies);
+    this.endpoints.set(options.endpointId, endpoint);
+    return endpoint;
+  }
+
+  async removeEndpoint(endpointId: string) {
+    const endpoint = this.endpoints.get(endpointId);
+    if (!endpoint) return false;
+    this.endpoints.delete(endpointId);
+    await endpoint.shutdown();
+    return true;
+  }
+
+  async shutdown() {
+    await Promise.all(
+      [...this.endpoints.values()].map(async (endpoint) => endpoint.shutdown()),
+    );
+    this.endpoints.clear();
+  }
+}
+
+function fakeSlackFetch(botId = `U-BOT-${randomUUID()}`) {
+  return (input: string | URL | Request) => {
+    const url = String(input);
+    if (url === "https://slack.com/api/auth.test") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            team_id: "T-PAPERCLIP",
+            team: "Paperclip Test",
+            user_id: botId,
+            user: `maya-${botId.slice(-8)}`,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    }
+    if (url.startsWith("https://slack.com/api/conversations.list")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            channels: [],
+            response_metadata: { next_cursor: "" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+    }
+    throw new Error(`Unexpected provider request: ${url}`);
+  };
+}
+
+function fakeTelegramFetch(
+  botId = Number.parseInt(randomUUID().replaceAll("-", "").slice(0, 12), 16),
+) {
+  return async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith("/getMe")) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          result: {
+            id: botId,
+            username: `paperclip_${botId}_bot`,
+            first_name: "Paperclip Test",
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.endsWith("/getWebhookInfo")) {
+      return new Response(JSON.stringify({ ok: true, result: { url: "" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.endsWith("/setWebhook") || url.endsWith("/deleteWebhook")) {
+      return new Response(JSON.stringify({ ok: true, result: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`Unexpected provider request: ${url}`);
+  };
+}
+
+function makeThread(input: {
+  channelId: string;
+  id: string;
+  isDM?: boolean;
+  name?: string;
+}) {
+  const addReaction = vi.fn(async () => undefined);
+  const startTyping = vi.fn(async () => undefined);
+  const subscribe = vi.fn(async () => undefined);
+  const thread = {
+    id: input.id,
+    channelId: input.channelId,
+    isDM: input.isDM ?? false,
+    channel: { id: input.channelId, name: input.name ?? input.channelId },
+    adapter: { addReaction },
+    startTyping,
+    subscribe,
+  } as unknown as Thread;
+  return { thread, addReaction, startTyping, subscribe };
+}
+
+function makeMessage(input: {
+  attachments?: Attachment[];
+  id: string;
+  text: string;
+  mentioned?: boolean;
+  userId?: string;
+  userName?: string;
+}) {
+  return {
+    id: input.id,
+    text: input.text,
+    isMention: input.mentioned ?? false,
+    attachments: input.attachments ?? [],
+    metadata: { dateSent: new Date(), edited: false },
+    author: {
+      userId: input.userId ?? "U-EXTERNAL",
+      userName: input.userName ?? "alex",
+      fullName: "Alex External",
+      isBot: false,
+      isMe: false,
+      isSystem: false,
+    } satisfies Author,
+  } as unknown as Message;
+}
+
+function boardActor(companyId: string) {
+  return {
+    type: "board" as const,
+    source: "session" as const,
+    userId: "owner-user",
+    isInstanceAdmin: false,
+    companyIds: [companyId],
+    memberships: [{ companyId, status: "active", membershipRole: "operator" }],
+  };
+}
+
+function routesApp(db: TestDb, companyId: string, service: ChatChannelService) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    req.actor = boardActor(companyId);
+    next();
+  });
+  app.use(
+    "/api",
+    chatChannelRoutes(db, {
+      heartbeat: { wakeup: async () => undefined },
+      service,
+    }),
+  );
+  app.use(errorHandler);
+  return app;
+}
+
+function webhookApp(service: ChatChannelService) {
+  const app = express();
+  app.use(express.raw({ type: "*/*" }));
+  app.use(chatWebhookRoutes(service));
+  app.use(errorHandler);
+  return app;
+}
+
+describeEmbeddedPostgres("chat channel control-plane integration", () => {
+  let db!: TestDb;
+  let tempDb: Awaited<
+    ReturnType<typeof startEmbeddedPostgresTestDatabase>
+  > | null = null;
+  const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+  const secretsTmpDir = path.join(
+    os.tmpdir(),
+    `paperclip-chat-channels-${randomUUID()}`,
+  );
+
+  beforeAll(async () => {
+    mkdirSync(secretsTmpDir, { recursive: true });
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(
+      secretsTmpDir,
+      "master.key",
+    );
+    if (externalTestDatabaseUrl) {
+      db = createDb(externalTestDatabaseUrl);
+    } else {
+      tempDb = await startEmbeddedPostgresTestDatabase(
+        "paperclip-chat-channels-",
+      );
+      db = createDb(tempDb.connectionString);
+    }
+  }, 30_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+    if (previousKeyFile === undefined)
+      delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previousKeyFile;
+    rmSync(secretsTmpDir, { recursive: true, force: true });
+  });
+
+  async function seedCompany() {
+    const companyId = randomUUID();
+    const assignedAgentId = randomUUID();
+    const replacementAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: `Chat Test ${companyId.slice(0, 8)}`,
+      issuePrefix: `C${companyId.replaceAll("-", "").slice(0, 7).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const now = new Date();
+    await db
+      .insert(authUsers)
+      .values({
+        id: "owner-user",
+        name: "Owner User",
+        email: "owner-user@example.com",
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "owner-user",
+      status: "active",
+      membershipRole: "operator",
+    });
+    await db.insert(agents).values([
+      {
+        id: assignedAgentId,
+        companyId,
+        name: "Maya",
+        role: "engineer",
+        status: "idle",
+        adapterType: "paperclip_runner",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: replacementAgentId,
+        companyId,
+        name: "Linus",
+        role: "engineer",
+        status: "idle",
+        adapterType: "paperclip_runner",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    return { companyId, assignedAgentId, replacementAgentId };
+  }
+
+  function createService(
+    runtime = new FakeChatSdkRuntime(),
+    providerFetch: typeof globalThis.fetch = fakeSlackFetch() as typeof globalThis.fetch,
+    overrides: Partial<
+      Pick<
+        ChatChannelServiceOptions,
+        "deferWebhookProcessing" | "scheduleDeferredWork" | "storage"
+      >
+    > = {},
+  ) {
+    const wakeup = vi.fn(async () => ({ accepted: true }));
+    const service = chatChannelService(db, {
+      fetch: providerFetch,
+      heartbeat: { wakeup },
+      publicBaseUrl: "https://paperclip.example",
+      runtime: runtime as unknown as ChatSdkRuntime,
+      ...overrides,
+    });
+    return { runtime, service, wakeup };
+  }
+
+  function createStorageService() {
+    const objects = new Map<string, Buffer>();
+    const putFile = vi.fn<StorageService["putFile"]>(async (input) => {
+      const objectKey = `${input.namespace}/${randomUUID()}-${input.originalFilename ?? "attachment"}`;
+      objects.set(objectKey, input.body);
+      return {
+        provider: "local_disk",
+        objectKey,
+        contentType: input.contentType,
+        byteSize: input.body.length,
+        sha256: createHash("sha256").update(input.body).digest("hex"),
+        originalFilename: input.originalFilename,
+      };
+    });
+    const storage: StorageService = {
+      provider: "local_disk",
+      putFile,
+      getObject: vi.fn(async (_companyId, objectKey) => {
+        const body = objects.get(objectKey);
+        if (!body) throw new Error(`Missing test object ${objectKey}`);
+        return {
+          stream: Readable.from([body]),
+          contentLength: body.length,
+        };
+      }),
+      headObject: vi.fn(async (_companyId, objectKey) => ({
+        exists: objects.has(objectKey),
+        contentLength: objects.get(objectKey)?.length,
+      })),
+      deleteObject: vi.fn(async (_companyId, objectKey) => {
+        objects.delete(objectKey);
+      }),
+    };
+    return { objects, putFile, storage };
+  }
+
+  async function recordSlackUrlVerification(
+    service: ChatChannelService,
+    publicId: string,
+  ) {
+    await service.handleWebhook(
+      publicId,
+      "slack",
+      new Request(
+        `https://paperclip.example/api/chat-webhooks/${publicId}/slack`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            type: "url_verification",
+            challenge: "verified-challenge",
+          }),
+        },
+      ),
+    );
+  }
+
+  async function qualifySetupRoundTrip(
+    service: ChatChannelService,
+    endpointId: string,
+    userId = "U-EXTERNAL",
+  ) {
+    const endpoint = await service.get(endpointId);
+    const conversation = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpointId))
+      .then((rows) => rows.at(-1));
+    if (!conversation) throw new Error("Expected setup conversation");
+    const fakeRuntime = service.runtime as unknown as FakeChatSdkRuntime;
+    const callbacks = fakeRuntime.configurations.get(endpointId)?.callbacks;
+    if (!callbacks) throw new Error("Expected setup callbacks");
+    const { thread } = makeThread({
+      id: conversation.externalThreadId,
+      channelId: conversation.externalConversationId,
+      isDM: conversation.isDirectMessage,
+      name: conversation.externalLabel,
+    });
+    await callbacks.onMessage({
+      endpointId,
+      provider: endpoint.provider,
+      thread,
+      message: makeMessage({
+        id: `setup-follow-up-${randomUUID()}`,
+        text: "Setup follow-up",
+        userId,
+      }),
+      trigger:
+        endpoint.provider === "telegram"
+          ? "direct_message"
+          : "subscribed_message",
+    });
+    await issueService(db).addComment(
+      conversation.issueId,
+      "Setup round trip complete",
+      { agentId: endpoint.assignedAgentId },
+      { authorType: "agent" },
+    );
+    await service.processPendingPublications();
+    const providerRuntime = fakeRuntime.endpoints.get(endpointId);
+    if (providerRuntime) providerRuntime.posts.length = 0;
+  }
+
+  async function configuredSlackEndpoint(
+    fixture: Awaited<ReturnType<typeof seedCompany>>,
+    overrides?: { allowUnlinkedPeople?: boolean },
+  ) {
+    const context = createService();
+    const endpoint = await context.service.create(
+      fixture.companyId,
+      {
+        provider: "slack",
+        assignedAgentId: fixture.assignedAgentId,
+        name: "Maya in Slack",
+      },
+      "owner-user",
+    );
+    if (overrides?.allowUnlinkedPeople !== undefined) {
+      await context.service.update(
+        endpoint.id,
+        {
+          allowUnlinkedPeople: overrides.allowUnlinkedPeople,
+        },
+        "owner-user",
+      );
+    }
+    await context.service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-test-token",
+          signingSecret: "test-signing-secret",
+        },
+      },
+      "owner-user",
+    );
+    await recordSlackUrlVerification(context.service, endpoint.publicId);
+    await context.service.configure(
+      endpoint.id,
+      { action: "verify" },
+      "owner-user",
+    );
+    const callbacks = context.runtime.configurations.get(
+      endpoint.id,
+    )?.callbacks;
+    if (!callbacks)
+      throw new Error("Fake runtime did not receive endpoint callbacks");
+    return { ...context, endpoint, callbacks };
+  }
+
+  async function configuredTelegramEndpoint(
+    fixture: Awaited<ReturnType<typeof seedCompany>>,
+  ) {
+    const context = createService(
+      new FakeChatSdkRuntime(),
+      fakeTelegramFetch() as typeof globalThis.fetch,
+    );
+    const endpoint = await context.service.create(
+      fixture.companyId,
+      {
+        provider: "telegram",
+        assignedAgentId: fixture.assignedAgentId,
+        name: "Maya in Telegram",
+      },
+      "owner-user",
+    );
+    await context.service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: { botToken: "123456:telegram-interaction-test" },
+      },
+      "owner-user",
+    );
+    const callbacks = context.runtime.configurations.get(
+      endpoint.id,
+    )?.callbacks;
+    if (!callbacks)
+      throw new Error("Fake runtime did not receive Telegram callbacks");
+    return { ...context, endpoint, callbacks };
+  }
+
+  async function deliverMessage(input: {
+    callbacks: CreateChatSdkEndpointRuntimeOptions["callbacks"];
+    endpointId: string;
+    message: Message;
+    provider?: ChatProvider;
+    thread: Thread;
+    trigger: ChatSdkMessageTrigger;
+  }) {
+    await input.callbacks.onMessage({
+      endpointId: input.endpointId,
+      provider: input.provider ?? "slack",
+      thread: input.thread,
+      message: input.message,
+      trigger: input.trigger,
+    });
+  }
+
+  it("creates a channel-purpose connection and rejects attempts to change its assigned agent", async () => {
+    const fixture = await seedCompany();
+    const { service } = createService();
+    const app = routesApp(db, fixture.companyId, service);
+
+    const createResponse = await request(app)
+      .post(`/api/companies/${fixture.companyId}/chat-endpoints`)
+      .send({ provider: "slack", assignedAgentId: fixture.assignedAgentId })
+      .expect(201);
+
+    expect(createResponse.body).toMatchObject({
+      provider: "slack",
+      assignedAgentId: fixture.assignedAgentId,
+      assignedAgentName: "Maya",
+      status: "draft",
+      setup: { command: expect.stringMatching(/^\/maya-[a-z0-9]{6}$/) },
+    });
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, createResponse.body.connectionId));
+    expect(connection).toMatchObject({
+      connectionPurpose: "channel",
+      transport: "chat_sdk",
+    });
+
+    await request(app)
+      .patch(`/api/chat-endpoints/${createResponse.body.id}`)
+      .send({ assignedAgentId: fixture.replacementAgentId })
+      .expect(400);
+    const [stored] = await db
+      .select({ assignedAgentId: chatEndpoints.assignedAgentId })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, createResponse.body.id));
+    expect(stored.assignedAgentId).toBe(fixture.assignedAgentId);
+  });
+
+  it("returns not found rather than revealing another company's chat endpoint", async () => {
+    const viewerCompany = await seedCompany();
+    const ownerCompany = await seedCompany();
+    const { service } = createService();
+    const endpoint = await service.create(
+      ownerCompany.companyId,
+      {
+        provider: "telegram",
+        assignedAgentId: ownerCompany.assignedAgentId,
+      },
+      "owner-user",
+    );
+    const app = routesApp(db, viewerCompany.companyId, service);
+
+    await request(app).get(`/api/chat-endpoints/${endpoint.id}`).expect(404);
+    await request(app)
+      .patch(`/api/chat-endpoints/${endpoint.id}`)
+      .send({ allowDirectMessages: true })
+      .expect(404);
+  });
+
+  it("does not let two live agent connections claim the same native bot or spoof its verified identity", async () => {
+    const fixture = await seedCompany();
+    const { service } = createService(
+      new FakeChatSdkRuntime(),
+      fakeSlackFetch("U-ONE-NATIVE-BOT") as typeof globalThis.fetch,
+    );
+    const first = await service.create(
+      fixture.companyId,
+      {
+        provider: "slack",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+    const second = await service.create(
+      fixture.companyId,
+      {
+        provider: "slack",
+        assignedAgentId: fixture.replacementAgentId,
+      },
+      "owner-user",
+    );
+    await service.configure(
+      first.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-first-agent",
+          signingSecret: "first-signing-secret",
+        },
+      },
+      "owner-user",
+    );
+    await expect(
+      service.configure(
+        second.id,
+        {
+          action: "configure",
+          credentials: {
+            botToken: "xoxb-second-agent",
+            signingSecret: "second-signing-secret",
+          },
+        },
+        "owner-user",
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "chat_bot_identity_in_use",
+        endpointId: first.id,
+        assignedAgentId: fixture.assignedAgentId,
+      },
+    });
+
+    const app = routesApp(db, fixture.companyId, service);
+    await request(app)
+      .post(`/api/chat-endpoints/${second.id}/setup`)
+      .send({
+        action: "configure",
+        providerAccountId: "T-SPOOFED",
+        botExternalId: "U-SPOOFED",
+        credentials: {
+          botToken: "xoxb-spoof",
+          signingSecret: "spoof-signing-secret",
+        },
+      })
+      .expect(400);
+  });
+
+  it("configures a customer-owned GitHub App without remapping its appId", async () => {
+    const fixture = await seedCompany();
+    const appId = "123456";
+    const privateKey = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+    })
+      .privateKey.export({ type: "pkcs8", format: "pem" })
+      .toString();
+    let observedIssuer: string | null = null;
+    const providerFetch = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "https://api.github.com/app") {
+          const authorization = new Headers(init?.headers).get("authorization");
+          const token = authorization?.replace(/^Bearer\s+/i, "");
+          const payload = token?.split(".")[1];
+          if (!payload) throw new Error("GitHub App JWT was not sent");
+          observedIssuer = String(
+            (
+              JSON.parse(
+                Buffer.from(payload, "base64url").toString("utf8"),
+              ) as { iss?: unknown }
+            ).iss,
+          );
+          return new Response(
+            JSON.stringify({
+              id: 789,
+              slug: "maya-paperclip",
+              name: "Maya Paperclip",
+              owner: { login: "paperclipai" },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url === "https://api.github.com/app/installations?per_page=100") {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 2468,
+                account: {
+                  id: 1357,
+                  login: "paperclipai",
+                  type: "Organization",
+                },
+                suspended_at: null,
+              },
+            ]),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (
+          url === "https://api.github.com/app/installations/2468/access_tokens"
+        ) {
+          return new Response(JSON.stringify({ token: "installation-token" }), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (
+          url ===
+          "https://api.github.com/installation/repositories?per_page=100&page=1"
+        ) {
+          return new Response(
+            JSON.stringify({
+              repositories: [
+                {
+                  id: 97531,
+                  full_name: "paperclipai/paperclip",
+                  html_url: "https://github.com/paperclipai/paperclip",
+                  owner: { id: 1357, login: "paperclipai" },
+                  private: false,
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error(`Unexpected provider request: ${url}`);
+      },
+    ) as unknown as typeof globalThis.fetch;
+    const { runtime, service } = createService(
+      new FakeChatSdkRuntime(),
+      providerFetch,
+    );
+    const endpoint = await service.create(
+      fixture.companyId,
+      {
+        provider: "github",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+
+    const configured = await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          appId,
+          privateKey,
+          webhookSecret: "github-webhook-secret",
+        },
+      },
+      "owner-user",
+    );
+
+    expect(observedIssuer).toBe(appId);
+    expect(configured).toMatchObject({
+      status: "verifying",
+      providerAccountId: "paperclipai",
+      botUsername: "maya-paperclip[bot]",
+      setup: { step: "test" },
+    });
+    expect(
+      runtime.configurations.get(endpoint.id)?.providerConfig,
+    ).toMatchObject({
+      provider: "github",
+      credentials: {
+        appId,
+        privateKey,
+        installationId: 2468,
+        webhookSecret: "github-webhook-secret",
+      },
+    });
+    const [connection] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(connection.refs.map((ref) => ref.configPath).sort()).toEqual([
+      "credentials.appId",
+      "credentials.installationId",
+      "credentials.privateKey",
+      "credentials.webhookSecret",
+    ]);
+    const githubResources = await service.listResources(endpoint.id);
+    expect(githubResources).toEqual([
+      expect.objectContaining({
+        type: "repository",
+        providerResourceId: "paperclipai/paperclip",
+        label: "paperclipai/paperclip",
+        availability: "available",
+        enabled: false,
+      }),
+    ]);
+    await service.replaceResources(endpoint.id, [
+      { id: githubResources[0]!.id, enabled: true },
+    ]);
+    const githubCallbacks = runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!githubCallbacks) throw new Error("Expected GitHub callbacks");
+    await deliverMessage({
+      callbacks: githubCallbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: makeThread({
+        channelId: "PaperclipAI/Paperclip",
+        id: "github:PaperclipAI/Paperclip:issue:17",
+        name: "paperclipai/paperclip",
+      }).thread,
+      message: makeMessage({
+        id: "github-root-17",
+        text: "@maya triage issue 17",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await expect(
+      db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id)),
+    ).resolves.toHaveLength(1);
+    await service.handleWebhook(
+      endpoint.publicId,
+      "github",
+      new Request("https://paperclip.example/github", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "installation_repositories",
+          "x-github-delivery": "github-repository-removed",
+        },
+        body: JSON.stringify({
+          action: "removed",
+          repositories_added: [],
+          repositories_removed: [
+            {
+              id: 97531,
+              full_name: "paperclipai/paperclip",
+              html_url: "https://github.com/paperclipai/paperclip",
+              owner: { id: 1357, login: "paperclipai" },
+            },
+          ],
+        }),
+      }),
+    );
+    await expect(service.listResources(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        providerResourceId: "paperclipai/paperclip",
+        availability: "removed",
+      }),
+    ]);
+    await service.handleWebhook(
+      endpoint.publicId,
+      "github",
+      new Request("https://paperclip.example/github", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "installation",
+          "x-github-delivery": "github-installation-suspended",
+        },
+        body: JSON.stringify({
+          action: "suspend",
+          installation: { id: 2468 },
+        }),
+      }),
+    );
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "attention",
+      healthMessage: "GitHub App installation was suspended",
+    });
+    expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+  });
+
+  it("configures a customer-owned Microsoft Teams bot with the entered credentials", async () => {
+    const fixture = await seedCompany();
+    const clientId = "00000000-0000-4000-8000-000000000001";
+    const tenantId = "00000000-0000-4000-8000-000000000002";
+    const clientSecret = "teams-client-secret";
+    let observedTokenRequest: URLSearchParams | null = null;
+    const providerFetch = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        expect(url).toBe(
+          `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+        );
+        expect(init?.method).toBe("POST");
+        observedTokenRequest = new URLSearchParams(String(init?.body));
+        return new Response(JSON.stringify({ access_token: "teams-access" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    ) as unknown as typeof globalThis.fetch;
+    const { runtime, service } = createService(
+      new FakeChatSdkRuntime(),
+      providerFetch,
+    );
+    const endpoint = await service.create(
+      fixture.companyId,
+      {
+        provider: "microsoft-teams",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+
+    const configured = await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: { clientId, tenantId, clientSecret },
+      },
+      "owner-user",
+    );
+
+    expect(Object.fromEntries(observedTokenRequest ?? [])).toEqual({
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: "client_credentials",
+      scope: "https://api.botframework.com/.default",
+    });
+    expect(configured).toMatchObject({
+      status: "verifying",
+      providerAccountId: tenantId,
+      botExternalId: clientId,
+      setup: { step: "test" },
+    });
+    expect(
+      runtime.configurations.get(endpoint.id)?.providerConfig,
+    ).toMatchObject({
+      provider: "microsoft-teams",
+      credentials: {
+        appId: clientId,
+        appPassword: clientSecret,
+        appTenantId: tenantId,
+        appType: "SingleTenant",
+      },
+    });
+  });
+
+  it("configures Telegram by verifying getMe and registering the Paperclip webhook", async () => {
+    const fixture = await seedCompany();
+    const botToken = "123456:telegram-test-token";
+    const botId = Number.parseInt(
+      randomUUID().replaceAll("-", "").slice(0, 12),
+      16,
+    );
+    const observedUrls: string[] = [];
+    let observedWebhook: Record<string, unknown> | null = null;
+    let observedWebhookDelete: Record<string, unknown> | null = null;
+    const providerFetch = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        observedUrls.push(url);
+        if (url.endsWith("/getMe")) {
+          expect(init).toBeUndefined();
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              result: {
+                id: botId,
+                username: "maya_paperclip_bot",
+                first_name: "Maya",
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/getWebhookInfo")) {
+          expect(init).toBeUndefined();
+          return new Response(
+            JSON.stringify({ ok: true, result: { url: "" } }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.endsWith("/setWebhook")) {
+          expect(init?.method).toBe("POST");
+          observedWebhook = JSON.parse(String(init?.body)) as Record<
+            string,
+            unknown
+          >;
+          return new Response(JSON.stringify({ ok: true, result: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.endsWith("/deleteWebhook")) {
+          expect(init?.method).toBe("POST");
+          observedWebhookDelete = JSON.parse(String(init?.body)) as Record<
+            string,
+            unknown
+          >;
+          return new Response(JSON.stringify({ ok: true, result: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`Unexpected provider request: ${url}`);
+      },
+    ) as unknown as typeof globalThis.fetch;
+    const { runtime, service } = createService(
+      new FakeChatSdkRuntime(),
+      providerFetch,
+    );
+    const endpoint = await service.create(
+      fixture.companyId,
+      {
+        provider: "telegram",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+
+    const configured = await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: { botToken },
+      },
+      "owner-user",
+    );
+
+    expect(observedUrls).toEqual([
+      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/getMe`,
+      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/getWebhookInfo`,
+      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/setWebhook`,
+    ]);
+    expect(configured).toMatchObject({
+      status: "verifying",
+      providerAccountId: String(botId),
+      botExternalId: String(botId),
+      botUsername: "maya_paperclip_bot",
+      setup: { step: "test" },
+    });
+    const providerConfig = runtime.configurations.get(
+      endpoint.id,
+    )?.providerConfig;
+    expect(providerConfig).toMatchObject({
+      provider: "telegram",
+      credentials: { botToken, secretToken: expect.any(String) },
+    });
+    if (providerConfig?.provider !== "telegram")
+      throw new Error("Telegram runtime configuration was not created");
+    expect(observedWebhook).toEqual({
+      url: `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`,
+      secret_token: providerConfig.credentials.secretToken,
+      allowed_updates: [
+        "message",
+        "edited_message",
+        "callback_query",
+        "my_chat_member",
+      ],
+      drop_pending_updates: true,
+    });
+    const [connection] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(connection.refs.map((ref) => ref.configPath).sort()).toEqual([
+      "credentials.botToken",
+      "credentials.webhookSecret",
+    ]);
+    await service.configure(endpoint.id, { action: "remove" }, "owner-user");
+    expect(observedWebhookDelete).toEqual({ drop_pending_updates: false });
+    expect(observedUrls.at(-1)).toBe(
+      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/deleteWebhook`,
+    );
+  });
+
+  it("reconciles Slack membership during configure, resume, and reconnect", async () => {
+    const fixture = await seedCompany();
+    let channels = [
+      { id: "C-ONE", name: "one", is_member: true, is_archived: false },
+    ];
+    const providerFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://slack.com/api/auth.test") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            team_id: "T-RECONCILE",
+            team: "Reconcile Test",
+            user_id: "U-RECONCILE",
+            user: "maya-reconcile",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.startsWith("https://slack.com/api/conversations.list")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            channels,
+            response_metadata: { next_cursor: "" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected provider request: ${url}`);
+    }) as typeof globalThis.fetch;
+    const { service } = createService(new FakeChatSdkRuntime(), providerFetch);
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-reconcile",
+          signingSecret: "reconcile-signing-secret",
+        },
+      },
+      "owner-user",
+    );
+    await expect(service.listResources(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        providerResourceId: "C-ONE",
+        availability: "available",
+        enabled: false,
+      }),
+    ]);
+
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active", setup: { step: "complete" } })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    await service.configure(endpoint.id, { action: "pause" }, "owner-user");
+    channels = [
+      { id: "C-TWO", name: "two", is_member: true, is_archived: false },
+    ];
+    await service.configure(endpoint.id, { action: "resume" }, "owner-user");
+    expect(
+      (await service.listResources(endpoint.id)).map((resource) => ({
+        id: resource.providerResourceId,
+        availability: resource.availability,
+      })),
+    ).toEqual([
+      { id: "C-ONE", availability: "unavailable" },
+      { id: "C-TWO", availability: "available" },
+    ]);
+
+    await db
+      .update(chatEndpoints)
+      .set({ status: "attention" })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    channels = [
+      { id: "C-THREE", name: "three", is_member: true, is_archived: false },
+    ];
+    await service.configure(
+      endpoint.id,
+      {
+        action: "reconnect",
+        credentials: {
+          botToken: "xoxb-reconcile",
+          signingSecret: "reconcile-signing-secret",
+        },
+      },
+      "owner-user",
+    );
+    expect(
+      (await service.listResources(endpoint.id)).map((resource) => ({
+        id: resource.providerResourceId,
+        availability: resource.availability,
+      })),
+    ).toEqual([
+      { id: "C-ONE", availability: "unavailable" },
+      { id: "C-THREE", availability: "available" },
+      { id: "C-TWO", availability: "unavailable" },
+    ]);
+  });
+
+  it("persists verified Slack membership and uninstall lifecycle before acknowledging", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    const configuredEndpoint = await service.get(endpoint.id);
+    const send = (payload: unknown) =>
+      service.handleWebhook(
+        endpoint.publicId,
+        "slack",
+        new Request("https://paperclip.example/slack", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        }),
+      );
+
+    await send({
+      event_id: "Ev-member-joined",
+      event: {
+        type: "member_joined_channel",
+        user: configuredEndpoint.botExternalId,
+        channel: "C-LIFECYCLE",
+        channel_type: "C",
+      },
+    });
+    const [resource] = await db
+      .select()
+      .from(chatEndpointResources)
+      .where(eq(chatEndpointResources.endpointId, endpoint.id));
+    expect(resource).toMatchObject({
+      providerResourceId: "C-LIFECYCLE",
+      availability: "available",
+      enabled: false,
+    });
+    await service.replaceResources(endpoint.id, [
+      { id: resource.id, enabled: true },
+    ]);
+
+    const thread = makeThread({
+      channelId: "C-LIFECYCLE",
+      id: "slack:C-LIFECYCLE:123.45",
+      name: "lifecycle",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: makeMessage({
+        id: "123.45",
+        text: "@maya preserve this task",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    expect(conversation).toBeDefined();
+
+    const leftEvent = {
+      event_id: "Ev-member-left",
+      event: {
+        type: "member_left_channel",
+        user: configuredEndpoint.botExternalId,
+        channel: "C-LIFECYCLE",
+      },
+    };
+    await send(leftEvent);
+    await send(leftEvent);
+    await expect(service.listResources(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        providerResourceId: "C-LIFECYCLE",
+        availability: "unavailable",
+      }),
+    ]);
+    expect(
+      await db
+        .select({ state: chatConversations.state })
+        .from(chatConversations)
+        .where(eq(chatConversations.id, conversation.id)),
+    ).toEqual([{ state: "unavailable" }]);
+    expect(
+      await db.select().from(issues).where(eq(issues.id, conversation.issueId)),
+    ).toHaveLength(1);
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: makeThread({
+        channelId: "C-LIFECYCLE",
+        id: "slack:C-LIFECYCLE:999.01",
+        name: "lifecycle",
+      }).thread,
+      message: makeMessage({
+        id: "999.01",
+        text: "@maya this delayed root must stay blocked",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(1);
+    await expect(service.listResources(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ availability: "unavailable", enabled: true }),
+    ]);
+    expect(
+      (
+        await db
+          .select()
+          .from(chatDeliveries)
+          .where(eq(chatDeliveries.endpointId, endpoint.id))
+      ).filter(
+        (delivery) => delivery.providerEventId === "lifecycle:Ev-member-left",
+      ),
+    ).toHaveLength(1);
+
+    await send({
+      event_id: "Ev-uninstalled",
+      event: { type: "app_uninstalled" },
+    });
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "revoked",
+      healthMessage: "Slack app was uninstalled",
+    });
+    expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(connection).toMatchObject({
+      status: "disabled",
+      enabled: false,
+      healthStatus: "failed",
+    });
+  });
+
+  it("applies Teams installation and Telegram membership resource lifecycle", async () => {
+    const fixture = await seedCompany();
+    const teams = createService(
+      new FakeChatSdkRuntime(),
+      (async () =>
+        new Response(JSON.stringify({ access_token: "teams-access" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as typeof globalThis.fetch,
+    );
+    const teamsEndpoint = await teams.service.create(
+      fixture.companyId,
+      {
+        provider: "microsoft-teams",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+    await teams.service.configure(
+      teamsEndpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          clientId: "00000000-0000-4000-8000-000000000111",
+          tenantId: "00000000-0000-4000-8000-000000000222",
+          clientSecret: "teams-secret",
+        },
+      },
+      "owner-user",
+    );
+    const teamsPayload = (action: "add" | "remove") => ({
+      id: `teams-${action}`,
+      type: "installationUpdate",
+      action,
+      conversation: { id: "19:conversation@thread.tacv2", isGroup: true },
+      channelData: {
+        team: { id: "team-1", name: "Paperclip" },
+        channel: { id: "channel-1", name: "Engineering" },
+      },
+    });
+    await teams.service.handleWebhook(
+      teamsEndpoint.publicId,
+      "microsoft-teams",
+      new Request("https://paperclip.example/teams", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(teamsPayload("add")),
+      }),
+    );
+    const [teamsResource] = await teams.service.listResources(teamsEndpoint.id);
+    expect(teamsResource).toMatchObject({
+      providerResourceId: "19:conversation@thread.tacv2",
+      availability: "available",
+      enabled: false,
+    });
+    await teams.service.replaceResources(teamsEndpoint.id, [
+      { id: teamsResource!.id, enabled: true },
+    ]);
+    const teamsCallbacks = teams.runtime.configurations.get(
+      teamsEndpoint.id,
+    )?.callbacks;
+    if (!teamsCallbacks) throw new Error("Expected Teams callbacks");
+    const teamsServiceUrl = "https://smba.trafficmanager.net/amer/";
+    const teamsConversationId = "19:conversation@thread.tacv2";
+    const teamsChannelId = `teams:${Buffer.from(teamsConversationId).toString("base64url")}:${Buffer.from(teamsServiceUrl).toString("base64url")}`;
+    const teamsThreadId = `teams:${Buffer.from(`${teamsConversationId};messageid=1729`).toString("base64url")}:${Buffer.from(teamsServiceUrl).toString("base64url")}`;
+    await deliverMessage({
+      callbacks: teamsCallbacks,
+      endpointId: teamsEndpoint.id,
+      provider: "microsoft-teams",
+      thread: makeThread({
+        channelId: teamsChannelId,
+        id: teamsThreadId,
+        name: "Engineering",
+      }).thread,
+      message: makeMessage({
+        id: "teams-root-1729",
+        text: "@Maya investigate the alert",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await expect(
+      db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, teamsEndpoint.id)),
+    ).resolves.toHaveLength(1);
+    await teams.service.handleWebhook(
+      teamsEndpoint.publicId,
+      "microsoft-teams",
+      new Request("https://paperclip.example/teams", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(teamsPayload("remove")),
+      }),
+    );
+    await expect(
+      teams.service.listResources(teamsEndpoint.id),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        providerResourceId: "19:conversation@thread.tacv2",
+        label: "Engineering",
+        availability: "removed",
+      }),
+    ]);
+
+    const telegram = createService(
+      new FakeChatSdkRuntime(),
+      fakeTelegramFetch(445566) as typeof globalThis.fetch,
+    );
+    const telegramEndpoint = await telegram.service.create(
+      fixture.companyId,
+      { provider: "telegram", assignedAgentId: fixture.replacementAgentId },
+      "owner-user",
+    );
+    await telegram.service.configure(
+      telegramEndpoint.id,
+      {
+        action: "configure",
+        credentials: { botToken: "445566:telegram-lifecycle" },
+      },
+      "owner-user",
+    );
+    const telegramMembership = (updateId: number, status: string) =>
+      telegram.service.handleWebhook(
+        telegramEndpoint.publicId,
+        "telegram",
+        new Request("https://paperclip.example/telegram", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            update_id: updateId,
+            my_chat_member: {
+              chat: { id: -100123, type: "supergroup", title: "Engineering" },
+              new_chat_member: { status },
+            },
+          }),
+        }),
+      );
+    await telegramMembership(1, "member");
+    const [telegramResource] = await telegram.service.listResources(
+      telegramEndpoint.id,
+    );
+    await telegram.service.replaceResources(telegramEndpoint.id, [
+      { id: telegramResource!.id, enabled: true },
+    ]);
+    const telegramCallbacks = telegram.runtime.configurations.get(
+      telegramEndpoint.id,
+    )?.callbacks;
+    if (!telegramCallbacks) throw new Error("Expected Telegram callbacks");
+    await deliverMessage({
+      callbacks: telegramCallbacks,
+      endpointId: telegramEndpoint.id,
+      provider: "telegram",
+      thread: makeThread({
+        channelId: "-100123",
+        id: "telegram:-100123:77",
+        name: "Engineering",
+      }).thread,
+      message: makeMessage({
+        id: "telegram-root-77",
+        text: "@paperclip investigate the alert",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await expect(
+      db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, telegramEndpoint.id)),
+    ).resolves.toHaveLength(1);
+    await telegramMembership(2, "left");
+    await expect(
+      telegram.service.listResources(telegramEndpoint.id),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        providerResourceId: "-100123",
+        label: "Engineering",
+        availability: "unavailable",
+      }),
+    ]);
+  });
+
+  it("does not acknowledge lifecycle callbacks whose durable write fails", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    const configuredEndpoint = await service.get(endpoint.id);
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected provider runtime");
+    providerRuntime.handleWebhook = vi.fn(async () => {
+      await db.delete(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id));
+      return new Response("accepted", { status: 202 });
+    });
+    await expect(
+      service.handleWebhook(
+        endpoint.publicId,
+        "slack",
+        new Request("https://paperclip.example/slack", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            event_id: "Ev-must-persist",
+            event: {
+              type: "member_joined_channel",
+              user: configuredEndpoint.botExternalId,
+              channel: "C-MUST-PERSIST",
+            },
+          }),
+        }),
+      ),
+    ).rejects.toBeDefined();
+  });
+
+  it("retries a durable lifecycle row without treating it as a message delivery", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, service } = await configuredSlackEndpoint(fixture);
+    const configuredEndpoint = await service.get(endpoint.id);
+    const transaction = vi.spyOn(db, "transaction");
+    transaction.mockRejectedValueOnce(
+      new Error("injected lifecycle persistence failure"),
+    );
+    await expect(
+      service.handleWebhook(
+        endpoint.publicId,
+        "slack",
+        new Request("https://paperclip.example/slack", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            event_id: "Ev-lifecycle-retry",
+            event: {
+              type: "member_joined_channel",
+              user: configuredEndpoint.botExternalId,
+              channel: "C-RETRY-LIFECYCLE",
+            },
+          }),
+        }),
+      ),
+    ).rejects.toThrow("injected lifecycle persistence failure");
+    transaction.mockRestore();
+    const [retry] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(chatDeliveries.providerEventId, "lifecycle:Ev-lifecycle-retry"),
+        ),
+      );
+    expect(retry).toMatchObject({ state: "retry", attempts: 1 });
+
+    await service.processPendingDeliveries(25, retry!.id);
+    await expect(
+      db
+        .select({ state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.id, retry!.id)),
+    ).resolves.toEqual([{ state: "processed" }]);
+    await expect(service.listResources(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        providerResourceId: "C-RETRY-LIFECYCLE",
+        availability: "available",
+      }),
+    ]);
+  });
+
+  it("activates Slack only after provider verification and a real test message", async () => {
+    const fixture = await seedCompany();
+    const { runtime, service } = createService();
+    const endpoint = await service.create(
+      fixture.companyId,
+      {
+        provider: "slack",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+
+    const configured = await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-test-token",
+          signingSecret: "test-signing-secret",
+        },
+      },
+      "owner-user",
+    );
+    expect(configured).toMatchObject({
+      status: "verifying",
+      setup: { step: "provider_setup" },
+    });
+    const [storedConfigured] = await db
+      .select({ setup: chatEndpoints.setup })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(storedConfigured.setup).toEqual({
+      step: "provider_setup",
+      testStartedAt: null,
+      webhookVerifiedAt: null,
+    });
+
+    await expect(
+      service.configure(endpoint.id, { action: "verify" }, "owner-user"),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: { code: "chat_webhook_not_verified" },
+    });
+    await recordSlackUrlVerification(service, endpoint.publicId);
+
+    const providerVerified = await service.configure(
+      endpoint.id,
+      { action: "verify" },
+      "owner-user",
+    );
+    expect(providerVerified).toMatchObject({
+      status: "verifying",
+      setup: { step: "test" },
+    });
+    const [storedProviderVerified] = await db
+      .select({ setup: chatEndpoints.setup })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(storedProviderVerified.setup).toMatchObject({
+      step: "test",
+      testStartedAt: expect.any(String),
+    });
+    await expect(service.test(endpoint.id)).rejects.toMatchObject({
+      status: 409,
+      details: { code: "chat_test_message_missing" },
+    });
+
+    const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks)
+      throw new Error("Fake runtime did not receive endpoint callbacks");
+    const testThread = makeThread({
+      channelId: "C-SETUP",
+      id: "slack:C-SETUP:9000.1",
+      name: "setup",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: testThread.thread,
+      message: makeMessage({
+        id: "9000.1",
+        text: "@maya verify this connection",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+
+    await expect(service.test(endpoint.id)).rejects.toMatchObject({
+      status: 409,
+      details: { code: "chat_test_follow_up_missing" },
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+
+    const activated = await service.test(endpoint.id);
+    expect(activated).toMatchObject({
+      status: "active",
+      healthMessage: "Connected",
+      activatedAt: expect.any(String),
+      setup: { step: "complete" },
+    });
+    const [storedActivated] = await db
+      .select({ setup: chatEndpoints.setup })
+      .from(chatEndpoints)
+      .where(eq(chatEndpoints.id, endpoint.id));
+    expect(storedActivated.setup).toEqual({
+      step: "complete",
+      testStartedAt: null,
+    });
+  });
+
+  it("durably receives a burst, then processes mention and reply FIFO under one conversation drain", async () => {
+    const fixture = await seedCompany();
+    const runtime = new FakeChatSdkRuntime();
+    const deferred: Array<() => void> = [];
+    const wakeup = vi.fn(async () => ({ accepted: true }));
+    const service = chatChannelService(db, {
+      deferWebhookProcessing: true,
+      fetch: fakeSlackFetch() as typeof globalThis.fetch,
+      heartbeat: { wakeup },
+      publicBaseUrl: "https://paperclip.example",
+      runtime: runtime as unknown as ChatSdkRuntime,
+      scheduleDeferredWork: (task) => deferred.push(task),
+    });
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-async-ingress",
+          signingSecret: "async-ingress-secret",
+        },
+      },
+      "owner-user",
+    );
+    await recordSlackUrlVerification(service, endpoint.publicId);
+    await service.configure(endpoint.id, { action: "verify" }, "owner-user");
+    const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Expected endpoint callbacks");
+    const thread = makeThread({
+      channelId: "C-ASYNC",
+      id: "slack:C-ASYNC:9100.1",
+      name: "async-ingress",
+    });
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: makeMessage({
+        id: "9100.1",
+        text: "@maya acknowledge quickly",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: makeMessage({
+        id: "9100.2",
+        text: "and include the rollback status",
+      }),
+      trigger: "subscribed_message",
+    });
+
+    const durable = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(durable).toHaveLength(2);
+    expect(durable).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerEventId: `${thread.thread.id}:9100.1`,
+          state: "received",
+          attempts: 0,
+        }),
+        expect.objectContaining({
+          providerEventId: `${thread.thread.id}:9100.2`,
+          state: "received",
+          attempts: 0,
+        }),
+      ]),
+    );
+    expect(
+      await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id)),
+    ).toHaveLength(0);
+    expect(deferred).toHaveLength(1);
+
+    const competingService = chatChannelService(db, {
+      fetch: fakeSlackFetch() as typeof globalThis.fetch,
+      heartbeat: { wakeup },
+      publicBaseUrl: "https://paperclip.example",
+      runtime: new FakeChatSdkRuntime() as unknown as ChatSdkRuntime,
+    });
+    deferred.shift()?.();
+    // Simulate another server process reconciling the same durable rows at
+    // the same time as the webhook process's deferred drain.
+    await competingService.processPendingDeliveries();
+    await vi.waitFor(async () => {
+      const rows = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      expect(rows).toHaveLength(1);
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversation.issueId))
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    expect(comments.map((comment) => comment.body)).toEqual([
+      "@maya acknowledge quickly",
+      "and include the rollback status",
+    ]);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect(
+      await db
+        .select()
+        .from(chatEndpointLeases)
+        .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+    ).toHaveLength(0);
+    await competingService.shutdown();
+    await service.shutdown();
+  });
+
+  it("rehydrates a durable attachment descriptor after restart and stores the file on the issue", async () => {
+    const fixture = await seedCompany();
+    const recoveryKey = `restart-attachment-${randomUUID()}`;
+    const attachmentBody = Buffer.from("restart-safe attachment body", "utf8");
+    const attachmentBodies = new Map([[recoveryKey, attachmentBody]]);
+    const firstRuntime = new FakeChatSdkRuntime(attachmentBodies);
+    const deferred: Array<() => void> = [];
+    const storage = createStorageService();
+    const first = createService(
+      firstRuntime,
+      fakeSlackFetch() as typeof globalThis.fetch,
+      {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: (task) => deferred.push(task),
+        storage: storage.storage,
+      },
+    );
+    const endpoint = await first.service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await first.service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-restart-attachment",
+          signingSecret: "restart-attachment-signing-secret",
+        },
+      },
+      "owner-user",
+    );
+    await recordSlackUrlVerification(first.service, endpoint.publicId);
+    await first.service.configure(
+      endpoint.id,
+      { action: "verify" },
+      "owner-user",
+    );
+    const callbacks = firstRuntime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Expected first-process callbacks");
+    const thread = makeThread({
+      channelId: "C-RESTART-FILE",
+      id: "slack:C-RESTART-FILE:9150.1",
+      name: "restart-files",
+    });
+    const liveFetch = vi.fn(async () => {
+      throw new Error("the original attachment closure must not survive");
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: makeMessage({
+        attachments: [
+          {
+            type: "file",
+            name: "restart-note.txt",
+            mimeType: "text/plain",
+            size: attachmentBody.length,
+            fetchData: liveFetch,
+            fetchMetadata: { testRecoveryKey: recoveryKey },
+          } as Attachment,
+        ],
+        id: "9150.1",
+        text: "@maya preserve this attachment",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    const [durableDelivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(durableDelivery).toMatchObject({ state: "received", attempts: 0 });
+    expect(JSON.stringify(durableDelivery.normalizedEvent)).not.toContain(
+      "xoxb-restart-attachment",
+    );
+    expect(deferred).toHaveLength(1);
+    expect(liveFetch).not.toHaveBeenCalled();
+    await first.service.shutdown();
+
+    const restartedRuntime = new FakeChatSdkRuntime(attachmentBodies);
+    const restarted = createService(
+      restartedRuntime,
+      fakeSlackFetch() as typeof globalThis.fetch,
+      { storage: storage.storage },
+    );
+    await restarted.service.processPendingDeliveries();
+
+    const restartedEndpointRuntime = restartedRuntime.endpoints.get(
+      endpoint.id,
+    );
+    expect(
+      restartedEndpointRuntime?.rehydratedAttachmentDescriptors,
+    ).toHaveLength(1);
+    expect(storage.putFile).toHaveBeenCalledTimes(1);
+    expect(storage.putFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: fixture.companyId,
+        originalFilename: "restart-note.txt",
+        contentType: "text/plain",
+        body: attachmentBody,
+      }),
+    );
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const storedAttachments = await db
+      .select({
+        attachmentId: issueAttachments.id,
+        issueId: issueAttachments.issueId,
+        issueCommentId: issueAttachments.issueCommentId,
+        contentType: assets.contentType,
+        byteSize: assets.byteSize,
+        originalFilename: assets.originalFilename,
+      })
+      .from(issueAttachments)
+      .innerJoin(assets, eq(assets.id, issueAttachments.assetId))
+      .where(eq(issueAttachments.issueId, conversation.issueId));
+    expect(storedAttachments).toEqual([
+      expect.objectContaining({
+        issueId: conversation.issueId,
+        issueCommentId: expect.any(String),
+        contentType: "text/plain",
+        byteSize: attachmentBody.length,
+        originalFilename: "restart-note.txt",
+      }),
+    ]);
+    await restarted.service.shutdown();
+  });
+
+  it("returns a retryable webhook failure when the delivery insert fails before durable receipt", async () => {
+    const fixture = await seedCompany();
+    const service = chatChannelService(db, {
+      deferWebhookProcessing: true,
+      fetch: fakeSlackFetch("U-BOT-DURABILITY") as typeof globalThis.fetch,
+      heartbeat: { wakeup: vi.fn(async () => ({ accepted: true })) },
+      publicBaseUrl: "https://paperclip.example",
+    });
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    const signingSecret = "durable-ingress-signing-secret";
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-durable-ingress",
+          signingSecret,
+        },
+      },
+      "owner-user",
+    );
+
+    const body = JSON.stringify({
+      type: "event_callback",
+      event_id: `Ev-${randomUUID()}`,
+      event_time: Math.floor(Date.now() / 1000),
+      team_id: "T-PAPERCLIP",
+      event: {
+        type: "app_mention",
+        user: "U-EXTERNAL",
+        username: "alex",
+        text: "@maya prove durable receipt",
+        ts: "9200.1",
+        channel: "C-DURABILITY",
+        channel_type: "channel",
+        team: "T-PAPERCLIP",
+      },
+    });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = `v0=${createHmac("sha256", signingSecret)
+      .update(`v0:${timestamp}:${body}`)
+      .digest("hex")}`;
+    const providerRequest = (retry = false) =>
+      new Request(
+        `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-slack-request-timestamp": timestamp,
+            "x-slack-signature": signature,
+            ...(retry ? { "x-slack-retry-num": "1" } : {}),
+          },
+          body,
+        },
+      );
+
+    const originalInsert = db.insert.bind(db);
+    let rejectDeliveryInsert = true;
+    const insertSpy = vi.spyOn(db, "insert").mockImplementation(((table) => {
+      if (table === chatDeliveries && rejectDeliveryInsert) {
+        rejectDeliveryInsert = false;
+        throw new Error("injected chat_deliveries insert failure");
+      }
+      return originalInsert(table);
+    }) as typeof db.insert);
+
+    const rejected = await service.handleWebhook(
+      endpoint.publicId,
+      "slack",
+      providerRequest(),
+    );
+    expect(rejected.status).toBe(503);
+    expect(rejected.headers.get("retry-after")).toBe("1");
+    expect(
+      await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id)),
+    ).toHaveLength(0);
+
+    insertSpy.mockRestore();
+    const acceptedRetry = await service.handleWebhook(
+      endpoint.publicId,
+      "slack",
+      providerRequest(true),
+    );
+    expect(acceptedRetry.status).toBe(200);
+    await vi.waitFor(async () => {
+      const deliveries = await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(deliveries).toHaveLength(1);
+    });
+    await service.shutdown();
+  });
+
+  it("deduplicates inbound events, keeps one task per thread, and requires enablement for newly discovered channels", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredSlackEndpoint(fixture);
+    const first = makeThread({
+      channelId: "C-ENGINEERING",
+      id: "slack:C-ENGINEERING:1000.1",
+      name: "engineering",
+    });
+    const firstMessage = makeMessage({
+      id: "1000.1",
+      text: "@maya investigate the deploy",
+      mentioned: true,
+    });
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: first.thread,
+      message: firstMessage,
+      trigger: "mention",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: first.thread,
+      message: firstMessage,
+      trigger: "mention",
+    });
+
+    let conversations = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    let endpointIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, fixture.companyId));
+    let deliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    let comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversations[0].issueId));
+    expect(conversations).toHaveLength(1);
+    expect(endpointIssues).toHaveLength(1);
+    expect(deliveries).toHaveLength(1);
+    expect(comments.map((comment) => comment.body)).toEqual([
+      "@maya investigate the deploy",
+    ]);
+    expect(first.addReaction).toHaveBeenCalledWith(
+      first.thread.id,
+      firstMessage.id,
+      "eyes",
+    );
+    expect(first.subscribe).toHaveBeenCalledTimes(1);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: first.thread,
+      message: makeMessage({ id: "1000.2", text: "Here is another detail" }),
+      trigger: "subscribed_message",
+    });
+    conversations = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    endpointIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, fixture.companyId));
+    comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversations[0].issueId));
+    expect(conversations).toHaveLength(1);
+    expect(endpointIssues).toHaveLength(1);
+    expect(comments.map((comment) => comment.body)).toEqual([
+      "@maya investigate the deploy",
+      "Here is another detail",
+    ]);
+
+    const second = makeThread({
+      channelId: "C-FINANCE",
+      id: "slack:C-FINANCE:2000.1",
+      name: "finance",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: second.thread,
+      message: makeMessage({
+        id: "2000.1",
+        text: "@maya summarize spend",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    const resources = await service.listResources(endpoint.id);
+    expect(
+      resources.map((resource) => ({
+        label: resource.label,
+        enabled: resource.enabled,
+      })),
+    ).toEqual([
+      { label: "engineering", enabled: true },
+      { label: "finance", enabled: false },
+    ]);
+    deliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(
+      deliveries.find((delivery) => delivery.providerEventId.includes("2000.1"))
+        ?.state,
+    ).toBe("filtered");
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(1);
+
+    const finance = resources.find((resource) => resource.label === "finance");
+    if (!finance) throw new Error("Expected discovered finance resource");
+    await service.replaceResources(endpoint.id, [
+      { id: finance.id, enabled: true },
+    ]);
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: second.thread,
+      message: makeMessage({
+        id: "2000.2",
+        text: "@maya summarize spend",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    expect(
+      await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id)),
+    ).toHaveLength(2);
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(2);
+  });
+
+  it("canonicalizes prefixed Chat SDK channel ids onto provider inventory resources", async () => {
+    const fixture = await seedCompany();
+    const providerFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://slack.com/api/auth.test") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            team_id: "T-PREFIXED",
+            team: "Prefixed Workspace",
+            user_id: "U-PREFIXED-BOT",
+            user: "maya-prefixed",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.startsWith("https://slack.com/api/conversations.list")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            channels: [
+              {
+                id: "C-PREFIXED",
+                name: "prefixed-channel",
+                is_member: true,
+                is_archived: false,
+              },
+            ],
+            response_metadata: { next_cursor: "" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected provider request: ${url}`);
+    }) as typeof globalThis.fetch;
+    const runtime = new FakeChatSdkRuntime();
+    const { service } = createService(runtime, providerFetch);
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          botToken: "xoxb-prefixed-channel",
+          signingSecret: "prefixed-channel-secret",
+        },
+      },
+      "owner-user",
+    );
+    const [inventoryResource] = await service.listResources(endpoint.id);
+    await service.replaceResources(endpoint.id, [
+      { id: inventoryResource!.id, enabled: true },
+    ]);
+    const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Expected Slack callbacks");
+    const thread = makeThread({
+      channelId: "slack:C-PREFIXED",
+      id: "slack:C-PREFIXED:2200.1",
+      name: "prefixed-channel",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: thread.thread,
+      message: makeMessage({
+        id: "2200.1",
+        text: "@maya use the inventoried destination",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+
+    const resources = await service.listResources(endpoint.id);
+    expect(resources).toHaveLength(1);
+    expect(resources[0]).toMatchObject({
+      id: inventoryResource!.id,
+      providerResourceId: "C-PREFIXED",
+      availability: "available",
+      enabled: true,
+    });
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ externalThreadId: thread.thread.id }),
+    ]);
+  });
+
+  it("refuses to enable a destination the provider no longer exposes", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-REMOVED",
+      id: "slack:C-REMOVED:2100.1",
+      name: "removed-channel",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "2100.1",
+        text: "This unaddressed event only discovers the channel",
+      }),
+      trigger: "unaddressed_message",
+    });
+    const [resource] = await db
+      .select()
+      .from(chatEndpointResources)
+      .where(eq(chatEndpointResources.endpointId, endpoint.id));
+    await db
+      .update(chatEndpointResources)
+      .set({ availability: "removed", updatedAt: new Date() })
+      .where(eq(chatEndpointResources.id, resource.id));
+
+    await expect(
+      service.replaceResources(endpoint.id, [
+        { id: resource.id, enabled: true },
+      ]),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "chat_resource_unavailable",
+        resourceId: resource.id,
+      },
+    });
+  });
+
+  it("filters unlinked people when configured, then honors a confirmed active-member identity link", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(
+      fixture,
+      { allowUnlinkedPeople: false },
+    );
+    const channel = makeThread({
+      channelId: "C-PRIVATE",
+      id: "slack:C-PRIVATE:3000.1",
+      name: "private",
+    });
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "3000.1",
+        text: "@maya private task",
+        mentioned: true,
+        userId: "U-LINK-ME",
+      }),
+      trigger: "mention",
+    });
+    expect(
+      await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id)),
+    ).toHaveLength(0);
+    const [filtered] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(filtered.state).toBe("filtered");
+
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: "linked-paperclip-user",
+      name: "Linked User",
+      email: `linked-${fixture.companyId}@example.com`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: "linked-paperclip-user",
+      status: "active",
+      membershipRole: "viewer",
+    });
+    const [principal] = await db
+      .select()
+      .from(chatExternalPrincipals)
+      .where(eq(chatExternalPrincipals.externalId, "U-LINK-ME"));
+    const intent = await service.createLinkIntent(
+      endpoint.id,
+      principal.id,
+      1_800,
+    );
+    const token = new URL(intent.confirmationUrl).searchParams.get("token");
+    if (!token) throw new Error("Identity-link confirmation token was absent");
+    await expect(service.previewIdentityLink(token)).resolves.toMatchObject({
+      endpointId: endpoint.id,
+      companyId: fixture.companyId,
+      provider: "slack",
+      externalLabel: "Alex External",
+    });
+    await expect(
+      service.confirmIdentityLink(token, "linked-paperclip-user"),
+    ).resolves.toEqual({
+      ok: true,
+      endpointId: endpoint.id,
+    });
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "3000.2",
+        text: "@maya private task",
+        mentioned: true,
+        userId: "U-LINK-ME",
+      }),
+      trigger: "mention",
+    });
+    expect(
+      await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id)),
+    ).toHaveLength(0);
+    const viewerDelivery = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id))
+      .then((rows) =>
+        rows.find((delivery) => delivery.providerEventId.includes("3000.2")),
+      );
+    expect(viewerDelivery?.state).toBe("filtered");
+
+    await db
+      .update(companyMemberships)
+      .set({ membershipRole: "operator" })
+      .where(eq(companyMemberships.principalId, "linked-paperclip-user"));
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "3000.3",
+        text: "@maya private task",
+        mentioned: true,
+        userId: "U-LINK-ME",
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "U-LINK-ME");
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    expect(conversation).toBeDefined();
+    const [comment] = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversation.issueId));
+    expect(comment.authorType).toBe("user");
+    expect(comment.authorUserId).toBe("linked-paperclip-user");
+    const userCommentCountBeforeSuspend = (
+      await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversation.issueId))
+    ).filter((candidate) => candidate.authorType === "user").length;
+
+    await db
+      .update(companyMemberships)
+      .set({ status: "suspended" })
+      .where(eq(companyMemberships.principalId, "linked-paperclip-user"));
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "3000.4",
+        text: "This must no longer pass",
+        userId: "U-LINK-ME",
+      }),
+      trigger: "subscribed_message",
+    });
+    const allComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversation.issueId));
+    expect(
+      allComments.filter((candidate) => candidate.authorType === "user"),
+    ).toHaveLength(userCommentCountBeforeSuspend);
+    const allDeliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(
+      allDeliveries.find((delivery) =>
+        delivery.providerEventId.includes("3000.4"),
+      )?.state,
+    ).toBe("filtered");
+  });
+
+  it("filters an unlinked guest when the endpoint sponsor is suspended and exposes the reason and duplicate count", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    await db
+      .update(companyMemberships)
+      .set({ status: "suspended" })
+      .where(
+        and(
+          eq(companyMemberships.companyId, fixture.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, "owner-user"),
+        ),
+      );
+    const channel = makeThread({
+      channelId: "C-SPONSOR-SUSPENDED",
+      id: "slack:C-SPONSOR-SUSPENDED:3100.1",
+      name: "sponsor-suspended",
+    });
+    const message = makeMessage({
+      id: "3100.1",
+      text: "@maya this guest no longer has a sponsor",
+      mentioned: true,
+      userId: `U-UNLINKED-${randomUUID()}`,
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: channel.thread,
+        message,
+        trigger: "mention",
+      });
+    }
+
+    expect(await service.listConversations(endpoint.id)).toEqual([]);
+    const [delivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(delivery).toMatchObject({
+      state: "filtered",
+      redactedError: "Endpoint sponsor can no longer authorize external guests",
+      normalizedEvent: {
+        deduplication: { duplicateCount: 2 },
+      },
+    });
+    await expect(service.listActivity(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        id: delivery.id,
+        kind: "delivery",
+        status: "filtered",
+        summary: "mention ignored · 2 duplicates ignored",
+        detail: "Endpoint sponsor can no longer authorize external guests",
+        replayable: false,
+      }),
+    ]);
+  });
+
+  it("keeps one Paperclip account mapping for the same provider principal across endpoints", async () => {
+    const fixture = await seedCompany();
+    const firstContext = createService(
+      new FakeChatSdkRuntime(),
+      fakeSlackFetch("U-BOT-IDENTITY-A") as typeof globalThis.fetch,
+    );
+    const secondContext = createService(
+      new FakeChatSdkRuntime(),
+      fakeSlackFetch("U-BOT-IDENTITY-B") as typeof globalThis.fetch,
+    );
+    const first = await firstContext.service.create(
+      fixture.companyId,
+      {
+        provider: "slack",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+    const second = await secondContext.service.create(
+      fixture.companyId,
+      {
+        provider: "slack",
+        assignedAgentId: fixture.replacementAgentId,
+      },
+      "owner-user",
+    );
+    for (const [context, endpoint, suffix] of [
+      [firstContext, first, "a"],
+      [secondContext, second, "b"],
+    ] as const) {
+      await context.service.configure(
+        endpoint.id,
+        {
+          action: "configure",
+          credentials: {
+            botToken: `xoxb-identity-${suffix}`,
+            signingSecret: `identity-secret-${suffix}`,
+          },
+        },
+        "owner-user",
+      );
+      await recordSlackUrlVerification(context.service, endpoint.publicId);
+      await context.service.configure(
+        endpoint.id,
+        { action: "verify" },
+        "owner-user",
+      );
+      const callbacks = context.runtime.configurations.get(
+        endpoint.id,
+      )?.callbacks;
+      if (!callbacks) throw new Error("Expected endpoint callbacks");
+      const thread = makeThread({
+        channelId: `C-IDENTITY-${suffix.toUpperCase()}`,
+        id: `slack:C-IDENTITY-${suffix.toUpperCase()}:1`,
+        name: `identity-${suffix}`,
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: thread.thread,
+        message: makeMessage({
+          id: `identity-${suffix}`,
+          text: `@bot identify ${suffix}`,
+          mentioned: true,
+          userId: "U-SHARED-HUMAN",
+        }),
+        trigger: "mention",
+      });
+    }
+
+    const now = new Date();
+    await db.insert(authUsers).values([
+      {
+        id: "paperclip-user-a",
+        name: "Paperclip User A",
+        email: `identity-a-${fixture.companyId}@example.com`,
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "paperclip-user-b",
+        name: "Paperclip User B",
+        email: `identity-b-${fixture.companyId}@example.com`,
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(companyMemberships).values([
+      {
+        companyId: fixture.companyId,
+        principalType: "user",
+        principalId: "paperclip-user-a",
+        status: "active",
+        membershipRole: "operator",
+      },
+      {
+        companyId: fixture.companyId,
+        principalType: "user",
+        principalId: "paperclip-user-b",
+        status: "active",
+        membershipRole: "operator",
+      },
+    ]);
+    const principal = await db
+      .select()
+      .from(chatExternalPrincipals)
+      .where(eq(chatExternalPrincipals.externalId, "U-SHARED-HUMAN"))
+      .then((rows) => rows[0]);
+    const firstIntent = await firstContext.service.createLinkIntent(
+      first.id,
+      principal.id,
+      1_800,
+    );
+    const firstToken = new URL(firstIntent.confirmationUrl).searchParams.get(
+      "token",
+    );
+    if (!firstToken) throw new Error("First identity token was absent");
+    await firstContext.service.confirmIdentityLink(
+      firstToken,
+      "paperclip-user-a",
+    );
+
+    const secondIntent = await secondContext.service.createLinkIntent(
+      second.id,
+      principal.id,
+      1_800,
+    );
+    const secondToken = new URL(secondIntent.confirmationUrl).searchParams.get(
+      "token",
+    );
+    if (!secondToken) throw new Error("Second identity token was absent");
+    await expect(
+      secondContext.service.confirmIdentityLink(
+        secondToken,
+        "paperclip-user-b",
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: { code: "chat_identity_link_conflict" },
+    });
+  });
+
+  it("publishes only the safe projection once and locks reassignment of a bound task", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-SAFE",
+      id: "slack:C-SAFE:4000.1",
+      name: "safe-output",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "4000.1",
+        text: "@maya give me the public result",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const comment = await issueService(db).addComment(
+      conversation.issueId,
+      "Visible answer. <analysis>never expose this reasoning</analysis>",
+      { userId: "owner-user" },
+      { authorType: "user" },
+    );
+
+    const first = await service.publishComment(
+      endpoint.id,
+      conversation.id,
+      comment.id,
+    );
+    const second = await service.publishComment(
+      endpoint.id,
+      conversation.id,
+      comment.id,
+    );
+    expect(first.id).toBe(second.id);
+    // The first call returns the newly inserted outbox row, while the second
+    // observes that same durable row after the synchronous delivery attempt.
+    expect(first.state).toBe("pending");
+    expect(second.state).toBe("published");
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    expect(providerRuntime?.posts).toEqual([
+      { threadId: channel.thread.id, text: "Visible answer." },
+    ]);
+    const publications = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.endpointId, endpoint.id));
+    const links = await db
+      .select()
+      .from(chatMessageLinks)
+      .where(eq(chatMessageLinks.endpointId, endpoint.id));
+    const explicitPublications = publications.filter(
+      (publication) => publication.commentId === comment.id,
+    );
+    expect(explicitPublications).toHaveLength(1);
+    expect(explicitPublications[0]).toMatchObject({
+      state: "published",
+      providerMessageId: expect.stringMatching(/^outbound-\d+$/),
+    });
+    expect(
+      links.filter(
+        (link) => link.direction === "inbound" || link.commentId === comment.id,
+      ),
+    ).toHaveLength(3);
+    expect(
+      links.find(
+        (link) =>
+          link.direction === "outbound" && link.commentId === comment.id,
+      )?.providerMessageId,
+    ).toBe(explicitPublications[0]?.providerMessageId);
+
+    await expect(
+      issueService(db).update(conversation.issueId, {
+        assigneeAgentId: fixture.replacementAgentId,
+        actorUserId: "owner-user",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "chat_binding_agent_locked",
+        conversationId: conversation.id,
+      },
+    });
+    const [boundIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, conversation.issueId));
+    expect(boundIssue.assigneeAgentId).toBe(fixture.assignedAgentId);
+
+    await service.configure(endpoint.id, { action: "remove" }, "owner-user");
+    await expect(
+      issueService(db).update(conversation.issueId, {
+        assigneeAgentId: fixture.replacementAgentId,
+        actorUserId: "owner-user",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "chat_binding_agent_locked",
+        conversationId: conversation.id,
+      },
+    });
+    await expect(
+      service.getIssueBinding(conversation.issueId),
+    ).resolves.toMatchObject({
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      assignedAgentLocked: true,
+    });
+  });
+
+  it("streams long output in bounded chunks after applying the safe external projection", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-LONG-SAFE",
+      id: "slack:C-LONG-SAFE:4100.1",
+      name: "long-safe-output",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "4100.1",
+        text: "@maya send the long public summary",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const publicParagraph = "External-safe result. ".repeat(45).trim();
+    const comment = await issueService(db).addComment(
+      conversation.issueId,
+      `${publicParagraph}\n\n<analysis>private chain of thought must never stream</analysis>`,
+      { userId: "owner-user" },
+      { authorType: "user" },
+    );
+
+    await service.publishComment(endpoint.id, conversation.id, comment.id);
+    const [publication] = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.commentId, comment.id));
+    expect(publication).toMatchObject({
+      state: "published",
+      payload: { text: publicParagraph },
+    });
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    const streamed = providerRuntime?.posts.at(-1);
+    expect(streamed?.chunks?.length).toBeGreaterThan(1);
+    expect(
+      streamed?.chunks?.every((chunk) => Array.from(chunk).length <= 280),
+    ).toBe(true);
+    expect(streamed?.chunks?.join("")).toBe(publication.payload.text);
+    expect(streamed?.text).toBe(publicParagraph);
+    expect(JSON.stringify(streamed)).not.toContain("private chain of thought");
+  });
+
+  it.each([
+    {
+      label: "rate limits as an automatic retry",
+      error: Object.assign(new Error("provider rate limit"), {
+        status: 429,
+        retryAfterMs: 5_000,
+      }),
+      expectedPublicationState: "retry",
+      expectedEndpointStatus: "active",
+      expectedConversationState: "active",
+      expectedResourceAvailability: "available",
+    },
+    {
+      label: "authentication failures as endpoint attention",
+      error: Object.assign(new Error("provider token expired"), {
+        status: 401,
+      }),
+      expectedPublicationState: "failed",
+      expectedEndpointStatus: "attention",
+      expectedConversationState: "active",
+      expectedResourceAvailability: "available",
+    },
+    {
+      label: "missing destinations as resource unavailable",
+      error: Object.assign(new Error("provider destination missing"), {
+        status: 404,
+      }),
+      expectedPublicationState: "cancelled",
+      expectedEndpointStatus: "active",
+      expectedConversationState: "unavailable",
+      expectedResourceAvailability: "unavailable",
+    },
+  ])(
+    "classifies publication $label",
+    async ({
+      error,
+      expectedConversationState,
+      expectedEndpointStatus,
+      expectedPublicationState,
+      expectedResourceAvailability,
+    }) => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint, runtime, service } =
+        await configuredSlackEndpoint(fixture);
+      const channelId = `C-PUBLICATION-ERROR-${randomUUID().slice(0, 8)}`;
+      const channel = makeThread({
+        channelId,
+        id: `slack:${channelId}:4200.1`,
+        name: "publication-errors",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: channel.thread,
+        message: makeMessage({
+          id: "4200.1",
+          text: "@maya exercise provider failure handling",
+          mentioned: true,
+        }),
+        trigger: "mention",
+      });
+      await qualifySetupRoundTrip(service, endpoint.id);
+      await service.test(endpoint.id, "owner-user");
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      const comment = await issueService(db).addComment(
+        conversation.issueId,
+        "Safe provider response",
+        { userId: "owner-user" },
+        { authorType: "user" },
+      );
+      const providerRuntime = runtime.endpoints.get(endpoint.id);
+      if (!providerRuntime) throw new Error("Expected provider runtime");
+      providerRuntime.postError = error;
+      const beforeAttempt = Date.now();
+      await service.publishComment(endpoint.id, conversation.id, comment.id);
+
+      const [publication] = await db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.commentId, comment.id));
+      expect(publication).toMatchObject({
+        state: expectedPublicationState,
+        attempts: 1,
+        redactedError: error.message,
+      });
+      if (expectedPublicationState === "retry") {
+        expect(publication.nextAttemptAt?.getTime()).toBeGreaterThanOrEqual(
+          beforeAttempt + 4_500,
+        );
+      } else {
+        expect(publication.nextAttemptAt).toBeNull();
+      }
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({
+        status: expectedEndpointStatus,
+      });
+      const [storedConversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.id, conversation.id));
+      expect(storedConversation.state).toBe(expectedConversationState);
+      const [resource] = await db
+        .select()
+        .from(chatEndpointResources)
+        .where(eq(chatEndpointResources.id, conversation.resourceId!));
+      expect(resource.availability).toBe(expectedResourceAvailability);
+      if (expectedEndpointStatus === "attention") {
+        expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+        const [connection] = await db
+          .select()
+          .from(toolConnections)
+          .where(eq(toolConnections.id, endpoint.connectionId));
+        expect(connection).toMatchObject({
+          status: "disabled",
+          enabled: false,
+          healthStatus: "degraded",
+        });
+      }
+    },
+  );
+
+  it("publishes a closed-choice question and resolves only its exact issued action as a linked writer", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    if (!callbacks.onAction)
+      throw new Error("Slack question action callback was not registered");
+    const channel = makeThread({
+      channelId: "C-QUESTION",
+      id: "slack:C-QUESTION:4500.1",
+      name: "questions",
+    });
+    const externalUserId = `U-QUESTION-${randomUUID()}`;
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "4500.1",
+        text: "@maya help me choose a priority",
+        mentioned: true,
+        userId: externalUserId,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+
+    const interaction = await issueThreadInteractionService(db).create(
+      {
+        id: conversation.issueId,
+        companyId: fixture.companyId,
+      },
+      {
+        kind: "ask_user_questions",
+        continuationPolicy: "wake_assignee",
+        title: "Choose the priority",
+        payload: {
+          version: 1,
+          title: "Choose the priority",
+          questions: [
+            {
+              id: "priority",
+              prompt: "Which priority should we use?",
+              selectionMode: "single",
+              required: true,
+              allowOther: false,
+              options: [
+                { id: "high", label: "High" },
+                { id: "normal", label: "Normal" },
+              ],
+            },
+          ],
+        },
+      },
+      { agentId: fixture.assignedAgentId },
+    );
+    await service.processPendingPublications();
+    const publication = await db
+      .select()
+      .from(chatPublications)
+      .where(
+        and(
+          eq(chatPublications.endpointId, endpoint.id),
+          eq(chatPublications.issueId, conversation.issueId),
+        ),
+      )
+      .then((rows) =>
+        rows.find((row) => row.idempotencyKey.startsWith("interaction:")),
+      );
+    if (!publication?.providerMessageId)
+      throw new Error("Question publication was not delivered");
+    expect(publication).toMatchObject({
+      state: "published",
+      payload: {
+        interactionId: interaction.id,
+        progressState: "waiting_for_input",
+        card: {
+          kind: "question",
+          title: "Which priority should we use?",
+        },
+      },
+    });
+    const callbackActions = publication.payload.card?.actions?.filter(
+      (action) => action.type === "callback",
+    );
+    expect(callbackActions).toHaveLength(2);
+    const highAction = callbackActions?.find(
+      (action) => action.label === "High",
+    );
+    if (!highAction || highAction.type !== "callback")
+      throw new Error("High-priority callback was not projected");
+
+    const linkedUserId = `question-user-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: linkedUserId,
+      name: "Question User",
+      email: `${linkedUserId}@example.com`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: linkedUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const principal = await db
+      .select()
+      .from(chatExternalPrincipals)
+      .where(eq(chatExternalPrincipals.externalId, externalUserId))
+      .then((rows) => rows[0]);
+    const intent = await service.createLinkIntent(
+      endpoint.id,
+      principal.id,
+      1_800,
+    );
+    const token = new URL(intent.confirmationUrl).searchParams.get("token");
+    if (!token) throw new Error("Question-user identity token was absent");
+    await service.confirmIdentityLink(token, linkedUserId);
+
+    const actionEvent = (
+      overrides: Partial<{
+        actionId: string;
+        messageId: string;
+        threadId: string;
+        userId: string;
+        value: string;
+      }> = {},
+    ) => ({
+      endpointId: endpoint.id,
+      provider: "slack" as const,
+      event: {
+        actionId: overrides.actionId ?? highAction.actionId,
+        adapter: {} as never,
+        messageId: overrides.messageId ?? publication.providerMessageId!,
+        openModal: async () => undefined,
+        raw: { type: "block_actions" },
+        thread: channel.thread,
+        threadId: overrides.threadId ?? channel.thread.id,
+        user: {
+          userId: overrides.userId ?? externalUserId,
+          userName: "question-user",
+          fullName: "Question User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        value: overrides.value ?? interaction.id,
+      },
+    });
+
+    await expect(
+      callbacks.onAction(actionEvent({ userId: `U-UNLINKED-${randomUUID()}` })),
+    ).rejects.toMatchObject({ status: 403 });
+    await db
+      .update(companyMemberships)
+      .set({ membershipRole: "viewer" })
+      .where(
+        and(
+          eq(companyMemberships.companyId, fixture.companyId),
+          eq(companyMemberships.principalId, linkedUserId),
+        ),
+      );
+    await expect(callbacks.onAction(actionEvent())).rejects.toMatchObject({
+      status: 403,
+    });
+    await db
+      .update(companyMemberships)
+      .set({ membershipRole: "operator" })
+      .where(
+        and(
+          eq(companyMemberships.companyId, fixture.companyId),
+          eq(companyMemberships.principalId, linkedUserId),
+        ),
+      );
+
+    const otherChannel = makeThread({
+      channelId: "C-QUESTION-OTHER",
+      id: "slack:C-QUESTION-OTHER:4501.1",
+      name: "other-question",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: otherChannel.thread,
+      message: makeMessage({
+        id: "4501.1",
+        text: "@maya a separate task",
+        mentioned: true,
+        userId: externalUserId,
+      }),
+      trigger: "mention",
+    });
+    await expect(
+      callbacks.onAction(actionEvent({ threadId: otherChannel.thread.id })),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      callbacks.onAction(actionEvent({ messageId: "outbound-forged" })),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      callbacks.onAction(actionEvent({ actionId: "pcq:forged" })),
+    ).rejects.toMatchObject({ status: 403 });
+    await expect(
+      callbacks.onAction(actionEvent({ value: randomUUID() })),
+    ).rejects.toMatchObject({ status: 403 });
+
+    await callbacks.onAction(actionEvent());
+    const [storedInteraction] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction.id));
+    expect(storedInteraction).toMatchObject({
+      status: "answered",
+      resolvedByUserId: linkedUserId,
+      result: {
+        version: 1,
+        answers: [{ questionId: "priority", optionIds: ["high"] }],
+      },
+    });
+    expect(
+      await db
+        .select()
+        .from(issueQuestionResponseDeliveries)
+        .where(
+          eq(issueQuestionResponseDeliveries.interactionId, interaction.id),
+        ),
+    ).toHaveLength(1);
+    const actions = await db
+      .select()
+      .from(chatActions)
+      .where(eq(chatActions.endpointId, endpoint.id));
+    expect(actions).toHaveLength(2);
+    expect(
+      actions.find((action) => action.status === "processed"),
+    ).toMatchObject({
+      status: "processed",
+      kind: "question_answer",
+      payload: {
+        publicationId: publication.id,
+        interactionId: interaction.id,
+        questionId: "priority",
+        optionId: "high",
+      },
+    });
+    expect(actions.find((action) => action.status === "expired")).toMatchObject(
+      {
+        kind: "question_answer",
+        result: { code: "interaction_resolved_by_sibling_action" },
+      },
+    );
+    const answeredActivity = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, fixture.companyId),
+          eq(activityLog.action, "issue.thread_interaction_answered"),
+          eq(activityLog.entityId, conversation.issueId),
+        ),
+      );
+    expect(answeredActivity).toHaveLength(1);
+    expect(answeredActivity[0]).toMatchObject({
+      actorType: "user",
+      actorId: linkedUserId,
+      details: {
+        source: "external_chat",
+        endpointId: endpoint.id,
+        publicationId: publication.id,
+        interactionId: interaction.id,
+      },
+    });
+
+    await expect(callbacks.onAction(actionEvent())).rejects.toMatchObject({
+      status: 403,
+    });
+    expect(
+      await db
+        .select()
+        .from(issueQuestionResponseDeliveries)
+        .where(
+          eq(issueQuestionResponseDeliveries.interactionId, interaction.id),
+        ),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    { provider: "slack" as const, label: "Slack" },
+    { provider: "microsoft-teams" as const, label: "Microsoft Teams" },
+  ])(
+    "round-trips a $label question modal and rejects forged or replayed tokens",
+    async ({ provider }) => {
+      const fixture = await seedCompany();
+      const context =
+        provider === "slack"
+          ? await configuredSlackEndpoint(fixture)
+          : await (async () => {
+              const created = createService(
+                new FakeChatSdkRuntime(),
+                (async () =>
+                  new Response(
+                    JSON.stringify({ access_token: "teams-modal-access" }),
+                    {
+                      status: 200,
+                      headers: { "content-type": "application/json" },
+                    },
+                  )) as typeof globalThis.fetch,
+              );
+              const endpoint = await created.service.create(
+                fixture.companyId,
+                {
+                  provider: "microsoft-teams",
+                  assignedAgentId: fixture.assignedAgentId,
+                },
+                "owner-user",
+              );
+              await created.service.configure(
+                endpoint.id,
+                {
+                  action: "configure",
+                  credentials: {
+                    clientId: "00000000-0000-4000-8000-000000000311",
+                    tenantId: "00000000-0000-4000-8000-000000000322",
+                    clientSecret: "teams-modal-secret",
+                  },
+                },
+                "owner-user",
+              );
+              const callbacks = created.runtime.configurations.get(
+                endpoint.id,
+              )?.callbacks;
+              if (!callbacks) throw new Error("Expected Teams modal callbacks");
+              return { ...created, endpoint, callbacks };
+            })();
+      const { callbacks, endpoint, service } = context;
+      if (!callbacks.onAction || !callbacks.onModalSubmit) {
+        throw new Error("Expected question action and modal callbacks");
+      }
+      const externalUserId = `${provider}-modal-user-${randomUUID()}`;
+      const teamsConversationId = "19:modal-conversation@thread.tacv2";
+      const teamsServiceUrl = "https://smba.trafficmanager.net/amer/";
+      const channel =
+        provider === "slack"
+          ? makeThread({
+              channelId: "C-MODAL-ROUNDTRIP",
+              id: `slack:C-MODAL-ROUNDTRIP:${randomUUID()}`,
+              name: "modal-roundtrip",
+            })
+          : makeThread({
+              channelId: `teams:${Buffer.from(teamsConversationId).toString("base64url")}:${Buffer.from(teamsServiceUrl).toString("base64url")}`,
+              id: `teams:${Buffer.from(`${teamsConversationId};messageid=modal-root`).toString("base64url")}:${Buffer.from(teamsServiceUrl).toString("base64url")}`,
+              name: "modal-roundtrip",
+            });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider,
+        thread: channel.thread,
+        message: makeMessage({
+          id: `modal-root-${randomUUID()}`,
+          text: "@maya collect the deployment details",
+          mentioned: true,
+          userId: externalUserId,
+        }),
+        trigger: "mention",
+      });
+      await qualifySetupRoundTrip(service, endpoint.id, externalUserId);
+      await service.test(endpoint.id, "owner-user");
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+
+      const linkedUserId = `modal-paperclip-user-${randomUUID()}`;
+      const now = new Date();
+      await db.insert(authUsers).values({
+        id: linkedUserId,
+        name: "Modal User",
+        email: `${linkedUserId}@example.com`,
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await db.insert(companyMemberships).values({
+        companyId: fixture.companyId,
+        principalType: "user",
+        principalId: linkedUserId,
+        status: "active",
+        membershipRole: "operator",
+      });
+      const principal = await db
+        .select()
+        .from(chatExternalPrincipals)
+        .where(
+          and(
+            eq(chatExternalPrincipals.companyId, fixture.companyId),
+            eq(chatExternalPrincipals.provider, provider),
+            eq(chatExternalPrincipals.externalId, externalUserId),
+          ),
+        )
+        .then((rows) => rows[0]);
+      const intent = await service.createLinkIntent(
+        endpoint.id,
+        principal.id,
+        1_800,
+      );
+      const identityToken = new URL(intent.confirmationUrl).searchParams.get(
+        "token",
+      );
+      if (!identityToken) throw new Error("Modal identity token was absent");
+      await service.confirmIdentityLink(identityToken, linkedUserId);
+
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: conversation.issueId, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions",
+          continuationPolicy: "wake_assignee",
+          title: "Deployment details",
+          payload: {
+            version: 1,
+            title: "Deployment details",
+            submitLabel: "Continue",
+            questions: [
+              {
+                id: "environment",
+                prompt: "Where should I deploy?",
+                selectionMode: "single",
+                required: true,
+                allowOther: false,
+                options: [
+                  { id: "staging", label: "Staging" },
+                  { id: "production", label: "Production" },
+                ],
+              },
+              {
+                id: "reason",
+                prompt: "What should the release note say?",
+                selectionMode: "single",
+                required: true,
+                allowOther: true,
+                options: [
+                  {
+                    id: "__paperclip_text__",
+                    label: "Type an answer",
+                    freeText: true,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        { agentId: fixture.assignedAgentId },
+      );
+      await service.processPendingPublications();
+      const publication = await db
+        .select()
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.endpointId, endpoint.id),
+            eq(chatPublications.issueId, conversation.issueId),
+          ),
+        )
+        .then((rows) =>
+          rows.find((row) => row.payload.interactionId === interaction.id),
+        );
+      if (!publication?.providerMessageId) {
+        throw new Error("Question form publication was not delivered");
+      }
+      const openAction = publication.payload.card?.actions?.find(
+        (action) => action.type === "callback",
+      );
+      if (!openAction || openAction.type !== "callback") {
+        throw new Error("Question form opener was not projected");
+      }
+      const modalUser = {
+        userId: externalUserId,
+        userName: "modal-user",
+        fullName: "Modal User",
+        isBot: false,
+        isMe: false,
+        isSystem: false,
+      };
+      const actionEvent = (actionId: string) => ({
+        endpointId: endpoint.id,
+        provider,
+        event: {
+          actionId,
+          adapter: {} as never,
+          messageId: publication.providerMessageId!,
+          openModal: vi.fn(async () => ({ viewId: "modal-view" })),
+          raw: {},
+          thread: channel.thread,
+          threadId: channel.thread.id,
+          user: modalUser,
+          value: interaction.id,
+        },
+      });
+      await expect(
+        callbacks.onAction(
+          actionEvent(`pcf:${"A".repeat(22)}`) as Parameters<
+            NonNullable<typeof callbacks.onAction>
+          >[0],
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+
+      const validOpen = actionEvent(openAction.actionId);
+      await callbacks.onAction(
+        validOpen as Parameters<NonNullable<typeof callbacks.onAction>>[0],
+      );
+      expect(validOpen.event.openModal).toHaveBeenCalledTimes(1);
+      const modal = validOpen.event.openModal.mock.calls[0]?.[0] as {
+        callbackId: string;
+        children: Array<{
+          id: string;
+          options?: Array<{ label: string; value: string }>;
+          type: string;
+        }>;
+        privateMetadata?: string;
+      };
+      const selectField = modal.children.find(
+        (child) => child.type === "select",
+      );
+      const textField = modal.children.find(
+        (child) => child.type === "text_input",
+      );
+      const productionValue = selectField?.options?.find(
+        (option) => option.label === "Production",
+      )?.value;
+      if (!selectField || !textField || !productionValue) {
+        throw new Error("Question modal fields were incomplete");
+      }
+      const modalEvent = (callbackId: string) => ({
+        endpointId: endpoint.id,
+        provider,
+        event: {
+          adapter: {} as never,
+          callbackId,
+          ...(provider === "slack"
+            ? { privateMetadata: modal.privateMetadata }
+            : {}),
+          raw: {},
+          relatedMessage: { id: publication.providerMessageId } as never,
+          relatedThread: channel.thread,
+          user: modalUser,
+          values: {
+            [selectField.id]: productionValue,
+            [textField.id]: "Add regional failover",
+          },
+          viewId: "modal-view",
+        },
+      });
+      await expect(
+        callbacks.onModalSubmit(
+          modalEvent(`pcfs:${"A".repeat(22)}`) as Parameters<
+            NonNullable<typeof callbacks.onModalSubmit>
+          >[0],
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+
+      const validSubmit = modalEvent(modal.callbackId);
+      await expect(
+        callbacks.onModalSubmit(
+          validSubmit as Parameters<
+            NonNullable<typeof callbacks.onModalSubmit>
+          >[0],
+        ),
+      ).resolves.toEqual({ action: "clear" });
+      const [answered] = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interaction.id));
+      expect(answered).toMatchObject({
+        status: "answered",
+        resolvedByUserId: linkedUserId,
+        result: {
+          version: 1,
+          answers: [
+            { questionId: "environment", optionIds: ["production"] },
+            {
+              questionId: "reason",
+              optionIds: [],
+              otherText: "Add regional failover",
+            },
+          ],
+        },
+      });
+      await expect(
+        callbacks.onModalSubmit(
+          validSubmit as Parameters<
+            NonNullable<typeof callbacks.onModalSubmit>
+          >[0],
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(
+        await db
+          .select()
+          .from(issueQuestionResponseDeliveries)
+          .where(
+            eq(issueQuestionResponseDeliveries.interactionId, interaction.id),
+          ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("uses compact single-use Telegram action tokens and rejects forged, expired, and oversized callbacks", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredTelegramEndpoint(fixture);
+    const externalUserId = "771234567";
+    const channel = makeThread({
+      channelId: externalUserId,
+      id: `telegram:${externalUserId}`,
+      isDM: true,
+      name: "Maya direct message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: channel.thread,
+      message: makeMessage({
+        id: "tg-question-1",
+        text: "Help me choose a priority",
+        userId: externalUserId,
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+
+    const linkedUserId = `telegram-question-user-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: linkedUserId,
+      name: "Telegram Question User",
+      email: `${linkedUserId}@example.com`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: linkedUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const principal = await db
+      .select()
+      .from(chatExternalPrincipals)
+      .where(eq(chatExternalPrincipals.externalId, externalUserId))
+      .then((rows) => rows[0]);
+    const intent = await service.createLinkIntent(
+      endpoint.id,
+      principal.id,
+      1_800,
+    );
+    const identityToken = new URL(intent.confirmationUrl).searchParams.get(
+      "token",
+    );
+    if (!identityToken) throw new Error("Telegram identity token was absent");
+    await service.confirmIdentityLink(identityToken, linkedUserId);
+
+    async function publishQuestion(title: string) {
+      const interaction = await issueThreadInteractionService(db).create(
+        {
+          id: conversation.issueId,
+          companyId: fixture.companyId,
+        },
+        {
+          kind: "ask_user_questions",
+          continuationPolicy: "wake_assignee",
+          title,
+          payload: {
+            version: 1,
+            title,
+            questions: [
+              {
+                id: "priority",
+                prompt: "Which priority should we use?",
+                selectionMode: "single",
+                required: true,
+                allowOther: false,
+                options: [
+                  { id: "high", label: "High" },
+                  { id: "normal", label: "Normal" },
+                ],
+              },
+            ],
+          },
+        },
+        { agentId: fixture.assignedAgentId },
+      );
+      await service.processPendingPublications();
+      const publication = await db
+        .select()
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.endpointId, endpoint.id),
+            eq(chatPublications.issueId, conversation.issueId),
+          ),
+        )
+        .then((rows) =>
+          rows.find(
+            (row) =>
+              row.payload.interactionId === interaction.id &&
+              row.state === "published",
+          ),
+        );
+      if (!publication?.providerMessageId)
+        throw new Error("Telegram question publication was not delivered");
+      const action = publication.payload.card?.actions?.find(
+        (candidate) =>
+          candidate.type === "callback" && candidate.label === "High",
+      );
+      if (!action || action.type !== "callback")
+        throw new Error("Telegram callback action was not projected");
+      const token = await db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.endpointId, endpoint.id),
+            eq(chatActions.providerActionId, action.actionId),
+          ),
+        )
+        .then((rows) => rows[0]);
+      if (!token) throw new Error("Telegram action token was not persisted");
+      return { interaction, publication, action, token };
+    }
+
+    const first = await publishQuestion("Choose the initial priority");
+    const callbackData = telegramChatSdkCallbackData(first.action.actionId);
+    expect(Buffer.byteLength(callbackData, "utf8")).toBe(39);
+    expect(Buffer.byteLength(callbackData, "utf8")).toBeLessThanOrEqual(
+      TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
+    );
+    expect(first.token).toMatchObject({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      principalId: null,
+      kind: "question_answer",
+      providerActionId: first.action.actionId,
+      status: "issued",
+      payload: {
+        version: 1,
+        publicationId: first.publication.id,
+        interactionId: first.interaction.id,
+        questionId: "priority",
+        optionId: "high",
+        expiresAt: expect.any(String),
+      },
+    });
+
+    const actionEvent = (input: {
+      actionId: string;
+      callbackData: string;
+      messageId?: string;
+    }) => ({
+      endpointId: endpoint.id,
+      provider: "telegram" as const,
+      event: {
+        actionId: input.actionId,
+        adapter: {} as never,
+        messageId: input.messageId ?? first.publication.providerMessageId!,
+        openModal: async () => undefined,
+        raw: {
+          id: `callback-${randomUUID()}`,
+          data: input.callbackData,
+          from: { id: Number(externalUserId), first_name: "Telegram User" },
+        },
+        thread: channel.thread,
+        threadId: channel.thread.id,
+        user: {
+          userId: externalUserId,
+          userName: "telegram-user",
+          fullName: "Telegram User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        value: undefined,
+      },
+    });
+
+    const forgedActionId = "pcq:AAAAAAAAAAAAAAAAAAAAAA";
+    await expect(
+      callbacks.onAction(
+        actionEvent({
+          actionId: forgedActionId,
+          callbackData: telegramChatSdkCallbackData(forgedActionId),
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+
+    const oversizedCallbackData = "x".repeat(
+      TELEGRAM_CALLBACK_DATA_LIMIT_BYTES + 1,
+    );
+    expect(Buffer.byteLength(oversizedCallbackData, "utf8")).toBe(65);
+    await expect(
+      callbacks.onAction(
+        actionEvent({
+          actionId: first.action.actionId,
+          callbackData: oversizedCallbackData,
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+
+    await db
+      .update(chatActions)
+      .set({ payload: { ...first.token.payload, optionId: "forged-option" } })
+      .where(eq(chatActions.id, first.token.id));
+    await expect(
+      callbacks.onAction(
+        actionEvent({
+          actionId: first.action.actionId,
+          callbackData,
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    await db
+      .update(chatActions)
+      .set({ payload: first.token.payload })
+      .where(eq(chatActions.id, first.token.id));
+
+    await callbacks.onAction(
+      actionEvent({
+        actionId: first.action.actionId,
+        callbackData,
+      }),
+    );
+    const [answered] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, first.interaction.id));
+    expect(answered).toMatchObject({
+      status: "answered",
+      resolvedByUserId: linkedUserId,
+      result: {
+        version: 1,
+        answers: [{ questionId: "priority", optionIds: ["high"] }],
+      },
+    });
+    await expect(
+      callbacks.onAction(
+        actionEvent({
+          actionId: first.action.actionId,
+          callbackData,
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(
+      await db
+        .select()
+        .from(issueQuestionResponseDeliveries)
+        .where(
+          eq(
+            issueQuestionResponseDeliveries.interactionId,
+            first.interaction.id,
+          ),
+        ),
+    ).toHaveLength(1);
+
+    const expired = await publishQuestion("Choose an expired priority");
+    await db
+      .update(chatActions)
+      .set({
+        payload: {
+          ...expired.token.payload,
+          expiresAt: new Date(Date.now() - 1_000).toISOString(),
+        },
+      })
+      .where(eq(chatActions.id, expired.token.id));
+    const expiredCallbackData = telegramChatSdkCallbackData(
+      expired.action.actionId,
+    );
+    await expect(
+      callbacks.onAction(
+        actionEvent({
+          actionId: expired.action.actionId,
+          callbackData: expiredCallbackData,
+          messageId: expired.publication.providerMessageId!,
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+    const [expiredToken] = await db
+      .select()
+      .from(chatActions)
+      .where(eq(chatActions.id, expired.token.id));
+    expect(expiredToken).toMatchObject({
+      status: "expired",
+      result: { code: "question_action_token_expired" },
+    });
+    const [stillPending] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, expired.interaction.id));
+    expect(stillPending.status).toBe("pending");
+  });
+
+  it("publishes complex question sets as non-executable Paperclip fallbacks", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-COMPLEX-QUESTION",
+      id: "slack:C-COMPLEX-QUESTION:4550.1",
+      name: "complex-questions",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "4550.1",
+        text: "@maya ask for several inputs",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const interaction = await issueThreadInteractionService(db).create(
+      { id: conversation.issueId, companyId: fixture.companyId },
+      {
+        kind: "ask_user_questions",
+        payload: {
+          version: 1,
+          questions: [
+            {
+              id: "regions",
+              prompt: "Which regions?",
+              selectionMode: "multi",
+              required: true,
+              allowOther: false,
+              options: [
+                { id: "us", label: "US" },
+                { id: "eu", label: "EU" },
+              ],
+            },
+            {
+              id: "notes",
+              prompt: "Any constraints?",
+              selectionMode: "single",
+              required: false,
+              allowOther: true,
+              options: [
+                { id: "other", label: "Describe them", freeText: true },
+              ],
+            },
+          ],
+        },
+      },
+      { agentId: fixture.assignedAgentId },
+    );
+    const publications = await db
+      .select()
+      .from(chatPublications)
+      .where(
+        and(
+          eq(chatPublications.endpointId, endpoint.id),
+          eq(chatPublications.issueId, conversation.issueId),
+        ),
+      );
+    const publication = publications.find(
+      (candidate) => candidate.payload.interactionId === interaction.id,
+    );
+    expect(publication).toBeDefined();
+    if (!publication) throw new Error("Expected interaction publication");
+    expect(publication.payload).toMatchObject({
+      interactionId: interaction.id,
+    });
+    expect(
+      publication.payload.card?.actions?.filter(
+        (action) => action.type === "callback",
+      ) ?? [],
+    ).toEqual([]);
+    expect(publication.payload.text).toContain(
+      "Open the task in Paperclip to respond",
+    );
+    expect(callbacks.onModalSubmit).toBeTypeOf("function");
+    expect(callbacks.onModalClose).toBeUndefined();
+    expect(callbacks.onReaction).toBeTypeOf("function");
+  });
+
+  it("preserves the raw webhook request and returns the provider adapter response", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime)
+      throw new Error("Expected configured fake provider runtime");
+    const payload = JSON.stringify({
+      type: "event_callback",
+      event_id: "Ev-123",
+    });
+
+    const response = await request(webhookApp(service))
+      .post(`/api/chat-webhooks/${endpoint.publicId}/slack`)
+      .set("content-type", "application/json")
+      .set("x-slack-signature", "v0=test-signature")
+      .send(payload)
+      .expect(202);
+
+    expect(response.text).toBe("accepted");
+    expect(response.headers["x-chat-test"]).toBe("accepted");
+    expect(
+      providerRuntime.webhookRequest?.headers.get("x-slack-signature"),
+    ).toBe("v0=test-signature");
+    await expect(providerRuntime.webhookRequest?.text()).resolves.toBe(payload);
+
+    await request(webhookApp(service))
+      .post(`/api/chat-webhooks/${endpoint.publicId}/irc`)
+      .set("content-type", "application/json")
+      .send("{}")
+      .expect(400);
+  });
+
+  it("retires superseded credentials and clears endpoint-owned secrets on removal", async () => {
+    const fixture = await seedCompany();
+    const { service } = createService();
+    const endpoint = await service.create(
+      fixture.companyId,
+      {
+        provider: "slack",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: { botToken: "xoxb-first", signingSecret: "first-secret" },
+      },
+      "owner-user",
+    );
+    const [firstConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    const firstIds = new Set(
+      firstConnection.credentialSecretRefs.map((ref) => ref.secretId),
+    );
+    expect(firstIds.size).toBe(2);
+
+    await service.configure(
+      endpoint.id,
+      {
+        action: "reconnect",
+        credentials: {
+          botToken: "xoxb-second",
+          signingSecret: "second-secret",
+        },
+      },
+      "owner-user",
+    );
+    const [rotatedConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(rotatedConnection.credentialSecretRefs).toHaveLength(2);
+    expect(
+      rotatedConnection.credentialSecretRefs.every(
+        (ref) => !firstIds.has(ref.secretId),
+      ),
+    ).toBe(true);
+    const afterRotation = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, fixture.companyId));
+    expect(afterRotation.map((secret) => secret.id).sort()).toEqual(
+      rotatedConnection.credentialSecretRefs.map((ref) => ref.secretId).sort(),
+    );
+
+    await service.configure(endpoint.id, { action: "remove" }, "owner-user");
+    const [removedConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(removedConnection.credentialSecretRefs).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(companySecrets)
+        .where(eq(companySecrets.companyId, fixture.companyId)),
+    ).toHaveLength(0);
+  });
+
+  it("marks provider setup as needing attention when Telegram webhook registration fails", async () => {
+    const fixture = await seedCompany();
+    const providerFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/getMe")) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: { id: 42, username: "maya_e2e_bot", first_name: "Maya" },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      if (url.endsWith("/getWebhookInfo")) {
+        return new Response(JSON.stringify({ ok: true, result: { url: "" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/setWebhook")) {
+        return new Response(
+          JSON.stringify({ ok: false, description: "webhook unavailable" }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      throw new Error(`Unexpected provider request: ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+    const { service, runtime } = createService(
+      new FakeChatSdkRuntime(),
+      providerFetch,
+    );
+    const endpoint = await service.create(
+      fixture.companyId,
+      {
+        provider: "telegram",
+        assignedAgentId: fixture.assignedAgentId,
+      },
+      "owner-user",
+    );
+
+    await expect(
+      service.configure(
+        endpoint.id,
+        {
+          action: "configure",
+          credentials: { botToken: "telegram-test-token" },
+        },
+        "owner-user",
+      ),
+    ).rejects.toMatchObject({ status: 422 });
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "attention",
+      healthMessage: "Provider setup needs attention",
+      lastError: "Telegram could not register the webhook: webhook unavailable",
+    });
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(connection).toMatchObject({
+      healthStatus: "degraded",
+      healthMessage: "Provider setup failed",
+    });
+    expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+  });
+
+  it("holds ambiguous provider sends for explicit operator replay without reordering", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-UNKNOWN",
+      id: "slack:C-UNKNOWN:4500.1",
+      name: "unknown-delivery",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "4500.1",
+        text: "@maya test an ambiguous response",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const firstComment = await issueService(db).addComment(
+      conversation.issueId,
+      "First safe response",
+      { userId: "owner-user" },
+      { authorType: "user" },
+    );
+    const secondComment = await issueService(db).addComment(
+      conversation.issueId,
+      "Second safe response",
+      { userId: "owner-user" },
+      { authorType: "user" },
+    );
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected provider runtime");
+    providerRuntime.postError = new Error("socket reset after write");
+
+    await service.publishComment(endpoint.id, conversation.id, firstComment.id);
+    const firstPublication = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.commentId, firstComment.id))
+      .then((rows) => rows[0]);
+    expect(firstPublication).toMatchObject({
+      state: "delivery_unknown",
+      attempts: 1,
+      providerMessageId: null,
+    });
+
+    await service.publishComment(
+      endpoint.id,
+      conversation.id,
+      secondComment.id,
+    );
+    const secondPublication = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.commentId, secondComment.id))
+      .then((rows) => rows[0]);
+    expect(secondPublication.state).toBe("pending");
+    const activity = await service.listActivity(endpoint.id);
+    expect(
+      activity.find((item) => item.id === firstPublication.id),
+    ).toMatchObject({
+      kind: "publication",
+      status: "delivery_unknown",
+      replayable: true,
+    });
+
+    providerRuntime.postError = null;
+    await service.replayPublication(endpoint.id, firstPublication.id);
+    await service.processPendingPublications();
+    const replayed = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.id, firstPublication.id))
+      .then((rows) => rows[0]);
+    const releasedSecond = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.id, secondPublication.id))
+      .then((rows) => rows[0]);
+    expect(replayed.state).toBe("published");
+    expect(releasedSecond.state).toBe("published");
+    expect(providerRuntime.posts.map((post) => post.text)).toEqual([
+      "First safe response",
+      "Second safe response",
+    ]);
+  });
+
+  it("wakes the bound task when an operator replays a failed delivery", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-REPLAY",
+      id: "slack:C-REPLAY:5000.1",
+      name: "replay",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "5000.1",
+        text: "@maya retry this",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    const [delivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    await db
+      .update(chatDeliveries)
+      .set({ state: "failed", redactedError: "temporary failure" })
+      .where(eq(chatDeliveries.id, delivery.id));
+
+    await service.replayDelivery(endpoint.id, delivery.id);
+
+    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect(wakeup.mock.calls[1]?.[1]).toMatchObject({
+      reason: "External chat message received",
+      payload: {
+        mutation: "chat_message_received",
+        wakeCommentId: expect.any(String),
+      },
+    });
+    const [replayed] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.id, delivery.id));
+    expect(replayed).toMatchObject({
+      state: "processed",
+      attempts: 2,
+      redactedError: null,
+    });
+  });
+
+  it("turns a Slack slash command into a new native thread and one Paperclip task", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    const command = endpoint.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    if (!callbacks.onSlashCommand)
+      throw new Error("Slack slash command callback was not registered");
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: "C-COMMANDS",
+      label: "commands",
+      availability: "available",
+      enabled: true,
+    });
+    const starterThreadId = "slack:C-COMMANDS:6000.1";
+    const post = vi.fn(async () => ({
+      id: "6000.1",
+      threadId: starterThreadId,
+    }));
+    const postEphemeral = vi.fn(async () => ({
+      id: "ephemeral-6000",
+      threadId: starterThreadId,
+    }));
+    await callbacks.onSlashCommand({
+      endpointId: endpoint.id,
+      provider: "slack",
+      event: {
+        channel: {
+          id: "C-COMMANDS",
+          name: "commands",
+          isDM: false,
+          post,
+          postEphemeral,
+        } as never,
+        command,
+        text: "investigate the command path",
+        triggerId: "trigger-6000",
+        user: {
+          userId: "U-COMMANDER",
+          userName: "commander",
+          fullName: "Command User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: { trigger_id: "trigger-6000" },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    });
+
+    expect(post).toHaveBeenCalledWith("Starting a task…");
+    const [conversation] = await service.listConversations(endpoint.id);
+    expect(conversation).toMatchObject({
+      externalThreadId: starterThreadId,
+      state: "active",
+    });
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversation.issueId));
+    expect(comments.map((comment) => comment.body)).toEqual([
+      "investigate the command path",
+    ]);
+  });
+
+  it("treats exact Slack status, new, and close text as DM task controls without issuing chat actions", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Slack slash command callback was not registered");
+    }
+    const dm = makeThread({
+      channelId: "D-CONTROLS",
+      id: "slack:D-CONTROLS:",
+      isDM: true,
+      name: "direct message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: dm.thread,
+      message: makeMessage({
+        id: "dm-control-root-1",
+        text: "Start the first DM task",
+        userId: "U-DM-CONTROLS",
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "U-DM-CONTROLS");
+    await service.test(endpoint.id, "owner-user");
+    const command = endpoint.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    const post = vi.fn(async () => ({
+      id: "unexpected-control-root",
+      threadId: dm.thread.id,
+    }));
+    const postEphemeral = vi.fn(async () => ({
+      id: "unexpected-control-ephemeral",
+      threadId: dm.thread.id,
+    }));
+    const slashChannel = {
+      id: "slack:D-CONTROLS",
+      name: "direct message",
+      isDM: true,
+      post,
+      postEphemeral,
+    } as never;
+    const invokeControl = async (control: "status" | "new" | "close") => {
+      await callbacks.onSlashCommand!({
+        endpointId: endpoint.id,
+        provider: "slack",
+        event: {
+          channel: slashChannel,
+          command,
+          text: control,
+          triggerId: `trigger-${control}-${randomUUID()}`,
+          user: {
+            userId: "U-DM-CONTROLS",
+            userName: "dm-controller",
+            fullName: "DM Controller",
+            isBot: false,
+            isMe: false,
+            isSystem: false,
+          },
+          raw: { command, text: control },
+          adapter: {} as never,
+          openModal: async () => undefined,
+        },
+      });
+    };
+    const issuesBeforeStatus = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, fixture.companyId));
+    await invokeControl("status");
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(issuesBeforeStatus.length);
+    expect(runtime.endpoints.get(endpoint.id)?.posts.at(-1)?.text).toMatch(
+      /— todo$/,
+    );
+
+    await invokeControl("new");
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(issuesBeforeStatus.length);
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ state: "completed" }),
+    ]);
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: dm.thread,
+      message: makeMessage({
+        id: "dm-control-root-2",
+        text: "Start the second DM task",
+        userId: "U-DM-CONTROLS",
+      }),
+      trigger: "direct_message",
+    });
+    const issuesBeforeClose = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, fixture.companyId));
+    expect(issuesBeforeClose).toHaveLength(issuesBeforeStatus.length + 1);
+    await invokeControl("close");
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(issuesBeforeClose.length);
+    expect(
+      (await service.listConversations(endpoint.id)).map(
+        (conversation) => conversation.state,
+      ),
+    ).toEqual(["completed", "completed"]);
+    expect(
+      await db
+        .select()
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id)),
+    ).toHaveLength(0);
+    expect(post).not.toHaveBeenCalled();
+    expect(postEphemeral).not.toHaveBeenCalled();
+  });
+
+  it("returns ephemeral guidance for exact Slack controls in channels without creating tasks or actions", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Slack slash command callback was not registered");
+    }
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: "C-CONTROL-GUIDANCE",
+      label: "control-guidance",
+      availability: "available",
+      enabled: true,
+    });
+    const command = endpoint.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    const post = vi.fn(async () => ({
+      id: "unexpected-channel-control-post",
+      threadId: "slack:C-CONTROL-GUIDANCE:root",
+    }));
+    const postEphemeral = vi.fn(async () => ({
+      id: "channel-control-guidance",
+      threadId: "slack:C-CONTROL-GUIDANCE:root",
+    }));
+    for (const control of ["status", "new", "close"] as const) {
+      await callbacks.onSlashCommand({
+        endpointId: endpoint.id,
+        provider: "slack",
+        event: {
+          channel: {
+            id: "slack:C-CONTROL-GUIDANCE",
+            name: "control-guidance",
+            isDM: false,
+            post,
+            postEphemeral,
+          } as never,
+          command,
+          text: control,
+          triggerId: `channel-control-${control}`,
+          user: {
+            userId: "U-CHANNEL-CONTROLLER",
+            userName: "channel-controller",
+            fullName: "Channel Controller",
+            isBot: false,
+            isMe: false,
+            isSystem: false,
+          },
+          raw: { command, text: control },
+          adapter: {} as never,
+          openModal: async () => undefined,
+        },
+      });
+    }
+    expect(post).not.toHaveBeenCalled();
+    expect(postEphemeral).toHaveBeenCalledTimes(3);
+    for (const call of postEphemeral.mock.calls) {
+      expect(call[1]).toBe(
+        "Use status, new, and close in a direct message with this agent. In a channel, open the Paperclip task from its Slack thread.",
+      );
+      expect(call[2]).toEqual({ fallbackToDM: false });
+    }
+    expect(await service.listConversations(endpoint.id)).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id)),
+    ).toHaveLength(0);
+  });
+
+  it("keeps Telegram start and unknown commands as terse guidance without creating work", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredTelegramEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Telegram slash command callback was not registered");
+    }
+    const post = vi.fn(async () => ({
+      id: `telegram-guidance-${randomUUID()}`,
+      threadId: "telegram:77112233",
+    }));
+    const channel = {
+      id: "77112233",
+      name: "Telegram direct message",
+      isDM: true,
+      post,
+    } as never;
+    const invoke = async (command: string, text: string) => {
+      await callbacks.onSlashCommand!({
+        endpointId: endpoint.id,
+        provider: "telegram",
+        event: {
+          channel,
+          command,
+          text,
+          triggerId: `telegram-command-${randomUUID()}`,
+          user: {
+            userId: "77112233",
+            userName: "telegram-user",
+            fullName: "Telegram User",
+            isBot: false,
+            isMe: false,
+            isSystem: false,
+          },
+          raw: { message: { text: `${command} ${text}`.trim() } },
+          adapter: {} as never,
+          openModal: async () => undefined,
+        },
+      });
+    };
+    await invoke("/start", "ignored payload");
+    await invoke("/danger", "create an administrator action");
+
+    expect(post).toHaveBeenNthCalledWith(
+      1,
+      "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
+    );
+    expect(post).toHaveBeenNthCalledWith(
+      2,
+      "Available commands: /status, /new, and /close.",
+    );
+    expect(await service.listConversations(endpoint.id)).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id)),
+    ).toHaveLength(0);
+  });
+
+  it("fails closed for unbound rich callbacks and unknown slash commands", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    const command = endpoint.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    expect(callbacks.onAction).toBeTypeOf("function");
+    expect(callbacks.onModalSubmit).toBeTypeOf("function");
+    expect(callbacks.onModalClose).toBeUndefined();
+    expect(callbacks.onOptionsLoad).toBeUndefined();
+    expect(callbacks.onReaction).toBeTypeOf("function");
+    if (!callbacks.onSlashCommand)
+      throw new Error("Slack slash command callback was not registered");
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: "C-COMMAND-DENY",
+      label: "denied commands",
+      availability: "available",
+      enabled: true,
+    });
+    const post = vi.fn(async () => ({
+      id: "unexpected-post",
+      threadId: "slack:C-COMMAND-DENY:6100.1",
+    }));
+    const postEphemeral = vi.fn(async () => ({
+      id: "ephemeral-deny",
+      threadId: "slack:C-COMMAND-DENY:6100.1",
+    }));
+    await callbacks.onSlashCommand({
+      endpointId: endpoint.id,
+      provider: "slack",
+      event: {
+        channel: {
+          id: "C-COMMAND-DENY",
+          name: "denied commands",
+          isDM: false,
+          post,
+          postEphemeral,
+        } as never,
+        command: "/anything-else",
+        text: "should not start work",
+        triggerId: "trigger-deny",
+        user: {
+          userId: "U-COMMANDER",
+          userName: "commander",
+          fullName: "Command User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: { trigger_id: "trigger-deny" },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    });
+    expect(post).not.toHaveBeenCalled();
+    expect(postEphemeral).toHaveBeenCalledWith(
+      expect.anything(),
+      `This connection only accepts ${command}.`,
+      { fallbackToDM: false },
+    );
+    expect(await service.listConversations(endpoint.id)).toEqual([]);
+  });
+
+  it("applies the direct-message toggle to Slack slash commands", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    const command = endpoint.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    if (!callbacks.onSlashCommand)
+      throw new Error("Slack slash command callback was not registered");
+    await service.update(
+      endpoint.id,
+      { allowDirectMessages: false },
+      "owner-user",
+    );
+    const post = vi.fn(async () => ({
+      id: "unexpected-dm-post",
+      threadId: "slack:D-COMMANDS:6200.1",
+    }));
+    const postEphemeral = vi.fn(async () => ({
+      id: "ephemeral-dm-deny",
+      threadId: "slack:D-COMMANDS:6200.1",
+    }));
+    await callbacks.onSlashCommand({
+      endpointId: endpoint.id,
+      provider: "slack",
+      event: {
+        channel: {
+          id: "D-COMMANDS",
+          name: "direct message",
+          isDM: true,
+          post,
+          postEphemeral,
+        } as never,
+        command,
+        text: "should not start work",
+        triggerId: "trigger-dm-deny",
+        user: {
+          userId: "U-COMMANDER",
+          userName: "commander",
+          fullName: "Command User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: { trigger_id: "trigger-dm-deny" },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    });
+    expect(post).not.toHaveBeenCalled();
+    expect(postEphemeral).toHaveBeenCalledWith(
+      expect.anything(),
+      "This channel or account is not allowed to start Paperclip work.",
+      { fallbackToDM: false },
+    );
+  });
+
+  it("records message edits and deletes durably and deduplicates lifecycle callbacks", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-LIFECYCLE",
+      id: "slack:C-LIFECYCLE:7000.1",
+      name: "lifecycle",
+    });
+    const original = makeMessage({
+      id: "7000.1",
+      text: "@maya original request",
+      mentioned: true,
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: original,
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+    if (!callbacks.onMessageUpdated || !callbacks.onMessageDeleted) {
+      throw new Error("Slack lifecycle callbacks were not registered");
+    }
+    const edited = {
+      ...makeMessage({ id: "7000.1", text: "@maya corrected request" }),
+      metadata: {
+        dateSent: new Date("2026-09-04T10:00:00.000Z"),
+        edited: true,
+        editedAt: new Date("2026-09-04T10:01:00.000Z"),
+      },
+    } as Message;
+    const updateEvent = {
+      endpointId: endpoint.id,
+      provider: "slack" as const,
+      thread: channel.thread,
+      message: edited,
+      previousMessage: original,
+    };
+    await callbacks.onMessageUpdated(updateEvent);
+    await callbacks.onMessageUpdated(updateEvent);
+    const deleteEvent = {
+      endpointId: endpoint.id,
+      provider: "slack" as const,
+      event: {
+        adapter: {} as never,
+        channelId: "C-LIFECYCLE",
+        deletedAt: new Date("2026-09-04T10:02:00.000Z"),
+        messageId: "7000.1",
+        platform: "slack",
+        raw: {},
+        threadId: channel.thread.id,
+      },
+    };
+    await callbacks.onMessageDeleted(deleteEvent);
+    await callbacks.onMessageDeleted(deleteEvent);
+
+    const deliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(deliveries.map((delivery) => delivery.eventKind).sort()).toEqual([
+      "mention",
+      "message",
+      "message_deleted",
+      "message_updated",
+    ]);
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversation.issueId));
+    expect(
+      comments
+        .filter(
+          (comment) =>
+            comment.body !== "Setup round trip complete" &&
+            comment.body !== "Setup follow-up",
+        )
+        .map((comment) => comment.body)
+        .sort(),
+    ).toEqual(
+      [
+        "@maya original request",
+        "An external message was edited:\n\n@maya corrected request",
+        "An external message in this conversation was deleted.",
+      ].sort(),
+    );
+    expect(wakeup).toHaveBeenCalledTimes(4);
+  });
+
+  it("audits reactions on linked messages without treating them as task instructions", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-REACTIONS",
+      id: "slack:C-REACTIONS:7100.1",
+      name: "reactions",
+    });
+    const original = makeMessage({
+      id: "7100.1",
+      text: "@maya observe reactions",
+      mentioned: true,
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: original,
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+    if (!callbacks.onReaction)
+      throw new Error("Slack reaction callback was not registered");
+
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const commentCountBefore = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversation.issueId))
+      .then((rows) => rows.length);
+    const wakeupCountBefore = wakeup.mock.calls.length;
+    const emoji = {
+      name: "thumbs_up",
+      toJSON: () => ":thumbs_up:",
+      toString: () => ":thumbs_up:",
+    };
+    const reaction = (added: boolean, eventTs: string) => ({
+      endpointId: endpoint.id,
+      provider: "slack" as const,
+      event: {
+        adapter: {} as never,
+        added,
+        emoji,
+        message: original,
+        messageId: original.id,
+        raw: { event_ts: eventTs },
+        rawEmoji: "+1",
+        thread: channel.thread,
+        threadId: channel.thread.id,
+        user: original.author,
+      },
+    });
+
+    await callbacks.onReaction(reaction(true, "7101.1"));
+    await callbacks.onReaction(reaction(true, "7101.1"));
+    await callbacks.onReaction(reaction(false, "7102.1"));
+
+    const reactions = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.conversationId, conversation.id))
+      .then((rows) =>
+        rows.filter((row) => row.eventKind.startsWith("reaction_")),
+      );
+    expect(reactions).toHaveLength(2);
+    expect(reactions.map((row) => row.eventKind).sort()).toEqual([
+      "reaction_added",
+      "reaction_removed",
+    ]);
+    expect(reactions[0]?.normalizedEvent).toMatchObject({
+      reaction: { emoji: "thumbs_up", rawEmoji: "+1" },
+    });
+    expect(
+      await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversation.issueId))
+        .then((rows) => rows.length),
+    ).toBe(commentCountBefore);
+    expect(wakeup.mock.calls).toHaveLength(wakeupCountBefore);
+    expect(
+      (await service.listActivity(endpoint.id)).filter((item) =>
+        item.summary.startsWith("reaction "),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("supplements Chat SDK with verified GitHub comment edit and delete lifecycle events", async () => {
+    const fixture = await seedCompany();
+    const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
+      .privateKey.export({ type: "pkcs8", format: "pem" })
+      .toString();
+    const runtime = new FakeChatSdkRuntime();
+    const { service, wakeup } = createService(runtime, (async (
+      input: string | URL | Request,
+    ) => {
+      const url = String(input);
+      if (url === "https://api.github.com/app") {
+        return new Response(
+          JSON.stringify({
+            id: 790,
+            slug: "maya-paperclip-lifecycle",
+            name: "Maya Paperclip",
+            owner: { login: "paperclipai" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "https://api.github.com/app/installations?per_page=100") {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 8642,
+              account: { id: 1, login: "paperclipai" },
+              suspended_at: null,
+            },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (
+        url === "https://api.github.com/app/installations/8642/access_tokens"
+      ) {
+        return new Response(JSON.stringify({ token: "installation-token" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (
+        url ===
+        "https://api.github.com/installation/repositories?per_page=100&page=1"
+      ) {
+        return new Response(JSON.stringify({ repositories: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected provider request: ${url}`);
+    }) as typeof globalThis.fetch);
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "github", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          appId: "123456",
+          privateKey,
+          webhookSecret: "github-lifecycle-secret",
+        },
+      },
+      "owner-user",
+    );
+    const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Expected GitHub callbacks");
+    const thread = makeThread({
+      channelId: "paperclipai/chat-e2e",
+      id: "github:paperclipai/chat-e2e:issue:42",
+      name: "paperclipai/chat-e2e",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "77001",
+        text: "@maya original GitHub request",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+
+    const sendLifecycle = async (
+      action: "edited" | "deleted",
+      updatedAt: string,
+    ) => {
+      await service.handleWebhook(
+        endpoint.publicId,
+        "github",
+        new Request(
+          `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/github`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-github-event": "issue_comment",
+            },
+            body: JSON.stringify({
+              action,
+              comment: {
+                id: 77001,
+                body: "@maya corrected GitHub request",
+                updated_at: updatedAt,
+              },
+              issue: { number: 42 },
+              repository: {
+                name: "chat-e2e",
+                owner: { login: "paperclipai" },
+              },
+            }),
+          },
+        ),
+      );
+    };
+
+    await sendLifecycle("edited", "2026-09-05T12:00:00Z");
+    await sendLifecycle("deleted", "2026-09-05T12:01:00Z");
+    await vi.waitFor(async () => {
+      const lifecycle = await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(
+        lifecycle.filter((row) =>
+          ["message_updated", "message_deleted"].includes(row.eventKind),
+        ),
+      ).toHaveLength(2);
+    });
+    expect(wakeup).toHaveBeenCalledTimes(4);
+    await service.shutdown();
+  });
+});

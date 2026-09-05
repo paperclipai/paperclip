@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="2512" viewBox="0 0 375 2512" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="375" height="2512"/><rect x="0" y="0" width="375" height="56" rx="6" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  GitHub</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><text x="16" y="88" font-size="20" fill="#000" stroke="none" font-weight="700">Connect Maya to GitHub</text>
+<text x="16" y="112" font-size="20" fill="#000" stroke="none" font-weight="700">conversations</text><text x="16" y="140" font-size="12" fill="#666" stroke="none" >Install a least-privilege GitHub App on the</text>
+<text x="16" y="156" font-size="12" fill="#666" stroke="none" >repositories where people will talk to Maya.</text><text x="16" y="218" font-size="20" fill="#000" stroke="none" font-weight="700">Agent and GitHub identity</text>
+<text x="16" y="244" font-size="12" fill="#666" stroke="none" >This chat endpoint is separate from any GitHub</text>
+<text x="16" y="260" font-size="12" fill="#666" stroke="none" >code/tool connection.</text>
+<line x1="16" y1="272" x2="359" y2="272" />
+<text x="24" y="296" font-size="14" fill="#000" stroke="none" font-weight="600">Paperclip agent</text>
+<text x="24" y="318" font-size="12" fill="#666" stroke="none" >Maya · Support engineer</text>
+<rect x="223" y="328" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="358" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change agent</text>
+<line x1="24" y1="384" x2="351" y2="384" stroke="#e6e6e6"/>
+<text x="24" y="408" font-size="14" fill="#000" stroke="none" font-weight="600">Purpose</text>
+<text x="24" y="430" font-size="12" fill="#666" stroke="none" >People mention Maya in issues and pull</text>
+<text x="24" y="446" font-size="12" fill="#666" stroke="none" >requests.</text>
+<rect x="223" y="440" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="470" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Chat only</text>
+<line x1="24" y1="496" x2="351" y2="496" stroke="#e6e6e6"/>
+<text x="24" y="520" font-size="14" fill="#000" stroke="none" font-weight="600">GitHub App identity</text>
+<text x="24" y="542" font-size="12" fill="#666" stroke="none" >paperclip-maya[bot] · avatar preview</text>
+<rect x="223" y="552" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="582" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Preview</text>
+<text x="16" y="638" font-size="20" fill="#000" stroke="none" font-weight="700">Choose GitHub host and app type</text>
+<text x="16" y="664" font-size="12" fill="#666" stroke="none" >A GitHub App is the production path; PAT is</text>
+<text x="16" y="680" font-size="12" fill="#666" stroke="none" >only for a local test.</text>
+<line x1="16" y1="692" x2="359" y2="692" />
+<text x="24" y="716" font-size="14" fill="#000" stroke="none" font-weight="600">Host</text>
+<text x="24" y="738" font-size="12" fill="#666" stroke="none" >GitHub.com</text>
+<rect x="223" y="748" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="778" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change</text>
+<line x1="24" y1="804" x2="351" y2="804" stroke="#e6e6e6"/>
+<text x="24" y="828" font-size="14" fill="#000" stroke="none" font-weight="600">Authentication</text>
+<text x="24" y="850" font-size="12" fill="#666" stroke="none" >GitHub App with installation-scoped</text>
+<text x="24" y="866" font-size="12" fill="#666" stroke="none" >credentials.</text>
+<rect x="223" y="860" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="890" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Recommended</text>
+<line x1="24" y1="916" x2="351" y2="916" stroke="#e6e6e6"/>
+<text x="24" y="940" font-size="14" fill="#000" stroke="none" font-weight="600">Enterprise Server</text>
+<text x="24" y="962" font-size="12" fill="#666" stroke="none" >Add a verified API and web base URL when</text>
+<text x="24" y="978" font-size="12" fill="#666" stroke="none" >selected.</text>
+<rect x="223" y="972" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1002" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Not used</text>
+<text x="16" y="1058" font-size="20" fill="#000" stroke="none" font-weight="700">Create the GitHub App</text>
+<text x="16" y="1084" font-size="12" fill="#666" stroke="none" >Paperclip supplies exact webhook and</text>
+<text x="16" y="1100" font-size="12" fill="#666" stroke="none" >least-privilege permission values.</text>
+<line x1="16" y1="1112" x2="359" y2="1112" />
+<text x="24" y="1136" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook URL and secret</text>
+<text x="24" y="1158" font-size="12" fill="#666" stroke="none" >Public endpoint plus generated high-entropy</text>
+<text x="24" y="1174" font-size="12" fill="#666" stroke="none" >secret reference.</text>
+<rect x="223" y="1168" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1198" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy values</text>
+<line x1="24" y1="1224" x2="351" y2="1224" stroke="#e6e6e6"/>
+<text x="24" y="1248" font-size="14" fill="#000" stroke="none" font-weight="600">Repository permissions</text>
+<text x="24" y="1270" font-size="12" fill="#666" stroke="none" >Issues write · Pull requests write ·</text>
+<text x="24" y="1286" font-size="12" fill="#666" stroke="none" >Metadata read.</text>
+<rect x="223" y="1280" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1310" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy list</text>
+<line x1="24" y1="1336" x2="351" y2="1336" stroke="#e6e6e6"/>
+<text x="24" y="1360" font-size="14" fill="#000" stroke="none" font-weight="600">Events</text>
+<text x="24" y="1382" font-size="12" fill="#666" stroke="none" >Issue comments and pull-request review</text>
+<text x="24" y="1398" font-size="12" fill="#666" stroke="none" >comments.</text>
+<rect x="223" y="1392" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1422" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy list</text>
+<text x="16" y="1478" font-size="20" fill="#000" stroke="none" font-weight="700">Install on repositories</text>
+<text x="16" y="1504" font-size="12" fill="#666" stroke="none" >GitHub owns organization approval and</text>
+<text x="16" y="1520" font-size="12" fill="#666" stroke="none" >repository selection.</text>
+<line x1="16" y1="1532" x2="359" y2="1532" />
+<text x="24" y="1556" font-size="14" fill="#000" stroke="none" font-weight="600">1. Register app</text>
+<text x="24" y="1578" font-size="12" fill="#666" stroke="none" >Create the app using the values above.</text>
+<rect x="223" y="1588" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1618" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open GitHub</text>
+<line x1="24" y1="1644" x2="351" y2="1644" stroke="#e6e6e6"/>
+<text x="24" y="1668" font-size="14" fill="#000" stroke="none" font-weight="600">2. Install app</text>
+<text x="24" y="1690" font-size="12" fill="#666" stroke="none" >Choose Acme and only the repositories where</text>
+<text x="24" y="1706" font-size="12" fill="#666" stroke="none" >chat is allowed.</text>
+<rect x="223" y="1700" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1730" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open install</text>
+<line x1="24" y1="1756" x2="351" y2="1756" stroke="#e6e6e6"/>
+<text x="24" y="1780" font-size="14" fill="#000" stroke="none" font-weight="600">3. Add credentials</text>
+<text x="24" y="1802" font-size="12" fill="#666" stroke="none" >App ID and private key are stored as</text>
+<text x="24" y="1818" font-size="12" fill="#666" stroke="none" >Paperclip secret references.</text>
+<rect x="223" y="1812" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1842" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Add secrets</text>
+<text x="16" y="1898" font-size="20" fill="#000" stroke="none" font-weight="700">Verify and activate</text>
+<text x="16" y="1924" font-size="12" fill="#666" stroke="none" >Code access is intentionally absent from this</text>
+<text x="16" y="1940" font-size="12" fill="#666" stroke="none" >connection.</text>
+<line x1="16" y1="1952" x2="359" y2="1952" />
+<text x="24" y="1976" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook</text>
+<text x="24" y="1998" font-size="12" fill="#666" stroke="none" >Signature, delivery ID, and subscribed</text>
+<text x="24" y="2014" font-size="12" fill="#666" stroke="none" >event verified.</text>
+<rect x="223" y="2008" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2038" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="24" y1="2064" x2="351" y2="2064" stroke="#e6e6e6"/>
+<text x="24" y="2088" font-size="14" fill="#000" stroke="none" font-weight="600">Installation</text>
+<text x="24" y="2110" font-size="12" fill="#666" stroke="none" >Acme org · acme/api and acme/web</text>
+<rect x="223" y="2120" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2150" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Passed</text>
+<line x1="24" y1="2176" x2="351" y2="2176" stroke="#e6e6e6"/>
+<text x="24" y="2200" font-size="14" fill="#000" stroke="none" font-weight="600">Permissions</text>
+<text x="24" y="2222" font-size="12" fill="#666" stroke="none" >No Contents, Actions, or Administration</text>
+<text x="24" y="2238" font-size="12" fill="#666" stroke="none" >grant.</text>
+<rect x="223" y="2232" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2262" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Least privilege</text>
+<line x1="24" y1="2288" x2="351" y2="2288" stroke="#e6e6e6"/>
+<text x="24" y="2312" font-size="14" fill="#000" stroke="none" font-weight="600">Test mention</text>
+<text x="24" y="2334" font-size="12" fill="#666" stroke="none" >Create a private test issue or use an</text>
+<text x="24" y="2350" font-size="12" fill="#666" stroke="none" >existing allowed issue.</text>
+<rect x="223" y="2344" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="2374" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Send test</text><rect x="16" y="2440" width="343" height="48" rx="6" fill="#000"/><text x="187.5" y="2470" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Activate GitHub</text><g data-region="annotations"><rect x="8" y="188" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="188" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="192" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="608" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="608" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="612" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="1028" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1028" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1032" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1448" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1448" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1452" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<rect x="8" y="1868" width="359" height="540" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1868" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1872" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">5</text></g></svg>

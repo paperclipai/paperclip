@@ -27,6 +27,11 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
+import {
+  chatEndpointsApi,
+  type ChatEndpoint,
+  type ChatProvider,
+} from "@/api/chatEndpoints";
 import { accessApi } from "@/api/access";
 import {
   AlertDialog,
@@ -59,7 +64,10 @@ import {
   appDefinitionSlug,
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
-import { appSourceConnectHref, appSourceResumeHref } from "./app-connect-policy";
+import {
+  appSourceConnectHref,
+  appSourceResumeHref,
+} from "./app-connect-policy";
 import { composioChildParentConnectionId } from "./composio-services";
 import {
   ConnectionOwnerIdentity,
@@ -79,6 +87,7 @@ type ConnectorRowModel = {
   entry: AppGalleryDisplayEntry | null;
   applications: ToolApplication[];
   connections: ToolConnection[];
+  chatEndpoints: ChatEndpoint[];
 };
 
 type ConnectionState = {
@@ -95,10 +104,43 @@ type ConnectionRemovalTarget = {
   childConnectionCount: number;
 };
 
+function chatProviderForSlug(slug: string): ChatProvider | null {
+  const method = getAppStoreDefinition(slug)?.methods.find(
+    (candidate) =>
+      candidate.transport === "chat_sdk" &&
+      candidate.purpose === "channel" &&
+      candidate.provider,
+  );
+  return method?.provider ?? null;
+}
+
+function chatConnectHref(
+  slug: string,
+  toolHref: string | null,
+  agentId?: string | null,
+): string | null {
+  const definition = getAppStoreDefinition(slug);
+  const provider = chatProviderForSlug(slug);
+  if (!definition || !provider) return null;
+  const params = new URLSearchParams({ provider });
+  const hasToolMethod = definition.methods.some(
+    (method) => method.purpose === "tool" && method.transport !== "chat_sdk",
+  );
+  const effectiveToolHref = hasToolMethod
+    ? (toolHref ?? `/apps/connect?source=${slug}`)
+    : null;
+  if (effectiveToolHref) params.set("toolHref", effectiveToolHref);
+  else params.set("purpose", "chat");
+  if (agentId) params.set("agentId", agentId);
+  return `/apps/chat/connect?${params.toString()}`;
+}
+
 function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
   const slug = appDefinitionSlug(entry);
   const definition = getAppStoreDefinition(slug);
-  return appSupportsCatalogSetup(definition) ? appSourceConnectHref(slug) : null;
+  return appSupportsCatalogSetup(definition)
+    ? appSourceConnectHref(slug)
+    : null;
 }
 
 function additionalConnectionHref(
@@ -150,17 +192,30 @@ function connectionRank(connection: ToolConnection): number {
 }
 
 function rowRank(row: ConnectorRowModel): number {
-  if (row.connections.some((connection) => connectionRank(connection) === 1)) return 2;
-  return row.connections.length > 0 ? 1 : 0;
+  if (
+    row.chatEndpoints.some((endpoint) => endpoint.status !== "draft") ||
+    row.connections.some((connection) => connectionRank(connection) === 1)
+  )
+    return 2;
+  return row.connections.length > 0 || row.chatEndpoints.length > 0 ? 1 : 0;
 }
 
-function connectorAction(row: ConnectorRowModel): {
+function connectorAction(
+  row: ConnectorRowModel,
+  agentId?: string | null,
+): {
   label: string;
   href: string | null;
   title?: string;
 } {
   const applicationId = row.applications[0]?.id ?? null;
-  if (row.connections.length > 0) {
+  const chatHref = chatConnectHref(
+    row.slug,
+    row.entry ? connectHrefFor(row.entry) : null,
+    agentId,
+  );
+  if (row.connections.length > 0 || row.chatEndpoints.length > 0) {
+    if (chatHref) return { label: "Add connection", href: chatHref };
     if (row.entry && applicationId) {
       return {
         label: "Add account",
@@ -177,9 +232,12 @@ function connectorAction(row: ConnectorRowModel): {
     return {
       label: "Unavailable",
       href: null,
-      title: row.entry.availability.reason ?? "This connector is unavailable on this instance.",
+      title:
+        row.entry.availability.reason ??
+        "This connector is unavailable on this instance.",
     };
   }
+  if (chatHref) return { label: "Connect", href: chatHref };
   if (row.entry) return { label: "Connect", href: connectHrefFor(row.entry) };
   return {
     label: "Connect",
@@ -187,7 +245,10 @@ function connectorAction(row: ConnectorRowModel): {
   };
 }
 
-function accountActionHref(row: ConnectorRowModel, connection: ToolConnection): string {
+function accountActionHref(
+  row: ConnectorRowModel,
+  connection: ToolConnection,
+): string {
   if (connection.status === "draft" && row.entry) {
     return appSourceResumeHref(row.slug, connection.id);
   }
@@ -201,12 +262,17 @@ function accountActionHref(row: ConnectorRowModel, connection: ToolConnection): 
  */
 export function Browse() {
   const navigate = useNavigate();
+  const preselectedChatAgentId =
+    typeof window === "undefined"
+      ? null
+      : new URLSearchParams(window.location.search).get("chatAgentId");
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
-  const [connectionToRemove, setConnectionToRemove] = useState<ConnectionRemovalTarget | null>(null);
+  const [connectionToRemove, setConnectionToRemove] =
+    useState<ConnectionRemovalTarget | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Connectors" }]);
@@ -228,8 +294,15 @@ export function Browse() {
     queryFn: () => toolsApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const chatEndpointsQuery = useQuery({
+    queryKey: queryKeys.chatEndpoints.list(selectedCompanyId ?? "__none__"),
+    queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
   const userDirectoryQuery = useQuery({
-    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId ?? "__none__"),
+    queryKey: queryKeys.access.companyUserDirectory(
+      selectedCompanyId ?? "__none__",
+    ),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
@@ -239,14 +312,21 @@ export function Browse() {
         confirmComposioChildren: target.childConnectionCount > 0,
       }),
     onSuccess: (_connection, target) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.tools.connections(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.tools.applications(selectedCompanyId!),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.apps.attention(selectedCompanyId!),
+      });
       pushToast({
         title: "Connection removed",
-        body: target.remainingConnectionCount > 0
-          ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
-          : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
+        body:
+          target.remainingConnectionCount > 0
+            ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
+            : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
         tone: "success",
       });
       setConnectionToRemove(null);
@@ -267,11 +347,13 @@ export function Browse() {
 
   const rows = useMemo<ConnectorRowModel[]>(() => {
     const activeConnections = (connectionsQuery.data?.connections ?? []).filter(
-      (connection) => connection.status !== "archived",
+      (connection) =>
+        connection.status !== "archived" &&
+        connection.connectionPurpose !== "channel",
     );
-    const activeApplications = (applicationsQuery.data?.applications ?? []).filter(
-      (application) => application.status !== "archived",
-    );
+    const activeApplications = (
+      applicationsQuery.data?.applications ?? []
+    ).filter((application) => application.status !== "archived");
     const connectionsByApplicationId = new Map<string, ToolConnection[]>();
     for (const connection of activeConnections) {
       connectionsByApplicationId.set(connection.applicationId, [
@@ -280,7 +362,9 @@ export function Browse() {
       ]);
     }
 
-    const gallerySlugs = new Set(gallery.map((entry) => appDefinitionSlug(entry)));
+    const gallerySlugs = new Set(
+      gallery.map((entry) => appDefinitionSlug(entry)),
+    );
     const gallerySlugByName = new Map(
       gallery.map((entry) => [
         appDefinitionName(entry).trim().toLocaleLowerCase(),
@@ -301,12 +385,58 @@ export function Browse() {
         entry,
         applications: [],
         connections: [],
+        chatEndpoints: [],
+      });
+    }
+    const nativeChatProviders = [
+      {
+        provider: "slack",
+        name: "Slack",
+        description:
+          "Chat with agents from Slack channels and direct messages.",
+      },
+      {
+        provider: "github",
+        name: "GitHub",
+        description:
+          "Chat with agents from issues, pull requests, and review threads.",
+      },
+      {
+        provider: "microsoft-teams",
+        name: "Microsoft Teams",
+        description: "Chat with agents from Teams channels and conversations.",
+      },
+      {
+        provider: "telegram",
+        name: "Telegram",
+        description:
+          "Chat with agents from Telegram direct messages, groups, and topics.",
+      },
+    ] as const;
+    for (const item of nativeChatProviders) {
+      if (
+        [...rowsBySlug.values()].some(
+          (row) => chatProviderForSlug(row.slug) === item.provider,
+        )
+      )
+        continue;
+      rowsBySlug.set(item.provider, {
+        key: `native-chat:${item.provider}`,
+        slug: item.provider,
+        name: item.name,
+        description: item.description,
+        brandKey: item.provider,
+        entry: null,
+        applications: [],
+        connections: [],
+        chatEndpoints: [],
       });
     }
 
     const customRows: ConnectorRowModel[] = [];
     for (const application of activeApplications) {
-      const appConnections = connectionsByApplicationId.get(application.id) ?? [];
+      const appConnections =
+        connectionsByApplicationId.get(application.id) ?? [];
       const configuredConnectionSlug = appConnections
         .map(
           (connection) =>
@@ -318,7 +448,10 @@ export function Browse() {
             typeof value === "string" && gallerySlugs.has(value),
         );
       const endpointMatchedSlug = appConnections
-        .flatMap((connection) => [connection.config?.url, connection.transportConfig?.url])
+        .flatMap((connection) => [
+          connection.config?.url,
+          connection.transportConfig?.url,
+        ])
         .map((value) =>
           typeof value === "string"
             ? appDefinitionSlug(getAppDefinitionForUrl(value, gallery)) || null
@@ -327,11 +460,15 @@ export function Browse() {
         .find((value): value is string => Boolean(value));
       const applicationSlug = appApplicationSourceSlug(application);
       const resolvedSlug =
-        applicationSlug && applicationSlug !== "link" && gallerySlugs.has(applicationSlug)
+        applicationSlug &&
+        applicationSlug !== "link" &&
+        gallerySlugs.has(applicationSlug)
           ? applicationSlug
           : (configuredConnectionSlug ??
             endpointMatchedSlug ??
-            gallerySlugByName.get(application.name.trim().toLocaleLowerCase()) ??
+            gallerySlugByName.get(
+              application.name.trim().toLocaleLowerCase(),
+            ) ??
             null);
       const galleryRow = resolvedSlug ? rowsBySlug.get(resolvedSlug) : null;
       if (galleryRow) {
@@ -344,12 +481,42 @@ export function Browse() {
         key: `application:${application.id}`,
         slug: applicationSlug ?? application.id,
         name: application.name,
-        description: application.description ?? "A custom connector configured for this organization.",
+        description:
+          application.description ??
+          "A custom connector configured for this organization.",
         brandKey: applicationSlug ?? application.name,
         entry: null,
         applications: [application],
         connections: appConnections,
+        chatEndpoints: [],
       });
+    }
+
+    for (const endpoint of chatEndpointsQuery.data ?? []) {
+      let target = [...rowsBySlug.values()].find(
+        (row) => chatProviderForSlug(row.slug) === endpoint.provider,
+      );
+      if (!target) {
+        const names = {
+          slack: "Slack",
+          github: "GitHub",
+          "microsoft-teams": "Microsoft Teams",
+          telegram: "Telegram",
+        } as const;
+        target = {
+          key: `chat:${endpoint.provider}`,
+          slug: endpoint.provider,
+          name: names[endpoint.provider],
+          description: `Chat with agents through ${names[endpoint.provider]}.`,
+          brandKey: endpoint.provider,
+          entry: null,
+          applications: [],
+          connections: [],
+          chatEndpoints: [],
+        };
+        customRows.push(target);
+      }
+      target.chatEndpoints.push(endpoint);
     }
 
     return [...rowsBySlug.values(), ...customRows]
@@ -358,16 +525,25 @@ export function Browse() {
         connections: [...row.connections].sort(
           (left, right) =>
             connectionRank(right) - connectionRank(left) ||
-            left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+            left.name.localeCompare(right.name, undefined, {
+              sensitivity: "base",
+            }),
         ),
       }))
       .sort(
         (left, right) =>
           rowRank(right) - rowRank(left) ||
-          left.name.localeCompare(right.name, undefined, { sensitivity: "base" }) ||
+          left.name.localeCompare(right.name, undefined, {
+            sensitivity: "base",
+          }) ||
           left.key.localeCompare(right.key),
       );
-  }, [applicationsQuery.data, connectionsQuery.data, gallery]);
+  }, [
+    applicationsQuery.data,
+    chatEndpointsQuery.data,
+    connectionsQuery.data,
+    gallery,
+  ]);
 
   const trimmed = query.trim().toLocaleLowerCase();
   const visibleRows = useMemo(() => {
@@ -378,6 +554,9 @@ export function Browse() {
         row.description.toLocaleLowerCase().includes(trimmed) ||
         row.connections.some((connection) =>
           connection.name.toLocaleLowerCase().includes(trimmed),
+        ) ||
+        row.chatEndpoints.some((endpoint) =>
+          endpoint.assignedAgentName.toLocaleLowerCase().includes(trimmed),
         ),
     );
   }, [rows, trimmed]);
@@ -393,9 +572,15 @@ export function Browse() {
   }
 
   const loading =
-    galleryQuery.isLoading || applicationsQuery.isLoading || connectionsQuery.isLoading;
+    galleryQuery.isLoading ||
+    applicationsQuery.isLoading ||
+    connectionsQuery.isLoading ||
+    chatEndpointsQuery.isLoading;
   const loadFailed =
-    galleryQuery.isError || applicationsQuery.isError || connectionsQuery.isError;
+    galleryQuery.isError ||
+    applicationsQuery.isError ||
+    connectionsQuery.isError ||
+    chatEndpointsQuery.isError;
   const nothingMatches = visibleRows.length === 0 && !showCustomConnector;
 
   return (
@@ -421,7 +606,8 @@ export function Browse() {
         >
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <p className="min-w-0 flex-1">
-            Couldn’t load every connector. Existing accounts are shown where available.
+            Couldn’t load every connector. Existing accounts are shown where
+            available.
           </p>
           <Button
             type="button"
@@ -431,6 +617,7 @@ export function Browse() {
               void galleryQuery.refetch();
               void applicationsQuery.refetch();
               void connectionsQuery.refetch();
+              void chatEndpointsQuery.refetch();
             }}
           >
             Try again
@@ -459,6 +646,7 @@ export function Browse() {
               userProfileById={userProfileById}
               onNavigate={navigate}
               onRequestRemove={setConnectionToRemove}
+              preselectedAgentId={preselectedChatAgentId}
             />
           ))}
           {showCustomConnector ? (
@@ -481,22 +669,30 @@ export function Browse() {
             <AlertDialogDescription>
               {connectionToRemove && connectionToRemove.childConnectionCount > 0
                 ? `This also removes ${connectionToRemove.childConnectionCount} connected ${connectionToRemove.childConnectionCount === 1 ? "service" : "services"} and takes agent access away immediately. The Composio key and child session credentials are deleted.`
-                : connectionToRemove && connectionToRemove.remainingConnectionCount > 0
-                ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
-                : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
+                : connectionToRemove &&
+                    connectionToRemove.remainingConnectionCount > 0
+                  ? `This connection's saved credentials are deleted and agents lose access through it immediately. They can still use ${connectionToRemove.providerName} through ${connectionToRemove.remainingConnectionCount} other active ${connectionToRemove.remainingConnectionCount === 1 ? "connection" : "connections"}.`
+                  : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={removeConnection.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={removeConnection.isPending}>
+              Cancel
+            </AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={!connectionToRemove || removeConnection.isPending}
               onClick={(event) => {
                 event.preventDefault();
-                if (connectionToRemove) removeConnection.mutate(connectionToRemove);
+                if (connectionToRemove)
+                  removeConnection.mutate(connectionToRemove);
               }}
             >
-              {removeConnection.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 />}
+              {removeConnection.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 />
+              )}
               {removeConnection.isPending ? "Removing…" : "Remove connection"}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -512,19 +708,25 @@ function ConnectorCard({
   userProfileById,
   onNavigate,
   onRequestRemove,
+  preselectedAgentId,
 }: {
   row: ConnectorRowModel;
   allConnections: ToolConnection[];
   userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
   onNavigate: (href: string) => void;
   onRequestRemove: (target: ConnectionRemovalTarget) => void;
+  preselectedAgentId?: string | null;
 }) {
-  const action = connectorAction(row);
+  const action = connectorAction(row, preselectedAgentId);
   return (
     <div
       role="listitem"
       data-app-slug={row.slug}
-      data-connected={row.connections.length > 0 ? "true" : "false"}
+      data-connected={
+        row.connections.length > 0 || row.chatEndpoints.length > 0
+          ? "true"
+          : "false"
+      }
       className="overflow-hidden rounded-xl border border-border"
     >
       <div className="flex flex-wrap items-center gap-3 px-4 py-4">
@@ -537,7 +739,9 @@ function ConnectorCard({
         />
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-foreground">{row.name}</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">{row.description}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {row.description}
+          </p>
         </div>
         <Button
           type="button"
@@ -580,11 +784,56 @@ function ConnectorCard({
                       candidate.enabled,
                   ).length,
                   childConnectionCount: allConnections.filter(
-                    (candidate) => composioChildParentConnectionId(candidate) === connection.id,
+                    (candidate) =>
+                      composioChildParentConnectionId(candidate) ===
+                      connection.id,
                   ).length,
                 });
               }}
             />
+          ))}
+        </div>
+      ) : null}
+      {row.chatEndpoints.length > 0 ? (
+        <div className="divide-y divide-border border-t border-border">
+          {row.chatEndpoints.map((endpoint) => (
+            <div
+              key={endpoint.id}
+              className="flex flex-wrap items-center gap-3 px-4 py-3"
+            >
+              <div className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  className="truncate text-left text-sm font-medium hover:underline"
+                  onClick={() =>
+                    onNavigate(`/apps/chat/${endpoint.id}/settings`)
+                  }
+                >
+                  {endpoint.assignedAgentName} · Chat
+                </button>
+                <p className="truncate text-xs text-muted-foreground">
+                  {endpoint.providerAccountLabel ??
+                    endpoint.botLabel ??
+                    "Provider identity"}
+                </p>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {endpoint.status.replace(/_/g, " ")}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() =>
+                  onNavigate(
+                    endpoint.status === "draft"
+                      ? `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}`
+                      : `/apps/chat/${endpoint.id}/settings`,
+                  )
+                }
+              >
+                {endpoint.status === "draft" ? "Finish setup" : "Manage"}
+              </Button>
+            </div>
           ))}
         </div>
       ) : null}
@@ -607,7 +856,11 @@ function ConnectionAccountRow({
 }) {
   const state = connectionState(connection);
   const actionHref = accountActionHref(row, connection);
-  const accountName = connectionDisplayNameForOwner(connection, row.name, owner);
+  const accountName = connectionDisplayNameForOwner(
+    connection,
+    row.name,
+    owner,
+  );
 
   return (
     <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center">
@@ -663,7 +916,9 @@ function ConnectionAccountRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}>
+            <DropdownMenuItem
+              onSelect={() => onNavigate(`/apps/${connection.id}/permissions`)}
+            >
               Permissions
             </DropdownMenuItem>
             <DropdownMenuSeparator />
@@ -681,7 +936,10 @@ function ConnectionAccountRow({
 function ConnectionStatusIcon({ state }: { state: ConnectionState }) {
   if (state.kind === "connected") {
     return (
-      <span className="mt-0.5 text-emerald-600 dark:text-emerald-400" title={state.label}>
+      <span
+        className="mt-0.5 text-emerald-600 dark:text-emerald-400"
+        title={state.label}
+      >
         <Check className="h-4 w-4" aria-hidden="true" />
         <span className="sr-only">{state.label}</span>
       </span>
@@ -697,7 +955,10 @@ function ConnectionStatusIcon({ state }: { state: ConnectionState }) {
   }
   if (state.kind === "draft") {
     return (
-      <span className="mt-0.5 text-amber-600 dark:text-amber-400" title={state.label}>
+      <span
+        className="mt-0.5 text-amber-600 dark:text-amber-400"
+        title={state.label}
+      >
         <Clock3 className="h-4 w-4" aria-hidden="true" />
         <span className="sr-only">{state.label}</span>
       </span>
@@ -711,7 +972,11 @@ function ConnectionStatusIcon({ state }: { state: ConnectionState }) {
   );
 }
 
-function CustomConnectorCard({ onNavigate }: { onNavigate: (href: string) => void }) {
+function CustomConnectorCard({
+  onNavigate,
+}: {
+  onNavigate: (href: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -725,7 +990,9 @@ function CustomConnectorCard({ onNavigate }: { onNavigate: (href: string) => voi
           <Link2 className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-foreground">Connect your own tool</h2>
+          <h2 className="text-sm font-semibold text-foreground">
+            Connect your own tool
+          </h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
             Add a custom MCP server or paste an existing configuration.
           </p>
@@ -786,8 +1053,12 @@ function CustomConnectorOption({
         <Icon className="h-4 w-4" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-sm font-semibold text-foreground">{title}</span>
-        <span className="block text-xs text-muted-foreground">{description}</span>
+        <span className="block text-sm font-semibold text-foreground">
+          {title}
+        </span>
+        <span className="block text-xs text-muted-foreground">
+          {description}
+        </span>
       </span>
       <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
     </button>

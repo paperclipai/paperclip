@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="1280" height="800"/><text x="48" y="48" font-size="20" stroke="none" fill="#000" font-weight="600">Paperclip</text><circle cx="1232" cy="40" r="16" fill="#e6e6e6"/><text x="640" y="144" font-size="28" stroke="none" fill="#000" font-weight="700" text-anchor="middle">Link your Slack identity</text><text x="640" y="176" font-size="14" stroke="none" fill="#666" text-anchor="middle">Confirm who you will act as when messaging Maya.</text><g transform="translate(280,248)" data-region="panel-1">
+    <rect width="288" height="248" rx="8" />
+    <text x="24" y="40" font-size="20" stroke="none" fill="#000" font-weight="600">Slack identity</text>
+    <line x1="24" y1="64" x2="264" y2="64" stroke="#e6e6e6" /><text x="24" y="84" font-size="14" stroke="none" fill="#666" >Ari S. · Acme workspace</text>
+<line x1="24" y1="104" x2="264" y2="104" stroke="#e6e6e6" /><text x="24" y="124" font-size="14" stroke="none" fill="#666" >Requested by @maya-support</text>
+<line x1="24" y1="144" x2="264" y2="144" stroke="#e6e6e6" /><text x="24" y="164" font-size="14" stroke="none" fill="#000" font-weight="600">Expires in 9 minutes</text>
+  </g>
+<g transform="translate(592,248)" data-region="panel-2">
+    <rect width="288" height="248" rx="8" />
+    <text x="24" y="40" font-size="20" stroke="none" fill="#000" font-weight="600">Paperclip identity</text>
+    <line x1="24" y1="64" x2="264" y2="64" stroke="#e6e6e6" /><text x="24" y="84" font-size="14" stroke="none" fill="#666" >Ari Stone · ari@acme.example</text>
+<line x1="24" y1="104" x2="264" y2="104" stroke="#e6e6e6" /><text x="24" y="124" font-size="14" stroke="none" fill="#666" >Company: Acme</text>
+<line x1="24" y1="144" x2="264" y2="144" stroke="#e6e6e6" /><text x="24" y="164" font-size="14" stroke="none" fill="#000" font-weight="600">Signed in</text>
+  </g>
+<g transform="translate(904,248)" data-region="panel-3">
+    <rect width="288" height="248" rx="8" />
+    <text x="24" y="40" font-size="20" stroke="none" fill="#000" font-weight="600">After linking</text>
+    <line x1="24" y1="64" x2="264" y2="64" stroke="#e6e6e6" /><text x="24" y="84" font-size="14" stroke="none" fill="#666" >Future actions use current permissions</text>
+<line x1="24" y1="104" x2="264" y2="104" stroke="#e6e6e6" /><text x="24" y="124" font-size="14" stroke="none" fill="#666" >This does not share Slack credentials</text>
+<line x1="24" y1="144" x2="264" y2="144" stroke="#e6e6e6" /><text x="24" y="164" font-size="14" stroke="none" fill="#000" font-weight="600">You can revoke from endpoint Access</text>
+  </g><g transform="translate(488,544)"><rect width="304" height="48" rx="4" fill="#000"/><text x="152" y="30" font-size="14" stroke="none" fill="#fff" font-weight="600" text-anchor="middle">Confirm identity link</text></g><text x="640" y="624" font-size="12" stroke="none" fill="#666" text-anchor="middle">Single use · Expires in 9 minutes · Revoke from endpoint Access</text><g data-region="annotations"><rect x="272" y="104" width="936" height="88" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="104" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="108" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">1</text>
+<rect x="272" y="240" width="304" height="264" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="240" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="244" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">2</text>
+<rect x="584" y="240" width="304" height="264" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="584" cy="240" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="584" y="244" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">3</text>
+<rect x="480" y="536" width="320" height="64" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="480" cy="536" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="480" y="540" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">4</text>
+<rect x="376" y="600" width="528" height="40" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="376" cy="600" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="376" y="604" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">5</text></g></svg>

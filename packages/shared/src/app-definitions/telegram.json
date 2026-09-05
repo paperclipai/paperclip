@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "slug": "telegram",
+  "name": "Telegram",
+  "description": "Let people start and continue Paperclip work with an agent from Telegram.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/telegram.svg"
+  },
+  "urlPatterns": [
+    "https://t.me/*",
+    "https://telegram.me/*",
+    "https://api.telegram.org/*"
+  ],
+  "methods": [
+    {
+      "key": "chat-agent",
+      "label": "Chat with an agent",
+      "purpose": "channel",
+      "provider": "telegram",
+      "transport": "chat_sdk",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Let people in Telegram start and continue work with one Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "botToken",
+          "label": "Bot token",
+          "type": "password",
+          "required": true,
+          "placeholder": "123456789:AA...",
+          "secret": true
+        }
+      ],
+      "guidanceMd": "Create one dedicated bot with BotFather. Paperclip replaces any existing webhook for that token. The bot works in private chats, groups, supergroups, and forum topics; keep privacy mode enabled so group work starts from a command, mention, or reply addressed to the bot.",
+      "consoleLinks": {
+        "register": "https://t.me/BotFather",
+        "docs": "https://core.telegram.org/bots/tutorial"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "chat",
+        "group",
+        "topic"
+      ]
+    }
+  ]
+}

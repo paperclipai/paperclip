@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="1280" height="800"/>
+  <g data-region="navigation">
+    <rect x="0" y="0" width="240" height="800" />
+    <text x="24" y="40" font-size="20" stroke="none" fill="#000" font-weight="600">Paperclip</text>
+    <text x="24" y="72" font-size="12" stroke="none" fill="#666" font-weight="600">Apps</text>
+    <rect x="8" y="72" width="224" height="40" rx="4" fill="#e6e6e6" /><text x="24" y="96" font-size="14" stroke="none" fill="#000" font-weight="600">Connectors</text>
+<text x="24" y="144" font-size="14" stroke="none" fill="#666" >Review</text>
+<text x="24" y="192" font-size="14" stroke="none" fill="#666" >Setup</text>
+<text x="24" y="240" font-size="14" stroke="none" fill="#666" >Overview</text>
+<text x="24" y="288" font-size="14" stroke="none" fill="#666" >Access</text>
+<text x="24" y="336" font-size="14" stroke="none" fill="#666" >Behavior</text>
+<text x="24" y="384" font-size="14" stroke="none" fill="#666" >Conversations</text>
+<text x="24" y="432" font-size="14" stroke="none" fill="#666" >Activity</text>
+    <text x="24" y="760" font-size="14" stroke="none" fill="#000" font-weight="600">Acme Company</text>
+    <text x="24" y="784" font-size="12" stroke="none" fill="#666" >Operator</text>
+  </g>
+  <g data-region="topbar">
+    <line x1="240" y1="64" x2="1280" y2="64" />
+    <text x="264" y="40" font-size="14" stroke="none" fill="#666" >Apps / Connectors</text>
+    <circle cx="1240" cy="32" r="16" fill="#e6e6e6" />
+  </g><text x="280" y="128" font-size="28" stroke="none" fill="#000" font-weight="700">Connectors</text><text x="280" y="160" font-size="14" stroke="none" fill="#666" >Connect tools and places where people talk to agents.</text><g transform="translate(280,184)"><rect width="480" height="40" rx="20"/><circle cx="24" cy="20" r="8"/><line x1="32" y1="28" x2="40" y2="36"/><text x="48" y="25" font-size="14" stroke="none" fill="#666" >Search connectors</text></g><g transform="translate(784,184)"><rect width="424" height="40" rx="4"/><text x="16" y="25" font-size="14" stroke="none" fill="#000" >All     Tools     Channels     Connected</text></g><g transform="translate(280,264)"><rect width="928" height="80" rx="8" fill="#e6e6e6"/><rect x="16" y="16" width="48" height="48" rx="8" fill="#e6e6e6" /><text x="80" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">Slack</text><text x="80" y="56" font-size="12" stroke="none" fill="#666" >Tools: 1 account · Channels: Maya bot · Active</text><text x="888" y="48" font-size="14" stroke="none" fill="#000" font-weight="600" text-anchor="end">Add account</text></g>
+<g transform="translate(280,360)"><rect width="928" height="80" rx="8" /><rect x="16" y="16" width="48" height="48" rx="8" fill="#e6e6e6" /><text x="80" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">Microsoft Teams</text><text x="80" y="56" font-size="12" stroke="none" fill="#666" >Tools: Not connected · Channels: Available</text><text x="888" y="48" font-size="14" stroke="none" fill="#000" font-weight="600" text-anchor="end">Connect</text></g>
+<g transform="translate(280,456)"><rect width="928" height="80" rx="8" /><rect x="16" y="16" width="48" height="48" rx="8" fill="#e6e6e6" /><text x="80" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">Discord</text><text x="80" y="56" font-size="12" stroke="none" fill="#666" >Tools: Not available · Channels: Preview</text><text x="888" y="48" font-size="14" stroke="none" fill="#000" font-weight="600" text-anchor="end">Connect</text></g>
+<g transform="translate(280,552)"><rect width="928" height="80" rx="8" /><rect x="16" y="16" width="48" height="48" rx="8" fill="#e6e6e6" /><text x="80" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">Telegram</text><text x="80" y="56" font-size="12" stroke="none" fill="#666" >Tools: Not available · Channels: 2 bots</text><text x="888" y="48" font-size="14" stroke="none" fill="#000" font-weight="600" text-anchor="end">Manage</text></g>
+<g transform="translate(280,648)"><rect width="928" height="80" rx="8" /><rect x="16" y="16" width="48" height="48" rx="8" fill="#e6e6e6" /><text x="80" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">GitHub</text><text x="80" y="56" font-size="12" stroke="none" fill="#666" >Tools: 1 app · Channels: Available</text><text x="888" y="48" font-size="14" stroke="none" fill="#000" font-weight="600" text-anchor="end">Connect</text></g><g data-region="annotations"><rect x="8" y="64" width="232" height="408" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="8" cy="64" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="8" y="68" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">1</text>
+<rect x="272" y="176" width="944" height="56" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="176" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="180" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">2</text>
+<rect x="272" y="256" width="944" height="472" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="256" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="260" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">3</text>
+<rect x="272" y="448" width="944" height="80" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="448" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="452" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">4</text>
+<rect x="1072" y="256" width="144" height="472" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="1072" cy="256" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="1072" y="260" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">5</text></g></svg>

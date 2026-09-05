@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1552" viewBox="0 0 375 1552" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1552"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Slack</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">ADVANCED SETUP</text>
+<line x1="32" y1="96" x2="32" y2="264" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#fff"/>
+<text x="32" y="157" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" font-weight="700">Create Slack app</text>
+<circle cx="32" cy="208" r="16" fill="#fff"/>
+<text x="32" y="213" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="213" font-size="14" fill="#666" stroke="none" >Connect app</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#666" stroke="none" >Verify</text>
+<text x="16" y="360" font-size="20" fill="#000" stroke="none" font-weight="700">Create a custom Slack app</text>
+<text x="16" y="392" font-size="12" fill="#666" stroke="none" >Advanced path for self-hosted deployments or</text>
+<text x="16" y="408" font-size="12" fill="#666" stroke="none" >organizations that require a customer-owned</text>
+<text x="16" y="424" font-size="12" fill="#666" stroke="none" >app.</text>
+<text x="16" y="472" font-size="20" fill="#000" stroke="none" font-weight="700">Agent</text>
+<text x="16" y="496" font-size="12" fill="#666" stroke="none" >The custom Slack app will always represent</text>
+<text x="16" y="512" font-size="12" fill="#666" stroke="none" >this agent.</text>
+<line x1="16" y1="528" x2="359" y2="528" />
+<text x="24" y="552" font-size="14" fill="#000" stroke="none" font-weight="600">Maya</text>
+<text x="24" y="574" font-size="12" fill="#666" stroke="none" >Support engineer · a new connection is</text>
+<text x="24" y="590" font-size="12" fill="#666" stroke="none" >required for another agent</text>
+<text x="351" y="624" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<text x="16" y="672" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip prepared the app</text>
+<text x="16" y="696" font-size="12" fill="#666" stroke="none" >A versioned Slack manifest contains the bot</text>
+<text x="16" y="712" font-size="12" fill="#666" stroke="none" >name, callback URLs, scopes, events, actions,</text>
+<text x="16" y="728" font-size="12" fill="#666" stroke="none" >modals, commands, and files configuration.</text>
+<line x1="16" y1="728" x2="359" y2="728" />
+<text x="24" y="752" font-size="14" fill="#000" stroke="none" font-weight="600">App identity</text>
+<text x="24" y="774" font-size="12" fill="#666" stroke="none" >Maya · unique native Slack app and mention</text>
+<text x="351" y="824" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Prepared</text>
+<line x1="24" y1="840" x2="351" y2="840" stroke="#e6e6e6"/>
+<text x="24" y="864" font-size="14" fill="#000" stroke="none" font-weight="600">Callback</text>
+<text x="24" y="886" font-size="12" fill="#666" stroke="none" >Chosen automatically for this Paperclip</text>
+<text x="24" y="902" font-size="12" fill="#666" stroke="none" >deployment.</text>
+<text x="351" y="936" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Prepared</text>
+<line x1="24" y1="952" x2="351" y2="952" stroke="#e6e6e6"/>
+<text x="24" y="976" font-size="14" fill="#000" stroke="none" font-weight="600">Permissions</text>
+<text x="24" y="998" font-size="12" fill="#666" stroke="none" >Maximum safe Slack chat capability set; no</text>
+<text x="24" y="1014" font-size="12" fill="#666" stroke="none" >tool permissions.</text>
+<text x="351" y="1048" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Prepared</text>
+<text x="16" y="1096" font-size="20" fill="#000" stroke="none" font-weight="700">Create it in Slack</text>
+<text x="16" y="1120" font-size="12" fill="#666" stroke="none" >The shared manifest URL opens Slack with the</text>
+<text x="16" y="1136" font-size="12" fill="#666" stroke="none" >configuration prefilled; there is no</text>
+<text x="16" y="1152" font-size="12" fill="#666" stroke="none" >copy-and-paste step.</text>
+<line x1="16" y1="1152" x2="359" y2="1152" />
+<text x="24" y="1176" font-size="14" fill="#000" stroke="none" font-weight="600">Workspace owner</text>
+<text x="24" y="1198" font-size="12" fill="#666" stroke="none" >Slack may require an app manager or</text>
+<text x="24" y="1214" font-size="12" fill="#666" stroke="none" >administrator to approve creation.</text>
+<text x="351" y="1248" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Provider policy</text>
+<line x1="24" y1="1264" x2="351" y2="1264" stroke="#e6e6e6"/>
+<text x="24" y="1288" font-size="14" fill="#000" stroke="none" font-weight="600">After creation</text>
+<text x="24" y="1310" font-size="12" fill="#666" stroke="none" >Return here for the two values Slack cannot</text>
+<text x="24" y="1326" font-size="12" fill="#666" stroke="none" >send back through this custom-app path.</text>
+<text x="351" y="1360" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Next step</text>
+<rect x="16" y="1416" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1446" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back to Add to Slack</text>
+<rect x="16" y="1480" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1510" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open prefilled Slack setup</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="272" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="440" width="359" height="200" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="440" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="444" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="640" width="359" height="736" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="640" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="644" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1408" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1408" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1412" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

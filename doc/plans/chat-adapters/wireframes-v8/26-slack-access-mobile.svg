@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="920" viewBox="0 0 375 920" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="920"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="32" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Maya on Slack</text><text x="359" y="32" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><rect x="16" y="72" width="343" height="48" rx="4" fill="#fff"/><text x="32" y="104" font-size="14" fill="#000" stroke="none" font-weight="600">Access</text><text x="343" y="104" font-size="14" fill="#666" stroke="none" text-anchor="end">⌄</text>
+<text x="16" y="160" font-size="20" fill="#000" stroke="none" font-weight="700">Slack access</text>
+<text x="16" y="190" font-size="12" fill="#666" stroke="none" >Decide how people are identified when they</text>
+<text x="16" y="206" font-size="12" fill="#666" stroke="none" >message Maya.</text>
+<text x="16" y="256" font-size="20" fill="#000" stroke="none" font-weight="700">Unlinked people</text>
+<line x1="16" y1="288" x2="359" y2="288" />
+<text x="24" y="328" font-size="14" fill="#000" stroke="none" font-weight="600">Allow unlinked people</text>
+<text x="24" y="356" font-size="12" fill="#666" stroke="none" >In enabled channels, unlinked Slack</text>
+<text x="24" y="374" font-size="12" fill="#666" stroke="none" >members can start and continue tasks</text>
+<text x="24" y="392" font-size="12" fill="#666" stroke="none" >with restricted access.</text>
+<rect x="287" y="312" width="64" height="48" rx="4" fill="#fff"/><rect x="303" y="324" width="48" height="24" rx="4" fill="#000"/><circle cx="335" cy="336" r="8" fill="#fff"/>
+<text x="24" y="440" font-size="14" fill="#000" stroke="none" font-weight="600">Restricted access</text>
+<text x="24" y="468" font-size="12" fill="#666" stroke="none" >May message and attach safe files.</text>
+<text x="24" y="486" font-size="12" fill="#666" stroke="none" >Cannot approve or administer Paperclip.</text>
+<text x="16" y="560" font-size="20" fill="#000" stroke="none" font-weight="700">Linked accounts</text>
+<text x="16" y="588" font-size="12" fill="#666" stroke="none" >Uses current Paperclip permissions.</text>
+<line x1="16" y1="616" x2="359" y2="616" />
+<text x="24" y="660" font-size="14" fill="#000" stroke="none" font-weight="600">Ari Chen · U0184</text>
+<text x="24" y="684" font-size="12" fill="#666" stroke="none" >ari@acme.com · Member</text>
+<rect x="247" y="648" width="104" height="48" rx="4" fill="#fff"/><text x="299" y="680" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Revoke</text>
+<line x1="24" y1="728" x2="351" y2="728" stroke="#e6e6e6"/>
+<text x="24" y="756" font-size="14" fill="#000" stroke="none" font-weight="600">Sam Rivera · U0191</text>
+<text x="24" y="780" font-size="12" fill="#666" stroke="none" >sam@acme.com · Viewer</text>
+<rect x="247" y="744" width="104" height="48" rx="4" fill="#fff"/><text x="299" y="776" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Revoke</text>
+<rect x="16" y="840" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="872" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Link account</text>
+<g data-region="annotations"><rect x="8" y="248" width="359" height="168" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="248" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="252" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="424" width="359" height="88" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="424" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="428" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="552" width="359" height="336" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="552" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="556" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>

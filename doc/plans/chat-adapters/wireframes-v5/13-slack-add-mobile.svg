@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1608" viewBox="0 0 375 1608" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1608"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Slack</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="208" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#fff"/>
+<text x="32" y="157" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" font-weight="700">Add Maya to Slack</text>
+<circle cx="32" cy="208" r="16" fill="#fff"/>
+<text x="32" y="213" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="213" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="304" font-size="20" fill="#000" stroke="none" font-weight="700">Add Maya to Slack</text>
+<text x="16" y="336" font-size="12" fill="#666" stroke="none" >Approve one agent installation. Paperclip</text>
+<text x="16" y="352" font-size="12" fill="#666" stroke="none" >handles credentials and delivery in the</text>
+<text x="16" y="368" font-size="12" fill="#666" stroke="none" >background.</text>
+<text x="16" y="416" font-size="20" fill="#000" stroke="none" font-weight="700">Agent</text>
+<text x="16" y="440" font-size="12" fill="#666" stroke="none" >This connection is permanently assigned to one</text>
+<text x="16" y="456" font-size="12" fill="#666" stroke="none" >Paperclip agent.</text>
+<line x1="16" y1="472" x2="359" y2="472" />
+<text x="24" y="496" font-size="14" fill="#000" stroke="none" font-weight="600">Maya</text>
+<text x="24" y="518" font-size="12" fill="#666" stroke="none" >Support engineer · active</text>
+<text x="351" y="568" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<text x="16" y="616" font-size="20" fill="#000" stroke="none" font-weight="700">What Slack will ask</text>
+<text x="16" y="640" font-size="12" fill="#666" stroke="none" >Slack owns workspace selection, administrator</text>
+<text x="16" y="656" font-size="12" fill="#666" stroke="none" >approval, and the final permission screen.</text>
+<line x1="16" y1="672" x2="359" y2="672" />
+<text x="24" y="696" font-size="14" fill="#000" stroke="none" font-weight="600">Workspace</text>
+<text x="24" y="718" font-size="12" fill="#666" stroke="none" >Choose the Slack workspace where Maya</text>
+<text x="24" y="734" font-size="12" fill="#666" stroke="none" >should appear.</text>
+<text x="351" y="768" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In Slack</text>
+<line x1="24" y1="784" x2="351" y2="784" stroke="#e6e6e6"/>
+<text x="24" y="808" font-size="14" fill="#000" stroke="none" font-weight="600">Permissions</text>
+<text x="24" y="830" font-size="12" fill="#666" stroke="none" >Review mentions, thread replies, messages,</text>
+<text x="24" y="846" font-size="12" fill="#666" stroke="none" >reactions, files, actions, modals…</text>
+<text x="351" y="880" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Review in Slack</text>
+<line x1="24" y1="896" x2="351" y2="896" stroke="#e6e6e6"/>
+<text x="24" y="920" font-size="14" fill="#000" stroke="none" font-weight="600">Installation</text>
+<text x="24" y="942" font-size="12" fill="#666" stroke="none" >Slack returns the authorized agent</text>
+<text x="24" y="958" font-size="12" fill="#666" stroke="none" >installation to this Paperclip company.</text>
+<text x="351" y="992" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic return</text>
+<text x="16" y="1040" font-size="20" fill="#000" stroke="none" font-weight="700">What Paperclip handles</text>
+<text x="16" y="1064" font-size="12" fill="#666" stroke="none" >No token, signing secret, webhook, relay, or</text>
+<text x="16" y="1080" font-size="12" fill="#666" stroke="none" >Socket Mode choice appears in this path.</text>
+<line x1="16" y1="1096" x2="359" y2="1096" />
+<text x="24" y="1120" font-size="14" fill="#000" stroke="none" font-weight="600">Credentials</text>
+<text x="24" y="1142" font-size="12" fill="#666" stroke="none" >Store the returned Slack installation in</text>
+<text x="24" y="1158" font-size="12" fill="#666" stroke="none" >Paperclip's secret store; never reveal it…</text>
+<text x="351" y="1192" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<line x1="24" y1="1208" x2="351" y2="1208" stroke="#e6e6e6"/>
+<text x="24" y="1232" font-size="14" fill="#000" stroke="none" font-weight="600">Delivery</text>
+<text x="24" y="1254" font-size="12" fill="#666" stroke="none" >Select and verify the correct callback path</text>
+<text x="24" y="1270" font-size="12" fill="#666" stroke="none" >for this Paperclip deployment.</text>
+<text x="351" y="1304" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<line x1="24" y1="1320" x2="351" y2="1320" stroke="#e6e6e6"/>
+<text x="24" y="1344" font-size="14" fill="#000" stroke="none" font-weight="600">Capabilities</text>
+<text x="24" y="1366" font-size="12" fill="#666" stroke="none" >Enable every safe Slack feature granted by</text>
+<text x="24" y="1382" font-size="12" fill="#666" stroke="none" >the installation.</text>
+<text x="351" y="1416" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Automatic</text>
+<rect x="16" y="1472" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1502" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Use a custom Slack app</text>
+<rect x="16" y="1536" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1566" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Add Maya to Slack</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="216" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="384" width="359" height="200" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="384" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="388" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="584" width="359" height="848" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="584" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="588" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1464" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1464" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1468" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

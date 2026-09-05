@@ -27,6 +27,9 @@ export function queueIssueAssignmentWakeup(input: {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   taskKey?: string | null;
+  /** Latest issue comment that caused this wakeup. Included in both payload
+   * and context so the heartbeat can build the exact turn that was requested. */
+  wakeCommentId?: string | null;
   rethrowOnError?: boolean;
 }) {
   if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
@@ -40,6 +43,7 @@ export function queueIssueAssignmentWakeup(input: {
         issueId: input.issue.id,
         mutation: input.mutation,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
+        ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
       },
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
@@ -47,6 +51,7 @@ export function queueIssueAssignmentWakeup(input: {
         issueId: input.issue.id,
         source: input.contextSource,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
+        ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
       },
     })
     .catch((err) => {

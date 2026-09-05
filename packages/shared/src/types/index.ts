@@ -506,6 +506,7 @@ export type {
   ToolConnectionCredentialSource,
   ToolConnectionCredentialPolicy,
   ToolConnectionOwnership,
+  ToolConnectionPurpose,
   ToolConnectionTransport,
   ToolConnectionStatus,
   ToolConnectionKind,
@@ -1060,3 +1061,4 @@ export type {
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
 export * from "./app-definition.js";
+export * from "./chat-channels.js";

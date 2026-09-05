@@ -84,6 +84,10 @@ import {
 } from "./issues.js";
 import { questionResponseDeliveryValues } from "./question-response-delivery.js";
 import {
+  cancelPendingIssueInteractionChatPublications,
+  enqueueIssueInteractionChatPublications,
+} from "./chat-interaction-publications.js";
+import {
   assertIssueThreadInteractionResolverAudience,
   canonicalizeStoredResolverPolicy,
   issueThreadInteractionResolutionError,
@@ -2689,7 +2693,9 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               idempotencyKey: normalizedData.idempotencyKey,
             });
           }
-          return hydrateInteraction(existing);
+          const interaction = hydrateInteraction(existing);
+          await enqueueIssueInteractionChatPublications(db, interaction);
+          return interaction;
         }
       }
 
@@ -2795,6 +2801,10 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               || data.kind === "ask_user_questions"
             );
           if (!actor.agentId || !canSupersedeSiblingCards) {
+            await enqueueIssueInteractionChatPublications(
+              tx as unknown as Db,
+              hydrateInteraction(row),
+            );
             return { row, supersededRows: [] };
           }
 
@@ -2829,6 +2839,18 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               now,
             });
           }
+          await cancelPendingIssueInteractionChatPublications(
+            tx as unknown as Db,
+            {
+              companyId: issue.companyId,
+              issueId: issue.id,
+              interactionIds: supersededRows.map((candidate) => candidate.id),
+            },
+          );
+          await enqueueIssueInteractionChatPublications(
+            tx as unknown as Db,
+            hydrateInteraction(row),
+          );
           return { row, supersededRows };
         });
         created = result.row;
@@ -2848,7 +2870,9 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             idempotencyKey: normalizedData.idempotencyKey,
           });
         }
-        return hydrateInteraction(existing);
+        const interaction = hydrateInteraction(existing);
+        await enqueueIssueInteractionChatPublications(db, interaction);
+        return interaction;
       }
 
       await touchIssue(db, issue.id);
@@ -3718,6 +3742,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       interactionId: string,
       input: RespondIssueThreadInteraction,
       actor: InteractionActor,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       assertIssueOpenForInteractionResolution(issue);
       const current = await db
@@ -3771,6 +3796,10 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         const answered = hydrateInteraction(row) as AskUserQuestionsInteraction;
         await tx.insert(issueQuestionResponseDeliveries).values(
           questionResponseDeliveryValues(answered),
+        );
+        await mutationOptions.afterResolveInTransaction?.(
+          tx,
+          answered,
         );
         return row;
       });

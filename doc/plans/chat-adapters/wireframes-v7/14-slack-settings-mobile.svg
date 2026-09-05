@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="936" viewBox="0 0 375 936" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="936"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="32" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Maya on Slack</text><text x="359" y="32" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><rect x="16" y="72" width="343" height="48" rx="4" fill="#fff"/><text x="32" y="104" font-size="14" fill="#000" stroke="none" font-weight="600">Settings</text><text x="343" y="104" font-size="14" fill="#666" stroke="none" text-anchor="end">⌄</text>
+<text x="16" y="160" font-size="20" fill="#000" stroke="none" font-weight="700">Slack settings</text>
+<text x="16" y="192" font-size="12" fill="#666" stroke="none" >Choose where people can start conversations</text>
+<text x="16" y="208" font-size="12" fill="#666" stroke="none" >with Maya.</text>
+<text x="16" y="256" font-size="20" fill="#000" stroke="none" font-weight="700">Allowed channels</text>
+<text x="16" y="280" font-size="12" fill="#666" stroke="none" >Maya responds only in the selected channels.</text>
+<line x1="16" y1="320" x2="359" y2="320" />
+<rect x="24" y="352" width="24" height="24" rx="4" fill="#000"/>
+<text x="36" y="368" font-size="12" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="360" font-size="14" fill="#000" stroke="none" font-weight="600">#customer-support · Acme</text>
+<text x="64" y="384" font-size="12" fill="#666" stroke="none" >Maya is already a member</text>
+<line x1="24" y1="416" x2="351" y2="416" stroke="#e6e6e6"/>
+<rect x="24" y="432" width="24" height="24" rx="4" fill="#000"/>
+<text x="36" y="448" font-size="12" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="440" font-size="14" fill="#000" stroke="none" font-weight="600">#incidents · Acme</text>
+<text x="64" y="464" font-size="12" fill="#666" stroke="none" >Maya is already a member</text>
+<rect x="16" y="512" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="544" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Edit allowed channels</text>
+<text x="16" y="624" font-size="20" fill="#000" stroke="none" font-weight="700">Direct messages</text>
+<text x="16" y="648" font-size="12" fill="#666" stroke="none" >Control whether people can start work</text>
+<text x="16" y="664" font-size="12" fill="#666" stroke="none" >privately.</text>
+<line x1="16" y1="704" x2="359" y2="704" />
+<text x="24" y="744" font-size="14" fill="#000" stroke="none" font-weight="600">Allow direct messages</text>
+<text x="24" y="768" font-size="12" fill="#666" stroke="none" >A person can start a task by messaging</text>
+<text x="24" y="784" font-size="12" fill="#666" stroke="none" >Maya directly.</text>
+<rect x="287" y="728" width="64" height="48" rx="4" fill="#fff"/><rect x="303" y="740" width="48" height="24" rx="4" fill="#000"/><circle cx="335" cy="752" r="8" fill="#fff"/>
+<rect x="16" y="848" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="880" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Save changes</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="64" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="224" width="359" height="352" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="224" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="228" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="592" width="359" height="216" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="592" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="596" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="840" width="359" height="64" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="840" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="844" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- 15 · Maya · Channels · Desktop 1280×800 -->
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <g data-region="navigation">
+    <rect x="0" y="0" width="240" height="800" />
+    <text x="24" y="40" font-size="20" stroke="none" fill="#000" font-weight="600">Paperclip</text>
+    <text x="24" y="72" font-size="12" stroke="none" fill="#666" font-weight="600">Agent</text>
+    <text x="24" y="96" font-size="14" stroke="none" fill="#666" >Overview</text>
+<text x="24" y="144" font-size="14" stroke="none" fill="#666" >Instructions</text>
+<text x="24" y="192" font-size="14" stroke="none" fill="#666" >Skills</text>
+<text x="24" y="240" font-size="14" stroke="none" fill="#666" >Runtime</text>
+<text x="24" y="288" font-size="14" stroke="none" fill="#666" >Secrets</text>
+<text x="24" y="336" font-size="14" stroke="none" fill="#666" >Tools</text>
+<rect x="8" y="360" width="224" height="40" rx="4" fill="#e6e6e6" /><text x="24" y="384" font-size="14" stroke="none" fill="#000" font-weight="600">Channels</text>
+<text x="24" y="432" font-size="14" stroke="none" fill="#666" >Permissions</text>
+    <text x="24" y="760" font-size="14" stroke="none" fill="#000" font-weight="600">Acme Company</text>
+    <text x="24" y="784" font-size="12" stroke="none" fill="#666" >Operator</text>
+  </g>
+  <g data-region="topbar">
+    <line x1="240" y1="64" x2="1280" y2="64" />
+    <text x="264" y="40" font-size="14" stroke="none" fill="#666" >Agent / Maya · Channels</text>
+    <circle cx="1240" cy="32" r="16" fill="#e6e6e6" />
+  </g>
+
+  <text x="280" y="136" font-size="28" stroke="none" fill="#000" font-weight="700">Maya · Channels</text>
+  <text x="280" y="168" font-size="14" stroke="none" fill="#666" >Every place this Paperclip agent can be reached.</text>
+  <g transform="translate(1088,104)"><rect width="120" height="40" rx="4" fill="#000" /><text x="60" y="25" font-size="14" stroke="none" fill="#fff" font-weight="600" text-anchor="middle">Add channel</text></g>
+
+  <g transform="translate(280,224)" data-region="panel-1">
+    <rect width="288" height="288" rx="8" />
+    <text x="24" y="40" font-size="20" stroke="none" fill="#000" font-weight="600">Slack · @maya-support</text>
+    <line x1="24" y1="64" x2="264" y2="64" stroke="#e6e6e6" /><text x="24" y="84" font-size="14" stroke="none" fill="#666" >Acme · 2 allowed channels</text>
+<line x1="24" y1="104" x2="264" y2="104" stroke="#e6e6e6" /><text x="24" y="124" font-size="14" stroke="none" fill="#666" >Healthy · Root mention opens thread</text>
+<line x1="24" y1="144" x2="264" y2="144" stroke="#e6e6e6" /><text x="24" y="164" font-size="14" stroke="none" fill="#000" font-weight="600">7 active tasks</text>
+  </g>
+<g transform="translate(592,224)" data-region="panel-2">
+    <rect width="288" height="288" rx="8" />
+    <text x="24" y="40" font-size="20" stroke="none" fill="#000" font-weight="600">Telegram · @maya_helper_bot</text>
+    <line x1="24" y1="64" x2="264" y2="64" stroke="#e6e6e6" /><text x="24" y="84" font-size="14" stroke="none" fill="#666" >Support group + DMs</text>
+<line x1="24" y1="104" x2="264" y2="104" stroke="#e6e6e6" /><text x="24" y="124" font-size="14" stroke="none" fill="#666" >Needs attention · Token expires</text>
+<line x1="24" y1="144" x2="264" y2="144" stroke="#e6e6e6" /><text x="24" y="164" font-size="14" stroke="none" fill="#000" font-weight="600">3 active tasks</text>
+  </g>
+<g transform="translate(904,224)" data-region="panel-3">
+    <rect width="288" height="288" rx="8" />
+    <text x="24" y="40" font-size="20" stroke="none" fill="#000" font-weight="600">Recent channel tasks</text>
+    <line x1="24" y1="64" x2="264" y2="64" stroke="#e6e6e6" /><text x="24" y="84" font-size="14" stroke="none" fill="#666" >PAP-1842 · Refund workflow</text>
+<line x1="24" y1="104" x2="264" y2="104" stroke="#e6e6e6" /><text x="24" y="124" font-size="14" stroke="none" fill="#666" >PAP-1839 · Ari DM</text>
+<line x1="24" y1="144" x2="264" y2="144" stroke="#e6e6e6" /><text x="24" y="164" font-size="14" stroke="none" fill="#000" font-weight="600">PAP-1827 · Product question</text>
+  </g>
+  <g transform="translate(280,544)"><rect width="928" height="96" rx="8" fill="#e6e6e6" /><text x="24" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">Channels sits under Runtime in agent navigation.</text><text x="24" y="64" font-size="12" stroke="none" fill="#666" >Endpoint cards retain platform identity, reach, health, and trigger policy.</text></g>
+  <g data-region="annotations"><rect x="272" y="88" width="944" height="112" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="92" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">1</text>
+<rect x="272" y="216" width="304" height="304" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="216" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="220" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">2</text>
+<rect x="584" y="216" width="304" height="304" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="584" cy="216" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="584" y="220" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">3</text>
+<rect x="896" y="216" width="320" height="304" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="896" cy="216" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="896" y="220" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">4</text>
+<rect x="272" y="536" width="944" height="112" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="536" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="540" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">5</text></g>
+  </svg>

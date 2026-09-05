@@ -7,6 +7,7 @@ export type AgentDetailView =
   | "runtime"
   | "secrets"
   | "tools"
+  | "channels"
   | "permissions"
   | "api-keys"
   | "revisions"
@@ -32,6 +33,7 @@ export const AGENT_DETAIL_NAVIGATION: ReadonlyArray<{
       { value: "runtime", label: "Harness / Runtime" },
       { value: "secrets", label: "Secrets" },
       { value: "tools", label: "Tools" },
+      { value: "channels", label: "Channels" },
     ],
   },
   {
@@ -50,6 +52,7 @@ export function parseAgentDetailView(value: string | null): AgentLocalDetailView
   if (value === "runtime" || value === "configure" || value === "configuration") return "runtime";
   if (value === "secrets") return "secrets";
   if (value === "tools") return "tools";
+  if (value === "channels") return "channels";
   if (value === "permissions" || value === "trust") return "permissions";
   if (value === "api-keys" || value === "keys") return "api-keys";
   if (value === "revisions" || value === "history") return "revisions";

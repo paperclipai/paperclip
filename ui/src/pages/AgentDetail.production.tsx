@@ -92,6 +92,7 @@ import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { AgentToolsTab } from "./AgentToolsTab";
+import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
 import {
   appendCapped,
   LIVE_TRANSCRIPT_RENDER_LIMIT,
@@ -275,7 +276,7 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "secrets" | "skills" | "tools" | "runs" | "audit" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "secrets" | "skills" | "tools" | "channels" | "runs" | "audit" | "budget";
 
 export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: string }> = [
   { value: "dashboard", label: "Dashboard" },
@@ -284,6 +285,7 @@ export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: s
   { value: "configuration", label: "Configuration" },
   { value: "secrets", label: "Secrets" },
   { value: "tools", label: "Tools" },
+  { value: "channels", label: "Channels" },
   { value: "runs", label: "Runs" },
   { value: "audit", label: "Audit" },
   { value: "budget", label: "Budget" },
@@ -329,6 +331,7 @@ export function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "secrets") return "secrets";
   if (value === "skills") return "skills";
   if (value === "tools") return "tools";
+  if (value === "channels") return "channels";
   if (value === "budget") return "budget";
   if (value === "audit") return "audit";
   if (value === "runs") return value;
@@ -1534,6 +1537,10 @@ export function AgentDetail() {
 
       {activeView === "tools" && resolvedCompanyId && (
         <AgentToolsTab agent={agent} companyId={resolvedCompanyId} />
+      )}
+
+      {activeView === "channels" && resolvedCompanyId && (
+        <AgentChannelsPanel agentId={agent.id} companyId={resolvedCompanyId} />
       )}
 
       {activeView === "runs" && (

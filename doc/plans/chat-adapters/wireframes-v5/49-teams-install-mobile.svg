@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1504" viewBox="0 0 375 1504" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1504"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Teams</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="320" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#000"/>
+<text x="32" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" >Register Teams bot</text>
+<circle cx="32" cy="208" r="16" fill="#000"/>
+<text x="32" y="213" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="213" font-size="14" fill="#000" stroke="none" >Connect identity</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#000" stroke="none" font-weight="700">Install app</text>
+<circle cx="32" cy="320" r="16" fill="#fff"/>
+<text x="32" y="325" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">5</text>
+<text x="64" y="325" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="416" font-size="20" fill="#000" stroke="none" font-weight="700">Install Maya in Microsoft Teams</text>
+<text x="16" y="448" font-size="12" fill="#666" stroke="none" >Download the generated app package and let</text>
+<text x="16" y="464" font-size="12" fill="#666" stroke="none" >Microsoft apply tenant and scope policy.</text>
+<text x="16" y="512" font-size="20" fill="#000" stroke="none" font-weight="700">Package ready</text>
+<text x="16" y="536" font-size="12" fill="#666" stroke="none" >Paperclip inserted Maya's immutable identity,</text>
+<text x="16" y="552" font-size="12" fill="#666" stroke="none" >bot App ID, supported scopes, commands, and</text>
+<text x="16" y="568" font-size="12" fill="#666" stroke="none" >icons into a validated Teams package.</text>
+<line x1="16" y1="568" x2="359" y2="568" />
+<text x="24" y="592" font-size="14" fill="#000" stroke="none" font-weight="600">Agent</text>
+<text x="24" y="614" font-size="12" fill="#666" stroke="none" >Maya · permanently assigned</text>
+<text x="351" y="664" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<line x1="24" y1="680" x2="351" y2="680" stroke="#e6e6e6"/>
+<text x="24" y="704" font-size="14" fill="#000" stroke="none" font-weight="600">Package</text>
+<text x="24" y="726" font-size="12" fill="#666" stroke="none" >maya-paperclip-teams.zip</text>
+<text x="351" y="776" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Validated</text>
+<line x1="24" y1="792" x2="351" y2="792" stroke="#e6e6e6"/>
+<text x="24" y="816" font-size="14" fill="#000" stroke="none" font-weight="600">Scopes</text>
+<text x="24" y="838" font-size="12" fill="#666" stroke="none" >Personal, team, and group chat</text>
+<text x="351" y="888" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Included</text>
+<text x="16" y="936" font-size="20" fill="#000" stroke="none" font-weight="700">Install through Microsoft Teams</text>
+<text x="16" y="960" font-size="12" fill="#666" stroke="none" >Tenant policy determines whether the operator</text>
+<text x="16" y="976" font-size="12" fill="#666" stroke="none" >can upload directly or must send the package</text>
+<text x="16" y="992" font-size="12" fill="#666" stroke="none" >to an administrator.</text>
+<line x1="16" y1="992" x2="359" y2="992" />
+<text x="24" y="1016" font-size="14" fill="#000" stroke="none" font-weight="600">Self-service tenant</text>
+<text x="24" y="1038" font-size="12" fill="#666" stroke="none" >Upload the package under Manage your apps,</text>
+<text x="24" y="1054" font-size="12" fill="#666" stroke="none" >then add it to the intended scope.</text>
+<text x="351" y="1088" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In Teams</text>
+<line x1="24" y1="1104" x2="351" y2="1104" stroke="#e6e6e6"/>
+<text x="24" y="1128" font-size="14" fill="#000" stroke="none" font-weight="600">Admin-managed tenant</text>
+<text x="24" y="1150" font-size="12" fill="#666" stroke="none" >Send the same package to the Teams</text>
+<text x="24" y="1166" font-size="12" fill="#666" stroke="none" >administrator for approval and…</text>
+<text x="351" y="1200" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Admin action</text>
+<line x1="24" y1="1216" x2="351" y2="1216" stroke="#e6e6e6"/>
+<text x="24" y="1240" font-size="14" fill="#000" stroke="none" font-weight="600">No extra credentials</text>
+<text x="24" y="1262" font-size="12" fill="#666" stroke="none" >The package contains public IDs and</text>
+<text x="24" y="1278" font-size="12" fill="#666" stroke="none" >presentation metadata, not the client…</text>
+<text x="351" y="1312" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Safe to share</text>
+<rect x="16" y="1368" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1398" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Teams</text>
+<rect x="16" y="1432" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1462" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Download Teams package</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="328" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="480" width="359" height="424" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="480" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="484" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="904" width="359" height="424" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="904" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="908" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1360" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1360" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1364" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

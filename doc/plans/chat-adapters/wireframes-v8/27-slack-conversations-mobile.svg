@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="916" viewBox="0 0 375 916" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="916"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="32" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Maya on Slack</text><text x="359" y="32" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><rect x="16" y="72" width="343" height="48" rx="4" fill="#fff"/><text x="32" y="104" font-size="14" fill="#000" stroke="none" font-weight="600">Conversations</text><text x="343" y="104" font-size="14" fill="#666" stroke="none" text-anchor="end">⌄</text>
+<text x="16" y="160" font-size="20" fill="#000" stroke="none" font-weight="700">Slack conversations</text>
+<text x="16" y="190" font-size="12" fill="#666" stroke="none" >Conversations created through this connection.</text>
+<rect x="16" y="224" width="343" height="200" rx="4" />
+<text x="32" y="256" font-size="14" fill="#000" stroke="none" font-weight="600">#customer-support · Refund timeout</text>
+<text x="32" y="286" font-size="12" fill="#666" stroke="none" >PAP-1842 · Refund workflow is failing</text>
+<text x="32" y="332" font-size="12" fill="#666" stroke="none" font-weight="600">Working · 18s</text>
+<rect x="32" y="360" width="144" height="48" rx="4" fill="#fff"/><text x="104" y="392" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Slack</text>
+<rect x="192" y="360" width="151" height="48" rx="4" fill="#000"/><text x="267.5" y="392" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open task</text>
+<rect x="16" y="440" width="343" height="200" rx="4" />
+<text x="32" y="472" font-size="14" fill="#000" stroke="none" font-weight="600">#incidents · Queue delay</text>
+<text x="32" y="502" font-size="12" fill="#666" stroke="none" >PAP-1838 · Investigate queue delay</text>
+<text x="32" y="548" font-size="12" fill="#666" stroke="none" font-weight="600">Waiting · 12m</text>
+<rect x="32" y="576" width="144" height="48" rx="4" fill="#fff"/><text x="104" y="608" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Slack</text>
+<rect x="192" y="576" width="151" height="48" rx="4" fill="#000"/><text x="267.5" y="608" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open task</text>
+<rect x="16" y="656" width="343" height="200" rx="4" />
+<text x="32" y="688" font-size="14" fill="#000" stroke="none" font-weight="600">Direct message · Ari Chen</text>
+<text x="32" y="718" font-size="12" fill="#666" stroke="none" >PAP-1831 · Customer export</text>
+<text x="32" y="764" font-size="12" fill="#666" stroke="none" font-weight="600">Completed · 2h</text>
+<rect x="32" y="792" width="144" height="48" rx="4" fill="#fff"/><text x="104" y="824" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Slack</text>
+<rect x="192" y="792" width="151" height="48" rx="4" fill="#000"/><text x="267.5" y="824" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open task</text>
+<g data-region="annotations"><rect x="8" y="216" width="359" height="216" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="216" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="220" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="432" width="359" height="216" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="432" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="436" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="648" width="359" height="216" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="648" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="652" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>

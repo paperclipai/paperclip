@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="1280" height="800"/>
+  <g data-region="navigation">
+    <rect x="0" y="0" width="240" height="800" />
+    <text x="24" y="40" font-size="20" stroke="none" fill="#000" font-weight="600">Paperclip</text>
+    <text x="24" y="72" font-size="12" stroke="none" fill="#666" font-weight="600">Task</text>
+    <text x="24" y="96" font-size="14" stroke="none" fill="#666" >Inbox</text>
+<text x="24" y="144" font-size="14" stroke="none" fill="#666" >Tasks</text>
+<text x="24" y="192" font-size="14" stroke="none" fill="#666" >Projects</text>
+<text x="24" y="240" font-size="14" stroke="none" fill="#666" >Agents</text>
+<text x="24" y="288" font-size="14" stroke="none" fill="#666" >Apps</text>
+<text x="24" y="336" font-size="14" stroke="none" fill="#666" >Activity</text>
+    <text x="24" y="760" font-size="14" stroke="none" fill="#000" font-weight="600">Acme Company</text>
+    <text x="24" y="784" font-size="12" stroke="none" fill="#666" >Operator</text>
+  </g>
+  <g data-region="topbar">
+    <line x1="240" y1="64" x2="1280" y2="64" />
+    <text x="264" y="40" font-size="14" stroke="none" fill="#666" >Task / Refund workflow is failing</text>
+    <circle cx="1240" cy="32" r="16" fill="#e6e6e6" />
+  </g><text x="280" y="112" font-size="28" stroke="none" fill="#000" font-weight="700">Refund workflow is failing</text><text x="280" y="144" font-size="14" stroke="none" fill="#666" >PAP-1842 · Externally bound to Maya on Slack.</text><g transform="translate(280,176)"><rect width="928" height="88" rx="8" fill="#e6e6e6"/><text x="24" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">Slack · #customer-support</text><text x="24" y="56" font-size="12" stroke="none" fill="#666" >Thread: Refund workflow</text><text x="24" y="76" font-size="12" stroke="none" fill="#666" >Assigned agent locked to Maya</text><text x="888" y="48" font-size="14" stroke="none" fill="#000" font-weight="600" text-anchor="end">Open Slack</text></g><g transform="translate(280,296)"><rect width="640" height="128" rx="8"/><circle cx="32" cy="32" r="16" fill="#e6e6e6"/><text x="64" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">Ari S. · External participant</text><text x="64" y="64" font-size="14" stroke="none" fill="#000" >The refund step is timing out again.</text><text x="64" y="96" font-size="12" stroke="none" fill="#666" >Linked as Ari Stone · 8 minutes ago</text></g><g transform="translate(280,448)"><rect width="640" height="144" rx="8" fill="#e6e6e6"/><circle cx="32" cy="32" r="16" fill="#e6e6e6"/><text x="64" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">Maya · Agent output</text><text x="64" y="64" font-size="14" stroke="none" fill="#000" >I found the failing retry boundary…</text><text x="64" y="96" font-size="12" stroke="none" fill="#666" >Publication: Delivered to Slack</text><text x="64" y="120" font-size="12" stroke="none" fill="#666" >Artifact: retry-analysis.md</text></g><g transform="translate(944,296)"><rect width="264" height="296" rx="8"/><text x="24" y="32" font-size="20" stroke="none" fill="#000" font-weight="600">Properties</text><text x="24" y="72" font-size="14" stroke="none" fill="#666" >Status · In progress</text>
+<text x="24" y="112" font-size="14" stroke="none" fill="#666" >Assignee · Maya (locked)</text>
+<text x="24" y="152" font-size="14" stroke="none" fill="#666" >Priority · High</text>
+<text x="24" y="192" font-size="14" stroke="none" fill="#666" >Project · Support</text>
+<text x="24" y="232" font-size="14" stroke="none" fill="#666" >Channel · Slack</text><g transform="translate(24,232)"><rect width="216" height="40" rx="4"/><text x="108" y="25" font-size="14" stroke="none" fill="#000" text-anchor="middle">Detach channel</text></g></g><g transform="translate(280,624)"><rect width="928" height="104" rx="8"/><text x="16" y="32" font-size="12" stroke="none" fill="#666" >Internal note</text><line x1="16" y1="56" x2="752" y2="56" stroke="#666"/><rect x="760" y="16" width="152" height="40" rx="4" fill="#000"/><text x="836" y="41" font-size="14" stroke="none" fill="#fff" font-weight="600" text-anchor="middle">Add comment</text><text x="16" y="88" font-size="12" stroke="none" fill="#000" >○ Send to channel · Preview required</text></g><g data-region="annotations"><rect x="272" y="168" width="944" height="104" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="172" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">1</text>
+<rect x="272" y="288" width="656" height="144" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="288" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="292" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">2</text>
+<rect x="272" y="440" width="656" height="160" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="440" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="444" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">3</text>
+<rect x="272" y="616" width="944" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="272" cy="616" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="272" y="620" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">4</text>
+<rect x="936" y="288" width="280" height="312" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="936" cy="288" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="936" y="292" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">5</text></g></svg>

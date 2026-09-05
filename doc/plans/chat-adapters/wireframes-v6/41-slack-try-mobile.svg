@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="944" viewBox="0 0 375 944" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="944"/><g data-region="mobile-header"><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Slack</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text></g><text x="16" y="80" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="104" x2="32" y2="216" />
+<circle cx="32" cy="104" r="16" fill="#000"/>
+<text x="32" y="109" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="109" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="160" r="16" fill="#000"/>
+<text x="32" y="165" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="165" font-size="14" fill="#000" stroke="none" >Connect Slack</text>
+<circle cx="32" cy="216" r="16" fill="#fff"/>
+<text x="32" y="221" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="221" font-size="14" fill="#000" stroke="none" font-weight="700">Try Maya</text>
+<text x="16" y="312" font-size="20" fill="#000" stroke="none" font-weight="700">Try Maya in Slack</text>
+<text x="16" y="368" font-size="12" fill="#666" stroke="none" >Start one task and reply to it once.</text>
+<text x="16" y="456" font-size="20" fill="#000" stroke="none" font-weight="700">Do this</text>
+<circle cx="32" cy="512" r="16" fill="#fff"/>
+<text x="32" y="517" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<text x="64" y="508" font-size="14" fill="#000" stroke="none" font-weight="600">Open a channel</text>
+<text x="64" y="532" font-size="12" fill="#666" stroke="none" >If Slack asks, add Maya with /invite</text>
+<text x="64" y="548" font-size="12" fill="#666" stroke="none" >@Maya.</text>
+<line x1="64" y1="584" x2="359" y2="584" stroke="#e6e6e6"/>
+<circle cx="32" cy="624" r="16" fill="#fff"/>
+<text x="32" y="629" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="620" font-size="14" fill="#000" stroke="none" font-weight="600">Start a task</text>
+<text x="64" y="644" font-size="12" fill="#666" stroke="none" >Post “@Maya help me test this” as a</text>
+<text x="64" y="660" font-size="12" fill="#666" stroke="none" >new channel message.</text>
+<line x1="64" y1="696" x2="359" y2="696" stroke="#e6e6e6"/>
+<circle cx="32" cy="736" r="16" fill="#fff"/>
+<text x="32" y="741" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="732" font-size="14" fill="#000" stroke="none" font-weight="600">Continue the task</text>
+<text x="64" y="756" font-size="12" fill="#666" stroke="none" >Reply once in the thread Maya creates;</text>
+<text x="64" y="772" font-size="12" fill="#666" stroke="none" >no second mention is needed.</text>
+<rect x="16" y="856" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="886" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open Slack</text><g data-region="annotations"><rect x="8" y="64" width="359" height="200" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="280" width="359" height="552" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="280" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="284" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="848" width="359" height="64" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="848" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="852" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>

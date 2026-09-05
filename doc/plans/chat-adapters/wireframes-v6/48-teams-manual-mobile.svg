@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1496" viewBox="0 0 375 1496" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1496"/><g data-region="mobile-header"><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Teams</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text></g><text x="16" y="80" font-size="12" fill="#666" stroke="none" font-weight="700">CUSTOM SETUP</text>
+<line x1="32" y1="104" x2="32" y2="272" />
+<circle cx="32" cy="104" r="16" fill="#000"/>
+<text x="32" y="109" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="109" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="160" r="16" fill="#fff"/>
+<text x="32" y="165" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="165" font-size="14" fill="#000" stroke="none" font-weight="700">Configure Microsoft</text>
+<circle cx="32" cy="216" r="16" fill="#fff"/>
+<text x="32" y="221" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="221" font-size="14" fill="#666" stroke="none" >Install Maya</text>
+<circle cx="32" cy="272" r="16" fill="#fff"/>
+<text x="32" y="277" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="277" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="368" font-size="20" fill="#000" stroke="none" font-weight="700">Set up Microsoft manually</text>
+<text x="16" y="424" font-size="12" fill="#666" stroke="none" >Create the bot in Microsoft, then paste the</text>
+<text x="16" y="440" font-size="12" fill="#666" stroke="none" >three identity values.</text>
+<text x="16" y="504" font-size="14" fill="#000" stroke="none" font-weight="600">Messaging endpoint</text>
+<rect x="16" y="520" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="550" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Copy Paperclip endpoint</text>
+<text x="16" y="616" font-size="20" fill="#000" stroke="none" font-weight="700">Do this</text>
+<circle cx="32" cy="672" r="16" fill="#fff"/>
+<text x="32" y="677" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<text x="64" y="668" font-size="14" fill="#000" stroke="none" font-weight="600">Create the Microsoft identity</text>
+<text x="64" y="692" font-size="12" fill="#666" stroke="none" >Create a single-tenant Entra App</text>
+<text x="64" y="708" font-size="12" fill="#666" stroke="none" >registration and a client secret.</text>
+<line x1="64" y1="744" x2="359" y2="744" stroke="#e6e6e6"/>
+<circle cx="32" cy="784" r="16" fill="#fff"/>
+<text x="32" y="789" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="780" font-size="14" fill="#000" stroke="none" font-weight="600">Create the bot</text>
+<text x="64" y="804" font-size="12" fill="#666" stroke="none" >Create an Azure Bot with that App ID,</text>
+<text x="64" y="820" font-size="12" fill="#666" stroke="none" >enable the Microsoft Teams channel,</text>
+<text x="64" y="836" font-size="12" fill="#666" stroke="none" >and paste Paperclip's messaging…</text>
+<line x1="64" y1="856" x2="359" y2="856" stroke="#e6e6e6"/>
+<circle cx="32" cy="896" r="16" fill="#fff"/>
+<text x="32" y="901" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="892" font-size="14" fill="#000" stroke="none" font-weight="600">Enter the identity below</text>
+<text x="64" y="916" font-size="12" fill="#666" stroke="none" >Copy Application ID and Directory ID</text>
+<text x="64" y="932" font-size="12" fill="#666" stroke="none" >from Entra; paste the client secret</text>
+<text x="64" y="948" font-size="12" fill="#666" stroke="none" >value before leaving Microsoft.</text>
+<text x="16" y="1016" font-size="14" fill="#000" stroke="none" font-weight="600">Application (client) ID</text>
+<rect x="16" y="1032" width="343" height="48" rx="4" fill="#fff"/>
+<text x="32" y="1062" font-size="14" fill="#666" stroke="none" >00000000-0000-0000-0000-000000000000</text>
+<text x="16" y="1120" font-size="14" fill="#000" stroke="none" font-weight="600">Directory (tenant) ID</text>
+<rect x="16" y="1136" width="343" height="48" rx="4" fill="#fff"/>
+<text x="32" y="1166" font-size="14" fill="#666" stroke="none" >00000000-0000-0000-0000-000000000000</text>
+<text x="16" y="1224" font-size="14" fill="#000" stroke="none" font-weight="600">Client secret</text>
+<rect x="16" y="1240" width="343" height="48" rx="4" fill="#fff"/>
+<text x="32" y="1270" font-size="14" fill="#666" stroke="none" >••••••••••••</text>
+<rect x="16" y="1344" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1374" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back</text>
+<rect x="16" y="1408" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1438" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect and create Teams app</text><g data-region="annotations"><rect x="8" y="64" width="359" height="256" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="480" width="359" height="96" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="480" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="484" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="992" width="359" height="304" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="992" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="996" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1336" width="359" height="128" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1336" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1340" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

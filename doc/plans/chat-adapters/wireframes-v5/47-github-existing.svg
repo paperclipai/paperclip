@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1160" viewBox="0 0 1280 1160" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="1280" height="1160"/><g data-region="global-sidebar"><text x="24" y="40" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="72" r="6" fill="#e6e6e6"/><text x="56" y="76" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="120" r="6" fill="#e6e6e6"/><text x="56" y="124" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="168" r="6" fill="#e6e6e6"/><text x="56" y="172" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="216" r="6" fill="#e6e6e6"/><text x="56" y="220" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="264" r="6" fill="#e6e6e6"/><text x="56" y="268" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="312" r="6" fill="#e6e6e6"/><text x="56" y="316" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="360" r="6" fill="#e6e6e6"/><text x="56" y="364" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="408" r="6" fill="#e6e6e6"/><text x="56" y="412" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="456" r="6" fill="#e6e6e6"/><text x="56" y="460" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="504" r="6" fill="#e6e6e6"/><text x="56" y="508" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="8" y="536" width="224" height="40" rx="4" fill="#e6e6e6"/><circle cx="32" cy="552" r="6" fill="#e6e6e6"/><text x="56" y="556" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="600" r="6" fill="#e6e6e6"/><text x="56" y="604" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="1104" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="1128" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="1160" /></g><g data-region="topbar"><line x1="240" y1="64" x2="1280" y2="64" /><text x="264" y="40" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  GitHub  ›  Chat with an agent</text><circle cx="1240" cy="32" r="16" fill="#e6e6e6"/></g><text x="264" y="104" font-size="12" fill="#666" stroke="none" font-weight="700">ADVANCED SETUP</text>
+<text x="264" y="128" font-size="14" fill="#000" stroke="none" font-weight="700">GitHub</text>
+<line x1="520" y1="64" x2="520" y2="1160" />
+<line x1="288" y1="152" x2="288" y2="392" />
+<circle cx="288" cy="152" r="16" fill="#000"/>
+<text x="288" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="320" y="148" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="288" cy="232" r="16" fill="#fff"/>
+<text x="288" y="237" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="320" y="228" font-size="14" fill="#000" stroke="none" font-weight="700">Connect existing App</text>
+<circle cx="288" cy="312" r="16" fill="#fff"/>
+<text x="288" y="317" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="320" y="308" font-size="14" fill="#666" stroke="none" >Choose repositories</text>
+<circle cx="288" cy="392" r="16" fill="#fff"/>
+<text x="288" y="397" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="320" y="388" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="264" y="1112" font-size="12" fill="#666" stroke="none" >Progress is saved automatically.</text><text x="560" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Connect an existing GitHub App</text>
+<text x="560" y="144" font-size="14" fill="#666" stroke="none" >Advanced path for organizations that already own and govern the dedicated chat App.</text>
+<text x="560" y="192" font-size="14" fill="#000" stroke="none" font-weight="600">GitHub App ID</text><rect x="560" y="208" width="640" height="48" rx="4" fill="#fff"/><text x="576" y="238" font-size="14" fill="#666" stroke="none" >123456</text><text x="560" y="280" font-size="12" fill="#666" stroke="none" >Identifies the customer-owned App registration.</text>
+<text x="560" y="328" font-size="14" fill="#000" stroke="none" font-weight="600">Private key</text><rect x="560" y="344" width="640" height="48" rx="4" fill="#fff"/><text x="576" y="374" font-size="14" fill="#666" stroke="none" >Choose PEM file</text><text x="560" y="416" font-size="12" fill="#666" stroke="none" >Signs installation-token requests; uploaded once into the secret store.</text>
+<text x="560" y="464" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook secret</text><rect x="560" y="480" width="640" height="48" rx="4" fill="#fff"/><text x="576" y="510" font-size="14" fill="#666" stroke="none" >••••••••••••</text><text x="560" y="552" font-size="12" fill="#666" stroke="none" >Verifies inbound GitHub webhook signatures.</text>
+<text x="560" y="600" font-size="14" fill="#000" stroke="none" font-weight="600">GitHub host</text><rect x="560" y="616" width="640" height="48" rx="4" fill="#fff"/><text x="576" y="646" font-size="14" fill="#666" stroke="none" >https://github.com</text><text x="560" y="688" font-size="12" fill="#666" stroke="none" >Change only for GitHub Enterprise Server.</text>
+<text x="560" y="744" font-size="20" fill="#000" stroke="none" font-weight="700">Required App configuration</text>
+<text x="560" y="768" font-size="12" fill="#666" stroke="none" >Paperclip verifies rather than asks the user to re-enter provider configuration.</text>
+<line x1="560" y1="792" x2="1224" y2="792" />
+<text x="576" y="816" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook and events</text>
+<text x="576" y="838" font-size="12" fill="#666" stroke="none" >Paperclip callback · issue comments · PR review comments</text>
+<text x="1208" y="820" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Will verify</text>
+<line x1="576" y1="864" x2="1208" y2="864" stroke="#e6e6e6"/>
+<text x="576" y="888" font-size="14" fill="#000" stroke="none" font-weight="600">Permissions</text>
+<text x="576" y="910" font-size="12" fill="#666" stroke="none" >Issues write · Pull requests write · Metadata read</text>
+<text x="1208" y="892" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Will verify</text>
+<line x1="576" y1="936" x2="1208" y2="936" stroke="#e6e6e6"/>
+<text x="576" y="960" font-size="14" fill="#000" stroke="none" font-weight="600">Code access</text>
+<text x="576" y="982" font-size="12" fill="#666" stroke="none" >Contents and Actions remain a separate tool connection.</text>
+<text x="1208" y="964" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Not used</text><rect x="560" y="1072" width="208" height="48" rx="4" fill="#fff"/><text x="664" y="1102" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Back to manifest flow</text><rect x="784" y="1072" width="440" height="48" rx="4" fill="#000"/><text x="1004" y="1102" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect and verify</text><g data-region="annotations"><rect x="256" y="88" width="248" height="520" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="552" y="168" width="680" height="544" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="552" y="712" width="680" height="296" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="712" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="716" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="552" y="1056" width="680" height="72" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="1056" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="1060" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

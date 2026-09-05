@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1080" viewBox="0 0 375 1080" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1080"/><g data-region="mobile-header"><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Teams</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text></g><text x="16" y="80" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="104" x2="32" y2="272" />
+<circle cx="32" cy="104" r="16" fill="#000"/>
+<text x="32" y="109" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="109" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="160" r="16" fill="#fff"/>
+<text x="32" y="165" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="165" font-size="14" fill="#000" stroke="none" font-weight="700">Create Teams app</text>
+<circle cx="32" cy="216" r="16" fill="#fff"/>
+<text x="32" y="221" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="221" font-size="14" fill="#666" stroke="none" >Install Maya</text>
+<circle cx="32" cy="272" r="16" fill="#fff"/>
+<text x="32" y="277" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="277" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="368" font-size="20" fill="#000" stroke="none" font-weight="700">Create Maya for Microsoft Teams</text>
+<text x="16" y="424" font-size="12" fill="#666" stroke="none" >Run one command to register Maya with</text>
+<text x="16" y="440" font-size="12" fill="#666" stroke="none" >Microsoft.</text>
+<text x="16" y="504" font-size="14" fill="#000" stroke="none" font-weight="600">Setup command</text>
+<rect x="16" y="520" width="343" height="72" rx="4" fill="#e6e6e6"/>
+<text x="32" y="546" font-size="12" fill="#000" stroke="none" >npx @paperclipai/teams-connect --setup</text>
+<text x="32" y="564" font-size="12" fill="#000" stroke="none" >PC-7K4M</text>
+<text x="16" y="640" font-size="20" fill="#000" stroke="none" font-weight="700">Do this</text>
+<circle cx="32" cy="696" r="16" fill="#fff"/>
+<text x="32" y="701" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<text x="64" y="692" font-size="14" fill="#000" stroke="none" font-weight="600">Copy and run the command</text>
+<text x="64" y="716" font-size="12" fill="#666" stroke="none" >Run it in a terminal on a computer</text>
+<text x="64" y="732" font-size="12" fill="#666" stroke="none" >where you can sign in to Microsoft</text>
+<text x="64" y="748" font-size="12" fill="#666" stroke="none" >365.</text>
+<line x1="64" y1="768" x2="359" y2="768" stroke="#e6e6e6"/>
+<circle cx="32" cy="808" r="16" fill="#fff"/>
+<text x="32" y="813" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="804" font-size="14" fill="#000" stroke="none" font-weight="600">Sign in to Microsoft</text>
+<text x="64" y="828" font-size="12" fill="#666" stroke="none" >Approve the Microsoft login when the</text>
+<text x="64" y="844" font-size="12" fill="#666" stroke="none" >browser opens. The command creates the</text>
+<text x="64" y="860" font-size="12" fill="#666" stroke="none" >bot and returns here when it is ready.</text>
+<rect x="16" y="928" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="958" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Set up Microsoft manually</text>
+<rect x="16" y="992" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1022" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Copy setup command</text><g data-region="annotations"><rect x="8" y="64" width="359" height="256" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="336" width="359" height="568" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="336" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="340" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="920" width="359" height="128" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="920" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="924" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>

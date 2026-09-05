@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1720" viewBox="0 0 375 1720" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1720"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Teams</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="320" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#fff"/>
+<text x="32" y="157" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" font-weight="700">Register Teams bot</text>
+<circle cx="32" cy="208" r="16" fill="#fff"/>
+<text x="32" y="213" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="213" font-size="14" fill="#666" stroke="none" >Connect identity</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#666" stroke="none" >Install app</text>
+<circle cx="32" cy="320" r="16" fill="#fff"/>
+<text x="32" y="325" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">5</text>
+<text x="64" y="325" font-size="14" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="416" font-size="20" fill="#000" stroke="none" font-weight="700">Register Maya for Microsoft Teams</text>
+<text x="16" y="448" font-size="12" fill="#666" stroke="none" >Run one guided Microsoft command to create the</text>
+<text x="16" y="464" font-size="12" fill="#666" stroke="none" >customer-owned bot identity and point it at</text>
+<text x="16" y="480" font-size="12" fill="#666" stroke="none" >Paperclip.</text>
+<text x="16" y="528" font-size="20" fill="#000" stroke="none" font-weight="700">Agent</text>
+<text x="16" y="552" font-size="12" fill="#666" stroke="none" >The Microsoft bot and Teams app package are</text>
+<text x="16" y="568" font-size="12" fill="#666" stroke="none" >permanently assigned to this agent.</text>
+<line x1="16" y1="584" x2="359" y2="584" />
+<text x="24" y="608" font-size="14" fill="#000" stroke="none" font-weight="600">Maya</text>
+<text x="24" y="630" font-size="12" fill="#666" stroke="none" >Support engineer · a new connection is</text>
+<text x="24" y="646" font-size="12" fill="#666" stroke="none" >required for another agent</text>
+<text x="351" y="680" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<text x="16" y="728" font-size="20" fill="#000" stroke="none" font-weight="700">Recommended Microsoft setup</text>
+<text x="16" y="752" font-size="12" fill="#666" stroke="none" >Teams Developer CLI creates the Entra App,</text>
+<text x="16" y="768" font-size="12" fill="#666" stroke="none" >Azure Bot resource, Teams channel, and install</text>
+<text x="16" y="784" font-size="12" fill="#666" stroke="none" >metadata with Microsoft-owned sign-in and…</text>
+<line x1="16" y1="784" x2="359" y2="784" />
+<text x="24" y="808" font-size="14" fill="#000" stroke="none" font-weight="600">Prerequisites</text>
+<text x="24" y="830" font-size="12" fill="#666" stroke="none" >Microsoft 365 account, Azure subscription,</text>
+<text x="24" y="846" font-size="12" fill="#666" stroke="none" >and permission to create the resources.</text>
+<text x="351" y="880" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Required</text>
+<line x1="24" y1="896" x2="351" y2="896" stroke="#e6e6e6"/>
+<text x="24" y="920" font-size="14" fill="#000" stroke="none" font-weight="600">Messaging endpoint</text>
+<text x="24" y="942" font-size="12" fill="#666" stroke="none" >Paperclip generated the verified endpoint</text>
+<text x="24" y="958" font-size="12" fill="#666" stroke="none" >used by the command.</text>
+<text x="351" y="992" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Prepared</text>
+<line x1="24" y1="1008" x2="351" y2="1008" stroke="#e6e6e6"/>
+<text x="24" y="1032" font-size="14" fill="#000" stroke="none" font-weight="600">Tenant policy</text>
+<text x="24" y="1054" font-size="12" fill="#666" stroke="none" >The CLI reports when custom-app upload or</text>
+<text x="24" y="1070" font-size="12" fill="#666" stroke="none" >resource creation needs an administrator.</text>
+<text x="351" y="1104" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Checked by Microsoft</text>
+<text x="16" y="1152" font-size="20" fill="#000" stroke="none" font-weight="700">What the command does</text>
+<text x="16" y="1176" font-size="12" fill="#666" stroke="none" >The copied command contains Maya's name and</text>
+<text x="16" y="1192" font-size="12" fill="#666" stroke="none" >Paperclip endpoint; it never contains a</text>
+<text x="16" y="1208" font-size="12" fill="#666" stroke="none" >Paperclip secret.</text>
+<line x1="16" y1="1208" x2="359" y2="1208" />
+<text x="24" y="1232" font-size="14" fill="#000" stroke="none" font-weight="600">Microsoft sign-in</text>
+<text x="24" y="1254" font-size="12" fill="#666" stroke="none" >The CLI asks Microsoft to authenticate the</text>
+<text x="24" y="1270" font-size="12" fill="#666" stroke="none" >operator.</text>
+<text x="351" y="1304" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">External</text>
+<line x1="24" y1="1320" x2="351" y2="1320" stroke="#e6e6e6"/>
+<text x="24" y="1344" font-size="14" fill="#000" stroke="none" font-weight="600">Resource creation</text>
+<text x="24" y="1366" font-size="12" fill="#666" stroke="none" >Creates one single-tenant bot identity and</text>
+<text x="24" y="1382" font-size="12" fill="#666" stroke="none" >enables the Teams channel.</text>
+<text x="351" y="1416" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">External</text>
+<line x1="24" y1="1432" x2="351" y2="1432" stroke="#e6e6e6"/>
+<text x="24" y="1456" font-size="14" fill="#000" stroke="none" font-weight="600">Credential output</text>
+<text x="24" y="1478" font-size="12" fill="#666" stroke="none" >Writes Client ID, Tenant ID, and a</text>
+<text x="24" y="1494" font-size="12" fill="#666" stroke="none" >generated secret for the next step.</text>
+<text x="351" y="1528" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Local output</text>
+<rect x="16" y="1584" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1614" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Use Azure Portal instead</text>
+<rect x="16" y="1648" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1678" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Copy setup command</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="328" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="496" width="359" height="200" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="496" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="500" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="696" width="359" height="848" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="696" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="700" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1576" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1576" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1580" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

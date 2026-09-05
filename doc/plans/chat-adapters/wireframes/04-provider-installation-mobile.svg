@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="812" viewBox="0 0 375 812" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="375" height="812"/><rect x="0" y="0" width="375" height="64"/><text x="16" y="40" font-size="14" font-weight="600" stroke="none" fill="#000">Apps</text><text x="343" y="40" font-size="14" text-anchor="end" stroke="none" fill="#666">Menu</text><text x="16" y="88" font-size="12" stroke="none" fill="#666" font-weight="600">Step 2 of 7 · Provider installation</text><text x="16" y="120" font-size="20" stroke="none" fill="#000" font-weight="600">Install the Slack bot</text><text x="16" y="144" font-size="12" stroke="none" fill="#666" >Bring your own Slack app and verify every</text>
+<text x="16" y="160" font-size="12" stroke="none" fill="#666" >connection layer.</text><g transform="translate(16,184)" data-region="panel-1"><rect width="343" height="144" rx="8" fill="#e6e6e6"/><text x="16" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">1 · Create the app</text><text x="16" y="64" font-size="12" stroke="none" fill="#666" >Open generated Slack manifest</text>
+<text x="16" y="88" font-size="12" stroke="none" fill="#666" >Install or reinstall to workspace</text>
+<text x="16" y="112" font-size="12" stroke="none" fill="#000" font-weight="600">Invite @maya-support to a channel</text></g>
+<g transform="translate(16,336)" data-region="panel-2"><rect width="343" height="144" rx="8" /><text x="16" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">2 · Save credentials</text><text x="16" y="64" font-size="12" stroke="none" fill="#666" >Bot token · Secret reference</text>
+<text x="16" y="88" font-size="12" stroke="none" fill="#666" >Signing secret · Secret reference</text>
+<text x="16" y="112" font-size="12" stroke="none" fill="#000" font-weight="600">Values are hidden after save</text></g>
+<g transform="translate(16,488)" data-region="panel-3"><rect width="343" height="144" rx="8" /><text x="16" y="32" font-size="14" stroke="none" fill="#000" font-weight="600">3 · Verify</text><text x="16" y="64" font-size="12" stroke="none" fill="#666" >Bot identity · Passed</text>
+<text x="16" y="88" font-size="12" stroke="none" fill="#666" >Webhook signature · Passed</text>
+<text x="16" y="112" font-size="12" stroke="none" fill="#000" font-weight="600">Scopes · 1 action needed</text></g><g transform="translate(16,640)"><rect width="343" height="48" rx="4" fill="#000"/><text x="171" y="30" font-size="14" stroke="none" fill="#fff" font-weight="600" text-anchor="middle">Continue</text></g><g data-region="annotations"><rect x="8" y="72" width="359" height="88" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="8" cy="72" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="8" y="76" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">1</text>
+<rect x="8" y="176" width="359" height="160" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="8" cy="176" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="8" y="180" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">2</text>
+<rect x="8" y="328" width="359" height="160" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="8" cy="328" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="8" y="332" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">3</text>
+<rect x="8" y="480" width="359" height="160" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="8" cy="480" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="8" y="484" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">4</text>
+<rect x="8" y="632" width="359" height="64" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+      <circle cx="8" cy="632" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="8" y="636" font-size="12" stroke="none" fill="#d33" font-weight="700" text-anchor="middle">5</text></g></svg>

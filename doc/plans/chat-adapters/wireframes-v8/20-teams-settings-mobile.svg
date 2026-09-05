@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1176" viewBox="0 0 375 1176" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1176"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="32" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Maya on Teams</text><text x="359" y="32" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><rect x="16" y="72" width="343" height="48" rx="4" fill="#fff"/><text x="32" y="104" font-size="14" fill="#000" stroke="none" font-weight="600">Settings</text><text x="343" y="104" font-size="14" fill="#666" stroke="none" text-anchor="end">⌄</text>
+<text x="16" y="160" font-size="20" fill="#000" stroke="none" font-weight="700">Microsoft Teams settings</text>
+<text x="16" y="190" font-size="12" fill="#666" stroke="none" >Enable the Teams channels where Maya may</text>
+<text x="16" y="206" font-size="12" fill="#666" stroke="none" >create and continue tasks.</text>
+<text x="16" y="256" font-size="20" fill="#000" stroke="none" font-weight="700">Channels</text>
+<text x="16" y="286" font-size="12" fill="#666" stroke="none" >Only channels in teams where Maya is installed</text>
+<text x="16" y="302" font-size="12" fill="#666" stroke="none" >can be enabled.</text>
+<line x1="16" y1="336" x2="359" y2="336" />
+<text x="24" y="380" font-size="14" fill="#000" stroke="none" font-weight="600">Support / General · Acme</text>
+<text x="24" y="404" font-size="12" fill="#666" stroke="none" >Installed in Teams · Enabled</text>
+<rect x="287" y="364" width="64" height="48" rx="4" fill="#fff"/><rect x="303" y="376" width="48" height="24" rx="4" fill="#000"/><circle cx="335" cy="388" r="8" fill="#fff"/>
+<line x1="24" y1="448" x2="351" y2="448" stroke="#e6e6e6"/>
+<text x="24" y="476" font-size="14" fill="#000" stroke="none" font-weight="600">Engineering / Incidents · Acme</text>
+<text x="24" y="500" font-size="12" fill="#666" stroke="none" >Installed in Teams · Enabled</text>
+<rect x="287" y="460" width="64" height="48" rx="4" fill="#fff"/><rect x="303" y="472" width="48" height="24" rx="4" fill="#000"/><circle cx="335" cy="484" r="8" fill="#fff"/>
+<line x1="24" y1="544" x2="351" y2="544" stroke="#e6e6e6"/>
+<text x="24" y="572" font-size="14" fill="#000" stroke="none" font-weight="600">Product / General · Acme</text>
+<text x="24" y="596" font-size="12" fill="#666" stroke="none" >Installed in Teams · Not enabled</text>
+<rect x="287" y="556" width="64" height="48" rx="4" fill="#fff"/><rect x="303" y="568" width="48" height="24" rx="4" fill="#fff"/><circle cx="319" cy="580" r="8" fill="#000"/>
+<rect x="16" y="656" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="688" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Add Maya to another team  ↗</text>
+<text x="16" y="724" font-size="12" fill="#666" stroke="none" >Opens Teams instructions. Channels in the</text>
+<text x="16" y="740" font-size="12" fill="#666" stroke="none" >newly installed team appear here disabled.</text>
+<text x="16" y="816" font-size="20" fill="#000" stroke="none" font-weight="700">Private conversations</text>
+<line x1="16" y1="848" x2="359" y2="848" />
+<text x="24" y="888" font-size="14" fill="#000" stroke="none" font-weight="600">Allow direct messages</text>
+<text x="24" y="912" font-size="12" fill="#666" stroke="none" >People may start tasks in personal chats</text>
+<text x="24" y="928" font-size="12" fill="#666" stroke="none" >with Maya.</text>
+<rect x="287" y="872" width="64" height="48" rx="4" fill="#fff"/><rect x="303" y="884" width="48" height="24" rx="4" fill="#000"/><circle cx="335" cy="896" r="8" fill="#fff"/>
+<line x1="24" y1="968" x2="351" y2="968" stroke="#e6e6e6"/>
+<text x="24" y="992" font-size="14" fill="#000" stroke="none" font-weight="600">Allow group chats</text>
+<text x="24" y="1016" font-size="12" fill="#666" stroke="none" >People may add Maya to a group chat and</text>
+<text x="24" y="1032" font-size="12" fill="#666" stroke="none" >start tasks there.</text>
+<rect x="287" y="976" width="64" height="48" rx="4" fill="#fff"/><rect x="303" y="988" width="48" height="24" rx="4" fill="#fff"/><circle cx="319" cy="1000" r="8" fill="#000"/>
+<rect x="16" y="1096" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1128" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Save changes</text>
+<g data-region="annotations"><rect x="8" y="248" width="359" height="400" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="248" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="252" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="287" y="344" width="80" height="304" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="287" cy="344" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="287" y="348" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="648" width="359" height="132" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="648" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="652" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="800" width="359" height="280" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="800" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="804" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1648" viewBox="0 0 375 1648" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1648"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  GitHub</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="264" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#000"/>
+<text x="32" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" >Create GitHub App</text>
+<circle cx="32" cy="208" r="16" fill="#000"/>
+<text x="32" y="213" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="213" font-size="14" fill="#000" stroke="none" >Choose repositories</text>
+<circle cx="32" cy="264" r="16" fill="#fff"/>
+<text x="32" y="269" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="64" y="269" font-size="14" fill="#000" stroke="none" font-weight="700">Try Maya</text>
+<text x="16" y="360" font-size="20" fill="#000" stroke="none" font-weight="700">Try Maya in GitHub</text>
+<text x="16" y="392" font-size="12" fill="#666" stroke="none" >Mention Maya in an allowed issue, pull-request</text>
+<text x="16" y="408" font-size="12" fill="#666" stroke="none" >conversation, or review thread.</text>
+<text x="16" y="456" font-size="20" fill="#000" stroke="none" font-weight="700">Installation complete</text>
+<text x="16" y="480" font-size="12" fill="#666" stroke="none" >Paperclip verified the App, installation,</text>
+<text x="16" y="496" font-size="12" fill="#666" stroke="none" >selected repositories, events, and signatures.</text>
+<line x1="16" y1="512" x2="359" y2="512" />
+<text x="24" y="536" font-size="14" fill="#000" stroke="none" font-weight="600">Agent</text>
+<text x="24" y="558" font-size="12" fill="#666" stroke="none" >Maya · permanently assigned</text>
+<text x="351" y="608" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<line x1="24" y1="624" x2="351" y2="624" stroke="#e6e6e6"/>
+<text x="24" y="648" font-size="14" fill="#000" stroke="none" font-weight="600">Installation</text>
+<text x="24" y="670" font-size="12" fill="#666" stroke="none" >Acme · acme/api and acme/web</text>
+<text x="351" y="720" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Connected</text>
+<line x1="24" y1="736" x2="351" y2="736" stroke="#e6e6e6"/>
+<text x="24" y="760" font-size="14" fill="#000" stroke="none" font-weight="600">Permissions</text>
+<text x="24" y="782" font-size="12" fill="#666" stroke="none" >Chat-only; no repository code authority</text>
+<text x="351" y="832" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<text x="16" y="880" font-size="20" fill="#000" stroke="none" font-weight="700">Start the first task</text>
+<text x="16" y="904" font-size="12" fill="#666" stroke="none" >Use an existing GitHub conversation; Paperclip</text>
+<text x="16" y="920" font-size="12" fill="#666" stroke="none" >does not create a second native thread.</text>
+<line x1="16" y1="936" x2="359" y2="936" />
+<text x="24" y="960" font-size="14" fill="#000" stroke="none" font-weight="600">1. Open an issue or PR</text>
+<text x="24" y="982" font-size="12" fill="#666" stroke="none" >Use either installed repository.</text>
+<text x="351" y="1032" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In GitHub</text>
+<line x1="24" y1="1048" x2="351" y2="1048" stroke="#e6e6e6"/>
+<text x="24" y="1072" font-size="14" fill="#000" stroke="none" font-weight="600">2. Mention the App</text>
+<text x="24" y="1094" font-size="12" fill="#666" stroke="none" >Comment “@paperclip-maya investigate this.”</text>
+<text x="351" y="1144" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Starts task</text>
+<line x1="24" y1="1160" x2="351" y2="1160" stroke="#e6e6e6"/>
+<text x="24" y="1184" font-size="14" fill="#000" stroke="none" font-weight="600">3. Watch the comment</text>
+<text x="24" y="1206" font-size="12" fill="#666" stroke="none" >Maya reacts, posts progress, and edits the</text>
+<text x="24" y="1222" font-size="12" fill="#666" stroke="none" >final GFM response.</text>
+<text x="351" y="1256" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Expected</text>
+<text x="16" y="1304" font-size="20" fill="#000" stroke="none" font-weight="700">Live verification</text>
+<text x="16" y="1328" font-size="12" fill="#666" stroke="none" >The first signed webhook proves the selected</text>
+<text x="16" y="1344" font-size="12" fill="#666" stroke="none" >installation and native conversation boundary.</text>
+<line x1="16" y1="1360" x2="359" y2="1360" />
+<text x="24" y="1384" font-size="14" fill="#000" stroke="none" font-weight="600">GitHub delivery</text>
+<text x="24" y="1406" font-size="12" fill="#666" stroke="none" >No test mention received yet.</text>
+<text x="351" y="1456" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Waiting</text>
+<rect x="16" y="1512" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1542" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Finish without testing</text>
+<rect x="16" y="1576" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1606" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open GitHub</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="272" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="424" width="359" height="424" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="424" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="428" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="848" width="359" height="624" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="848" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="852" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1504" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1504" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1508" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1256" viewBox="0 0 1280 1256" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="1280" height="1256"/><g><text x="24" y="38" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="68" r="6" fill="#e6e6e6"/><text x="52" y="73" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="114" r="6" fill="#e6e6e6"/><text x="52" y="119" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="160" r="6" fill="#e6e6e6"/><text x="52" y="165" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="206" r="6" fill="#e6e6e6"/><text x="52" y="211" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="252" r="6" fill="#e6e6e6"/><text x="52" y="257" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="298" r="6" fill="#e6e6e6"/><text x="52" y="303" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="344" r="6" fill="#e6e6e6"/><text x="52" y="349" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="390" r="6" fill="#e6e6e6"/><text x="52" y="395" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="436" r="6" fill="#e6e6e6"/><text x="52" y="441" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="482" r="6" fill="#e6e6e6"/><text x="52" y="487" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="12" y="510" width="216" height="38" rx="6" fill="#e6e6e6"/><circle cx="32" cy="528" r="6" fill="#e6e6e6"/><text x="52" y="533" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="574" r="6" fill="#e6e6e6"/><text x="52" y="579" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="1200" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="1228" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="1256" /></g><g><line x1="240" y1="60" x2="1280" y2="60" /><text x="264" y="36" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  Maya on Microsoft Teams  ›  Access</text><circle cx="1240" cy="30" r="16" fill="#e6e6e6"/></g><g><text x="264" y="94" font-size="12" fill="#666" stroke="none" >‹  All connectors</text><circle cx="280" cy="132" r="18" fill="#e6e6e6"/><text x="308" y="138" font-size="14" fill="#000" stroke="none" font-weight="700">Maya on Teams</text><text x="280" y="194" font-size="14" fill="#666" stroke="none" >Overview</text>
+<text x="280" y="242" font-size="14" fill="#666" stroke="none" >Settings</text>
+<rect x="252" y="264" width="216" height="40" rx="6" fill="#e6e6e6"/><text x="280" y="290" font-size="14" fill="#000" stroke="none" font-weight="600">Access</text>
+<text x="280" y="338" font-size="14" fill="#666" stroke="none" >Conversations</text>
+<text x="280" y="386" font-size="14" fill="#666" stroke="none" >Activity</text><line x1="480" y1="60" x2="480" y2="1256" /></g><text x="504" y="108" font-size="28" fill="#000" stroke="none" font-weight="700">Microsoft Teams access</text><text x="504" y="138" font-size="14" fill="#666" stroke="none" >External identities, linked Paperclip users, sponsored guests, and effective authority.</text><text x="504" y="198" font-size="20" fill="#000" stroke="none" font-weight="700">Endpoint sponsor</text>
+<text x="504" y="223" font-size="12" fill="#666" stroke="none" >Sponsor authority is intersected with tenant and installed-resource scope.</text>
+<line x1="504" y1="246" x2="1224" y2="246" />
+<text x="520" y="272" font-size="14" fill="#000" stroke="none" font-weight="600">Sponsor</text>
+<text x="520" y="294" font-size="12" fill="#666" stroke="none" >Dana · Company admin</text>
+<rect x="1032" y="258" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="288" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Change sponsor</text>
+<line x1="520" y1="318" x2="1208" y2="318" stroke="#e6e6e6"/>
+<text x="520" y="344" font-size="14" fill="#000" stroke="none" font-weight="600">Endpoint scope</text>
+<text x="520" y="366" font-size="12" fill="#666" stroke="none" >Support project · Support / General</text>
+<rect x="1032" y="330" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="360" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">View scope</text>
+<text x="504" y="420" font-size="20" fill="#000" stroke="none" font-weight="700">Linked Microsoft people</text>
+<text x="504" y="445" font-size="12" fill="#666" stroke="none" >Tenant ID and Entra object ID form the stable identity key.</text>
+<line x1="504" y1="468" x2="1224" y2="468" />
+<text x="520" y="494" font-size="14" fill="#000" stroke="none" font-weight="600">Ari Chen · 31a0••••</text>
+<text x="520" y="516" font-size="12" fill="#666" stroke="none" >ari@acme.com · Member · confirmed Sep 3</text>
+<rect x="1032" y="480" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="510" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Revoke</text>
+<line x1="520" y1="540" x2="1208" y2="540" stroke="#e6e6e6"/>
+<text x="520" y="566" font-size="14" fill="#000" stroke="none" font-weight="600">Sam Rivera · 8d11••••</text>
+<text x="520" y="588" font-size="12" fill="#666" stroke="none" >sam@acme.com · Viewer · confirmed Sep 4</text>
+<rect x="1032" y="552" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="582" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Revoke</text>
+<line x1="520" y1="612" x2="1208" y2="612" stroke="#e6e6e6"/>
+<text x="520" y="638" font-size="14" fill="#000" stroke="none" font-weight="600">Link another person</text>
+<text x="520" y="660" font-size="12" fill="#666" stroke="none" >Create an expiring company-confirmation link.</text>
+<rect x="1032" y="624" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="654" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Create link</text>
+<text x="504" y="714" font-size="20" fill="#000" stroke="none" font-weight="700">Unlinked participants</text>
+<text x="504" y="739" font-size="12" fill="#666" stroke="none" >Guests, federated users, and tenant members all begin with restricted sponsored authority until</text>
+<text x="504" y="755" font-size="12" fill="#666" stroke="none" >linked.</text>
+<line x1="504" y1="762" x2="1224" y2="762" />
+<text x="520" y="788" font-size="14" fill="#000" stroke="none" font-weight="600">Restricted guest profile</text>
+<text x="520" y="810" font-size="12" fill="#666" stroke="none" >Comment, attach files, and receive safe output inside an allowed issue.</text>
+<rect x="1032" y="774" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="804" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Default</text>
+<line x1="520" y1="834" x2="1208" y2="834" stroke="#e6e6e6"/>
+<text x="520" y="860" font-size="14" fill="#000" stroke="none" font-weight="600">Governance</text>
+<text x="520" y="882" font-size="12" fill="#666" stroke="none" >No approvals, budgets, hiring, permissions, connection management, or</text>
+<text x="520" y="898" font-size="12" fill="#666" stroke="none" >reassignment.</text>
+<rect x="1032" y="846" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="876" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Denied</text>
+<text x="504" y="936" font-size="20" fill="#000" stroke="none" font-weight="700">Microsoft identity and consent</text>
+<text x="504" y="961" font-size="12" fill="#666" stroke="none" >Directory lookup may improve display metadata but never replaces the verified Teams actor key.</text>
+<line x1="504" y1="984" x2="1224" y2="984" />
+<text x="520" y="1010" font-size="14" fill="#000" stroke="none" font-weight="600">External and guest users</text>
+<text x="520" y="1032" font-size="12" fill="#666" stroke="none" >Tenant context remains part of identity resolution and audit</text>
+<text x="520" y="1048" font-size="12" fill="#666" stroke="none" >attribution.</text>
+<rect x="1032" y="996" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1026" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Guarded</text>
+<line x1="520" y1="1056" x2="1208" y2="1056" stroke="#e6e6e6"/>
+<text x="520" y="1082" font-size="14" fill="#000" stroke="none" font-weight="600">Bot-to-bot activity</text>
+<text x="520" y="1104" font-size="12" fill="#666" stroke="none" >Ignored unless an explicit audited endpoint route permits it.</text>
+<rect x="1032" y="1068" width="176" height="48" rx="6" fill="#fff"/><text x="1120" y="1098" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Ignored</text><g data-region="annotations"><rect x="496" y="168" width="736" height="230" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="168" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="172" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="496" y="390" width="736" height="302" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="390" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="394" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="496" y="684" width="736" height="230" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="684" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="688" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="496" y="906" width="736" height="230" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="496" cy="906" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="496" y="910" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

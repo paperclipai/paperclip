@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1928" viewBox="0 0 375 1928" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect width="375" height="1928"/><rect x="0" y="0" width="375" height="56" rx="6" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Maya on GitHub</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Menu</text><rect x="16" y="72" width="343" height="48" rx="6" fill="#fff"/><text x="32" y="102" font-size="14" fill="#000" stroke="none" font-weight="600">Overview</text><text x="343" y="102" font-size="14" fill="#666" stroke="none" text-anchor="end">⌄</text><text x="16" y="152" font-size="20" fill="#000" stroke="none" font-weight="700">GitHub overview</text><text x="16" y="176" font-size="12" fill="#666" stroke="none" >Identity, installation health, automatic</text>
+<text x="16" y="192" font-size="12" fill="#666" stroke="none" >capabilities, and connector lifecycle.</text><text x="16" y="222" font-size="20" fill="#000" stroke="none" font-weight="700">Connection</text>
+<text x="16" y="248" font-size="12" fill="#666" stroke="none" >One GitHub App bot represents Maya in the</text>
+<text x="16" y="264" font-size="12" fill="#666" stroke="none" >selected installation.</text>
+<line x1="16" y1="276" x2="359" y2="276" />
+<text x="24" y="300" font-size="14" fill="#000" stroke="none" font-weight="600">Status</text>
+<text x="24" y="322" font-size="12" fill="#666" stroke="none" >Active · last delivery 3 minutes ago</text>
+<rect x="223" y="332" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="362" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Healthy</text>
+<line x1="24" y1="388" x2="351" y2="388" stroke="#e6e6e6"/>
+<text x="24" y="412" font-size="14" fill="#000" stroke="none" font-weight="600">Agent</text>
+<text x="24" y="434" font-size="12" fill="#666" stroke="none" >Maya · Support engineer</text>
+<rect x="223" y="444" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="474" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open agent</text>
+<line x1="24" y1="500" x2="351" y2="500" stroke="#e6e6e6"/>
+<text x="24" y="524" font-size="14" fill="#000" stroke="none" font-weight="600">GitHub identity</text>
+<text x="24" y="546" font-size="12" fill="#666" stroke="none" >paperclip-maya[bot] · Acme installation</text>
+<rect x="223" y="556" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="586" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open GitHub</text>
+<text x="16" y="642" font-size="20" fill="#000" stroke="none" font-weight="700">Installation and delivery</text>
+<text x="16" y="668" font-size="12" fill="#666" stroke="none" >Repository reach and webhook health stay</text>
+<text x="16" y="684" font-size="12" fill="#666" stroke="none" >explicit.</text>
+<line x1="16" y1="696" x2="359" y2="696" />
+<text x="24" y="720" font-size="14" fill="#000" stroke="none" font-weight="600">Repositories</text>
+<text x="24" y="742" font-size="12" fill="#666" stroke="none" >acme/api, acme/web</text>
+<rect x="223" y="752" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="782" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">2 selected</text>
+<line x1="24" y1="808" x2="351" y2="808" stroke="#e6e6e6"/>
+<text x="24" y="832" font-size="14" fill="#000" stroke="none" font-weight="600">Webhook</text>
+<text x="24" y="854" font-size="12" fill="#666" stroke="none" >Signature verified · delivery IDs</text>
+<text x="24" y="870" font-size="12" fill="#666" stroke="none" >deduplicated</text>
+<rect x="223" y="864" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="894" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Healthy</text>
+<line x1="24" y1="920" x2="351" y2="920" stroke="#e6e6e6"/>
+<text x="24" y="944" font-size="14" fill="#000" stroke="none" font-weight="600">Permissions</text>
+<text x="24" y="966" font-size="12" fill="#666" stroke="none" >Issues and Pull requests write · Metadata</text>
+<text x="24" y="982" font-size="12" fill="#666" stroke="none" >read</text>
+<rect x="223" y="976" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1006" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Current</text>
+<text x="16" y="1062" font-size="20" fill="#000" stroke="none" font-weight="700">Available automatically</text>
+<text x="16" y="1088" font-size="12" fill="#666" stroke="none" >Paperclip uses every safe interaction GitHub</text>
+<text x="16" y="1104" font-size="12" fill="#666" stroke="none" >exposes for this chat connection.</text>
+<line x1="16" y1="1116" x2="359" y2="1116" />
+<text x="24" y="1140" font-size="14" fill="#000" stroke="none" font-weight="600">Conversation</text>
+<text x="24" y="1162" font-size="12" fill="#666" stroke="none" >Issue, PR conversation, and inline</text>
+<text x="24" y="1178" font-size="12" fill="#666" stroke="none" >review-thread mentions.</text>
+<rect x="223" y="1172" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1202" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Included</text>
+<line x1="24" y1="1228" x2="351" y2="1228" stroke="#e6e6e6"/>
+<text x="24" y="1252" font-size="14" fill="#000" stroke="none" font-weight="600">Output</text>
+<text x="24" y="1274" font-size="12" fill="#666" stroke="none" >Reaction receipt, GFM response, coarse</text>
+<text x="24" y="1290" font-size="12" fill="#666" stroke="none" >edit-in-place progress, final comment.</text>
+<rect x="223" y="1284" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1314" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Included</text>
+<line x1="24" y1="1340" x2="351" y2="1340" stroke="#e6e6e6"/>
+<text x="24" y="1364" font-size="14" fill="#000" stroke="none" font-weight="600">Files and actions</text>
+<text x="24" y="1386" font-size="12" fill="#666" stroke="none" >Ingest safe linked attachments; publish</text>
+<text x="24" y="1402" font-size="12" fill="#666" stroke="none" >artifacts and governed actions as Paperclip…</text>
+<rect x="223" y="1396" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1426" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Included</text>
+<line x1="24" y1="1452" x2="351" y2="1452" stroke="#e6e6e6"/>
+<text x="24" y="1476" font-size="14" fill="#000" stroke="none" font-weight="600">Fallback</text>
+<text x="24" y="1498" font-size="12" fill="#666" stroke="none" >Unsupported stream, DM, ephemeral, modal,</text>
+<text x="24" y="1514" font-size="12" fill="#666" stroke="none" >or button behavior becomes text plus a…</text>
+<rect x="223" y="1508" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1538" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Automatic</text>
+<text x="16" y="1594" font-size="20" fill="#000" stroke="none" font-weight="700">Lifecycle</text>
+<text x="16" y="1620" font-size="12" fill="#666" stroke="none" >Operate the App installation without conflating</text>
+<text x="16" y="1636" font-size="12" fill="#666" stroke="none" >it with tool access.</text>
+<line x1="16" y1="1648" x2="359" y2="1648" />
+<text x="24" y="1672" font-size="14" fill="#000" stroke="none" font-weight="600">Connection test</text>
+<text x="24" y="1694" font-size="12" fill="#666" stroke="none" >Verify signature, bot identity, selected</text>
+<text x="24" y="1710" font-size="12" fill="#666" stroke="none" >repositories, and comment response.</text>
+<rect x="223" y="1704" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1734" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Test</text>
+<line x1="24" y1="1760" x2="351" y2="1760" stroke="#e6e6e6"/>
+<text x="24" y="1784" font-size="14" fill="#000" stroke="none" font-weight="600">Maintenance</text>
+<text x="24" y="1806" font-size="12" fill="#666" stroke="none" >Pause, rotate private key, repair</text>
+<text x="24" y="1822" font-size="12" fill="#666" stroke="none" >installation, or remove endpoint.</text>
+<rect x="223" y="1816" width="128" height="48" rx="6" fill="#fff"/><text x="287" y="1846" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Manage</text><g data-region="annotations"><rect x="8" y="192" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="192" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="196" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="612" width="359" height="428" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="612" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="616" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="1032" width="359" height="540" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1032" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1036" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1564" width="359" height="316" rx="6" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1564" r="9" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1568" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

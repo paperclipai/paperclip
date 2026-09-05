@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1720" viewBox="0 0 375 1720" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1720"/><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="36" font-size="14" fill="#000" stroke="none" font-weight="600">‹  Slack</text><text x="359" y="36" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text>
+<text x="16" y="72" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
+<line x1="32" y1="96" x2="32" y2="208" />
+<circle cx="32" cy="96" r="16" fill="#000"/>
+<text x="32" y="101" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="101" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="152" r="16" fill="#000"/>
+<text x="32" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="64" y="157" font-size="14" fill="#000" stroke="none" >Add Maya to Slack</text>
+<circle cx="32" cy="208" r="16" fill="#fff"/>
+<text x="32" y="213" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="64" y="213" font-size="14" fill="#000" stroke="none" font-weight="700">Try Maya</text>
+<text x="16" y="304" font-size="20" fill="#000" stroke="none" font-weight="700">Try Maya in Slack</text>
+<text x="16" y="336" font-size="12" fill="#666" stroke="none" >Mention Maya once. Paperclip verifies the real</text>
+<text x="16" y="352" font-size="12" fill="#666" stroke="none" >workspace event and creates the first task</text>
+<text x="16" y="368" font-size="12" fill="#666" stroke="none" >thread.</text>
+<text x="16" y="416" font-size="20" fill="#000" stroke="none" font-weight="700">Installation complete</text>
+<text x="16" y="440" font-size="12" fill="#666" stroke="none" >Slack returned a verified installation for</text>
+<text x="16" y="456" font-size="12" fill="#666" stroke="none" >this company.</text>
+<line x1="16" y1="472" x2="359" y2="472" />
+<text x="24" y="496" font-size="14" fill="#000" stroke="none" font-weight="600">Agent</text>
+<text x="24" y="518" font-size="12" fill="#666" stroke="none" >Maya · permanently assigned</text>
+<text x="351" y="568" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Locked</text>
+<line x1="24" y1="584" x2="351" y2="584" stroke="#e6e6e6"/>
+<text x="24" y="608" font-size="14" fill="#000" stroke="none" font-weight="600">Workspace</text>
+<text x="24" y="630" font-size="12" fill="#666" stroke="none" >Acme · @Maya installed</text>
+<text x="351" y="680" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Connected</text>
+<line x1="24" y1="696" x2="351" y2="696" stroke="#e6e6e6"/>
+<text x="24" y="720" font-size="14" fill="#000" stroke="none" font-weight="600">Permission check</text>
+<text x="24" y="742" font-size="12" fill="#666" stroke="none" >All required safe chat capabilities are</text>
+<text x="24" y="758" font-size="12" fill="#666" stroke="none" >available.</text>
+<text x="351" y="792" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Passed</text>
+<text x="16" y="840" font-size="20" fill="#000" stroke="none" font-weight="700">Start the first task</text>
+<text x="16" y="864" font-size="12" fill="#666" stroke="none" >Use the same behavior people will use after</text>
+<text x="16" y="880" font-size="12" fill="#666" stroke="none" >setup.</text>
+<line x1="16" y1="896" x2="359" y2="896" />
+<text x="24" y="920" font-size="14" fill="#000" stroke="none" font-weight="600">1. Open a channel</text>
+<text x="24" y="942" font-size="12" fill="#666" stroke="none" >Choose a channel where you are allowed to</text>
+<text x="24" y="958" font-size="12" fill="#666" stroke="none" >add or mention apps.</text>
+<text x="351" y="992" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">In Slack</text>
+<line x1="24" y1="1008" x2="351" y2="1008" stroke="#e6e6e6"/>
+<text x="24" y="1032" font-size="14" fill="#000" stroke="none" font-weight="600">2. Mention Maya</text>
+<text x="24" y="1054" font-size="12" fill="#666" stroke="none" >Send “@Maya help me investigate this” as a</text>
+<text x="24" y="1070" font-size="12" fill="#666" stroke="none" >new channel message.</text>
+<text x="351" y="1104" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Starts thread</text>
+<line x1="24" y1="1120" x2="351" y2="1120" stroke="#e6e6e6"/>
+<text x="24" y="1144" font-size="14" fill="#000" stroke="none" font-weight="600">3. Continue in the thread</text>
+<text x="24" y="1166" font-size="12" fill="#666" stroke="none" >Maya replies in a new thread; that thread</text>
+<text x="24" y="1182" font-size="12" fill="#666" stroke="none" >is one Paperclip task.</text>
+<text x="351" y="1216" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Expected</text>
+<text x="16" y="1264" font-size="20" fill="#000" stroke="none" font-weight="700">Live verification</text>
+<text x="16" y="1288" font-size="12" fill="#666" stroke="none" >Paperclip waits for an actual signed Slack</text>
+<text x="16" y="1304" font-size="12" fill="#666" stroke="none" >event rather than claiming setup works after a</text>
+<text x="16" y="1320" font-size="12" fill="#666" stroke="none" >token check.</text>
+<line x1="16" y1="1320" x2="359" y2="1320" />
+<text x="24" y="1344" font-size="14" fill="#000" stroke="none" font-weight="600">Workspace event</text>
+<text x="24" y="1366" font-size="12" fill="#666" stroke="none" >No test mention received yet.</text>
+<text x="351" y="1416" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Waiting</text>
+<line x1="24" y1="1432" x2="351" y2="1432" stroke="#e6e6e6"/>
+<text x="24" y="1456" font-size="14" fill="#000" stroke="none" font-weight="600">If Maya is not in the channel</text>
+<text x="24" y="1478" font-size="12" fill="#666" stroke="none" >Slack prompts you to add the agent; no</text>
+<text x="24" y="1494" font-size="12" fill="#666" stroke="none" >Paperclip setting is required.</text>
+<text x="351" y="1528" font-size="12" fill="#000" stroke="none" text-anchor="end" font-weight="600">Handled in Slack</text>
+<rect x="16" y="1584" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1614" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Finish without testing</text>
+<rect x="16" y="1648" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1678" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open Slack</text>
+<g data-region="annotations"><rect x="8" y="64" width="359" height="216" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="384" width="359" height="424" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="384" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="388" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="8" y="808" width="359" height="736" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="808" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="812" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<rect x="8" y="1576" width="359" height="120" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="1576" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="1580" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">4</text></g></svg>

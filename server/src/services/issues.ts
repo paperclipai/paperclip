@@ -4,6 +4,8 @@ import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, ne, 
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  chatConversations,
+  chatPublications,
   agentWakeupRequests,
   agents,
   authUsers,
@@ -135,6 +137,7 @@ import {
   type ActivityPublication,
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
+import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -6827,6 +6830,7 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+
       const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
       // A child may target another project. Parent workspace identity is only
       // valid inside the parent's project, so do not forward it across that
@@ -7792,6 +7796,26 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      if (
+        issueData.assigneeAgentId !== undefined
+        && issueData.assigneeAgentId !== existing.assigneeAgentId
+      ) {
+        const externalBinding = await dbOrTx
+          .select({ id: chatConversations.id })
+          .from(chatConversations)
+          .where(and(
+            eq(chatConversations.companyId, existing.companyId),
+            eq(chatConversations.issueId, existing.id),
+          ))
+          .limit(1)
+          .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+        if (externalBinding) {
+          throw conflict("Agent assignment cannot change while this task is bound to an external channel", {
+            code: "chat_binding_agent_locked",
+            conversationId: externalBinding.id,
+          });
+        }
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -9093,6 +9117,42 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
+      // An agent-authored board comment is the externally publishable unit.
+      // Raw run events, internal logs, tool traces, and reasoning never enter
+      // this outbox because they are not issue comments.
+      if (authorType === "agent") {
+        const bindings = await dbOrTx
+          .select({
+            companyId: chatConversations.companyId,
+            conversationId: chatConversations.id,
+            endpointId: chatConversations.endpointId,
+          })
+          .from(chatConversations)
+          .where(and(
+            eq(chatConversations.issueId, issueId),
+            inArray(chatConversations.state, ["active", "waiting"]),
+          ));
+        for (const binding of bindings) {
+          await dbOrTx
+            .insert(chatPublications)
+            .values({
+              companyId: binding.companyId,
+              endpointId: binding.endpointId,
+              conversationId: binding.conversationId,
+              issueId,
+              commentId: comment.id,
+              idempotencyKey: `comment:${comment.id}:${binding.endpointId}`,
+              payload: projectSafeChatPublication({
+                classification: "external",
+                source: "agent_comment",
+                text: redactedBody,
+              }),
+              state: "pending",
+            })
+            .onConflictDoNothing();
+        }
+      }
+
       if (
         authorType === "user" &&
         actor.userId &&
@@ -9150,14 +9210,27 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issue) throw notFound("Issue not found");
 
+      let parentComment: {
+        id: string;
+        companyId: string;
+        issueId: string;
+        authorType: string | null;
+        authorAgentId: string | null;
+      } | null = null;
       if (input.issueCommentId) {
-        const comment = await db
-          .select({ id: issueComments.id, companyId: issueComments.companyId, issueId: issueComments.issueId })
+        parentComment = await db
+          .select({
+            id: issueComments.id,
+            companyId: issueComments.companyId,
+            issueId: issueComments.issueId,
+            authorType: issueComments.authorType,
+            authorAgentId: issueComments.authorAgentId,
+          })
           .from(issueComments)
           .where(eq(issueComments.id, input.issueCommentId))
           .then((rows) => rows[0] ?? null);
-        if (!comment) throw notFound("Issue comment not found");
-        if (comment.companyId !== issue.companyId || comment.issueId !== issue.id) {
+        if (!parentComment) throw notFound("Issue comment not found");
+        if (parentComment.companyId !== issue.companyId || parentComment.issueId !== issue.id) {
           throw unprocessable("Attachment comment must belong to same issue and company");
         }
       }
@@ -9227,6 +9300,44 @@ export function issueService(db: Db) {
             })
             .returning({ id: issueWorkProducts.id })
           : [];
+
+        if (
+          input.createdByAgentId &&
+          parentComment?.authorType === "agent" &&
+          parentComment.authorAgentId === input.createdByAgentId
+        ) {
+          const bindings = await tx
+            .select({
+              endpointId: chatConversations.endpointId,
+              conversationId: chatConversations.id,
+            })
+            .from(chatConversations)
+            .where(and(
+              eq(chatConversations.companyId, issue.companyId),
+              eq(chatConversations.issueId, issue.id),
+              inArray(chatConversations.state, ["active", "waiting"]),
+            ));
+          for (const binding of bindings) {
+            await tx
+              .insert(chatPublications)
+              .values({
+                companyId: issue.companyId,
+                endpointId: binding.endpointId,
+                conversationId: binding.conversationId,
+                issueId: issue.id,
+                commentId: parentComment.id,
+                idempotencyKey: `attachment:${attachment.id}:${binding.endpointId}`,
+                payload: projectSafeChatPublication({
+                  classification: "external",
+                  source: "agent_comment",
+                  text: `Shared ${asset.originalFilename ?? "a file"}.`,
+                  attachmentIds: [attachment.id],
+                }),
+                state: "pending",
+              })
+              .onConflictDoNothing();
+          }
+        }
 
         return {
           id: attachment.id,
