@@ -96,6 +96,18 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow).toContain(
       '--build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}"',
     );
+    expect(workflow).toContain(
+      "IMAGE_CACHE: ghcr.io/paperclipai/paperclip-daytona-runner:e2e-buildcache-amd64",
+    );
+    expect(workflow).toContain(
+      '--cache-from "type=registry,ref=${IMAGE_CACHE}"',
+    );
+    expect(workflow).toContain(
+      '--cache-to "type=registry,ref=${IMAGE_CACHE},mode=max"',
+    );
+    expect(workflow).toContain(
+      'if [ "$TARGET_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then',
+    );
     expect(workflow).not.toContain("e2e-git-${{ github.sha }}");
     expect(workflow).toContain("cosign sign --yes");
     expect(workflow).toContain("docker logout ghcr.io");
@@ -124,6 +136,24 @@ describe("runner E2E Daytona image contract", () => {
     expect(workflow.indexOf("docker logout ghcr.io")).toBeLessThan(
       workflow.indexOf(`--format '{{json .Image}}'`),
     );
+    const providerInstall = dockerfile.indexOf(
+      "RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'",
+    );
+    const runnerSourceCopy = dockerfile.indexOf(
+      "COPY packages/paperclip-runner/src ./packages/paperclip-runner/src",
+    );
+    const providerRevisionArg = dockerfile.indexOf(
+      "ARG PAPERCLIP_RUNNER_SOURCE_REVISION",
+    );
+    const cliInstall = dockerfile.indexOf("RUN npm install -g");
+    const finalMetadataArgs = dockerfile.lastIndexOf(
+      "ARG PAPERCLIP_RUNNER_CONTENT_ID",
+    );
+    expect(providerInstall).toBeGreaterThan(0);
+    expect(providerInstall).toBeLessThan(runnerSourceCopy);
+    expect(providerInstall).toBeLessThan(providerRevisionArg);
+    expect(cliInstall).toBeGreaterThan(0);
+    expect(cliInstall).toBeLessThan(finalMetadataArgs);
   });
 
   it("hashes the audited image dependency closure rather than the repository revision", async () => {
@@ -190,7 +220,10 @@ describe("runner E2E Daytona image contract", () => {
         "FROM pinned\n",
       );
       await writeFile(path.join(root, "package.json"), '{"private":true}\n');
-      await writeFile(path.join(root, "pnpm-lock.yaml"), "lockfileVersion: 9\n");
+      await writeFile(
+        path.join(root, "pnpm-lock.yaml"),
+        "lockfileVersion: 9\n",
+      );
       await writeFile(
         path.join(root, "packages/paperclip-runner/package.json"),
         '{"name":"@paperclipai/paperclip-runner"}\n',
@@ -225,9 +258,7 @@ describe("runner E2E Daytona image contract", () => {
         path.join(root, "unrelated.txt"),
         "does not enter the image\n",
       );
-      expect(
-        await computeDaytonaImageContentId(options),
-      ).toBe(baseline);
+      expect(await computeDaytonaImageContentId(options)).toBe(baseline);
 
       for (const relativePath of [
         "docker/daytona-runner/Dockerfile",
