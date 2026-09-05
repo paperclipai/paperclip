@@ -4656,6 +4656,133 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(providerRuntime.edits).toHaveLength(2);
   });
 
+  it.each(["slack", "github"] as const)(
+    "preserves every %s agent comment after replacing one run placeholder",
+    async (provider) => {
+      const fixture = await seedCompany();
+      const configured =
+        provider === "slack"
+          ? await configuredSlackEndpoint(fixture)
+          : await configuredGitHubEndpoint(fixture);
+      const { callbacks, endpoint, runtime, service } = configured;
+      const thread = makeThread({
+        channelId:
+          provider === "slack"
+            ? "C-MULTI-FINAL"
+            : "github:paperclipai/paperclip",
+        id:
+          provider === "slack"
+            ? "slack:C-MULTI-FINAL:4045.1"
+            : "github:paperclipai/paperclip:issue:418",
+        name: provider === "slack" ? "multi-final" : "paperclipai/paperclip",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider,
+        thread: thread.thread,
+        message: makeMessage({
+          id: provider === "slack" ? "4045.1" : "41801",
+          text: "@maya return three separately visible answers",
+          mentioned: true,
+        }),
+        trigger: "mention",
+      });
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: fixture.assignedAgentId,
+        status: "running",
+        contextSnapshot: { issueId: conversation.issueId },
+      });
+      await db.insert(chatPublications).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        issueId: conversation.issueId,
+        idempotencyKey: `run:${runId}:working:${endpoint.id}`,
+        payload: { text: "Maya is working…", progressState: "working" },
+        state: "pending",
+      });
+      await service.processPendingPublications();
+
+      const comments = [];
+      for (const body of ["answer-one", "answer-two", "answer-three"]) {
+        comments.push(
+          await issueService(db).addComment(
+            conversation.issueId,
+            body,
+            { agentId: fixture.assignedAgentId, runId },
+            { authorType: "agent" },
+          ),
+        );
+      }
+      await Promise.all([
+        service.processPendingPublications(),
+        service.processPendingPublications(),
+        service.processPendingPublications(),
+      ]);
+
+      const providerRuntime = runtime.endpoints.get(endpoint.id);
+      expect(providerRuntime?.posts.map((post) => post.text)).toEqual([
+        "Maya is working…",
+        "answer-two",
+        "answer-three",
+      ]);
+      expect(providerRuntime?.edits).toEqual([
+        {
+          threadId: thread.thread.id,
+          messageId: "outbound-1",
+          text: "answer-one",
+        },
+      ]);
+      const commentPublications = await db
+        .select()
+        .from(chatPublications)
+        .where(
+          inArray(
+            chatPublications.commentId,
+            comments.map((comment) => comment.id),
+          ),
+        )
+        .orderBy(asc(chatPublications.createdAt), asc(chatPublications.id));
+      expect(commentPublications).toEqual([
+        expect.objectContaining({
+          commentId: comments[0].id,
+          state: "published",
+          providerMessageId: "outbound-1",
+        }),
+        expect.objectContaining({
+          commentId: comments[1].id,
+          state: "published",
+          providerMessageId: "outbound-2",
+        }),
+        expect.objectContaining({
+          commentId: comments[2].id,
+          state: "published",
+          providerMessageId: "outbound-3",
+        }),
+      ]);
+      expect(
+        await db
+          .select()
+          .from(chatMessageLinks)
+          .where(
+            and(
+              eq(chatMessageLinks.conversationId, conversation.id),
+              eq(chatMessageLinks.direction, "outbound"),
+            ),
+          ),
+      ).toHaveLength(3);
+      await service.shutdown();
+    },
+  );
+
   it("coalesces one Slack run's lifecycle and final response into one thread reply", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =

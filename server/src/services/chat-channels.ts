@@ -6611,6 +6611,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (!currentRunId) return null;
     return db
       .select({
+        commentId: chatPublications.commentId,
         providerMessageId: chatPublications.providerMessageId,
         payload: chatPublications.payload,
       })
@@ -6630,11 +6631,28 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .orderBy(desc(chatPublications.createdAt))
-      .then(
-        (rows) =>
-          rows.find((row) => Boolean(row.providerMessageId))
-            ?.providerMessageId ?? null,
-      );
+      .then((rows) => {
+        // Progress updates are one replaceable provider-message lane per run.
+        // The first durable agent comment may turn that placeholder into the
+        // terminal response, but later comments from the same run are distinct
+        // user-visible outputs and must be posted separately. Re-editing the
+        // placeholder for each comment silently erases the earlier replies.
+        if (
+          publication.commentId &&
+          rows.some(
+            (row) =>
+              row.commentId !== null && row.payload.progressState === undefined,
+          )
+        )
+          return null;
+        return (
+          rows.find(
+            (row) =>
+              Boolean(row.providerMessageId) &&
+              row.payload.progressState !== undefined,
+          )?.providerMessageId ?? null
+        );
+      });
   }
 
   async function processPendingPublications(limit = 25) {
