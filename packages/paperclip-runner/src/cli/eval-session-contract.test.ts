@@ -5,6 +5,7 @@ import {
   evalSessionUsage,
   parseEvalSessionRequest,
 } from "./eval-session-contract.js";
+import { boundedEvalSessionUsage } from "./eval-session.js";
 
 function request(overrides: Record<string, unknown> = {}): unknown {
   return {
@@ -158,6 +159,41 @@ describe("eval-session request contract", () => {
 });
 
 describe("eval-session usage", () => {
+  it("retains durable failed turns even when their reported usage exceeds completed-turn limits", () => {
+    const parsed = parseEvalSessionRequest(request());
+    const snapshot = {
+      usageLedger: [{
+        receiptId: "receipt-failed",
+        attemptId: "attempt-1",
+        providerResponseId: "response-failed",
+        turnId: "turn-failed",
+        observedAt: "2026-09-05T00:00:00.000Z",
+        providerCalls: 2,
+        providerRequests: 2,
+        inputTokens: 1_000,
+        outputTokens: 100,
+        cachedInputTokens: 0,
+        reasoningTokens: 0,
+        costNanodollars: 200_000_000,
+      }],
+    } as unknown as CapabilityLiveSessionSnapshot;
+    const failedTurn = {
+      turnId: "turn-failed",
+      status: "failed" as const,
+      assistantText: "",
+      snapshot,
+    };
+
+    expect(boundedEvalSessionUsage(parsed, failedTurn)).toMatchObject({
+      agentTurns: 2,
+      providerReportedCostNanodollars: 200_000_000,
+    });
+    expect(() => boundedEvalSessionUsage(parsed, {
+      ...failedTurn,
+      status: "completed",
+    })).toThrow("agent turn limit exceeded");
+  });
+
   it("deduplicates receipts and applies the versioned model price", () => {
     const receipt = {
       receiptId: "receipt-1",

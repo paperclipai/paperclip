@@ -127,6 +127,32 @@ function usageIfAvailable(
   }
 }
 
+export function boundedEvalSessionUsage(
+  request: EvalSessionRequest,
+  turn: CapabilityLiveTurnResult,
+): EvalSessionUsage | null {
+  if (turn.status !== "completed") {
+    return usageIfAvailable(request, turn.snapshot);
+  }
+  const usage = evalSessionUsage(request.model, turn.snapshot);
+  if (usage.agentTurns > request.limits.maxAgentTurns) {
+    throw new Error("agent turn limit exceeded");
+  }
+  if (
+    usage.estimatedCostNanodollars >
+    request.limits.maxEstimatedCostNanodollars
+  ) {
+    throw new Error("estimated cost limit exceeded");
+  }
+  if (
+    usage.providerReportedCostNanodollars >
+    request.limits.maxEstimatedCostNanodollars
+  ) {
+    throw new Error("provider-reported cost limit exceeded");
+  }
+  return usage;
+}
+
 async function closeSession(
   session: CapabilityLiveSession | null,
   reason: string,
@@ -201,22 +227,7 @@ export async function runEvalSessionCli(
     } as unknown as CreateCapabilityLiveSessionInput;
     session = await service.create(createInput);
     turn = await session.sendMessage(request.prompt);
-    const usage = evalSessionUsage(request.model, turn.snapshot);
-    if (usage.agentTurns > request.limits.maxAgentTurns) {
-      throw new Error("agent turn limit exceeded");
-    }
-    if (
-      usage.estimatedCostNanodollars >
-      request.limits.maxEstimatedCostNanodollars
-    ) {
-      throw new Error("estimated cost limit exceeded");
-    }
-    if (
-      usage.providerReportedCostNanodollars >
-      request.limits.maxEstimatedCostNanodollars
-    ) {
-      throw new Error("provider-reported cost limit exceeded");
-    }
+    const usage = boundedEvalSessionUsage(request, turn);
     await session.completeAttempt(
       turn.status === "completed" ? "succeeded" : "failed",
       turn.status === "completed" ? null : `provider_turn_${turn.status}`,
@@ -263,7 +274,7 @@ export async function runEvalSessionCli(
         mode: "live",
         replaySource: "live",
       }),
-      usage,
+      ...(usage === null ? {} : { usage }),
       timing: {
         startedAt,
         finishedAt: new Date().toISOString(),
