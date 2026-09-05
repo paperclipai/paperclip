@@ -29,9 +29,7 @@ The former "How conversations work" screens are removed. Provider-native activat
 | 01  | Start           | Shared        | Connectors                            | 1280×800  | 375×812  |
 | 02  | Start           | Shared        | Choose how to connect                 | 1280×800  | 375×812  |
 | 03  | Start           | Shared        | Which agent do you want to chat with? | 1280×800  | 375×812  |
-| 13  | Slack           | Setup         | Add Maya to Slack                     | 1280×800  | 375×812  |
-| 42  | Slack           | Custom setup  | Create and install the Slack app      | 1280×800  | 375×1064 |
-| 43  | Slack           | Custom setup  | Connect the Slack app                 | 1280×800  | 375×1176 |
+| 13  | Slack           | Setup         | Connect a Slack app                   | 1280×800  | 375×812  |
 | 41  | Slack           | Setup         | Try Maya in Slack                     | 1280×800  | 375×944  |
 | 14  | Slack           | Settings      | Slack settings                        | 1280×984  | 375×1072 |
 | 26  | Slack           | Access        | Slack access                          | 1280×880  | 375×920  |
@@ -97,49 +95,20 @@ Purpose: Choose the one agent represented by this connection.
 
 Rationale: This is the only shared Paperclip-specific setup decision.
 
-### 13 · Create and install Maya in Slack
+### 13 · Connect a Slack app
 
-Purpose: Create the customer-owned Slack App that represents Maya.
+Purpose: Bring your own Slack app using Paperclip's prepared manifest.
 
-1. The step rail is the only repeated setup context; the selected agent is not restated in the page body.
-2. The page contains only the prepared-manifest handoff required for the customer-owned App.
-
-Actions:
-
-- **Open Slack app setup:** Opens Slack's official app-from-manifest URL with Paperclip's generated manifest encoded in the link.
-- **Continue after installing:** Advances to the two credential fields after the operator installs the App in Slack.
-
-Rationale: Bring-your-own Slack credentials are the required first-release path. A managed Add to Slack flow is an optional later convenience and cannot gate release.
-
-### 42 · Create and install the Slack app
-
-Purpose: Paperclip prepared a Slack App Manifest for Maya.
-
-1. Every line is an action the operator must complete in Slack.
-2. The manifest removes manual scope, event, callback, command, and interactivity configuration.
-3. The page advances only after the operator confirms the app was installed.
+1. The prepared manifest and exact provider locations make the customer-owned App the complete required path.
+2. Only the Bot User OAuth Token and Signing Secret are entered, and both remain write-only.
+3. Managed Add to Slack is an optional later convenience and cannot gate this path or release.
 
 Actions:
 
-- **Open Slack app setup:** Opens Slack's official app-from-manifest URL with Paperclip's generated manifest encoded in the link.
-- **Continue after installing:** Advances to the two credential fields after the operator has installed the new app in Slack.
+- **Connect Slack app:** Stores the two write-only credentials and verifies the Slack bot identity and required scopes.
+- **Open Slack app settings:** Opens Slack's app-management page where the operator creates and installs the customer-owned App.
 
-Rationale: The custom path gives exact provider instructions without exposing Paperclip's automatic configuration.
-
-### 43 · Connect the Slack app
-
-Purpose: Copy two values from the Slack app settings.
-
-1. The only help text tells the operator exactly where to find each required value.
-2. Only the two unavoidable Slack credentials are requested.
-3. Connecting verifies the values instead of showing a separate verification report.
-
-Actions:
-
-- **Connect Slack app:** Stores both values write-only and verifies the Slack bot identity and required scopes before continuing.
-- **Back:** Returns to the Slack creation instructions without saving partially entered values.
-
-Rationale: A customer-owned Slack App cannot return these values to Paperclip, so both fields are necessary.
+Rationale: Bring-your-own credentials are sufficient to ship; managed installation remains optional.
 
 ### 41 · Try Maya in Slack
 

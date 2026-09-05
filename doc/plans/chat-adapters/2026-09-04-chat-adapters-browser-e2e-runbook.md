@@ -303,7 +303,7 @@ Run these assertions within each platform-specific procedure.
 - Dedicated Slack developer workspace containing Dana, Ari, and Jules.
 - Permission to install a Paperclip Slack app and invite it to the two test channels.
 - Direct-message access enabled for the test workspace.
-- Managed **Add to Slack** path when available. The prepared customer-owned App Manifest path is the required baseline and is qualified for every stable release and after any manifest/scope change.
+- The prepared customer-owned App Manifest path is the required baseline and is qualified for every stable release and after any manifest/scope change. Managed **Add to Slack** is optional when available and is not a prerequisite.
 
 ### S1 — Required customer-owned Slack App setup
 

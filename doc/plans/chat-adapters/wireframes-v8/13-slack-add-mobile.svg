@@ -5,13 +5,13 @@
 <text x="64" y="109" font-size="14" fill="#000" stroke="none" >Agent selected</text>
 <circle cx="32" cy="160" r="16" fill="#fff"/>
 <text x="32" y="165" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
-<text x="64" y="165" font-size="14" fill="#000" stroke="none" font-weight="700">Connect Slack</text>
+<text x="64" y="165" font-size="14" fill="#000" stroke="none" font-weight="700">Connect Slack app</text>
 <circle cx="32" cy="216" r="16" fill="#fff"/>
 <text x="32" y="221" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
 <text x="64" y="221" font-size="14" fill="#666" stroke="none" >Try Maya</text>
-<text x="16" y="312" font-size="20" fill="#000" stroke="none" font-weight="700">Add Maya to Slack</text>
-<text x="16" y="368" font-size="12" fill="#666" stroke="none" >Install Maya in your Slack workspace.</text>
+<text x="16" y="312" font-size="20" fill="#000" stroke="none" font-weight="700">Connect a Slack app</text>
+<text x="16" y="368" font-size="12" fill="#666" stroke="none" >Bring your own Slack app with Paperclip's manifest.</text>
 
-<rect x="16" y="464" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="494" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Set up a custom Slack app</text>
-<rect x="16" y="528" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="558" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Add Maya to Slack</text><g data-region="annotations"><rect x="8" y="64" width="359" height="200" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="16" y="464" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="494" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Slack app settings</text>
+<rect x="16" y="528" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="558" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect Slack app</text><g data-region="annotations"><rect x="8" y="64" width="359" height="200" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
 <rect x="8" y="280" width="359" height="304" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="280" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="284" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text></g></svg>

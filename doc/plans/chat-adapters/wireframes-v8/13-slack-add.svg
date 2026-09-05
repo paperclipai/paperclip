@@ -18,15 +18,15 @@
 <text x="320" y="148" font-size="14" fill="#000" stroke="none" >Agent selected</text>
 <circle cx="288" cy="232" r="16" fill="#fff"/>
 <text x="288" y="237" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
-<text x="320" y="228" font-size="14" fill="#000" stroke="none" font-weight="700">Connect Slack</text>
+<text x="320" y="228" font-size="14" fill="#000" stroke="none" font-weight="700">Connect Slack app</text>
 <circle cx="288" cy="312" r="16" fill="#fff"/>
 <text x="288" y="317" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
-<text x="320" y="308" font-size="14" fill="#666" stroke="none" >Try Maya</text><text x="560" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Add Maya to Slack</text>
-<text x="560" y="144" font-size="14" fill="#666" stroke="none" >Install Maya in your Slack workspace.</text>
+<text x="320" y="308" font-size="14" fill="#666" stroke="none" >Try Maya</text><text x="560" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Connect a Slack app</text>
+<text x="560" y="144" font-size="14" fill="#666" stroke="none" >Bring your own Slack app using Paperclip's manifest.</text>
 
 
 
 
-<rect x="560" y="208" width="256" height="48" rx="4" fill="#fff"/><text x="688" y="238" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Set up a custom Slack app</text>
-<rect x="832" y="208" width="392" height="48" rx="4" fill="#000"/><text x="1028" y="238" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Add Maya to Slack</text><g data-region="annotations"><rect x="256" y="88" width="248" height="136" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="560" y="208" width="256" height="48" rx="4" fill="#fff"/><text x="688" y="238" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open Slack app settings</text>
+<rect x="832" y="208" width="392" height="48" rx="4" fill="#000"/><text x="1028" y="238" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect Slack app</text><g data-region="annotations"><rect x="256" y="88" width="248" height="136" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
 <rect x="552" y="88" width="680" height="176" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text></g></svg>

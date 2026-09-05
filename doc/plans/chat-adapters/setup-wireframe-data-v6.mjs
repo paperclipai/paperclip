@@ -6,84 +6,39 @@ export const setupFlows = [
       {
         id: "13",
         slug: "slack-add",
-        title: "Add Maya to Slack",
-        subtitle: "Install Maya in your Slack workspace.",
-        rail: ["Agent selected", "Connect Slack", "Try Maya"],
+        title: "Connect a Slack app",
+        subtitle: "Bring your own Slack app using Paperclip's prepared manifest.",
+        rail: ["Agent selected", "Connect Slack app", "Try Maya"],
         active: 1,
         mode: "default",
-        primary: "Add Maya to Slack",
-        secondary: "Set up a custom Slack app",
-        actions: [
-          ["Add Maya to Slack", "Opens Slack's Add to Slack flow. The operator chooses a workspace and approves the installation; Slack then returns to the Try Maya step."],
-          ["Set up a custom Slack app", "Opens the customer-owned Slack App instructions for self-hosted deployments or organizations that cannot use Add to Slack."]
-        ],
-        annotations: [
-          "The step rail is the only repeated setup context; the selected agent is not restated in the page body.",
-          "The page contains only the installation action and the necessary customer-owned-App fallback."
-        ],
-        rationale: "Nothing else on this page requires operator attention."
-      },
-      {
-        id: "42",
-        slug: "slack-custom-create",
-        title: "Create and install the Slack app",
-        subtitle: "Paperclip prepared a Slack App Manifest for Maya.",
-        rail: ["Agent selected", "Create Slack app", "Connect app", "Try Maya"],
-        active: 1,
-        mode: "advanced",
         instructions: [
-          ["Open the prepared setup", "Slack opens with Maya's manifest already filled in."],
-          ["Choose the workspace", "Click Next, review the manifest, then click Create."],
-          ["Install the app", "In Slack app settings, open OAuth & Permissions, click Install to Workspace, then Allow."]
-        ],
-        primary: "Open Slack app setup",
-        secondary: "Continue after installing",
-        actions: [
-          ["Open Slack app setup", "Opens Slack's official app-from-manifest URL with Paperclip's generated manifest encoded in the link."],
-          ["Continue after installing", "Advances to the two credential fields after the operator has installed the new app in Slack."]
-        ],
-        annotations: [
-          "Every line is an action the operator must complete in Slack.",
-          "The manifest removes manual scope, event, callback, command, and interactivity configuration.",
-          "The page advances only after the operator confirms the app was installed."
-        ],
-        rationale: "The custom path gives exact provider instructions without exposing Paperclip's automatic configuration."
-      },
-      {
-        id: "43",
-        slug: "slack-custom-connect",
-        title: "Connect the Slack app",
-        subtitle: "Copy two values from the Slack app settings.",
-        rail: ["Agent selected", "Create Slack app", "Connect app", "Try Maya"],
-        active: 2,
-        mode: "advanced",
-        instructions: [
-          ["Copy the bot token", "Open OAuth & Permissions and copy Bot User OAuth Token. It begins with xoxb-."],
-          ["Copy the signing secret", "Open Basic Information, expand App Credentials, and copy Signing Secret."]
+          ["Copy the manifest", "Create a Slack app From an app manifest in the target workspace."],
+          ["Install the app", "Open OAuth & Permissions, install it to the workspace, and copy the Bot User OAuth Token."],
+          ["Copy the signing secret", "Open Basic Information and copy the App's Signing Secret."]
         ],
         fields: [
           ["Bot User OAuth Token", "xoxb-••••••••••••"],
           ["Signing Secret", "••••••••••••"]
         ],
         primary: "Connect Slack app",
-        secondary: "Back",
+        secondary: "Open Slack app settings",
         actions: [
-          ["Connect Slack app", "Stores both values write-only and verifies the Slack bot identity and required scopes before continuing."],
-          ["Back", "Returns to the Slack creation instructions without saving partially entered values."]
+          ["Connect Slack app", "Stores the two write-only credentials and verifies the Slack bot identity and required scopes."],
+          ["Open Slack app settings", "Opens Slack's app-management page where the operator creates and installs the customer-owned App."]
         ],
         annotations: [
-          "The only help text tells the operator exactly where to find each required value.",
-          "Only the two unavoidable Slack credentials are requested.",
-          "Connecting verifies the values instead of showing a separate verification report."
+          "The prepared manifest and exact provider locations make the customer-owned App the complete required path.",
+          "Only the Bot User OAuth Token and Signing Secret are entered, and both remain write-only.",
+          "Managed Add to Slack is an optional later convenience and cannot gate this path or release."
         ],
-        rationale: "A customer-owned Slack App cannot return these values to Paperclip, so both fields are necessary."
+        rationale: "Bring-your-own credentials are sufficient to ship; managed installation remains optional."
       },
       {
         id: "41",
         slug: "slack-try",
         title: "Try Maya in Slack",
         subtitle: "Start one task and reply to it once.",
-        rail: ["Agent selected", "Connect Slack", "Try Maya"],
+        rail: ["Agent selected", "Connect Slack app", "Try Maya"],
         active: 2,
         mode: "default",
         instructions: [
