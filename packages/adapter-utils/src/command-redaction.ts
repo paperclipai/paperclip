@@ -135,13 +135,13 @@ const COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS = [
   String.raw`'[^'\r\n]*'`,
   String.raw`\$'(?:\\.|[^'\\\r\n])*'`,
 ] as const;
-const COMMAND_SHELL_ESCAPE_PAIR_PATTERN = String.raw`\\[^\r\n]`;
+const COMMAND_SHELL_ESCAPE_PAIR_PATTERN = String.raw`\\+[^\r\n]`;
 // An opening escape pair carries the first byte of an unquoted value, as in
-// `X-API-Key:\ abc`. It excludes the escaped quote, so a `\"` opener falls to
-// the escaped branches. A deeper run such as `\\\"` opens with an escaped
-// backslash, which this pattern does accept; the escaped branches precede the
-// unquoted one in the alternation and take that value first.
-const COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN = String.raw`\\[^"\r\n]`;
+// `X-API-Key:\ abc`. The backslash run may be longer inside a serialized
+// command, where each layer doubles it. A run followed by a quote is excluded,
+// so a `\"` opener at any depth falls to the escaped branches, which precede
+// the unquoted one in the alternation.
+const COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN = String.raw`\\+[^"\r\n]`;
 // The first segment of an unquoted value is a raw token, bounded only by
 // whitespace, a quote, a backtick, or a backslash. A raw HTTP diagnostic
 // carries an opaque credential the same way, so a `;`, `|`, or `&` inside it

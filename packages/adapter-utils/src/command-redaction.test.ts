@@ -342,6 +342,27 @@ describe("redactCommandText header secrets", () => {
     }
   });
 
+  it("consumes an escaped-space continuation at every serialization depth", () => {
+    // A shell escape pair doubles its backslash with each serialization
+    // layer; the continuation reads the whole run as one pair.
+    const bases = [
+      'curl -H X-API-Key:"SECRET"\\ TAIL https://example.test',
+      'curl -H X-API-Key:\\ SECRET https://example.test',
+      'curl -H "X-API-Key: SECRET"\\ TAIL;echo safe',
+    ];
+    for (const base of bases) {
+      let text = base;
+      for (let depth = 0; depth <= 2; depth += 1) {
+        if (depth > 0) text = JSON.stringify(text);
+        const output = redactCommandText(text);
+        expect(output).not.toContain("SECRET");
+        expect(output).not.toContain("TAIL");
+        if (depth > 0) expect(() => JSON.parse(output)).not.toThrow();
+        expect(redactCommandText(output)).toBe(output);
+      }
+    }
+  });
+
   it("redacts a bare apikey header value", () => {
     // Supabase sends the key under an unhyphenated `apikey` header.
     expect(redactCommandText("apikey: abc")).toBe(
