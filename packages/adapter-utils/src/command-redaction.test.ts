@@ -321,10 +321,11 @@ describe("redactCommandText header secrets", () => {
     }
   });
 
-  it("keeps a serializer's closing delimiter when the argument is truncated", () => {
-    // A run log can cut a serialized command inside the header argument. The
-    // truncated value stops before the enclosing string's own quote, even
-    // when the cut lands after a backslash, so the string stays well formed.
+  it("redacts a truncated serialized argument to the end of its line", () => {
+    // A run log can cut a serialized command inside the header argument. With
+    // no closer on the line, the value runs to the end of the line: a bare
+    // quote there may be a further segment of the same shell word, so the rule
+    // redacts it rather than keeping it as the enclosing string's delimiter.
     const cuts = [
       'curl -H "X-API-Key: SECRET',
       'curl -H X-API-Key:"SECRET',
@@ -336,10 +337,30 @@ describe("redactCommandText header secrets", () => {
       for (const text of [JSON.stringify(cut), JSON.stringify(JSON.stringify(cut))]) {
         const output = redactCommandText(text);
         expect(output).not.toContain("SECRET");
-        expect(() => JSON.parse(output)).not.toThrow();
         expect(redactCommandText(output)).toBe(output);
       }
     }
+  });
+
+  it("keeps an even backslash run before a quote out of the escape pair", () => {
+    // Two backslashes are an escaped backslash; the quote after them opens a
+    // further segment of the same word, which is consumed with the value.
+    const input = 'curl -H X-API-Key:SECRET\\\\"TAILMARK"MORE ;echo safe';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("SECRET");
+    expect(output).not.toContain("TAILMARK");
+    expect(output).not.toContain("MORE");
+    expect(output).toBe(`curl -H X-API-Key:${REDACTED_COMMAND_TEXT_VALUE} ;echo safe`);
+    expect(redactCommandText(output)).toBe(output);
+  });
+
+  it("redacts a truncated quoted tail after an escaped-quoted value", () => {
+    const input = 'curl -H X-API-Key:\\"SECRET"TAILMARK';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("SECRET");
+    expect(output).not.toContain("TAILMARK");
+    expect(output).toBe(`curl -H X-API-Key:\\"${REDACTED_COMMAND_TEXT_VALUE}`);
+    expect(redactCommandText(output)).toBe(output);
   });
 
   it("consumes an escaped-space continuation at every serialization depth", () => {

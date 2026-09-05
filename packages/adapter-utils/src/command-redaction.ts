@@ -135,13 +135,13 @@ const COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS = [
   String.raw`'[^'\r\n]*'`,
   String.raw`\$'(?:\\.|[^'\\\r\n])*'`,
 ] as const;
-const COMMAND_SHELL_ESCAPE_PAIR_PATTERN = String.raw`\\+[^\r\n]`;
+const COMMAND_SHELL_ESCAPE_PAIR_PATTERN = String.raw`(?:(?:\\\\)+[^"\r\n]|(?:\\\\)*\\[^\r\n])`;
 // An opening escape pair carries the first byte of an unquoted value, as in
 // `X-API-Key:\ abc`. The backslash run may be longer inside a serialized
 // command, where each layer doubles it. A run followed by a quote is excluded,
 // so a `\"` opener at any depth falls to the escaped branches, which precede
 // the unquoted one in the alternation.
-const COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN = String.raw`\\+[^"\r\n]`;
+const COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN = String.raw`(?:(?:\\\\)+[^"\r\n]|(?:\\\\)*\\[^"\r\n])`;
 // The first segment of an unquoted value is a raw token, bounded only by
 // whitespace, a quote, a backtick, or a backslash. A raw HTTP diagnostic
 // carries an opaque credential the same way, so a `;`, `|`, or `&` inside it
@@ -185,19 +185,14 @@ const commandSecretHeaderEscapedOpener = (run: string) =>
   String.raw`(?<!\\)(?<${run}>(?:\\\\)*\\)"`;
 const commandSecretHeaderEscapedBody = (run: string) =>
   String.raw`(?:(?!(?<!\\)\k<${run}>")[^\s\r\n])(?:(?!(?<!\\)\k<${run}>")[^\r\n])*`;
-// A truncated argument has no closer on its line. Its body then also stops
-// before a bare quote, one preceded by an even run of backslashes, which can
-// only be an enclosing serializer's delimiter; that delimiter survives and the
-// enclosing string stays well formed. The closer itself is unescaped, so
-// backtracking never reads an escaped backslash as the closer.
-const COMMAND_SECRET_HEADER_BARE_QUOTE_PATTERN = String.raw`(?<=(?<!\\)(?:\\\\)*)"`;
-const commandSecretHeaderEscapedTruncatedBody = (run: string) =>
-  String.raw`(?:(?!(?<!\\)\k<${run}>")(?!${COMMAND_SECRET_HEADER_BARE_QUOTE_PATTERN})[^\s\r\n])` +
-  String.raw`(?:(?!(?<!\\)\k<${run}>")(?!${COMMAND_SECRET_HEADER_BARE_QUOTE_PATTERN})[^\r\n])*`;
+// The closer itself is unescaped, so backtracking never reads an escaped
+// backslash as the closer. A truncated argument has no closer on its line and
+// the value then runs to the end of the line: a bare quote there may be a
+// further segment of the same shell word, so it is redacted rather than kept.
 const commandSecretHeaderEscapedValue = (run: string, close: string) =>
   `(?:${commandSecretHeaderEscapedBody(run)}(?<!\\\\)(?<${close}>\\k<${run}>")` +
-  `|${commandSecretHeaderEscapedTruncatedBody(run)}` +
-  String.raw`(?=[\r\n]|$|${COMMAND_SECRET_HEADER_BARE_QUOTE_PATTERN}))`;
+  `|${commandSecretHeaderEscapedBody(run)}` +
+  String.raw`(?=[\r\n]|$))`;
 const COMMAND_SECRET_HEADER_RE = new RegExp(
   String.raw`(?<!\\)(?<dqPrefix>"${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\\r?\n|\\.|[^"\\\r\n])*\\?(?:(?<dqClose>")|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
     String.raw`|(?<sqPrefix>'${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'][^'\r\n]*(?:(?<sqClose>')|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
