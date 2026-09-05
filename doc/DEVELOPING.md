@@ -336,7 +336,10 @@ Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
 can name a different source variable while the agent still receives the
 canonical variable. `--api-key <value>` is also supported and is mutually
 exclusive with `--api-key-env`; Paperclip redacts it from its own output, but
-wrappers, process listings, and shell history may expose argument values. In a
+also removes it from the JavaScript argument view before telemetry, diagnostics,
+or server startup. Wrappers, operating-system process listings, and shell
+history may still expose argument values. This is an explicit local test-drive
+tradeoff; use an environment-backed input when that exposure is not acceptable. In a
 linked Git worktree the command sets worktree runtime mode and safely arms
 **Run tasks in this worktree** for the current isolated instance. Primary
 checkouts and non-Git directories leave that experimental setting unchanged.

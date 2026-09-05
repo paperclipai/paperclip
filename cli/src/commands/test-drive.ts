@@ -114,6 +114,23 @@ export function redactTestDriveText(text: string, credentials: Array<string | un
   return redacted;
 }
 
+export function redactTestDriveArgv(
+  apiKey: string | undefined,
+  argv: string[] = process.argv,
+): void {
+  if (!apiKey) return;
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--api-key" && argv[index + 1] === apiKey) {
+      argv[index + 1] = "[REDACTED]";
+      index += 1;
+      continue;
+    }
+    if (argv[index] === `--api-key=${apiKey}`) {
+      argv[index] = "--api-key=[REDACTED]";
+    }
+  }
+}
+
 export function resolveTestDriveDataDir(dataDir?: string): string {
   const explicit = dataDir?.trim();
   if (explicit) {
@@ -390,6 +407,9 @@ export async function testDriveCommand(
     openBrowser: openUrl,
   },
 ): Promise<void> {
+  // Commander has already copied the value into options. Remove it from the
+  // JavaScript argv view before logging, telemetry, diagnostics, or startup.
+  redactTestDriveArgv(options.apiKey);
   const dataDir = path.resolve(process.env.PAPERCLIP_HOME ?? resolveTestDriveDataDir(options.dataDir));
   const linkedWorktree = process.env.PAPERCLIP_IN_WORKTREE === "true";
   const instanceId = process.env.PAPERCLIP_INSTANCE_ID ?? "default";

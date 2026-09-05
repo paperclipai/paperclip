@@ -217,11 +217,14 @@ MY_ROUTER_KEY=... npx paperclipai test-drive \
 
 Credentials are stored through Paperclip's user-secret reference path and are
 redacted from Paperclip command output. Paperclip does not print `--api-key`,
-but command wrappers, process listings, and shell history can expose values
-passed in arguments. Prefer an exported canonical variable or `--api-key-env`
-when that matters. Provider connectivity, local harness installation,
-credential validity, and model availability are intentionally checked only
-when the agent first runs.
+and it removes the value from its JavaScript argument view immediately after
+Commander parses it. Paperclip does not put the raw argument list in telemetry,
+API metadata, or diagnostics. Command wrappers, operating-system process
+listings, and shell history can still expose values passed in arguments. This
+is an explicit tradeoff for the local test-drive workflow. Prefer an exported
+canonical variable or `--api-key-env` when that matters. Provider connectivity,
+local harness installation, credential validity, and model availability are
+intentionally checked only when the agent first runs.
 
 When invoked inside a linked Git worktree, the command ignores inherited
 `PAPERCLIP_IN_WORKTREE` state, launches in worktree mode, and verifies **Run

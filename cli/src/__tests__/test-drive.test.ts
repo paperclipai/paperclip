@@ -8,6 +8,7 @@ import {
   bootstrapTestDrive,
   prepareTestDriveEnvironment,
   reconcileTestDriveWorktreeExecution,
+  redactTestDriveArgv,
   redactTestDriveText,
   resolveTestDriveBootstrap,
   resolveTestDriveDataDir,
@@ -263,6 +264,17 @@ describe("test-drive bootstrap validation", () => {
       "literal-secret, custom-secret, and env-secret must never appear",
       ["literal-secret", "custom-secret", "env-secret"],
     )).toBe("[REDACTED], [REDACTED], and [REDACTED] must never appear");
+  });
+
+  it("removes literal keys from the JavaScript argv view", () => {
+    const splitArgv = ["node", "paperclipai", "test-drive", "--api-key", "literal-secret"];
+    const joinedArgv = ["node", "paperclipai", "test-drive", "--api-key=literal-secret"];
+
+    redactTestDriveArgv("literal-secret", splitArgv);
+    redactTestDriveArgv("literal-secret", joinedArgv);
+
+    expect(splitArgv).toEqual(["node", "paperclipai", "test-drive", "--api-key", "[REDACTED]"]);
+    expect(joinedArgv).toEqual(["node", "paperclipai", "test-drive", "--api-key=[REDACTED]"]);
   });
 });
 
