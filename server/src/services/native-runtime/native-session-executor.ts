@@ -7189,7 +7189,9 @@ async function createRunnerdBackendWithinSessionClaim(
         HOME: remoteTarget!.remoteCwd,
         CODEX_HOME: posix.join(remoteTarget!.remoteCwd, ".codex"),
         PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
-        PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+        ...(remoteTarget!.transport === "sandbox"
+          ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }
+          : {}),
       }
     : {
         ...effectiveRunnerEnvironmentBase,
