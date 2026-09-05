@@ -84,6 +84,7 @@ export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
@@ -3153,6 +3154,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
+    // Productivity-review issues self-manage their lifecycle (evidence
+    // refresh, snooze, creation caps) and carry no live execution path of
+    // their own. Escalating one to `blocked` whenever its review owner is
+    // momentarily not invokable only manufactures orphaned review cards plus
+    // repeated terminal-run-recovery retries. Every escalation entry point
+    // (reconcile sweep, plan-approval resume, native-run promotion) funnels
+    // through here; returning null leaves the review untouched for its own
+    // reconciliation to refresh or snooze.
+    if (input.issue.originKind === PRODUCTIVITY_REVIEW_ORIGIN_KIND) {
+      return null;
+    }
+
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
@@ -3505,6 +3518,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
 
     for (const issue of candidates) {
+      // Productivity-review issues are self-managed by their own reconciliation
+      // (evidence refresh, terminal snooze, creation cap). Treating one as a
+      // stranded assignment escalates it to `blocked` with no live execution
+      // path whenever its review owner is momentarily not invokable, which only
+      // manufactures orphaned review cards and repeated recovery retries. Skip
+      // them here.
+      if (issue.originKind === PRODUCTIVITY_REVIEW_ORIGIN_KIND) {
+        result.skipped += 1;
+        continue;
+      }
       const executionState = issue.status === "in_review"
         ? parseIssueExecutionState(issue.executionState)
         : null;
