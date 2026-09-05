@@ -229,6 +229,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
+import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -2240,6 +2241,144 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       ).toBe(true);
 
       await act(async () => root.unmount());
+    });
+
+    it("opens the OpenAI card's sign-in once the prompt lands", async () => {
+      // The panel that shows a code owns its session and the wizard learns the
+      // prompt's URL only by being told. When it was not told, the step waited
+      // on a card that had already opened: the code sat on screen under a
+      // button still reading "Next", disabled, with nothing left to wait for.
+      //
+      // The sibling test above stops at the login having started, which is why
+      // this went unseen — and the harness could not see it either, since it
+      // supplies the prompt itself rather than going through the panel.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/OpenAI/);
+      for (let i = 0; i < 6; i++) await flushReact();
+
+      // The displayed-code panel is the one under test: if the row picked a
+      // source the other panel serves, the rest of this proves nothing.
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalled();
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
+      const cta = [...document.body.querySelectorAll("button")].pop()!;
+      expect(cta.textContent?.trim()).toBe("Sign in to OpenAI");
+      // The code is the card's own content, and it arrives with the URL.
+      expect(document.body.textContent).toContain("Q2RJ-E1YIF");
+      // The button is the whole point: its destination is the URL the panel
+      // reports, so an unreported prompt leaves it reading like an offer and
+      // refusing the press. The label alone does not catch that — the phase can
+      // reach `ready` before the signal resolves, which names the button
+      // without enabling it.
+      expect(cta.hasAttribute("disabled"), "the sign-in should be pressable").toBe(
+        false,
+      );
+
+      await act(async () => root.unmount());
+    });
+
+    it("does not hire after Back interrupts the hold before step 5", async () => {
+      // "Connecting" is held for two seconds so it reads as a state rather than
+      // a flicker, and Back stays live throughout. The hire behind that hold
+      // knows nothing about the phase, so a timer left running took a customer
+      // who had just backed out to Review with an agent hired anyway.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      // A session the server has already authenticated, so the panel completes
+      // and reports success on its own. The paste that normally gets it there
+      // is the sibling test's subject; this one is about what the success does.
+      mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+        sessionId: "claude-session-1",
+        status: "authenticated",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      const cta = () =>
+        [...document.body.querySelectorAll("button")].pop()?.textContent?.trim();
+      expect(cta(), "success should have taken the button to the hold").toBe(
+        "Connecting",
+      );
+
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.trim().startsWith("Back"),
+      );
+      await act(async () => {
+        back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 10; i++) await flushReact();
+
+      // Past the hold: whatever it was going to do, it has had its chance.
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, CONNECTED_HOLD_MS + 400));
+      });
+      for (let i = 0; i < 6; i++) await flushReact();
+
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Connect a model");
+
+      await act(async () => root.unmount());
+    });
+
+    it("starts no login when Back interrupts the collapse", async () => {
+      // Backing out before the card has opened has nothing to close. Unwinding
+      // through the card beat regardless mounted the panel — which starts a
+      // server login on mount — only for the unmount to cancel it, and a cancel
+      // that fails holds the per-owner reservation until the server deadline,
+      // so the retry the customer is about to make cannot start.
+      //
+      // The beats collapse to zero without a `matchMedia` to ask, which is why
+      // this stubs one: the collapse has to still be running when Back lands.
+      const realMatchMedia = window.matchMedia;
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: (query: string) => ({
+          matches: false,
+          media: query,
+          onchange: null,
+          addListener: () => {},
+          removeListener: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: () => false,
+        }),
+      });
+      try {
+        mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+        const { root } = await openStep4({ adapterType: "claude_local" });
+
+        await pickSource(/Claude/);
+        // Still collapsing: the flushes above are microtasks and 0ms timers,
+        // far inside the collapse's own duration.
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+
+        const back = [...document.body.querySelectorAll("button")].find((b) =>
+          b.textContent?.trim().startsWith("Back"),
+        );
+        await act(async () => {
+          back!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        for (let i = 0; i < 10; i++) await flushReact();
+        await act(async () => {
+          await new Promise((resolve) => window.setTimeout(resolve, 1200));
+        });
+        for (let i = 0; i < 6; i++) await flushReact();
+
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain("Connect a model");
+
+        await act(async () => root.unmount());
+      } finally {
+        Object.defineProperty(window, "matchMedia", {
+          configurable: true,
+          writable: true,
+          value: realMatchMedia,
+        });
+      }
     });
 
     it("starts the codex_local sign-in on Connect when the signal cannot decide", async () => {

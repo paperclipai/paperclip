@@ -1284,6 +1284,20 @@ function OnboardingWizardInner({
       );
       return () => clearTimeout(t);
     }
+    if (connectPhase === "connecting") {
+      // No success state: the step advances. The hold is so "Connecting" is
+      // legible as a state rather than a flicker on the way out — a step that
+      // left the instant a paste landed would read as the paste having gone
+      // wrong.
+      //
+      // A beat rather than a bare timer because Back stays live through it. A
+      // dropped handle hired two seconds after the customer had backed out,
+      // landing them on Review having asked for the opposite; `handleGiveHeartbeat`
+      // has no notion of the phase and could not refuse it. Leaving the phase —
+      // Back, the step changing, unmount — now cancels the hire with it.
+      const t = setTimeout(() => void handleGiveHeartbeat(), CONNECTED_HOLD_MS);
+      return () => clearTimeout(t);
+    }
     if (connectPhase === "unwindCard") {
       const t = setTimeout(() => setConnectPhase("unwindRoom"), beatDelay(CARD_EXIT_MS));
       return () => clearTimeout(t);
@@ -1346,7 +1360,14 @@ function OnboardingWizardInner({
    */
   function unwindConnectStep() {
     setConnectAuthUrl(null);
-    setConnectPhase("unwindCard");
+    // Where the reverse starts depends on how far the sequence got. Backing out
+    // during the collapse has no card to close and no room to give back, and
+    // entering `unwindCard` regardless mounted the panel — which starts a
+    // server login on mount — purely so the unmount could cancel it. Should
+    // that cancel fail, the reservation is held to the server deadline and an
+    // immediate retry cannot start. With no card open, the row is the whole of
+    // the unwind.
+    setConnectPhase(connectCardLive ? "unwindCard" : "unwindRow");
   }
 
   /**
@@ -3087,6 +3108,10 @@ function OnboardingWizardInner({
                           label="API key"
                           placeholder="Enter API key here"
                           masked
+                          // The card is the answer to the tile just pressed, so
+                          // the field is unambiguously the next thing. Carried
+                          // over from the key field this card replaced.
+                          autoFocus
                           value={apiKey}
                           onChange={setApiKey}
                           onSubmit={() => handleConnectStepPrimary()}
@@ -3119,13 +3144,10 @@ function OnboardingWizardInner({
                           if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
                         }}
                         onConnected={() => {
-                          // No success state: the step advances. The hold is so
-                          // "Connecting" is legible as a state rather than a
-                          // flicker on the way out — a step that left the
-                          // instant a paste landed would read as the paste
-                          // having gone wrong.
+                          // The hold before the step advances is the phase's own
+                          // beat, above, so that backing out during it cancels
+                          // the hire.
                           setConnectPhase("connecting");
-                          window.setTimeout(() => void handleGiveHeartbeat(), CONNECTED_HOLD_MS);
                         }}
                         onStored={() => {
                           queryClient.invalidateQueries({

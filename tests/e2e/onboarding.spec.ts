@@ -117,7 +117,7 @@ test.describe("Onboarding wizard", () => {
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
 
-  test("connect step starts the sign-in on Connect, rather than hiring, when the signal reports no credential", async ({
+  test("connect step starts the sign-in when the source is chosen, rather than hiring, when the signal reports no credential", async ({
     page,
   }) => {
     const pageErrors: string[] = [];
@@ -273,29 +273,32 @@ test.describe("Onboarding wizard", () => {
     await page.locator("#onboarding-agent-name").fill("Ada");
     await page.getByRole("button", { name: "Next" }).click();
 
-    // Step 4 (Connect a model): pick a source. Nothing to assert yet — the card
-    // *is* the sign-in now, so it does not exist until Connect is pressed. By
-    // role rather than by label, because which adapters the row offers depends
-    // on the registry this environment reports.
+    // Step 4 (Connect a model). By role rather than by label, because which
+    // adapters the row offers depends on the registry this environment reports.
     const source = page.getByRole("radio").first();
     await source.waitFor({ timeout: 30_000 });
+
+    // Nothing before the row is answered: the card is the answer to the tile,
+    // and the button has nothing to do until there is a source to do it with.
+    const cardInstruction = page.getByText("then come back and enter authorization code");
+    await expect(cardInstruction).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
+
+    // Answering the row is what starts the sign-in — this is the ordering the
+    // step exists to enforce, since a hire here would file an agent with no
+    // credential to run on. It is also the whole of the interaction: there is
+    // no second press between choosing a source and being signed in.
     await source.click();
 
-    const cardInstruction = page.getByText("Open Claude link then come back and enter code");
-    await expect(cardInstruction).toHaveCount(0);
-
-    // Connect starts the sign-in instead of hiring, which is the ordering the
-    // step exists to enforce: a hire here would file an agent with no
-    // credential to run on. Waited on for *enabled* rather than for visible —
-    // it is already on screen, and clicking a disabled button does nothing.
-    const connect = page.getByRole("button", { name: "Connect", exact: true });
-    await expect(connect).toBeEnabled({ timeout: 30_000 });
-    await connect.click();
-
-    await expect(cardInstruction).toBeVisible({ timeout: 15_000 });
+    await expect(cardInstruction).toBeVisible({ timeout: 30_000 });
+    // One destination, two ways to it: the card's own link for anyone
+    // finishing in another browser, and the step's button for the flow.
+    const cardLink = page.getByRole("link", { name: /^Sign in to / });
+    await expect(cardLink).toBeVisible({ timeout: 15_000 });
+    await expect(cardLink).toHaveAttribute("href", /claude\.ai\/oauth\/authorize/);
     await expect(
-      page.getByRole("link", { name: /claude\.ai\/oauth\/authorize/ }),
-    ).toBeVisible({ timeout: 15_000 });
+      page.getByRole("button", { name: /^Sign in to / }),
+    ).toBeEnabled({ timeout: 15_000 });
     // No "Use saved login" here: the hire step applies a stored login itself.
     await expect(page.getByRole("button", { name: "Use saved login" })).toHaveCount(0);
     expect(hireCalled).toBe(false);
