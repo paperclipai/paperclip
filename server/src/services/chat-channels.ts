@@ -3830,22 +3830,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .then((rows) => rows[0] ?? null);
   }
 
-  async function appendLifecycleComment(
-    endpointId: string,
-    threadId: string,
-    text: string,
-  ): Promise<ConversationRow | null> {
-    const conversation = await conversationForThread(endpointId, threadId);
-    if (!conversation) return null;
-    await issuesSvc.addComment(
-      conversation.issueId,
-      text,
-      {},
-      { authorType: "system" },
-    );
-    return conversation;
-  }
-
   async function recordLifecycleDelivery(input: {
     endpointId: string;
     threadId: string;
@@ -3854,71 +3838,87 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     text: string;
     revision?: string | null;
   }) {
-    const record = await endpointRecord(input.endpointId);
-    if (!record) throw notFound("Chat endpoint not found");
-    // A provider has already authenticated this callback. During setup the
-    // message can belong to the test conversation, so retain its correction.
-    // Paused or unhealthy connections acknowledge late callbacks without
-    // mutating the bound task or causing provider retry storms.
-    if (
-      record.endpoint.status !== "verifying" &&
-      record.endpoint.status !== "active"
-    )
-      return;
-    const conversation = await conversationForThread(
-      input.endpointId,
-      input.threadId,
-    );
-    if (!conversation) return;
-    const linkedMessage = await db
-      .select({ id: chatMessageLinks.id })
-      .from(chatMessageLinks)
-      .where(
-        and(
-          eq(chatMessageLinks.endpointId, input.endpointId),
-          eq(chatMessageLinks.conversationId, conversation.id),
-          eq(chatMessageLinks.providerMessageId, input.messageId),
-          eq(chatMessageLinks.direction, "inbound"),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
-    if (!linkedMessage) return;
     const providerEventId = `${input.eventKind}:${input.threadId}:${input.messageId}:${input.revision ?? "once"}`;
-    const [delivery] = await db
-      .insert(chatDeliveries)
-      .values({
-        companyId: record.endpoint.companyId,
-        endpointId: input.endpointId,
-        conversationId: conversation.id,
-        providerEventId,
-        deduplicationKey: createHash("sha256")
-          .update(providerEventId)
-          .digest("hex"),
-        eventKind: input.eventKind,
-        normalizedEvent: {
+    await db.transaction(async (tx) => {
+      const endpoint = await tx
+        .select()
+        .from(chatEndpoints)
+        .where(eq(chatEndpoints.id, input.endpointId))
+        .then((rows) => rows[0] ?? null);
+      if (!endpoint) throw notFound("Chat endpoint not found");
+      // A provider has already authenticated this callback. During setup the
+      // message can belong to the test conversation, so retain its correction.
+      // Paused or unhealthy connections acknowledge late callbacks without
+      // mutating the bound task or causing provider retry storms.
+      if (endpoint.status !== "verifying" && endpoint.status !== "active")
+        return;
+      const conversation = await tx
+        .select()
+        .from(chatConversations)
+        .where(
+          and(
+            eq(chatConversations.endpointId, input.endpointId),
+            eq(chatConversations.externalThreadId, input.threadId),
+          ),
+        )
+        .orderBy(desc(chatConversations.sessionGeneration))
+        .then((rows) => rows[0] ?? null);
+      if (!conversation) return;
+      const linkedMessage = await tx
+        .select({ id: chatMessageLinks.id })
+        .from(chatMessageLinks)
+        .where(
+          and(
+            eq(chatMessageLinks.endpointId, input.endpointId),
+            eq(chatMessageLinks.conversationId, conversation.id),
+            eq(chatMessageLinks.providerMessageId, input.messageId),
+            eq(chatMessageLinks.direction, "inbound"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!linkedMessage) return;
+      const [delivery] = await tx
+        .insert(chatDeliveries)
+        .values({
+          companyId: endpoint.companyId,
+          endpointId: input.endpointId,
+          conversationId: conversation.id,
           providerEventId,
-          kind: input.eventKind,
-          conversation: { externalThreadId: input.threadId },
-          message: {
-            providerMessageId: input.messageId,
-            text: input.text,
+          deduplicationKey: createHash("sha256")
+            .update(providerEventId)
+            .digest("hex"),
+          eventKind: input.eventKind,
+          normalizedEvent: {
+            providerEventId,
+            kind: input.eventKind,
+            conversation: { externalThreadId: input.threadId },
+            message: {
+              providerMessageId: input.messageId,
+              text: input.text,
+            },
           },
-        },
-        state: "received",
-      })
-      .onConflictDoNothing()
-      .returning();
-    if (!delivery) return;
-    await appendLifecycleComment(input.endpointId, input.threadId, input.text);
-    await db
-      .update(chatDeliveries)
-      .set({
-        state: "processed",
-        attempts: 1,
-        processedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(chatDeliveries.id, delivery.id));
+          state: "received",
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (!delivery) return;
+      await issuesSvc.addComment(
+        conversation.issueId,
+        input.text,
+        {},
+        { authorType: "system" },
+        tx,
+      );
+      await tx
+        .update(chatDeliveries)
+        .set({
+          state: "processed",
+          attempts: 1,
+          processedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(chatDeliveries.id, delivery.id));
+    });
   }
 
   async function handleMessageUpdated(

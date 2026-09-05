@@ -6764,6 +6764,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
       );
 
+    const transaction = vi.spyOn(db, "transaction");
+    transaction.mockRejectedValueOnce(
+      new Error("injected lifecycle transaction failure"),
+    );
+    await expect(
+      sendEdit(1_788_620_100, "Edited during setup"),
+    ).rejects.toThrow("injected lifecycle transaction failure");
+    transaction.mockRestore();
+    await expect(
+      db
+        .select()
+        .from(chatDeliveries)
+        .where(
+          and(
+            eq(chatDeliveries.endpointId, endpoint.id),
+            eq(chatDeliveries.eventKind, "message_updated"),
+          ),
+        ),
+    ).resolves.toEqual([]);
+
     await expect(
       sendEdit(1_788_620_100, "Edited during setup"),
     ).resolves.toMatchObject({ ok: true });
@@ -6861,8 +6881,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           body: JSON.stringify(editPayload),
         }),
       );
-    await sendEdit();
-    await sendEdit();
+    await Promise.all(Array.from({ length: 12 }, sendEdit));
 
     const [conversation] = await db
       .select()
@@ -6902,10 +6921,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(
         and(
           eq(chatDeliveries.endpointId, endpoint.id),
-          eq(
-            chatDeliveries.providerEventId,
-            `telegram:${chatId}:${chatId}:41`,
-          ),
+          eq(chatDeliveries.providerEventId, `telegram:${chatId}:${chatId}:41`),
         ),
       );
     expect(originalDelivery.normalizedEvent.deduplication).toBeUndefined();
