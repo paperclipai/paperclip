@@ -31,6 +31,28 @@ function text(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function responseHeader(
+  headers: Headers | Record<string, unknown> | undefined,
+  name: string,
+): string | null {
+  if (!headers) return null;
+  if (headers instanceof Headers) return headers.get(name);
+  const target = name.toLowerCase();
+  const entry = Object.entries(headers).find(
+    ([key]) => key.toLowerCase() === target,
+  );
+  const value = entry?.[1];
+  return typeof value === "string" || typeof value === "number"
+    ? String(value)
+    : null;
+}
+
+function positiveNumber(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 /**
  * Classify a provider send failure by whether an external side effect could
  * already have happened. Only ambiguous network failures stop automatic
@@ -52,7 +74,10 @@ export function classifyChatPublicationError(
           status?: unknown;
           statusCode?: unknown;
           data?: { error?: unknown };
-          response?: { status?: unknown };
+          response?: {
+            status?: unknown;
+            headers?: Headers | Record<string, unknown>;
+          };
           innerHttpError?: { statusCode?: unknown };
         })
       : null;
@@ -67,6 +92,22 @@ export function classifyChatPublicationError(
     value?.innerHttpError?.statusCode,
   ].find((candidate): candidate is number => typeof candidate === "number");
   const reason = text(error);
+  const retryAfterHeader = positiveNumber(
+    responseHeader(value?.response?.headers, "retry-after"),
+  );
+  const rateLimitRemaining = responseHeader(
+    value?.response?.headers,
+    "x-ratelimit-remaining",
+  );
+  const rateLimitReset = positiveNumber(
+    responseHeader(value?.response?.headers, "x-ratelimit-reset"),
+  );
+  const githubRateLimit =
+    status === 403 &&
+    (retryAfterHeader !== null ||
+      rateLimitRemaining === "0" ||
+      reason.toLowerCase().includes("secondary rate limit") ||
+      reason.toLowerCase().includes("rate limit exceeded"));
 
   if (
     name === "AdapterRateLimitError" ||
@@ -74,17 +115,24 @@ export function classifyChatPublicationError(
     code === "RATE_LIMITED" ||
     code === "slack_webapi_rate_limited_error" ||
     platformCode === "ratelimited" ||
-    status === 429
+    status === 429 ||
+    githubRateLimit
   ) {
     const seconds = finitePositive(value?.retryAfter);
     const milliseconds = finitePositive(value?.retryAfterMs);
     const telegramSeconds = finitePositive(value?.retry_after);
+    const resetMilliseconds = rateLimitReset
+      ? Math.max(1_000, rateLimitReset * 1_000 - Date.now())
+      : null;
+    const headerSeconds = seconds ?? retryAfterHeader ?? telegramSeconds;
     return {
       kind: "retry",
       retryAfterMs: Math.min(
         15 * 60_000,
         milliseconds ??
-          (seconds ?? telegramSeconds ?? 2 ** Math.max(0, attempt)) * 1000,
+          (headerSeconds !== null
+            ? headerSeconds * 1000
+            : (resetMilliseconds ?? 2 ** Math.max(0, attempt) * 1000)),
       ),
       reason,
     };

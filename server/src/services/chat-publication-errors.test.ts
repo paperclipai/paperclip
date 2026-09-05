@@ -54,6 +54,44 @@ describe("chat publication error classification", () => {
         1,
       ),
     ).toMatchObject({ kind: "retry", retryAfterMs: 9000 });
+    expect(
+      classifyChatPublicationError(
+        Object.assign(new Error("You have exceeded a secondary rate limit"), {
+          name: "HttpError",
+          status: 403,
+          response: { headers: { "retry-after": "61" } },
+        }),
+        1,
+      ),
+    ).toMatchObject({ kind: "retry", retryAfterMs: 61_000 });
+    expect(
+      classifyChatPublicationError(
+        Object.assign(new Error("API rate limit exceeded"), {
+          name: "HttpError",
+          status: 403,
+          response: {
+            headers: {
+              "x-ratelimit-remaining": "0",
+              "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 60),
+            },
+          },
+        }),
+        1,
+      ),
+    ).toMatchObject({ kind: "retry" });
+  });
+
+  it("does not mistake an ordinary GitHub permission denial for rate limiting", () => {
+    expect(
+      classifyChatPublicationError(
+        Object.assign(new Error("Resource not accessible by integration"), {
+          name: "HttpError",
+          status: 403,
+          response: { headers: { "x-ratelimit-remaining": "4999" } },
+        }),
+        1,
+      ),
+    ).toMatchObject({ kind: "endpoint_attention" });
   });
 
   it.each([
