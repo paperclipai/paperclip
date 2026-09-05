@@ -123,6 +123,23 @@ class FakeEndpointRuntime {
     return this.webhookResponse;
   }
 
+  acceptsProviderScope(raw: unknown) {
+    if (this.options.providerConfig.provider !== "microsoft-teams") return true;
+    const expected = this.options.providerConfig.credentials.appTenantId;
+    if (!expected || !raw || typeof raw !== "object") return Boolean(!expected);
+    const payload = raw as {
+      conversation?: { tenantId?: unknown };
+      channelData?: { tenant?: { id?: unknown } };
+    };
+    const tenantIds = [
+      payload.conversation?.tenantId,
+      payload.channelData?.tenant?.id,
+    ].filter((value): value is string => typeof value === "string");
+    return (
+      tenantIds.length > 0 && tenantIds.every((value) => value === expected)
+    );
+  }
+
   thread(threadId: string) {
     const channelId = threadId.split(":")[1] ?? threadId;
     return {
@@ -2491,25 +2508,71 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
+    const teamsTenantId = "00000000-0000-4000-8000-000000000222";
     const teamsPayload = (action: "add" | "remove") => ({
       id: `teams-${action}`,
       type: "installationUpdate",
       action,
-      conversation: { id: "19:conversation@thread.tacv2", isGroup: true },
+      conversation: {
+        id: "19:conversation@thread.tacv2",
+        isGroup: true,
+        tenantId: teamsTenantId,
+      },
       channelData: {
+        tenant: { id: teamsTenantId },
         team: { id: "team-1", name: "Paperclip" },
         channel: { id: "channel-1", name: "Engineering" },
       },
     });
-    await teams.service.handleWebhook(
-      teamsEndpoint.publicId,
-      "microsoft-teams",
-      new Request("https://paperclip.example/teams", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(teamsPayload("add")),
-      }),
-    );
+    const deliverTeamsLifecycle = (payload: unknown) =>
+      teams.service.handleWebhook(
+        teamsEndpoint.publicId,
+        "microsoft-teams",
+        new Request("https://paperclip.example/teams", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        }),
+      );
+    const foreignTenantPayload = teamsPayload("add");
+    foreignTenantPayload.id = "teams-foreign-tenant";
+    foreignTenantPayload.conversation.tenantId = "foreign-tenant";
+    foreignTenantPayload.channelData.tenant.id = "foreign-tenant";
+    await expect(
+      deliverTeamsLifecycle(foreignTenantPayload),
+    ).resolves.toMatchObject({ status: 202 });
+    const missingTenantPayload = teamsPayload("add") as Omit<
+      ReturnType<typeof teamsPayload>,
+      "conversation" | "channelData"
+    > & {
+      conversation: Omit<
+        ReturnType<typeof teamsPayload>["conversation"],
+        "tenantId"
+      >;
+      channelData: Omit<
+        ReturnType<typeof teamsPayload>["channelData"],
+        "tenant"
+      >;
+    };
+    delete (missingTenantPayload.conversation as { tenantId?: string })
+      .tenantId;
+    delete (missingTenantPayload.channelData as { tenant?: { id: string } })
+      .tenant;
+    missingTenantPayload.id = "teams-missing-tenant";
+    await expect(
+      deliverTeamsLifecycle(missingTenantPayload),
+    ).resolves.toMatchObject({ status: 202 });
+    await expect(
+      teams.service.listResources(teamsEndpoint.id),
+    ).resolves.toEqual([]);
+    await expect(
+      db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, teamsEndpoint.id)),
+    ).resolves.toHaveLength(0);
+
+    await deliverTeamsLifecycle(teamsPayload("add"));
     const [teamsResource] = await teams.service.listResources(teamsEndpoint.id);
     expect(teamsResource).toMatchObject({
       providerResourceId: "19:conversation@thread.tacv2",
@@ -2549,15 +2612,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(chatConversations)
         .where(eq(chatConversations.endpointId, teamsEndpoint.id)),
     ).resolves.toHaveLength(1);
-    await teams.service.handleWebhook(
-      teamsEndpoint.publicId,
-      "microsoft-teams",
-      new Request("https://paperclip.example/teams", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(teamsPayload("remove")),
-      }),
-    );
+    await deliverTeamsLifecycle(teamsPayload("remove"));
     await expect(
       teams.service.listResources(teamsEndpoint.id),
     ).resolves.toEqual([

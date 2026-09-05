@@ -5549,7 +5549,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           );
       }
     }
-    if (response.ok && lifecyclePayload) {
+    if (
+      response.ok &&
+      lifecyclePayload &&
+      endpointRuntime.acceptsProviderScope(lifecyclePayload)
+    ) {
       const effects = parseChatProviderLifecycle({
         provider: endpoint.provider,
         headers: lifecycleInspection.headers,
