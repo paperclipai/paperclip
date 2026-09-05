@@ -4246,7 +4246,10 @@ function assertValidAssigneeAgentFilter(assigneeAgentFilter: string | null | und
 }
 
 function assertValidUuidFilter(name: string, value: string | undefined) {
-  if (typeof value === "string" && !isUuidLike(value)) {
+  // An empty value means "filter absent" — every query builder below gates on a
+  // falsy filter, and `parseIssueAssigneeAgentFilter` normalizes `""` the same
+  // way. Rejecting it here would disagree with both.
+  if (typeof value === "string" && value.trim() !== "" && !isUuidLike(value)) {
     throw unprocessable(`${name} must be a UUID`);
   }
 }

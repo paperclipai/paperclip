@@ -2901,22 +2901,39 @@ function parseIssueUuidFilters<Name extends IssueUuidFilterName>(
   for (const name of names) {
     const rawValue = query[name];
     if (rawValue === undefined) continue;
-    if (typeof rawValue !== "string" || !isUuidLike(rawValue.trim())) {
+    if (typeof rawValue !== "string") {
       return { ok: false, error: `${name} must be a UUID` };
     }
-    filters[name] = rawValue.trim();
+    const trimmed = rawValue.trim();
+    // An empty value means "filter absent", not "filter malformed". Every query
+    // builder in `services/issues.ts` gates on a falsy filter, so `?projectId=`
+    // has always returned the unfiltered 200. Only non-empty text is validated.
+    if (trimmed.length === 0) continue;
+    if (!isUuidLike(trimmed)) {
+      return { ok: false, error: `${name} must be a UUID` };
+    }
+    filters[name] = trimmed;
   }
   const parentIdName = "parentId" as Name;
   if (names.includes(parentIdName)) {
     // `parentId ?? parentIssueId` is the long-standing precedence on both routes.
-    // Only validate the alias when it is the value that will actually be used —
-    // validating a superseded alias would 400 a request that has always been 200.
+    // `??` resolves on presence, not on emptiness: a present-but-empty `parentId`
+    // already suppressed the alias, so read the raw query value here rather than
+    // the parsed filter. Only validate the alias when it is the value that will
+    // actually be used — validating a superseded alias would 400 a request that
+    // has always been 200.
     const rawParentIssueId = query.parentIssueId;
-    if (filters[parentIdName] === undefined && rawParentIssueId !== undefined) {
-      if (typeof rawParentIssueId !== "string" || !isUuidLike(rawParentIssueId.trim())) {
+    if (query[parentIdName] === undefined && rawParentIssueId !== undefined) {
+      if (typeof rawParentIssueId !== "string") {
         return { ok: false, error: "parentIssueId must be a UUID" };
       }
-      filters[parentIdName] = rawParentIssueId.trim();
+      const trimmedAlias = rawParentIssueId.trim();
+      if (trimmedAlias.length > 0) {
+        if (!isUuidLike(trimmedAlias)) {
+          return { ok: false, error: "parentIssueId must be a UUID" };
+        }
+        filters[parentIdName] = trimmedAlias;
+      }
     }
   }
   return { ok: true, filters };
@@ -2929,7 +2946,9 @@ function parseIssueAssigneeAgentIdFilter(
   const rejected = { ok: false as const, error: "assigneeAgentId must be a UUID or 'null'" };
   if (typeof rawValue !== "string") return rejected;
   const normalized = rawValue.trim();
-  if (normalized.length === 0) return rejected;
+  // Empty means "filter absent" — `services/issues.ts` normalizes `""` to
+  // `undefined` for this filter, and the route did the same before this guard.
+  if (normalized.length === 0) return { ok: true, value: undefined };
   if (normalized.toLowerCase() === "null") return { ok: true, value: null };
   if (!isUuidLike(normalized)) return rejected;
   return { ok: true, value: normalized };

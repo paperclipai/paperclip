@@ -13,6 +13,7 @@ import {
   goals,
   heartbeatRuns,
   issueLabels,
+  issueRelations,
   issues,
   labels,
   principalPermissionGrants,
@@ -31,6 +32,7 @@ import {
   issueRoutes,
 } from "../routes/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
+import { issueService } from "../services/issues.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "../services/successful-run-handoff-state.js";
 
@@ -886,6 +888,151 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       .query({ attention: "blocked", assigneeAgentId: "null" });
     expect(nullAssigneeRes.status, JSON.stringify(nullAssigneeRes.body)).toBe(200);
     expect(nullAssigneeRes.body).toMatchObject({ count: 0 });
+  });
+
+  it("treats an empty UUID filter value as absent on both routes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Visible issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    // The blocked-inbox count only counts issues that carry blocked attention,
+    // so the count control below needs a real `blocks` edge to be non-zero.
+    await db.insert(issueRelations).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const app = createApp(companyId);
+    const params = [
+      "assigneeAgentId",
+      "participantAgentId",
+      "projectId",
+      "workspaceId",
+      "executionWorkspaceId",
+      "parentId",
+      "descendantOf",
+      "labelId",
+    ] as const;
+
+    // Control: the unfiltered responses must be non-empty, or "empty value means
+    // absent" and "empty value filtered everything out" would look identical.
+    const listBaseline = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", limit: "20" });
+    expect(listBaseline.status, JSON.stringify(listBaseline.body)).toBe(200);
+    const baselineIds = listBaseline.body.map((issue: { id: string }) => issue.id);
+    expect(baselineIds).toEqual([issueId]);
+
+    for (const param of params) {
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ status: "todo", [param]: "", limit: "20" });
+
+      expect(res.status, `${param}: ${JSON.stringify(res.body)}`).toBe(200);
+      expect(res.body.map((issue: { id: string }) => issue.id), param).toEqual(baselineIds);
+    }
+
+    // `parentId ?? parentIssueId` resolves on presence, not on emptiness: a
+    // present-but-empty `parentId` suppresses the alias, so this shape has
+    // always been the unfiltered 200.
+    const supersededAliasRes = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", parentId: "", parentIssueId: randomUUID(), limit: "20" });
+    expect(supersededAliasRes.status, JSON.stringify(supersededAliasRes.body)).toBe(200);
+    expect(supersededAliasRes.body.map((issue: { id: string }) => issue.id)).toEqual(baselineIds);
+
+    const countBaseline = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked" });
+    expect(countBaseline.status, JSON.stringify(countBaseline.body)).toBe(200);
+    const baselineCount = countBaseline.body.count as number;
+    expect(baselineCount).toBeGreaterThan(0);
+
+    for (const param of params) {
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues/count`)
+        .query({ attention: "blocked", [param]: "" });
+
+      expect(res.status, `${param}: ${JSON.stringify(res.body)}`).toBe(200);
+      expect(res.body.count, param).toBe(baselineCount);
+    }
+
+    const countAliasRes = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", parentId: "", parentIssueId: randomUUID() });
+    expect(countAliasRes.status, JSON.stringify(countAliasRes.body)).toBe(200);
+    expect(countAliasRes.body.count).toBe(baselineCount);
+
+    // The empty value must drop the filter, not become a filter that matches
+    // nothing: a real UUID on the same param still bites.
+    const filteredRes = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", projectId: randomUUID(), limit: "20" });
+    expect(filteredRes.status, JSON.stringify(filteredRes.body)).toBe(200);
+    expect(filteredRes.body).toEqual([]);
+
+    // The service is reachable directly, not only through these two routes, so
+    // `assertValidUuidFilter` has to agree with the query builders next to it:
+    // empty is absent, non-empty text still throws.
+    const svc = issueService(db);
+    const serviceFilterNames = [
+      "participantAgentId",
+      "goalId",
+      "createdByAgentId",
+      "projectId",
+      "workspaceId",
+      "executionWorkspaceId",
+      "parentId",
+      "descendantOf",
+      "labelId",
+    ] as const;
+    for (const name of serviceFilterNames) {
+      const rows = await svc.list(companyId, { status: "todo", [name]: "", limit: 20 });
+      expect(rows.map((row: { id: string }) => row.id), name).toEqual([issueId]);
+      await expect(
+        svc.list(companyId, { status: "todo", [name]: "bad", limit: 20 }),
+      ).rejects.toThrow(`${name} must be a UUID`);
+    }
   });
 
   it("keeps valid UUID filters working with status, limit, and search", async () => {
