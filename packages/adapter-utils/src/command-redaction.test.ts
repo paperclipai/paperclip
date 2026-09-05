@@ -306,6 +306,42 @@ describe("redactCommandText header secrets", () => {
     );
   });
 
+  it("consumes a suffix segment adjacent to a serialized quoted header argument", () => {
+    // The suffix is part of the same shell word as the header, so it is part
+    // of the credential at every serialization depth.
+    let text = 'curl -H "X-API-Key: SECRET"TAILMARK;echo safe';
+    for (let depth = 1; depth <= 3; depth += 1) {
+      text = JSON.stringify(text);
+      const output = redactCommandText(text);
+      expect(output).not.toContain("SECRET");
+      expect(output).not.toContain("TAILMARK");
+      expect(output).toContain(";echo safe");
+      expect(() => JSON.parse(output)).not.toThrow();
+      expect(redactCommandText(output)).toBe(output);
+    }
+  });
+
+  it("keeps a serializer's closing delimiter when the argument is truncated", () => {
+    // A run log can cut a serialized command inside the header argument. The
+    // truncated value stops before the enclosing string's own quote, even
+    // when the cut lands after a backslash, so the string stays well formed.
+    const cuts = [
+      'curl -H "X-API-Key: SECRET',
+      'curl -H X-API-Key:"SECRET',
+      'curl -H "X-API-Key: SECRET\\',
+      'curl -H "X-API-Key: SECRET\\\\',
+      'curl -H X-API-Key:"SECRET\\',
+    ];
+    for (const cut of cuts) {
+      for (const text of [JSON.stringify(cut), JSON.stringify(JSON.stringify(cut))]) {
+        const output = redactCommandText(text);
+        expect(output).not.toContain("SECRET");
+        expect(() => JSON.parse(output)).not.toThrow();
+        expect(redactCommandText(output)).toBe(output);
+      }
+    }
+  });
+
   it("redacts a bare apikey header value", () => {
     // Supabase sends the key under an unhyphenated `apikey` header.
     expect(redactCommandText("apikey: abc")).toBe(

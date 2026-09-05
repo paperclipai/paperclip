@@ -185,16 +185,27 @@ const commandSecretHeaderEscapedOpener = (run: string) =>
   String.raw`(?<!\\)(?<${run}>(?:\\\\)*\\)"`;
 const commandSecretHeaderEscapedBody = (run: string) =>
   String.raw`(?:(?!(?<!\\)\k<${run}>")[^\s\r\n])(?:(?!(?<!\\)\k<${run}>")[^\r\n])*`;
-const commandSecretHeaderEscapedCloser = (run: string, close: string) =>
-  String.raw`(?:(?<${close}>\k<${run}>")|(?=[\r\n]|$))`;
+// A truncated argument has no closer on its line. Its body then also stops
+// before a bare quote, one preceded by an even run of backslashes, which can
+// only be an enclosing serializer's delimiter; that delimiter survives and the
+// enclosing string stays well formed. The closer itself is unescaped, so
+// backtracking never reads an escaped backslash as the closer.
+const COMMAND_SECRET_HEADER_BARE_QUOTE_PATTERN = String.raw`(?<=(?<!\\)(?:\\\\)*)"`;
+const commandSecretHeaderEscapedTruncatedBody = (run: string) =>
+  String.raw`(?:(?!(?<!\\)\k<${run}>")(?!${COMMAND_SECRET_HEADER_BARE_QUOTE_PATTERN})[^\s\r\n])` +
+  String.raw`(?:(?!(?<!\\)\k<${run}>")(?!${COMMAND_SECRET_HEADER_BARE_QUOTE_PATTERN})[^\r\n])*`;
+const commandSecretHeaderEscapedValue = (run: string, close: string) =>
+  `(?:${commandSecretHeaderEscapedBody(run)}(?<!\\\\)(?<${close}>\\k<${run}>")` +
+  `|${commandSecretHeaderEscapedTruncatedBody(run)}` +
+  String.raw`(?=[\r\n]|$|${COMMAND_SECRET_HEADER_BARE_QUOTE_PATTERN}))`;
 const COMMAND_SECRET_HEADER_RE = new RegExp(
   String.raw`(?<!\\)(?<dqPrefix>"${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\\r?\n|\\.|[^"\\\r\n])*\\?(?:(?<dqClose>")|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
     String.raw`|(?<sqPrefix>'${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'][^'\r\n]*(?:(?<sqClose>')|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
     String.raw`|(?<ansiPrefix>\$'${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s'\\])(?:\\.|[^'\\\r\n])*\\?(?:(?<ansiClose>')|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
     `|(?<serPrefix>${commandSecretHeaderEscapedOpener("serRun")}${COMMAND_SECRET_HEADER_PREFIX_PATTERN})` +
-    `${commandSecretHeaderEscapedBody("serRun")}${commandSecretHeaderEscapedCloser("serRun", "serClose")}` +
+    `${commandSecretHeaderEscapedValue("serRun", "serClose")}${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
     String.raw`|(?<![A-Za-z0-9_-])(?<evPrefix>\b${COMMAND_SECRET_HEADER_NAME_PATTERN}${COMMAND_SECRET_HEADER_COLON_PATTERN}${COMMAND_SECRET_HEADER_SCHEME_PATTERN}${commandSecretHeaderEscapedOpener("evRun")}${COMMAND_SECRET_HEADER_SCHEME_PATTERN})` +
-    `${commandSecretHeaderEscapedBody("evRun")}${commandSecretHeaderEscapedCloser("evRun", "evClose")}${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
+    `${commandSecretHeaderEscapedValue("evRun", "evClose")}${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
     String.raw`|(?<![A-Za-z0-9_-])(?<!(?<!\\)["'])(?<uqPrefix>\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}`,
   "gi",
 );
