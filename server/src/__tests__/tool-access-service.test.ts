@@ -9323,16 +9323,6 @@ describeEmbeddedPostgres("tool access service", () => {
         transportConfig: { ...connection.transportConfig, concurrentOAuthCompletion: true },
         updatedAt: concurrentUpdateAt,
       }).where(eq(toolConnections.id, first.connectionId));
-      const [personalGrant] = await db.select().from(connectionGrants).where(and(
-        eq(connectionGrants.connectionId, first.connectionId),
-        eq(connectionGrants.kind, "user"),
-      )).limit(1);
-      expect(personalGrant).toBeTruthy();
-      await db.update(connectionGrants).set({
-        providerTenant: { github: { concurrentOAuthCompletion: true } },
-        credentialSecretRefs: [],
-        updatedAt: concurrentUpdateAt,
-      }).where(eq(connectionGrants.id, personalGrant!.id));
       throw new Error("provider unavailable");
     });
 
@@ -9351,12 +9341,14 @@ describeEmbeddedPostgres("tool access service", () => {
       config: expect.objectContaining({ concurrentOAuthCompletion: true }),
     });
     const afterGrants = await service.listConnectionGrants(first.connectionId, company.id);
-    expect(afterGrants.grants).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        kind: "user",
-        providerTenant: { github: { concurrentOAuthCompletion: true } },
-      }),
-    ]));
+    const personalGrant = afterGrants.grants.find((grant) => grant.kind === "user");
+    expect(personalGrant).toMatchObject({ status: "active" });
+    expect(personalGrant?.credentialSecretRefs).toHaveLength(1);
+    const [preservedSecret] = await db.select().from(companySecrets).where(eq(
+      companySecrets.id,
+      personalGrant!.credentialSecretRefs[0]!.secretId,
+    ));
+    expect(preservedSecret.deletedAt).toBeNull();
   });
 
   it("fails closed when an identity-changing revival cannot roll back", async () => {

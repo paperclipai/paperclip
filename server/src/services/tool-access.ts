@@ -9554,6 +9554,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       };
     } catch (error) {
       let identityRollbackError: unknown = null;
+      let preserveConcurrentRevival = false;
       if (connectionRow && revivedConnectionPrevious) {
         const attemptedConnection = connectionRow;
         try {
@@ -9566,11 +9567,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             // fields and `updatedAt`, so compare the identity/configuration
             // fields this attempt owned. If another request changed any of
             // those fields, its newer connection state is authoritative.
-            if (
+            const connectionMutationIsStillCurrent = Boolean(
               latestConnection
               && connectionSetupMutationFingerprint(latestConnection)
-                === connectionSetupMutationFingerprint(attemptedConnection)
-            ) {
+                === connectionSetupMutationFingerprint(attemptedConnection),
+            );
+            if (connectionMutationIsStillCurrent) {
               await tx.update(toolConnections).set({
                 name: revivedConnectionPrevious.name,
                 transport: revivedConnectionPrevious.transport,
@@ -9585,9 +9587,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
                 credentialPolicy: revivedConnectionPrevious.credentialPolicy,
                 updatedAt: new Date(),
               }).where(eq(toolConnections.id, revivedConnectionPrevious.id));
+            } else {
+              preserveConcurrentRevival = true;
             }
 
-            if (revivedGrantMutation) {
+            if (connectionMutationIsStillCurrent && revivedGrantMutation) {
               const { previous, current } = revivedGrantMutation;
               const [latestGrant] = await tx.select().from(connectionGrants).where(eq(
                 connectionGrants.id,
@@ -9652,16 +9656,23 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       } else if (connectionRow) {
         await db.delete(toolConnections).where(eq(toolConnections.id, connectionRow.id)).catch(() => undefined);
       }
-      if (applicationRow && !existingApplication) {
+      if (!preserveConcurrentRevival && applicationRow && !existingApplication) {
         await db.delete(toolApplications).where(eq(toolApplications.id, applicationRow.id)).catch(() => undefined);
-      } else if (existingApplication && applicationRow && applicationRow.status !== existingApplication.status) {
+      } else if (
+        !preserveConcurrentRevival
+        && existingApplication
+        && applicationRow
+        && applicationRow.status !== existingApplication.status
+      ) {
         await db.update(toolApplications)
           .set({ status: existingApplication.status, archivedAt: existingApplication.archivedAt, updatedAt: new Date() })
           .where(eq(toolApplications.id, existingApplication.id))
           .catch(() => undefined);
       }
-      for (const secretId of createdSecretIds) {
-        await secrets.remove(secretId).catch(() => undefined);
+      if (!preserveConcurrentRevival) {
+        for (const secretId of createdSecretIds) {
+          await secrets.remove(secretId).catch(() => undefined);
+        }
       }
       if (identityRollbackError) {
         throw new HttpError(500, "Connection setup failed and its prior identity could not be restored.", {
