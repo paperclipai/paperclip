@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
+import type { Stats } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildLocalProcessSandboxSpawnTarget,
   parseLocalProcessFilesystemScope,
@@ -27,6 +28,7 @@ async function withTmpDir<T>(tmpDir: string, run: () => Promise<T>): Promise<T> 
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(cleanup.splice(0).map((candidate) => fs.rm(candidate, { recursive: true, force: true })));
 });
 
@@ -94,6 +96,117 @@ describe("local process sandbox", () => {
     expect(target.args).toContain(workspace);
     expect(target.args).toContain(managedHome);
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
+  });
+
+  it("preserves merged-/usr symlink layout for top-level system paths", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-merged-usr-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace);
+
+    const symlinkTargets = new Map<string, string>([
+      ["/bin", "usr/bin"],
+      ["/sbin", "usr/sbin"],
+      ["/lib", "usr/lib"],
+      ["/lib64", "usr/lib64"],
+    ]);
+    const originalLstat = fs.lstat.bind(fs);
+    const originalReadlink = fs.readlink.bind(fs);
+    vi.spyOn(fs, "lstat").mockImplementation(async (candidate) => {
+      const normalized = typeof candidate === "string" ? path.resolve(candidate) : String(candidate);
+      if (symlinkTargets.has(normalized)) {
+        return { isSymbolicLink: () => true } as Stats;
+      }
+      return originalLstat(candidate);
+    });
+    vi.spyOn(fs, "readlink").mockImplementation(async (candidate) => {
+      const normalized = typeof candidate === "string" ? path.resolve(candidate) : String(candidate);
+      const target = symlinkTargets.get(normalized);
+      if (target) return target;
+      return originalReadlink(candidate);
+    });
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+      },
+    });
+
+    const toPairs = (args: string[], flag: "--ro-bind" | "--symlink"): Array<[string, string]> => {
+      const pairs: Array<[string, string]> = [];
+      for (let index = 0; index < args.length - 2; index += 1) {
+        if (args[index] === flag) pairs.push([args[index + 1], args[index + 2]]);
+      }
+      return pairs;
+    };
+
+    const roBinds = toPairs(target.args, "--ro-bind");
+    const symlinks = toPairs(target.args, "--symlink");
+    expect(roBinds).toContainEqual(["/usr", "/usr"]);
+    expect(roBinds).not.toContainEqual(["/bin", "/bin"]);
+    expect(roBinds).not.toContainEqual(["/sbin", "/sbin"]);
+    expect(roBinds).not.toContainEqual(["/lib", "/lib"]);
+    expect(roBinds).not.toContainEqual(["/lib64", "/lib64"]);
+    expect(symlinks).toEqual(expect.arrayContaining([
+      ["usr/bin", "/bin"],
+      ["usr/sbin", "/sbin"],
+      ["usr/lib", "/lib"],
+      ["usr/lib64", "/lib64"],
+    ]));
+  });
+
+  it("uses ro-bind for non-merged paths and /usr fallback for missing top-level paths", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-non-merged-usr-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace);
+
+    const existingTopLevel = new Set<string>(["/bin", "/sbin", "/lib"]);
+    const originalLstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, "lstat").mockImplementation(async (candidate) => {
+      const normalized = typeof candidate === "string" ? path.resolve(candidate) : String(candidate);
+      if (existingTopLevel.has(normalized)) {
+        return { isSymbolicLink: () => false } as Stats;
+      }
+      if (normalized === "/lib64") {
+        const error = new Error("Mocked missing /lib64") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return originalLstat(candidate);
+    });
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+      },
+    });
+
+    const toPairs = (args: string[], flag: "--ro-bind" | "--symlink"): Array<[string, string]> => {
+      const pairs: Array<[string, string]> = [];
+      for (let index = 0; index < args.length - 2; index += 1) {
+        if (args[index] === flag) pairs.push([args[index + 1], args[index + 2]]);
+      }
+      return pairs;
+    };
+
+    const roBinds = toPairs(target.args, "--ro-bind");
+    const symlinks = toPairs(target.args, "--symlink");
+    expect(roBinds).toEqual(expect.arrayContaining([
+      ["/bin", "/bin"],
+      ["/sbin", "/sbin"],
+      ["/lib", "/lib"],
+    ]));
+    expect(roBinds).not.toContainEqual(["/lib64", "/lib64"]);
+    expect(symlinks).toContainEqual(["usr/lib64", "/lib64"]);
   });
 
   it("binds a confined absolute alias to the synchronized workspace", async () => {
