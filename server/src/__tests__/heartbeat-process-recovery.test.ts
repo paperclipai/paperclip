@@ -6347,6 +6347,73 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("leaves the onboarding first task idle until the user comments", async () => {
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    await db
+      .update(issues)
+      .set({ originKind: "onboarding_first_task" })
+      .where(eq(issues.id, issueId));
+    // The server-seeded greeting is agent-authored; it must not count as the
+    // user having typed.
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      body: "Welcome to Paperclip!",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.onboardingFirstTaskExempted).toBe(1);
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(0);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
+  it("dispatches the onboarding first task once a user comment exists", async () => {
+    const { companyId, agentId, issueId } =
+      await seedAssignedTodoNoRunFixture();
+    await db
+      .update(issues)
+      .set({ originKind: "onboarding_first_task" })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      authorType: "user",
+      body: "Let's start with a landing page.",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.onboardingFirstTaskExempted).toBe(0);
+    expect(result.assignmentDispatched).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    if (runs[0]?.id) {
+      await waitForRunToSettle(heartbeat, runs[0].id);
+    }
+  });
+
   it("does not duplicate initial assigned todo dispatch when a queued wake already exists", async () => {
     const { companyId, agentId, issueId } =
       await seedAssignedTodoNoRunFixture();
