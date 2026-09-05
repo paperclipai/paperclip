@@ -47,15 +47,6 @@ describe("chat publication error classification", () => {
     ).toMatchObject({ kind: "retry", retryAfterMs: 3000 });
     expect(
       classifyChatPublicationError(
-        Object.assign(new Error("slack web api rate limit"), {
-          code: "slack_webapi_rate_limited_error",
-          retryAfter: 9,
-        }),
-        1,
-      ),
-    ).toMatchObject({ kind: "retry", retryAfterMs: 9000 });
-    expect(
-      classifyChatPublicationError(
         Object.assign(new Error("You have exceeded a secondary rate limit"), {
           name: "HttpError",
           status: 403,
@@ -79,6 +70,22 @@ describe("chat publication error classification", () => {
         1,
       ),
     ).toMatchObject({ kind: "retry" });
+  });
+
+  it("keeps a rejected Slack WebClient 429 under durable outbox retry control", () => {
+    expect(
+      classifyChatPublicationError(
+        Object.assign(new Error("slack web api rate limit"), {
+          code: "slack_webapi_rate_limited_error",
+          retryAfter: 9,
+        }),
+        1,
+      ),
+    ).toEqual({
+      kind: "retry",
+      retryAfterMs: 9_000,
+      reason: "slack web api rate limit",
+    });
   });
 
   it("does not mistake an ordinary GitHub permission denial for rate limiting", () => {

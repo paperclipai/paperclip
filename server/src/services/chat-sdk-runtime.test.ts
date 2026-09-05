@@ -202,6 +202,11 @@ describe("Chat SDK endpoint runtime", () => {
       mode: "webhook",
       nativeStreaming: true,
       userName: "paperclip-agent",
+      webClientOptions: {
+        rejectRateLimitedCalls: true,
+        retryConfig: { retries: 0 },
+        timeout: 45_000,
+      },
     });
     expect(captures.chatConfigs[0]).toMatchObject({
       concurrency: "concurrent",

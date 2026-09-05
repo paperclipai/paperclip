@@ -48,6 +48,7 @@ import {
 export const CHAT_SDK_VERSION = "4.39.0";
 export const CHAT_SDK_SOURCE_REVISION =
   "51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c";
+const SLACK_WEB_API_TIMEOUT_MS = 45_000;
 
 /** Public Paperclip provider ids. The Teams SDK name remains an internal detail. */
 export type ChatSdkProvider =
@@ -358,6 +359,15 @@ function createProviderAdapter(
         mode: "webhook",
         nativeStreaming: true,
         userName: config.userName,
+        // Paperclip's durable publication outbox owns retry timing and
+        // ambiguous-delivery handling. Slack's default client can otherwise
+        // retry for roughly 30 minutes, well beyond the 60-second streaming
+        // lease, allowing another worker to quarantine an in-flight send.
+        webClientOptions: {
+          rejectRateLimitedCalls: true,
+          retryConfig: { retries: 0 },
+          timeout: SLACK_WEB_API_TIMEOUT_MS,
+        },
       };
       return createSlackAdapter(adapterConfig);
     }
