@@ -9971,6 +9971,39 @@ export function issueRoutes(
       onBehalfOfUserId: _requestedOnBehalfOfUserId,
       ...updateFields
     } = req.body;
+
+    // Guard: prevent a user-actor PATCH that carries a comment from closing
+    // an issue locked by a DIFFERENT run. This is the mis-attribution path
+    // (LUX-1797): a routine run posted its completion comment to the wrong
+    // issue via a board-actor PATCH, closing LUX-1133 mid-deploy. The comment
+    // is persisted, but the status change is stripped so the issue stays open.
+    // A plain board PATCH with no comment still closes the issue normally.
+    //
+    // Defense in depth: fire ONLY when actor.runId is present AND differs from
+    // the issue's executionRunId. A null run id (no X-Paperclip-Run-Id header)
+    // must fall through unchanged — stripping on null produced 4 false
+    // positives in the first 6 hours (LUX-2033, LUX-2035) because legitimate
+    // agent completion paths that don't send the header had their own issues'
+    // status stripped, causing quota-burning re-wakes.
+    if (
+      commentBody &&
+      updateFields.status === "done" &&
+      existing.executionRunId &&
+      actor.actorType === "user" &&
+      actor.runId &&
+      actor.runId !== existing.executionRunId
+    ) {
+      logger.warn(
+        {
+          issueId: existing.id,
+          executionRunId: existing.executionRunId,
+          actorRunId: actor.runId,
+        },
+        "stripping status from comment-bearing PATCH: issue locked by different run",
+      );
+      delete updateFields.status;
+    }
+
     const reviewPolicyChangeRequested =
       req.body.reviewPolicy !== undefined
       && req.body.reviewPolicy !== existing.reviewPolicy;

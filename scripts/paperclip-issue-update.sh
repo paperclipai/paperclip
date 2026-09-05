@@ -5,7 +5,9 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/paperclip-issue-update.sh [--issue-id ID] [--status STATUS] [--comment TEXT] [--dry-run]
+  scripts/paperclip-issue-update.sh --issue-id ID [--status STATUS] [--comment TEXT] [--dry-run]
+
+  --issue-id is required. Do not rely on PAPERCLIP_TASK_ID.
 
 Reads a multiline markdown comment from stdin when stdin is piped. This preserves
 newlines when building the JSON payload for PATCH /api/issues/{issueId}.
@@ -33,7 +35,7 @@ require_command() {
   fi
 }
 
-issue_id="${PAPERCLIP_TASK_ID:-}"
+issue_id=""
 status=""
 comment_arg=""
 dry_run=0
@@ -69,7 +71,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$issue_id" ]]; then
-  printf 'Missing issue id. Pass --issue-id or set PAPERCLIP_TASK_ID.\n' >&2
+  printf 'Missing issue id. --issue-id is required.\n' >&2
   exit 1
 fi
 
