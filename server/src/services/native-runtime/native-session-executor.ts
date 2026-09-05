@@ -37,6 +37,7 @@ import type {
   PrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
 import {
+  acpxRuntimeSessionDirectoryName,
   createNativeSessionBackend,
   createRunnerdCodexTransport,
   defaultCapabilityRunnerdBinary,
@@ -1830,7 +1831,7 @@ type NativeDriverKind = NativeExecutionInput["session"]["driverKind"];
 export interface NativeHarnessPersistenceDirectory {
   name: "runner" | "codex-home" | "opencode" | "acpx";
   location: "runner" | "filesystem";
-  excludeTopLevelEntries: readonly string[];
+  excludeEntries: readonly string[];
 }
 
 export interface NativeHarnessPersistenceProfile {
@@ -1870,26 +1871,37 @@ export function resolveNativeHarnessPersistenceProfile(
           // credential source and config.toml can contain the native MCP
           // bearer token. Re-materialize both for a replacement sandbox
           // instead of putting credentials into the disaster-recovery copy.
-          excludeTopLevelEntries: CODEX_HOME_NON_PERSISTENT_ENTRIES,
+          excludeEntries: CODEX_HOME_NON_PERSISTENT_ENTRIES,
         }
       : execution.provider.kind === "opencode"
         ? {
             name: "opencode",
             location: "filesystem",
-            excludeTopLevelEntries: [],
+            excludeEntries: [],
           }
         : execution.provider.kind === "acpx"
           ? {
               name: "acpx",
               location: "filesystem",
-              excludeTopLevelEntries: [],
+              // ACPX stores each provider beneath a stable session directory.
+              // Codex creates process-local executable aliases in tmp/arg0;
+              // they may point outside the runtime tree and are neither safe
+              // nor necessary to restore. Credentials and launch-time config
+              // are also re-materialized in the replacement sandbox.
+              excludeEntries:
+                execution.provider.agent === "codex"
+                  ? CODEX_HOME_NON_PERSISTENT_ENTRIES.map(
+                      (entry) =>
+                        `${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/codex-home/${entry}`,
+                    )
+                  : [],
             }
           : null;
   return {
     providerKind: execution.provider.kind,
     driverKind: execution.session.driverKind,
     directories: [
-      { name: "runner", location: "runner", excludeTopLevelEntries: [] },
+      { name: "runner", location: "runner", excludeEntries: [] },
       ...(providerDirectory ? [providerDirectory] : []),
     ],
   };
@@ -5147,7 +5159,18 @@ async function stageRemoteRunnerFile(input: {
 
 function archiveExcludeArgs(entries: readonly string[]): string[] {
   for (const entry of entries) {
-    if (entry === "." || entry === ".." || !/^[A-Za-z0-9._-]+$/.test(entry)) {
+    const segments = entry.split("/");
+    if (
+      entry.length === 0 ||
+      entry.startsWith("/") ||
+      segments.some(
+        (segment) =>
+          segment === "" ||
+          segment === "." ||
+          segment === ".." ||
+          !/^[A-Za-z0-9._-]+$/.test(segment),
+      )
+    ) {
       throw new Error("runner_remote_checkpoint_exclusion_invalid");
     }
   }
@@ -5160,9 +5183,9 @@ export async function stageRemoteRunnerDirectory(input: {
   sourcePath: string;
   targetPath: string;
   mode: number;
-  excludeTopLevelEntries?: readonly string[];
+  excludeEntries?: readonly string[];
 }): Promise<void> {
-  const excludeArgs = archiveExcludeArgs(input.excludeTopLevelEntries ?? []);
+  const excludeArgs = archiveExcludeArgs(input.excludeEntries ?? []);
   if (input.runner.syncIn) {
     let stagingRoot: string | null = null;
     let sourcePath = input.sourcePath;
@@ -5341,7 +5364,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   sourcePath: string;
   targetPath: string;
   mode: number;
-  excludeTopLevelEntries?: readonly string[];
+  excludeEntries?: readonly string[];
 }): Promise<void> {
   if (
     !(await remoteRunnerPathExists({
@@ -5352,7 +5375,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   )
     return;
   mkdirSync(resolve(input.targetPath, ".."), { recursive: true, mode: 0o700 });
-  const excluded = input.excludeTopLevelEntries ?? [];
+  const excluded = input.excludeEntries ?? [];
   const excludeArgs = archiveExcludeArgs(excluded)
     .map((argument) => `'${argument}'`)
     .join(" ");
@@ -6806,8 +6829,7 @@ async function createRunnerdBackendWithinSessionClaim(
                         sourcePath: localDirectory,
                         targetPath: remoteDirectory,
                         mode: 0o700,
-                        excludeTopLevelEntries:
-                          directory.excludeTopLevelEntries,
+                        excludeEntries: directory.excludeEntries,
                       });
                     }
                   }
@@ -6970,7 +6992,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     sourcePath,
                     targetPath,
                     mode: 0o700,
-                    excludeTopLevelEntries: directory.excludeTopLevelEntries,
+                    excludeEntries: directory.excludeEntries,
                   });
                   if (!existsSync(targetPath)) {
                     throw new Error("runner_harness_state_mismatch");

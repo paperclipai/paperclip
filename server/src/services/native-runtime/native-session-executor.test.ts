@@ -17,9 +17,10 @@ import {
   nativeRunFinalizations,
   type Db,
 } from "@paperclipai/db";
-import type {
-  NativeExecutionInputV1,
-  PrpEvent,
+import {
+  acpxRuntimeSessionDirectoryName,
+  type NativeExecutionInputV1,
+  type PrpEvent,
 } from "@paperclipai/paperclip-runner";
 import { createHash } from "node:crypto";
 import {
@@ -483,8 +484,29 @@ describe("native harness persistence profiles", () => {
     expect(
       codex.directories.find((directory) => directory.name === "codex-home"),
     ).toMatchObject({
-      excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
     });
+  });
+
+  it("excludes only nested Codex launch state from ACPX recovery", () => {
+    const acpx = profile({ kind: "acpx", agent: "codex" }, "acpx_runtime");
+    const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
+    expect(
+      acpx.directories.find((directory) => directory.name === "acpx"),
+    ).toMatchObject({
+      excludeEntries: [
+        `${sessionDirectory}/codex-home/tmp`,
+        `${sessionDirectory}/codex-home/.tmp`,
+        `${sessionDirectory}/codex-home/auth.json`,
+        `${sessionDirectory}/codex-home/config.toml`,
+      ],
+    });
+    expect(
+      profile(
+        { kind: "acpx", agent: "claude" },
+        "acpx_runtime",
+      ).directories.find((directory) => directory.name === "acpx"),
+    ).toMatchObject({ excludeEntries: [] });
   });
 });
 
@@ -1031,7 +1053,7 @@ describe("remote provider checkpoint snapshots", () => {
       sourcePath: "/remote/session/filesystem/codex-home",
       targetPath: "/tmp/paperclip-checkpoint-test-codex-home",
       mode: 0o700,
-      excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+      excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
     });
 
     expect(execute).toHaveBeenNthCalledWith(
@@ -1066,7 +1088,40 @@ describe("remote provider checkpoint snapshots", () => {
     );
   });
 
-  it("rejects non-top-level checkpoint exclusions", async () => {
+  it("omits nested ACPX-Codex scratch aliases without widening the exclusion", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      exitCode: 0,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+    });
+    const syncOut = vi.fn(async () => undefined);
+    const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
+    const excluded = [
+      `${sessionDirectory}/codex-home/tmp`,
+      `${sessionDirectory}/codex-home/.tmp`,
+      `${sessionDirectory}/codex-home/auth.json`,
+      `${sessionDirectory}/codex-home/config.toml`,
+    ];
+
+    await syncRemoteRunnerDirectoryOut({
+      runner: { execute, syncOut } as never,
+      sourcePath: "/remote/session/filesystem/acpx",
+      targetPath: "/tmp/paperclip-checkpoint-test-acpx",
+      mode: 0o700,
+      excludeEntries: excluded,
+    });
+
+    const snapshotCommand = String(execute.mock.calls[1]?.[0]?.args?.[1]);
+    for (const entry of excluded) {
+      expect(snapshotCommand).toContain(`'--exclude=./${entry}'`);
+    }
+    expect(snapshotCommand).not.toContain("--exclude=./acpx-state");
+    expect(snapshotCommand).not.toContain("--exclude=./codex-home");
+    expect(syncOut).toHaveBeenCalledOnce();
+  });
+
+  it("rejects unsafe relative checkpoint exclusions", async () => {
     const execute = vi.fn().mockResolvedValue({
       exitCode: 0,
       timedOut: false,
@@ -1079,7 +1134,7 @@ describe("remote provider checkpoint snapshots", () => {
         sourcePath: "/remote/codex-home",
         targetPath: "/tmp/paperclip-checkpoint-invalid-codex-home",
         mode: 0o700,
-        excludeTopLevelEntries: ["../outside"],
+        excludeEntries: ["../outside"],
       }),
     ).rejects.toThrow("runner_remote_checkpoint_exclusion_invalid");
   });
@@ -1180,7 +1235,7 @@ describe("remote provider checkpoint restores", () => {
         sourcePath,
         targetPath: "/remote/codex-home",
         mode: 0o700,
-        excludeTopLevelEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
+        excludeEntries: ["tmp", ".tmp", "auth.json", "config.toml"],
       });
 
       expect(syncIn).toHaveBeenCalledOnce();

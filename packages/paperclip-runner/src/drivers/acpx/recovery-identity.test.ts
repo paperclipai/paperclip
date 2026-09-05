@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
   ACPX_IDENTITY_RECORD_SCHEMA,
+  acpxRuntimeSessionDirectoryName,
   acpxProviderSessionIdentity,
   createAcpxIdentityRecord,
   createAcpxRecoveryBinding,
@@ -25,6 +26,21 @@ afterEach(async () => {
 });
 
 describe("ACPX recovery identity", () => {
+  it("derives one stable, filesystem-safe runtime directory name", () => {
+    expect(acpxRuntimeSessionDirectoryName("session/1")).toMatch(
+      /^session_1-[0-9a-f]{16}$/,
+    );
+    expect(acpxRuntimeSessionDirectoryName("...")).toMatch(
+      /^session-[0-9a-f]{16}$/,
+    );
+    expect(acpxRuntimeSessionDirectoryName("session/1")).toBe(
+      acpxRuntimeSessionDirectoryName("session/1"),
+    );
+    expect(acpxRuntimeSessionDirectoryName("session/1")).not.toBe(
+      acpxRuntimeSessionDirectoryName("session_1"),
+    );
+  });
+
   it("binds the canonical workspace, profile, model, policy, and session", async () => {
     const fixture = await recoveryFixture();
     expect(fixture.binding.runtimeRoot).toContain("session-1-");
