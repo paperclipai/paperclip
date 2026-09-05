@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Building2, Loader2, UserRound } from "lucide-react";
+import { Building2, Loader2, TriangleAlert, UserRound } from "lucide-react";
 import type {
   ConnectionAudienceMember,
   ConnectionGrant,
@@ -296,15 +296,20 @@ function GitHubConnectionSummary({
 }) {
   const github = grant.providerTenant?.github;
   if (!github) return null;
-  const repositorySummary = github.repositorySelection === "all"
-    ? "All repositories"
-    : `${github.repositoryCount} selected repositories`;
+  const allRepositories = github.repositorySelection === "all";
   return (
     <div className="divide-y divide-border border-y border-border">
       <div className="flex flex-wrap items-center justify-between gap-3 py-3">
         <div className="min-w-0">
           <div className="text-sm font-medium text-foreground">Repositories</div>
-          <div className="text-xs text-muted-foreground">{repositorySummary}</div>
+          {allRepositories ? (
+            <div className="flex items-center gap-1.5 text-xs text-amber-800 dark:text-amber-200">
+              <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
+              All current and future repositories
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground">{github.repositoryCount} selected repositories</div>
+          )}
         </div>
         {github.managementUrl ? (
           <Button asChild size="sm" variant="outline">

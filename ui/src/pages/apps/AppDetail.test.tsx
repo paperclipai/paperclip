@@ -262,6 +262,32 @@ function personalGrant(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function dedicatedGitHubGrant(overrides: Record<string, unknown> = {}) {
+  return organizationGrant({
+    id: "grant-agent",
+    kind: "agent",
+    subjectAgentId: "agent-1",
+    subjectUserId: null,
+    isDefault: false,
+    providerTenant: {
+      github: {
+        userId: "123",
+        login: "dottabot",
+        installationCount: 1,
+        repositoryCount: 1,
+        repositorySelection: "selected",
+        installationIds: ["456"],
+        installationOwnerLogins: ["paperclipai"],
+        managementUrl: "https://github.com/settings/installations/456",
+        webhookHealth: "pending",
+        lastWebhookAt: null,
+        lastAccessRefreshAt: "2026-09-05T12:00:00.000Z",
+      },
+    },
+    ...overrides,
+  });
+}
+
 function catalogEntry(overrides: Record<string, unknown> = {}) {
   return {
     id: "catalog-read",
@@ -1433,28 +1459,7 @@ describe("AppDetail", () => {
     }));
     listConnectionGrantsMock.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
-      grants: [organizationGrant({
-        id: "grant-agent",
-        kind: "agent",
-        subjectAgentId: "agent-1",
-        subjectUserId: null,
-        isDefault: false,
-        providerTenant: {
-          github: {
-            userId: "123",
-            login: "dottabot",
-            installationCount: 1,
-            repositoryCount: 1,
-            repositorySelection: "selected",
-            installationIds: ["456"],
-            installationOwnerLogins: ["paperclipai"],
-            managementUrl: "https://github.com/settings/installations/456",
-            webhookHealth: "pending",
-            lastWebhookAt: null,
-            lastAccessRefreshAt: "2026-09-05T12:00:00.000Z",
-          },
-        },
-      })],
+      grants: [dedicatedGitHubGrant()],
       capabilities: fullCapabilities(),
       currentUserId: "user-1",
       members: [],
@@ -1474,6 +1479,39 @@ describe("AppDetail", () => {
     expect(container.textContent).not.toContain("Webhook health");
     expect(container.textContent).not.toContain("Last event");
     expect(container.textContent).not.toContain("Last access refresh");
+  });
+
+  it("warns about all-repository GitHub access within the repository row", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      credentialPolicy: "per_agent",
+      authKind: "oauth",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({
+        providerTenant: {
+          github: {
+            userId: "123",
+            login: "dottabot",
+            installationCount: 1,
+            repositoryCount: 0,
+            repositorySelection: "all",
+            installationIds: ["456"],
+            installationOwnerLogins: ["paperclipai"],
+            managementUrl: "https://github.com/settings/installations/456",
+          },
+        },
+      })],
+      capabilities: fullCapabilities(),
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("All current and future repositories");
+    expect(container.textContent).not.toContain("selected repositories");
   });
 
   it("persists an empty audience as all organization members", async () => {
