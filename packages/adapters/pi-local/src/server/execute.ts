@@ -251,7 +251,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       )
     : [];
   const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const useConfiguredInsteadOfAgentHome = configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
