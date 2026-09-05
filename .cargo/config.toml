@@ -1,0 +1,16 @@
+# Cargo defaults abort a crate download when the transfer rate stays
+# below 10 bytes per second for 30 seconds, then retry 3 times. On a
+# shared CI runner a brief network stall can cross that 30-second window
+# on every attempt, so the whole download fails even though the network
+# recovers soon after. A wider timeout and two more retries give a stall
+# more time to pass before cargo gives up.
+#
+# Worst case for one dead crate: 6 attempts (1 try plus 5 retries) times
+# a 60-second timeout equals 360 seconds. The job that runs this build
+# has a 20-minute (1200-second) timeout, so this worst case uses 30% of
+# the budget and leaves 840 seconds for every other step.
+[net]
+retry = 5
+
+[http]
+timeout = 60
