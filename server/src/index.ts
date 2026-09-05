@@ -1700,6 +1700,20 @@ export async function startServer(): Promise<StartedServer> {
                 logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
               }
             })
+            .then(async () => {
+              // `deliverAgentUnblockNotification` otherwise only ever
+              // fires on the not-blocked -> blocked write edge. Any row that
+              // reaches `status: "blocked"` with a stamp through some other
+              // path (a backfill, a self-heal write, an import, a restore)
+              // never crosses that edge and is otherwise permanently
+              // unnotifiable even though it looks healthy in the data. This
+              // sweep re-evaluates the predicate every tick instead of only
+              // at the edge.
+              const notified = await heartbeat.reconcileBlockedOwnerNotifications();
+              if (notified.notified > 0 || notified.failed > 0) {
+                logger.warn({ ...notified }, "periodic blocked-owner notification reconciliation notified or failed candidates");
+              }
+            })
             .catch((err) => {
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));
