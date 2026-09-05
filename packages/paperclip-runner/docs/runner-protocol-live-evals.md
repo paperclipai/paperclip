@@ -70,6 +70,9 @@ Claude Managed also requires the four nonsecret
 nonsecret `PAPERCLIP_AWS_AGENTCORE_*` profile variables, including
 `PAPERCLIP_AWS_AGENTCORE_EXECUTION_ROLE_ARN`; the workflow writes the GitHub
 OIDC token to a mode-`0600` file and never forwards long-lived AWS access keys.
+Provision the AgentCore stack with `--github-oidc-provider-arn` so that scoped
+role admits only the `paperclipai/paperclip` repository's protected
+`runner-e2e-paid` environment as its web-identity subject.
 Scheduled runs additionally require `RUNNER_PROTOCOL_EVAL_NIGHTLY_ENABLED=true`
 and the pinned `RUNNER_PROTOCOL_EVALS_SHA` repository variable.
 

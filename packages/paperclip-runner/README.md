@@ -261,6 +261,21 @@ pnpm --filter @paperclipai/paperclip-runner smoke:capability:aws-agentcore
 pnpm --filter @paperclipai/paperclip-runner aws-agentcore:destroy -- --yes
 ```
 
+To admit the hosted direct-eval workflow, provision with the account-local
+GitHub Actions OIDC provider and keep the default exact repository and protected
+environment binding:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner aws-agentcore:provision -- \
+  --aws-profile paperclip-dev \
+  --github-oidc-provider-arn arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com
+```
+
+This adds only `repo:paperclipai/paperclip:environment:runner-e2e-paid` as a
+web-identity subject on the scoped invocation role. The generated nonsecret
+profile records that role as both the local invocation role and the hosted
+execution role.
+
 Provisioning can incur Bedrock, AgentCore Runtime/Memory, storage, and private
 networking charges. Provisioning refuses to modify a colliding stack unless its
 Paperclip ownership tags and template description match. A verified
