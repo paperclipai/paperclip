@@ -53,7 +53,9 @@ async function sha256(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
-function providerVersion(request: EvalSessionRequest): string | null {
+export function evalSessionProviderVersion(
+  request: EvalSessionRequest,
+): string | null {
   if (request.provider === "opencode") {
     const version = request.opencodeVersion ?? "1.18.17";
     if (version !== "1.18.17") {
@@ -71,7 +73,7 @@ function providerVersion(request: EvalSessionRequest): string | null {
     return request.managedProfile!.agentVersion;
   }
   if (request.provider === "aws_agentcore") {
-    return request.agentCoreProfile!.harnessVersion;
+    return request.agentCoreProfile!.qualificationRevision;
   }
   return null;
 }
@@ -186,7 +188,7 @@ export async function runEvalSessionCli(
   const requestedProvider = request.provider ?? "codex";
   const requestedDriver = request.driver ??
     expectedEvalSessionDriver(requestedProvider);
-  const requestedProviderVersion = providerVersion(request);
+  const requestedProviderVersion = evalSessionProviderVersion(request);
   const service = options.serviceFactory?.(runnerdPath) ??
     new CapabilityLiveSessionService({
       transportOptions: {

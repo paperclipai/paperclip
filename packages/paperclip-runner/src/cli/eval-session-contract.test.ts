@@ -5,7 +5,10 @@ import {
   evalSessionUsage,
   parseEvalSessionRequest,
 } from "./eval-session-contract.js";
-import { boundedEvalSessionUsage } from "./eval-session.js";
+import {
+  boundedEvalSessionUsage,
+  evalSessionProviderVersion,
+} from "./eval-session.js";
 
 function request(overrides: Record<string, unknown> = {}): unknown {
   return {
@@ -79,6 +82,28 @@ describe("eval-session request contract", () => {
     expect(parsed).not.toHaveProperty("acpxAgent");
     expect(parsed).not.toHaveProperty("agentCoreProfile");
     expect(parsed).not.toHaveProperty("opencodeVersion");
+  });
+
+  it("attributes managed providers to their immutable deployed revisions", () => {
+    expect(evalSessionProviderVersion(parseEvalSessionRequest(request({
+      provider: "aws_agentcore",
+      driver: "aws_agentcore_harness_api",
+      model: "global.anthropic.claude-sonnet-4-6",
+      agentCoreProfile: agentCoreProfile(),
+    })))).toBe("aws-agentcore-harness-context-v2");
+    expect(evalSessionProviderVersion(parseEvalSessionRequest(request({
+      provider: "claude_managed",
+      driver: "claude_managed_agents_api",
+      model: "claude-sonnet-5",
+      managedProfile: {
+        profileId: "managed-qualified",
+        anthropicAgentId: "agent-test",
+        agentVersion: "17",
+        environmentId: "environment-test",
+        betaVersion: "managed-agents-2026-04-01",
+        maxSessionListCostUsd: 1,
+      },
+    })))).toBe("17");
   });
 
   it("rejects Pi and accepts both qualified remote provider profiles", () => {
