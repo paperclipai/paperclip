@@ -3852,6 +3852,35 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // mutating the bound task or causing provider retry storms.
       if (endpoint.status !== "verifying" && endpoint.status !== "active")
         return;
+      const originalMessageIsPending = () =>
+        tx
+          .select({ id: chatDeliveries.id })
+          .from(chatDeliveries)
+          .where(
+            and(
+              eq(chatDeliveries.endpointId, input.endpointId),
+              eq(
+                chatDeliveries.providerEventId,
+                `${input.threadId}:${input.messageId}`,
+              ),
+              inArray(chatDeliveries.state, [
+                "received",
+                "processing",
+                "retry",
+              ]),
+            ),
+          )
+          .then((rows) => rows.length > 0);
+      const waitForOriginalMessage = async () => {
+        if (await originalMessageIsPending()) {
+          // The provider will retry this authenticated lifecycle callback.
+          // Acknowledging it now would lose an edit that raced the deferred
+          // creation of the original message's conversation and link.
+          throw new Error(
+            "Original chat message is still being durably processed",
+          );
+        }
+      };
       const conversation = await tx
         .select()
         .from(chatConversations)
@@ -3863,7 +3892,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         )
         .orderBy(desc(chatConversations.sessionGeneration))
         .then((rows) => rows[0] ?? null);
-      if (!conversation) return;
+      if (!conversation) {
+        await waitForOriginalMessage();
+        return;
+      }
       const linkedMessage = await tx
         .select({ id: chatMessageLinks.id })
         .from(chatMessageLinks)
@@ -3876,7 +3908,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           ),
         )
         .then((rows) => rows[0] ?? null);
-      if (!linkedMessage) return;
+      if (!linkedMessage) {
+        await waitForOriginalMessage();
+        return;
+      }
       const [delivery] = await tx
         .insert(chatDeliveries)
         .values({

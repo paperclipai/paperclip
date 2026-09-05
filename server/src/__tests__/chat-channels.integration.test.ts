@@ -6820,6 +6820,100 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(wakeup).toHaveBeenCalledTimes(1);
   });
 
+  it("asks Telegram to retry an edit that races deferred original-message processing", async () => {
+    const fixture = await seedCompany();
+    const deferred: Array<() => Promise<void>> = [];
+    const runtime = new FakeChatSdkRuntime();
+    const { service, wakeup } = createService(
+      runtime,
+      fakeTelegramFetch() as typeof globalThis.fetch,
+      {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: (task) => deferred.push(task),
+      },
+    );
+    const endpoint = await service.create(
+      fixture.companyId,
+      { provider: "telegram", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: { botToken: "123456:telegram-ordering-test" },
+      },
+      "owner-user",
+    );
+    const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Expected Telegram callbacks");
+    const chatId = "77112235";
+    const dm = makeThread({
+      channelId: `telegram:${chatId}`,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram direct message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: `${chatId}:61`,
+        text: "Original deferred request",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+    await expect(
+      db
+        .select({ state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id)),
+    ).resolves.toEqual([{ state: "received" }]);
+
+    const sendEdit = () =>
+      service.handleWebhook(
+        endpoint.publicId,
+        "telegram",
+        new Request("https://paperclip.example/telegram", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            update_id: 7_003,
+            edited_message: {
+              message_id: 61,
+              edit_date: 1_788_620_200,
+              chat: { id: Number(chatId), type: "private" },
+              from: { id: Number(chatId), first_name: "Telegram User" },
+              text: "Edit racing deferred processing",
+            },
+          }),
+        }),
+      );
+
+    await expect(sendEdit()).rejects.toThrow(
+      "Original chat message is still being durably processed",
+    );
+    await service.processPendingDeliveries();
+    await expect(sendEdit()).resolves.toMatchObject({ ok: true });
+
+    const lifecycle = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(chatDeliveries.eventKind, "message_updated"),
+        ),
+      );
+    expect(lifecycle).toEqual([
+      expect.objectContaining({ state: "processed", attempts: 1 }),
+    ]);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
   it("records verified Telegram edited_message updates against the existing DM task", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service, wakeup } =
