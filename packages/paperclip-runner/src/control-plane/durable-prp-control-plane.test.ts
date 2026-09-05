@@ -265,6 +265,7 @@ it("preserves only bounded GitHub credential projection at the runner spawn boun
       GIT_CONFIG_VALUE_0: "!trusted-helper",
       GIT_CONFIG_KEY_1: "must.not.cross",
       GIT_CONFIG_VALUE_1: "must-not-cross",
+      PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
       DATABASE_URL: "must-not-cross",
     },
     processLauncher: (spec) => {
@@ -295,6 +296,7 @@ it("preserves only bounded GitHub credential projection at the runner spawn boun
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
     GIT_CONFIG_VALUE_0: "!trusted-helper",
+    PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
   });
   expect(launches[0]!.environment.GIT_CONFIG_KEY_1).toBeUndefined();
   expect(launches[0]!.environment.GIT_CONFIG_VALUE_1).toBeUndefined();

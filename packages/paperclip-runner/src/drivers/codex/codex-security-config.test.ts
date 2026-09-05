@@ -90,4 +90,34 @@ describe("Codex security configuration", () => {
       },
     });
   });
+
+  it("uses the outer sandbox for default-mode commands only when the controller authorizes it", () => {
+    const source = { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" };
+    expect(createIsolatedCodexAppServerArgs(source)).toContain(
+      "--dangerously-bypass-approvals-and-sandbox",
+    );
+    expect(
+      createSecuredCodexThreadParams(
+        "/workspace",
+        "default",
+        true,
+        false,
+        source,
+      ),
+    ).toMatchObject({ permissions: "danger-full-access" });
+    expect(
+      createSecuredCodexThreadParams(
+        "/workspace",
+        "plan",
+        true,
+        false,
+        source,
+      ),
+    ).toMatchObject({
+      permissions: "paperclip-runner-workspace-read-only",
+    });
+    expect(createIsolatedCodexAppServerArgs({})).not.toContain(
+      "--dangerously-bypass-approvals-and-sandbox",
+    );
+  });
 });

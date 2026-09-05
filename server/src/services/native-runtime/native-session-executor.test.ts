@@ -3816,6 +3816,7 @@ describe("runnerd provider runtime wiring", () => {
       runnerEnvironment: {
         HOME: "/home/runner",
         PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
+        PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
       },
     });
 
@@ -3829,6 +3830,12 @@ describe("runnerd provider runtime wiring", () => {
         }),
       }),
     );
+    const localTransportOptions = state.createTransport.mock.calls[0]![0] as {
+      environment: NodeJS.ProcessEnv;
+    };
+    expect(
+      localTransportOptions.environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX,
+    ).toBeUndefined();
   });
 
   it("atomically migrates legacy unscoped state only for its exact durable run identity", async () => {
@@ -5535,6 +5542,7 @@ describe("runnerd provider runtime wiring", () => {
         runnerBinary: "/tmp/paperclip-runnerd",
         environment: expect.objectContaining({
           PAPERCLIP_WORKSPACE_CWD: remoteCwd,
+          PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
         }),
       }),
     );

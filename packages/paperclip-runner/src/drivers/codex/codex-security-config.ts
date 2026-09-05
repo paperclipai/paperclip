@@ -10,6 +10,10 @@ export const CODEX_SKILLLESS_PERMISSION_PROFILE =
 export const CODEX_PLANNING_PERMISSION_PROFILE =
   "paperclip-runner-workspace-read-only";
 
+function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
+  return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
+}
+
 const SKILLLESS_BASE_CONFIG = {
   "skills.include_instructions": false,
   include_apps_instructions: false,
@@ -72,6 +76,7 @@ export function createIsolatedCodexAppServerArgs(
   readOnlyRoots: string[] = [],
 ): string[] {
   const hasGitHubCredential = hasGitHubCredentialEnvironment(source);
+  const externalRunnerSandbox = usesExternalRunnerSandbox(source);
   const inheritedGitHubKeys = githubCredentialEnvironmentKeys(source);
   const deniedHostRoots = [
     ...new Set(
@@ -128,6 +133,9 @@ export function createIsolatedCodexAppServerArgs(
       : []),
     "--disable",
     "image_generation",
+    ...(externalRunnerSandbox
+      ? ["--dangerously-bypass-approvals-and-sandbox"]
+      : []),
     "app-server",
   ];
 }
@@ -137,9 +145,12 @@ export function createSecuredCodexThreadParams(
   mode: "default" | "plan" = "default",
   includeCollaborationModeInstructions = true,
   includeSkillInstructions = false,
+  source: NodeJS.ProcessEnv = process.env,
 ): Record<string, unknown> {
   const permissionProfile =
-    mode === "plan"
+    mode === "default" && usesExternalRunnerSandbox(source)
+      ? "danger-full-access"
+      : mode === "plan"
       ? CODEX_PLANNING_PERMISSION_PROFILE
       : CODEX_SKILLLESS_PERMISSION_PROFILE;
   return {

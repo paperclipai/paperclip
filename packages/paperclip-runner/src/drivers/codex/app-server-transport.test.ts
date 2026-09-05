@@ -28,6 +28,7 @@ describe("Codex app-server transport limits", () => {
         GIT_CONFIG_VALUE_0: "!trusted-helper",
         GIT_CONFIG_KEY_1: "must.not.cross",
         GIT_CONFIG_VALUE_1: "must-not-cross",
+        PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
         DATABASE_URL: "must-not-cross",
       }),
     ).toEqual({
@@ -38,6 +39,7 @@ describe("Codex app-server transport limits", () => {
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "credential.https://github.com.helper",
       GIT_CONFIG_VALUE_0: "!trusted-helper",
+      PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
     });
 
     const invalid = createSanitizedCodexEnvironment({

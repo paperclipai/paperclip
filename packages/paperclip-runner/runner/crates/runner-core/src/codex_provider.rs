@@ -614,6 +614,13 @@ const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
     "GIT_CONFIG_VALUE_31",
 ];
 
+const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "CODEX_HOME",
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
+];
+
 impl CodexProvider {
     pub fn start(
         config: &CodexProviderConfig,
@@ -679,7 +686,7 @@ impl CodexProvider {
         let provider_environment_keys = if config.provider == "opencode" {
             OPENCODE_PROVIDER_ENVIRONMENT_KEYS
         } else {
-            &["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"][..]
+            CODEX_PROVIDER_ENVIRONMENT_KEYS
         };
         let environment_keys = common_environment_keys
             .iter()
@@ -2946,6 +2953,12 @@ mod tests {
         }
         assert!(!GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&"GIT_CONFIG_KEY_32"));
         assert!(!GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.contains(&"GIT_CONFIG_VALUE_32"));
+    }
+
+    #[test]
+    fn codex_provider_accepts_only_the_controller_derived_external_sandbox_bit() {
+        assert!(CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_RUNNER_EXTERNAL_SANDBOX"));
+        assert!(!CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_SANDBOX_MODE"));
     }
 
     #[test]
