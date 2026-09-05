@@ -127,6 +127,20 @@ function createRecordingStore() {
     async cancelDurable() {
       return null;
     },
+    async findActiveDurable(key, now) {
+      for (const row of rows.values()) {
+        if (
+          row.companyId === key.companyId &&
+          row.ownerUserId === key.ownerUserId &&
+          row.adapterType === key.adapterType &&
+          !isTerminalSessionState(row.state) &&
+          row.deadline > now
+        ) {
+          return { ...row };
+        }
+      }
+      return null;
+    },
   };
 
   return {

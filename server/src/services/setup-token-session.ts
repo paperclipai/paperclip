@@ -32,7 +32,7 @@
 //     testable.
 
 import { randomBytes } from "node:crypto";
-import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
@@ -286,6 +286,20 @@ export interface SetupTokenCleanupStore {
   cancelDurable(
     identity: SetupTokenCleanupIdentity,
     cancellableStates: readonly SetupTokenSessionState[],
+  ): Promise<SetupTokenCleanupRecord | null>;
+  /**
+   * Returns the caller's active durable row for a scope, with no session id. A
+   * restarted server process holds no in-memory session, so this is the
+   * fallback source of truth for session discovery: the row survives the
+   * restart even though the live process and the in-memory session do not. It
+   * returns a row only when the company, the owner, and the adapter match, the
+   * state is not terminal, and the deadline is not yet past. It returns null
+   * for a missing row, a foreign-scope row, a terminal row, and an expired
+   * row.
+   */
+  findActiveDurable(
+    key: Pick<SetupTokenCleanupIdentity, "companyId" | "ownerUserId" | "adapterType">,
+    now: number,
   ): Promise<SetupTokenCleanupRecord | null>;
 }
 
@@ -1148,15 +1162,22 @@ export class SetupTokenSessionService {
   }
 
   /**
-   * Finds the caller's live active session for a scope, with no session id.
-   * The browser rediscovers its own session after a reload with no local
-   * state. It matches the company, the owner, and the adapter, and it returns
-   * only a non-terminal session, so a caller with no active login and a caller
-   * with a foreign scope both find nothing.
+   * Finds the caller's active session for a scope, with no session id. The
+   * browser rediscovers its own session after a reload with no local state. It
+   * matches the company, the owner, and the adapter, and it returns only a
+   * non-terminal session, so a caller with no active login and a caller with a
+   * foreign scope both find nothing.
+   *
+   * It checks the in-memory session first. A server restart drops every
+   * in-memory session, so it then falls back to the durable active row. The
+   * durable-only descriptor carries no login URL, because the full URL lives
+   * only in memory (SR-5). This fallback keeps the caller's start route from
+   * retrying a start that the durable active-row uniqueness constraint would
+   * reject.
    */
-  findActiveByScope(
+  async findActiveByScope(
     key: Pick<SetupTokenSessionScope, "companyId" | "ownerUserId" | "adapterType">,
-  ): { sessionId: string; scope: SetupTokenSessionScope } | null {
+  ): Promise<SetupTokenSessionDescriptor | null> {
     for (const session of this.sessions.values()) {
       if (isTerminalSessionState(session.state)) continue;
       if (
@@ -1164,10 +1185,18 @@ export class SetupTokenSessionService {
         session.scope.ownerUserId === key.ownerUserId &&
         session.scope.adapterType === key.adapterType
       ) {
-        return { sessionId: session.id, scope: session.scope };
+        return this.describeOwned(session.id, session.scope);
       }
     }
-    return null;
+    const durable = await this.store.findActiveDurable(key, this.now());
+    if (!durable) return null;
+    return {
+      sessionId: durable.sessionId,
+      state: durable.state,
+      environmentId: durable.environmentId,
+      deadline: durable.deadline,
+      loginUrl: null,
+    };
   }
 
   /**
@@ -1595,6 +1624,27 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
         .where(and(scopeMatch(identity), inArray(adapterAuthSessions.status, [...cancellableStates])))
         .returning();
       const row = changed[0];
+      return row ? toCleanupRecord(row) : null;
+    },
+
+    async findActiveDurable(key, now): Promise<SetupTokenCleanupRecord | null> {
+      // The active slot cap is one row per company, owner, and adapter, so at
+      // most one row can match. The scan filters by the setup-token adapter, so
+      // it never reads a Codex device-login row on the shared table.
+      const rows = await db
+        .select()
+        .from(adapterAuthSessions)
+        .where(
+          and(
+            eq(adapterAuthSessions.companyId, key.companyId),
+            eq(adapterAuthSessions.startedByUserId, key.ownerUserId),
+            eq(adapterAuthSessions.adapterType, key.adapterType as AgentAdapterType),
+            notInArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
+            gt(adapterAuthSessions.expiresAt, new Date(now)),
+          ),
+        )
+        .limit(1);
+      const row = rows[0];
       return row ? toCleanupRecord(row) : null;
     },
   };

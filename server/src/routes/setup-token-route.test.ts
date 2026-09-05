@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SETUP_TOKEN_SESSION_NOT_FOUND,
   SETUP_TOKEN_PROVIDER_UNSUPPORTED,
+  isTerminalSessionState,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
   type SetupTokenLeaseManager,
@@ -294,6 +295,20 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
       if (!row || !cancellableStates.includes(row.state)) return null;
       row.state = "cancelled";
       return { ...row };
+    },
+    async findActiveDurable(key, now) {
+      for (const row of rows.values()) {
+        if (
+          row.companyId === key.companyId &&
+          row.ownerUserId === key.ownerUserId &&
+          row.adapterType === key.adapterType &&
+          !isTerminalSessionState(row.state) &&
+          row.deadline > now
+        ) {
+          return { ...row };
+        }
+      }
+      return null;
     },
   };
   const leases: SetupTokenLeaseManager = {

@@ -145,6 +145,7 @@ import {
   SetupTokenSessionError,
   assessConfidentialStartup,
   evaluateConfidentialTransport,
+  isTerminalSessionState,
   SETUP_TOKEN_START_FAILED,
   SETUP_TOKEN_SESSION_NOT_FOUND,
   SETUP_TOKEN_PROVIDER_UNSUPPORTED,
@@ -578,6 +579,20 @@ export function agentRoutes(
       }
       row.state = "cancelled";
       return { ...row };
+    },
+    async findActiveDurable(key, now): Promise<SetupTokenCleanupRecord | null> {
+      for (const row of setupTokenCleanupRows.values()) {
+        if (
+          row.companyId === key.companyId &&
+          row.ownerUserId === key.ownerUserId &&
+          row.adapterType === key.adapterType &&
+          !isTerminalSessionState(row.state) &&
+          row.deadline > now
+        ) {
+          return { ...row };
+        }
+      }
+      return null;
     },
   };
 
@@ -5708,14 +5723,13 @@ export function agentRoutes(
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
     res.setHeader("Cache-Control", "no-store, private");
-    const found = setupTokenLoginService.findActiveByScope(
+    const descriptor = await setupTokenLoginService.findActiveByScope(
       companySetupTokenKey(companyId, ownerUserId),
     );
-    if (!found) {
+    if (!descriptor) {
       res.status(404).json({ error: SETUP_TOKEN_SESSION_NOT_FOUND });
       return;
     }
-    const descriptor = setupTokenLoginService.describeOwned(found.sessionId, found.scope);
     // Read the panel mode from the adapter capability, the same way the start
     // route does. The full login URL rides in this response, guarded by the
     // same transport advisory the prompt route attaches.

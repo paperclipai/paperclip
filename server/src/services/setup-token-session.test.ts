@@ -230,6 +230,23 @@ class FakeStore implements SetupTokenCleanupStore {
     row.state = "cancelled";
     return { ...row };
   }
+  async findActiveDurable(
+    key: Pick<SetupTokenCleanupIdentity, "companyId" | "ownerUserId" | "adapterType">,
+    now: number,
+  ): Promise<SetupTokenCleanupRecord | null> {
+    for (const row of this.rows.values()) {
+      if (
+        row.companyId === key.companyId &&
+        row.ownerUserId === key.ownerUserId &&
+        row.adapterType === key.adapterType &&
+        !isTerminalSessionState(row.state) &&
+        row.deadline > now
+      ) {
+        return { ...row };
+      }
+    }
+    return null;
+  }
 }
 
 function allowAllRateLimiter(): SetupTokenRateLimiter {
@@ -757,7 +774,7 @@ describe("SetupTokenSessionService.findActiveByScope", () => {
   it("finds the caller's live active session with no session id", async () => {
     const { service } = buildService();
     const { sessionId } = await service.start(OWNER_SCOPE);
-    const found = service.findActiveByScope(OWNER_SCOPE);
+    const found = await service.findActiveByScope(OWNER_SCOPE);
     expect(found?.sessionId).toBe(sessionId);
   });
 
@@ -765,11 +782,40 @@ describe("SetupTokenSessionService.findActiveByScope", () => {
     const { service } = buildService();
     const { sessionId } = await service.start(OWNER_SCOPE);
     expect(
-      service.findActiveByScope({ ...OWNER_SCOPE, ownerUserId: "user-2" }),
+      await service.findActiveByScope({ ...OWNER_SCOPE, ownerUserId: "user-2" }),
     ).toBeNull();
 
     await service.cancel(sessionId, OWNER_SCOPE);
-    expect(service.findActiveByScope(OWNER_SCOPE)).toBeNull();
+    expect(await service.findActiveByScope(OWNER_SCOPE)).toBeNull();
+  });
+
+  it("finds the durable active row after a restart drops the in-memory session", async () => {
+    const store = new FakeStore();
+    const { service: before } = buildService({ store });
+    const { sessionId } = await before.start(OWNER_SCOPE);
+
+    // Simulate a restart: a fresh service shares the durable store but starts
+    // with an empty in-memory session map.
+    const { service: after } = buildService({ store });
+    const found = await after.findActiveByScope(OWNER_SCOPE);
+    expect(found?.sessionId).toBe(sessionId);
+    // The full login URL lives only in memory (SR-5), so a restart-recovered
+    // descriptor never carries one.
+    expect(found?.loginUrl).toBeNull();
+  });
+
+  it("does not find a foreign-scope or an expired durable row after a restart", async () => {
+    const store = new FakeStore();
+    const { service: before } = buildService({ store, ttlMs: 1_000 });
+    await before.start(OWNER_SCOPE);
+
+    const { service: after } = buildService({ store });
+    expect(
+      await after.findActiveByScope({ ...OWNER_SCOPE, ownerUserId: "user-2" }),
+    ).toBeNull();
+
+    const { service: expiredAfter } = buildService({ store, now: () => Date.now() + 60_000 });
+    expect(await expiredAfter.findActiveByScope(OWNER_SCOPE)).toBeNull();
   });
 });
 
