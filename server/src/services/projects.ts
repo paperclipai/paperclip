@@ -620,17 +620,21 @@ export function projectService(db: Db) {
   };
 
   return {
-    list: async (companyId: string, opts: { includeArchived?: boolean } = {}): Promise<ProjectWithGoals[]> => {
+    list: async (companyId: string, opts: { includeArchived?: boolean; includeDeleted?: boolean } = {}): Promise<ProjectWithGoals[]> => {
       // NOTE: this service default is intentionally the inverse of the HTTP route default.
       // The route (`GET /companies/:companyId/projects`) defaults `includeArchived` to `false`
       // (active-only) for its callers, but the service defaults to `true` so that existing
       // server-internal callers that pass no opts keep their pre-existing "return everything,
       // including archived" behaviour. Pass `{ includeArchived: false }` explicitly for active-only.
       const includeArchived = opts.includeArchived ?? true;
-      const where = includeArchived
-        ? eq(projects.companyId, companyId)
-        : and(eq(projects.companyId, companyId), isNull(projects.archivedAt));
-      const rows = await db.select().from(projects).where(where);
+      const conditions = [eq(projects.companyId, companyId)];
+      if (!includeArchived) {
+        conditions.push(isNull(projects.archivedAt));
+      }
+      if (!opts.includeDeleted) {
+        conditions.push(isNull(projects.deletedAt));
+      }
+      const rows = await db.select().from(projects).where(and(...conditions));
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
       return attachListMetrics(db, companyId, withWorkspaces);
@@ -897,6 +901,28 @@ export function projectService(db: Db) {
       }
 
       return cleared;
+    },
+
+    softDelete: async (id: string) => {
+      const row = await db
+        .update(projects)
+        .set({ deletedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(projects.id, id), isNull(projects.deletedAt)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+    },
+
+    restore: async (id: string) => {
+      const row = await db
+        .update(projects)
+        .set({ deletedAt: null, updatedAt: new Date() })
+        .where(eq(projects.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
     },
 
     remove: (id: string) =>
