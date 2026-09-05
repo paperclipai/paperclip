@@ -213,6 +213,16 @@ interface ActorMiddlewareOptions {
 
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
+// The same MCP protocol handler is also mounted on an older `/api` path, which
+// `GET /api/tool-gateway/gateways/:gatewayId/mcp` still advertises as the
+// endpoint to call. Clients that read that response, or that were configured
+// before the public path existed, send the same `pcgw_*` bearer here. Match the
+// gateway id as a UUID and require `/mcp` as the final segment, so the sibling
+// routes under the same prefix — `/tokens` above all — keep the normal actor
+// authentication path.
+const legacyMcpGatewayProtocolPath =
+  /^\/api\/tool-gateway\/gateways\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/mcp\/?$/i;
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   return async (req, _res, next) => {
@@ -237,9 +247,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     // validated by the gateway service itself. Do not interpret that bearer as
     // a board key or agent JWT here: doing so rejects the MCP handshake before
     // the protocol route can verify its run-scoped credential. Keep this bypass
-    // restricted to the unguessable public gateway path; all /api routes retain
+    // restricted to the two MCP protocol paths; every other /api route retains
     // the normal actor authentication path below.
-    if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
+    if (
+      hasBearerCredentials &&
+      (publicMcpGatewayProtocolPath.test(req.path) || legacyMcpGatewayProtocolPath.test(req.path))
+    ) {
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
