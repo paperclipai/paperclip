@@ -353,6 +353,15 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "budget_exhausted",
   "issue_paused",
   "issue_dependencies_blocked",
+  // This is the fail-closed fallback for exceptions raised before an adapter
+  // process starts. Known transient preflight failures use dedicated bounded
+  // retry paths instead of generic issue continuation recovery.
+  "setup_failed",
+  "low_trust_isolation_unavailable",
+  "low_trust_requires_isolated_workspace",
+  "low_trust_boundary_mismatch",
+  "low_trust_requires_sandbox_environment",
+  "low_trust_runtime_services_denied",
 ]);
 
 // A continuation cancelled with this code is a *deliberate wait* (the latest run

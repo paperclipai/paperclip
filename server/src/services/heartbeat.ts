@@ -638,6 +638,13 @@ const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE =
   "execution_review_participant_recovery";
 const GITHUB_PR_WORKFLOW_SKILL_KEY =
   "paperclipai/bundled/software-development/github-pr-workflow";
+const NON_RETRYABLE_PREFLIGHT_FAILURE_CODES = new Set<string>([
+  "low_trust_isolation_unavailable",
+  "low_trust_requires_isolated_workspace",
+  "low_trust_boundary_mismatch",
+  "low_trust_requires_sandbox_environment",
+  "low_trust_runtime_services_denied",
+]);
 // Error codes that mark a pre-dispatch setup failure. The adapter process never
 // started, so no agent could post an issue comment. The setup catch writes one
 // of these codes when a failure happens before `adapter.execute`.
@@ -645,7 +652,14 @@ const PRE_ADAPTER_SETUP_FAILURE_CODES = new Set<string>([
   "setup_failed",
   CONFIGURATION_INCOMPLETE_FAILURE_CODE,
   WORKSPACE_VALIDATION_FAILURE_CODE,
+  ...NON_RETRYABLE_PREFLIGHT_FAILURE_CODES,
 ]);
+
+function nonRetryablePreflightFailureCode(error: unknown): string | null {
+  if (!(error instanceof HttpError) || error.status !== 422) return null;
+  const code = readNonEmptyString(parseObject(error.details).code);
+  return code && NON_RETRYABLE_PREFLIGHT_FAILURE_CODES.has(code) ? code : null;
+}
 const GITHUB_PR_WORKFLOW_SKILL_SLUG = "github-pr-workflow";
 const PUSH_CAPABILITY_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
 // Keep this in sync with local adapters that require a git workspace before launch.
@@ -22630,6 +22644,8 @@ export function heartbeatService(
           normalizeResponsibleUserDenialCode(
             (await getRun(runId).catch(() => null))?.errorCode,
           );
+        const nonRetryablePreflightCode =
+          nonRetryablePreflightFailureCode(outerErr);
         const setupFailureErrorCode =
           workspaceValidationSetupFailure?.code ??
           configurationIncompleteSetupFailure?.code ??
@@ -22637,6 +22653,7 @@ export function heartbeatService(
             ? CONFIGURATION_INCOMPLETE_FAILURE_CODE
             : null) ??
           recordedResponsibleUserDenialCode ??
+          nonRetryablePreflightCode ??
           "setup_failed";
         logger.error(
           { err: outerErr, runId },

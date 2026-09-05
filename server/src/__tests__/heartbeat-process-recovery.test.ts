@@ -8764,6 +8764,50 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("does not turn a pre-adapter setup failure into a duplicate continuation run", async () => {
+    const { companyId, agentId, issueId, runId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "failed",
+        runErrorCode: "setup_failed",
+        runError:
+          "Low-trust execution requires isolated workspaces to be enabled.",
+      });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: null,
+    });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(
+      runs.find((row) => {
+        const context = row.contextSnapshot as Record<string, unknown> | null;
+        return context?.retryReason === "issue_continuation_needed";
+      }),
+    ).toBeUndefined();
+  });
+
   it("leaves the productive-but-stranded continuation path unchanged under the new classifier", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

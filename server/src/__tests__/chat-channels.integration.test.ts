@@ -6058,6 +6058,72 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toHaveLength(0);
   });
 
+  it("keeps successive Telegram DM messages on one active Paperclip task", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    const dm = makeThread({
+      channelId: "77112233",
+      id: "telegram:77112233",
+      isDM: true,
+      name: "Telegram direct message",
+    });
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: "77112233:11",
+        text: "Start one DM task",
+        userId: "77112233",
+      }),
+      trigger: "direct_message",
+    });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    await qualifySetupRoundTrip(service, endpoint.id, "77112233");
+    await service.test(endpoint.id, "owner-user");
+    wakeup.mockClear();
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: "77112233:12",
+        text: "Continue that same DM task",
+        userId: "77112233",
+      }),
+      trigger: "direct_message",
+    });
+
+    const conversations = await service.listConversations(endpoint.id);
+    expect(conversations).toEqual([
+      expect.objectContaining({ state: "active", sessionGeneration: 1 }),
+    ]);
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(1);
+    expect(
+      (
+        await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.issueId, conversations[0]!.issueId))
+      ).map((comment) => comment.body),
+    ).toEqual(
+      expect.arrayContaining([
+        "Start one DM task",
+        "Continue that same DM task",
+      ]),
+    );
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed for unbound rich callbacks and unknown slash commands", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service } =
