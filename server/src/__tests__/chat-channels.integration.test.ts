@@ -5591,6 +5591,107 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
+  it("does not let one blocked Slack conversation starve another outbox head", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    const blockedThread = makeThread({
+      channelId: "C-OUTBOX-FAIRNESS",
+      id: "slack:C-OUTBOX-FAIRNESS:4080.1",
+      name: "outbox-fairness",
+    });
+    const readyThread = makeThread({
+      channelId: "C-OUTBOX-FAIRNESS",
+      id: "slack:C-OUTBOX-FAIRNESS:4080.2",
+      name: "outbox-fairness",
+    });
+    for (const [thread, id, text] of [
+      [blockedThread, "4080.1", "@maya create the blocked task"],
+      [readyThread, "4080.2", "@maya create the ready task"],
+    ] as const) {
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        thread: thread.thread,
+        message: makeMessage({ id, text, mentioned: true }),
+        trigger: "mention",
+      });
+    }
+    const conversations = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const blockedConversation = conversations.find(
+      (conversation) =>
+        conversation.externalThreadId === blockedThread.thread.id,
+    );
+    const readyConversation = conversations.find(
+      (conversation) => conversation.externalThreadId === readyThread.thread.id,
+    );
+    if (!blockedConversation || !readyConversation) {
+      throw new Error("Expected both Slack task conversations");
+    }
+
+    const baseTime = new Date("2026-09-05T15:10:00.000Z");
+    await db.insert(chatPublications).values([
+      {
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: blockedConversation.id,
+        issueId: blockedConversation.issueId,
+        idempotencyKey: `fairness:unknown:${endpoint.id}`,
+        payload: { text: "Ambiguous predecessor" },
+        state: "delivery_unknown",
+        createdAt: baseTime,
+      },
+      ...Array.from({ length: 30 }, (_, index) => ({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: blockedConversation.id,
+        issueId: blockedConversation.issueId,
+        idempotencyKey: `fairness:blocked:${index}:${endpoint.id}`,
+        payload: { text: `Blocked publication ${index}` },
+        state: "pending",
+        createdAt: new Date(baseTime.getTime() + index + 1),
+      })),
+      {
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: readyConversation.id,
+        issueId: readyConversation.issueId,
+        idempotencyKey: `fairness:ready:${endpoint.id}`,
+        payload: { text: "Ready publication" },
+        state: "pending",
+        createdAt: new Date(baseTime.getTime() + 60_000),
+      },
+    ]);
+
+    await service.processPendingPublications(25);
+
+    expect(runtime.endpoints.get(endpoint.id)?.posts).toEqual([
+      { threadId: readyThread.thread.id, text: "Ready publication" },
+    ]);
+    await expect(
+      db
+        .select({ state: chatPublications.state })
+        .from(chatPublications)
+        .where(
+          eq(chatPublications.idempotencyKey, `fairness:ready:${endpoint.id}`),
+        ),
+    ).resolves.toEqual([{ state: "published" }]);
+    expect(
+      await db
+        .select({ state: chatPublications.state })
+        .from(chatPublications)
+        .where(eq(chatPublications.conversationId, blockedConversation.id)),
+    ).toEqual(
+      expect.arrayContaining([
+        { state: "delivery_unknown" },
+        ...Array.from({ length: 30 }, () => ({ state: "pending" })),
+      ]),
+    );
+  });
+
   it("streams long output in bounded chunks after applying the safe external projection", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
@@ -7552,6 +7653,109 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(issueComments.issueId, conversation.issueId));
     expect(comments.map((comment) => comment.body)).toEqual([
       "investigate the command path",
+    ]);
+  });
+
+  it("admits concurrent and retried Slack slash commands only once", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredSlackEndpoint(fixture);
+    const command = endpoint.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    if (!callbacks.onSlashCommand)
+      throw new Error("Slack slash command callback was not registered");
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: "C-COMMAND-RETRY",
+      label: "command-retry",
+      availability: "available",
+      enabled: true,
+    });
+    const starterThreadId = "slack:C-COMMAND-RETRY:6001.1";
+    let releasePost!: (value: { id: string; threadId: string }) => void;
+    const post = vi.fn(
+      () =>
+        new Promise<{ id: string; threadId: string }>((resolve) => {
+          releasePost = resolve;
+        }),
+    );
+    const postEphemeral = vi.fn(async () => ({
+      id: "ephemeral-6001",
+      threadId: starterThreadId,
+    }));
+    const slashEvent = {
+      endpointId: endpoint.id,
+      provider: "slack" as const,
+      event: {
+        channel: {
+          id: "C-COMMAND-RETRY",
+          name: "command-retry",
+          isDM: false,
+          post,
+          postEphemeral,
+        } as never,
+        command,
+        text: "investigate one retried command",
+        triggerId: "trigger-6001",
+        user: {
+          userId: "U-COMMAND-RETRY",
+          userName: "command-retry",
+          fullName: "Command Retry User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: { trigger_id: "trigger-6001" },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    };
+
+    const first = callbacks.onSlashCommand(slashEvent);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
+    const concurrentRetry = callbacks.onSlashCommand(slashEvent);
+    releasePost({ id: "6001.1", threadId: starterThreadId });
+    await Promise.all([first, concurrentRetry]);
+
+    // A later provider retry resumes from the durable root binding. The
+    // synthetic inbound ledger then proves that the task mutation already ran.
+    await callbacks.onSlashCommand(slashEvent);
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const conversations = await service.listConversations(endpoint.id);
+    expect(conversations).toEqual([
+      expect.objectContaining({
+        externalThreadId: starterThreadId,
+        state: "active",
+      }),
+    ]);
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversations[0]!.issueId)),
+    ).resolves.toEqual([{ body: "investigate one retried command" }]);
+    await expect(
+      db
+        .select({
+          kind: chatActions.kind,
+          status: chatActions.status,
+          result: chatActions.result,
+        })
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id)),
+    ).resolves.toEqual([
+      {
+        kind: "slash_task_start",
+        status: "processed",
+        result: {
+          threadId: starterThreadId,
+          providerMessageId: "6001.1",
+        },
+      },
     ]);
   });
 

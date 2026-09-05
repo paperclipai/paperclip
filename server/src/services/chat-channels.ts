@@ -21,9 +21,12 @@ import {
   lt,
   lte,
   ne,
+  notExists,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -341,6 +344,8 @@ const MAX_ERROR_TEXT = 2_000;
 const DELIVERY_PROCESSING_STALE_MS = 60_000;
 const DELIVERY_LEASE_TTL_MS = 90_000;
 const DELIVERY_DRAIN_LIMIT = 100;
+const SLACK_COMMAND_OWNER_WAIT_MS = 2_000;
+const SLACK_COMMAND_POST_STALE_MS = 60_000;
 // Slack can deliver adjacent Events API callbacks on separate HTTP requests
 // out of timestamp order. Hold the first callback briefly so a rapid burst can
 // be sorted by the provider's message timestamp before any run is started.
@@ -5080,18 +5085,165 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
       return;
     }
-    // Slash commands are channel-scoped. Start one terse native root message
-    // and use the thread returned by the provider as the Paperclip task
-    // boundary, matching the same one-thread/one-task model as an @mention.
-    const starter = await event.event.channel.post("Starting a task…");
-    const endpointRuntime =
-      runtime.get(event.endpointId) ?? (await runtimeFor(record.endpoint));
-    const thread = endpointRuntime.thread(starter.threadId);
     const providerCommandId =
       event.event.triggerId ??
       createHash("sha256")
         .update(JSON.stringify(event.event.raw))
         .digest("hex");
+    const providerActionId = `slash_task:${createHash("sha256")
+      .update(
+        `${event.event.command}:${event.event.user.userId}:${providerCommandId}`,
+      )
+      .digest("hex")}`;
+    const [insertedAction] = await db
+      .insert(chatActions)
+      .values({
+        companyId: record.endpoint.companyId,
+        endpointId: record.endpoint.id,
+        principalId: principal.principal.id,
+        kind: "slash_task_start",
+        providerActionId,
+        payload: {
+          version: 1,
+          channelId: event.event.channel.id,
+          command,
+        },
+        status: "received",
+      })
+      .onConflictDoNothing()
+      .returning();
+    const loadAction = () =>
+      db
+        .select()
+        .from(chatActions)
+        .where(
+          and(
+            eq(chatActions.endpointId, record.endpoint.id),
+            eq(chatActions.providerActionId, providerActionId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+    let action = insertedAction ?? (await loadAction());
+    if (!action) throw new Error("Slack command admission was not persisted");
+
+    let ownsProviderPost = Boolean(insertedAction);
+    if (!ownsProviderPost && action.status === "received") {
+      if (
+        action.updatedAt.getTime() <=
+        Date.now() - SLACK_COMMAND_POST_STALE_MS
+      ) {
+        await db
+          .update(chatActions)
+          .set({
+            status: "delivery_unknown",
+            result: { code: "slash_task_delivery_unknown" },
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatActions.id, action.id),
+              eq(chatActions.status, "received"),
+              lte(
+                chatActions.updatedAt,
+                new Date(Date.now() - SLACK_COMMAND_POST_STALE_MS),
+              ),
+            ),
+          );
+        return;
+      }
+      // A concurrent Slack retry can arrive while the first callback is still
+      // posting the native root. Wait briefly so it can take over durable
+      // inbound processing if that first request disappears after persisting
+      // the provider thread id.
+      const ownerDeadline = Date.now() + SLACK_COMMAND_OWNER_WAIT_MS;
+      while (action.status === "received" && Date.now() < ownerDeadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        action = (await loadAction()) ?? action;
+      }
+    }
+    if (
+      !ownsProviderPost &&
+      action.status === "failed" &&
+      action.result?.retryable === true
+    ) {
+      const [reclaimedAction] = await db
+        .update(chatActions)
+        .set({ status: "received", result: null, updatedAt: new Date() })
+        .where(
+          and(eq(chatActions.id, action.id), eq(chatActions.status, "failed")),
+        )
+        .returning();
+      if (reclaimedAction) {
+        action = reclaimedAction;
+        ownsProviderPost = true;
+      } else {
+        action = (await loadAction()) ?? action;
+      }
+    }
+
+    let starterThreadId =
+      action.status === "processed" &&
+      typeof action.result?.threadId === "string"
+        ? action.result.threadId
+        : null;
+    if (!starterThreadId) {
+      if (!ownsProviderPost) {
+        // Another callback owns the provider-visible root post, or a prior
+        // ambiguous attempt is deliberately quarantined. A later provider
+        // retry can resume from the persisted thread id after the owner wins.
+        return;
+      }
+      try {
+        // Slash commands are channel-scoped. Start one terse native root
+        // message and use the thread returned by the provider as the task
+        // boundary, matching the @mention one-thread/one-task model.
+        const starter = await event.event.channel.post("Starting a task…");
+        starterThreadId = starter.threadId;
+        const [completedAction] = await db
+          .update(chatActions)
+          .set({
+            status: "processed",
+            result: {
+              threadId: starter.threadId,
+              providerMessageId: starter.id,
+            },
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatActions.id, action.id),
+              eq(chatActions.status, "received"),
+            ),
+          )
+          .returning();
+        action = completedAction ?? action;
+      } catch (error) {
+        const disposition = classifyChatPublicationError(error, 1);
+        await db
+          .update(chatActions)
+          .set({
+            status:
+              disposition.kind === "delivery_unknown"
+                ? "delivery_unknown"
+                : "failed",
+            result: {
+              code: `slash_task_${disposition.kind}`,
+              retryable: disposition.kind === "retry",
+            },
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatActions.id, action.id),
+              eq(chatActions.status, "received"),
+            ),
+          );
+        throw error;
+      }
+    }
+    const endpointRuntime =
+      runtime.get(event.endpointId) ?? (await runtimeFor(record.endpoint));
+    const thread = endpointRuntime.thread(starterThreadId);
     const synthetic = {
       id: createHash("sha256")
         .update(
@@ -6802,299 +6954,348 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           lte(chatPublications.updatedAt, staleBefore),
         ),
       );
-    const rows = await db
-      .select()
-      .from(chatPublications)
-      .where(
-        and(
-          inArray(chatPublications.state, ["pending", "retry"]),
-          or(
-            isNull(chatPublications.nextAttemptAt),
-            lte(chatPublications.nextAttemptAt, now),
-          ),
-        ),
-      )
-      .orderBy(asc(chatPublications.createdAt), asc(chatPublications.id))
-      .limit(limit);
-    for (const publication of rows) {
-      const earlierOpenPublication = await db
-        .select({ id: chatPublications.id })
+    const earlierPublication = alias(
+      chatPublications,
+      "earlier_chat_publications",
+    );
+    const attemptedIds: string[] = [];
+    while (attemptedIds.length < limit) {
+      // Select only each conversation's current head before applying the
+      // global limit. Re-query after every batch so one invocation can still
+      // drain a conversation's newly unblocked milestones in FIFO order.
+      const rows = await db
+        .select()
         .from(chatPublications)
         .where(
           and(
-            eq(chatPublications.conversationId, publication.conversationId),
+            inArray(chatPublications.state, ["pending", "retry"]),
             or(
-              lt(chatPublications.createdAt, publication.createdAt),
-              and(
-                eq(chatPublications.createdAt, publication.createdAt),
-                lt(chatPublications.id, publication.id),
-              ),
+              isNull(chatPublications.nextAttemptAt),
+              lte(chatPublications.nextAttemptAt, now),
             ),
-            inArray(chatPublications.state, [
-              "pending",
-              "retry",
-              "streaming",
-              "delivery_unknown",
-            ]),
-          ),
-        )
-        .limit(1)
-        .then((result) => result[0] ?? null);
-      if (earlierOpenPublication) continue;
-      const claimWhere = [
-        eq(chatPublications.id, publication.id),
-        eq(chatPublications.state, publication.state),
-      ];
-      const claimed = await db
-        .update(chatPublications)
-        .set({
-          state: "streaming",
-          attempts: publication.attempts + 1,
-          updatedAt: now,
-        })
-        .where(and(...claimWhere))
-        .returning();
-      if (!claimed.length) continue;
-      try {
-        const [endpoint, conversation] = await Promise.all([
-          db
-            .select()
-            .from(chatEndpoints)
-            .where(eq(chatEndpoints.id, publication.endpointId))
-            .then((result) => result[0] ?? null),
-          db
-            .select()
-            .from(chatConversations)
-            .where(eq(chatConversations.id, publication.conversationId))
-            .then((result) => result[0] ?? null),
-        ]);
-        if (!endpoint || !conversation)
-          throw new Error("Chat publication binding is unavailable");
-        if (endpoint.status === "paused" || endpoint.status === "attention") {
-          await db
-            .update(chatPublications)
-            .set({
-              state: "pending",
-              attempts: publication.attempts,
-              nextAttemptAt: null,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(chatPublications.id, publication.id),
-                eq(chatPublications.state, "streaming"),
-              ),
-            );
-          continue;
-        }
-        // The setup conversation is a real end-to-end test: once provider
-        // credentials are verified, its safe agent response must be able to
-        // reach the provider before the operator confirms the final wizard
-        // step. Draft, paused, revoked, and archived endpoints remain closed.
-        if (
-          !["active", "verifying"].includes(endpoint.status) ||
-          ["unavailable", "endpoint_removed"].includes(conversation.state)
-        ) {
-          await db
-            .update(chatPublications)
-            .set({
-              state: "cancelled",
-              redactedError: "External destination is no longer active",
-              updatedAt: new Date(),
-            })
-            .where(eq(chatPublications.id, publication.id));
-          continue;
-        }
-        if (conversation.isDirectMessage) {
-          if (!endpoint.allowDirectMessages)
-            throw new Error("Direct messages are disabled for this connection");
-        } else {
-          const resource = conversation.resourceId
-            ? await db
-                .select()
-                .from(chatEndpointResources)
+            attemptedIds.length > 0
+              ? notInArray(chatPublications.id, attemptedIds)
+              : undefined,
+            notExists(
+              db
+                .select({ id: earlierPublication.id })
+                .from(earlierPublication)
                 .where(
                   and(
-                    eq(chatEndpointResources.id, conversation.resourceId),
-                    eq(chatEndpointResources.endpointId, endpoint.id),
-                    eq(chatEndpointResources.companyId, endpoint.companyId),
+                    eq(
+                      earlierPublication.conversationId,
+                      chatPublications.conversationId,
+                    ),
+                    or(
+                      lt(
+                        earlierPublication.createdAt,
+                        chatPublications.createdAt,
+                      ),
+                      and(
+                        eq(
+                          earlierPublication.createdAt,
+                          chatPublications.createdAt,
+                        ),
+                        lt(earlierPublication.id, chatPublications.id),
+                      ),
+                    ),
+                    inArray(earlierPublication.state, [
+                      "pending",
+                      "retry",
+                      "streaming",
+                      "delivery_unknown",
+                    ]),
                   ),
-                )
-                .then((result) => result[0] ?? null)
-            : null;
+                ),
+            ),
+          ),
+        )
+        .orderBy(asc(chatPublications.createdAt), asc(chatPublications.id))
+        .limit(limit - attemptedIds.length);
+      if (rows.length === 0) break;
+      for (const publication of rows) {
+        attemptedIds.push(publication.id);
+        const earlierOpenPublication = await db
+          .select({ id: chatPublications.id })
+          .from(chatPublications)
+          .where(
+            and(
+              eq(chatPublications.conversationId, publication.conversationId),
+              or(
+                lt(chatPublications.createdAt, publication.createdAt),
+                and(
+                  eq(chatPublications.createdAt, publication.createdAt),
+                  lt(chatPublications.id, publication.id),
+                ),
+              ),
+              inArray(chatPublications.state, [
+                "pending",
+                "retry",
+                "streaming",
+                "delivery_unknown",
+              ]),
+            ),
+          )
+          .limit(1)
+          .then((result) => result[0] ?? null);
+        if (earlierOpenPublication) continue;
+        const claimWhere = [
+          eq(chatPublications.id, publication.id),
+          eq(chatPublications.state, publication.state),
+        ];
+        const claimed = await db
+          .update(chatPublications)
+          .set({
+            state: "streaming",
+            attempts: publication.attempts + 1,
+            updatedAt: now,
+          })
+          .where(and(...claimWhere))
+          .returning();
+        if (!claimed.length) continue;
+        try {
+          const [endpoint, conversation] = await Promise.all([
+            db
+              .select()
+              .from(chatEndpoints)
+              .where(eq(chatEndpoints.id, publication.endpointId))
+              .then((result) => result[0] ?? null),
+            db
+              .select()
+              .from(chatConversations)
+              .where(eq(chatConversations.id, publication.conversationId))
+              .then((result) => result[0] ?? null),
+          ]);
+          if (!endpoint || !conversation)
+            throw new Error("Chat publication binding is unavailable");
+          if (endpoint.status === "paused" || endpoint.status === "attention") {
+            await db
+              .update(chatPublications)
+              .set({
+                state: "pending",
+                attempts: publication.attempts,
+                nextAttemptAt: null,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(chatPublications.id, publication.id),
+                  eq(chatPublications.state, "streaming"),
+                ),
+              );
+            continue;
+          }
+          // The setup conversation is a real end-to-end test: once provider
+          // credentials are verified, its safe agent response must be able to
+          // reach the provider before the operator confirms the final wizard
+          // step. Draft, paused, revoked, and archived endpoints remain closed.
           if (
-            !resource?.enabled ||
-            resource.availability !== "available" ||
-            (resource.type === "group_chat" && !endpoint.allowGroupChats)
+            !["active", "verifying"].includes(endpoint.status) ||
+            ["unavailable", "endpoint_removed"].includes(conversation.state)
           ) {
             await db
               .update(chatPublications)
               .set({
                 state: "cancelled",
-                redactedError: "Destination is disabled in Paperclip",
+                redactedError: "External destination is no longer active",
                 updatedAt: new Date(),
               })
               .where(eq(chatPublications.id, publication.id));
             continue;
           }
-        }
-        const payload = publication.payload as SafeChatPublicationPayload;
-        const replaceProviderMessageId = CAPABILITIES[endpoint.provider]
-          .messageEdits
-          ? await runPublicationToReplace(publication, payload)
-          : null;
-        const sent = await postSafePublication({
-          endpoint,
-          conversation,
-          publication,
-          payload,
-          replaceProviderMessageId,
-        });
-        await db.transaction(async (tx) => {
-          await tx
-            .update(chatPublications)
-            .set({
-              state: "published",
-              providerMessageId: sent.id,
-              publishedAt: new Date(),
-              redactedError: null,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(chatPublications.id, publication.id),
-                eq(chatPublications.state, "streaming"),
-              ),
-            );
-          const messageLinkInsert = tx.insert(chatMessageLinks).values({
-            companyId: publication.companyId,
-            endpointId: publication.endpointId,
-            conversationId: publication.conversationId,
-            publicationId: publication.id,
-            commentId: publication.commentId,
-            providerMessageId: sent.id,
-            direction: "outbound",
-          });
-          if (replaceProviderMessageId) {
-            await messageLinkInsert.onConflictDoUpdate({
-              target: [
-                chatMessageLinks.endpointId,
-                chatMessageLinks.conversationId,
-                chatMessageLinks.providerMessageId,
-              ],
-              set: {
-                publicationId: publication.id,
-                commentId: publication.commentId,
-              },
-            });
+          if (conversation.isDirectMessage) {
+            if (!endpoint.allowDirectMessages)
+              throw new Error(
+                "Direct messages are disabled for this connection",
+              );
           } else {
-            await messageLinkInsert.onConflictDoNothing();
+            const resource = conversation.resourceId
+              ? await db
+                  .select()
+                  .from(chatEndpointResources)
+                  .where(
+                    and(
+                      eq(chatEndpointResources.id, conversation.resourceId),
+                      eq(chatEndpointResources.endpointId, endpoint.id),
+                      eq(chatEndpointResources.companyId, endpoint.companyId),
+                    ),
+                  )
+                  .then((result) => result[0] ?? null)
+              : null;
+            if (
+              !resource?.enabled ||
+              resource.availability !== "available" ||
+              (resource.type === "group_chat" && !endpoint.allowGroupChats)
+            ) {
+              await db
+                .update(chatPublications)
+                .set({
+                  state: "cancelled",
+                  redactedError: "Destination is disabled in Paperclip",
+                  updatedAt: new Date(),
+                })
+                .where(eq(chatPublications.id, publication.id));
+              continue;
+            }
           }
-          await tx
-            .update(chatEndpoints)
-            .set({ lastPublicationAt: new Date(), updatedAt: new Date() })
-            .where(eq(chatEndpoints.id, endpoint.id));
-        });
-      } catch (error) {
-        const attempts = publication.attempts + 1;
-        const disposition = classifyChatPublicationError(error, attempts);
-        const failure = redactSensitiveText(disposition.reason).slice(
-          0,
-          MAX_ERROR_TEXT,
-        );
-        const terminalRetry = disposition.kind === "retry" && attempts >= 5;
-        const failedEndpointRecord =
-          disposition.kind === "endpoint_attention"
-            ? await endpointRecord(publication.endpointId)
+          const payload = publication.payload as SafeChatPublicationPayload;
+          const replaceProviderMessageId = CAPABILITIES[endpoint.provider]
+            .messageEdits
+            ? await runPublicationToReplace(publication, payload)
             : null;
-        await db.transaction(async (tx) => {
-          if (disposition.kind === "endpoint_attention") {
+          const sent = await postSafePublication({
+            endpoint,
+            conversation,
+            publication,
+            payload,
+            replaceProviderMessageId,
+          });
+          await db.transaction(async (tx) => {
             await tx
-              .update(chatEndpoints)
+              .update(chatPublications)
               .set({
-                status: "attention",
-                healthMessage:
-                  "Provider credentials or permissions need attention",
-                lastError: failure,
+                state: "published",
+                providerMessageId: sent.id,
+                publishedAt: new Date(),
+                redactedError: null,
                 updatedAt: new Date(),
               })
-              .where(eq(chatEndpoints.id, publication.endpointId));
-            if (failedEndpointRecord) {
+              .where(
+                and(
+                  eq(chatPublications.id, publication.id),
+                  eq(chatPublications.state, "streaming"),
+                ),
+              );
+            const messageLinkInsert = tx.insert(chatMessageLinks).values({
+              companyId: publication.companyId,
+              endpointId: publication.endpointId,
+              conversationId: publication.conversationId,
+              publicationId: publication.id,
+              commentId: publication.commentId,
+              providerMessageId: sent.id,
+              direction: "outbound",
+            });
+            if (replaceProviderMessageId) {
+              await messageLinkInsert.onConflictDoUpdate({
+                target: [
+                  chatMessageLinks.endpointId,
+                  chatMessageLinks.conversationId,
+                  chatMessageLinks.providerMessageId,
+                ],
+                set: {
+                  publicationId: publication.id,
+                  commentId: publication.commentId,
+                },
+              });
+            } else {
+              await messageLinkInsert.onConflictDoNothing();
+            }
+            await tx
+              .update(chatEndpoints)
+              .set({ lastPublicationAt: new Date(), updatedAt: new Date() })
+              .where(eq(chatEndpoints.id, endpoint.id));
+          });
+        } catch (error) {
+          const attempts = publication.attempts + 1;
+          const disposition = classifyChatPublicationError(error, attempts);
+          const failure = redactSensitiveText(disposition.reason).slice(
+            0,
+            MAX_ERROR_TEXT,
+          );
+          const terminalRetry = disposition.kind === "retry" && attempts >= 5;
+          const failedEndpointRecord =
+            disposition.kind === "endpoint_attention"
+              ? await endpointRecord(publication.endpointId)
+              : null;
+          await db.transaction(async (tx) => {
+            if (disposition.kind === "endpoint_attention") {
               await tx
-                .update(toolConnections)
+                .update(chatEndpoints)
                 .set({
-                  status: "disabled",
-                  enabled: false,
-                  healthStatus: "degraded",
+                  status: "attention",
                   healthMessage:
                     "Provider credentials or permissions need attention",
                   lastError: failure,
-                  healthCheckedAt: new Date(),
                   updatedAt: new Date(),
                 })
-                .where(
-                  eq(
-                    toolConnections.id,
-                    failedEndpointRecord.endpoint.connectionId,
-                  ),
-                );
-            }
-          } else if (disposition.kind === "resource_unavailable") {
-            const binding = await tx
-              .select({ resourceId: chatConversations.resourceId })
-              .from(chatConversations)
-              .where(eq(chatConversations.id, publication.conversationId))
-              .then((result) => result[0] ?? null);
-            await tx
-              .update(chatConversations)
-              .set({ state: "unavailable", updatedAt: new Date() })
-              .where(eq(chatConversations.id, publication.conversationId));
-            if (binding?.resourceId) {
+                .where(eq(chatEndpoints.id, publication.endpointId));
+              if (failedEndpointRecord) {
+                await tx
+                  .update(toolConnections)
+                  .set({
+                    status: "disabled",
+                    enabled: false,
+                    healthStatus: "degraded",
+                    healthMessage:
+                      "Provider credentials or permissions need attention",
+                    lastError: failure,
+                    healthCheckedAt: new Date(),
+                    updatedAt: new Date(),
+                  })
+                  .where(
+                    eq(
+                      toolConnections.id,
+                      failedEndpointRecord.endpoint.connectionId,
+                    ),
+                  );
+              }
+            } else if (disposition.kind === "resource_unavailable") {
+              const binding = await tx
+                .select({ resourceId: chatConversations.resourceId })
+                .from(chatConversations)
+                .where(eq(chatConversations.id, publication.conversationId))
+                .then((result) => result[0] ?? null);
               await tx
-                .update(chatEndpointResources)
-                .set({ availability: "unavailable", updatedAt: new Date() })
-                .where(eq(chatEndpointResources.id, binding.resourceId));
+                .update(chatConversations)
+                .set({ state: "unavailable", updatedAt: new Date() })
+                .where(eq(chatConversations.id, publication.conversationId));
+              if (binding?.resourceId) {
+                await tx
+                  .update(chatEndpointResources)
+                  .set({ availability: "unavailable", updatedAt: new Date() })
+                  .where(eq(chatEndpointResources.id, binding.resourceId));
+              }
             }
-          }
 
-          const state =
-            disposition.kind === "retry" && !terminalRetry
-              ? "retry"
-              : disposition.kind === "delivery_unknown"
-                ? "delivery_unknown"
-                : disposition.kind === "resource_unavailable"
-                  ? "cancelled"
-                  : "failed";
-          await tx
-            .update(chatPublications)
-            .set({
-              state,
-              nextAttemptAt:
-                disposition.kind === "retry" && !terminalRetry
-                  ? new Date(Date.now() + disposition.retryAfterMs)
-                  : null,
-              redactedError: failure,
-              updatedAt: new Date(),
-            })
-            .where(eq(chatPublications.id, publication.id));
-        });
-        if (disposition.kind === "endpoint_attention") {
-          await runtime
-            .removeEndpoint(publication.endpointId)
-            .catch(() => undefined);
+            const state =
+              disposition.kind === "retry" && !terminalRetry
+                ? "retry"
+                : disposition.kind === "delivery_unknown"
+                  ? "delivery_unknown"
+                  : disposition.kind === "resource_unavailable"
+                    ? "cancelled"
+                    : "failed";
+            await tx
+              .update(chatPublications)
+              .set({
+                state,
+                nextAttemptAt:
+                  disposition.kind === "retry" && !terminalRetry
+                    ? new Date(Date.now() + disposition.retryAfterMs)
+                    : null,
+                redactedError: failure,
+                updatedAt: new Date(),
+              })
+              .where(eq(chatPublications.id, publication.id));
+          });
+          if (disposition.kind === "endpoint_attention") {
+            await runtime
+              .removeEndpoint(publication.endpointId)
+              .catch(() => undefined);
+          }
+          logger.warn(
+            {
+              endpointId: publication.endpointId,
+              publicationId: publication.id,
+              error: failure,
+              disposition: disposition.kind,
+            },
+            "chat publication failed",
+          );
         }
-        logger.warn(
-          {
-            endpointId: publication.endpointId,
-            publicationId: publication.id,
-            error: failure,
-            disposition: disposition.kind,
-          },
-          "chat publication failed",
-        );
       }
     }
-    return rows.length;
+    return attemptedIds.length;
   }
 
   async function getIssueBinding(
