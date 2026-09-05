@@ -77,6 +77,38 @@ describe("buildIssuePropertiesPanelKey", () => {
     expect(second).not.toBe(first);
   });
 
+  it("changes when the watchdog record's updatedAt changes even if other watchdog fields are unchanged", () => {
+    const watchdogBase = {
+      id: "watchdog-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      watchdogAgentId: "agent-1",
+      instructions: "Keep the tree moving.",
+      status: "active" as const,
+      watchdogIssueId: null,
+      lastObservedFingerprint: null,
+      lastReviewedFingerprint: null,
+      lastTriggeredAt: null,
+      lastCompletedAt: null,
+      triggerCount: 0,
+      createdAt: new Date("2026-04-12T12:01:00.000Z"),
+    };
+    const first = buildIssuePropertiesPanelKey(
+      createIssue({
+        watchdog: { ...watchdogBase, updatedAt: new Date("2026-04-12T12:01:00.000Z") },
+      }),
+      [],
+    );
+    const second = buildIssuePropertiesPanelKey(
+      createIssue({
+        watchdog: { ...watchdogBase, updatedAt: new Date("2026-04-12T12:02:00.000Z") },
+      }),
+      [],
+    );
+
+    expect(second).not.toBe(first);
+  });
+
   it("changes when workspace detail hydrates after opening from a cached issue", () => {
     const first = buildIssuePropertiesPanelKey(createIssue(), []);
     const second = buildIssuePropertiesPanelKey(

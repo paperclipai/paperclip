@@ -91,6 +91,7 @@ export function buildIssuePropertiesPanelKey(
           instructions: issue.watchdog.instructions ?? null,
           status: issue.watchdog.status,
           watchdogIssueId: issue.watchdog.watchdogIssueId ?? null,
+          updatedAt: String(issue.watchdog.updatedAt ?? ""),
         }
       : null,
     parentSummary: issue.ancestors?.[0]
