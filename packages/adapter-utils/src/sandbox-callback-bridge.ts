@@ -1704,7 +1704,11 @@ export async function startSandboxCallbackBridgeServer(input: {
       [
         `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)}`,
         `rm -f ${shellQuote(directories.readyFile)} ${shellQuote(directories.pidFile)}`,
-        `nohup ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
+        // This daemon is owned by the bridge handle and stopped through its
+        // pid-file in `stop()`. Do not inherit the one-shot command's run scope,
+        // otherwise generic run-process cleanup would reap the bridge immediately
+        // after this launcher shell exits, before the readiness probe can observe it.
+        `env PAPERCLIP_RUN_PROCESS_SCOPE= nohup ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
           `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
         "pid=$!",
         `printf '%s\\n' \"$pid\" > ${shellQuote(directories.pidFile)}`,
