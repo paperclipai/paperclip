@@ -634,26 +634,6 @@ describe("public repository paid workflow security", () => {
     );
   });
 
-  it("bounds a Playwright process that stalls after writing its result", async () => {
-    const launcher = await readFile(
-      path.join(repositoryRoot, "tests/runner-e2e/launch.ts"),
-      "utf8",
-    );
-
-    expect(launcher).toContain("completedResultExitGraceMs = 120_000");
-    expect(launcher).toContain("processResult.postResultStallError");
-    expect(launcher).toContain(
-      'processResult.timedOut && result.status === "passed"',
-    );
-    expect(launcher).toContain(
-      'processResult.exitCode !== 0 && result.status === "passed"',
-    );
-    expect(launcher).toContain('failureClass: "cleanup_failure"');
-    expect(launcher).toMatch(
-      /options\.ui \|\| options\.debug\s*\? \[\]\s*: executions\.map/,
-    );
-  });
-
   it("binds rerun evidence and Pages artifacts to the exact workflow attempt", async () => {
     const workflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"),

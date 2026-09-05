@@ -53,6 +53,10 @@ import {
 } from "./shared-memory.js";
 import { reserveRunnerE2EServerPort } from "./ports.js";
 import {
+  createResultExitGuard,
+  enforceResultProcessIntegrity,
+} from "./result-exit-guard.js";
+import {
   observeDescendantProcessTree,
   refreshContinuouslyLiveProcessGroups,
   revalidateObservedProcessGroups,
@@ -335,6 +339,7 @@ async function runProcess(
   timeoutMs: number | null,
   logPath: string,
   completionPaths: readonly string[],
+  interactive: boolean,
 ) {
   const log = createWriteStream(logPath, { flags: "a", mode: 0o600 });
   const child = spawn("pnpm", args, {
@@ -360,9 +365,7 @@ async function runProcess(
     recordOutput(chunk, process.stderr),
   );
   let childSettled = false;
-  let completionObservedAt: number | null = null;
   let postResultStallError: string | null = null;
-  let completionCheckActive = false;
   let boundedCleanup: Promise<string | null> | undefined;
   const forceStopDirectChild = () => {
     if (!childSettled && child.exitCode === null && child.signalCode === null) {
@@ -403,14 +406,12 @@ async function runProcess(
       const gracefulDeadline = Date.now() + 5_000;
       while (remainingGroups.length > 0 && Date.now() < gracefulDeadline) {
         const table = await readProcessTable();
-        if (!table) {
-          forceStopDirectChild();
-          return "Could not verify descendant process identities before SIGKILL";
+        if (table) {
+          remainingGroups = refreshContinuouslyLiveProcessGroups(
+            remainingGroups,
+            table,
+          );
         }
-        remainingGroups = refreshContinuouslyLiveProcessGroups(
-          remainingGroups,
-          table,
-        );
         if (remainingGroups.length > 0) await wait(50);
       }
       const remainingGroupIds = new Set(
@@ -426,17 +427,24 @@ async function runProcess(
       }
 
       const forcedDeadline = Date.now() + 5_000;
+      let forcedVerificationUnavailable = false;
       while (Date.now() < forcedDeadline) {
         const table = await readProcessTable();
         if (!table) {
-          return "Could not verify descendant process exit after SIGKILL";
+          forcedVerificationUnavailable = true;
+          await wait(50);
+          continue;
         }
+        forcedVerificationUnavailable = false;
         remainingGroups = refreshContinuouslyLiveProcessGroups(
           remainingGroups,
           table,
         );
         if (remainingGroups.length === 0) return null;
         await wait(50);
+      }
+      if (forcedVerificationUnavailable) {
+        return "Could not verify descendant process exit after SIGKILL";
       }
       return `Verified descendant process groups ${remainingGroups
         .map((group) => group.processGroupId)
@@ -445,46 +453,43 @@ async function runProcess(
     activeProcessCleanup.set(rootProcessGroupId, boundedCleanup);
   };
   activeProcessTerminators.set(child.pid, stopChildTree);
-  const completionPoll =
-    completionPaths.length === 0
-      ? undefined
-      : setInterval(async () => {
-          if (childSettled || completionCheckActive || postResultStallError)
-            return;
-          completionCheckActive = true;
-          try {
-            const complete = (
-              await Promise.all(
-                completionPaths.map((candidate) =>
-                  access(candidate).then(
-                    () => true,
-                    () => false,
-                  ),
-                ),
-              )
-            ).every(Boolean);
-            if (!complete || childSettled) return;
-            completionObservedAt ??= Date.now();
-            if (
-              Date.now() - completionObservedAt <
-              completedResultExitGraceMs
-            ) {
-              return;
-            }
-            const diagnostic = await processTreeDiagnostic(child.pid!);
-            if (childSettled) return;
-            postResultStallError = `Playwright remained alive for ${completedResultExitGraceMs}ms after every result was written`;
-            recordOutput(
-              Buffer.from(
-                `\n${postResultStallError}; forcing bounded cleanup. ${diagnostic.summary}\n`,
-              ),
-              process.stderr,
-            );
-            stopChildTree(diagnostic);
-          } finally {
-            completionCheckActive = false;
-          }
-        }, 500);
+  const resultExitGuard = createResultExitGuard({
+    resultPaths: completionPaths,
+    interactive,
+    graceMs: completedResultExitGraceMs,
+    now: Date.now,
+    pathExists: (candidate) =>
+      access(candidate).then(
+        () => true,
+        () => false,
+      ),
+    onExpired: async () => {
+      const diagnostic = await processTreeDiagnostic(child.pid!);
+      if (childSettled) return;
+      postResultStallError = `Playwright remained alive for ${completedResultExitGraceMs}ms after every result was written`;
+      recordOutput(
+        Buffer.from(
+          `\n${postResultStallError}; forcing bounded cleanup. ${diagnostic.summary}\n`,
+        ),
+        process.stderr,
+      );
+      stopChildTree(diagnostic);
+    },
+  });
+  const completionPoll = resultExitGuard.enabled
+    ? setInterval(() => {
+        void resultExitGuard.poll().catch(() => {
+          if (childSettled || postResultStallError) return;
+          postResultStallError =
+            "Completed-result exit guard failed during bounded inspection";
+          recordOutput(
+            Buffer.from(`\n${postResultStallError}; forcing cleanup.\n`),
+            process.stderr,
+          );
+          stopChildTree();
+        });
+      }, 500)
+    : undefined;
   completionPoll?.unref();
   let timedOut = false;
   const timer =
@@ -722,11 +727,10 @@ async function runAttempt(input: {
       childEnv,
       watchdog,
       path.join(privateDir, "playwright.log"),
-      options.ui || options.debug
-        ? []
-        : executions.map((candidate) =>
-            path.join(privateDir, "cases", candidate.task.id, "result.json"),
-          ),
+      executions.map((candidate) =>
+        path.join(privateDir, "cases", candidate.task.id, "result.json"),
+      ),
+      options.ui || options.debug,
     );
     const processFailure = processResult.spawnError
       ? `Playwright failed to start: ${processResult.spawnError}`
@@ -759,23 +763,7 @@ async function runAttempt(input: {
           processFailureClass,
         );
         const result = await readResult(resultPath, fallback);
-        const processIntegrityError =
-          processResult.processCleanupError ??
-          processResult.postResultStallError ??
-          (processResult.timedOut && result.status === "passed"
-            ? "Playwright exceeded its process watchdog after writing every result"
-            : processResult.exitCode !== 0 && result.status === "passed"
-              ? `Playwright exited ${processResult.exitCode} after writing a passing result`
-              : null);
-        return processIntegrityError
-          ? {
-              ...result,
-              status: "failed" as const,
-              failureClass: "cleanup_failure" as const,
-              error: processIntegrityError,
-              cleanup: "failed" as const,
-            }
-          : result;
+        return enforceResultProcessIntegrity(result, processResult);
       }),
     );
     let isolationError: unknown;
