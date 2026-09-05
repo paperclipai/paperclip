@@ -32,11 +32,25 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 // `proxy-authenticate` are excluded: they are response headers whose
 // `error="invalid_token"` parameters are diagnostics worth keeping.
 //
-// The value is bounded by its context, so a multi-part credential stays covered
-// end to end. Inside a double- or single-quoted shell argument the value runs to
-// the closing quote. Unquoted, the value is either a comma-separated `key=value`
-// list, the shape a `Digest` or `AWS4-HMAC-SHA256` credential takes, or a single
-// whitespace-delimited token. A continuation parameter must itself carry an `=`,
+// A header value is the rest of its shell word, so a multi-part credential
+// stays covered end to end. A shell word concatenates segments: an unquoted
+// run, a double-quoted part, a single-quoted part, an ANSI-C `$'...'` part, and
+// a backslash escape pair all join into one argument, and the rule consumes
+// every segment of the word before it writes one placeholder. Whitespace and a
+// shell metacharacter end the word, so the following argument survives. A
+// quoted segment that opens the value may also end at a line break or at the
+// end of the input, because a truncated run log writes an argument whose
+// closing quote never arrives. The first segment of an unquoted value never
+// opens on a backslash, which leaves an escaped-quote opener such as
+// `Authorization: \"Bearer ...\"` to the caller's own rules. The unquoted
+// branch also declines a name preceded by another name character or by an
+// unescaped quote: such a name sits inside a longer name or inside a quoted
+// argument that the quoted branches already own.
+//
+// An unquoted value may instead open as a comma-separated `key=value` list, the
+// shape a `Digest`, `Concealed`, or `AWS4-HMAC-SHA256` credential takes. A
+// parameter written as an HTTP quoted-string carries quoted-pairs and still
+// rejects a raw line break. A continuation parameter must itself carry an `=`,
 // so a bare word after the last parameter (`... response="r" status=401`)
 // survives.
 //
@@ -55,20 +69,20 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 // sequences an embedded `\"` or `\\` becomes, and closes at the next bare
 // `\"`. A multi-part credential in a serialized diagnostic is therefore covered
 // end to end, not truncated at its first escape. A single-quoted value takes a
-// backslash literally, because a shell single quote has no escapes. Only the
-// unquoted branch stops at a backslash, so an escaped-quote opener that does
-// not follow a header name, such as `Authorization: \"Bearer ...\"`, is left to
-// the caller's own authorization rules. A quoted value must open with a
+// backslash literally, because a shell single quote has no escapes, while an
+// ANSI-C value has escapes of its own. A quoted value must open with a
 // non-blank character, so an empty header argument such as `-H "X-API-Key: "`
 // stays as it is.
 //
-// The schemes come from the IANA HTTP Authentication Scheme Registry, plus
-// `AWS4-HMAC-SHA256` and `Token`, which are widely used but unregistered. A
-// longer alternative precedes a shorter one that shares its prefix.
+// The scheme list follows the IANA HTTP Authentication Scheme Registry as of
+// the RFC 9729 `Concealed` addition, plus `AWS4-HMAC-SHA256`, `Hawk`, and
+// `Token`, which are widely used but unregistered. A longer alternative
+// precedes a shorter one that shares its prefix.
 const COMMAND_AUTH_SCHEMES = [
   "AWS4-HMAC-SHA256",
   "Basic",
   "Bearer",
+  "Concealed",
   "Digest",
   "DPoP",
   "GNAP",
@@ -92,13 +106,40 @@ const COMMAND_SECRET_HEADER_PREFIX_PATTERN =
 const COMMAND_SECRET_HEADER_PARAM_PATTERN =
   String.raw`[^\s"'` +
   "`" +
-  String.raw`\\,=]+=(?:"[^"\\\r\n]*"|'[^'\\\r\n]*'|[^\s"'` +
+  String.raw`\\,=]+=(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s"'` +
   "`" +
   String.raw`\\,]*)`;
-const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN =
-  String.raw`(?:${COMMAND_SECRET_HEADER_PARAM_PATTERN}(?:[ \t]*,[ \t]*${COMMAND_SECRET_HEADER_PARAM_PATTERN})*|[^\s\\"'` +
-  "`" +
-  String.raw`]+)`;
+const COMMAND_SECRET_HEADER_PARAM_LIST_PATTERN =
+  COMMAND_SECRET_HEADER_PARAM_PATTERN +
+  String.raw`(?:[ \t]*,[ \t]*${COMMAND_SECRET_HEADER_PARAM_PATTERN})*`;
+// The segments a shell word concatenates. A double-quoted part keeps its escape
+// pairs and line continuations, a single-quoted part takes every byte
+// literally, an ANSI-C `$'...'` part has its own escapes, a lone escape pair
+// carries one character, and a plain run carries the rest.
+const COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS = [
+  String.raw`"(?:\\\r?\n|\\.|[^"\\\r\n])*"`,
+  String.raw`'[^'\r\n]*'`,
+  String.raw`\$'(?:\\.|[^'\\\r\n])*'`,
+] as const;
+const COMMAND_SHELL_ESCAPE_PAIR_PATTERN = String.raw`\\[^\r\n]`;
+// A plain run stops at a shell metacharacter as well as at whitespace: `;`,
+// `|`, `&`, `<`, `>`, and the parentheses end the word, so a redaction never
+// swallows a separator, a redirection, or the next command.
+const COMMAND_SHELL_PLAIN_SEGMENT_PATTERN =
+  String.raw`[^\s"'` + "`" + String.raw`\\;|&<>()]+`;
+const COMMAND_SHELL_SEGMENT_PATTERN = `(?:${[
+  ...COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS,
+  COMMAND_SHELL_ESCAPE_PAIR_PATTERN,
+  COMMAND_SHELL_PLAIN_SEGMENT_PATTERN,
+].join("|")})`;
+// The first segment of an unquoted value never opens on a backslash, so an
+// escaped-quote opener stays with the caller's own rules.
+const COMMAND_SHELL_FIRST_SEGMENT_PATTERN = `(?:${[
+  ...COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS,
+  COMMAND_SHELL_PLAIN_SEGMENT_PATTERN,
+].join("|")})`;
+const COMMAND_SECRET_HEADER_CONTINUATION_PATTERN = `${COMMAND_SHELL_SEGMENT_PATTERN}*`;
+const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN = `(?:${COMMAND_SECRET_HEADER_PARAM_LIST_PATTERN}|${COMMAND_SHELL_FIRST_SEGMENT_PATTERN})`;
 // The escape units a serialized command writes inside an escaped-quoted
 // argument: an escaped backslash followed by another escape (an embedded
 // `\"` or `\\`), an escaped backslash followed by a plain character, or an
@@ -106,12 +147,13 @@ const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN =
 // argument.
 const COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN = String.raw`\\\\\\.|\\\\[^\\]|\\[^"\\]`;
 const COMMAND_SECRET_HEADER_RE = new RegExp(
-  String.raw`(?<!\\)("${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\\r?\n|\\.|[^"\\\r\n])*(")` +
-    String.raw`|('${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'][^'\r\n]*(')` +
+  String.raw`(?<!\\)("${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\\r?\n|\\.|[^"\\\r\n])*\\?(?:(")|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
+    String.raw`|('${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'][^'\r\n]*(?:(')|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
+    String.raw`|(\$'${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s'\\])(?:\\.|[^'\\\r\n])*\\?(?:(')|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
     String.raw`|(?<!\\)(\\"${COMMAND_SECRET_HEADER_PREFIX_PATTERN})` +
     String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^\s"\\])` +
     String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^"\\\r\n])*(\\")` +
-    String.raw`|(\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}`,
+    String.raw`|(?<![A-Za-z0-9_-])(?<!(?<!\\)["'])(\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}`,
   "gi",
 );
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
@@ -162,18 +204,26 @@ export function redactCommandText(
         doubleQuoteClose: string | undefined,
         singleQuotedPrefix: string | undefined,
         singleQuoteClose: string | undefined,
-        escapedQuotedPrefix: string | undefined,
-        escapedQuoteClose: string | undefined,
+        ansiCQuotedPrefix: string | undefined,
+        ansiCQuoteClose: string | undefined,
+        serializedPrefix: string | undefined,
+        serializedClose: string | undefined,
         unquotedPrefix: string | undefined,
       ) => {
+        // Exactly one branch matches, so exactly one prefix is defined.
         const prefix =
           doubleQuotedPrefix ??
           singleQuotedPrefix ??
-          escapedQuotedPrefix ??
+          ansiCQuotedPrefix ??
+          serializedPrefix ??
           unquotedPrefix ??
           "";
         const closingQuote =
-          doubleQuoteClose ?? singleQuoteClose ?? escapedQuoteClose ?? "";
+          doubleQuoteClose ??
+          singleQuoteClose ??
+          ansiCQuoteClose ??
+          serializedClose ??
+          "";
         return `${prefix}${redactedValue}${closingQuote}`;
       },
     )
