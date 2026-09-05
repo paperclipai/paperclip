@@ -81,6 +81,14 @@ function publicEvidencePath(
 export function publicScreenshotPaths(campaign: RunnerE2ECampaign) {
   const screenshots = new Set<string>();
   for (const result of campaign.results) {
+    const files =
+      result.screenshots
+        ?.filter(
+          (screenshot) =>
+            screenshot.publication === PUBLIC_RUNNER_SCREENSHOT_MARKER,
+        )
+        .map((screenshot) => screenshot.file) ?? [];
+    if (files.length === 0) continue;
     if (
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,299}$/.test(result.executionId) ||
       !Number.isSafeInteger(result.attempt) ||
@@ -90,13 +98,6 @@ export function publicScreenshotPaths(campaign: RunnerE2ECampaign) {
         `Cannot publish screenshots for unsafe execution identity ${result.executionId}`,
       );
     }
-    const files =
-      result.screenshots
-        ?.filter(
-          (screenshot) =>
-            screenshot.publication === PUBLIC_RUNNER_SCREENSHOT_MARKER,
-        )
-        .map((screenshot) => screenshot.file) ?? [];
     for (const file of files) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.png$/i.test(file)) {
         throw new Error(

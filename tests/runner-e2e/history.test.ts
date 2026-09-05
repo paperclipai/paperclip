@@ -524,6 +524,21 @@ describe("historical publication security", () => {
     expect([...publicScreenshotPaths(failedCampaign)]).toEqual([
       `evidence/${execution.id}/attempt-1/failure.png`,
     ]);
+
+    const missingArtifactCampaign = buildRunnerCampaign({
+      campaignId: "missing-artifact",
+      generatedAt: "2026-08-28T00:01:00.000Z",
+      expected: [execution.id],
+      results: [
+        {
+          ...result(execution, "failed"),
+          attempt: 0,
+          error: "Missing matrix artifact",
+          screenshots: [],
+        },
+      ],
+    });
+    expect([...publicScreenshotPaths(missingArtifactCampaign)]).toEqual([]);
   });
 
   it("replaces target-supplied public assets with trusted publisher assets", async () => {
