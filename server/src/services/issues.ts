@@ -9029,7 +9029,11 @@ export function issueService(db: Db) {
       if (!issue) throw notFound("Issue not found");
 
       const currentUserRedactionOptions = {
-        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+        // Keep every read on the caller's transaction connection. Re-entering
+        // the outer pool here can deadlock when concurrent transactions fill
+        // the pool while waiting on the same issue or delivery row.
+        enabled: (await instanceSettings.getGeneral({ db: dbOrTx }))
+          .censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
       const authorType = issueCommentAuthorTypeSchema.parse(
