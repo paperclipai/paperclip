@@ -1358,7 +1358,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         id: item.id,
         name: "paperclipai/paperclip",
       });
-      await deliverMessage({
+      const rootDelivery = {
         callbacks,
         endpointId: endpoint.id,
         provider: "github",
@@ -1369,7 +1369,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           mentioned: true,
         }),
         trigger: "mention",
-      });
+      } as const;
+      await deliverMessage(rootDelivery);
+      if (item === cases[0]) await deliverMessage(rootDelivery);
       await deliverMessage({
         callbacks,
         endpointId: endpoint.id,
@@ -1398,6 +1400,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(deliveries).toHaveLength(6);
     expect(deliveries.every((row) => row.state === "processed")).toBe(true);
+    expect(
+      deliveries.find((row) => row.providerEventId.endsWith(":51001")),
+    ).toMatchObject({
+      normalizedEvent: { deduplication: { duplicateCount: 1 } },
+    });
     expect(
       deliveries.filter(
         (row) => row.normalizedEvent.trigger === "subscribed_message",
