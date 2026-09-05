@@ -4,7 +4,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import { activityLog, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -4028,6 +4028,25 @@ export function agentRoutes(
     res.json(state);
   });
 
+  // Fingerprint the requested hire identity so a retried POST inside the same run
+  // (e.g. an agent that misread the 201 body and re-sent the payload) resolves to
+  // the hire it already created instead of spawning a "Name 2" duplicate.
+  const hireFingerprint = (input: {
+    name?: unknown;
+    role?: unknown;
+    title?: unknown;
+    adapterType?: unknown;
+  }): string => {
+    const norm = (value: unknown) =>
+      typeof value === "string" ? value.trim().toLowerCase() : "";
+    return JSON.stringify([
+      norm(input.name),
+      norm(input.role),
+      norm(input.title),
+      norm(input.adapterType),
+    ]);
+  };
+
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
@@ -4108,6 +4127,39 @@ export function agentRoutes(
     if (!company) {
       res.status(404).json({ error: "Company not found" });
       return;
+    }
+
+    // Idempotency within a run: if this run already created a hire with the same
+    // identity, return that hire instead of creating a duplicate. The creating
+    // agent cannot pause or delete its own hire (board-only), so a doubled hire
+    // would otherwise strand a phantom teammate the board never approved.
+    const requestFingerprint = hireFingerprint(normalizedHireInput);
+    const runId = req.actor.runId;
+    if (runId && isUuidLike(runId)) {
+      const priorHires = await db
+        .select({ entityId: activityLog.entityId, details: activityLog.details })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.runId, runId),
+            eq(activityLog.action, "agent.hire_created"),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt));
+      const match = priorHires.find(
+        (row) => (row.details as Record<string, unknown> | null)?.hireFingerprint === requestFingerprint,
+      );
+      if (match) {
+        const existingAgent = await svc.getById(match.entityId);
+        if (existingAgent && existingAgent.status !== "terminated") {
+          const priorApprovalId = (match.details as Record<string, unknown> | null)?.approvalId;
+          const existingApproval =
+            typeof priorApprovalId === "string" ? await approvalsSvc.getById(priorApprovalId) : null;
+          res.status(200).json({ agent: existingAgent, approval: existingApproval, idempotent: true });
+          return;
+        }
+      }
     }
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
@@ -4221,6 +4273,7 @@ export function agentRoutes(
         approvalId: approval?.id ?? null,
         issueIds: sourceIssueIds,
         desiredSkills: desiredSkillAssignment.desiredSkills,
+        hireFingerprint: requestFingerprint,
       },
     });
     const telemetryClient = getTelemetryClient();
