@@ -199,7 +199,7 @@ export function createComposioClient(options: ComposioClientOptions): ComposioCl
         body: JSON.stringify({
           user_id: userId,
           mcp: options.mcp,
-          ...(options.toolkits ? { toolkits: { enabled: options.toolkits } } : {}),
+          ...(options.toolkits ? { toolkits: { enable: options.toolkits } } : {}),
           ...(options.tools ? { tools: options.tools } : {}),
           ...(options.authConfigs ? { auth_configs: options.authConfigs } : {}),
           ...(options.connectedAccounts ? { connected_accounts: options.connectedAccounts } : {}),
