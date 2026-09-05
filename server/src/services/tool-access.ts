@@ -817,9 +817,12 @@ function connectionMethodFor(app: AppDefinition, methodKey?: string | null) {
   const normalizedMethodKey = app.slug === "gmail" && methodKey === "paperclip-id-oauth"
     ? "paperclip-draft"
     : methodKey;
+  const toolMethods = getAvailableConnectionMethods(app).filter((candidate) =>
+    candidate.purpose !== "channel" && candidate.transport !== "chat_sdk"
+  );
   const method = normalizedMethodKey
-    ? app.methods.find((candidate) => candidate.key === normalizedMethodKey) ?? null
-    : getAvailableConnectionMethod(app, null);
+    ? toolMethods.find((candidate) => candidate.key === normalizedMethodKey) ?? null
+    : getAvailableConnectionMethod({ ...app, methods: toolMethods }, null);
   if (!method) throw unprocessable("This app does not have an available connection method");
   return method;
 }
@@ -8783,7 +8786,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ? "local"
       : input.connectionMethodKey;
     if (!galleryEntry && input.connectionMethodKey) throw badRequest("Connection method selection requires a gallery app");
-    if (galleryEntry && getAvailableConnectionMethods(galleryEntry).length > 1 && !inferredMethodKey) {
+    if (galleryEntry && getAvailableConnectionMethods(galleryEntry).filter((candidate) =>
+      candidate.purpose !== "channel" && candidate.transport !== "chat_sdk"
+    ).length > 1 && !inferredMethodKey) {
       throw badRequest("Choose a connection method for this app");
     }
     const method = galleryEntry ? connectionMethodFor(galleryEntry, inferredMethodKey) : null;
