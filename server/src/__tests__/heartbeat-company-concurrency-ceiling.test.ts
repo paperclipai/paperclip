@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentRuntimeState,
   agentWakeupRequests,
   companies,
   createDb,
@@ -84,11 +85,13 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await heartbeat.drainActiveRunExecutions();
     mockAdapterExecute.mockClear();
     runningProcesses.clear();
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -211,6 +214,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
     const queuedRunId = await seedQueuedRun(companyId, agentB);
 
     await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
 
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
     expect(await statusOf(queuedRunId)).not.toBe("queued");
@@ -223,6 +227,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
     const queuedRunId = await seedQueuedRun(companyId, agentA);
 
     await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
 
     expect(mockAdapterExecute).not.toHaveBeenCalled();
     expect(await statusOf(queuedRunId)).toBe("queued");
@@ -239,11 +244,13 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
 
     // Verify the ceiling blocks agentB before the slot is freed.
     await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
     expect(await statusOf(agentBQueuedId)).toBe("queued");
 
     // Cancel agentA's run — frees the company slot and should trigger cross-agent
     // handoff so agentB does not have to wait for the next resumeQueuedRuns tick.
     await heartbeat.cancelRun(agentARunId, "test: freeing slot for cross-agent handoff");
+    await heartbeat.drainActiveRunExecutions();
 
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
     expect(await statusOf(agentBQueuedId)).not.toBe("queued");
@@ -264,6 +271,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
     // Without the stale-row guard, agentA's orphaned row counts against the
     // ceiling and keeps agentB stranded even though no real run is active.
     await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
 
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
     expect(await statusOf(agentBQueuedId)).not.toBe("queued");
@@ -277,6 +285,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
     const agentBQueuedId = await seedQueuedRun(companyId, agentB);
 
     await heartbeat.cancelRun(agentARunId, "test: cancelling run with no company ceiling");
+    await heartbeat.drainActiveRunExecutions();
     // Without a company ceiling, cancelling agentA does not fan out to agentB
     expect(await statusOf(agentBQueuedId)).toBe("queued");
   });
