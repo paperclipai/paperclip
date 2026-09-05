@@ -43,10 +43,38 @@ function sourceSlugForApplication(application: ToolApplication | undefined) {
   return text(application?.metadata?.sourceTemplateKey) ?? text(application?.metadata?.galleryKey);
 }
 
+// Every Composio-proxied connection (Gmail, Google Search Console, ...) is
+// stored as a child row that shares its parent's applicationId - the single,
+// generic "Composio" app-store entry - regardless of which underlying
+// service it actually proxies (see composioChildConfig in
+// composio-session-manager.ts and syncComposioChild in tool-access.ts,
+// which sets `applicationId: parent.applicationId`). Falling through to
+// sourceSlugForApplication for these rows would always resolve to
+// "composio", never the real service slug, so a company whose only working
+// Gmail connection is a Composio child could never be found by
+// connections_search("gmail")/connection_request("gmail") - those tools
+// would keep pointing an agent at an unrelated or archived native
+// connection instead. Map the Composio toolkit slug to the matching
+// first-party app slug explicitly (not a blind toolkitSlug === app.slug
+// assumption) since several toolkits have no corresponding native app
+// definition at all.
+const COMPOSIO_TOOLKIT_APP_SLUGS: Record<string, string> = {
+  gmail: "gmail",
+};
+
+function composioToolkitSlugFor(connection: ToolConnection): string | null {
+  const config = record(connection.config);
+  if (config?.provider !== "composio") return null;
+  return text(config.toolkitSlug);
+}
+
 function sourceSlugForConnection(
   connection: ToolConnection,
   applications: ReadonlyMap<string, ToolApplication>,
 ) {
+  const composioToolkitSlug = composioToolkitSlugFor(connection);
+  const composioAppSlug = composioToolkitSlug ? COMPOSIO_TOOLKIT_APP_SLUGS[composioToolkitSlug] : undefined;
+  if (composioAppSlug) return composioAppSlug;
   return text(connection.config?.sourceTemplateKey)
     ?? text(connection.transportConfig?.sourceTemplateKey)
     ?? sourceSlugForApplication(applications.get(connection.applicationId));
