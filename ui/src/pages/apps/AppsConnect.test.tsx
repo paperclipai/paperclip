@@ -776,6 +776,30 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Connect with Paperclip");
   });
 
+  it("uses GitHub's advertised PAT fallback when an enrolled Cloud omits the managed profile", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Your GitHub key");
+    expect(container.textContent).not.toContain("Connect with Paperclip");
+    expect(container.textContent).not.toContain("Continue to GitHub");
+    const connect = buttonByText("Connect");
+    expect(connect?.disabled).toBe(true);
+    const tokenInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(tokenInput).toBeTruthy();
+    await act(async () => setInputValue(tokenInput!, "github_pat_test"));
+    await flushReact();
+    expect(connect?.disabled).toBe(false);
+  });
+
   it("preserves a dedicated agent identity across the full-page enrollment callback", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({

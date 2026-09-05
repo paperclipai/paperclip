@@ -1214,6 +1214,22 @@ export function ConnectionSetupFlow({
       reconnectConnection,
       applications: applicationsQuery.data?.applications ?? [],
     });
+    const requestedEntryAdvertisesManagedConnector = Boolean(
+      requestedEntry?.methods.some((candidate) =>
+        candidate.oauthStrategy === "paperclip_cloud_connector"
+        || candidate.oauthStrategy === "paperclip_id_connector"
+      ),
+    );
+    // The enrollment lookup decides whether a hidden managed method means
+    // "enroll this instance" or "that Cloud profile is unavailable here".
+    // Do not choose a method until that distinction is known: retaining the
+    // hidden method key after an active enrollment produces an empty setup
+    // screen with a permanently disabled generic Connect button.
+    if (
+      requestedDefinitionUsesManagedConnector
+      && !requestedEntryAdvertisesManagedConnector
+      && connectorEnrollmentQuery.isLoading
+    ) return;
     const methods = connectionMethodsForCredentialSource(requestedEntry, credentialSource);
     const method = methods.length === 1 ? methods[0]! : null;
     const automaticOAuth = credentialSource === "paperclip_vault" && Boolean(automaticOAuthMethod(requestedEntry));
@@ -1266,12 +1282,10 @@ export function ConnectionSetupFlow({
       setCuratedOAuthClientId("");
       setCuratedOAuthClientSecret("");
       setVercelConnector("");
-      const requestedEntryAdvertisesManagedConnector = requestedEntry.methods.some((candidate) =>
-        candidate.oauthStrategy === "paperclip_cloud_connector"
-        || candidate.oauthStrategy === "paperclip_id_connector"
-      );
       const initialMethod = (
-        requestedDefinitionUsesManagedConnector && !requestedEntryAdvertisesManagedConnector
+        requestedDefinitionUsesManagedConnector
+          && !requestedEntryAdvertisesManagedConnector
+          && connectorEnrollmentQuery.data?.configured !== true
           ? recommendedManagedConnectorMethod(fullRequestedDefinition)
           : null
       ) ?? recommendedSetupConnectionMethod(methods);
@@ -1317,6 +1331,8 @@ export function ConnectionSetupFlow({
     applicationsQuery.data,
     connectionsQuery.isError,
     connectionsQuery.isFetchedAfterMount,
+    connectorEnrollmentQuery.data?.configured,
+    connectorEnrollmentQuery.isLoading,
     credentialSource,
     entry?.slug,
     galleryQuery.data,
