@@ -152,12 +152,45 @@ describe("redactCommandText header secrets", () => {
     );
   });
 
-  it("does not start a match at an escaped quote after the colon", () => {
-    // A serialized diagnostic writes a quoted header value as `\"`. The value
-    // pattern excludes the backslash, so the rule leaves this shape to the
-    // caller's own authorization rules instead of redacting the escape itself.
+  it("redacts an escaped-quoted value and keeps its escaped quotes", () => {
+    // An outer shell writes quote syntax for an inner shell this way, and the
+    // caller's own authorization rules write the same shape. Keeping the
+    // escaped quotes makes both agree on the result.
     const input = String.raw`prefix Authorization: \"Bearer nested\" suffix`;
-    expect(redactCommandText(input)).toBe(input);
+    const output = redactCommandText(input);
+    expect(output).not.toContain("nested");
+    expect(output).toBe(
+      String.raw`prefix Authorization: \"Bearer ` +
+        REDACTED_COMMAND_TEXT_VALUE +
+        String.raw`\" suffix`,
+    );
+    // This is exactly what the caller's chain feeds back in, so it must not
+    // move again.
+    const settled =
+      String.raw`prefix Authorization: \"` +
+      REDACTED_COMMAND_TEXT_VALUE +
+      String.raw`\" suffix`;
+    expect(redactCommandText(settled)).toBe(settled);
+  });
+
+  it("redacts an escaped-quoted value passed to a nested shell", () => {
+    const input = String.raw`sh -c "curl -H X-API-Key:\"abc123\" https://example.test"`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc123");
+    expect(output).toBe(
+      String.raw`sh -c "curl -H X-API-Key:\"` +
+        REDACTED_COMMAND_TEXT_VALUE +
+        String.raw`\" https://example.test"`,
+    );
+  });
+
+  it("redacts a truncated escaped-quoted value", () => {
+    const input = String.raw`X-API-Key:\"abc`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(
+      String.raw`X-API-Key:\"` + REDACTED_COMMAND_TEXT_VALUE,
+    );
   });
 
   it("redacts a header secret inside a serialized command string", () => {
@@ -354,12 +387,28 @@ describe("redactCommandText header secrets", () => {
 
   it("redacts a value whose quotes cover only the value", () => {
     // `X-API-Key:"abc123"` is one shell word, so the quoted part is the value.
+    // The value keeps its own delimiters, which makes a second pass a no-op.
+    const R = REDACTED_COMMAND_TEXT_VALUE;
     const input = `curl -H X-API-Key:"abc123" https://example.test`;
     const output = redactCommandText(input);
     expect(output).not.toContain("abc123");
-    expect(output).toBe(
-      `curl -H X-API-Key:${REDACTED_COMMAND_TEXT_VALUE} https://example.test`,
+    expect(output).toBe(`curl -H X-API-Key:"${R}" https://example.test`);
+    expect(redactCommandText(`curl -H X-API-Key:'abc' https://x`)).toBe(
+      `curl -H X-API-Key:'${R}' https://x`,
     );
+    expect(redactCommandText(`curl -H X-API-Key:$'abc' https://x`)).toBe(
+      `curl -H X-API-Key:$'${R}' https://x`,
+    );
+  });
+
+  it("is stable over a value-only quoted header with a following command", () => {
+    // The preserved delimiters keep the second pass from reading the
+    // placeholder as a bare token and eating the separator.
+    const R = REDACTED_COMMAND_TEXT_VALUE;
+    const once = redactCommandText(`curl -H X-API-Key:"abc"123;echo done`);
+    expect(once).toBe(`curl -H X-API-Key:"${R}";echo done`);
+    expect(redactCommandText(once)).toBe(once);
+    expect(redactDiagnosticText(once)).toBe(once);
   });
 
   it("redacts a segment adjacent to a quoted header argument", () => {
@@ -524,6 +573,11 @@ describe("redactCommandText header secrets", () => {
       String.raw`curl -H $'X-API-Key: abc\'123' https://example.test`,
     ];
     const pinnedForms = [
+      `curl -H X-API-Key:"abc"123;echo done`,
+      `curl -H X-API-Key:'abc' https://x`,
+      `curl -H X-API-Key:$'abc' https://x`,
+      String.raw`sh -c "curl -H X-API-Key:\"abc123\" https://example.test"`,
+      String.raw`X-API-Key:\"abc`,
       `curl -H "Authorization: Bearer abc" https://example.test`,
       `curl -H "X-API-Key: " -H "X-Auth-Token:" https://example.test`,
       `prefix Authorization: ${REDACTED_COMMAND_TEXT_VALUE} suffix`,

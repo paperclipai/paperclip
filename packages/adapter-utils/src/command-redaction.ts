@@ -70,7 +70,13 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 // delimiters: it opens at an unescaped `\"`, consumes the doubled escape
 // sequences an embedded `\"` or `\\` becomes, and closes at the next bare
 // `\"`. A multi-part credential in a serialized diagnostic is therefore covered
-// end to end, not truncated at its first escape. A single-quoted value takes a
+// end to end, not truncated at its first escape. A separate branch owns a value
+// whose own quotes are escaped after the colon, the shape an outer shell writes
+// to pass quote syntax to an inner one. It keeps those escaped quotes in the
+// output, so the caller's own authorization redaction and this rule settle on
+// the same text. A value quoted after the colon likewise keeps its own
+// delimiters, which leaves the placeholder readable as a quoted value on a
+// second pass instead of as a bare token. A single-quoted value takes a
 // backslash literally, because a shell single quote has no escapes, while an
 // ANSI-C value has escapes of its own. A quoted value must open with a
 // non-blank character, so an empty header argument such as `-H "X-API-Key: "`
@@ -102,9 +108,13 @@ const COMMAND_AUTH_SCHEMES = [
 const COMMAND_SECRET_HEADER_HINT_PATTERN = String.raw`(?:api[-_]?key|token|secret|auth)`;
 const COMMAND_SECRET_HEADER_NAME_PATTERN =
   String.raw`(?!(?:www|proxy)-authenticate\b)(?:(?=[A-Za-z0-9]+[-_])[A-Za-z0-9_-]*${COMMAND_SECRET_HEADER_HINT_PATTERN}[A-Za-z0-9_-]*|authorization|apikey)`;
+const COMMAND_SECRET_HEADER_COLON_PATTERN = String.raw`[ \t]*:[ \t]*`;
+const COMMAND_SECRET_HEADER_SCHEME_PATTERN =
+  String.raw`(?:(?:${COMMAND_AUTH_SCHEMES.join("|")})[ \t]+)?`;
 const COMMAND_SECRET_HEADER_PREFIX_PATTERN =
   COMMAND_SECRET_HEADER_NAME_PATTERN +
-  String.raw`[ \t]*:[ \t]*(?:(?:${COMMAND_AUTH_SCHEMES.join("|")})[ \t]+)?`;
+  COMMAND_SECRET_HEADER_COLON_PATTERN +
+  COMMAND_SECRET_HEADER_SCHEME_PATTERN;
 const COMMAND_SECRET_HEADER_PARAM_PATTERN =
   String.raw`[^\s"'` +
   "`" +
@@ -144,13 +154,21 @@ const COMMAND_SHELL_SEGMENT_PATTERN = `(?:${[
   COMMAND_SHELL_ESCAPE_PAIR_PATTERN,
   COMMAND_SHELL_PLAIN_SEGMENT_PATTERN,
 ].join("|")})`;
-const COMMAND_SHELL_FIRST_SEGMENT_PATTERN = `(?:${[
-  ...COMMAND_SHELL_QUOTED_SEGMENT_PATTERNS,
+const COMMAND_SECRET_HEADER_CONTINUATION_PATTERN = `${COMMAND_SHELL_SEGMENT_PATTERN}*`;
+// A value quoted after the colon keeps its own delimiters around the
+// placeholder, so a second pass reads the same shape and leaves it alone. The
+// opener and the closer are captured; the body is not.
+const COMMAND_SECRET_HEADER_QUOTED_VALUE_PATTERNS = [
+  String.raw`(")(?:\\\r?\n|\\.|[^"\\\r\n])*(")`,
+  String.raw`(')[^'\r\n]*(')`,
+  String.raw`(\$')(?:\\.|[^'\\\r\n])*(')`,
+] as const;
+const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN = `(?:${[
+  COMMAND_SECRET_HEADER_PARAM_LIST_PATTERN,
+  ...COMMAND_SECRET_HEADER_QUOTED_VALUE_PATTERNS,
   COMMAND_SHELL_OPENING_ESCAPE_PAIR_PATTERN,
   COMMAND_SHELL_RAW_TOKEN_PATTERN,
 ].join("|")})`;
-const COMMAND_SECRET_HEADER_CONTINUATION_PATTERN = `${COMMAND_SHELL_SEGMENT_PATTERN}*`;
-const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN = `(?:${COMMAND_SECRET_HEADER_PARAM_LIST_PATTERN}|${COMMAND_SHELL_FIRST_SEGMENT_PATTERN})`;
 // The escape units a serialized command writes inside an escaped-quoted
 // argument: an escaped backslash followed by another escape (an embedded
 // `\"` or `\\`), an escaped backslash followed by a plain character, or an
@@ -164,6 +182,9 @@ const COMMAND_SECRET_HEADER_RE = new RegExp(
     String.raw`|(?<!\\)(\\"${COMMAND_SECRET_HEADER_PREFIX_PATTERN})` +
     String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^\s"\\])` +
     String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^"\\\r\n])*(\\")` +
+    String.raw`|(?<![A-Za-z0-9_-])(\b${COMMAND_SECRET_HEADER_NAME_PATTERN}${COMMAND_SECRET_HEADER_COLON_PATTERN}\\"${COMMAND_SECRET_HEADER_SCHEME_PATTERN})` +
+    String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^\s"\\])` +
+    String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^"\\\r\n])*(?:(\\")|(?=[\r\n]|$))${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}` +
     String.raw`|(?<![A-Za-z0-9_-])(?<!(?<!\\)["'])(\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}${COMMAND_SECRET_HEADER_CONTINUATION_PATTERN}`,
   "gi",
 );
@@ -207,37 +228,18 @@ export function redactCommandText(
   if (!maybeContainsSecretText(command)) return command;
   return command
     .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
-    .replace(
-      COMMAND_SECRET_HEADER_RE,
-      (
-        _match,
-        doubleQuotedPrefix: string | undefined,
-        doubleQuoteClose: string | undefined,
-        singleQuotedPrefix: string | undefined,
-        singleQuoteClose: string | undefined,
-        ansiCQuotedPrefix: string | undefined,
-        ansiCQuoteClose: string | undefined,
-        serializedPrefix: string | undefined,
-        serializedClose: string | undefined,
-        unquotedPrefix: string | undefined,
-      ) => {
-        // Exactly one branch matches, so exactly one prefix is defined.
-        const prefix =
-          doubleQuotedPrefix ??
-          singleQuotedPrefix ??
-          ansiCQuotedPrefix ??
-          serializedPrefix ??
-          unquotedPrefix ??
-          "";
-        const closingQuote =
-          doubleQuoteClose ??
-          singleQuoteClose ??
-          ansiCQuoteClose ??
-          serializedClose ??
-          "";
-        return `${prefix}${redactedValue}${closingQuote}`;
-      },
-    )
+    .replace(COMMAND_SECRET_HEADER_RE, (...matchArgs: unknown[]) => {
+      // Each branch captures its prefix, then an optional opener for a value
+      // that keeps its own quotes, then an optional closer. Only one branch
+      // matches, so the groups it defined read in that order.
+      const captured = matchArgs
+        .slice(1, -2)
+        .filter((group): group is string => typeof group === "string");
+      const prefix = captured[0] ?? "";
+      const opener = captured.length > 2 ? captured[1] : "";
+      const closing = captured.length > 1 ? captured[captured.length - 1] : "";
+      return `${prefix}${opener}${redactedValue}${closing}`;
+    })
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
     .replace(
       COMMAND_ENV_SECRET_ASSIGNMENT_RE,
