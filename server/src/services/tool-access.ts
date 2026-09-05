@@ -9492,54 +9492,81 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         },
       };
     } catch (error) {
+      let identityRollbackError: unknown = null;
       if (connectionRow && revivedConnectionPrevious) {
-        await db.transaction(async (tx) => {
-          await tx.update(toolConnections).set({
-            name: revivedConnectionPrevious.name,
-            transport: revivedConnectionPrevious.transport,
-            status: revivedConnectionPrevious.status,
-            enabled: revivedConnectionPrevious.enabled,
-            config: revivedConnectionPrevious.config,
-            transportConfig: revivedConnectionPrevious.transportConfig,
-            credentialRefs: revivedConnectionPrevious.credentialRefs,
-            credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
-            credentialSource: revivedConnectionPrevious.credentialSource,
-            externalCredential: revivedConnectionPrevious.externalCredential,
-            credentialPolicy: revivedConnectionPrevious.credentialPolicy,
-            updatedAt: new Date(),
-          }).where(eq(toolConnections.id, revivedConnectionPrevious.id));
+        try {
+          await db.transaction(async (tx) => {
+            await tx.update(toolConnections).set({
+              name: revivedConnectionPrevious.name,
+              transport: revivedConnectionPrevious.transport,
+              status: revivedConnectionPrevious.status,
+              enabled: revivedConnectionPrevious.enabled,
+              config: revivedConnectionPrevious.config,
+              transportConfig: revivedConnectionPrevious.transportConfig,
+              credentialRefs: revivedConnectionPrevious.credentialRefs,
+              credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
+              credentialSource: revivedConnectionPrevious.credentialSource,
+              externalCredential: revivedConnectionPrevious.externalCredential,
+              credentialPolicy: revivedConnectionPrevious.credentialPolicy,
+              updatedAt: new Date(),
+            }).where(eq(toolConnections.id, revivedConnectionPrevious.id));
 
-          const retainedGrantIds = new Set(revivedGrantSnapshots.map((grant) => grant.id));
-          const currentGrants = await tx.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
-            eq(connectionGrants.companyId, companyId),
-            eq(connectionGrants.connectionId, revivedConnectionPrevious.id),
-          ));
-          const addedGrantIds = currentGrants
-            .map((grant) => grant.id)
-            .filter((grantId) => !retainedGrantIds.has(grantId));
-          if (addedGrantIds.length > 0) {
-            await tx.delete(connectionGrants).where(inArray(connectionGrants.id, addedGrantIds));
+            const retainedGrantIds = new Set(revivedGrantSnapshots.map((grant) => grant.id));
+            const currentGrants = await tx.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+              eq(connectionGrants.companyId, companyId),
+              eq(connectionGrants.connectionId, revivedConnectionPrevious.id),
+            ));
+            const addedGrantIds = currentGrants
+              .map((grant) => grant.id)
+              .filter((grantId) => !retainedGrantIds.has(grantId));
+            if (addedGrantIds.length > 0) {
+              await tx.delete(connectionGrants).where(inArray(connectionGrants.id, addedGrantIds));
+            }
+            for (const grant of revivedGrantSnapshots) {
+              await tx.update(connectionGrants).set({
+                kind: grant.kind,
+                subjectUserId: grant.subjectUserId,
+                subjectAgentId: grant.subjectAgentId,
+                providerTenant: grant.providerTenant,
+                credentialSecretRefs: grant.credentialSecretRefs,
+                externalCredential: grant.externalCredential,
+                status: grant.status,
+                isDefault: grant.isDefault,
+                createdByAgentId: grant.createdByAgentId,
+                createdByUserId: grant.createdByUserId,
+                revokedAt: grant.revokedAt,
+                revokedByAgentId: grant.revokedByAgentId,
+                revokedByUserId: grant.revokedByUserId,
+                lastUsedAt: grant.lastUsedAt,
+                updatedAt: grant.updatedAt,
+              }).where(eq(connectionGrants.id, grant.id));
+            }
+          });
+        } catch (rollbackError) {
+          identityRollbackError = rollbackError;
+          // The attempted identity and its grants may no longer agree. Keep the
+          // connection unusable until a manager explicitly reconnects it, and
+          // surface the restoration failure instead of returning only the
+          // original provider error.
+          try {
+            await db.update(toolConnections).set({
+              status: "draft",
+              enabled: false,
+              healthStatus: "error",
+              healthMessage: "Connection identity restoration failed. Reconnect this app to continue.",
+              lastError: "connection_identity_rollback_failed",
+              updatedAt: new Date(),
+            }).where(and(
+              eq(toolConnections.id, revivedConnectionPrevious.id),
+              eq(toolConnections.companyId, companyId),
+            ));
+          } catch (quarantineError) {
+            identityRollbackError = new AggregateError(
+              [rollbackError, quarantineError],
+              "Connection identity rollback and quarantine both failed",
+            );
           }
-          for (const grant of revivedGrantSnapshots) {
-            await tx.update(connectionGrants).set({
-              kind: grant.kind,
-              subjectUserId: grant.subjectUserId,
-              subjectAgentId: grant.subjectAgentId,
-              providerTenant: grant.providerTenant,
-              credentialSecretRefs: grant.credentialSecretRefs,
-              externalCredential: grant.externalCredential,
-              status: grant.status,
-              isDefault: grant.isDefault,
-              createdByAgentId: grant.createdByAgentId,
-              createdByUserId: grant.createdByUserId,
-              revokedAt: grant.revokedAt,
-              revokedByAgentId: grant.revokedByAgentId,
-              revokedByUserId: grant.revokedByUserId,
-              lastUsedAt: grant.lastUsedAt,
-              updatedAt: grant.updatedAt,
-            }).where(eq(connectionGrants.id, grant.id));
-          }
-        }).catch(() => undefined);
+        }
       } else if (connectionRow) {
         await db.delete(toolConnections).where(eq(toolConnections.id, connectionRow.id)).catch(() => undefined);
       }
@@ -9553,6 +9580,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
       for (const secretId of createdSecretIds) {
         await secrets.remove(secretId).catch(() => undefined);
+      }
+      if (identityRollbackError) {
+        throw new HttpError(500, "Connection setup failed and its prior identity could not be restored.", {
+          code: "connection_identity_rollback_failed",
+        });
       }
       throw error;
     }
