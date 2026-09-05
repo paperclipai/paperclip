@@ -266,10 +266,14 @@ const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
   "microsoft-teams": {
     threads: true,
     directMessages: true,
-    nativeStreaming: true,
-    // The pinned Teams adapter supports outbound editMessage, which lets one
-    // Paperclip run coalesce its progress and final response. It does not yet
-    // normalize inbound Bot Framework messageUpdate activities.
+    // Production webhook processing is deferred into Paperclip's durable
+    // ingress queue. The Teams adapter's request-scoped DM streamer is gone by
+    // the time agent output is published, so advertise the durable behavior we
+    // can actually provide. editMessage still lets one run coalesce its
+    // queued, working, and final states in place.
+    nativeStreaming: false,
+    // The pinned Teams adapter does not yet normalize inbound Bot Framework
+    // messageUpdate activities.
     messageEdits: true,
     messageDeletes: false,
     reactions: true,
@@ -424,6 +428,12 @@ function teamsConversationId(threadId: string): string | null {
 
 function baseTeamsConversationId(value: string): string {
   return value.replace(/;messageid=[^;]+/i, "");
+}
+
+function teamsThreadRootMessageId(threadId: string): string | null {
+  const conversationId = teamsConversationId(threadId);
+  if (!conversationId) return null;
+  return /;messageid=([^;]+)/i.exec(conversationId)?.[1] ?? null;
 }
 
 function canonicalProviderResourceId(
@@ -3270,11 +3280,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         endpoint.provider === "slack"
           ? /^slack:[^:]+:(.+)$/.exec(thread.id)?.[1]
           : null;
+      const teamsRootMessageId =
+        endpoint.provider === "microsoft-teams"
+          ? teamsThreadRootMessageId(thread.id)
+          : null;
       const isPlausibleOrphanFollowUp =
         endpoint.provider === "github" ||
         (endpoint.provider === "slack" &&
           Boolean(slackRootMessageId) &&
-          slackRootMessageId !== message.id);
+          slackRootMessageId !== message.id) ||
+        (endpoint.provider === "microsoft-teams" &&
+          Boolean(teamsRootMessageId) &&
+          teamsRootMessageId !== message.id);
       const setupDestinationCanBeEnabledByEarlierMention =
         endpoint.provider === "github" &&
         !thread.isDM &&
@@ -3291,11 +3308,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         principalAllowed &&
         (destinationAllowed || setupDestinationCanBeEnabledByEarlierMention)
       ) {
-        // GitHub and Slack can deliver a thread reply before the older root
-        // callback that creates its Paperclip task. Keep this exact delivery
-        // once, without admitting or waking it, so the durable thread drain can
-        // sort again if the root arrives shortly afterward. A standalone
-        // unaddressed message reaches the normal filtered path on attempt two.
+        // GitHub, Slack, and Teams can deliver a thread reply before the older
+        // root callback that creates its Paperclip task. Keep this exact
+        // delivery once, without admitting or waking it, so the durable thread
+        // drain can sort again if the root arrives shortly afterward. A
+        // standalone unaddressed message reaches the normal filtered path on
+        // attempt two.
         await db
           .update(chatDeliveries)
           .set({

@@ -781,6 +781,53 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     return { ...context, endpoint, callbacks };
   }
 
+  async function configuredTeamsEndpoint(
+    fixture: Awaited<ReturnType<typeof seedCompany>>,
+    overrides: Partial<
+      Pick<
+        ChatChannelServiceOptions,
+        "deferWebhookProcessing" | "scheduleDeferredWork"
+      >
+    > = {},
+  ) {
+    const context = createService(
+      new FakeChatSdkRuntime(),
+      (async () =>
+        new Response(JSON.stringify({ access_token: "teams-test-access" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as typeof globalThis.fetch,
+      overrides,
+    );
+    const endpoint = await context.service.create(
+      fixture.companyId,
+      {
+        provider: "microsoft-teams",
+        assignedAgentId: fixture.assignedAgentId,
+        name: "Maya in Teams",
+      },
+      "owner-user",
+    );
+    await context.service.configure(
+      endpoint.id,
+      {
+        action: "configure",
+        credentials: {
+          clientId: randomUUID(),
+          tenantId: randomUUID(),
+          clientSecret: "teams-test-secret",
+        },
+      },
+      "owner-user",
+    );
+    const callbacks = context.runtime.configurations.get(
+      endpoint.id,
+    )?.callbacks;
+    if (!callbacks)
+      throw new Error("Fake runtime did not receive Teams callbacks");
+    return { ...context, endpoint, callbacks };
+  }
+
   async function configuredGitHubEndpoint(
     fixture: Awaited<ReturnType<typeof seedCompany>>,
     overrides: Partial<
@@ -2146,7 +2193,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: "verifying",
       providerAccountId: tenantId,
       botExternalId: clientId,
-      capabilities: { messageEdits: true, messageDeletes: false },
+      capabilities: {
+        nativeStreaming: false,
+        messageEdits: true,
+        messageDeletes: false,
+      },
       setup: { step: "test" },
     });
     expect(
@@ -3572,6 +3623,153 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(
       db
         .select({ state: chatDeliveries.state, attempts: chatDeliveries.attempts })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.id, delivery.id)),
+    ).resolves.toEqual([{ state: "filtered", attempts: 2 }]);
+    expect(await service.listConversations(endpoint.id)).toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+  });
+
+  it("holds a delayed Teams channel reply until its older root mention arrives", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredTeamsEndpoint(fixture, {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: () => undefined,
+      });
+    const conversationId = "19:teams-delayed-root@thread.tacv2";
+    const serviceUrl = "https://smba.trafficmanager.net/amer/";
+    const rootMessageId = "1740000000001";
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: conversationId,
+      label: "delayed-root",
+      availability: "available",
+      enabled: true,
+    });
+    const thread = makeThread({
+      channelId: `teams:${Buffer.from(conversationId).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
+      id: `teams:${Buffer.from(`${conversationId};messageid=${rootMessageId}`).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
+      name: "delayed-root",
+    });
+    const laterReply = makeMessage({
+      id: "1740000000002",
+      text: "Teams follow-up whose callback arrived first",
+    });
+    laterReply.metadata.dateSent = new Date("2026-09-05T18:20:02.000Z");
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "microsoft-teams",
+      thread: thread.thread,
+      message: laterReply,
+      trigger: "subscribed_message",
+    });
+    await service.processPendingDeliveries();
+
+    const [deferredReply] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(deferredReply).toMatchObject({
+      state: "retry",
+      attempts: 1,
+      redactedError: "Waiting briefly for an earlier root mention",
+    });
+    expect(deferredReply.nextAttemptAt).not.toBeNull();
+    expect(await service.listConversations(endpoint.id)).toHaveLength(0);
+
+    const earlierRoot = makeMessage({
+      id: rootMessageId,
+      text: "@maya keep both Teams messages",
+      mentioned: true,
+    });
+    earlierRoot.metadata.dateSent = new Date("2026-09-05T18:20:01.000Z");
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "microsoft-teams",
+      thread: thread.thread,
+      message: earlierRoot,
+      trigger: "mention",
+    });
+    await service.processPendingDeliveries();
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(chatDeliveries.id, deferredReply.id));
+    await service.processPendingDeliveries();
+
+    const [conversation] = await service.listConversations(endpoint.id);
+    expect(conversation).toMatchObject({ externalThreadId: thread.thread.id });
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversation!.issueId))
+        .orderBy(asc(issueComments.createdAt), asc(issueComments.id)),
+    ).resolves.toEqual([
+      { body: "@maya keep both Teams messages" },
+      { body: "Teams follow-up whose callback arrived first" },
+    ]);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+  });
+
+  it("filters a standalone unaddressed Teams channel reply after one grace attempt", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredTeamsEndpoint(fixture, {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: () => undefined,
+      });
+    const conversationId = "19:teams-orphan-only@thread.tacv2";
+    const serviceUrl = "https://smba.trafficmanager.net/amer/";
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: conversationId,
+      label: "orphan-only",
+      availability: "available",
+      enabled: true,
+    });
+    const thread = makeThread({
+      channelId: `teams:${Buffer.from(conversationId).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
+      id: `teams:${Buffer.from(`${conversationId};messageid=1740000000011`).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
+      name: "orphan-only",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "microsoft-teams",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "1740000000012",
+        text: "not for the Teams bot",
+      }),
+      trigger: "subscribed_message",
+    });
+    await service.processPendingDeliveries();
+    const [delivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
+
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(chatDeliveries.id, delivery.id));
+    await service.processPendingDeliveries();
+
+    await expect(
+      db
+        .select({
+          state: chatDeliveries.state,
+          attempts: chatDeliveries.attempts,
+        })
         .from(chatDeliveries)
         .where(eq(chatDeliveries.id, delivery.id)),
     ).resolves.toEqual([{ state: "filtered", attempts: 2 }]);
