@@ -56,6 +56,11 @@ interface CostEventRow {
 
 type Resolution = { rateCardCents: number | null; costStatus: string; pricingMethodology: string };
 
+// Same cutoff migration 0241 uses to reclassify rows whose cache-write tokens
+// were folded into input_tokens before the column existed. Must stay in sync
+// with `packages/db/src/migrations/0241_pricing_methodology.sql`.
+const PRE_CACHE_WRITE_CUTOFF = new Date("2026-07-30T00:22:00Z");
+
 /**
  * Mirrors `resolveLedgerCostStatus` in the heartbeat service, reading the
  * persisted `cost_cents` as the stand-in for a provider-reported cost (the raw
@@ -84,8 +89,19 @@ export function resolveBackfill(row: {
     row.occurredAt,
   );
 
+  // Cache-write tokens for these rows are folded into input_tokens and
+  // unrecoverable; the migration marked them `pre_cache_write_aware` and the
+  // backfill must not silently promote them back to `measured` just because
+  // it can now compute a rate-card figure from what's stored.
+  const isPreCacheWriteAware = row.cacheWriteTokens === 0 && row.occurredAt < PRE_CACHE_WRITE_CUTOFF;
+  const measuredLabel = isPreCacheWriteAware ? "pre_cache_write_aware" : "measured";
+  // Migration 0241 also relabels these rows' cost_status so dashboards can
+  // bucket them; re-running the backfill must not flip that back to plain
+  // 'reported' just because it re-derives the same rate-card figure.
+  const reportedLabel = isPreCacheWriteAware ? "reported_pre_migration" : "reported";
+
   // No tokens means there is nothing to price and nothing to misrepresent.
-  if (!hasTokenUsage) return { rateCardCents: 0, costStatus: "reported", pricingMethodology: "measured" };
+  if (!hasTokenUsage) return { rateCardCents: 0, costStatus: reportedLabel, pricingMethodology: measuredLabel };
 
   // A provider that billed real money reported a credible cost; keep the label
   // and populate the rate card alongside it as a cross-check. If the model has
@@ -93,14 +109,14 @@ export function resolveBackfill(row: {
   // not a zero that would read as "verified free".
   if (row.costCents > 0) {
     return derivedCents === null
-      ? { rateCardCents: null, costStatus: "reported", pricingMethodology: "unpriced" }
-      : { rateCardCents: derivedCents, costStatus: "reported", pricingMethodology: "measured" };
+      ? { rateCardCents: null, costStatus: reportedLabel, pricingMethodology: "unpriced" }
+      : { rateCardCents: derivedCents, costStatus: reportedLabel, pricingMethodology: measuredLabel };
   }
 
   // Tokens but no cash and no rate for the model: an honest gap, not a zero.
   if (derivedCents === null) return { rateCardCents: null, costStatus: "unpriced", pricingMethodology: "unpriced" };
 
-  return { rateCardCents: derivedCents, costStatus: "derived", pricingMethodology: "measured" };
+  return { rateCardCents: derivedCents, costStatus: "derived", pricingMethodology: measuredLabel };
 }
 
 async function main(): Promise<void> {
