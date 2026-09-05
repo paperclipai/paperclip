@@ -820,6 +820,7 @@ settings:
             (!repairing && (!credentials.appId || !credentials.privateKey)) ||
             !endpoint.setup?.webhookSecretConfigured ||
             !endpoint.setup?.webhookUrl ||
+            generatingSetupSecret ||
             pending
           }
           onClick={() =>

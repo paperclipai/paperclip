@@ -81,6 +81,7 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain(
       "immediately invalidates GitHub webhook signatures",
     );
+    expect(setup).toContain("generatingSetupSecret ||\n            pending");
     expect(setup).not.toContain("/setprivacy");
     expect(setup).toContain("Create Azure Bot");
     expect(setup).toContain("Microsoft 365 work or school organization");
