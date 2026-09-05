@@ -20,6 +20,10 @@ import {
 } from "./run-observations.js";
 import { resolveRunnerE2ESource } from "./source.js";
 import {
+  isPublicRunnerScreenshotRoute,
+  PUBLIC_RUNNER_SCREENSHOT_MARKER,
+} from "./screenshot-policy.js";
+import {
   assertSecretFree,
   findSecretLeakInJsonValues,
   normalizedSecrets,
@@ -542,9 +546,8 @@ for (const execution of executions) {
     let failureClassOverride: FailureClass | undefined;
     let cleanup: RunnerE2EResult["cleanup"] = "not_started";
 
-    const captureScreenshot = async (
+    const capturePrivateScreenshot = async (
       id: string,
-      label: string,
       file: string,
     ) => {
       const screenshotPath = path.join(privateDir, file);
@@ -553,7 +556,25 @@ for (const execution of executions) {
         path: screenshotPath,
         contentType: "image/png",
       });
-      screenshots.push({ id, label, file });
+    };
+
+    const captureScreenshot = async (
+      id: string,
+      label: string,
+      file: string,
+    ) => {
+      if (!isPublicRunnerScreenshotRoute(page.url())) {
+        throw new Error(
+          `Public runner screenshot blocked on non-task route ${page.url()}`,
+        );
+      }
+      await capturePrivateScreenshot(id, file);
+      screenshots.push({
+        id,
+        label,
+        file,
+        publication: PUBLIC_RUNNER_SCREENSHOT_MARKER,
+      });
     };
 
     const captureRuntimeLeases = async () => {
@@ -1795,16 +1816,17 @@ for (const execution of executions) {
         }
       }
       if (!page.isClosed()) {
-        const failureScreenshot = path.join(privateDir, "failure.png");
-        await page
-          .screenshot({ path: failureScreenshot, fullPage: true })
-          .catch(() => undefined);
-        await testInfo
-          .attach("failure", {
-            path: failureScreenshot,
-            contentType: "image/png",
-          })
-          .catch(() => undefined);
+        if (isPublicRunnerScreenshotRoute(page.url())) {
+          await captureScreenshot(
+            "failure",
+            "Task state at failure",
+            "failure.png",
+          ).catch(() => undefined);
+        } else {
+          await capturePrivateScreenshot("failure", "failure.png").catch(
+            () => undefined,
+          );
+        }
       }
     } finally {
       try {

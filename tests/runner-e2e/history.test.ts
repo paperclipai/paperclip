@@ -30,6 +30,7 @@ import {
 } from "./history.js";
 import { renderRunnerHistoryIndex } from "./history-index.js";
 import { renderPublicCampaignSummary } from "./public-summary-image.js";
+import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
@@ -212,6 +213,24 @@ describe("runner E2E campaign history", () => {
 });
 
 describe("historical publication security", () => {
+  it("allows public capture only on an issue task route", () => {
+    expect(
+      isPublicRunnerScreenshotRoute(
+        "http://127.0.0.1:3100/PAP/issues/PAP-123",
+      ),
+    ).toBe(true);
+    expect(
+      isPublicRunnerScreenshotRoute("http://127.0.0.1:3100/PAP/settings"),
+    ).toBe(false);
+    expect(
+      isPublicRunnerScreenshotRoute("http://127.0.0.1:3100/setup/secrets"),
+    ).toBe(false);
+    expect(
+      isPublicRunnerScreenshotRoute("https://example.test/PAP/issues/PAP-123"),
+    ).toBe(false);
+    expect(isPublicRunnerScreenshotRoute("not a URL")).toBe(false);
+  });
+
   it("publishes declared screenshots while keeping active evidence private", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-landing-test-"));
     const output = path.join(root, "landing");
@@ -224,6 +243,7 @@ describe("historical publication security", () => {
           id: "final-state",
           label: "Final state",
           file: "final-state.png",
+          publication: "public-runner-fixture",
         },
       ],
     } satisfies RunnerE2EResult;
@@ -348,6 +368,7 @@ describe("historical publication security", () => {
               id: "final-state",
               label: "PROVIDER_LABEL_MUST_NOT_RENDER",
               file: "final-state.png",
+              publication: "public-runner-fixture",
             },
           ],
         },
@@ -453,7 +474,7 @@ describe("historical publication security", () => {
     ).rejects.toThrow("does not match its raster file type");
   });
 
-  it("rejects unsafe screenshot paths and includes failed-cell captures", () => {
+  it("requires trusted-fixture opt-in and rejects unsafe screenshot paths", () => {
     const execution = runnerMatrix[0]!;
     const campaign = buildRunnerCampaign({
       campaignId: "unsafe-screenshot",
@@ -467,6 +488,7 @@ describe("historical publication security", () => {
               id: "unsafe",
               label: "Unsafe",
               file: "../secret.png",
+              publication: "public-runner-fixture",
             },
           ],
         },
@@ -480,7 +502,24 @@ describe("historical publication security", () => {
       campaignId: "failed-screenshot",
       generatedAt: "2026-08-28T00:01:00.000Z",
       expected: [execution.id],
-      results: [result(execution, "failed")],
+      results: [
+        {
+          ...result(execution, "failed"),
+          screenshots: [
+            {
+              id: "failure",
+              label: "Task state at failure",
+              file: "failure.png",
+              publication: "public-runner-fixture",
+            },
+            {
+              id: "private-diagnostic",
+              label: "Private diagnostic",
+              file: "private-diagnostic.png",
+            },
+          ],
+        },
+      ],
     });
     expect([...publicScreenshotPaths(failedCampaign)]).toEqual([
       `evidence/${execution.id}/attempt-1/failure.png`,

@@ -19,6 +19,7 @@ import os from "node:os";
 import { writePublicCampaignSummaryImage } from "./public-summary-image.js";
 import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
 import { renderRunnerHistoryIndex } from "./history-index.js";
+import { PUBLIC_RUNNER_SCREENSHOT_MARKER } from "./screenshot-policy.js";
 import {
   campaignHistoryRecord,
   emptyRunnerHistory,
@@ -89,10 +90,13 @@ export function publicScreenshotPaths(campaign: RunnerE2ECampaign) {
         `Cannot publish screenshots for unsafe execution identity ${result.executionId}`,
       );
     }
-    const files = [
-      ...(result.screenshots?.map((screenshot) => screenshot.file) ?? []),
-      ...(result.status === "failed" ? ["failure.png"] : []),
-    ];
+    const files =
+      result.screenshots
+        ?.filter(
+          (screenshot) =>
+            screenshot.publication === PUBLIC_RUNNER_SCREENSHOT_MARKER,
+        )
+        .map((screenshot) => screenshot.file) ?? [];
     for (const file of files) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.png$/i.test(file)) {
         throw new Error(

@@ -206,10 +206,13 @@ usage is labeled `unavailable` or `unpriced`; it is never presented as zero
 cost. The CI report job stages the same portable site at
 `normalized/index.html` inside the access-controlled merged report artifact.
 
-Permanent publication uses two explicit bundles. Both retain the PNG files
-declared by normalized results, plus the fixed `failure.png` for failed cells,
-so every campaign dashboard has its screenshot thumbnails and gallery. The
-CloudFront-backed S3 history also contains one publisher-generated
+Permanent publication uses two explicit bundles. Both retain only normalized
+result PNG files with the explicit `public-runner-fixture` publication marker,
+including marked `failure.png` captures, so every campaign dashboard has its
+screenshot thumbnails and gallery. The capture helper adds this marker only
+for the reviewed runner fixture and blocks public capture outside an issue task
+route. A blocked failure capture remains private. The CloudFront-backed S3
+history also contains one publisher-generated
 `public-images/campaign-summary.png`.
 Trusted publisher code renders it offline from fixed catalog labels and
 sanitized status/count/duration fields; provider output, error text, comments,
@@ -393,9 +396,10 @@ bundle digest fails closed.
 GitHub Pages remains the stable latest dashboard. Enable Pages with GitHub
 Actions as its source and set `RUNNER_FULL_STACK_E2E_PUBLISH_PAGES=true`.
 The publisher creates an S3 stage with the trusted synthetic summary PNG and a
-separate Pages stage. Both surfaces publish only declared per-result PNG
-screenshots (plus failed-cell `failure.png`) alongside sanitized structured
-evidence. Neither surface publishes video, archives, generated reports,
+separate Pages stage. Both surfaces publish only per-result PNG screenshots
+with the explicit `public-runner-fixture` marker alongside sanitized structured
+evidence. The runner capture helper refuses to mark a screenshot on a non-task
+route. Neither surface publishes video, archives, generated reports,
 SVG/active content, databases, Paperclip homes, workspaces, raw/unallowlisted
 logs, or credentials.
 

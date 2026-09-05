@@ -275,6 +275,7 @@ export interface RunnerE2EResult {
     id: string;
     label: string;
     file: string;
+    publication?: "public-runner-fixture";
   }>;
   cleanup: "not_started" | "passed" | "failed";
 }
