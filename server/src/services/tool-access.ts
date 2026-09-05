@@ -8830,13 +8830,30 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ));
       name = nextAvailableConnectionName(requestedName, connectionNames.map((row) => row.name));
     }
-    const retainedGrantKind: ConnectionGrantKind | null = retainedConnection
+    const previousGrantKind: ConnectionGrantKind | null = retainedConnection
       ? retainedConnection.credentialPolicy === "per_user"
         ? "user"
         : retainedConnection.credentialPolicy === "per_agent"
           ? "agent"
         : "organization"
       : null;
+    // An explicit resume/application reconnect continues the retained identity.
+    // A fresh gallery connect may still reuse an archived row for stable history
+    // and company-unique naming, but an explicit Access choice is a new identity
+    // decision and must replace the archived policy. Without this distinction,
+    // removing a dedicated-agent connection and reconnecting the default personal
+    // account leaves `per_agent` behind and the OAuth callback cannot persist its
+    // user grant.
+    const retainsIdentity = Boolean(
+      retainedConnection
+      && (
+        retainedConnection.status === "draft"
+        || requestedResumeConnection
+        || input.applicationId
+        || input.grantKind === undefined
+      )
+    );
+    const retainedGrantKind = retainsIdentity ? previousGrantKind : null;
     // The route can authorize an explicit resume before entering the service,
     // but name/source recovery happens here. Do not let a caller submit a
     // personal grant choice to pass the route and then inherit an implicitly
@@ -8844,8 +8861,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     // unrestricted instance operator; every authenticated user must still hold
     // current connection-manager authority before this retained row is touched.
     if (
-      retainedGrantKind === "organization"
-      && input.grantKind === "user"
+      previousGrantKind
+      && input.grantKind
+      && previousGrantKind !== input.grantKind
       && actor?.actorType === "user"
       && actor.actorSource !== "local_implicit"
     ) {
@@ -8868,7 +8886,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         eq(principalPermissionGrants.permissionKey, "tools:manage_connections"),
       )).limit(1);
       if (!roleCanManage && !explicitManagerGrant) {
-        throw forbidden("Only a company owner, admin, or member with connection-manager permission can share credentials with the organization.");
+        throw forbidden("Only a company owner, admin, or member with connection-manager permission can change this connection's credential identity.");
       }
     }
     const requestedGrantKind = retainedGrantKind ?? input.grantKind ?? "organization";
@@ -9069,6 +9087,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     // or API key, without carrying credentials across a method/provider change.
     const canRetainCredentialMaterial = Boolean(
       retainedConnection
+      && previousGrantKind === requestedGrantKind
       && galleryEntry
       && retainedSource === galleryEntry.slug
       && retainedMethodKey === method?.key,
@@ -9076,13 +9095,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const retainedCredentialSecretRefs = canRetainCredentialMaterial
       ? (retainedPersonalIdentity?.grant?.credentialSecretRefs ?? retainedConnection?.credentialSecretRefs ?? [])
       : [];
-    // Only the personal path changes the policy; every existing gallery app keeps
-    // the shared default it has today.
-    const credentialPolicy: ToolConnectionCredentialPolicy | undefined = personalIdentityUserId
+    const credentialPolicy: ToolConnectionCredentialPolicy = requestedGrantKind === "user"
       ? "per_user"
-      : dedicatedAgentId
+      : requestedGrantKind === "agent"
         ? "per_agent"
-        : undefined;
+        : "shared";
     const connectionOwnership = isPaperclipCloudConnectorStrategy(method?.oauthStrategy) ? "platform_shared" : "customer";
     let applicationRow: typeof toolApplications.$inferSelect | null = null;
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
@@ -9273,9 +9290,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           credentialSecretRefs: connectionCredentialSecretRefs,
           credentialSource,
           externalCredential,
-          // Identity is immutable for a retained connection. A fresh
-          // connection still derives it from the explicit Access choice.
-          credentialPolicy: revivedConnectionPrevious.credentialPolicy,
+          credentialPolicy,
           updatedAt: new Date(),
         }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).returning();
       } else {
@@ -9298,7 +9313,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           transportConfig: config,
           credentialRefs,
           credentialSecretRefs: connectionCredentialSecretRefs,
-          ...(credentialPolicy ? { credentialPolicy } : {}),
+          credentialPolicy,
           createdByAgentId: actor?.actorType === "agent" ? actor.actorId ?? null : null,
           createdByUserId: actor?.actorType === "user" ? actor.actorId ?? null : null,
         }).returning();
@@ -9484,6 +9499,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           credentialSecretRefs: revivedConnectionPrevious.credentialSecretRefs,
           credentialSource: revivedConnectionPrevious.credentialSource,
           externalCredential: revivedConnectionPrevious.externalCredential,
+          credentialPolicy: revivedConnectionPrevious.credentialPolicy,
           updatedAt: new Date(),
         }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).catch(() => undefined);
       } else if (connectionRow) {
