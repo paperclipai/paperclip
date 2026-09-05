@@ -747,6 +747,30 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     },
   );
 
+  it.each(["todo", "blocked"] as const)(
+    "reports a parked %s routine issue consistently in list and detail",
+    async (issueStatus) => {
+      const { companyId, issueSvc, routine, svc } = await seedFixture();
+      const parkedIssue = await issueSvc.create(companyId, {
+        projectId: routine.projectId,
+        title: routine.title,
+        description: routine.description,
+        status: issueStatus,
+        priority: routine.priority,
+        assigneeAgentId: routine.assigneeAgentId,
+        originKind: "routine_execution",
+        originId: routine.id,
+        originRunId: randomUUID(),
+      });
+
+      const [listedRoutine] = await svc.list(companyId);
+      const detail = await svc.getDetail(routine.id);
+
+      expect(listedRoutine?.activeIssue?.id).toBe(parkedIssue.id);
+      expect(detail?.activeIssue?.id).toBe(parkedIssue.id);
+    },
+  );
+
   it.each([
     ["done", false],
     ["cancelled", false],
