@@ -2351,7 +2351,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
     }
     const finalPublication = await db
-      .select({ payload: chatPublications.payload })
+      .select({
+        commentId: chatPublications.commentId,
+        payload: chatPublications.payload,
+      })
       .from(chatPublications)
       .where(
         and(
@@ -2362,7 +2365,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             qualifyingDelivery.conversationId,
           ),
           eq(chatPublications.state, "published"),
-          isNotNull(chatPublications.commentId),
           gte(chatPublications.publishedAt, qualifyingDelivery.processedAt),
         ),
       )
@@ -2370,8 +2372,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .then((rows) =>
         rows.find(
           (row) =>
-            row.payload.progressState === undefined &&
-            row.payload.interactionId === undefined,
+            row.payload.interactionId === undefined &&
+            ((row.payload.progressState === undefined &&
+              row.commentId !== null) ||
+              row.payload.progressState === "failed"),
         ),
       );
     if (!finalPublication) {

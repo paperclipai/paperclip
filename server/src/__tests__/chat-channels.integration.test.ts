@@ -2519,6 +2519,82 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
   });
 
+  it("accepts a published terminal failure for setup transport qualification", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } =
+      await configuredSlackEndpoint(fixture);
+    const testThread = makeThread({
+      channelId: "C-SETUP-FAILED",
+      id: "slack:C-SETUP-FAILED:9001.1",
+      name: "setup-failed",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: testThread.thread,
+      message: makeMessage({
+        id: "9001.1",
+        text: "@maya verify a failed setup turn",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: testThread.thread,
+      message: makeMessage({
+        id: "9001.2",
+        text: "Setup follow-up",
+      }),
+      trigger: "subscribed_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected setup conversation");
+
+    for (const progressState of ["queued", "working"] as const) {
+      await db.insert(chatPublications).values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        conversationId: conversation.id,
+        issueId: conversation.issueId,
+        idempotencyKey: `setup-transport:${progressState}:${endpoint.id}`,
+        payload: {
+          text: `Maya is ${progressState}.`,
+          progressState,
+        },
+        state: "pending",
+      });
+      await service.processPendingPublications();
+      await expect(service.test(endpoint.id)).rejects.toMatchObject({
+        status: 409,
+        details: { code: "chat_test_round_trip_incomplete" },
+      });
+    }
+
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `setup-transport:failed:${endpoint.id}`,
+      payload: {
+        text: "Maya stopped before completing this turn.",
+        progressState: "failed",
+      },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+
+    await expect(service.test(endpoint.id)).resolves.toMatchObject({
+      status: "active",
+      setup: { step: "complete" },
+    });
+  });
+
   it("durably receives a burst, then processes mention and reply FIFO under one conversation drain", async () => {
     const fixture = await seedCompany();
     const runtime = new FakeChatSdkRuntime();
