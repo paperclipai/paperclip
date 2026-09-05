@@ -666,7 +666,13 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
     isProductiveContinuationRun(latestRun);
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(
+  db: Db,
+  deps: {
+    enqueueWakeup: RecoveryWakeup;
+    liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
+  },
+) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -4581,12 +4587,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else if (issueStatus === "cancelled") issueTerminalStatus = "cancelled";
     }
 
-    // Process-death authority. The run is live only when a process still backs
-    // it. Check the in-memory handle first, then the recorded pid and process
-    // group. Require recorded process metadata, so this authority never fires on
-    // a run that has not yet stored its pid.
+    // Process-death authority. The run is live while either its adapter process
+    // or the enclosing heartbeat execution/finalization still owns it. Check
+    // that full in-process lifecycle first, then the recorded pid and process
+    // group. Require recorded process metadata, so this authority never fires
+    // on a run that has not yet stored its pid.
     let processGone = false;
-    if (!runningProcesses.get(run.id)) {
+    const hasLiveExecution =
+      deps.liveRunExecutions?.has(run.id) ?? runningProcesses.has(run.id);
+    if (!hasLiveExecution) {
       if (typeof pid === "number" || typeof processGroupId === "number") {
         const processAlive =
           (typeof pid === "number" && isPidAlive(pid)) ||
