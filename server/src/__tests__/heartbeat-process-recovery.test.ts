@@ -4960,7 +4960,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
-    expect(result.waitingOnReviewResolved).toBe(1);
+    expect(result.deliberateWaitResolved).toBe(1);
     expect(result.escalated).toBe(0);
     expect(result.issueIds).toEqual([issueId]);
 
@@ -5091,7 +5091,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
-    expect(result.waitingOnReviewResolved).toBe(1);
+    expect(result.deliberateWaitResolved).toBe(1);
     expect(result.escalated).toBe(0);
     expect(result.issueIds).toEqual([issueId]);
 
@@ -5147,7 +5147,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
-    expect(result.waitingOnReviewResolved).toBe(0);
+    expect(result.deliberateWaitResolved).toBe(0);
     expect(result.continuationRequeued).toBe(1);
     expect(result.dispositionRepairRequeued).toBe(1);
     expect(result.escalated).toBe(0);
@@ -5833,6 +5833,104 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       resolutionNote: "owner_not_invokable",
     });
     expect(repairWakeups).toHaveLength(0);
+  });
+
+  it("waits on the open child instead of escalating a dependency-gated process-loss retry", async () => {
+    // HIV-2762 / HIV-2740: the child died, the process-loss retry hit the dependency
+    // gate, and `issue_dependencies_blocked` used to be classified non-retryable — so the
+    // parent was reassigned to the recovery owner and its provider session abandoned
+    // while the child was still running. It must become an ordinary dependency wait.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_dependencies_blocked",
+      runError:
+        "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve",
+    });
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const openChildId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: openChildId,
+        companyId,
+        parentId: issueId,
+        title: "Delegated child still running",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 30,
+        identifier: `${issuePrefix}-30`,
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.deliberateWaitResolved).toBe(1);
+    expect(result.escalated).toBe(0);
+
+    const parent = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(parent?.status).toBe("blocked");
+    // The assignee keeps the issue, so the blockers-resolved wake resumes its task session.
+    expect(parent?.assigneeAgentId).toBe(agentId);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([openChildId]);
+
+    // No stranded-recovery action/issue, so nothing is handed to the recovery owner.
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain(`${issuePrefix}-30`);
+    expect(comments[0]?.body).toContain("continue automatically");
+    expect(comments[0]?.body).not.toContain("issue_dependencies_blocked");
+    expect(comments[0]?.metadata).toMatchObject({
+      sections: [expect.objectContaining({
+        rows: expect.arrayContaining([
+          expect.objectContaining({ label: "Cause", value: "continuation_dependencies_blocked" }),
+        ]),
+      })],
+    });
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(
+      activity.some(
+        (event) =>
+          event.action === "issue.updated" &&
+          (event.details as { source?: string } | null)?.source ===
+            "recovery.reconcile_continuation_dependencies_blocked",
+      ),
+    ).toBe(true);
+  });
+
+  it("requeues a continuation instead of escalating when a dependency hold has no open blocker", async () => {
+    // Stale hold: the gate said blocked but nothing is actually open. That is a resume
+    // candidate, not a terminal failure — the old non-retryable classification escalated it.
+    // `retryReason: null` models the HIV-2740 shape: the cancelled run was a process-loss
+    // retry, not an automatic continuation recovery, so no attempt cap has been spent yet.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: null,
+      runErrorCode: "issue_dependencies_blocked",
+      runError: "Cancelled because issue dependencies are still blocked",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.deliberateWaitResolved).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+
+    const parent = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(parent?.status).toBe("in_progress");
+    expect(parent?.assigneeAgentId).toBe(agentId);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
@@ -7386,7 +7484,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     expect(result.continuationRequeued).toBe(0);
-    expect(result.waitingOnReviewResolved).toBe(0);
+    expect(result.deliberateWaitResolved).toBe(0);
     expect(result.escalated).toBe(1);
     expect(result.issueIds).toContain(issueId);
 
