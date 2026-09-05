@@ -2536,6 +2536,83 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T09:00:00.000Z"));
   });
 
+  it("always_enqueue creates a distinct issue per scheduled tick while the prior issue stays open", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await db.update(routines).set({ concurrencyPolicy: "always_enqueue" }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+    }, {});
+
+    await db.update(routineTriggers).set({ nextRunAt: new Date("2026-07-16T00:00:00.000Z") }).where(eq(routineTriggers.id, trigger.id));
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T00:00:01.000Z"))).toEqual({ triggered: 1 });
+
+    await db.update(routineTriggers).set({ nextRunAt: new Date("2026-07-16T00:01:00.000Z") }).where(eq(routineTriggers.id, trigger.id));
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T00:01:01.000Z"))).toEqual({ triggered: 1 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(2);
+    expect(runs.map((run) => run.status)).toEqual(["issue_created", "issue_created"]);
+    expect(runs.every((run) => run.failureReason === null)).toBe(true);
+    expect(runs[0]!.dispatchFingerprint).not.toBe(runs[1]!.dispatchFingerprint);
+
+    const executionIssues = (await db.select().from(issues).where(eq(issues.companyId, companyId)))
+      .filter((issue) => issue.originKind === "routine_execution");
+    expect(executionIssues).toHaveLength(2);
+    expect(new Set(executionIssues.map((issue) => issue.originFingerprint)).size).toBe(2);
+    // Positive control: both issues are still open and execution-locked, so they
+    // participate in issues_open_routine_execution_uq — the second insert really
+    // was exposed to the collision the fix must avoid.
+    expect(executionIssues.every((issue) => issue.status === "todo" && issue.executionRunId)).toBe(true);
+  });
+
+  it("resolves an always_enqueue replay of one scheduled occurrence without a database failure", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await db.update(routines).set({ concurrencyPolicy: "always_enqueue" }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+    }, {});
+    const occurrence = new Date("2026-07-16T00:00:00.000Z");
+
+    await db.update(routineTriggers).set({ nextRunAt: occurrence }).where(eq(routineTriggers.id, trigger.id));
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T00:00:01.000Z"))).toEqual({ triggered: 1 });
+    // Replay the same occurrence (a scheduler retry re-claiming the identical tick).
+    await db.update(routineTriggers).set({ nextRunAt: occurrence }).where(eq(routineTriggers.id, trigger.id));
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T00:00:02.000Z"))).toEqual({ triggered: 1 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(2);
+    expect(runs.map((run) => run.status).sort()).toEqual(["coalesced", "issue_created"]);
+    expect(runs.every((run) => run.failureReason === null)).toBe(true);
+    const created = runs.find((run) => run.status === "issue_created")!;
+    const replayed = runs.find((run) => run.status === "coalesced")!;
+    expect(replayed.dispatchFingerprint).toBe(created.dispatchFingerprint);
+    expect(replayed.linkedIssueId).toBe(created.linkedIssueId);
+    expect(replayed.coalescedIntoRunId).toBe(created.id);
+
+    const executionIssues = (await db.select().from(issues).where(eq(issues.companyId, companyId)))
+      .filter((issue) => issue.originKind === "routine_execution");
+    expect(executionIssues).toHaveLength(1);
+  });
+
+  it("always_enqueue manual runs without an idempotency key each enqueue a distinct issue", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await db.update(routines).set({ concurrencyPolicy: "always_enqueue" }).where(eq(routines.id, routine.id));
+
+    const first = await svc.runRoutine(routine.id, { source: "manual" });
+    const second = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(first.status).toBe("issue_created");
+    expect(second.status).toBe("issue_created");
+    expect(second.dispatchFingerprint).not.toBe(first.dispatchFingerprint);
+
+    const executionIssues = (await db.select().from(issues).where(eq(issues.companyId, companyId)))
+      .filter((issue) => issue.originKind === "routine_execution");
+    expect(executionIssues).toHaveLength(2);
+  });
+
   it("coalesces sub-hourly schedules restricted to weekdays", async () => {
     const { routine, svc } = await seedFixture();
     await db.update(routines).set({
