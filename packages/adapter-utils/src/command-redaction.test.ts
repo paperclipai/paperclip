@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   REDACTED_COMMAND_TEXT_VALUE,
+  redactCommandText,
   redactDiagnosticText,
 } from "./command-redaction.js";
 
@@ -91,5 +92,428 @@ second-line\" status=401`;
     const output = redactDiagnosticText(input);
     expect(output).not.toContain("MARKERBACKSLASH_B");
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
+});
+
+describe("redactCommandText header secrets", () => {
+  it("redacts a double-quoted X-API-Key header value", () => {
+    const input = 'curl -H "X-API-Key: abc" https://example.test/api/agents/me';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test/api/agents/me`,
+    );
+  });
+
+  it("redacts a single-quoted lowercase x-api-key header value", () => {
+    const input = "curl -H 'x-api-key: abc' https://example.test/api/agents/me";
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(
+      `curl -H 'x-api-key: ${REDACTED_COMMAND_TEXT_VALUE}' https://example.test/api/agents/me`,
+    );
+  });
+
+  it("redacts an unquoted header value and other credential header names", () => {
+    expect(redactCommandText("curl -H X-API-Key:abc https://example.test")).toBe(
+      `curl -H X-API-Key:${REDACTED_COMMAND_TEXT_VALUE} https://example.test`,
+    );
+    expect(redactCommandText('curl -H "Api-Key: abc"')).toBe(
+      `curl -H "Api-Key: ${REDACTED_COMMAND_TEXT_VALUE}"`,
+    );
+    expect(redactCommandText('curl -H "X-Auth-Token: abc"')).toBe(
+      `curl -H "X-Auth-Token: ${REDACTED_COMMAND_TEXT_VALUE}"`,
+    );
+    expect(redactCommandText('curl -H "X-Paperclip-Api-Key: abc"')).toBe(
+      `curl -H "X-Paperclip-Api-Key: ${REDACTED_COMMAND_TEXT_VALUE}"`,
+    );
+  });
+
+  it("keeps a non-secret header untouched", () => {
+    const input = 'curl -H "Content-Type: application/json" -H "Accept: application/json" https://example.test';
+    expect(redactCommandText(input)).toBe(input);
+  });
+
+  it("keeps the bearer header output byte for byte identical", () => {
+    // The bearer rule already redacted this shape. The header rule keeps the
+    // scheme, so the output must not change.
+    const input = 'curl -H "Authorization: Bearer abc" https://example.test';
+    expect(redactCommandText(input)).toBe(
+      `curl -H "Authorization: Bearer ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+  });
+
+  it("now redacts a basic authorization header value", () => {
+    const input = 'curl -H "Authorization: Basic dXNlcjpwdw==" https://example.test';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("dXNlcjpwdw==");
+    expect(output).toBe(
+      `curl -H "Authorization: Basic ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+  });
+
+  it("does not start a match at an escaped quote after the colon", () => {
+    // A serialized diagnostic writes a quoted header value as `\"`. The value
+    // pattern excludes the backslash, so the rule leaves this shape to the
+    // caller's own authorization rules instead of redacting the escape itself.
+    const input = String.raw`prefix Authorization: \"Bearer nested\" suffix`;
+    expect(redactCommandText(input)).toBe(input);
+  });
+
+  it("redacts a header secret inside a serialized command string", () => {
+    const input = String.raw`{"command":"curl -H \"X-API-Key: abc\" https://example.test"}`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(
+      String.raw`{"command":"curl -H \"X-API-Key: ` +
+        REDACTED_COMMAND_TEXT_VALUE +
+        String.raw`\" https://example.test"}`,
+    );
+  });
+
+  it("is idempotent over a header secret", () => {
+    const input = 'curl -H "X-API-Key: abc" -H "Authorization: Bearer def"';
+    const once = redactCommandText(input);
+    expect(redactCommandText(once)).toBe(once);
+    expect(redactDiagnosticText(once)).toBe(once);
+  });
+
+  it("redacts an entire quoted digest credential, not just its first parameter", () => {
+    const input =
+      `curl -H 'Authorization: Digest username="alice", realm="r", nonce="n", uri="/x", response="deadbeef"' https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("alice");
+    expect(output).not.toContain("deadbeef");
+    expect(output).not.toContain("nonce");
+    expect(output).toBe(
+      `curl -H 'Authorization: Digest ${REDACTED_COMMAND_TEXT_VALUE}' https://example.test`,
+    );
+  });
+
+  it("redacts an unquoted digest credential and stops at the next field", () => {
+    // A log line carries the header without shell quoting. The parameter list
+    // ends at the last comma-joined `key=value`, so the trailing status field
+    // survives.
+    const input =
+      'Authorization: Digest username="alice", nonce="n", response="deadbeef" status=401';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("alice");
+    expect(output).not.toContain("deadbeef");
+    expect(output).toBe(
+      `Authorization: Digest ${REDACTED_COMMAND_TEXT_VALUE} status=401`,
+    );
+  });
+
+  it("redacts an entire quoted sigv4 credential, not just the scheme name", () => {
+    const input =
+      'curl -H "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260903/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123"';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("AKIAEXAMPLE");
+    expect(output).not.toContain("abc123");
+    expect(output).toBe(
+      `curl -H "Authorization: AWS4-HMAC-SHA256 ${REDACTED_COMMAND_TEXT_VALUE}"`,
+    );
+  });
+
+  it("redacts an unquoted sigv4 credential and stops at the next word", () => {
+    const input =
+      "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260903/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123 retry";
+    const output = redactCommandText(input);
+    expect(output).not.toContain("AKIAEXAMPLE");
+    expect(output).not.toContain("abc123");
+    expect(output).toBe(
+      `Authorization: AWS4-HMAC-SHA256 ${REDACTED_COMMAND_TEXT_VALUE} retry`,
+    );
+  });
+
+  it("keeps an already redacted unquoted header bounded", () => {
+    // The server redaction feeds this shape in after its own rules. The trailing
+    // word must survive.
+    const input = `prefix Authorization: ${REDACTED_COMMAND_TEXT_VALUE} suffix`;
+    expect(redactCommandText(input)).toBe(input);
+  });
+
+  it("keeps hint words that are not header names untouched", () => {
+    expect(redactCommandText("GET /v1/tokens:list")).toBe("GET /v1/tokens:list");
+    expect(redactCommandText("auth: failed")).toBe("auth: failed");
+  });
+
+  it("keeps a www-authenticate challenge untouched", () => {
+    // The challenge parameters are diagnostics, not credentials.
+    const input =
+      'WWW-Authenticate: Bearer realm="paperclip", error="invalid_token"';
+    expect(redactCommandText(input)).toBe(input);
+  });
+
+  it("keeps an empty quoted header argument untouched", () => {
+    // A quoted value must open with a non-blank character, so there is nothing
+    // to hide here and the argument stays byte for byte.
+    const input = 'curl -H "X-API-Key: " -H "X-Auth-Token:" https://example.test';
+    expect(redactCommandText(input)).toBe(input);
+  });
+
+  it("redacts a bare apikey header value", () => {
+    // Supabase sends the key under an unhyphenated `apikey` header.
+    expect(redactCommandText("apikey: abc")).toBe(
+      `apikey: ${REDACTED_COMMAND_TEXT_VALUE}`,
+    );
+  });
+
+  it("redacts a proxy-authorization header value", () => {
+    const input = 'curl -H "Proxy-Authorization: Basic dXNlcjpwdw=="';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("dXNlcjpwdw==");
+    expect(output).toBe(
+      `curl -H "Proxy-Authorization: Basic ${REDACTED_COMMAND_TEXT_VALUE}"`,
+    );
+  });
+
+  it("is idempotent over a multi-part credential", () => {
+    const input =
+      `curl -H 'Authorization: Digest username="alice", response="deadbeef"' https://example.test`;
+    const once = redactCommandText(input);
+    expect(redactCommandText(once)).toBe(once);
+    expect(redactDiagnosticText(once)).toBe(once);
+  });
+
+  it("redacts past an escaped quote inside a double-quoted header value", () => {
+    // The shell escape does not end the argument, so the value runs on past it.
+    const input = String.raw`curl -H "X-API-Key: abc\"def" https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("def");
+    expect(output).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+  });
+
+  it("redacts across a backslash-newline continuation inside a double-quoted value", () => {
+    // A shell line continuation inside double quotes is part of the argument.
+    const input = 'curl -H "X-API-Key: abc\\\ndef" https://example.test';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("def");
+    expect(output).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+    const crlf = 'curl -H "X-API-Key: abc\\\r\ndef" https://example.test';
+    expect(redactCommandText(crlf)).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+  });
+
+  it("redacts a backslash inside a single-quoted header value", () => {
+    // A shell single quote has no escapes, so the backslash is part of the value.
+    const input = String.raw`curl -H 'X-API-Key: abc\def' https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(
+      `curl -H 'X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}' https://example.test`,
+    );
+  });
+
+  it("redacts a double-quoted value that is itself an escaped quoted string", () => {
+    const input = String.raw`curl -H "Authorization: \"Bearer nested\"" https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("nested");
+    expect(output).toBe(
+      `curl -H "Authorization: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+  });
+
+  it("redacts an entire serialized digest credential", () => {
+    // The header argument is escaped inside a JSON string, so its quotes read as
+    // `\"` and its own embedded quotes as `\\\"`. The value must still run to the
+    // end of the argument.
+    const input = String.raw`{"command":"curl -H \"Authorization: Digest username=\\\"alice\\\", response=\\\"deadbeef\\\"\" https://x"}`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("alice");
+    expect(output).not.toContain("deadbeef");
+    expect(output).toBe(
+      String.raw`{"command":"curl -H \"Authorization: Digest ` +
+        REDACTED_COMMAND_TEXT_VALUE +
+        String.raw`\" https://x"}`,
+    );
+  });
+
+  it("redacts past an embedded escaped quote in a serialized header value", () => {
+    const input = String.raw`{"command":"curl -H \"X-API-Key: abc\\\"def\" https://x"}`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("def");
+    expect(output).toBe(
+      String.raw`{"command":"curl -H \"X-API-Key: ` +
+        REDACTED_COMMAND_TEXT_VALUE +
+        String.raw`\" https://x"}`,
+    );
+  });
+
+  it("is idempotent over a serialized multi-part credential", () => {
+    const input = String.raw`{"command":"curl -H \"Authorization: Digest username=\\\"alice\\\", response=\\\"deadbeef\\\"\" https://x"}`;
+    const once = redactCommandText(input);
+    expect(redactCommandText(once)).toBe(once);
+    expect(redactDiagnosticText(once)).toBe(once);
+  });
+
+  it("redacts a value whose quotes cover only the value", () => {
+    // `X-API-Key:"abc123"` is one shell word, so the quoted part is the value.
+    const input = `curl -H X-API-Key:"abc123" https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc123");
+    expect(output).toBe(
+      `curl -H X-API-Key:${REDACTED_COMMAND_TEXT_VALUE} https://example.test`,
+    );
+  });
+
+  it("redacts a segment adjacent to a quoted header argument", () => {
+    // The trailing `123` joins the same shell word, so it is part of the value.
+    const input = `curl -H "X-API-Key: abc"123 https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("123");
+    expect(output).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+  });
+
+  it("redacts across an unquoted escape pair", () => {
+    // `\ ` escapes the space, so the word continues past it.
+    const input = String.raw`curl -H X-API-Key:abc\ 123 https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("123");
+    expect(output).toBe(
+      `curl -H X-API-Key:${REDACTED_COMMAND_TEXT_VALUE} https://example.test`,
+    );
+  });
+
+  it("redacts an ANSI-C quoted header argument", () => {
+    const input = String.raw`curl -H $'X-API-Key: abc\'123' https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).not.toContain("123");
+    expect(output).toBe(
+      `curl -H $'X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}' https://example.test`,
+    );
+  });
+
+  it("keeps an unterminated quote out of the value", () => {
+    // A lone quote does not open a segment, so the word ends before it.
+    const input = String.raw`X-API-Key: abc"tail`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(
+      `X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}"tail`,
+    );
+  });
+
+  it("redacts a concealed credential parameter list", () => {
+    // RFC 9729 writes the proof and key identifier as authentication parameters.
+    const input =
+      "Authorization: Concealed k=YmFzZW1lbnQ, a=PUBLICKEY, s=2055, v=VERIFY, p=PROOFSECRET status=401";
+    const output = redactCommandText(input);
+    expect(output).not.toContain("PROOFSECRET");
+    expect(output).not.toContain("YmFzZW1lbnQ");
+    expect(output).toBe(
+      `Authorization: Concealed ${REDACTED_COMMAND_TEXT_VALUE} status=401`,
+    );
+  });
+
+  it("redacts a quoted concealed credential to the closing quote", () => {
+    const input = `curl -H "Authorization: Concealed k=YmFzZW1lbnQ, p=PROOFSECRET" https://x`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("PROOFSECRET");
+    expect(output).toBe(
+      `curl -H "Authorization: Concealed ${REDACTED_COMMAND_TEXT_VALUE}" https://x`,
+    );
+  });
+
+  it("redacts a digest credential whose parameter carries a quoted-pair", () => {
+    // HTTP quoted-string syntax allows an escaped character inside a parameter.
+    const input = String.raw`Authorization: Digest username="al\"ice", nonce="n", response="abc123" status=401`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc123");
+    expect(output).not.toContain("al");
+    expect(output).toBe(
+      `Authorization: Digest ${REDACTED_COMMAND_TEXT_VALUE} status=401`,
+    );
+    expect(redactDiagnosticText(input)).toBe(
+      `Authorization: Digest ${REDACTED_COMMAND_TEXT_VALUE} status=401`,
+    );
+  });
+
+  it("redacts a quoted header argument whose closing quote never arrives", () => {
+    // A truncated run log ends the line mid-argument. The value runs to the end
+    // of the line instead of to a closing quote.
+    const R = REDACTED_COMMAND_TEXT_VALUE;
+    expect(redactCommandText(`curl -H "X-API-Key: abc`)).toBe(
+      `curl -H "X-API-Key: ${R}`,
+    );
+    expect(redactCommandText(`curl -H 'X-API-Key: abc`)).toBe(
+      `curl -H 'X-API-Key: ${R}`,
+    );
+    expect(redactCommandText(`curl -H $'X-API-Key: abc`)).toBe(
+      `curl -H $'X-API-Key: ${R}`,
+    );
+    // A lone trailing backslash is part of the truncated value.
+    expect(redactCommandText('curl -H "X-API-Key: abc\\')).toBe(
+      `curl -H "X-API-Key: ${R}`,
+    );
+    // The next line is a separate line, so it stays as it is.
+    expect(redactCommandText('curl -H "X-API-Key: abc\nsecond line')).toBe(
+      `curl -H "X-API-Key: ${R}\nsecond line`,
+    );
+  });
+
+  it("keeps a shell separator after a quoted header argument", () => {
+    // A metacharacter ends the shell word, so the pipeline and the next command
+    // survive the redaction.
+    expect(redactCommandText(`curl -H 'x-api-key: abc'|head`)).toBe(
+      `curl -H 'x-api-key: ${REDACTED_COMMAND_TEXT_VALUE}'|head`,
+    );
+    expect(
+      redactCommandText(`sh -c 'curl -H "X-API-Key: abc"; echo done'`),
+    ).toBe(
+      `sh -c 'curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}"; echo done'`,
+    );
+    expect(redactCommandText(`(curl -H "X-API-Key: abc")`)).toBe(
+      `(curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}")`,
+    );
+  });
+
+  it("is stable and keeps serialized commands parseable", () => {
+    const shellWordForms = [
+      `curl -H X-API-Key:"abc123" https://example.test`,
+      `curl -H "X-API-Key: abc"123 https://example.test`,
+      String.raw`curl -H X-API-Key:abc\ 123 https://example.test`,
+      String.raw`curl -H $'X-API-Key: abc\'123' https://example.test`,
+    ];
+    const pinnedForms = [
+      `curl -H "Authorization: Bearer abc" https://example.test`,
+      `curl -H "X-API-Key: " -H "X-Auth-Token:" https://example.test`,
+      `prefix Authorization: ${REDACTED_COMMAND_TEXT_VALUE} suffix`,
+      String.raw`prefix Authorization: \"Bearer nested\" suffix`,
+      'Authorization: Digest username="alice", response="deadbeef" status=401',
+      "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE, Signature=abc123 retry",
+      String.raw`X-API-Key: abc"tail`,
+    ];
+    for (const input of [...shellWordForms, ...pinnedForms]) {
+      const once = redactCommandText(input);
+      expect(redactCommandText(once)).toBe(once);
+      expect(redactDiagnosticText(once)).toBe(once);
+    }
+    // The escaped-quoted branch keeps a serialized command valid JSON.
+    const serializedForms = [
+      String.raw`{"command":"curl -H \"X-API-Key: abc\" https://example.test"}`,
+      String.raw`{"command":"curl -H \"Authorization: Digest username=\\\"alice\\\", response=\\\"deadbeef\\\"\" https://x"}`,
+    ];
+    for (const input of serializedForms) {
+      const once = redactCommandText(input);
+      expect(() => JSON.parse(once)).not.toThrow();
+      expect(redactCommandText(once)).toBe(once);
+    }
+  });
+
+  it("redacts a header secret inside a diagnostic and keeps a JSON secret field working", () => {
+    const input = 'command failed: curl -H "X-API-Key: abc" -> {"token":"opaque-value"}';
+    const output = redactDiagnosticText(input);
+    expect(output).not.toContain("abc");
+    expect(output).not.toContain("opaque-value");
+    expect(output).toContain("command failed:");
   });
 });
