@@ -5,6 +5,7 @@ import {
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
+  type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -272,7 +273,13 @@ function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
 function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
   if (latestRun?.errorCode === "provider_quota") return true;
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
-  if (latestRun?.errorCode !== "adapter_failed") return false;
+  if (!latestRun) return false;
+  if (
+    latestRun.errorCode !== "adapter_failed" &&
+    !ADAPTER_ENGINE_FAILURE_ERROR_CODES.has(latestRun.errorCode ?? "")
+  ) {
+    return false;
+  }
   return /(?:usage|rate|quota) limit|you(?:'|’)ve hit your (?:\w+ )?limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "");
 }
 
@@ -389,6 +396,34 @@ const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
+// Bounds one repair pass so a large backlog cannot resume the whole board in a single sweep.
+const UNROUTABLE_BLOCKED_REPAIR_DEFAULT_LIMIT = 25;
+
+// LUN-7056: `blocked` with no first-class blocker and no unblock descriptor is a dead end. Dependency
+// wakeups have nothing to resolve and `deliverAgentUnblockNotification` has nobody to wake, so the
+// issue sits untouched until a human happens to notice it. Every recovery escalation that parks an
+// issue in `blocked` without blockers must therefore name who can lift it and what to do.
+function recoveryUnblockDescriptor(ownerAgentId: string | null | undefined, action: string): IssueUnblockDescriptor {
+  return { owner: ownerAgentId ? { agentId: ownerAgentId } : "board", action };
+}
+
+// Infrastructure-class run failures reported by the ACP engine rather than the adapter itself.
+// The engine stamps a failed turn with its own phase code, so provider exhaustion reaches recovery
+// as `acpx_turn_failed` instead of `adapter_failed` and used to miss quota classification entirely
+// (LUN-7056: a session limit on 2026-09-04 wrongly moved 9 issues to `blocked`).
+//
+// `timeout` stays out on purpose — it is a Paperclip-level timeout that can wrap an unrelated
+// downstream service, so quota-shaped text under it must remain unclassified. `acpx_auth_required`
+// and `acpx_backend_missing` stay out too: those are real configuration blockers needing a human.
+const ADAPTER_ENGINE_FAILURE_ERROR_CODES = new Set<string>([
+  "acpx_turn_failed",
+  "acpx_timeout",
+  "acpx_runtime_error",
+  "acpx_protocol_error",
+  "acpx_session_init_failed",
+  "acpx_session_config_failed",
+  "acpx_backend_unavailable",
+]);
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
@@ -472,16 +507,24 @@ export function classifyAdapterFailureForRecovery(
   latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
+  const isEngineFailure = ADAPTER_ENGINE_FAILURE_ERROR_CODES.has(latestRun.errorCode ?? "");
   if (
     latestRun.errorCode !== "adapter_failed" &&
     latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
+    latestRun.errorCode !== "configuration_incomplete" &&
+    !isEngineFailure
   ) {
     return null;
   }
   const resultJson = parseObject(latestRun.resultJson);
   const error = [latestRun.errorCode ?? "", latestRun.error ?? "", JSON.stringify(resultJson)].join("\n");
-  if (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)) {
+  // An engine phase code only unlocks the quota path. Diagnosing `configuration_incomplete` moves
+  // the issue to `blocked`, so it stays gated on the adapter-level codes that carry a trustworthy
+  // configuration signal rather than on a generic engine crash.
+  if (
+    !isEngineFailure &&
+    (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error))
+  ) {
     return { kind: "configuration_incomplete" };
   }
   if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) return null;
@@ -2268,7 +2311,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const updated = await issuesSvc.update(input.issue.id, {
+      status: "blocked",
+      unblockDescriptor: recoveryUnblockDescriptor(
+        input.issue.assigneeAgentId,
+        "Inspect the failed run evidence, restore a live execution path or record the manual " +
+          "resolution, then move this recovery issue out of `blocked`.",
+      ),
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -2968,6 +3018,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
+      // Board-owned: the disposition repair is exhausted, so a human decision lifts this (LUN-7056).
+      unblockDescriptor: recoveryUnblockDescriptor(
+        null,
+        "Repair the liveness disposition or request an explicit source-owner decision, " +
+          "then move this issue out of `blocked`.",
+      ),
     });
     if (!updated) return null;
     const sourceAssigneePreserved =
@@ -3176,6 +3232,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      // No first-class blocker means the dependency graph cannot route this issue, so name the
+      // recovery owner explicitly rather than leaving it unreachable (LUN-7056).
+      ...(blockerIds.length === 0
+        ? {
+            unblockDescriptor: recoveryUnblockDescriptor(
+              recoveryAction.ownerAgentId ?? recoveryAction.returnOwnerAgentId,
+              `Inspect the failed run evidence for \`${recoveryCause}\`, restore a live execution path, ` +
+                "then move this issue out of `blocked`.",
+            ),
+          }
+        : {}),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -3466,6 +3533,94 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const monitor = parseObject(parseObject(issue.executionPolicy).monitor);
     return readNonEmptyString(monitor.serviceName) === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
       readNonEmptyString(monitor.externalRef) === latestRun.id;
+  }
+
+  // LUN-7056: repair issues already sitting in the unroutable `blocked` state — no first-class
+  // blocker, no unblock descriptor — that an infrastructure failure put there. Nothing can wake
+  // these, so they stay dead until a human notices (measured 2026-08-03, 09-02 and 09-04).
+  //
+  // Deliberately narrow: an issue is only restored when its own latest run failed with an
+  // infrastructure cause. A descriptor-less `blocked` issue waiting on a human decision is a
+  // legitimate business block and is left exactly as it is — mass-unblocking those would both
+  // lose real state and spawn a wave of runs.
+  async function repairUnroutableBlockedIssues(opts?: { now?: Date; limit?: number }) {
+    const now = opts?.now ?? new Date();
+    const limit = opts?.limit ?? UNROUTABLE_BLOCKED_REPAIR_DEFAULT_LIMIT;
+    const result = { inspected: 0, repaired: 0, skipped: 0, deferred: 0, issueIds: [] as string[] };
+
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.status, "blocked"),
+        isNull(issues.unblockDescriptor),
+        isNull(issues.hiddenAt),
+        sql`${issues.assigneeAgentId} is not null`,
+      ));
+
+    for (const issue of candidates) {
+      result.inspected += 1;
+      if (result.repaired >= limit) {
+        result.deferred += 1;
+        continue;
+      }
+
+      // A dependency-blocked issue is routable already: resolving the blocker wakes it.
+      const blockerIds = await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id);
+      if (blockerIds.length > 0) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      const classification = latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
+        ? classifyAdapterFailureForRecovery(latestRun, now)
+        : null;
+      if (classification?.kind !== "provider_quota" || !latestRun) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const restored = await issuesSvc.update(issue.id, { status: "in_progress" });
+      if (!restored) {
+        result.skipped += 1;
+        continue;
+      }
+      // Restoring alone would leave the issue idle, so re-arm the same wake the live path uses.
+      await scheduleProviderQuotaRecoveryMonitor({ issue: restored, latestRun, classification });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: null,
+        runId: latestRun.id,
+        action: "issue.unroutable_blocked_repaired",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          previousStatus: "blocked",
+          status: "in_progress",
+          source: "recovery.repair_unroutable_blocked",
+          latestRunId: latestRun.id,
+          latestRunErrorCode: latestRun.errorCode,
+          retryAt: classification.retryAt.toISOString(),
+        },
+      });
+
+      result.repaired += 1;
+      result.issueIds.push(issue.id);
+    }
+
+    if (result.deferred > 0) {
+      // Never let a bounded pass read as "everything was covered".
+      logger.info(
+        { deferred: result.deferred, limit },
+        "repairUnroutableBlockedIssues hit its per-pass limit; remaining issues repair on the next pass",
+      );
+    }
+    return result;
   }
 
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
@@ -4867,6 +5022,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    repairUnroutableBlockedIssues,
     sweepStaleIssueLocks,
     reconcileResolvedDependencyWakeBackstop,
     readRecoveryTimerIntervalMs,

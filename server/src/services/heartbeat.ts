@@ -17383,6 +17383,10 @@ export function heartbeatService(
     });
   }
 
+  async function repairUnroutableBlockedIssues() {
+    return recovery.repairUnroutableBlockedIssues();
+  }
+
   async function sweepStaleIssueLocks() {
     return recovery.sweepStaleIssueLocks();
   }
@@ -26051,6 +26055,7 @@ export function heartbeatService(
     },
 
     reconcileStrandedAssignedIssues,
+    repairUnroutableBlockedIssues,
 
     terminalizeRunOnLeaseRelease,
 

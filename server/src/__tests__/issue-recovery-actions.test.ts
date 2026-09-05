@@ -424,6 +424,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(updatedIssue).toMatchObject({
       status: "blocked",
     });
+    // LUN-7056: this escalation has no first-class blocker, so without a descriptor the issue would
+    // be unroutable — no dependency to resolve and nobody to wake. Name the owner who can lift it.
+    expect(updatedIssue?.blockedByIssueIds ?? []).toHaveLength(0);
+    expect(updatedIssue?.unblockDescriptor).toMatchObject({
+      owner: { agentId: coderId },
+      action: expect.stringContaining("blocked"),
+    });
     const recoveryIssues = await db
       .select()
       .from(issues)
@@ -736,6 +743,67 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).toHaveBeenCalled();
   });
 
+  // LUN-7056 AC5: issues already parked in the unroutable `blocked` state by an earlier outage
+  // (2026-08-03, 09-02, 09-04) have no wake path at all, so a repair pass has to lift them.
+  describe("repairUnroutableBlockedIssues", () => {
+    it("restores an issue an infra failure left blocked with no blockers and no descriptor", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+        errorCode: "acpx_turn_failed",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      // The exact dead state measured in production: blocked, no blockers, no descriptor.
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 1, deferred: 0 });
+      const [repaired] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(repaired).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+      // Restored *and* re-armed — a restore without a wake would just be a quieter dead end.
+      expect(repaired?.monitorNextCheckAt).toBeInstanceOf(Date);
+    });
+
+    it("leaves a business-blocked issue untouched", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        // Not an infrastructure cause: this issue is blocked on a real decision.
+        error: "The agent could not proceed without a pricing decision.",
+        errorCode: "acpx_turn_failed",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 0 });
+      const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(untouched?.status).toBe("blocked");
+    });
+  });
+
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();
@@ -781,6 +849,47 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const secondResult = await recovery.reconcileStrandedAssignedIssues();
     expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  // LUN-7056: reproduces the 2026-09-04 outage byte-for-byte. The ACP engine reported the session
+  // limit as `acpx_turn_failed`, which missed quota classification, so the issue was moved to
+  // `blocked` with no blockers and no unblock descriptor — a state nothing can ever wake.
+  it("keeps the issue in place and arms a retry when a session limit arrives as an engine failure", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+      errorCode: "acpx_turn_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.providerQuotaMonitored).toBe(1);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    // The status is preserved — the infra failure delayed the work, it did not block it.
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      monitorScheduledBy: "assignee",
+    });
+    // ...and a wake is armed at the provider reset time, so the issue recovers unattended.
+    expect(updatedIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(updatedIssue?.executionPolicy).toMatchObject({
+      monitor: { serviceName: "AI provider quota", externalRef: runId, recoveryPolicy: "wake_owner" },
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun).toMatchObject({ errorCode: "provider_quota" });
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
   });
 

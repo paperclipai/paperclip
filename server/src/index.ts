@@ -1428,6 +1428,16 @@ export async function startServer(): Promise<StartedServer> {
           );
         }
 
+        // LUN-7056: lift issues an earlier infrastructure outage left in `blocked` with no blocker
+        // and no unblock descriptor. Nothing else can wake that state, so it needs a startup sweep.
+        const blockedRepaired = await heartbeat.repairUnroutableBlockedIssues();
+        if (blockedRepaired.repaired > 0 || blockedRepaired.deferred > 0) {
+          logger.warn(
+            { ...blockedRepaired },
+            "startup repaired issues left unroutable in blocked by an infrastructure failure",
+          );
+        }
+
         const dependencyWakesReconciled = await heartbeat.reconcileResolvedDependencyWakes();
         if (dependencyWakesReconciled.healed > 0) {
           logger.warn(

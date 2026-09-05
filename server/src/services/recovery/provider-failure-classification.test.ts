@@ -81,6 +81,51 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  // LUN-7056: the ACP engine stamps every failed turn with its own phase code, so a provider
+  // session limit reached the recovery pass as `acpx_turn_failed` and fell through to the
+  // stranded/`blocked` path. Measured 2026-09-04: 25 runs, 11 issues, 9 wrongly blocked.
+  it("classifies a session limit reported through the acpx engine as provider quota", () => {
+    const now = new Date("2026-09-04T17:40:01.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "acpx_turn_failed",
+      error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+      resultJson: null,
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      // 08:00 Bangkok (UTC+7) on 2026-09-05 == 01:00Z.
+      retryAt: new Date("2026-09-05T01:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it.each([
+    "acpx_runtime_error",
+    "acpx_timeout",
+    "acpx_session_init_failed",
+    "acpx_backend_unavailable",
+  ])("classifies quota exhaustion surfaced under engine code %s", (errorCode) => {
+    const now = new Date("2026-09-04T17:40:01.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode,
+      error: "You've hit your session limit · resets 8am (Asia/Bangkok)",
+      resultJson: null,
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-09-05T01:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it("still ignores non-quota engine failures", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "acpx_turn_failed",
+      error: "Internal error: the agent returned a malformed tool call.",
+      resultJson: null,
+    })).toBeNull();
+  });
+
   it.each([
     "model_not_found: requested model does not exist",
     "No API credentials were found for this provider",
