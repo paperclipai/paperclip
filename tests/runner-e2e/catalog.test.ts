@@ -318,14 +318,15 @@ describe("runner E2E catalog", () => {
     expect(task!.buildPrompt("nonce")).toContain(
       'summary:"PAPERCLIP_E2E_PLAN_DONE_nonce"',
     );
+    expect(task!.buildPrompt("nonce")).toContain("first call get_task_context");
     expect(task!.buildPrompt("nonce")).toContain(
+      "identifies the exact revised Plan revision used as the confirmation target as accepted",
+    );
+    expect(task!.buildPrompt("nonce")).toContain(
+      "After that verification succeeds, your immediate next action must be the paperclip_finish tool call",
+    );
+    expect(task!.buildPrompt("nonce")).not.toContain(
       "trust that inline acceptance",
-    );
-    expect(task!.buildPrompt("nonce")).toContain(
-      "Your first response action on that wake must be the paperclip_finish tool call",
-    );
-    expect(task!.buildPrompt("nonce")).toContain(
-      "Do not call get_task_context, list_documents, or any other tool",
     );
     expect(task!.buildPrompt("nonce")).toContain(
       "those two tool calls form one indivisible response sequence",
