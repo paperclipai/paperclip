@@ -40,11 +40,17 @@ vi.mock("../dev-server-status.js", () => ({
   toDevServerHealthStatus: vi.fn(),
 }));
 
+vi.mock("../services/workspace-readiness.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/workspace-readiness.js")>()),
+  isManagedWorkspaceInstance: () => false,
+}));
+
 function createApp(
   db?: Db,
   serverInfo = testServerInfo,
   databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
   runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
+  productFeedback?: Parameters<typeof healthRoutes>[1]["productFeedback"],
 ) {
   const app = express();
   app.use(
@@ -57,6 +63,7 @@ function createApp(
       serverInfo,
       databaseBackupHealth,
       runtimeEnv,
+      productFeedback,
     }),
   );
   return app;
@@ -151,6 +158,28 @@ describe("GET /health", () => {
       version: serverVersion,
       serverInfo: testServerInfo,
     });
+  });
+
+  it("advertises the product feedback capability without provider credentials", async () => {
+    const res = await request(createApp(createHealthyDb())).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.features.productFeedback).toEqual({
+      enabled: false,
+      limits: { feedbackMaxLength: 5_000, diagnosticCount: 5 },
+    });
+  });
+
+  it("advertises enabled product feedback on self-hosted instances", async () => {
+    const productFeedback = {
+      enabled: true,
+      limits: { feedbackMaxLength: 5_000, diagnosticCount: 5 },
+    };
+    const res = await request(createApp(createHealthyDb(), testServerInfo, undefined, {}, productFeedback))
+      .get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.features.productFeedback).toEqual(productFeedback);
   });
 
   it("returns 503 when the database probe fails", async () => {

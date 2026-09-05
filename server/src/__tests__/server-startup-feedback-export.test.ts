@@ -189,6 +189,13 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     storageS3ForcePathStyle: false,
     feedbackExportBackendUrl: "https://telemetry.example.com",
     feedbackExportBackendToken: "telemetry-token",
+    productFeedback: {
+      enabled: true,
+      limits: {
+        feedbackMaxLength: 5_000,
+        diagnosticCount: 5,
+      },
+    },
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,
@@ -224,6 +231,7 @@ vi.mock("../app.js", () => ({
 }));
 
 vi.mock("../config.js", () => ({
+  applyManagedCloudProductFeedbackFloor: (capability: unknown) => capability,
   loadConfig: loadConfigMock,
 }));
 

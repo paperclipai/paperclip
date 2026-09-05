@@ -27,6 +27,43 @@ describe("paperclip config schema", () => {
     expect(parsed.logging.logDir).toBe("~/.paperclip/instances/default/logs");
     expect(parsed.storage.localDisk.baseDir).toBe("~/.paperclip/instances/default/data/storage");
     expect(parsed.secrets.localEncrypted.keyFilePath).toBe("~/.paperclip/instances/default/secrets/master.key");
+    expect(parsed.productFeedback).toEqual({ enabled: true });
+  });
+
+  it("retains an explicit product feedback disable setting", () => {
+    const parsed = paperclipConfigSchema.parse({
+      $meta: {
+        version: 1,
+        updatedAt: "2026-09-01T00:00:00.000Z",
+        source: "configure",
+      },
+      database: { mode: "embedded-postgres" },
+      logging: { mode: "file" },
+      server: {},
+      productFeedback: {
+        enabled: false,
+      },
+    });
+
+    expect(parsed.productFeedback).toEqual({ enabled: false });
+  });
+
+  it("does not require analytics-provider configuration when feedback is enabled", () => {
+    const parsed = paperclipConfigSchema.parse({
+      $meta: {
+        version: 1,
+        updatedAt: "2026-09-01T00:00:00.000Z",
+        source: "configure",
+      },
+      database: { mode: "embedded-postgres" },
+      logging: { mode: "file" },
+      server: {},
+      productFeedback: {
+        enabled: true,
+      },
+    });
+
+    expect(parsed.productFeedback).toEqual({ enabled: true });
   });
 
   it("retains extension keys at the top level and every nested config boundary", () => {

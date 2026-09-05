@@ -45,6 +45,13 @@ const SENSITIVE_KEYS = new Set<string>([
   "private_key",
   "privatekey",
   "paperclip_capability",
+  // Product-feedback text and follow-up contact can pass through the
+  // same-origin relay route. HTTP error logging copies request bodies, so
+  // redact both at the centralized boundary.
+  "feedback",
+  "reporteremail",
+  "reporter_email",
+  "reporter-email",
   // The Claude setup-token login fields. `browserCode` carries the one-time
   // sign-in code and `authorization_code` carries the OAuth code; neither may
   // reach a log line.
