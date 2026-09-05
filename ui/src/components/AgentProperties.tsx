@@ -1,10 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
+import { Copy } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
+import { useToastActions } from "../context/ToastContext";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { queryKeys } from "../lib/queryKeys";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentStatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
@@ -28,6 +31,7 @@ function PropertyRow({ label, children }: { label: string; children: React.React
 
 export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const { pushToast } = useToastActions();
   const lastErrorIsActive = agent.status === "error";
 
   const { data: agents } = useQuery({
@@ -38,17 +42,34 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
 
   const reportsToAgent = agent.reportsTo ? agents?.find((a) => a.id === agent.reportsTo) : null;
 
+  const copyErrorReason = async (text: string) => {
+    try {
+      await copyTextToClipboard(text);
+      pushToast({ title: "Error reason copied", tone: "success" });
+    } catch {
+      pushToast({ title: "Could not copy error reason", tone: "error" });
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="space-y-1">
         <PropertyRow label="Status">
           <AgentStatusBadge status={agent.status} />
         </PropertyRow>
-        {lastErrorIsActive && agent.errorReason && (
-          <PropertyRow label="Error reason">
+        {agent.errorReason && (
+          <PropertyRow label={lastErrorIsActive ? "Error reason" : "Residual error reason"}>
             <span className="text-xs text-red-600 dark:text-red-400 break-words min-w-0">
               {agent.errorReason}
             </span>
+            <button
+              type="button"
+              onClick={() => void copyErrorReason(agent.errorReason!)}
+              className="ml-1 shrink-0 text-muted-foreground hover:text-foreground"
+              aria-label="Copy error reason"
+            >
+              <Copy className="h-3 w-3" />
+            </button>
           </PropertyRow>
         )}
         <PropertyRow label="Role">

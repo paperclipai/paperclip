@@ -698,16 +698,15 @@ describe.sequential("agent cross-tenant route authorization", () => {
     }));
   });
 
-  it("returns 409 and does not mutate when the agent org chain is invalid", async () => {
+  it("propagates the org-chain guard 409 thrown by the service without recording activity", async () => {
+    const { conflict } = await import("../errors.js");
     mockAgentService.getById.mockImplementation(async () => ({
       ...baseAgent,
       status: "error",
-      orgChainHealth: {
-        status: "invalid_org_chain",
-        reason: "missing_manager",
-        repairGuidance: "Repair the reporting chain first.",
-      },
     }));
+    mockAgentService.clearError.mockImplementation(async () => {
+      throw conflict("Repair the reporting chain first.");
+    });
     const app = await createApp({
       type: "board",
       userId: "board-user",
@@ -722,7 +721,7 @@ describe.sequential("agent cross-tenant route authorization", () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("Repair the reporting chain first");
-    expect(mockAgentService.clearError).not.toHaveBeenCalled();
+    expect(mockAgentService.clearError).toHaveBeenCalledWith(agentId);
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 

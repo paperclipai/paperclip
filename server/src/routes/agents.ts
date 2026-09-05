@@ -4860,12 +4860,6 @@ export function agentRoutes(
     if (!existing) {
       return;
     }
-    if (existing.orgChainHealth?.status === "invalid_org_chain") {
-      res.status(409).json({
-        error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before clearing its error",
-      });
-      return;
-    }
 
     const agent = await svc.clearError(id);
     if (!agent) {

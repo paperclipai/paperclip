@@ -45,7 +45,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
     await tempDb?.cleanup();
   });
 
-  it("moves an error agent to idle without deleting run history or runtime diagnostics", async () => {
+  it("moves an error agent to idle, keeping run history but resetting runtime state", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -120,6 +120,8 @@ describeEmbeddedPostgres("agent service clearError", () => {
       errorReason: null,
     });
 
+    // Run history (the failed run and its transcript) is the audit record and
+    // must survive the clear unchanged.
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(run).toMatchObject({
       id: runId,
@@ -144,17 +146,53 @@ describeEmbeddedPostgres("agent service clearError", () => {
       payload: { itemType: "error" },
     });
 
+    // Runtime state restarts from a clean slate: the failed session and its
+    // failure diagnostics are dropped so the next run begins fresh.
     const [runtimeState] = await db
       .select()
       .from(agentRuntimeState)
       .where(eq(agentRuntimeState.agentId, agentId));
     expect(runtimeState).toMatchObject({
       agentId,
-      sessionId: "codex-session-1",
-      stateJson: { taskKey: "issue:test" },
-      lastRunId: runId,
-      lastRunStatus: "failed",
-      lastError: "Adapter exited with code 1",
+      sessionId: null,
+      stateJson: {},
+      lastRunStatus: null,
+      lastError: null,
+    });
+  });
+
+  it("clears a residual errorReason even when the agent is not in the error state", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    // A legacy row that carries errorReason but whose status drifted to idle.
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      errorReason: "stale failure note",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const cleared = await agentService(db).clearError(agentId);
+
+    expect(cleared).toMatchObject({
+      id: agentId,
+      status: "idle",
+      errorReason: null,
     });
   });
 
@@ -185,6 +223,102 @@ describeEmbeddedPostgres("agent service clearError", () => {
     await expect(agentService(db).clearError(agentId)).rejects.toMatchObject({
       status: 409,
       message: "Only agents in error status can have their error cleared",
+    });
+  });
+
+  it("rejects running and paused agents even when they carry an errorReason", async () => {
+    const companyId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const runningAgentId = randomUUID();
+    const pausedAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: runningAgentId,
+        companyId,
+        name: "Running",
+        role: "engineer",
+        status: "running",
+        errorReason: "stale note",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: pausedAgentId,
+        companyId,
+        name: "Paused",
+        role: "engineer",
+        status: "paused",
+        errorReason: "stale note",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await expect(agentService(db).clearError(runningAgentId)).rejects.toMatchObject({
+      status: 409,
+      message: "Running agents cannot have their error cleared",
+    });
+    await expect(agentService(db).clearError(pausedAgentId)).rejects.toMatchObject({
+      status: 409,
+      message: "Paused agents must be resumed before clearing their error",
+    });
+  });
+
+  it("rejects clearing when the reporting chain is invalid", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const terminatedManagerId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    // A terminated manager makes the chain invalid without violating the FK.
+    await db.insert(agents).values([
+      {
+        id: terminatedManagerId,
+        companyId,
+        name: "Manager",
+        role: "ceo",
+        status: "terminated",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "error",
+        errorReason: "boom",
+        reportsTo: terminatedManagerId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await expect(agentService(db).clearError(agentId)).rejects.toMatchObject({
+      status: 409,
     });
   });
 

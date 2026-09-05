@@ -102,10 +102,12 @@ export function ClearErrorButton({
   onClick,
   disabled,
   size = "sm",
+  title,
 }: {
   onClick: () => void;
   disabled?: boolean;
   size?: "sm" | "default";
+  title?: string;
 }) {
   return (
     <Button
@@ -113,6 +115,7 @@ export function ClearErrorButton({
       size={size}
       onClick={onClick}
       disabled={disabled}
+      title={title ?? "Clear error and return agent to idle"}
       className="border-destructive/60 text-destructive hover:bg-destructive/10 hover:text-destructive dark:border-destructive/50"
       aria-label="Clear error and return agent to idle"
     >
@@ -279,6 +282,13 @@ export function AgentActionButtons({
     onSuccess: (data, action) => {
       onActionError?.(null);
       invalidateAgent();
+      if (action === "clear_error") {
+        pushToast({
+          title: "Agent error cleared",
+          body: `${agent.name} returned to idle`,
+          tone: "success",
+        });
+      }
       if (action === "terminate") {
         if (!confirmLateNavigationChanges(agentActionStartedDirtyRef)) return;
         onTerminateSuccess?.(data as Agent);
@@ -366,6 +376,7 @@ export function AgentActionButtons({
   });
 
   const isPendingApproval = agent.status === "pending_approval";
+  const orgChainInvalid = agent.orgChainHealth?.status === "invalid_org_chain";
   const disabled = actionsDisabled || agentAction.isPending || providerTraceAction.isPending;
   const assignAndRunDisabled = disabled || isPendingApproval || workActionsDisabled;
   const pauseResumeDisabled = disabled || isPendingApproval || (isPaused && workActionsDisabled);
@@ -424,9 +435,24 @@ export function AgentActionButtons({
       )}
       {isError ? (
         <ClearErrorButton
-          onClick={() => agentAction.mutate("clear_error")}
+          onClick={() => {
+            if (orgChainInvalid) {
+              reportError(
+                agent.orgChainHealth?.repairGuidance ??
+                  "Repair this agent's reporting chain before clearing its error",
+              );
+              return;
+            }
+            agentAction.mutate("clear_error");
+          }}
           disabled={clearErrorDisabled}
           size={size}
+          title={
+            orgChainInvalid
+              ? agent.orgChainHealth?.repairGuidance ??
+                "Repair this agent's reporting chain before clearing its error"
+              : undefined
+          }
         />
       ) : (
         <PauseResumeButton

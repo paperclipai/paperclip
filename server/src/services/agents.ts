@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -906,8 +906,27 @@ export function agentService(db: Db) {
       if (existing.status === "pending_approval") {
         throw conflict("Pending approval agents cannot have errors cleared");
       }
-      if (existing.status !== "error") {
+      if (existing.status === "running") {
+        throw conflict("Running agents cannot have their error cleared");
+      }
+      if (existing.status === "paused") {
+        throw conflict("Paused agents must be resumed before clearing their error");
+      }
+      // The agent is clearable when it is in the error state, or when it still
+      // carries a residual errorReason left over from an earlier failure (e.g. a
+      // legacy row that was not transitioned through the heartbeat finalizer).
+      const clearable = existing.status === "error" || existing.errorReason != null;
+      if (!clearable) {
         throw conflict("Only agents in error status can have their error cleared");
+      }
+      // Resuming work through an invalid reporting chain is a governance
+      // violation; reject the clear the same way resume does instead of
+      // silently returning a broken agent to idle.
+      if (existing.orgChainHealth?.status === "invalid_org_chain") {
+        throw conflict(
+          existing.orgChainHealth?.repairGuidance ??
+            "Repair this agent's reporting chain before clearing its error",
+        );
       }
 
       const updated = await db
@@ -919,13 +938,32 @@ export function agentService(db: Db) {
           errorReason: null,
           updatedAt: new Date(),
         })
-        .where(and(eq(agents.id, id), eq(agents.status, "error")))
+        .where(
+          and(
+            eq(agents.id, id),
+            or(eq(agents.status, "error"), isNotNull(agents.errorReason)),
+          ),
+        )
         .returning()
         .then((rows) => rows[0] ?? null);
 
       if (!updated) {
-        throw conflict("Only agents in error status can have their error cleared");
+        throw conflict("Agent error is no longer clearable; refresh and retry");
       }
+
+      // Start the runtime from a clean slate: forget the failed session and the
+      // failure diagnostics that referenced it, while run history stays intact.
+      await db
+        .update(agentRuntimeState)
+        .set({
+          sessionId: null,
+          lastError: null,
+          lastRunStatus: null,
+          stateJson: {},
+          updatedAt: new Date(),
+        })
+        .where(eq(agentRuntimeState.agentId, id));
+
       return getById(updated.id);
     },
 
