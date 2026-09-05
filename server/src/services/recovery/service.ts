@@ -427,6 +427,18 @@ const ADAPTER_ENGINE_FAILURE_ERROR_CODES = new Set<string>([
   "acpx_backend_unavailable",
 ]);
 
+// `acpx_session_config_failed` is the one engine phase code that also carries a trustworthy
+// configuration signal. It is stamped when `configure_session` fails while applying the run's
+// model / thinking-effort / fast-mode overrides (`applySessionConfigOptions`,
+// `packages/adapter-utils/src/acpx-engine/execute.ts`), so it covers durable, human-actionable
+// misconfiguration — a rejected model id, or a runtime with no config controls at all — as well as
+// a transient engine hiccup. It stays in the engine set so quota-shaped text under it still defers
+// instead of blocking, but it must not suppress the configuration diagnosis the way a generic
+// engine crash does, otherwise a real config blocker under this code falls through unclassified.
+const ENGINE_FAILURE_CODES_WITH_CONFIGURATION_SIGNAL = new Set<string>([
+  "acpx_session_config_failed",
+]);
+
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
@@ -520,11 +532,14 @@ export function classifyAdapterFailureForRecovery(
   }
   const resultJson = parseObject(latestRun.resultJson);
   const error = [latestRun.errorCode ?? "", latestRun.error ?? "", JSON.stringify(resultJson)].join("\n");
-  // An engine phase code only unlocks the quota path. Diagnosing `configuration_incomplete` moves
-  // the issue to `blocked`, so it stays gated on the adapter-level codes that carry a trustworthy
-  // configuration signal rather than on a generic engine crash.
+  // A generic engine phase code only unlocks the quota path. Diagnosing `configuration_incomplete`
+  // moves the issue to `blocked`, so it stays gated on the codes that carry a trustworthy
+  // configuration signal — the adapter-level ones, plus the `configure_session` phase code, which
+  // is emitted precisely when the run's model/effort overrides could not be applied.
+  const suppressesConfigurationDiagnosis =
+    isEngineFailure && !ENGINE_FAILURE_CODES_WITH_CONFIGURATION_SIGNAL.has(latestRun.errorCode ?? "");
   if (
-    !isEngineFailure &&
+    !suppressesConfigurationDiagnosis &&
     (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error))
   ) {
     return { kind: "configuration_incomplete" };

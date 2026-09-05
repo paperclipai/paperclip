@@ -118,6 +118,43 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  // LUN-7056 review: `configure_session` fails while applying the run's model / effort overrides,
+  // so this one engine code can also mean a durable, human-actionable misconfiguration. Quota-shaped
+  // text under it must still defer, but a real config blocker under it must still surface as one
+  // instead of falling through unclassified.
+  it("defers quota exhaustion surfaced under the session-config engine code", () => {
+    const now = new Date("2026-09-04T17:40:01.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "acpx_session_config_failed",
+      error: "You've hit your session limit · resets 8am (Asia/Bangkok)",
+      resultJson: null,
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-09-05T01:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it("still diagnoses a real configuration blocker reported under the session-config engine code", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "acpx_session_config_failed",
+      error: "model_not_found: the configured model override does not exist",
+      resultJson: null,
+    })).toEqual({ kind: "configuration_incomplete" });
+  });
+
+  it.each([
+    "acpx_turn_failed",
+    "acpx_runtime_error",
+    "acpx_session_init_failed",
+  ])("does not read a generic engine crash under %s as a configuration blocker", (errorCode) => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode,
+      error: "model_not_found: the agent crashed mid-turn",
+      resultJson: null,
+    })).toBeNull();
+  });
+
   it("still ignores non-quota engine failures", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "acpx_turn_failed",

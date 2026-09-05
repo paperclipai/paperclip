@@ -68,6 +68,13 @@ const {
       skipped: 0,
       issueIds: [],
     })),
+    repairUnroutableBlockedIssues: vi.fn(async () => ({
+      inspected: 0,
+      repaired: 0,
+      skipped: 0,
+      deferred: 0,
+      issueIds: [] as string[],
+    })),
     reconcileResolvedDependencyWakes: vi.fn(async () => ({ healed: 0 })),
     reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0 })),
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
