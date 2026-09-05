@@ -1776,6 +1776,173 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it("holds a GitHub follow-up that arrives after the reorder window until its older root mention arrives", async () => {
+    const fixture = await seedCompany();
+    const deferred: Array<() => void> = [];
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredGitHubEndpoint(fixture, {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: (task) => deferred.push(task),
+      });
+    const thread = makeThread({
+      channelId: "github:paperclipai/paperclip",
+      id: "github:paperclipai/paperclip:issue:72",
+      name: "paperclipai/paperclip",
+    });
+    const laterReply = makeMessage({
+      id: "72002",
+      text: "follow-up delivered well before its root callback",
+    });
+    laterReply.metadata.dateSent = new Date("2026-09-05T18:00:02.000Z");
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: thread.thread,
+      message: laterReply,
+      trigger: "unaddressed_message",
+    });
+    const [replyDelivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date() })
+      .where(eq(chatDeliveries.id, replyDelivery!.id));
+
+    await service.processPendingDeliveries(25, replyDelivery!.id);
+
+    await expect(
+      db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.id, replyDelivery!.id)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        state: "retry",
+        attempts: 1,
+        redactedError: "Waiting briefly for an earlier root mention",
+      }),
+    ]);
+    await expect(
+      db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id)),
+    ).resolves.toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+
+    const earlierMention = makeMessage({
+      id: "72001",
+      text: "@maya start the delayed GitHub task",
+      mentioned: true,
+    });
+    earlierMention.metadata.dateSent = new Date("2026-09-05T18:00:01.000Z");
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: thread.thread,
+      message: earlierMention,
+      trigger: "mention",
+    });
+    const mentionDelivery = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(chatDeliveries.providerEventId, `${thread.thread.id}:72001`),
+        ),
+      )
+      .then((rows) => rows[0]);
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date() })
+      .where(eq(chatDeliveries.id, mentionDelivery!.id));
+    await service.processPendingDeliveries(25, mentionDelivery!.id);
+
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    expect(conversation).toBeDefined();
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date() })
+      .where(eq(chatDeliveries.id, replyDelivery!.id));
+    await service.processPendingDeliveries(25, replyDelivery!.id);
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, conversation!.issueId))
+      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    expect(comments.map((comment) => comment.body)).toEqual([
+      "@maya start the delayed GitHub task",
+      "follow-up delivered well before its root callback",
+    ]);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect(deferred).toHaveLength(1);
+    await service.shutdown();
+  });
+
+  it("filters a standalone unaddressed GitHub comment after one orphan grace attempt", async () => {
+    const fixture = await seedCompany();
+    const deferred: Array<() => void> = [];
+    const { callbacks, endpoint, service, wakeup } =
+      await configuredGitHubEndpoint(fixture, {
+        deferWebhookProcessing: true,
+        scheduleDeferredWork: (task) => deferred.push(task),
+      });
+    const thread = makeThread({
+      channelId: "github:paperclipai/paperclip",
+      id: "github:paperclipai/paperclip:issue:73",
+      name: "paperclipai/paperclip",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: thread.thread,
+      message: makeMessage({
+        id: "73001",
+        text: "ordinary comment that never mentions the agent",
+      }),
+      trigger: "unaddressed_message",
+    });
+    const [delivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    for (const expectedAttempt of [1, 2]) {
+      await db
+        .update(chatDeliveries)
+        .set({ nextAttemptAt: new Date() })
+        .where(eq(chatDeliveries.id, delivery!.id));
+      await service.processPendingDeliveries(25, delivery!.id);
+      const current = await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.id, delivery!.id))
+        .then((rows) => rows[0]);
+      expect(current).toMatchObject({
+        state: expectedAttempt === 1 ? "retry" : "filtered",
+        attempts: expectedAttempt,
+      });
+    }
+    await expect(
+      db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id)),
+    ).resolves.toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(deferred).toHaveLength(1);
+    await service.shutdown();
+  });
+
   it("recovers a revoked GitHub installation on the same endpoint with its new installation id", async () => {
     const fixture = await seedCompany();
     const context = await configuredGitHubEndpoint(fixture);
