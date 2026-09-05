@@ -439,6 +439,37 @@ const ENGINE_FAILURE_CODES_WITH_CONFIGURATION_SIGNAL = new Set<string>([
   "acpx_session_config_failed",
 ]);
 
+// LUN-7056 AC1. The infrastructure causes that are *not* quota: the run could not execute at all.
+// Provider exhaustion is only one way an execution path dies; a crashed adapter process, an adapter
+// timeout or an engine transport error leave the work in exactly the same place — untouched and
+// retryable. None of them is a reason to write `blocked`, which means "a real dependency stands in
+// the way". `acpx_session_config_failed`, `acpx_auth_required` and `acpx_backend_missing` stay out:
+// those carry a durable configuration signal a human has to act on.
+const INFRA_TRANSIENT_FAILURE_ERROR_CODES = new Set<string>([
+  "process_lost",
+  "acpx_timeout",
+  "acpx_turn_failed",
+  "acpx_runtime_error",
+  "acpx_protocol_error",
+  "acpx_session_init_failed",
+  "acpx_backend_unavailable",
+  "codex_transient_upstream",
+  "claude_transient_upstream",
+  "codex_harness_crash",
+]);
+
+// A fleet pause is a deliberate decision rather than a crash, but its run failure is still an
+// infrastructure delay: nothing depends on this issue, it is waiting for the hold to lift. It gets
+// the long backoff so a held subtree is not re-probed every quarter hour.
+const FLEET_PAUSE_FAILURE_ERROR_CODES = new Set<string>(["issue_paused"]);
+
+export const INFRA_TRANSIENT_RECOVERY_BACKOFF_MS = 15 * 60 * 1000;
+export const FLEET_PAUSE_RECOVERY_BACKOFF_MS = 60 * 60 * 1000;
+// An infrastructure cause defers instead of blocking, but it must not defer forever. Past this many
+// consecutive infra-classed failures on the same issue the cause is no longer plausibly transient,
+// so the issue escalates through the normal path — which now always attaches a routable descriptor.
+const INFRA_TRANSIENT_MAX_CONSECUTIVE_DEFERRALS = 3;
+
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
@@ -446,8 +477,30 @@ const CONFIGURATION_INCOMPLETE_ERROR_RE =
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
+  | { kind: "infra_transient"; retryAt: Date; parsedResetTime: false; errorCode: string }
   | { kind: "configuration_incomplete" }
   | null;
+
+// The classifications that carry a retry instant. These are the ones that defer the issue — status
+// preserved, wake armed — instead of escalating it.
+export type DeferrableFailureClassification = Extract<
+  NonNullable<AdapterFailureRecoveryClassification>,
+  { retryAt: Date }
+>;
+
+// LUN-7056 AC1. `infra` = the run could not execute (provider exhaustion, session limit, engine or
+// process crash, adapter timeout, fleet pause). `business` = everything else, a real dependency or
+// a configuration blocker a human must fix. Only a `business` failure may ever end in `blocked`.
+export type RunFailureClass = "infra" | "business";
+
+export function classifyRunFailureClass(
+  latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson"> | null | undefined,
+  now = new Date(),
+): RunFailureClass {
+  if (!latestRun) return "business";
+  const kind = classifyAdapterFailureForRecovery(latestRun, now)?.kind;
+  return kind === "provider_quota" || kind === "infra_transient" ? "infra" : "business";
+}
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
   const match = error.match(
@@ -521,12 +574,17 @@ export function classifyAdapterFailureForRecovery(
   latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
-  const isEngineFailure = ADAPTER_ENGINE_FAILURE_ERROR_CODES.has(latestRun.errorCode ?? "");
+  const errorCode = latestRun.errorCode ?? "";
+  const isEngineFailure = ADAPTER_ENGINE_FAILURE_ERROR_CODES.has(errorCode);
+  const isInfraTransientFailure = INFRA_TRANSIENT_FAILURE_ERROR_CODES.has(errorCode);
+  const isFleetPauseFailure = FLEET_PAUSE_FAILURE_ERROR_CODES.has(errorCode);
   if (
     latestRun.errorCode !== "adapter_failed" &&
     latestRun.errorCode !== "provider_quota" &&
     latestRun.errorCode !== "configuration_incomplete" &&
-    !isEngineFailure
+    !isEngineFailure &&
+    !isInfraTransientFailure &&
+    !isFleetPauseFailure
   ) {
     return null;
   }
@@ -544,7 +602,22 @@ export function classifyAdapterFailureForRecovery(
   ) {
     return { kind: "configuration_incomplete" };
   }
-  if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) return null;
+  if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) {
+    // No quota signal, but an infrastructure error code still means the run could not execute. It
+    // defers on a fixed backoff rather than falling through to a `blocked` escalation (AC1/AC2).
+    if (isInfraTransientFailure || isFleetPauseFailure) {
+      const backoffMs = isFleetPauseFailure
+        ? FLEET_PAUSE_RECOVERY_BACKOFF_MS
+        : INFRA_TRANSIENT_RECOVERY_BACKOFF_MS;
+      return {
+        kind: "infra_transient",
+        retryAt: new Date(now.getTime() + backoffMs),
+        parsedResetTime: false,
+        errorCode,
+      };
+    }
+    return null;
+  }
 
   const persistedRetryAt = readNonEmptyString(resultJson.retryNotBefore) ??
     readNonEmptyString(resultJson.transientRetryNotBefore) ??
@@ -3226,6 +3299,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
+    // LUN-7056 AC2, the seam where `blocked` actually gets written. Everything upstream of this
+    // point — the dispatch re-enqueue, the liveness continuation — has already been tried. If the
+    // run died on infrastructure the issue is not blocked on anything, so it keeps its status and
+    // gets one more wake instead. `deferInfraRunFailure` bounds that, so a permanently broken
+    // execution path still reaches the escalation below.
+    //
+    // Only for a cause read off the run itself: an explicit `recoveryCause`, a notice seed or
+    // successful-run-handoff evidence means the caller diagnosed something the run's error code does
+    // not describe, and that diagnosis wins.
+    if (
+      input.latestRun &&
+      !input.recoveryCause &&
+      !input.notice &&
+      !input.successfulRunHandoffEvidence
+    ) {
+      const now = new Date();
+      const classification = classifyAdapterFailureForRecovery(input.latestRun, now);
+      if (classification?.kind === "infra_transient") {
+        const deferral = await deferInfraRunFailure({
+          issue: input.issue,
+          latestRun: input.latestRun,
+          classification,
+          now,
+        });
+        if (deferral.outcome === "deferred") return deferral.issue;
+      }
+    }
+
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
@@ -3463,10 +3564,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     };
   }
 
-  async function scheduleProviderQuotaRecoveryMonitor(input: {
+  // Arms the wake that replaces a `blocked` write for an infrastructure failure. It keeps
+  // `PROVIDER_QUOTA_MONITOR_SERVICE_NAME` for every infra cause on purpose: that service name is
+  // what `heartbeat` keys on to route the wake back to the *review participant* rather than the
+  // assignee (heartbeat.ts, `isProviderQuotaReviewMonitor`). A second name would have to be taught
+  // to that router before it could be used, and the routing is identical for all infra causes.
+  async function scheduleInfraRecoveryMonitor(input: {
     issue: typeof issues.$inferSelect;
     latestRun: NonNullable<LatestIssueRun>;
-    classification: Extract<NonNullable<AdapterFailureRecoveryClassification>, { kind: "provider_quota" }>;
+    classification: DeferrableFailureClassification;
   }) {
     if (input.issue.status !== "in_progress" && input.issue.status !== "in_review") return null;
 
@@ -3477,13 +3583,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const retryTargetDescription = input.issue.status === "in_review"
       ? "the active review participant"
       : "the original assignee";
+    const notes = input.classification.kind === "provider_quota"
+      ? (input.classification.parsedResetTime
+        ? `Provider usage quota reached; retry ${retryTargetDescription} at the provider reset time.`
+        : `Provider usage quota reached; retry ${retryTargetDescription} after the default recovery backoff.`)
+      : `Infrastructure run failure (\`${input.classification.errorCode}\`); retry ` +
+        `${retryTargetDescription} after the recovery backoff.`;
     const policy = {
       ...(previousPolicy ?? { mode: "normal" as const, commentRequired: true, stages: [] }),
       monitor: {
         nextCheckAt: input.classification.retryAt.toISOString(),
-        notes: input.classification.parsedResetTime
-          ? `Provider usage quota reached; retry ${retryTargetDescription} at the provider reset time.`
-          : `Provider usage quota reached; retry ${retryTargetDescription} after the default recovery backoff.`,
+        notes,
         scheduledBy: "assignee" as const,
         kind: "external_service" as const,
         serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
@@ -3519,9 +3629,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       entityId: input.issue.id,
       details: {
         identifier: input.issue.identifier,
-        source: "recovery.provider_quota",
+        source: input.classification.kind === "provider_quota"
+          ? "recovery.provider_quota"
+          : "recovery.infra_transient",
         latestRunId: input.latestRun.id,
-        errorCode: "provider_quota",
+        errorCode: input.classification.kind === "provider_quota"
+          ? "provider_quota"
+          : input.classification.errorCode,
+        failureClass: "infra",
         nextCheckAt: input.classification.retryAt.toISOString(),
         parsedResetTime: input.classification.parsedResetTime,
         targetAgentId,
@@ -3529,6 +3644,68 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     return updated;
+  }
+
+  // LUN-7056 AC2. One place that turns an infra-classed run failure into "status preserved + wake
+  // armed". Bounded: a permanently crashing execution path must stop deferring and escalate, or the
+  // issue would silently ping-pong on the monitor forever with nobody ever told.
+  async function deferInfraRunFailure(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: NonNullable<LatestIssueRun>;
+    classification: DeferrableFailureClassification;
+    now: Date;
+  }): Promise<
+    | { outcome: "deferred"; issue: typeof issues.$inferSelect }
+    | { outcome: "exhausted" | "unavailable" }
+  > {
+    if (input.classification.kind === "infra_transient") {
+      const consecutive = await countConsecutiveInfraFailedRuns(
+        input.issue.companyId,
+        input.issue.id,
+        input.now,
+      );
+      if (consecutive >= INFRA_TRANSIENT_MAX_CONSECUTIVE_DEFERRALS) return { outcome: "exhausted" };
+    }
+    const monitored = await scheduleInfraRecoveryMonitor({
+      issue: input.issue,
+      latestRun: input.latestRun,
+      classification: input.classification,
+    });
+    return monitored ? { outcome: "deferred", issue: monitored } : { outcome: "unavailable" };
+  }
+
+  // Counts the unbroken tail of infra-classed failures on the issue. Derived from the runs' own
+  // error codes rather than persisted state, so it stays correct even when a deferral wrote nothing
+  // back onto the run.
+  async function countConsecutiveInfraFailedRuns(companyId: string, issueId: string, now: Date) {
+    const rows = await db
+      .select({
+        status: heartbeatRuns.status,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(INFRA_TRANSIENT_MAX_CONSECUTIVE_DEFERRALS + 1);
+
+    let count = 0;
+    for (const row of rows) {
+      if (!UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+        row.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+      )) {
+        break;
+      }
+      if (classifyRunFailureClass(row, now) !== "infra") break;
+      count += 1;
+    }
+    return count;
   }
 
   function getAdapterFailureRecoveryTargetAgentId(issue: typeof issues.$inferSelect) {
@@ -3541,7 +3718,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return participant?.type === "agent" ? participant.agentId : null;
   }
 
-  function hasPendingProviderQuotaRecoveryMonitor(
+  function hasPendingInfraRecoveryMonitor(
     issue: typeof issues.$inferSelect,
     latestRun: LatestIssueRun,
     now: Date,
@@ -3550,6 +3727,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const monitor = parseObject(parseObject(issue.executionPolicy).monitor);
     return readNonEmptyString(monitor.serviceName) === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
       readNonEmptyString(monitor.externalRef) === latestRun.id;
+  }
+
+  // Which status a falsely-blocked issue belongs in, and which agent owns the retry there. Reads the
+  // same signal `getAdapterFailureRecoveryTargetAgentId` uses, except the issue is currently
+  // `blocked`, so the pending review participant has to be read directly rather than gated on
+  // `status === "in_review"`.
+  function resolveUnroutableBlockedRestoreTarget(issue: typeof issues.$inferSelect): {
+    status: "in_progress" | "in_review";
+    targetAgentId: string | null;
+  } {
+    const pendingExecutionState = parseIssueExecutionState(issue.executionState);
+    const participant = pendingExecutionState?.status === "pending"
+      ? pendingExecutionState.currentParticipant
+      : null;
+    if (participant?.type === "agent" && participant.agentId) {
+      return { status: "in_review", targetAgentId: participant.agentId };
+    }
+    return { status: "in_progress", targetAgentId: issue.assigneeAgentId };
   }
 
   // LUN-7056: repair issues already sitting in the unroutable `blocked` state — no first-class
@@ -3563,7 +3758,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function repairUnroutableBlockedIssues(opts?: { now?: Date; limit?: number }) {
     const now = opts?.now ?? new Date();
     const limit = opts?.limit ?? UNROUTABLE_BLOCKED_REPAIR_DEFAULT_LIMIT;
-    const result = { inspected: 0, repaired: 0, skipped: 0, deferred: 0, issueIds: [] as string[] };
+    const result = { inspected: 0, repaired: 0, skipped: 0, unevaluated: 0, issueIds: [] as string[] };
 
     const candidates = await db
       .select()
@@ -3574,15 +3769,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         isNull(issues.hiddenAt),
         sql`${issues.assigneeAgentId} is not null`,
       ))
+      // Oldest stuck first, so successive bounded sweeps make guaranteed forward progress instead of
+      // re-reading whatever page Postgres happens to return.
+      .orderBy(asc(issues.blockedTransitionAt), asc(issues.id))
       // Startup waits on this query, so scan a bounded page rather than every historical row.
       .limit(UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT);
 
     for (const issue of candidates) {
-      result.inspected += 1;
       if (result.repaired >= limit) {
-        result.deferred += 1;
+        // Not "deferred": these were never classified, so most of them are probably legitimate
+        // business blocks. Counting them as pending repairs would overstate the backlog.
+        result.unevaluated += 1;
         continue;
       }
+      result.inspected += 1;
 
       // A dependency-blocked issue is routable already: resolving the blocker wakes it.
       const blockerIds = await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id);
@@ -3595,26 +3795,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const classification = latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
         ? classifyAdapterFailureForRecovery(latestRun, now)
         : null;
-      if (classification?.kind !== "provider_quota" || !latestRun) {
+      if (!latestRun || !classification || classification.kind === "configuration_incomplete") {
         result.skipped += 1;
         continue;
       }
+
+      // Restore the status the escalation actually took the issue *from*, not a hard-coded
+      // `in_progress`. `escalateStrandedAssignedIssue` is called with `previousStatus: "in_review"`
+      // whenever a review participant's own run fails, and that write leaves the review stage
+      // pending in `executionState`. Forcing such an issue to `in_progress` would drop the review
+      // disposition and point the retry at the assignee instead of the reviewer.
+      const restoreTarget = resolveUnroutableBlockedRestoreTarget(issue);
 
       // The monitor is the only wake this repair installs, and it is only scheduled for the agent
       // that owns the failed run. Without that match, restoring the status would swap a dead
-      // `blocked` for an idle `in_progress` with no execution path, which is strictly worse.
-      if (latestRun.agentId !== issue.assigneeAgentId) {
+      // `blocked` for an idle status with no execution path, which is strictly worse.
+      if (!restoreTarget.targetAgentId || latestRun.agentId !== restoreTarget.targetAgentId) {
         result.skipped += 1;
         continue;
       }
 
-      const restored = await issuesSvc.update(issue.id, { status: "in_progress" });
+      const restored = await issuesSvc.update(issue.id, { status: restoreTarget.status });
       if (!restored) {
         result.skipped += 1;
         continue;
       }
       // Restoring alone would leave the issue idle, so re-arm the same wake the live path uses.
-      const monitored = await scheduleProviderQuotaRecoveryMonitor({ issue: restored, latestRun, classification });
+      const monitored = await scheduleInfraRecoveryMonitor({ issue: restored, latestRun, classification });
       if (!monitored) {
         // Never leave the issue awake-less: put it back, this time routable.
         await issuesSvc.update(issue.id, {
@@ -3641,10 +3848,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         details: {
           identifier: issue.identifier,
           previousStatus: "blocked",
-          status: "in_progress",
+          status: restoreTarget.status,
           source: "recovery.repair_unroutable_blocked",
           latestRunId: latestRun.id,
           latestRunErrorCode: latestRun.errorCode,
+          failureClass: "infra",
+          recoveryClassification: classification.kind,
           retryAt: classification.retryAt.toISOString(),
         },
       });
@@ -3653,7 +3862,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       result.issueIds.push(issue.id);
     }
 
-    if (result.deferred > 0 || result.inspected >= UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT) {
+    if (result.unevaluated > 0 || result.inspected >= UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT) {
       // Never let a bounded pass read as "everything was covered". This pass runs at startup only,
       // so anything left here waits for the next restart rather than for some later sweep.
       logger.warn(
@@ -3836,7 +4045,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const providerQuotaMonitorRun = issue.status === "in_review"
         ? participantLatestRunForRecovery
         : latestRun;
-      if (hasPendingProviderQuotaRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
+      if (hasPendingInfraRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
         result.skipped += 1;
         continue;
       }
@@ -3858,7 +4067,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const adapterFailureClassification = issue.status !== "in_review" && latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
         ? classifyAdapterFailureForRecovery(latestRun, recoveryNow)
         : null;
-      if (latestRun && adapterFailureClassification) {
+      // A quota outage is knowable at first sight — there is nothing to retry until the reset time —
+      // so it defers here, ahead of the continuation budget. Every *other* infrastructure cause
+      // keeps the existing retry path below (re-enqueue, liveness continuation) and only defers at
+      // the escalation seam inside `escalateStrandedAssignedIssue`, so this fix adds retries rather
+      // than replacing the ones already there.
+      if (latestRun && adapterFailureClassification?.kind !== "infra_transient" && adapterFailureClassification) {
         const targetAgentId = getAdapterFailureRecoveryTargetAgentId(issue);
         if (!targetAgentId || latestRun.agentId !== targetAgentId) {
           result.skipped += 1;
@@ -3866,12 +4080,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (adapterFailureClassification.kind === "provider_quota") {
-          const monitored = await scheduleProviderQuotaRecoveryMonitor({
+          const deferral = await deferInfraRunFailure({
             issue,
             latestRun,
             classification: adapterFailureClassification,
+            now: recoveryNow,
           });
-          if (monitored) {
+          if (deferral.outcome === "deferred") {
             latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
             result.providerQuotaMonitored += 1;
             result.issueIds.push(issue.id);
@@ -4052,12 +4267,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ? classifyAdapterFailureForRecovery(participantLatestRun, recoveryNow)
           : null;
         if (participantAdapterFailureClassification?.kind === "provider_quota") {
-          const monitored = await scheduleProviderQuotaRecoveryMonitor({
+          const deferral = await deferInfraRunFailure({
             issue,
             latestRun: participantLatestRun,
             classification: participantAdapterFailureClassification,
+            now: recoveryNow,
           });
-          if (monitored) {
+          if (deferral.outcome === "deferred") {
             latestRun = await persistAdapterFailureRecoveryClassification(
               participantLatestRun,
               participantAdapterFailureClassification,
