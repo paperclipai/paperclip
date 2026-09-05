@@ -260,6 +260,7 @@ import {
 } from "../services/issue-thread-interaction-resolution.js";
 import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
+  attributeRunSourceIssueOnCheckout,
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
@@ -11632,6 +11633,21 @@ export function issueRoutes(
         return;
       }
       throw error;
+    }
+    if (req.actor.type === "agent" && checkoutRunId) {
+      try {
+        await attributeRunSourceIssueOnCheckout(db, {
+          companyId: issue.companyId,
+          runId: checkoutRunId,
+          agentId: req.body.agentId,
+          issueId: issue.id,
+        });
+      } catch (error) {
+        logger.warn(
+          { error, issueId: issue.id, runId: checkoutRunId },
+          "Failed to enrich heartbeat run context after successful checkout",
+        );
+      }
     }
     const actor = getActorInfo(req);
     if (updated?.harnessKind === "skill_test") {

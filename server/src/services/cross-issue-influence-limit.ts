@@ -1,4 +1,4 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
@@ -41,6 +41,28 @@ function readRunSourceIssueId(contextSnapshot: unknown) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
   }
   return null;
+}
+
+/** Gives an unscoped heartbeat run its source issue after a successful checkout. */
+export async function attributeRunSourceIssueOnCheckout(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string; issueId: string },
+) {
+  return db
+    .update(heartbeatRuns)
+    .set({
+      contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || jsonb_build_object('issueId', ${input.issueId}::text, 'taskId', ${input.issueId}::text)`,
+    })
+    .where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.agentId, input.agentId),
+      inArray(heartbeatRuns.status, ["queued", "running"]),
+      sql`nullif(btrim(coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', '')), '') is null`,
+      sql`nullif(btrim(coalesce(${heartbeatRuns.contextSnapshot} ->> 'taskId', '')), '') is null`,
+    ))
+    .returning({ id: heartbeatRuns.id })
+    .then((rows) => rows.length > 0);
 }
 
 export function evaluateCrossIssueInfluenceLimit(input: {
