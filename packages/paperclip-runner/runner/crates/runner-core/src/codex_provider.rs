@@ -531,6 +531,7 @@ pub struct CodexProvider {
     last_trace_frame_id: Option<u64>,
     opencode_launch_profile: Option<OpenCodeLaunchProfile>,
     completion_contract: Option<ProviderCompletionContract>,
+    permission_profile: &'static str,
 }
 
 // The controller accepts at most 32 process-scoped Git config entries and
@@ -621,6 +622,14 @@ const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
 ];
 
+fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static str {
+    if provider == "codex" && external_sandbox {
+        "danger-full-access"
+    } else {
+        "paperclip-runner-workspace-only"
+    }
+}
+
 impl CodexProvider {
     pub fn start(
         config: &CodexProviderConfig,
@@ -666,6 +675,10 @@ impl CodexProvider {
             ));
         }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
+        let permission_profile = codex_permission_profile(
+            &config.provider,
+            std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
+        );
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
         let common_environment_keys = [
@@ -765,6 +778,7 @@ impl CodexProvider {
                     criterion_ids: criterion_ids.to_vec(),
                 }
             }),
+            permission_profile,
         };
         let initialized = provider.request(
             "initialize",
@@ -786,7 +800,7 @@ impl CodexProvider {
             "cwd": config.cwd,
             "model": config.model,
             "approvalPolicy": config.approval_policy,
-            "permissions": "paperclip-runner-workspace-only",
+            "permissions": provider.permission_profile,
             "runtimeWorkspaceRoots": [config.cwd],
             "baseInstructions": config.instructions,
             "dynamicTools": dynamic_tools,
@@ -1102,7 +1116,7 @@ impl CodexProvider {
             json!({
                 "threadId": self.thread_id,
                 "cwd": cwd,
-                "permissions": "paperclip-runner-workspace-only",
+                "permissions": self.permission_profile,
                 "runtimeWorkspaceRoots": [cwd],
                 "input": [{"type": "text", "text": message, "text_elements": []}],
             }),
@@ -2959,6 +2973,18 @@ mod tests {
     fn codex_provider_accepts_only_the_controller_derived_external_sandbox_bit() {
         assert!(CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_RUNNER_EXTERNAL_SANDBOX"));
         assert!(!CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_SANDBOX_MODE"));
+        assert_eq!(
+            codex_permission_profile("codex", true),
+            "danger-full-access"
+        );
+        assert_eq!(
+            codex_permission_profile("codex", false),
+            "paperclip-runner-workspace-only"
+        );
+        assert_eq!(
+            codex_permission_profile("opencode", true),
+            "paperclip-runner-workspace-only"
+        );
     }
 
     #[test]
