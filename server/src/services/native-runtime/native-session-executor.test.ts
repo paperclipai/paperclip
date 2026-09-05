@@ -3758,6 +3758,13 @@ describe("runnerd provider runtime wiring", () => {
       runnerExecutionTarget: remoteTarget,
     });
     state.createBackend.mock.calls[0]![1].codexTransportFactory!();
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({
+          PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+        }),
+      }),
+    );
     const archiveExternalRunnerState =
       state.createTransport.mock.calls[0]![0].archiveExternalRunnerState;
     expect(archiveExternalRunnerState).toBeTypeOf("function");
@@ -3816,6 +3823,7 @@ describe("runnerd provider runtime wiring", () => {
       runnerEnvironment: {
         HOME: "/home/runner",
         PAPERCLIP_WORKSPACE_CWD: "/untrusted/configured-workspace",
+        PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
       },
     });
 
@@ -3829,6 +3837,12 @@ describe("runnerd provider runtime wiring", () => {
         }),
       }),
     );
+    const localTransportOptions = state.createTransport.mock.calls[0]![0] as {
+      environment: NodeJS.ProcessEnv;
+    };
+    expect(
+      localTransportOptions.environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX,
+    ).toBeUndefined();
   });
 
   it("atomically migrates legacy unscoped state only for its exact durable run identity", async () => {
@@ -5538,6 +5552,12 @@ describe("runnerd provider runtime wiring", () => {
         }),
       }),
     );
+    const sshTransportOptions = state.createTransport.mock.calls[0]![0] as {
+      environment: NodeJS.ProcessEnv;
+    };
+    expect(
+      sshTransportOptions.environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX,
+    ).toBeUndefined();
     expect(state.createTransport.mock.calls[0]![0].runnerBinary).not.toBe(
       `${remoteCwd}/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd`,
     );
