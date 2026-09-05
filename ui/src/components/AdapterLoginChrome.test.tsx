@@ -4,12 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { afterEach, describe, expect, it } from "vitest";
 
+import type React from "react";
 import {
   OnboardingLoginCard,
-  OnboardingLoginCodeInput,
+  OnboardingCardField,
   onboardingCardInputClass,
 } from "./AdapterLoginChrome";
-import { ApiKeyField } from "./onboarding/ConnectInputCanvas";
 
 /**
  * The connect step's canvas holds one of two cards, and the credential switch
@@ -52,53 +52,92 @@ async function render(node: React.ReactNode): Promise<HTMLElement> {
   return container;
 }
 
-describe("the connect step's two cards", () => {
-  it("gives the key field and the sign-in field the same input, from one declaration", async () => {
-    // The assertion that would have caught the drift this file exists for: not
-    // "both look like X", which passes right up until one of them is restyled,
-    // but that the two carry the byte-identical class string.
-    const signIn = await render(
-      <OnboardingLoginCard instruction="Open Claude link then come back and enter code">
-        <OnboardingLoginCodeInput value="" onChange={() => {}} onSubmit={() => {}} />
-      </OnboardingLoginCard>,
-    );
-    const keyCard = await render(
-      <ApiKeyField envKey="ANTHROPIC_API_KEY" value="" onChange={() => {}} />,
-    );
+describe("the connect step's cards", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
 
-    const codeInput = signIn.querySelector("input")!;
-    const keyInput = keyCard.querySelector("input")!;
-    expect(codeInput.className).toBe(onboardingCardInputClass);
-    expect(keyInput.className).toBe(codeInput.className);
+  afterEach(() => {
+    if (root) flushSync(() => root!.unmount());
+    root = null;
+    document.body.innerHTML = "";
   });
 
-  it("wraps the key field in the same card shell as the sign-in", async () => {
-    // The shell, not just the input. The key field used to draw its own
-    // bordered box, so flipping the credential switch changed the shape of the
-    // step rather than its content.
-    const signIn = await render(
-      <OnboardingLoginCard instruction="Open Claude link then come back and enter code">
-        <OnboardingLoginCodeInput value="" onChange={() => {}} onSubmit={() => {}} />
-      </OnboardingLoginCard>,
-    );
-    const keyCard = await render(
-      <ApiKeyField envKey="ANTHROPIC_API_KEY" value="" onChange={() => {}} />,
+  function render(node: React.ReactNode) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    flushSync(() => root!.render(node));
+  }
+
+  it("gives every card field the same input, from one declaration", () => {
+    // The step asks for three different things in this row — a browser code, a
+    // key — and they sit one toggle apart in the same canvas, so a divergence
+    // between them is visible by flipping a switch. Sharing the declaration is
+    // what stops that; this is the assertion that the sharing is real.
+    render(
+      <>
+        <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
+        <OnboardingCardField
+          label="API key"
+          placeholder="Enter API key here"
+          masked
+          value=""
+          onChange={() => {}}
+          onSubmit={() => {}}
+        />
+      </>,
     );
 
-    expect(keyCard.firstElementChild!.className).toBe(signIn.firstElementChild!.className);
+    const [code, key] = [...container.querySelectorAll("input")];
+    expect(code!.className).toBe(onboardingCardInputClass);
+    expect(key!.className).toBe(code!.className);
   });
 
-  it("labels the key field with the variable it will be written to", async () => {
-    // The name answers what a paster cannot answer for themselves — where this
-    // step puts the key — so it is the label rather than a sentence about it,
-    // and it reaches assistive tech as the field's name too.
-    const keyCard = await render(
-      <ApiKeyField envKey="ANTHROPIC_API_KEY" value="" onChange={() => {}} />,
+  it("masks a key and does not mask a one-time code", () => {
+    // A provider key is a credential that goes on living; a browser code is
+    // single-use and about to be pasted somewhere the customer can see.
+    render(
+      <>
+        <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
+        <OnboardingCardField
+          label="API key"
+          masked
+          value=""
+          onChange={() => {}}
+          onSubmit={() => {}}
+        />
+      </>,
     );
 
-    expect(keyCard.textContent).toContain("ANTHROPIC_API_KEY");
-    expect(keyCard.querySelector("input")!.getAttribute("aria-label")).toBe("ANTHROPIC_API_KEY");
-    // Still a password field: the key is a secret even while being pasted.
-    expect(keyCard.querySelector("input")!.getAttribute("type")).toBe("password");
+    const [code, key] = [...container.querySelectorAll("input")];
+    expect(code!.getAttribute("type")).toBe("text");
+    expect(code!.getAttribute("aria-label")).toBe("Authorization code");
+    expect(key!.getAttribute("type")).toBe("password");
+    expect(key!.getAttribute("aria-label")).toBe("API key");
+  });
+
+  it("holds one height across the card's waiting and ready states", () => {
+    // The card opens on a spinner and then fills. Both states share a floor, so
+    // the footer below is pushed down once for one event rather than twice —
+    // the loaded card growing into place would be a second shove.
+    render(
+      <OnboardingLoginCard loading instruction="Starting…">
+        <div />
+      </OnboardingLoginCard>,
+    );
+    const waiting = container.firstElementChild!.className;
+
+    flushSync(() => root!.unmount());
+    root = null;
+    document.body.innerHTML = "";
+    render(
+      <OnboardingLoginCard instruction="Ready">
+        <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
+      </OnboardingLoginCard>,
+    );
+    const ready = container.firstElementChild!.className;
+
+    expect(waiting).toContain("min-h-(--sz-108px)");
+    expect(ready).toContain("min-h-(--sz-108px)");
   });
 });

@@ -1,8 +1,17 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Copy, Check } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import { Copy, Check, Loader2 } from "lucide-react";
 
 import { Button } from "./ui/button";
 import { copyTextToClipboard } from "../lib/clipboard";
+import {
+  CARD_REVEAL_FIELD,
+  CARD_REVEAL_INSTRUCTION,
+  CARD_REVEAL_TRAVEL,
+  COPIED_REVEAL,
+  COPIED_REVEAL_DELAY_MS,
+  COPIED_REVEAL_TRAVEL,
+} from "./onboarding/onboarding-motion";
 
 /**
  * Which shell a login panel draws itself in.
@@ -22,6 +31,32 @@ import { copyTextToClipboard } from "../lib/clipboard";
 export type AdapterLoginChrome = "panel" | "onboarding";
 
 /**
+ * What the connect step calls each source.
+ *
+ * One map, read by the tile row and by the sign-in card's sentence, so the row
+ * and the card cannot end up calling the same provider different things.
+ *
+ * Deliberately not the display registry's label, which ten other surfaces read
+ * and which names the tool that runs ("Codex CLI was not found on this host").
+ * Also not `ADAPTER_LOGIN_PROVIDER`, which names the account being signed in to
+ * — "Anthropic" is right in a settings panel listing credentials and wrong in a
+ * sentence that reads "Sign in to Claude".
+ *
+ * Three names for two adapters is a tension worth stating rather than hiding.
+ * The concepts differ — vendor, tool, account — but if the product decides
+ * otherwise, this is the one to delete.
+ */
+export const CONNECT_SOURCE_NAMES: Record<string, string> = {
+  claude_local: "Claude",
+  codex_local: "OpenAI",
+};
+
+/** The provider name for a source, falling back to the type when unlisted. */
+export function connectSourceName(adapterType: string): string {
+  return CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
+}
+
+/**
  * The connect step's login card: an instruction with a Cancel beside it, then
  * the rows the customer works through.
  *
@@ -33,6 +68,7 @@ export type AdapterLoginChrome = "panel" | "onboarding";
 export function OnboardingLoginCard({
   instruction,
   onCancel,
+  loading = false,
   children,
 }: {
   /**
@@ -42,10 +78,32 @@ export function OnboardingLoginCard({
    */
   instruction: ReactNode;
   onCancel?: () => void;
+  /**
+   * Show a spinner instead of the contents, at the same height.
+   *
+   * The card opens before the sign-in has anything to put in it. Rendering it
+   * empty and growing later would push the footer twice for one event, so both
+   * states share a floor — see `--sz-108px`, which is exactly the height of an
+   * instruction over one row. A card holding more than that (the settings
+   * chrome's link *and* field) still grows past it.
+   */
+  loading?: boolean;
   children: ReactNode;
 }) {
+  if (loading) {
+    return (
+      <div
+        className="flex min-h-(--sz-108px) items-center justify-center rounded-xl bg-muted/40"
+        role="status"
+        aria-label="Preparing the sign-in"
+      >
+        <Loader2 className="size-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-xl bg-muted/40 px-4 py-3.5 flex flex-col gap-4">
+    <div className="flex min-h-(--sz-108px) flex-col gap-4 rounded-xl bg-muted/40 p-4">
       {/* No `gap`: `justify-between` already holds the two apart, and the eight
           pixels a gap reserves are eight the instruction does not have. The
           longest of these strings needs the full width between the inset and
@@ -64,7 +122,11 @@ export function OnboardingLoginCard({
           to give and wraps on the rounding. Matching the width the design
           actually renders is the closer reading of it than matching a nominal
           size in a font it was not drawn in. */}
-      <div className="flex items-center justify-between pl-2">
+      <motion.div
+        className="flex items-center justify-between pl-2"
+        initial={{ opacity: 0, y: CARD_REVEAL_TRAVEL }}
+        animate={{ opacity: 1, y: 0, transition: CARD_REVEAL_INSTRUCTION }}
+      >
         <span className="text-xs text-muted-foreground">{instruction}</span>
         {onCancel && (
           <Button
@@ -77,8 +139,16 @@ export function OnboardingLoginCard({
             Cancel
           </Button>
         )}
-      </div>
-      {children}
+      </motion.div>
+      {/* A beat behind the sentence above it, so the card reads as one thing
+          unfolding and the instruction has been read by the time the field is
+          ready to be pasted into. */}
+      <motion.div
+        initial={{ opacity: 0, y: CARD_REVEAL_TRAVEL }}
+        animate={{ opacity: 1, y: 0, transition: CARD_REVEAL_FIELD }}
+      >
+        {children}
+      </motion.div>
     </div>
   );
 }
@@ -129,7 +199,7 @@ function LoginCardCopyButton({
       size="icon-xs"
       aria-label={label}
       title={label}
-      className="size-6 shrink-0 text-muted-foreground hover:text-foreground [&_svg]:size-4"
+      className="size-6 shrink-0 text-muted-foreground hover:text-foreground [&_svg]:size-3"
       onClick={async () => {
         try {
           await copyTextToClipboard(value);
@@ -148,61 +218,77 @@ function LoginCardCopyButton({
 }
 
 /**
- * The authentication link.
- *
- * Underlined and an actual anchor, because the instruction above it says to
- * open it — the copy button beside it is for the case where the login is being
- * finished in another browser, not the primary path. It truncates rather than
- * wrapping: these URLs carry a query string long enough to push the row to
- * three lines, and none of that tail tells the reader anything.
- */
-export function OnboardingLoginUrlRow({ url }: { url: string }) {
-  return (
-    <LoginCardRow>
-      <a
-        href={url}
-        target="_blank"
-        rel="noreferrer noopener"
-        className="min-w-0 flex-1 truncate font-mono text-xs text-foreground underline underline-offset-4"
-      >
-        {url}
-      </a>
-      <LoginCardCopyButton value={url} label="Copy the authentication link" />
-    </LoginCardRow>
-  );
-}
-
-/**
  * The one-time code, for the login that hands one out.
  *
- * The word beside the button rather than only the mark on it: this code is
- * carried to another device, so the confirmation has to survive being read from
- * a step away.
+ * `autoCopy` puts it on the clipboard as the card lands and says so. The code
+ * is going to be pasted somewhere else — that is its whole purpose — so making
+ * the customer press a button first is a step that exists only to be completed.
+ *
+ * The claim is made only when the write actually succeeded. A clipboard write
+ * needs transient user activation, and this one happens a beat after the press
+ * that started the sign-in, so a browser may well refuse it; "Copied!" over an
+ * empty clipboard would send someone to paste nothing. The button beside it is
+ * the path that always works, and is why the failure is quiet rather than an
+ * error.
  */
-export function OnboardingLoginCodeRow({ code }: { code: string }) {
+export function OnboardingLoginCodeRow({
+  code,
+  autoCopy = false,
+}: {
+  code: string;
+  autoCopy?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoCopiedRef = useRef(false);
 
   useEffect(() => () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
   }, []);
 
+  useEffect(() => {
+    if (!autoCopy || autoCopiedRef.current) return;
+    autoCopiedRef.current = true;
+    void copyTextToClipboard(code)
+      .then(() => {
+        // Written now, said later: the clipboard should be ready the instant
+        // the code is readable, but the claim waits for the rest of the card to
+        // stop moving — see COPIED_REVEAL_DELAY_MS.
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setCopied(true), COPIED_REVEAL_DELAY_MS);
+      })
+      .catch(() => {
+        // Refused, most likely for want of user activation. The button stays.
+      });
+  }, [autoCopy, code]);
+
   return (
-    <LoginCardRow>
-      <span className="min-w-0 flex-1 truncate font-mono text-sm tracking-wide text-foreground">
-        {code}
-      </span>
-      {copied && <span className="shrink-0 text-xs text-muted-foreground">copied!</span>}
+    <div className="flex h-(--sz-44px) items-center gap-2 rounded-lg bg-muted px-4">
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{code}</span>
+      <AnimatePresence initial={false}>
+        {copied && (
+          <motion.span
+            key="copied"
+            className="shrink-0 text-sm text-muted-foreground/40"
+            initial={{ opacity: 0, y: COPIED_REVEAL_TRAVEL }}
+            animate={{ opacity: 1, y: 0, transition: COPIED_REVEAL }}
+            exit={{ opacity: 0, transition: COPIED_REVEAL }}
+          >
+            Copied!
+          </motion.span>
+        )}
+      </AnimatePresence>
       <LoginCardCopyButton
         value={code}
         label="Copy the code"
         onCopied={() => {
-          setCopied(true);
+          // No wait here. A press is a direct action, and delaying its
+          // acknowledgement would read as the button having missed.
           if (timeoutRef.current) clearTimeout(timeoutRef.current);
-          timeoutRef.current = setTimeout(() => setCopied(false), 1500);
+          setCopied(true);
         }}
       />
-    </LoginCardRow>
+    </div>
   );
 }
 
@@ -220,39 +306,63 @@ export const onboardingCardInputClass =
   "outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)";
 
 /**
- * The field the browser code is pasted back into.
+ * The card's single-line field, whatever the card is asking for.
  *
- * No Submit button beside it: the code arrives in one piece, off the clipboard,
- * so the paste is the answer and a press after it confirms nothing the paste
- * did not already say.
+ * Three cards use it and they want different things: a browser code pasted
+ * back, and an API key typed or pasted in. Same row, same measurements — what
+ * changes is the label, the placeholder, and whether the value should be masked.
  *
- * `onPaste` is what the caller submits on, and it is separate from `onChange`
- * on purpose. There is no shape that says "this code is complete" —
- * `isValidBrowserCode` accepts any run of printable ASCII from one character up,
- * deliberately, because the provider's exact format is not pinned down — so a
- * submit driven by the value alone fires on the first keystroke of anyone who
- * types instead of pasting. Enter stays for them.
+ * No Submit button beside it in the code case: the code arrives in one piece,
+ * off the clipboard, so the paste is the answer and a press after it confirms
+ * nothing the paste did not already say.
+ *
+ * `onPaste` is what that case submits on, and it is separate from `onChange` on
+ * purpose. There is no shape that says "this code is complete" —
+ * `isValidBrowserCode` accepts any run of printable ASCII from one character
+ * up, deliberately, because the provider's exact format is not pinned down — so
+ * a submit driven by the value alone fires on the first keystroke of anyone who
+ * types instead of pasting. Enter stays for them. A key field simply omits it:
+ * a key is not submitted by arriving, it is submitted by the step's own button.
  */
-export function OnboardingLoginCodeInput({
+export function OnboardingCardField({
   value,
   onChange,
   onSubmit,
   onPaste,
   disabled,
+  label = "Authorization code",
+  placeholder = "Paste authorization code here",
+  masked = false,
+  autoFocus = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
   onPaste?: () => void;
   disabled?: boolean;
+  label?: string;
+  placeholder?: string;
+  /** A provider key is a credential; a one-time browser code is not. */
+  masked?: boolean;
+  /**
+   * Take focus when the card opens.
+   *
+   * For the key card, where the field is the only thing being asked for and the
+   * card only opens because it was asked for. The code cards do not: their
+   * customer is on their way to another tab, and a caret waiting behind them is
+   * not where the next action is.
+   */
+  autoFocus?: boolean;
 }) {
   return (
     <input
-      aria-label="Authorization code"
-      type="text"
+      // eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
+      autoFocus={autoFocus}
+      aria-label={label}
+      type={masked ? "password" : "text"}
       autoComplete="off"
       spellCheck={false}
-      placeholder="Paste authorization code here"
+      placeholder={placeholder}
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
