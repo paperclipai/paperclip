@@ -66,6 +66,7 @@ export {
 } from "./log-redaction.js";
 export {
   REDACTED_COMMAND_TEXT_VALUE,
+  maybeContainsSecretText,
   redactCommandText,
   redactDiagnosticText,
 } from "./command-redaction.js";

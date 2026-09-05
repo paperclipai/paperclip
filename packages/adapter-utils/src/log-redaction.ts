@@ -1,3 +1,4 @@
+import { redactCommandText } from "./command-redaction.js";
 import type { TranscriptEntry } from "./types.js";
 
 export const REDACTED_HOME_PATH_USER = "*";
@@ -42,12 +43,12 @@ export function redactHomePathUserSegments(text: string, opts?: HomePathRedactio
   return result;
 }
 
-export function redactHomePathUserSegmentsInValue<T>(value: T, opts?: HomePathRedactionOptions): T {
+function mapStrings<T>(value: T, fn: (text: string) => string): T {
   if (typeof value === "string") {
-    return redactHomePathUserSegments(value, opts) as T;
+    return fn(value) as T;
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => redactHomePathUserSegmentsInValue(entry, opts)) as T;
+    return value.map((entry) => mapStrings(entry, fn)) as T;
   }
   if (!isPlainObject(value)) {
     return value;
@@ -55,9 +56,24 @@ export function redactHomePathUserSegmentsInValue<T>(value: T, opts?: HomePathRe
 
   const redacted: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    redacted[key] = redactHomePathUserSegmentsInValue(entry, opts);
+    redacted[key] = mapStrings(entry, fn);
   }
   return redacted as T;
+}
+
+export function redactHomePathUserSegmentsInValue<T>(value: T, opts?: HomePathRedactionOptions): T {
+  return mapStrings(value, (text) => redactHomePathUserSegments(text, opts));
+}
+
+// Tool output is the one surface that never sees `redactCommandText`, which is
+// how a `git remote -v` credential reached a run log verbatim. Secret scrubbing
+// is unconditional here: `opts.enabled` only governs home-path masking.
+function redactEntryText(text: string, opts?: HomePathRedactionOptions) {
+  return redactCommandText(redactHomePathUserSegments(text, opts));
+}
+
+function redactEntryValue<T>(value: T, opts?: HomePathRedactionOptions): T {
+  return mapStrings(value, (text) => redactEntryText(text, opts));
 }
 
 export function redactTranscriptEntryPaths(entry: TranscriptEntry, opts?: HomePathRedactionOptions): TranscriptEntry {
@@ -69,15 +85,15 @@ export function redactTranscriptEntryPaths(entry: TranscriptEntry, opts?: HomePa
     case "system":
     case "stdout":
     case "diff":
-      return { ...entry, text: redactHomePathUserSegments(entry.text, opts) };
+      return { ...entry, text: redactEntryText(entry.text, opts) };
     case "tool_call":
       return {
         ...entry,
         name: redactHomePathUserSegments(entry.name, opts),
-        input: redactHomePathUserSegmentsInValue(entry.input, opts),
+        input: redactEntryValue(entry.input, opts),
       };
     case "tool_result":
-      return { ...entry, content: redactHomePathUserSegments(entry.content, opts) };
+      return { ...entry, content: redactEntryText(entry.content, opts) };
     case "init":
       return {
         ...entry,
@@ -87,9 +103,9 @@ export function redactTranscriptEntryPaths(entry: TranscriptEntry, opts?: HomePa
     case "result":
       return {
         ...entry,
-        text: redactHomePathUserSegments(entry.text, opts),
+        text: redactEntryText(entry.text, opts),
         subtype: redactHomePathUserSegments(entry.subtype, opts),
-        errors: entry.errors.map((error) => redactHomePathUserSegments(error, opts)),
+        errors: entry.errors.map((error) => redactEntryText(error, opts)),
       };
     default:
       return entry;

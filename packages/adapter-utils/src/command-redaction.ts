@@ -19,7 +19,11 @@ const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
 const COMMAND_AUTHORIZATION_BEARER_RE =
   /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
-const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const COMMAND_GITHUB_TOKEN_RE =
+  /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g;
+// Any credential embedded in a remote URL (`https://user:secret@host`), whatever
+// the provider or token format. This is how git stores a push credential.
+const COMMAND_URL_USERINFO_RE = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:)[^\s/@]+@/gi;
 const COMMAND_JWT_RE =
   /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
 const COMMAND_SECRET_HINTS = [
@@ -41,9 +45,12 @@ const COMMAND_SECRET_HINTS = [
   "ghu_",
   "ghs_",
   "ghr_",
+  "github_pat_",
+  // Reaches the URL-userinfo scrub for hosts with no dot, e.g. `http://u:p@localhost/`.
+  "://",
 ] as const;
 
-function maybeContainsSecretText(command: string) {
+export function maybeContainsSecretText(command: string) {
   const lower = command.toLowerCase();
   return (
     COMMAND_SECRET_HINTS.some((hint) => lower.includes(hint)) ||
@@ -74,6 +81,7 @@ export function redactCommandText(
           : `${prefix}${redactedValue}`;
       },
     )
+    .replace(COMMAND_URL_USERINFO_RE, `$1${redactedValue}@`)
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
     .replace(COMMAND_JWT_RE, redactedValue);

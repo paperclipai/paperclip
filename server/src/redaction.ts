@@ -1,4 +1,4 @@
-import { redactCommandText } from "@paperclipai/adapter-utils";
+import { maybeContainsSecretText, redactCommandText } from "@paperclipai/adapter-utils";
 
 const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
 
@@ -347,35 +347,7 @@ const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
   String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
   "gi",
 );
-const SECRET_TEXT_HINTS = [
-  "api",
-  "key",
-  "token",
-  "auth",
-  "bearer",
-  "secret",
-  "pass",
-  "credential",
-  "jwt",
-  "private",
-  "cookie",
-  "connectionstring",
-  "sk-",
-  "ghp_",
-  "gho_",
-  "ghu_",
-  "ghs_",
-  "ghr_",
-] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
-
-function maybeContainsSecretText(input: string) {
-  const lower = input.toLowerCase();
-  return (
-    SECRET_TEXT_HINTS.some((hint) => lower.includes(hint)) ||
-    input.includes(".")
-  );
-}
 
 function inlineWhitespaceEnd(input: string, start: number): number {
   let index = start;

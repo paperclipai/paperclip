@@ -40,4 +40,14 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("paperclip-json-secret");
     expect(compacted).not.toContain("paperclip-flag-secret");
   });
+
+  it("redacts a fine-grained GitHub PAT embedded in a git remote line (FEA-476)", () => {
+    const token = `github_pat_${"1".repeat(22)}_${"a".repeat(59)}`;
+    const chunk = `origin\thttps://x-access-token:${token}@github.com/acme/widgets.git (fetch)\n`;
+
+    const compacted = compactRunLogChunk(chunk);
+
+    expect(compacted).toContain("***REDACTED***");
+    expect(compacted).not.toContain(token);
+  });
 });

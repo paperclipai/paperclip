@@ -341,6 +341,7 @@ describe("redaction", () => {
     const jwt =
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
     const githubToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";
+    const fineGrainedToken = `github_pat_${"1".repeat(22)}_${"a".repeat(59)}`;
     const input = [
       "Authorization: Bearer live-bearer-token-value",
       `payload {"apiKey":"json-secret-value"}`,
@@ -349,6 +350,8 @@ describe("redaction", () => {
       `export PAPERCLIP_API_KEY='paperclip-shell-secret'`,
       `GITHUB_TOKEN=${githubToken}`,
       `session=${jwt}`,
+      // FEA-476: a `git remote -v` line with an embedded fine-grained PAT.
+      `origin\thttps://x-access-token:${fineGrainedToken}@github.com/acme/widgets.git (fetch)`,
     ].join("\n");
 
     const result = redactSensitiveText(input);
@@ -360,6 +363,7 @@ describe("redaction", () => {
     expect(result).not.toContain("escaped-json-secret");
     expect(result).not.toContain("paperclip-shell-secret");
     expect(result).not.toContain(githubToken);
+    expect(result).not.toContain(fineGrainedToken);
     expect(result).not.toContain(jwt);
   });
 
