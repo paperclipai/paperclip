@@ -4011,12 +4011,21 @@ export function issueRoutes(
   async function denyIssueWrite(
     req: Request,
     res: Response,
-    issue: { identifier?: string | null; assigneeAgentId: string | null },
+    issue: { id: string; identifier?: string | null; assigneeAgentId: string | null },
     code: IssueWriteDenialCode,
     extraDetails: Record<string, unknown> = {},
   ) {
     const labels = await issueWriteDenialLabels(req, issue);
     const { status, body } = issueWriteDenialResponse(code, labels);
+    logger.warn(
+      {
+        code,
+        issueId: issue.id,
+        actorAgentId: req.actor.type === "agent" ? req.actor.agentId ?? null : null,
+        runId: req.actor.type === "agent" ? req.actor.runId ?? null : null,
+      },
+      "issue write denied",
+    );
     res.status(status).json({
       error: body.error,
       details: { ...body.details, ...extraDetails },
