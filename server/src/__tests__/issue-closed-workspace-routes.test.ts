@@ -17,6 +17,8 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
   checkout: vi.fn(),
+  release: vi.fn(),
+  restoreCheckoutSnapshot: vi.fn(),
   addComment: vi.fn(),
 }));
 
@@ -252,7 +254,6 @@ describe.sequential("closed isolated workspace issue routes", () => {
       issue: { id: issueId, companyId: "company-1", projectId: null },
       actor: expect.objectContaining({ actorType: "user" }),
     });
-    // The closed-workspace dead end is gone: the comment is accepted.
     expect(res.status).toBe(201);
   });
 
@@ -264,7 +265,6 @@ describe.sequential("closed isolated workspace issue routes", () => {
       .send({ comment: "hello" });
 
     expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).toHaveBeenCalledTimes(1);
-    // The closed-workspace dead end is gone: the update is accepted.
     expect(res.status).toBe(200);
   });
 
@@ -279,8 +279,73 @@ describe.sequential("closed isolated workspace issue routes", () => {
       });
 
     expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).toHaveBeenCalledTimes(1);
-    // The closed-workspace dead end is gone: the checkout is accepted.
     expect(res.status).toBe(200);
+  });
+
+  it("skips closed-workspace reopen for terminal inert checkout and returns the unchanged row", async () => {
+    const terminalIssue = { ...makeIssue(), status: "done" as const };
+    mockIssueService.getById.mockResolvedValue(terminalIssue);
+    mockIssueService.checkout.mockResolvedValue(terminalIssue);
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "done"],
+      });
+
+    expect(mockExecutionWorkspaceService.getById).not.toHaveBeenCalled();
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).not.toHaveBeenCalled();
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      issueId,
+      agentId,
+      ["todo", "backlog", "blocked", "done"],
+      null,
+      false,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      status: "done",
+      executionWorkspaceId: closedWorkspaceId,
+    });
+  });
+
+  it("skips closed-workspace reopen when the issue becomes terminal after checkout returns", async () => {
+    const source = makeIssue();
+    const checkedOut = {
+      ...source,
+      status: "in_progress" as const,
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+      startedAt: new Date("2026-08-20T09:00:00.000Z"),
+    };
+    const terminalized = { ...checkedOut, status: "cancelled" as const };
+    mockIssueService.getById
+      .mockResolvedValueOnce(source)
+      .mockResolvedValueOnce(terminalized);
+    mockIssueService.checkout.mockResolvedValue(checkedOut);
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(mockExecutionWorkspaceService.getById).not.toHaveBeenCalled();
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      status: "cancelled",
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+    });
   });
 
   it("returns 409 and blocks the comment when the workspace cannot be reopened", async () => {
@@ -298,7 +363,30 @@ describe.sequential("closed isolated workspace issue routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("returns 503 and blocks the checkout when the rebuild fails", async () => {
+  it("returns 503 and restores pre-checkout snapshot when rebuild fails after a mutating checkout", async () => {
+    const priorStartedAt = new Date("2026-08-20T09:00:00.000Z");
+    const blockedSource = {
+      ...makeIssue(),
+      status: "blocked" as const,
+      assigneeAgentId: agentId,
+      assigneeUserId: "user-prior",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      startedAt: priorStartedAt,
+    };
+    const checkedOut = {
+      ...blockedSource,
+      status: "in_progress" as const,
+      assigneeUserId: null,
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+      startedAt: new Date("2026-08-20T12:00:00.000Z"),
+    };
+    mockIssueService.getById.mockResolvedValue(blockedSource);
+    mockIssueService.checkout.mockResolvedValue(checkedOut);
+    mockIssueService.restoreCheckoutSnapshot.mockResolvedValue(blockedSource);
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
       code: "rebuild_failed",
@@ -312,14 +400,107 @@ describe.sequential("closed isolated workspace issue routes", () => {
         expectedStatuses: ["todo", "backlog", "blocked"],
       });
 
+    expect(mockIssueService.checkout).toHaveBeenCalled();
+    expect(mockIssueService.release).not.toHaveBeenCalled();
+    expect(mockIssueService.restoreCheckoutSnapshot).toHaveBeenCalledWith(
+      issueId,
+      {
+        status: "blocked",
+        assigneeAgentId: agentId,
+        assigneeUserId: "user-prior",
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        startedAt: priorStartedAt,
+      },
+      agentId,
+      null,
+      {
+        checkoutRunId: "run-after-checkout",
+        executionRunId: "run-after-checkout",
+        status: "in_progress",
+      },
+    );
     expect(res.status).toBe(503);
-    expect(mockIssueService.checkout).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 and restores pre-checkout snapshot when reopen is not possible after a mutating checkout", async () => {
+    const blockedSource = {
+      ...makeIssue(),
+      status: "blocked" as const,
+      assigneeAgentId: agentId,
+    };
+    const checkedOut = {
+      ...blockedSource,
+      status: "in_progress" as const,
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+    };
+    mockIssueService.getById.mockResolvedValue(blockedSource);
+    mockIssueService.checkout.mockResolvedValue(checkedOut);
+    mockIssueService.restoreCheckoutSnapshot.mockResolvedValue(blockedSource);
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: false,
+      code: "not_reopenable",
+      message: "Execution workspace is not reopenable",
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(mockIssueService.release).not.toHaveBeenCalled();
+    expect(mockIssueService.restoreCheckoutSnapshot).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        assigneeAgentId: agentId,
+        checkoutRunId: null,
+        executionRunId: null,
+      }),
+      agentId,
+      null,
+      {
+        checkoutRunId: "run-after-checkout",
+        executionRunId: "run-after-checkout",
+        status: "in_progress",
+      },
+    );
+    expect(res.status).toBe(409);
+  });
+
+  it("does not restore ownership when reopen fails but checkout did not mutate the row", async () => {
+    const alreadyOwned = {
+      ...makeIssue(),
+      status: "in_progress" as const,
+      checkoutRunId: "existing-run",
+      executionRunId: "existing-run",
+    };
+    mockIssueService.getById.mockResolvedValue(alreadyOwned);
+    mockIssueService.checkout.mockResolvedValue(alreadyOwned);
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: false,
+      code: "rebuild_failed",
+      message: "Failed to rebuild the execution workspace",
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_progress"],
+      });
+
+    expect(mockIssueService.release).not.toHaveBeenCalled();
+    expect(mockIssueService.restoreCheckoutSnapshot).not.toHaveBeenCalled();
+    expect(res.status).toBe(503);
   });
 
   it("does not reopen the workspace when a checkout fails the run-id gate", async () => {
-    // An agent checkout without a run id is rejected before the reopen runs. The
-    // reopen must not rebuild and republish the workspace, or the still-terminal
-    // issue keeps a leaked active workspace that the reaper skips.
     const agentActorWithoutRunId = {
       type: "agent",
       agentId,
@@ -343,9 +524,6 @@ describe.sequential("closed isolated workspace issue routes", () => {
   });
 
   it("clears the reopen-pending flag when the comment update returns null after a reopen", async () => {
-    // The workspace reopens, but the issue update then returns null. The issue
-    // stays terminal, so the guard must clear the reopen-pending flag. Otherwise
-    // the terminal reaper and the archive route skip the rebuilt worktree forever.
     mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
     mockIssueService.update.mockResolvedValue(null);
 
@@ -367,8 +545,8 @@ describe.sequential("closed isolated workspace issue routes", () => {
     }, { timeout: REOPEN_PENDING_WAIT_TIMEOUT_MS });
   });
 
-  it("clears the reopen-pending flag when the checkout throws after a reopen", async () => {
-    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
+  it("does not reopen when checkout throws before the workspace step", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "todo" });
     mockIssueService.checkout.mockRejectedValue(new Error("checkout failed"));
 
     const res = await request(createApp())
@@ -379,24 +557,51 @@ describe.sequential("closed isolated workspace issue routes", () => {
       });
 
     expect(res.status).toBe(500);
-    await vi.waitFor(() => {
-      expect(
-        mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen,
-      ).toHaveBeenCalledWith(
-        expect.objectContaining({
-          workspaceId: closedWorkspaceId,
-          issue: expect.objectContaining({ id: issueId }),
-          expectedGeneration: 4,
-        }),
-      );
-    }, { timeout: REOPEN_PENDING_WAIT_TIMEOUT_MS });
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).not.toHaveBeenCalled();
+    expect(
+      mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen,
+    ).not.toHaveBeenCalled();
   });
 
   it("does not clear the reopen-pending flag when the checkout resumes the issue", async () => {
-    // The checkout moves the issue out of the terminal state, so the reaper clears
-    // the flag on its next cycle. The route must not clear it here.
-    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
-    mockIssueService.checkout.mockResolvedValue({ ...makeIssue(), status: "in_progress" });
+    const resumed = { ...makeIssue(), status: "in_progress" as const };
+    mockIssueService.getById
+      .mockResolvedValueOnce({ ...makeIssue(), status: "done" })
+      .mockResolvedValue(resumed);
+    mockIssueService.checkout.mockResolvedValue(resumed);
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "done"],
+        resume: true,
+      });
+
+    expect(res.status).toBe(200);
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).toHaveBeenCalledTimes(1);
+    await assertNoBackgroundClearWithinRetryWindow();
+  });
+
+  it("clears the reopen-pending flag when status becomes terminal after reopen but before response settle", async () => {
+    const source = makeIssue();
+    const checkedOut = {
+      ...source,
+      status: "in_progress" as const,
+      checkoutRunId: "run-after-checkout",
+      executionRunId: "run-after-checkout",
+    };
+    const terminalized = { ...checkedOut, status: "cancelled" as const };
+    mockIssueService.getById
+      .mockResolvedValueOnce(source)
+      .mockResolvedValueOnce(checkedOut)
+      .mockResolvedValueOnce(checkedOut)
+      .mockResolvedValue(terminalized);
+    mockIssueService.checkout.mockResolvedValue(checkedOut);
 
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/checkout`)
@@ -406,23 +611,30 @@ describe.sequential("closed isolated workspace issue routes", () => {
       });
 
     expect(res.status).toBe(200);
-    await assertNoBackgroundClearWithinRetryWindow();
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(
+        mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: closedWorkspaceId,
+          expectedGeneration: 4,
+        }),
+      );
+    }, { timeout: REOPEN_PENDING_WAIT_TIMEOUT_MS });
   });
 
   it("does not clear the reopen-pending flag when a concurrent request already reopened the workspace", async () => {
-    // A concurrent request reopened the workspace first, so this request receives
-    // reopened: false and never set the flag. Even though the checkout leaves the
-    // issue terminal, this request must not clear the flag that the other request
-    // owns. Otherwise the reaper or the archive route can destroy the rebuilt
-    // worktree while the other request still uses it.
-    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "todo" });
+    mockIssueService.checkout.mockResolvedValue({ ...makeIssue(), status: "in_progress" });
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: true,
       reopened: false,
       workspace: { ...makeClosedWorkspace(), status: "active", closedAt: null },
       generation: 4,
     });
-    mockIssueService.checkout.mockResolvedValue(null);
 
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/checkout`)
@@ -436,9 +648,6 @@ describe.sequential("closed isolated workspace issue routes", () => {
   });
 
   it("retries the reopen-pending clear when the first attempt fails transiently", async () => {
-    // The workspace reopens, but the comment update returns null, so the issue
-    // stays terminal and the guard must clear the flag. A transient failure of the
-    // first clear must not strand the flag; the guard retries until it succeeds.
     mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
     mockIssueService.update.mockResolvedValue(null);
     mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen
