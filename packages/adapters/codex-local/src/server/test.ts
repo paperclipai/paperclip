@@ -24,7 +24,17 @@ import { parseCodexJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
 import { buildCodexExecArgs } from "./codex-args.js";
-import { prepareManagedCodexHome } from "./codex-home.js";
+import {
+  isManagedCodexHomePath,
+  prepareManagedCodexHome,
+  resolveSharedCodexHomeDir,
+  seedManagedCodexHome,
+} from "./codex-home.js";
+import {
+  isCodexAuthCacheEnabled,
+  resolveCodexAuthCacheEntryPath,
+  selectVendCredential,
+} from "./codex-auth-cache.js";
 import { resolveCodexExecutionEngineForRun, testCodexAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
@@ -94,23 +104,58 @@ async function prepareCodexHelloProbe(input: {
   };
 
   if (input.targetIsRemote && !input.probeApiKey) {
-    const managedHome = await prepareManagedCodexHome(process.env, async () => {}, input.companyId, {
-      apiKey: null,
-    });
+    // Prepare the exact home a real run would use, mirroring execute.ts: vend
+    // the shared credential's freshest same-identity cached copy, then seed the
+    // effective home — the company default when no CODEX_HOME is configured, a
+    // Paperclip-managed override (the per-agent home) seeded in place — and
+    // stage that home's credentials. A genuine external override manages its
+    // own auth: its bytes are staged as-is and it is never seeded or mutated.
+    // Without this mirror the probe exercises a different credential than the
+    // run, and the Test and real runs can disagree in both directions.
+    const configuredCodexHome = isNonEmpty(input.env.CODEX_HOME)
+      ? path.resolve(input.env.CODEX_HOME.trim())
+      : null;
+    const configuredHomeIsManaged =
+      configuredCodexHome != null &&
+      isManagedCodexHomePath(process.env, input.companyId, configuredCodexHome);
+    if (isCodexAuthCacheEnabled(process.env)) {
+      // Identity-anchored cache vend, exactly as execute runs it before the
+      // seeding below. Best-effort: a vend failure never blocks the probe, and
+      // the probe then stages the shared credential as-is.
+      const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+      await selectVendCredential(
+        sharedHomeAuthPath,
+        (accountId) => resolveCodexAuthCacheEntryPath(process.env, accountId, input.companyId),
+        async () => {},
+      ).catch(() => undefined);
+    }
+    let effectiveHome: string;
+    if (configuredCodexHome == null) {
+      effectiveHome = await prepareManagedCodexHome(process.env, async () => {}, input.companyId, {
+        apiKey: null,
+      });
+    } else {
+      if (configuredHomeIsManaged) {
+        await seedManagedCodexHome(configuredCodexHome, process.env, async () => {}, {
+          apiKey: null,
+        });
+      }
+      effectiveHome = configuredCodexHome;
+    }
 
     // Upload only the credential/config files the login probe needs, not the
-    // entire managed CODEX_HOME. A real managed home accumulates hundreds of MB
-    // of session/state history (`sessions/`, `state_*.sqlite`, …); tarring and
-    // streaming all of it into the sandbox made the environment Test probe take
-    // many minutes and look like it hung. The hello probe only needs auth.
+    // entire effective CODEX_HOME. A real managed home accumulates hundreds of
+    // MB of session/state history (`sessions/`, `state_*.sqlite`, …); tarring
+    // and streaming all of it into the sandbox made the environment Test probe
+    // take many minutes and look like it hung. The hello probe only needs auth.
     probeHomeLocalDir = await fs.mkdtemp(
       path.join(os.tmpdir(), `paperclip-codex-probe-home-${input.runId}-`),
     );
     let seededAuth = false;
     for (const file of ["auth.json", "config.toml"]) {
-      // `fs.readFile` follows the managed home's `auth.json` symlink into the
-      // host's `~/.codex`, so we copy the resolved bytes as a plain file.
-      const contents = await fs.readFile(path.join(managedHome, file)).catch(() => null);
+      // `fs.readFile` follows the home's `auth.json` symlink into the host's
+      // `~/.codex`, so we copy the resolved bytes as a plain file.
+      const contents = await fs.readFile(path.join(effectiveHome, file)).catch(() => null);
       if (contents) {
         await fs.writeFile(path.join(probeHomeLocalDir, file), contents);
         if (file === "auth.json") seededAuth = true;
