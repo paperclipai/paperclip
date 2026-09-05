@@ -1293,10 +1293,13 @@ function OnboardingWizardInner({
       return () => clearTimeout(t);
     }
     if (connectPhase === "unwindRow") {
-      const t = setTimeout(() => {
-        setSourcePicked(false);
-        setConnectPhase("idle");
-      }, beatDelay(SOURCE_COLLAPSE_MS));
+      // Let the selection go as the row starts back, not once it has arrived.
+      // Held to the end, the tile changed colour with nothing else moving —
+      // a cut rather than a release. Released here it fades across the travel
+      // and settles into its default instead of snapping to it. The tiles take
+      // the slower duration while `settling`, so the fade lasts the journey.
+      setSourcePicked(false);
+      const t = setTimeout(() => setConnectPhase("idle"), beatDelay(SOURCE_COLLAPSE_MS));
       return () => clearTimeout(t);
     }
     return;
@@ -1466,15 +1469,26 @@ function OnboardingWizardInner({
     setAdapterEnvError(null);
   }, [step, adapterType, model, command, args, url, credentialMode, apiKey]);
 
-  // A login belongs to one source in one credential mode. Switching either
-  // means the card on screen is answering a question nobody asked any more, so
-  // the step goes back to offering Connect. The panel is keyed on the adapter
-  // as well, so it unmounts on the same change and releases its server session
-  // on the way out.
+  /**
+   * Leaving the step puts the row back to a question.
+   *
+   * Deliberately keyed on the step and nothing else. It used to reset on
+   * `adapterType` too, which made picking a source take two clicks: the first
+   * set the phase *and* the adapter, this effect saw the adapter change and put
+   * the phase straight back to idle, and only a second click — which changed no
+   * adapter, so woke no effect — was allowed to stand.
+   *
+   * Nothing else needs to reset it. A source can only change by being picked,
+   * and picking sets the phase itself; the credential mode can only change
+   * before the sequence starts, because its control is inert once the row has
+   * collapsed.
+   */
   useEffect(() => {
+    if (step === 4) return;
     setConnectPhase("idle");
     setConnectAuthUrl(null);
-  }, [adapterType, credentialMode]);
+    setSourcePicked(false);
+  }, [step]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
   const hasAnthropicApiKeyOverrideCheck =

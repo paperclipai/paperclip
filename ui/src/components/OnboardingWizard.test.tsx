@@ -2217,6 +2217,31 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("starts the sign-in on the first press, even when it changes the adapter", async () => {
+      // The regression this is here for. Picking a source sets the phase *and*
+      // the adapter, and a reset keyed on the adapter then put the phase
+      // straight back — so the first press did nothing and only a second one,
+      // which changed no adapter and so woke no effect, was allowed to stand.
+      //
+      // It only showed when the chosen source differed from the one the draft
+      // carried: picking the adapter already in state is a no-op React bails
+      // out of, so every existing case here happened to miss it.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pickSource(/OpenAI/);
+
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+      expect(
+        document.body
+          .querySelector('[role="radiogroup"]')!
+          .className.includes("justify-center"),
+        "one press should have answered the row",
+      ).toBe(true);
+
+      await act(async () => root.unmount());
+    });
+
     it("starts the codex_local sign-in on Connect when the signal cannot decide", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
       const { root } = await openStep4({ adapterType: "codex_local" });
