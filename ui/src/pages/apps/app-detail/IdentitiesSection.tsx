@@ -31,8 +31,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Link } from "@/lib/router";
-import { brandChipBadge } from "@/lib/status-colors";
-import { cn } from "@/lib/utils";
+import { brandBanner, brandChipBadge } from "@/lib/status-colors";
+import { agentUrl, cn } from "@/lib/utils";
 import {
   audienceUserIds,
   grantAccountLabel,
@@ -99,7 +99,7 @@ export function IdentitiesSection({
   credentialPolicy: ToolConnectionCredentialPolicy;
   ownerUserId: string | null;
   connectedUser: { label: string; image: string | null } | null;
-  dedicatedAgent: { id: string; name: string } | null;
+  dedicatedAgent: { id: string; name: string; urlKey?: string | null } | null;
   grantsQuery: ConnectionGrantsResponse | undefined;
   loading: boolean;
   error: boolean;
@@ -181,7 +181,7 @@ export function IdentitiesSection({
           status={agentGrant?.status ?? null}
           detail={dedicatedAgent ? (
             <Link
-              to={`/agents/${dedicatedAgent.id}`}
+              to={agentUrl(dedicatedAgent)}
               className="transition-colors hover:text-foreground hover:underline"
             >
               Used only by {dedicatedAgent.name}
@@ -296,19 +296,32 @@ function GitHubConnectionSummary({
 }) {
   const github = grant.providerTenant?.github;
   if (!github) return null;
-  const allRepositories = github.repositorySelection === "all";
+  const repositoryWarning = github.repositorySelection === "all"
+    ? "All current and future repositories"
+    : github.repositorySelection === "mixed"
+      ? "Mixed access; scope varies by installation"
+      : null;
+  const repositorySummary = github.repositorySelection === "none"
+    ? "No repositories selected"
+    : `${github.repositoryCount} selected repositories`;
   return (
     <div className="divide-y divide-border border-y border-border">
       <div className="flex flex-wrap items-center justify-between gap-3 py-3">
         <div className="min-w-0">
           <div className="text-sm font-medium text-foreground">Repositories</div>
-          {allRepositories ? (
-            <div className="flex items-center gap-1.5 text-xs text-amber-800 dark:text-amber-200">
-              <TriangleAlert className="h-3.5 w-3.5 shrink-0" />
-              All current and future repositories
+          {repositoryWarning ? (
+            <div
+              role="note"
+              className={cn(
+                "mt-1 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+                brandBanner.warning,
+              )}
+            >
+              <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              {repositoryWarning}
             </div>
           ) : (
-            <div className="text-xs text-muted-foreground">{github.repositoryCount} selected repositories</div>
+            <div className="text-xs text-muted-foreground">{repositorySummary}</div>
           )}
         </div>
         {github.managementUrl ? (

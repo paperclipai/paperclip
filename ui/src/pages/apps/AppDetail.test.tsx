@@ -262,7 +262,10 @@ function personalGrant(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function dedicatedGitHubGrant(overrides: Record<string, unknown> = {}) {
+function dedicatedGitHubGrant(
+  overrides: Record<string, unknown> = {},
+  githubOverrides: Record<string, unknown> = {},
+) {
   return organizationGrant({
     id: "grant-agent",
     kind: "agent",
@@ -282,6 +285,7 @@ function dedicatedGitHubGrant(overrides: Record<string, unknown> = {}) {
         webhookHealth: "pending",
         lastWebhookAt: null,
         lastAccessRefreshAt: "2026-09-05T12:00:00.000Z",
+        ...githubOverrides,
       },
     },
     ...overrides,
@@ -1467,7 +1471,7 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
-    expect(container.querySelector('a[href="/agents/agent-1"]')?.textContent).toContain("Used only by Coder");
+    expect(container.querySelector('a[href="/agents/coder"]')?.textContent).toContain("Used only by Coder");
     expect(container.textContent).toContain("Repositories");
     expect(container.textContent).toContain("1 selected repositories");
     expect(container.querySelector(
@@ -1489,19 +1493,9 @@ describe("AppDetail", () => {
     }));
     listConnectionGrantsMock.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
-      grants: [dedicatedGitHubGrant({
-        providerTenant: {
-          github: {
-            userId: "123",
-            login: "dottabot",
-            installationCount: 1,
-            repositoryCount: 0,
-            repositorySelection: "all",
-            installationIds: ["456"],
-            installationOwnerLogins: ["paperclipai"],
-            managementUrl: "https://github.com/settings/installations/456",
-          },
-        },
+      grants: [dedicatedGitHubGrant({}, {
+        repositoryCount: 0,
+        repositorySelection: "all",
       })],
       capabilities: fullCapabilities(),
       currentUserId: "user-1",
@@ -1511,6 +1505,32 @@ describe("AppDetail", () => {
     await renderAppDetail();
 
     expect(container.textContent).toContain("All current and future repositories");
+    expect(container.textContent).not.toContain("selected repositories");
+  });
+
+  it.each([
+    ["mixed", "Mixed access; scope varies by installation"],
+    ["none", "No repositories selected"],
+  ] as const)("labels %s GitHub repository access explicitly", async (repositorySelection, expected) => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      credentialPolicy: "per_agent",
+      authKind: "oauth",
+    }));
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [dedicatedGitHubGrant({}, {
+        repositoryCount: 0,
+        repositorySelection,
+      })],
+      capabilities: fullCapabilities(),
+      currentUserId: "user-1",
+      members: [],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain(expected);
     expect(container.textContent).not.toContain("selected repositories");
   });
 
