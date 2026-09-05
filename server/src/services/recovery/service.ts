@@ -71,6 +71,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { evaluateStrandedEscalationGuard } from "./stranded-escalation-guard.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -3151,6 +3152,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
       });
+    }
+
+    // The sweep picked this issue some time ago. Re-read the current state so a
+    // stale snapshot cannot write `blocked` over a newer decision.
+    const escalationGuard = await evaluateStrandedEscalationGuard(db, { issue: input.issue });
+    if (escalationGuard.decision === "skip") {
+      logger.info(
+        { issueId: input.issue.id, identifier: input.issue.identifier, guard: escalationGuard },
+        "recovery: suppressed stranded escalation",
+      );
+      return null;
     }
 
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
