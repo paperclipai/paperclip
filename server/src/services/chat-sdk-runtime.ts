@@ -244,6 +244,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function microsoftTeamsTenantIds(raw: unknown): string[] {
+  if (!isRecord(raw)) return [];
+  const conversation = isRecord(raw.conversation) ? raw.conversation : null;
+  const channelData = isRecord(raw.channelData) ? raw.channelData : null;
+  const tenant =
+    channelData && isRecord(channelData.tenant) ? channelData.tenant : null;
+  return [conversation?.tenantId, tenant?.id]
+    .filter(
+      (value): value is string =>
+        typeof value === "string" && value.trim().length > 0,
+    )
+    .map((value) => value.trim());
+}
+
 /** Chat SDK-normalized inbound message plus Paperclip endpoint identity. */
 export interface ChatSdkMessageCallbackEvent {
   context?: MessageContext;
@@ -593,6 +607,7 @@ function registerCallbacks(
   provider: ChatSdkProvider,
   callbacks: ChatSdkRuntimeCallbacks,
   trackCallback: <T>(callback: () => Promise<T> | T) => Promise<T>,
+  acceptsProviderScope: (raw: unknown) => boolean,
 ): void {
   const messageCallback =
     (trigger: ChatSdkMessageTrigger) =>
@@ -601,6 +616,7 @@ function registerCallbacks(
       message: Message,
       context?: MessageContext,
     ): Promise<void> => {
+      if (!acceptsProviderScope(message.raw)) return;
       await trackCallback(
         async () =>
           await callbacks.onMessage({
@@ -625,6 +641,7 @@ function registerCallbacks(
 
   if (callbacks.onMessageUpdated) {
     chat.onMessageUpdated(async (thread, message, previousMessage) => {
+      if (!acceptsProviderScope(message.raw)) return;
       await trackCallback(
         async () =>
           await callbacks.onMessageUpdated?.({
@@ -639,6 +656,7 @@ function registerCallbacks(
   }
   if (callbacks.onMessageDeleted) {
     chat.onMessageDeleted(async (event) => {
+      if (!acceptsProviderScope(event.raw)) return;
       await trackCallback(
         async () =>
           await callbacks.onMessageDeleted?.({ endpointId, provider, event }),
@@ -647,6 +665,7 @@ function registerCallbacks(
   }
   if (callbacks.onReaction) {
     chat.onReaction(async (event) => {
+      if (!acceptsProviderScope(event.raw)) return;
       await trackCallback(
         async () =>
           await callbacks.onReaction?.({ endpointId, provider, event }),
@@ -655,31 +674,33 @@ function registerCallbacks(
   }
   if (callbacks.onAction) {
     chat.onAction(async (event) => {
+      if (!acceptsProviderScope(event.raw)) return;
       await trackCallback(
         async () => await callbacks.onAction?.({ endpointId, provider, event }),
       );
     });
   }
   if (callbacks.onOptionsLoad) {
-    chat.onOptionsLoad(
-      async (event) =>
-        await trackCallback(
-          async () =>
-            await callbacks.onOptionsLoad?.({ endpointId, provider, event }),
-        ),
-    );
+    chat.onOptionsLoad(async (event) => {
+      if (!acceptsProviderScope(event.raw)) return undefined;
+      return await trackCallback(
+        async () =>
+          await callbacks.onOptionsLoad?.({ endpointId, provider, event }),
+      );
+    });
   }
   if (callbacks.onModalSubmit) {
-    chat.onModalSubmit(
-      async (event) =>
-        await trackCallback(
-          async () =>
-            await callbacks.onModalSubmit?.({ endpointId, provider, event }),
-        ),
-    );
+    chat.onModalSubmit(async (event) => {
+      if (!acceptsProviderScope(event.raw)) return undefined;
+      return await trackCallback(
+        async () =>
+          await callbacks.onModalSubmit?.({ endpointId, provider, event }),
+      );
+    });
   }
   if (callbacks.onModalClose) {
     chat.onModalClose(async (event) => {
+      if (!acceptsProviderScope(event.raw)) return;
       await trackCallback(
         async () =>
           await callbacks.onModalClose?.({ endpointId, provider, event }),
@@ -688,6 +709,7 @@ function registerCallbacks(
   }
   if (callbacks.onSlashCommand) {
     chat.onSlashCommand(async (event) => {
+      if (!acceptsProviderScope(event.raw)) return;
       await trackCallback(
         async () =>
           await callbacks.onSlashCommand?.({ endpointId, provider, event }),
@@ -707,12 +729,17 @@ export class ChatSdkEndpointRuntime {
   private readonly webhookIngress =
     new AsyncLocalStorage<WebhookIngressAttempt>();
   private readonly webhookIngressTimeoutMs: number;
+  private readonly microsoftTeamsTenantId: string | null;
 
   constructor(options: CreateChatSdkEndpointRuntimeOptions) {
     this.companyId = options.companyId;
     this.endpointId = options.endpointId;
     this.provider = options.providerConfig.provider;
     this.sdkAdapterKey = adapterKey(this.provider);
+    this.microsoftTeamsTenantId =
+      options.providerConfig.provider === "microsoft-teams"
+        ? (options.providerConfig.credentials.appTenantId?.trim() ?? null)
+        : null;
     this.webhookIngressTimeoutMs = Math.max(
       1,
       Math.min(options.webhookIngressTimeoutMs ?? 2_500, 10_000),
@@ -764,6 +791,7 @@ export class ChatSdkEndpointRuntime {
           attempt.callbackPromises.delete(promise);
         }
       },
+      (raw) => this.acceptsProviderScope(raw),
     );
   }
 
@@ -834,9 +862,11 @@ export class ChatSdkEndpointRuntime {
         return retryableTimeout();
       while (attempt.callbackPromises.size > 0) {
         if (
-          !(await beforeDeadline(
-            Promise.allSettled([...attempt.callbackPromises]),
-          )).completed
+          !(
+            await beforeDeadline(
+              Promise.allSettled([...attempt.callbackPromises]),
+            )
+          ).completed
         )
           return retryableTimeout();
       }
@@ -875,6 +905,22 @@ export class ChatSdkEndpointRuntime {
 
   getProviderAdapter(): Adapter {
     return this.adapter;
+  }
+
+  /**
+   * Keep a dedicated Teams endpoint bound to the configured organization.
+   * Bot Framework authentication validates the service token, app audience,
+   * and service URL, but its service-issued JWT is not tenant-scoped. The
+   * verified activity body therefore remains the authoritative tenant claim.
+   */
+  acceptsProviderScope(raw: unknown): boolean {
+    if (this.provider !== "microsoft-teams" || !this.microsoftTeamsTenantId)
+      return true;
+    const tenantIds = microsoftTeamsTenantIds(raw);
+    return (
+      tenantIds.length > 0 &&
+      tenantIds.every((tenantId) => tenantId === this.microsoftTeamsTenantId)
+    );
   }
 
   /** Build the closed, credential-free locator stored with durable ingress. */

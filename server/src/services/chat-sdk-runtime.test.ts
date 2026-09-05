@@ -41,6 +41,7 @@ vi.mock("@chat-adapter/telegram", () => ({
 vi.mock("chat", () => ({
   Chat: class MockChat {
     readonly handlers: Record<string, (...args: unknown[]) => unknown> = {};
+    readonly handlerRegistrations: Record<string, number> = {};
     readonly webhooks: Record<string, (request: Request) => Promise<Response>> =
       {};
     initializeCalls = 0;
@@ -57,15 +58,23 @@ vi.mock("chat", () => ({
     }
 
     onDirectMessage(handler: (...args: unknown[]) => unknown) {
+      this.handlerRegistrations.direct =
+        (this.handlerRegistrations.direct ?? 0) + 1;
       this.handlers.direct = handler;
     }
     onNewMention(handler: (...args: unknown[]) => unknown) {
+      this.handlerRegistrations.mention =
+        (this.handlerRegistrations.mention ?? 0) + 1;
       this.handlers.mention = handler;
     }
     onSubscribedMessage(handler: (...args: unknown[]) => unknown) {
+      this.handlerRegistrations.subscribed =
+        (this.handlerRegistrations.subscribed ?? 0) + 1;
       this.handlers.subscribed = handler;
     }
     onNewMessage(_pattern: RegExp, handler: (...args: unknown[]) => unknown) {
+      this.handlerRegistrations.unaddressed =
+        (this.handlerRegistrations.unaddressed ?? 0) + 1;
       this.handlers.unaddressed = handler;
     }
     onMessageUpdated(handler: (...args: unknown[]) => unknown) {
@@ -298,10 +307,14 @@ describe("Chat SDK endpoint runtime", () => {
       callbacks: { onMessage },
     });
     const chat = captures.chats[0] as unknown as {
+      handlerRegistrations: Record<string, number>;
       handlers: Record<string, (...args: unknown[]) => Promise<void>>;
     };
     const thread = { id: "teams:thread" };
-    const message = { id: "message-1" };
+    const message = {
+      id: "message-1",
+      raw: { conversation: { tenantId: "teams-tenant" } },
+    };
     await chat.handlers.mention?.(thread, message, {
       totalSinceLastHandler: 1,
       skipped: [],
@@ -316,6 +329,91 @@ describe("Chat SDK endpoint runtime", () => {
         message,
       }),
     );
+    expect(chat.handlerRegistrations).toMatchObject({
+      direct: 1,
+      mention: 1,
+      subscribed: 1,
+      unaddressed: 1,
+    });
+  });
+
+  it("rejects every Teams callback outside the configured tenant", async () => {
+    const callbacks = {
+      onAction: vi.fn(),
+      onMessage: vi.fn(),
+      onMessageDeleted: vi.fn(),
+      onMessageUpdated: vi.fn(),
+      onModalClose: vi.fn(),
+      onModalSubmit: vi.fn(),
+      onOptionsLoad: vi.fn(),
+      onReaction: vi.fn(),
+      onSlashCommand: vi.fn(),
+    };
+    const runtime = createChatSdkEndpointRuntime({
+      ...baseOptions({
+        provider: "microsoft-teams",
+        userName: "Paperclip Agent",
+        credentials: {
+          appId: "app",
+          appPassword: "password",
+          appTenantId: "tenant-expected",
+          appType: "SingleTenant",
+        },
+      }),
+      callbacks,
+    });
+    const chat = captures.chats[0] as unknown as {
+      handlers: Record<string, (...args: unknown[]) => Promise<unknown>>;
+    };
+    const thread = { id: "teams:thread" };
+    const foreign = {
+      id: "message-foreign",
+      raw: { channelData: { tenant: { id: "tenant-foreign" } } },
+    };
+    const missing = { id: "message-missing", raw: {} };
+
+    expect(runtime.acceptsProviderScope(foreign.raw)).toBe(false);
+    expect(runtime.acceptsProviderScope(missing.raw)).toBe(false);
+    await chat.handlers.direct?.(thread, foreign, {}, {});
+    await chat.handlers.mention?.(thread, missing, {});
+    await chat.handlers.subscribed?.(thread, foreign, {});
+    await chat.handlers.unaddressed?.(thread, missing, {});
+    await chat.handlers.updated?.(thread, foreign, undefined);
+    await chat.handlers.deleted?.({ raw: missing.raw });
+    await chat.handlers.reaction?.({ raw: foreign.raw });
+    await chat.handlers.action?.({ raw: missing.raw });
+    await chat.handlers.options?.({ raw: foreign.raw });
+    await chat.handlers.modalSubmit?.({ raw: missing.raw });
+    await chat.handlers.modalClose?.({ raw: foreign.raw });
+    await chat.handlers.slash?.({ raw: missing.raw });
+
+    for (const callback of Object.values(callbacks))
+      expect(callback).not.toHaveBeenCalled();
+
+    const expectedRaw = {
+      conversation: { tenantId: "tenant-expected" },
+      channelData: { tenant: { id: "tenant-expected" } },
+    };
+    expect(runtime.acceptsProviderScope(expectedRaw)).toBe(true);
+    expect(
+      runtime.acceptsProviderScope({
+        ...expectedRaw,
+        channelData: { tenant: { id: "tenant-foreign" } },
+      }),
+    ).toBe(false);
+    await chat.handlers.mention?.(
+      thread,
+      { id: "message-expected", raw: expectedRaw },
+      {},
+    );
+    await chat.handlers.reaction?.({ raw: expectedRaw });
+    await chat.handlers.action?.({ raw: expectedRaw });
+    await chat.handlers.modalSubmit?.({ raw: expectedRaw });
+
+    expect(callbacks.onMessage).toHaveBeenCalledTimes(1);
+    expect(callbacks.onReaction).toHaveBeenCalledTimes(1);
+    expect(callbacks.onAction).toHaveBeenCalledTimes(1);
+    expect(callbacks.onModalSubmit).toHaveBeenCalledTimes(1);
   });
 
   it("registers optional interaction callbacks only when supplied", () => {
