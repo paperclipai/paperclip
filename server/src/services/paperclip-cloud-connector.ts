@@ -380,6 +380,7 @@ export function createPaperclipCloudConnector(input: {
           || authorizationUrl.username
           || authorizationUrl.password
           || authorizationUrl.hash
+          || !isExpectedProviderAuthorizationUrl(profile, authorizationUrl)
         ) {
           throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid provider URL", "CONNECTOR_BAD_RESPONSE");
         }
@@ -676,6 +677,16 @@ function connectorProfileDefinition(profile: PaperclipCloudConnectorProfileId): 
     return { provider: "github", scopes: GITHUB_CONNECTOR_PROFILES[profile].scopes };
   }
   return { provider: "google", scopes: GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes };
+}
+
+function isExpectedProviderAuthorizationUrl(
+  profile: PaperclipCloudConnectorProfileId,
+  url: URL,
+): boolean {
+  if (isGitHubConnectorProfileId(profile)) {
+    return url.origin === "https://github.com" && url.pathname === "/login/oauth/authorize";
+  }
+  return url.origin === "https://accounts.google.com" && url.pathname === "/o/oauth2/v2/auth";
 }
 
 function isPaperclipCloudConnectorProfileId(value: string): value is PaperclipCloudConnectorProfileId {

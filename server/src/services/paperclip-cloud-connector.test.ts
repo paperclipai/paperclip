@@ -115,11 +115,35 @@ describe("Paperclip Cloud connector", () => {
     });
   });
 
+  it("accepts the fixed Google authorization endpoint for Google profiles", async () => {
+    const keys = config();
+    const connector = createPaperclipCloudConnector({
+      config: keys.config,
+      request: vi.fn(async () => Response.json({
+        confirmationUrl: "https://my.example.test/connections/confirm?session=broker-state",
+        authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=client&state=broker-state",
+        expiresAt: "2099-08-21T20:00:00.000Z",
+      })) as typeof fetch,
+    });
+
+    await expect(connector.startAuthorization({
+      subject,
+      companyId,
+      profile: "gmail.draft",
+      returnUri: "https://paperclip.example.test/api/tools/oauth/cloud-connector/callback",
+      returnState: "state-direct-google",
+    })).resolves.toMatchObject({
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=client&state=broker-state",
+    });
+  });
+
   it.each([
     ["non-string", { href: "https://github.com/login/oauth/authorize" }],
     ["plaintext HTTP", "http://github.com/login/oauth/authorize"],
     ["embedded credentials", "https://user:password@github.com/login/oauth/authorize"],
     ["fragment", "https://github.com/login/oauth/authorize#unexpected"],
+    ["unapproved HTTPS origin", "https://attacker.example.test/login/oauth/authorize"],
+    ["unapproved provider path", "https://github.com/session/authorize"],
     ["not a URL", "not-a-url"],
   ])("rejects a malformed direct provider URL: %s", async (_label, authorizationUrl) => {
     const keys = config();
