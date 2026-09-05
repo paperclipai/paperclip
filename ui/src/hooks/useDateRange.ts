@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { t } from "@/i18n";
 
 export type DatePreset = "mtd" | "7d" | "30d" | "ytd" | "all" | "custom";
 
-export const PRESET_LABELS: Record<DatePreset, string> = {
+export const PRESET_KEYS: DatePreset[] = ["mtd", "7d", "30d", "ytd", "all", "custom"];
+
+const PRESET_LABEL_FALLBACKS: Record<DatePreset, string> = {
   mtd: "Month to Date",
   "7d": "Last 7 Days",
   "30d": "Last 30 Days",
@@ -11,7 +14,26 @@ export const PRESET_LABELS: Record<DatePreset, string> = {
   custom: "Custom",
 };
 
-export const PRESET_KEYS: DatePreset[] = ["mtd", "7d", "30d", "ytd", "all", "custom"];
+const PRESET_LABEL_KEYS: Record<DatePreset, string> = {
+  mtd: "common.dateRange.monthToDate",
+  "7d": "common.dateRange.last7Days",
+  "30d": "common.dateRange.last30Days",
+  ytd: "common.dateRange.yearToDate",
+  all: "common.dateRange.allTime",
+  custom: "common.dateRange.custom",
+};
+
+export const PRESET_LABELS: Record<DatePreset, string> = new Proxy(PRESET_LABEL_FALLBACKS, {
+  get(target, property, receiver) {
+    if (typeof property !== "string" || !(property in PRESET_LABEL_KEYS)) {
+      return Reflect.get(target, property, receiver);
+    }
+    const preset = property as DatePreset;
+    const key = PRESET_LABEL_KEYS[preset];
+    const translated = t(key);
+    return translated === key ? target[preset] : translated;
+  },
+});
 
 // note: computeRange is called inside a useMemo that re-evaluates once per minute
 // (driven by minuteTick). this means sliding windows (7d, 30d) advance their upper

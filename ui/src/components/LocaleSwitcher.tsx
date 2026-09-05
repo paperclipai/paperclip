@@ -2,7 +2,11 @@ import { Languages } from "lucide-react";
 import { i18n, setLocale, supportedLocales, useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 
-const SWITCHER_LOCALES = ["en", "ru"].filter((locale) => supportedLocales.includes(locale));
+const SWITCHER_LOCALES = supportedLocales;
+const LOCALE_LABEL_KEYS = {
+  en: "common.english",
+  ru: "common.russian",
+} as const;
 
 export function LocaleSwitcher() {
   const { t } = useTranslation();
@@ -28,9 +32,11 @@ export function LocaleSwitcher() {
                 : "text-muted-foreground hover:text-foreground",
             )}
             aria-pressed={currentLocale === locale}
+            aria-label={t(LOCALE_LABEL_KEYS[locale])}
+            lang={locale}
             onClick={() => setLocale(locale)}
           >
-            {locale === "ru" ? "РУ" : "EN"}
+            {t(LOCALE_LABEL_KEYS[locale])}
           </button>
         ))}
       </div>

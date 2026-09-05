@@ -170,6 +170,8 @@ type StagedIssueFile = {
 };
 
 import { Badge } from "@/components/ui/badge";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import {
   buildAssigneeAdapterOverrides,
   ISSUE_OVERRIDE_ADAPTER_TYPES,
@@ -267,24 +269,24 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function buildStatusOptions(): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
+function buildStatusOptions(t: TFunction): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
   const palette = issueStatusText;
   return [
     {
       value: "backlog",
-      label: "Backlog",
+      label: t("status.backlog"),
       color: palette.backlog ?? issueStatusTextDefault,
       description: "Parked - assignee will not be woken",
     },
     {
       value: "todo",
-      label: "Todo",
+      label: t("status.todo"),
       color: palette.todo ?? issueStatusTextDefault,
       description: "Executable - assignee will be woken",
     },
-    { value: "in_progress", label: "In Progress", color: palette.in_progress ?? issueStatusTextDefault },
-    { value: "in_review", label: "In Review", color: palette.in_review ?? issueStatusTextDefault },
-    { value: "done", label: "Done", color: palette.done ?? issueStatusTextDefault },
+    { value: "in_progress", label: t("status.in_progress"), color: palette.in_progress ?? issueStatusTextDefault },
+    { value: "in_review", label: t("status.in_review"), color: palette.in_review ?? issueStatusTextDefault },
+    { value: "done", label: t("status.done"), color: palette.done ?? issueStatusTextDefault },
   ];
 }
 
@@ -317,10 +319,10 @@ function shouldWarnAboutRunUserSecrets(status: string, assigneeAgentId: string |
 }
 
 const priorities = [
-  { value: "critical", label: "Critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
-  { value: "high", label: "High", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
-  { value: "medium", label: "Medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
-  { value: "low", label: "Low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
+  { value: "critical", labelKey: "priority.critical", icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault },
+  { value: "high", labelKey: "priority.high", icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault },
+  { value: "medium", labelKey: "priority.medium", icon: Minus, color: priorityColor.medium ?? priorityColorDefault },
+  { value: "low", labelKey: "priority.low", icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault },
 ];
 
 const EXECUTION_WORKSPACE_MODES = [
@@ -459,12 +461,13 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
 });
 
 export function NewIssueDialog() {
+  const { t } = useTranslation();
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const visualViewportLayout = useVisualViewportLayout(newIssueOpen);
   const dialogBodyRef = useRef<HTMLDivElement>(null);
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
   const workModeOptions = useMemo(() => workModeMetaList(), []);
-  const statuses = useMemo(() => buildStatusOptions(), []);
+  const statuses = useMemo(() => buildStatusOptions(t), [t]);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
@@ -1416,7 +1419,11 @@ export function NewIssueDialog() {
               </PopoverContent>
             </Popover>
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>{isSubIssueMode ? "New sub-task" : "New task"}</span>
+            <span>
+              {isSubIssueMode
+                ? t("pages.newIssueDialog.newSubtask")
+                : t("pages.newIssueDialog.newTask")}
+            </span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -1434,6 +1441,7 @@ export function NewIssueDialog() {
               className="text-muted-foreground"
               onClick={() => closeNewIssue()}
               disabled={createIssue.isPending}
+              aria-label={t("common.close")}
             >
               <span className="text-lg leading-none">&times;</span>
             </Button>
@@ -1534,11 +1542,11 @@ export function NewIssueDialog() {
                 value={projectId}
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
-                placeholder="Project"
+                placeholder={t("pages.routines.project")}
                 disablePortal
-                noneLabel="No project"
-                searchPlaceholder="Search projects..."
-                emptyMessage="No projects found."
+                noneLabel={t("pages.routines.noProject")}
+                searchPlaceholder={t("pages.routines.searchProjectsPlaceholder")}
+                emptyMessage={t("pages.routines.noProjectsFound")}
                 onChange={handleProjectChange}
                 onConfirm={() => {
                   descriptionEditorRef.current?.focus();
@@ -1553,7 +1561,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">Project</span>
+                    <span className="text-muted-foreground">{t("pages.routines.project")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -1809,7 +1817,7 @@ export function NewIssueDialog() {
                         Remove
                       </button>
                       <Button type="button" size="sm" className="h-7 text-xs" onClick={() => setWatchdogEditorOpen(false)}>
-                        Done
+                        {t("status.done")}
                       </Button>
                     </div>
                   </PopoverContent>
@@ -2116,7 +2124,7 @@ export function NewIssueDialog() {
                 {currentPriority ? (
                   <>
                     <currentPriority.icon className={cn("h-3 w-3", currentPriority.color)} />
-                    {currentPriority.label}
+                    {t(currentPriority.labelKey)}
                   </>
                 ) : (
                   <>
@@ -2137,7 +2145,7 @@ export function NewIssueDialog() {
                   onClick={() => { setPriority(p.value); setPriorityOpen(false); }}
                 >
                   <p.icon className={cn("h-3 w-3", p.color)} />
-                  {p.label}
+                  {t(p.labelKey)}
                 </button>
               ))}
             </PopoverContent>
@@ -2242,7 +2250,7 @@ export function NewIssueDialog() {
                     }}
                   >
                     <p.icon className={cn("h-3 w-3", p.color)} />
-                    {p.label}
+                    {t(p.labelKey)}
                   </button>
                 ))}
                 <div className="my-1 border-t border-border" />
@@ -2267,7 +2275,7 @@ export function NewIssueDialog() {
           >
             <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Assigning implies executable intent - leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
+              Assigning implies executable intent - leave status as <span className="font-medium">{t("status.backlog")}</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">{t("status.todo")}</span> or <span className="font-medium">{t("status.in_progress")}</span>.
             </span>
           </div>
         ) : null}
@@ -2319,7 +2327,13 @@ export function NewIssueDialog() {
             >
               <span className="inline-flex items-center justify-center gap-1.5">
                 {createIssue.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                <span>{createIssue.isPending ? "Creating..." : isSubIssueMode ? "Create Sub-Task" : "Create Task"}</span>
+                <span>
+                  {createIssue.isPending
+                    ? t("pages.newIssueDialog.creating")
+                    : isSubIssueMode
+                      ? t("pages.newIssueDialog.createSubtask")
+                      : t("pages.newIssueDialog.createTask")}
+                </span>
               </span>
             </Button>
           </div>

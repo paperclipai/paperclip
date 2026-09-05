@@ -16,6 +16,7 @@ import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "../../lib/utils";
 import { EmptyState } from "../../components/EmptyState";
 import { SecretPathName } from "./SecretPathName";
+import { t, useTranslation } from "@/i18n";
 import {
   AgentRefChip,
   DeliveryBadge,
@@ -31,12 +32,17 @@ import {
 /** ISO expiry → "expires in 12d" / "expires in 5h" / "expired". */
 function expiryLabel(expiresAt: string): { text: string; urgent: boolean } {
   const ms = new Date(expiresAt).getTime() - Date.now();
-  if (Number.isNaN(ms)) return { text: "no expiry", urgent: false };
-  if (ms <= 0) return { text: "expired", urgent: true };
+  if (Number.isNaN(ms)) return { text: t("pages.secrets.proposals.noExpiry"), urgent: false };
+  if (ms <= 0) return { text: t("pages.secrets.proposals.expired"), urgent: true };
   const hours = Math.floor(ms / 3_600_000);
-  if (hours < 24) return { text: `expires in ${hours}h`, urgent: true };
+  if (hours < 24) {
+    return { text: t("pages.secrets.proposals.expiresHours", { count: hours }), urgent: true };
+  }
   const days = Math.floor(hours / 24);
-  return { text: `expires in ${days}d`, urgent: days <= 2 };
+  return {
+    text: t("pages.secrets.proposals.expiresDays", { count: days }),
+    urgent: days <= 2,
+  };
 }
 
 function ProposalRow({
@@ -74,7 +80,7 @@ function ProposalRow({
               {proposal.target ? (
                 <AgentRefChip agent={proposal.target} className="font-medium" />
               ) : (
-                <span className="text-muted-foreground">agent</span>
+                <span className="text-muted-foreground">{t("pages.secrets.common.agent")}</span>
               )}
               <DeliveryBadge configPath={proposal.configPath} />
               <code className="font-mono text-xs">{envKey || proposal.configPath}</code>
@@ -91,7 +97,8 @@ function ProposalRow({
         {/* Provenance meta */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">
-            by <AgentRefChip agent={proposal.proposedBy} className="font-medium text-foreground" />
+            {t("pages.secrets.proposals.by")} {" "}
+            <AgentRefChip agent={proposal.proposedBy} className="font-medium text-foreground" />
           </span>
           {proposal.originIssue ? (
             <>
@@ -144,6 +151,7 @@ export function ProposalsTab({
   companyId: string;
   providerConfigs: CompanySecretProviderConfig[];
 }) {
+  useTranslation();
   const proposalsQuery = useQuery({
     queryKey: queryKeys.secrets.proposals(companyId, "pending"),
     queryFn: () => secretsApi.listProposals(companyId, "pending"),
@@ -167,7 +175,7 @@ export function ProposalsTab({
   if (proposalsQuery.isError) {
     return (
       <div className="flex items-center gap-2 py-4 text-sm text-destructive">
-        <AlertCircle className="size-4" /> Couldn’t load proposals. Try again.
+        <AlertCircle className="size-4" /> {t("pages.secrets.proposals.loadFailed")}
       </div>
     );
   }
@@ -175,7 +183,7 @@ export function ProposalsTab({
   if (proposalsQuery.isPending) {
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" /> Loading proposals…
+        <Loader2 className="size-4 animate-spin" /> {t("pages.secrets.proposals.loading")}
       </div>
     );
   }
@@ -184,8 +192,8 @@ export function ProposalsTab({
     return (
       <EmptyState
         icon={Inbox}
-        title="No pending proposals"
-        message="When an agent proposes a secret or an access binding, it shows up here for review."
+        title={t("pages.secrets.proposals.emptyTitle")}
+        message={t("pages.secrets.proposals.emptyMessage")}
       />
     );
   }
@@ -193,8 +201,7 @@ export function ProposalsTab({
   return (
     <div className="space-y-2">
       <p className="text-xs text-muted-foreground">
-        Agents propose credentials and access bindings; you approve or reject them here. Proposed
-        values are never shown — only a fingerprint and length.
+        {t("pages.secrets.proposals.description")}
       </p>
       {sorted.map((proposal) => (
         <ProposalRow

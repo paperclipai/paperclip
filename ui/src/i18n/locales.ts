@@ -1,27 +1,18 @@
 import type { Resource } from "i18next";
 
 import { assertValidLocaleMessages } from "./locale-validation";
+import en from "./locales/en.json";
+import ru from "./locales/ru.json";
 
 export const DEFAULT_LOCALE = "en" as const;
+export const supportedLocales = [DEFAULT_LOCALE, "ru"] as const;
+export type SupportedLocale = (typeof supportedLocales)[number];
 
-const localeModules = import.meta.glob("./locales/*.json", {
-  eager: true,
-  import: "default",
-}) as Record<string, unknown>;
-
-export const localeMessages = Object.fromEntries(
-  Object.entries(localeModules).map(([path, messages]) => {
-    const locale = path.match(/\/([A-Za-z0-9_-]+)\.json$/)?.[1];
-    if (!locale) {
-      throw new Error(`Invalid locale file path: ${path}`);
-    }
-    return [locale, messages];
-  }),
-);
-
-if (!(DEFAULT_LOCALE in localeMessages)) {
-  throw new Error(`Missing default locale messages for ${DEFAULT_LOCALE}`);
-}
+// Register only catalogs that have complete, human-reviewed coverage. The
+// repository still contains small locale scaffolds for future contributors,
+// but exposing those files would present an almost entirely English UI as a
+// translated language.
+export const localeMessages = { en, ru } as const;
 
 for (const [locale, messages] of Object.entries(localeMessages)) {
   try {
@@ -32,9 +23,9 @@ for (const [locale, messages] of Object.entries(localeMessages)) {
   }
 }
 
-// Keep scaffold catalogs registered for parity checks, but expose only locales
-// that have completed a native review. Add a locale here when its catalog is ready.
-export const supportedLocales = [DEFAULT_LOCALE, "ru"];
+export function isSupportedLocale(locale: string): locale is SupportedLocale {
+  return (supportedLocales as readonly string[]).includes(locale);
+}
 
 function expandPluralFallbacks(locale: string, messages: unknown): unknown {
   const pluralCategories = new Intl.PluralRules(locale).resolvedOptions().pluralCategories;
@@ -67,5 +58,3 @@ export const i18nextResources: Resource = Object.fromEntries(
     { translation: expandPluralFallbacks(locale, messages) },
   ]),
 ) as Resource;
-
-export type SupportedLocale = keyof typeof localeMessages;

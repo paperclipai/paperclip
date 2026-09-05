@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useSidebarNavExpanded } from "./SidebarNavItem";
+import { useTranslation } from "@/i18n";
 
 type SidebarSectionIcon = ComponentType<{ className?: string }>;
 
@@ -69,6 +70,7 @@ function SidebarSectionHeader({
   label,
   menu,
 }: Pick<SidebarSectionProps, "collapsible" | "headerAction" | "label" | "menu">) {
+  const { t } = useTranslation();
   const { isMobile } = useSidebar();
   const [menuOpen, setMenuOpen] = useState(false);
   const hasMenu = Boolean(
@@ -160,7 +162,9 @@ function SidebarSectionHeader({
               type="button"
               data-slot="icon-button"
               className="absolute -left-4 flex h-5 w-5 items-center justify-center rounded-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-              aria-label={collapsible.open ? `Collapse ${label}` : `Expand ${label}`}
+              aria-label={collapsible.open
+                ? t("common.collapseSection", { name: label })
+                : t("common.expandSection", { name: label })}
             >
               <ChevronRight className={caretClassName} aria-hidden="true" />
             </button>

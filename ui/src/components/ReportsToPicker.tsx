@@ -9,6 +9,7 @@ import { User } from "lucide-react";
 import { cn } from "../lib/utils";
 import { roleLabels } from "./agent-config-primitives";
 import { AgentIcon } from "./AgentIconPicker";
+import { useTranslation } from "@/i18n";
 
 export function ReportsToPicker({
   agents,
@@ -27,6 +28,7 @@ export function ReportsToPicker({
   disabledEmptyLabel?: string;
   chooseLabel?: string;
 }) {
+  useTranslation();
   const [open, setOpen] = useState(false);
   const exclude = new Set(excludeAgentIds);
   const rows = agents.filter(

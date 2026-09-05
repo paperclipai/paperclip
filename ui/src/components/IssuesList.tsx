@@ -98,6 +98,7 @@ import { taskDateGroup, taskDateGroupSeparator, type TaskDateGroup } from "../li
 import { entityStatusLabel } from "@/lib/entity-labels";
 import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
+import { useTranslation } from "react-i18next";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
 const ISSUE_SEARCH_RESULT_LIMIT = 200;
 const ISSUE_BOARD_COLUMN_RESULT_LIMIT = 200;
@@ -133,15 +134,7 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
   return null;
 }
 const boardIssueStatuses = ISSUE_STATUSES;
-const issueStatusLabels: Record<IssueStatus, string> = {
-  backlog: entityStatusLabel("backlog"),
-  todo: entityStatusLabel("todo"),
-  in_progress: entityStatusLabel("in_progress"),
-  in_review: entityStatusLabel("in_review"),
-  done: entityStatusLabel("done"),
-  blocked: entityStatusLabel("blocked"),
-  cancelled: entityStatusLabel("cancelled"),
-};
+const issueStatusLabel = (status: IssueStatus) => entityStatusLabel(status);
 const progressSegmentClasses: Record<IssueStatus, string> = {
   backlog: "bg-muted-foreground/40",
   todo: "bg-blue-500",
@@ -653,7 +646,7 @@ function SubIssueProgressSummaryStrip({
                 key={status}
                 className={cn("h-full", progressSegmentClasses[status])}
                 style={{ width: `${(count / summary.totalCount) * 100}%` }}
-                title={`${issueStatusLabels[status]}: ${count}`}
+                title={`${issueStatusLabel(status)}: ${count}`}
                 aria-hidden="true"
               />
             ))}
@@ -730,6 +723,7 @@ function StreamlinedIssuesList({
   toolbarPresentation = "legacy",
   onUpdateIssue,
 }: IssuesListProps) {
+  const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -1030,7 +1024,7 @@ function StreamlinedIssuesList({
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
-        label: currentUserId === "local-board" ? "Board" : "Me",
+        label: currentUserId === "local-board" ? t("pages.inbox.board") : t("pages.pipelines.me"),
         kind: "user",
         searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
       });
@@ -1081,7 +1075,7 @@ function StreamlinedIssuesList({
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });
-  }, [agents, currentUserId, issues]);
+  }, [agents, currentUserId, issues, t]);
 
   const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
   const availableIssueColumns = useMemo(
@@ -1338,7 +1332,7 @@ function StreamlinedIssuesList({
       key,
       label:
         key === "__unassigned"
-          ? "Unassigned"
+          ? t("filter.unassigned")
           : key.startsWith("__user:")
             ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? "User")
             : (agentName(key) ?? key.slice(0, 8)),
@@ -1355,6 +1349,7 @@ function StreamlinedIssuesList({
     issueTitleMap,
     companyUserLabelMap,
     projectById,
+    t,
   ]);
 
   // Flattened visible order (group headers, then tree DFS per group —
@@ -1673,8 +1668,8 @@ function StreamlinedIssuesList({
     viewState.groupBy,
   ]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Task";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Task";
+  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : t("command.createNewTask");
+  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : t("nav.newTask");
   const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
@@ -1746,12 +1741,12 @@ function StreamlinedIssuesList({
         controls={(
           <>
           {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
+          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label={t("pages.agents.viewMode")}>
             <button
               className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
-              aria-label="List view"
+              title={t("pages.agents.viewList")}
+              aria-label={t("pages.agents.viewList")}
               aria-pressed={viewState.viewMode === "list"}
             >
               <List className="h-3.5 w-3.5" />
@@ -1774,7 +1769,7 @@ function StreamlinedIssuesList({
               size="icon"
               className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", viewState.nestingEnabled && "bg-accent")}
               onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
-              title={viewState.nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+              title={viewState.nestingEnabled ? t("pages.inbox.disableNesting") : t("pages.inbox.enableNesting")}
             >
               <ListTree className="h-3.5 w-3.5" />
             </Button>
@@ -1890,7 +1885,7 @@ function StreamlinedIssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("pages.inbox.sort")}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
@@ -1899,11 +1894,11 @@ function StreamlinedIssuesList({
                   {/* PAP-411: "priority" sort option hidden behind SHOW_TASK_PRIORITY_UI (comparator stays dormant). */}
                   {([
                     ["workflow", "Workflow"],
-                    ["status", "Status"],
+                    ["status", t("nav.status")],
                     ["priority", "Priority"],
-                    ["title", "Title"],
+                    ["title", t("pages.cases.sortTitle")],
                     ["created", "Created"],
-                    ["updated", "Updated"],
+                    ["updated", t("pages.projects.sort.updated")],
                   ] as const)
                     .filter(([field]) => SHOW_TASK_PRIORITY_UI || field !== "priority")
                     .map(([field, label]) => (
@@ -1937,7 +1932,7 @@ function StreamlinedIssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("pages.inbox.group")}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
@@ -1945,13 +1940,13 @@ function StreamlinedIssuesList({
                 <div className="p-2 space-y-0.5">
                   {/* PAP-411: "priority" group-by option hidden behind SHOW_TASK_PRIORITY_UI (group logic stays dormant). */}
                   {([
-                    ["status", "Status"],
+                    ["status", t("nav.status")],
                     ["priority", "Priority"],
-                    ["assignee", "Responsible"],
-                    ["project", "Project"],
-                    ["workspace", "Workspace"],
-                    ["parent", "Parent Task"],
-                    ["none", "None"],
+                    ["assignee", t("pages.inbox.groupByAssignee")],
+                    ["project", t("pages.inbox.groupByProject")],
+                    ["workspace", t("pages.inbox.groupByWorkspace")],
+                    ["parent", t("pages.artifacts.groupParentTask")],
+                    ["none", t("status.none")],
                   ] as const)
                     .filter(([value]) => SHOW_TASK_PRIORITY_UI || value !== "priority")
                     .map(([value, label]) => (
@@ -2191,11 +2186,11 @@ function StreamlinedIssuesList({
                               issueBadge === "Paused" ? (
                                 <Badge variant="ghost"
                                   className={cn("ml-1.5 px-1.5 text-(length:--text-nano)", statusBadge.paused)}
-                                  aria-label="Paused"
-                                  title="Paused"
+                                  aria-label={t("status.paused")}
+                                  title={t("status.paused")}
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
-                                  Paused
+                                  {t("status.paused")}
                                 </Badge>
                               ) : (
                                 <Badge variant="outline" className="ml-1.5 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) text-amber-700 dark:text-amber-300">
@@ -2357,7 +2352,7 @@ function StreamlinedIssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search responsible..."
+                                      placeholder={t("pages.routines.searchResponsiblePlaceholder")}
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -2389,7 +2384,7 @@ function StreamlinedIssuesList({
                                           }}
                                         >
                                           <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
+                                          <span>{t("pages.pipelines.me")}</span>
                                         </button>
                                       )}
                                       {(agents ?? [])

@@ -45,6 +45,7 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
+import { useTranslation } from "@/i18n";
 
 /* ── Top-level tab types ── */
 
@@ -364,6 +365,7 @@ function ProjectPluginOperationsList({
 /* ── Main project page ── */
 
 export function ProjectDetail() {
+  const { t } = useTranslation();
   const { companyPrefix, projectId, filter } = useParams<{
     companyPrefix?: string;
     projectId: string;
@@ -881,7 +883,7 @@ export function ProjectDetail() {
             { value: "list", label: "Tasks" },
             { value: "overview", label: "Overview" },
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: t("nav.workspaces") }] : []),
             { value: "configuration", label: "Configuration" },
             { value: "budget", label: "Budget" },
             ...pluginTabItems.map((item) => ({
@@ -931,7 +933,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{t("workspaces.loading")}</p>
         )
       ) : null}
 

@@ -2,11 +2,11 @@ import { Link } from "@/lib/router";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { deriveInitials } from "./Identity";
 import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
-import { timeAgo } from "../lib/timeAgo";
-import { cn } from "../lib/utils";
+import { cn, relativeTime } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
+import { useTranslation } from "@/i18n";
 
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
   switch (entityType) {
@@ -29,7 +29,11 @@ interface ActivityRowProps {
 }
 
 export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
-  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
+  const { t } = useTranslation();
+  const defaultVerb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
+  const verb = event.action === "company.created"
+    ? t("pages.dashboard.activityCreatedOrganization")
+    : defaultVerb;
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
@@ -48,7 +52,14 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const userLabel = userProfile?.label === "Board"
+    ? t("pages.dashboard.activityActorBoard")
+    : userProfile?.label;
+  const actorName = actor?.name ?? (event.actorType === "system"
+    ? t("pages.dashboard.activityActorSystem")
+    : userLabel ?? (event.actorType === "user"
+      ? t("pages.dashboard.activityActorBoard")
+      : event.actorId || t("common.unknown")));
   const actorAvatarUrl = userProfile?.image ?? null;
 
   const inner = (
@@ -66,7 +77,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
             {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
           </p>
         </div>
-        <span className="text-xs text-muted-foreground shrink-0">{timeAgo(event.createdAt)}</span>
+        <span className="text-xs text-muted-foreground shrink-0">{relativeTime(event.createdAt)}</span>
       </div>
       <IssueReferenceActivitySummary event={event} />
     </div>

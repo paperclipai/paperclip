@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { i18n, LOCALE_STORAGE_KEY, setLocale, t } from ".";
+import { i18n, LOCALE_STORAGE_KEY, resolveInitialLocale, setLocale, t } from ".";
 import en from "./locales/en.json";
 import { localeMessages, supportedLocales } from "./locales";
 
@@ -18,9 +18,10 @@ describe("locale sync", () => {
   afterEach(async () => {
     await i18n.changeLanguage("en");
     window.localStorage.clear();
+    vi.restoreAllMocks();
   });
 
-  it("keeps every locale in exact key parity with en.json", () => {
+  it("keeps every supported locale in exact key parity with en.json", () => {
     const englishKeys = flattenKeys(en).sort();
     for (const [locale, messages] of Object.entries(localeMessages)) {
       if (locale === "en") continue;
@@ -52,7 +53,7 @@ describe("locale sync", () => {
 
   it("exposes only locales with a completed native review", () => {
     expect(supportedLocales).toEqual(["en", "ru"]);
-    expect(localeMessages).toHaveProperty("ar");
+    expect(Object.keys(localeMessages)).toEqual(["en", "ru"]);
   });
 
   it("keeps the document language and direction in sync", async () => {
@@ -73,5 +74,29 @@ describe("locale sync", () => {
     setLocale("ar");
     expect(i18n.language).toBe("ru");
     expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("ru");
+  });
+
+  it("prefers a saved locale over browser locale", () => {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, "en");
+    vi.spyOn(window.navigator, "languages", "get").mockReturnValue(["ru-RU"]);
+    expect(resolveInitialLocale()).toBe("en");
+  });
+
+  it("normalizes regional and underscore browser locales", () => {
+    vi.spyOn(window.navigator, "languages", "get").mockReturnValue(["ru_RU"]);
+    expect(resolveInitialLocale()).toBe("ru");
+  });
+
+  it("still detects browser locale when localStorage is unavailable", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage disabled");
+    });
+    vi.spyOn(window.navigator, "languages", "get").mockReturnValue(["ru-RU"]);
+    expect(resolveInitialLocale()).toBe("ru");
+  });
+
+  it("falls back to English for an unsupported browser locale", () => {
+    vi.spyOn(window.navigator, "languages", "get").mockReturnValue(["fr-FR"]);
+    expect(resolveInitialLocale()).toBe("en");
   });
 });

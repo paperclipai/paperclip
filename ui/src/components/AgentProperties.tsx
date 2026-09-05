@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { AGENT_ROLE_LABELS, type Agent, type AgentRuntimeState } from "@paperclipai/shared";
+import type { Agent, AgentRuntimeState } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -9,13 +9,15 @@ import { AgentStatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
+import { localizedAgentRoleLabels } from "../lib/entity-labels";
+import { useTranslation } from "@/i18n";
 
 interface AgentPropertiesProps {
   agent: Agent;
   runtimeState?: AgentRuntimeState;
 }
 
-const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
+const roleLabels = localizedAgentRoleLabels;
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -27,6 +29,7 @@ function PropertyRow({ label, children }: { label: string; children: React.React
 }
 
 export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
+  useTranslation();
   const { selectedCompanyId } = useCompany();
   const lastErrorIsActive = agent.status === "error";
 
