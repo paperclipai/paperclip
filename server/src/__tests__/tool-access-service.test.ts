@@ -694,6 +694,11 @@ describeEmbeddedPostgres("tool access service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
+    const externalDatabaseUrl = process.env.PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL?.trim();
+    if (externalDatabaseUrl) {
+      db = createDb(externalDatabaseUrl);
+      return;
+    }
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-access-service-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -12084,6 +12089,34 @@ describeEmbeddedPostgres("tool access service", () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("revoked token"));
+    const [chatApplication] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `chat:slack:${randomUUID()}`,
+      name: "Slack chat",
+      type: "chat",
+      status: "active",
+      metadata: { sourceTemplateKey: "slack", purpose: "channel" },
+    }).returning();
+    const [chatConnection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: chatApplication!.id,
+      name: "Slack agent",
+      uid: `chat-slack-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "chat_sdk",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "slack" },
+      transportConfig: {},
+      healthStatus: "ok",
+      healthMessage: "Slack webhook healthy.",
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
     const connection = await service.createConnection(company.id, {
       name: "Swept remote",
       transport: "mcp_remote",
@@ -12094,6 +12127,10 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0 });
     const [updatedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    const [untouchedChatConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, chatConnection!.id));
 
     expect(sweep).toMatchObject({
       checked: 1,
@@ -12105,6 +12142,13 @@ describeEmbeddedPostgres("tool access service", () => {
       healthStatus: "error",
       healthMessage: "revoked token",
       lastError: "revoked token",
+    });
+    expect(untouchedChatConnection).toMatchObject({
+      healthStatus: "ok",
+      healthMessage: "Slack webhook healthy.",
+      lastError: null,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
     });
   });
 

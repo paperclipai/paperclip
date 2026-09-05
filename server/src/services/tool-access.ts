@@ -5808,7 +5808,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const connections = await db
       .select()
       .from(toolConnections)
-      .where(and(eq(toolConnections.enabled, true), eq(toolConnections.status, "active")))
+      .where(and(
+        eq(toolConnections.enabled, true),
+        eq(toolConnections.status, "active"),
+        ne(toolConnections.transport, "chat_sdk"),
+      ))
       .orderBy(asc(toolConnections.healthCheckedAt), asc(toolConnections.createdAt));
     const due = connections
       .filter((connection) => !connection.healthCheckedAt || connection.healthCheckedAt <= cutoff)
