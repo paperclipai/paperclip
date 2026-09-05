@@ -926,7 +926,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    await context.service.generateSetupSecret(endpoint.id, "owner-user");
+    const { webhookSecret } = await context.service.generateSetupSecret(
+      endpoint.id,
+      "owner-user",
+    );
     await context.service.configure(
       endpoint.id,
       {
@@ -951,6 +954,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ...context,
       endpoint,
       callbacks,
+      webhookSecret,
       setInstallationId(value: number) {
         installationId = value;
       },
@@ -2416,7 +2420,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("acknowledges signed GitHub webhooks from another installation without admitting them", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } =
+    const { endpoint, runtime, service, webhookSecret } =
       await configuredGitHubEndpoint(fixture);
     await db
       .update(chatEndpoints)
@@ -2429,7 +2433,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       action: "deleted",
       installation: { id: 9999 },
     });
-    const signature = createHmac("sha256", "github-webhook-secret")
+    const signature = createHmac("sha256", webhookSecret)
       .update(payload)
       .digest("hex");
 
@@ -9897,7 +9901,34 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(sendEdit()).rejects.toThrow(
       "Original chat message is still being durably processed",
     );
+    // A periodic reconciler must not bypass Telegram's bounded ordering hold,
+    // even when asked about this exact delivery. The provider should continue
+    // retrying the edit until the already-scheduled per-conversation drain has
+    // admitted the original message in provider order.
     await service.processPendingDeliveries(25, originalDelivery.id);
+    await expect(sendEdit()).rejects.toThrow(
+      "Original chat message is still being durably processed",
+    );
+    await expect(
+      db
+        .select({ state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.id, originalDelivery.id)),
+    ).resolves.toEqual([{ state: "received" }]);
+
+    expect(deferred).toHaveLength(1);
+    deferred.shift()?.();
+    await vi.waitFor(
+      async () => {
+        await expect(
+          db
+            .select({ state: chatDeliveries.state })
+            .from(chatDeliveries)
+            .where(eq(chatDeliveries.id, originalDelivery.id)),
+        ).resolves.toEqual([{ state: "processed" }]);
+      },
+      { timeout: 3_000 },
+    );
     await expect(sendEdit()).resolves.toMatchObject({ ok: true });
 
     const lifecycle = await db
