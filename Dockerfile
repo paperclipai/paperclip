@@ -116,6 +116,17 @@ RUN rm -rf packages/paperclip-runner/runner/target
 # `server...` filter (server plus everything it actually depends on,
 # transitively) is safe and drops the unused weight.
 #
+# This deletes node_modules and reinstalls rather than installing narrow
+# from the start, because nothing earlier in the pipeline can afford to
+# skip the full install: `build` above needs every devDependency present
+# (typescript, vite, cargo's crates, ...) to actually compile the ui,
+# plugin-sdk, and server. Only once that's done do we know it's safe to
+# drop them. `pnpm prune --prod` looked like the narrower tool for this,
+# but it only prunes the *root* workspace importer's devDependencies, not
+# each member's independently, and takes no --filter -- so it can't scope
+# to just server's own graph. A filtered `install --prod` is the only
+# primitive that does, and it requires a clean node_modules first.
+#
 # tsx is deliberately NOT pruned: server/package.json lists it as a
 # production dependency (not dev) because the ENTRYPOINT below imports it
 # directly (`--import ./server/node_modules/tsx/...`) to transpile the
