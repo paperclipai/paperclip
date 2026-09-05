@@ -3899,6 +3899,12 @@ describe("runnerd provider runtime wiring", () => {
       accepted: true,
     },
     {
+      directLifecycle: "empty",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: true,
+    },
+    {
       directLifecycle: "ready",
       backupLifecycle: "suspended",
       corrupt: false,
@@ -3906,6 +3912,12 @@ describe("runnerd provider runtime wiring", () => {
     },
     {
       directLifecycle: "malformed",
+      backupLifecycle: "suspended",
+      corrupt: false,
+      accepted: false,
+    },
+    {
+      directLifecycle: "nonempty",
       backupLifecycle: "suspended",
       corrupt: false,
       accepted: false,
@@ -4001,7 +4013,18 @@ describe("runnerd provider runtime wiring", () => {
           join(scopedRoot, "control-plane", "control-plane-state.json"),
           JSON.stringify(durableControlPlaneState(identity)),
         );
-        if (directLifecycle !== null) {
+        if (directLifecycle === "empty") {
+          // Remote transports before the externally-owned-state fix left an
+          // empty local placeholder beside the controller state. It is not an
+          // authority record and must not mask a verified remote backup.
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+        } else if (directLifecycle === "nonempty") {
+          await mkdir(join(scopedRoot, "runner"), { recursive: true });
+          await writeFile(
+            join(scopedRoot, "runner", "unexpected-state.json"),
+            "{}",
+          );
+        } else if (directLifecycle !== null) {
           await mkdir(join(scopedRoot, "runner"), { recursive: true });
           await writeFile(
             join(scopedRoot, "runner", "runner-state.json"),

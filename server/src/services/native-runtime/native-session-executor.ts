@@ -1385,7 +1385,17 @@ function runnerdAuthorityLifecycle(
   if (!existsSync(runnerRoot)) return "absent";
   if (!isSafeNativeStateDirectory(runnerRoot)) return "indeterminate";
   const statePath = resolve(runnerRoot, "runner-state.json");
-  if (!existsSync(statePath)) return "indeterminate";
+  if (!existsSync(statePath)) {
+    try {
+      // Older remote transports created this controller-side placeholder even
+      // though runner state was owned by the sandbox. It carries no authority,
+      // so a verified failover backup may be consulted. Any non-empty direct
+      // directory remains indeterminate and therefore blocks fallback.
+      return readdirSync(runnerRoot).length === 0 ? "absent" : "indeterminate";
+    } catch {
+      return "indeterminate";
+    }
+  }
   try {
     const state = record(
       JSON.parse(
