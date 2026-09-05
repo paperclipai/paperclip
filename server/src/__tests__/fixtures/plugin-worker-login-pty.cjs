@@ -20,6 +20,9 @@
 //     `hostRouteId` field at all, so a test proves the host warns about a plugin
 //     build old enough to omit the field, instead of silently dropping it.
 //   - `exitCode`: when set, the fixture emits an exit notification after the outputs.
+//   - `omitHostRouteIdOnExit`: when true, the main `exitCode` exit notification
+//     carries no `hostRouteId` field, so a test proves the host still resolves
+//     a legacy worker's exit by the worker session id.
 //   - `extraExits`: an array of `{ exitCode, sid? }`. The fixture emits each as a
 //     further exit notification, after the main `exitCode` exit. `sid` defaults
 //     to the real worker session id; a test sets a wrong `sid` to script a worker
@@ -89,12 +92,15 @@ function outputLines(entries, hostRouteId, workerSessionId) {
 }
 
 // Serialize one exit notification line for the given host route and worker
-// session id.
-function exitLine(hostRouteId, workerSessionId, exitCode) {
+// session id. `omit: true` sends the notification with no `hostRouteId`
+// field at all, matching a plugin build old enough to predate it.
+function exitLine(hostRouteId, workerSessionId, exitCode, omit) {
+  const params = { workerSessionId, exitCode };
+  if (!omit) params.hostRouteId = hostRouteId;
   return `${JSON.stringify({
     jsonrpc: "2.0",
     method: "loginPty.exit",
-    params: { hostRouteId, workerSessionId, exitCode },
+    params,
   })}\n`;
 }
 
@@ -126,7 +132,7 @@ function scriptedOutputLines(directive, hostRouteId, workerSessionId) {
   const extraExits = Array.isArray(directive.extraExits) ? directive.extraExits : [];
   let lines = outputLines(outputs, hostRouteId, workerSessionId);
   if (typeof directive.exitCode === "number") {
-    lines += exitLine(hostRouteId, workerSessionId, directive.exitCode);
+    lines += exitLine(hostRouteId, workerSessionId, directive.exitCode, directive.omitHostRouteIdOnExit);
   }
   for (const exit of extraExits) {
     lines += exitLine(exit.hostRouteId ?? hostRouteId, exit.sid ?? workerSessionId, exit.exitCode);

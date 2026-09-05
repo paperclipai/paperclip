@@ -1512,31 +1512,39 @@ export function createPluginWorkerHandle(
     }
   }
 
-  // Resolve one login pseudo-terminal notification to its route by the host
-  // route identifier. Return null for a missing identifier or for an unknown
-  // or a stale (already terminalized) identifier, so the caller drops the
-  // notification.
+  // Resolve one login pseudo-terminal notification to its route. Return null
+  // for an unknown or a stale (already terminalized) identifier, so the caller
+  // drops the notification.
   //
-  // `hostRouteId` is a required field on this notification. A plugin build
-  // old enough to not send it loses its login pseudo-terminal output, so the
+  // The current protocol tags every notification with the host route
+  // identifier, so a current build resolves through
+  // `loginPtyRoutesByHostRouteId` directly, even while more than one route is
+  // open on this worker.
+  //
+  // A plugin build old enough to predate the host route identifier tags the
+  // notification with only the worker session identifier, the sole routing
+  // key the previous protocol used. That identifier still resolves to exactly
+  // one route: the bind step in `openLoginPtySession` never lets two live
+  // routes share one worker session identifier, so
+  // `loginPtyRoutesByWorkerSessionId` holds at most one route per key. The
   // host warns once for this worker — never once for each dropped message,
-  // since a live pseudo-terminal can send many. The warning carries no
-  // session identifier, no route identifier, and no login code: only the
-  // fact that the build is too old. This never falls back to resolving the
-  // route by the worker session identifier alone; a single identifier cannot
-  // prove which route the message belongs to.
-  function resolveLoginPtyRouteByHostRouteId(params: Record<string, unknown>): LoginPtyRoute | null {
+  // since a live pseudo-terminal can send many — so an operator can see the
+  // build is too old, then still delivers the route's output and exit
+  // notifications instead of losing them.
+  function resolveLoginPtyRoute(params: Record<string, unknown>): LoginPtyRoute | null {
     const hostRouteId = readNonEmptyString(params.hostRouteId);
-    if (!hostRouteId) {
-      if (!loggedMissingLoginPtyHostRouteId) {
-        loggedMissingLoginPtyHostRouteId = true;
-        log.warn(
-          "login pseudo-terminal message has no hostRouteId; the plugin build is too old",
-        );
-      }
-      return null;
+    if (hostRouteId) {
+      return loginPtyRoutesByHostRouteId.get(hostRouteId) ?? null;
     }
-    return loginPtyRoutesByHostRouteId.get(hostRouteId) ?? null;
+    if (!loggedMissingLoginPtyHostRouteId) {
+      loggedMissingLoginPtyHostRouteId = true;
+      log.warn(
+        "login pseudo-terminal message has no hostRouteId; the plugin build is too old",
+      );
+    }
+    const workerSessionId = readNonEmptyString(params.workerSessionId);
+    if (!workerSessionId) return null;
+    return loginPtyRoutesByWorkerSessionId.get(workerSessionId) ?? null;
   }
 
   // Route one login pseudo-terminal output notification to the per-session
@@ -1548,7 +1556,7 @@ export function createPluginWorkerHandle(
   // bytes.
   function routeLoginPtyOutput(notification: JsonRpcNotification): void {
     const params = isRecord(notification.params) ? notification.params : {};
-    const route = resolveLoginPtyRouteByHostRouteId(params);
+    const route = resolveLoginPtyRoute(params);
     if (!route) return;
     if (route.state === "opening") {
       queuePreBindLoginPtyOutput(route, notification);
@@ -1583,7 +1591,7 @@ export function createPluginWorkerHandle(
   // later record — live or replayed — finds a closed route and drops there.
   function routeLoginPtyExit(notification: JsonRpcNotification): void {
     const params = isRecord(notification.params) ? notification.params : {};
-    const route = resolveLoginPtyRouteByHostRouteId(params);
+    const route = resolveLoginPtyRoute(params);
     if (!route) return;
     if (route.state === "opening") {
       queuePreBindLoginPtyExit(route, notification);

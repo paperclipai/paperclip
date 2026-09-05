@@ -1617,14 +1617,17 @@ describe("plugin worker manager login pseudo-terminal concurrency", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The missing-hostRouteId diagnostic. `hostRouteId` is a required field on
-// the login pseudo-terminal output and exit notifications, so a plugin build
-// old enough to omit it loses its login pseudo-terminal output. This warns
-// an operator instead of failing silently.
+// The missing-hostRouteId diagnostic. `hostRouteId` is the routing key the
+// current protocol tags every login pseudo-terminal notification with, but a
+// plugin build old enough to predate it still tags the same notification with
+// the worker session identifier, the sole routing key the previous protocol
+// used. The host warns once about the old build, then still resolves the
+// route by that identifier, so a legacy worker keeps its login output and its
+// exit notification instead of losing them.
 // ---------------------------------------------------------------------------
 
 describe("plugin worker manager login pseudo-terminal missing hostRouteId diagnostic", () => {
-  it("logs one warning when a login pseudo-terminal message arrives with no hostRouteId", async () => {
+  it("delivers output from a legacy worker with no hostRouteId, resolved by the worker session id, and warns once", async () => {
     const handle = makeLoginPtyHandle();
     vi.mocked(logger.warn).mockClear();
     try {
@@ -1633,25 +1636,34 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
       const route = await handle.openLoginPtySession(
         ptyOpenInput({
           workerSessionId: "ws-A",
-          outputs: [{ chunk: "dropped", omitHostRouteId: true }],
+          outputs: [{ chunk: "legacy-output", omitHostRouteId: true }],
         }),
       );
       route.onData((chunk) => chunks.push(chunk));
-      // Give the malformed notification time to arrive and be dropped.
-      await new Promise((resolve) => setTimeout(resolve, 60));
-
-      // The message is still dropped: the current behaviour does not change.
-      expect(chunks).toEqual([]);
+      await vi.waitFor(() => expect(chunks).toContain("legacy-output"));
 
       const warnCalls = vi.mocked(logger.warn).mock.calls.flat().map((arg) => JSON.stringify(arg));
       const matches = warnCalls.filter((call) => call.includes("hostRouteId"));
       expect(matches).toHaveLength(1);
       expect(matches[0]).toContain("plugin build is too old");
       // No identifier and no raw output in the warning.
-      expect(matches[0]).not.toContain("dropped");
+      expect(matches[0]).not.toContain("legacy-output");
       expect(matches[0]).not.toContain("ws-A");
 
       await route.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles the login wait on a legacy worker's exit notification with no hostRouteId", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const route = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A", exitCode: 0, omitHostRouteIdOnExit: true }),
+      );
+      await expect(route.wait()).resolves.toEqual({ exitCode: 0 });
     } finally {
       await handle.stop().catch(() => undefined);
     }
@@ -1672,13 +1684,36 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
           ],
         }),
       );
-      // Give every malformed notification time to arrive.
+      // Give every notification time to arrive.
       await new Promise((resolve) => setTimeout(resolve, 60));
 
       const warnCalls = vi.mocked(logger.warn).mock.calls.flat().map((arg) => JSON.stringify(arg));
       const matches = warnCalls.filter((call) => call.includes("hostRouteId"));
       expect(matches).toHaveLength(1);
 
+      await route.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a message with no hostRouteId and no worker session id", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const chunks: string[] = [];
+      const route = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [
+            { chunk: "unroutable", omitHostRouteId: true, sid: "" },
+            { chunk: "good" },
+          ],
+        }),
+      );
+      route.onData((chunk) => chunks.push(chunk));
+      await vi.waitFor(() => expect(chunks).toContain("good"));
+      expect(chunks).toEqual(["good"]);
       await route.close();
     } finally {
       await handle.stop().catch(() => undefined);
