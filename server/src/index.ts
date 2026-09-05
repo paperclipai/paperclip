@@ -851,6 +851,7 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: config.host,
     authPublicBaseUrl: config.authPublicBaseUrl,
     authReady,
+    authDisableSignUp: config.authDisableSignUp,
     companyDeletionEnabled: config.companyDeletionEnabled,
     pluginMigrationDb: pluginMigrationDb as any,
     betterAuthHandler,
