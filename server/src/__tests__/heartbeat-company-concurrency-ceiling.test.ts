@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
@@ -88,6 +89,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
     await heartbeat.drainActiveRunExecutions();
     mockAdapterExecute.mockClear();
     runningProcesses.clear();
+    await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
