@@ -51,6 +51,25 @@ POST /api/companies/{companyId}/issues
 }
 ```
 
+### Project inference for agent-created issues
+
+When an agent creates an issue and the request carries no project signal of its
+own — no `projectId`, `parentId`, `projectWorkspaceId` or `executionWorkspaceId`
+— the server fills `projectId` in from the git repo the issue affects, in this
+order:
+
+1. an `@project` mention in the title or description
+2. the project of the issue the creating run is working on
+3. the single project whose git repo the text names — a remote URL matching a
+   project workspace `repoUrl` (https, ssh and scp-style forms, an optional
+   `.git` suffix and casing are all treated as the same repo), or an absolute
+   path at or underneath a project workspace `cwd`
+4. otherwise `null`
+
+Text naming two different projects' repos resolves to `null` rather than to a
+guess. An explicit `projectId` is never overridden, and issues created by a user
+are left untouched.
+
 ## Update Issue
 
 ```
