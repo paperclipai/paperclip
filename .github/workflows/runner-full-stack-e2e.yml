@@ -1132,7 +1132,7 @@ jobs:
           fi
 
   publish_history:
-    name: Publish trusted-summary S3 history and structured Pages bundle
+    name: Publish S3 history and Pages bundle with declared screenshots
     needs: [authorize, catalog, report]
     if: always() && needs.catalog.result == 'success' && needs.report.outputs.history_source_ready == 'true'
     runs-on: ubuntu-latest
@@ -1183,7 +1183,7 @@ jobs:
           role-to-assume: ${{ vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
           aws-region: ${{ vars.RUNNER_E2E_HISTORY_AWS_REGION }}
 
-      - name: Publish trusted summary image to S3 and prune the Pages bundle
+      - name: Publish trusted summary and declared screenshots to public bundles
         env:
           PAPERCLIP_RUNNER_E2E_REPORT_DIR: ${{ github.workspace }}/runner-e2e-merged-report/normalized
           RUNNER_E2E_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_HISTORY_S3_BUCKET }}
@@ -1196,7 +1196,7 @@ jobs:
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         run: echo "name=github-pages-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
-      - name: Package structured-only dashboard for GitHub Pages
+      - name: Package pruned dashboard with declared screenshots for GitHub Pages
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
@@ -1204,7 +1204,7 @@ jobs:
           path: runner-e2e-merged-report/pages
 
   pages:
-    name: Publish latest structured dashboard
+    name: Publish latest dashboard with declared screenshots
     needs: [report, publish_history]
     if: always() && needs.report.outputs.history_source_ready == 'true' && needs.publish_history.result == 'success' && vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
     runs-on: ubuntu-latest

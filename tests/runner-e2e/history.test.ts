@@ -17,6 +17,7 @@ import {
   createBundleManifest,
   isHistoricalBundlePathAllowed,
   prunePrivateHistoryEvidence,
+  publicScreenshotPaths,
   stageTrustedHistoryAssets,
   validateHistoryDestination,
 } from "./history-publish.js";
@@ -200,10 +201,10 @@ describe("runner E2E campaign history", () => {
       "campaigns/complete-red/public-images/campaign-summary.png",
     );
     expect(index).toContain(
-      "Provider-produced visual evidence remains in access-controlled workflow artifacts",
+      "declared screenshots, and sanitized structured evidence",
     );
     expect(index).toContain(
-      "Trusted synthetic summary image and inert structured evidence",
+      "Declared screenshots and inert structured evidence",
     );
     expect(index).not.toContain("data-gallery-dialog");
     expect(index).not.toContain("Configuration matrix");
@@ -211,7 +212,7 @@ describe("runner E2E campaign history", () => {
 });
 
 describe("historical publication security", () => {
-  it("keeps visual and active evidence private when building the public dashboard", async () => {
+  it("publishes declared screenshots while keeping active evidence private", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-landing-test-"));
     const output = path.join(root, "landing");
     temporaryDirectories.push(root);
@@ -243,7 +244,11 @@ describe("historical publication security", () => {
       path.join(root, "normalized-results.json"),
       JSON.stringify(campaign),
     );
-    await writeFile(path.join(evidenceDirectory, "final-state.png"), "png");
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    );
+    await writeFile(path.join(evidenceDirectory, "final-state.png"), png);
     await writeFile(path.join(evidenceDirectory, "failure.webm"), "webm");
     await writeFile(path.join(evidenceDirectory, "unsafe.svg"), "<svg />");
     await writeFile(
@@ -267,26 +272,27 @@ describe("historical publication security", () => {
       "private archive",
     );
 
-    await prunePrivateHistoryEvidence(root);
+    const publicScreenshots = publicScreenshotPaths(campaign);
+    await prunePrivateHistoryEvidence(root, publicScreenshots);
     await regenerateRunnerDashboard({
       bundle: root,
       outputDirectory: output,
       evidenceHrefPrefix: "campaigns/campaign-1",
     });
     const dashboard = await readFile(path.join(output, "index.html"), "utf8");
-    expect(dashboard).not.toContain(
+    expect(dashboard).toContain(
       `campaigns/campaign-1/evidence/${execution.id}/attempt-1/final-state.png`,
     );
-    expect(dashboard).toContain("Visual evidence · workflow artifact only");
+    expect(dashboard).toContain("View gallery · 1");
     expect(dashboard).toContain(
-      "public history contains inert structured evidence and a trusted synthetic campaign summary",
+      "Declared PNG screenshots and sanitized structured evidence are retained with every published campaign",
     );
     expect(dashboard).toContain(
-      "Public history excludes provider-produced visual evidence",
+      "Declared screenshots and sanitized structured evidence published",
     );
     await expect(
       readFile(path.join(evidenceDirectory, "final-state.png")),
-    ).rejects.toThrow();
+    ).resolves.toEqual(png);
     await expect(
       readFile(path.join(evidenceDirectory, "failure.webm")),
     ).rejects.toThrow();
@@ -325,7 +331,7 @@ describe("historical publication security", () => {
     ).rejects.toThrow("safe relative URL path");
   });
 
-  it("keeps target screenshots private and admits only the trusted summary PNG", async () => {
+  it("admits declared PNG screenshots and the trusted summary only", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-s3-test-"));
     temporaryDirectories.push(root);
     const execution = runnerMatrix[0]!;
@@ -371,13 +377,12 @@ describe("historical publication security", () => {
       writeFile(path.join(evidenceDirectory, "result.json"), "{}\n"),
     ]);
 
-    await prunePrivateHistoryEvidence(root);
-    for (const removed of [
-      "final-state.png",
-      "undeclared.png",
-      "failure.webm",
-      "unsafe.svg",
-    ]) {
+    const publicScreenshots = publicScreenshotPaths(campaign);
+    await prunePrivateHistoryEvidence(root, publicScreenshots);
+    await expect(
+      readFile(path.join(evidenceDirectory, "final-state.png")),
+    ).resolves.toEqual(png);
+    for (const removed of ["undeclared.png", "failure.webm", "unsafe.svg"]) {
       await expect(
         readFile(path.join(evidenceDirectory, removed)),
       ).rejects.toThrow();
@@ -419,8 +424,10 @@ describe("historical publication security", () => {
     expect(
       isHistoricalBundlePathAllowed(
         `evidence/${execution.id}/attempt-1/final-state.png`,
+        false,
+        publicScreenshots,
       ),
-    ).toBe(false);
+    ).toBe(true);
     await regenerateRunnerDashboard({
       bundle: root,
       publicSummaryImageHref: "public-images/campaign-summary.png",
@@ -432,14 +439,52 @@ describe("historical publication security", () => {
       root,
       campaign.campaignId,
       true,
+      publicScreenshots,
     );
     expect(manifest.files.map((file) => file.path)).toContain(
       "public-images/campaign-summary.png",
     );
+    expect(manifest.files.map((file) => file.path)).toContain(
+      `evidence/${execution.id}/attempt-1/final-state.png`,
+    );
     await writeFile(summaryPath, "not a png");
     await expect(
-      createBundleManifest(root, campaign.campaignId, true),
+      createBundleManifest(root, campaign.campaignId, true, publicScreenshots),
     ).rejects.toThrow("does not match its raster file type");
+  });
+
+  it("rejects unsafe screenshot paths and includes failed-cell captures", () => {
+    const execution = runnerMatrix[0]!;
+    const campaign = buildRunnerCampaign({
+      campaignId: "unsafe-screenshot",
+      generatedAt: "2026-08-28T00:01:00.000Z",
+      expected: [execution.id],
+      results: [
+        {
+          ...result(execution, "passed"),
+          screenshots: [
+            {
+              id: "unsafe",
+              label: "Unsafe",
+              file: "../secret.png",
+            },
+          ],
+        },
+      ],
+    });
+    expect(() => publicScreenshotPaths(campaign)).toThrow(
+      "Cannot publish unsafe screenshot path",
+    );
+
+    const failedCampaign = buildRunnerCampaign({
+      campaignId: "failed-screenshot",
+      generatedAt: "2026-08-28T00:01:00.000Z",
+      expected: [execution.id],
+      results: [result(execution, "failed")],
+    });
+    expect([...publicScreenshotPaths(failedCampaign)]).toEqual([
+      `evidence/${execution.id}/attempt-1/failure.png`,
+    ]);
   });
 
   it("replaces target-supplied public assets with trusted publisher assets", async () => {

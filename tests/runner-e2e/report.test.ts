@@ -194,10 +194,10 @@ describe("runner E2E report aggregation", () => {
     expect(dashboard).toContain("data-gallery-next");
     expect(dashboard).toContain("View gallery · 1");
     expect(dashboard).toContain(
-      "Visual evidence is retained in the access-controlled workflow artifact",
+      "Declared PNG screenshots and sanitized structured evidence are retained with every published campaign",
     );
     expect(dashboard).toContain(
-      "Public history excludes provider-produced visual evidence",
+      "Declared screenshots and sanitized structured evidence published",
     );
     expect(dashboard).toContain("message_contains");
     expect(dashboard).toContain("Matchers and test context");

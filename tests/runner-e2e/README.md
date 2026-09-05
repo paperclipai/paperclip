@@ -189,10 +189,11 @@ Packaged, access-controlled evidence is written beneath
 outcomes, sanitized fixture/API metadata, a result record, JUnit, HTML, and a
 blob report. Failures additionally retain the Playwright trace/video, browser
 diagnostics, failure screenshot, and sanitized Paperclip/run logs when
-produced. Provider/UI PNG and WebM files remain limited to the local results
-directory and access-controlled GitHub Actions artifact because secrets can be
-rendered into pixels. SVG is active content and is rejected from the packaged
-evidence entirely.
+produced. WebM files remain limited to the local results directory and
+access-controlled GitHub Actions artifact. Declared PNG screenshots are also
+published with permanent campaign dashboards; fixture authors must therefore
+keep credentials and other private data out of every captured UI state. SVG is
+active content and is rejected from the packaged evidence entirely.
 
 Every completed local campaign also writes
 `tests/runner-e2e/results/<campaign>/dashboard.html`. The self-contained page
@@ -205,22 +206,26 @@ usage is labeled `unavailable` or `unpriced`; it is never presented as zero
 cost. The CI report job stages the same portable site at
 `normalized/index.html` inside the access-controlled merged report artifact.
 
-Permanent publication uses two explicit bundles. The CloudFront-backed S3
-history contains one publisher-generated `public-images/campaign-summary.png`.
+Permanent publication uses two explicit bundles. Both retain the PNG files
+declared by normalized results, plus the fixed `failure.png` for failed cells,
+so every campaign dashboard has its screenshot thumbnails and gallery. The
+CloudFront-backed S3 history also contains one publisher-generated
+`public-images/campaign-summary.png`.
 Trusted publisher code renders it offline from fixed catalog labels and
 sanitized status/count/duration fields; provider output, error text, comments,
 and target-produced pixels are never inputs. The PNG must pass a 12 MiB bound
 and signature validation before entering the immutable manifest. S3 also
 retains allowlisted inert per-attempt evidence (`.json`, `.log`, `.md`, and
 `.txt`); `.log` copies have already passed exact-value/key-shape scanning and
-redaction. The GitHub Pages bundle is regenerated separately and remains
-structured-only.
+redaction. The GitHub Pages bundle is regenerated separately with the same
+declared-screenshot boundary.
 
 Both public bundles exclude video, archives, raw/unallowlisted logs, SVG or
 other active content, generated Playwright/blob/HTML report trees, and
-per-attempt XML. The root `junit.xml` remains public because the report
-aggregator builds it from fixed markup and XML-escaped fields. Full evidence
-remains available only in the access-controlled workflow artifact.
+undeclared PNG files, and per-attempt XML. The root `junit.xml` remains public
+because the report aggregator builds it from fixed markup and XML-escaped
+fields. Full evidence remains available only in the access-controlled workflow
+artifact.
 
 ### Billing interpretation
 
@@ -388,9 +393,11 @@ bundle digest fails closed.
 GitHub Pages remains the stable latest dashboard. Enable Pages with GitHub
 Actions as its source and set `RUNNER_FULL_STACK_E2E_PUBLISH_PAGES=true`.
 The publisher creates an S3 stage with the trusted synthetic summary PNG and a
-separate structured-only Pages stage. Neither surface publishes provider/UI
-screenshots, video, archives, generated reports, SVG/active content, databases,
-Paperclip homes, workspaces, raw/unallowlisted logs, or credentials.
+separate Pages stage. Both surfaces publish only declared per-result PNG
+screenshots (plus failed-cell `failure.png`) alongside sanitized structured
+evidence. Neither surface publishes video, archives, generated reports,
+SVG/active content, databases, Paperclip homes, workspaces, raw/unallowlisted
+logs, or credentials.
 
 See [FIXTURES.md](./FIXTURES.md) before adding or changing a profile,
 environment, task, matcher, or future Paperclip object fixture.

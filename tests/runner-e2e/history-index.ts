@@ -215,7 +215,7 @@ export function renderRunnerHistoryIndex(
       <div>
         <p class="eyebrow">Historical test reporting</p>
         <h1>Runner E2E campaigns</h1>
-        <p class="lede">Each row is one workflow campaign against a Paperclip revision. Open a report for its configuration matrices, matchers, per-test billing, and sanitized structured evidence. Provider-produced visual evidence remains in access-controlled workflow artifacts.</p>
+        <p class="lede">Each row is one workflow campaign against a Paperclip revision. Open a report for its configuration matrices, matchers, per-test billing, declared screenshots, and sanitized structured evidence. Additional diagnostic evidence remains in access-controlled workflow artifacts.</p>
       </div>
       <div class="summary" aria-label="History summary">
         <div class="metric"><strong>${campaigns.length}</strong><span>Campaigns</span></div>
@@ -234,7 +234,7 @@ export function renderRunnerHistoryIndex(
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <footer><span>Updated ${html(date(history.updatedAt))} UTC</span><span>Immutable campaign reports · Trusted synthetic summary image and inert structured evidence</span></footer>
+    <footer><span>Updated ${html(date(history.updatedAt))} UTC</span><span>Immutable campaign reports · Declared screenshots and inert structured evidence</span></footer>
   </main>
 </body>
 </html>`;

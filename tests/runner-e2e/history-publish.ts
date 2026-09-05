@@ -42,13 +42,17 @@ const PUBLISH_ROOT_FILES = new Set([
 ]);
 const PUBLIC_EVIDENCE_EXTENSIONS = new Set([".json", ".log", ".md", ".txt"]);
 const MAX_PUBLIC_RASTER_BYTES = 12 * 1024 * 1024;
+const EMPTY_PUBLIC_SCREENSHOTS: ReadonlySet<string> = new Set();
 const PRIVATE_EVIDENCE_DIRECTORIES = new Set([
   "blob-report",
   "html-report",
   "playwright-output",
 ]);
 
-function publicEvidencePath(relative: string) {
+function publicEvidencePath(
+  relative: string,
+  publicScreenshots: ReadonlySet<string> = EMPTY_PUBLIC_SCREENSHOTS,
+) {
   const match = relative.match(
     /^evidence\/[A-Za-z0-9._-]+\/attempt-[1-9][0-9]*\/(.+)$/,
   );
@@ -66,14 +70,47 @@ function publicEvidencePath(relative: string) {
   ) {
     return false;
   }
-  return PUBLIC_EVIDENCE_EXTENSIONS.has(
-    path.posix.extname(evidencePath).toLowerCase(),
+  return (
+    PUBLIC_EVIDENCE_EXTENSIONS.has(
+      path.posix.extname(evidencePath).toLowerCase(),
+    ) || publicScreenshots.has(relative)
   );
+}
+
+export function publicScreenshotPaths(campaign: RunnerE2ECampaign) {
+  const screenshots = new Set<string>();
+  for (const result of campaign.results) {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,299}$/.test(result.executionId) ||
+      !Number.isSafeInteger(result.attempt) ||
+      result.attempt < 1
+    ) {
+      throw new Error(
+        `Cannot publish screenshots for unsafe execution identity ${result.executionId}`,
+      );
+    }
+    const files = [
+      ...(result.screenshots?.map((screenshot) => screenshot.file) ?? []),
+      ...(result.status === "failed" ? ["failure.png"] : []),
+    ];
+    for (const file of files) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.png$/i.test(file)) {
+        throw new Error(
+          `Cannot publish unsafe screenshot path for ${result.executionId}: ${file}`,
+        );
+      }
+      screenshots.add(
+        `evidence/${result.executionId}/attempt-${result.attempt}/${file}`,
+      );
+    }
+  }
+  return screenshots;
 }
 
 export function isHistoricalBundlePathAllowed(
   relative: string,
   allowPublicSummary = false,
+  publicScreenshots: ReadonlySet<string> = EMPTY_PUBLIC_SCREENSHOTS,
 ) {
   if (
     relative.includes("\\") ||
@@ -92,7 +129,7 @@ export function isHistoricalBundlePathAllowed(
   ) {
     return true;
   }
-  return publicEvidencePath(relative);
+  return publicEvidencePath(relative, publicScreenshots);
 }
 
 function hasPublicPngMagic(content: Buffer) {
@@ -120,32 +157,39 @@ async function validatePublicRaster(absolute: string, relative: string) {
   }
 }
 
-async function pruneEvidenceDirectory(root: string, current: string) {
+async function pruneEvidenceDirectory(
+  root: string,
+  current: string,
+  publicScreenshots: ReadonlySet<string>,
+) {
   const entries = await readdir(current, { withFileTypes: true });
   for (const entry of entries) {
     const absolute = path.join(current, entry.name);
     if (entry.isDirectory()) {
-      await pruneEvidenceDirectory(root, absolute);
+      await pruneEvidenceDirectory(root, absolute, publicScreenshots);
       if ((await readdir(absolute)).length === 0) {
         await rm(absolute, { recursive: true });
       }
       continue;
     }
     const relative = path.relative(root, absolute).split(path.sep).join("/");
-    if (!entry.isFile() || !publicEvidencePath(relative)) {
+    if (!entry.isFile() || !publicEvidencePath(relative, publicScreenshots)) {
       await rm(absolute, { force: true });
     }
   }
 }
 
-export async function prunePrivateHistoryEvidence(root: string) {
+export async function prunePrivateHistoryEvidence(
+  root: string,
+  publicScreenshots: ReadonlySet<string> = EMPTY_PUBLIC_SCREENSHOTS,
+) {
   const evidenceRoot = path.join(root, "evidence");
   const metadata = await lstat(evidenceRoot).catch(() => null);
   if (!metadata) return;
   if (!metadata.isDirectory()) {
     throw new Error("Historical evidence root must be a directory");
   }
-  await pruneEvidenceDirectory(root, evidenceRoot);
+  await pruneEvidenceDirectory(root, evidenceRoot, publicScreenshots);
 }
 
 export async function stageTrustedHistoryAssets(
@@ -248,6 +292,7 @@ async function relativeFiles(
   root: string,
   current = root,
   allowPublicSummary = false,
+  publicScreenshots: ReadonlySet<string> = EMPTY_PUBLIC_SCREENSHOTS,
 ): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true });
   const files: string[] = [];
@@ -257,11 +302,24 @@ async function relativeFiles(
       throw new Error(`Refusing to publish symbolic link ${entry.name}`);
     }
     if (entry.isDirectory()) {
-      files.push(...(await relativeFiles(root, absolute, allowPublicSummary)));
+      files.push(
+        ...(await relativeFiles(
+          root,
+          absolute,
+          allowPublicSummary,
+          publicScreenshots,
+        )),
+      );
     } else if (entry.isFile()) {
       const relative = path.relative(root, absolute).split(path.sep).join("/");
       if (MUTABLE_HISTORY_FILES.has(relative)) continue;
-      if (!isHistoricalBundlePathAllowed(relative, allowPublicSummary)) {
+      if (
+        !isHistoricalBundlePathAllowed(
+          relative,
+          allowPublicSummary,
+          publicScreenshots,
+        )
+      ) {
         throw new Error(
           `Refusing non-allowlisted historical bundle path ${relative}`,
         );
@@ -276,16 +334,20 @@ export async function createBundleManifest(
   root: string,
   campaignId: string,
   allowPublicSummary = false,
+  publicScreenshots: ReadonlySet<string> = EMPTY_PUBLIC_SCREENSHOTS,
 ): Promise<BundleManifest> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(campaignId)) {
     throw new Error("Campaign ID is unsafe for immutable object storage");
   }
   const files = await Promise.all(
-    (await relativeFiles(root, root, allowPublicSummary))
+    (await relativeFiles(root, root, allowPublicSummary, publicScreenshots))
       .sort()
       .map(async (relative) => {
         const absolute = path.join(root, ...relative.split("/"));
-        if (relative === "public-images/campaign-summary.png") {
+        if (
+          relative === "public-images/campaign-summary.png" ||
+          publicScreenshots.has(relative)
+        ) {
           await validatePublicRaster(absolute, relative);
         }
         const [content, metadata] = await Promise.all([
@@ -498,16 +560,17 @@ async function main() {
       `${destination.publicBaseUrl}/${destination.prefix}`,
     ),
   );
+  const publicScreenshots = publicScreenshotPaths(campaign);
 
   // Campaign bundles are immutable and must not capture a mutable history
   // file left in a reused local directory. The root landing page below is the
   // only dashboard that embeds navigation across campaigns. S3 gets its own
-  // staged copy. All target/provider-produced raster remains private. The sole
-  // public image is rendered below by trusted publisher code from fixed catalog
-  // labels and numeric/status fields while Chromium has no network access.
+  // staged copy. Only screenshots declared by normalized results (plus the
+  // fixed failure screenshot for failed executions) cross the public boundary;
+  // all other target-produced files remain subject to the structured allowlist.
   const s3ReportRoot = path.join(temporary, "s3-campaign");
   await cp(reportRoot, s3ReportRoot, { recursive: true, errorOnExist: true });
-  await prunePrivateHistoryEvidence(s3ReportRoot);
+  await prunePrivateHistoryEvidence(s3ReportRoot, publicScreenshots);
   await stageTrustedHistoryAssets(s3ReportRoot);
   await rm(path.join(s3ReportRoot, "public-images"), {
     recursive: true,
@@ -528,6 +591,7 @@ async function main() {
     s3ReportRoot,
     campaign.campaignId,
     true,
+    publicScreenshots,
   );
   const campaignPrefix = `${destination.prefix}/campaigns/${campaign.campaignId}`;
   const manifestKey = `${campaignPrefix}/bundle-manifest.json`;
@@ -556,12 +620,12 @@ async function main() {
     );
   }
 
-  // Pages intentionally remains a smaller, structured-only publication in a
-  // sibling stage. The downloaded report stays intact for this whole job.
+  // Pages uses the same declared-screenshot boundary in a sibling stage. The
+  // downloaded access-controlled report stays intact for this whole job.
   const pagesRoot = path.join(path.dirname(reportRoot), "pages");
   await rm(pagesRoot, { recursive: true, force: true });
   await cp(reportRoot, pagesRoot, { recursive: true, errorOnExist: true });
-  await prunePrivateHistoryEvidence(pagesRoot);
+  await prunePrivateHistoryEvidence(pagesRoot, publicScreenshots);
   await stageTrustedHistoryAssets(pagesRoot);
   await rm(path.join(pagesRoot, "public-images"), {
     recursive: true,
@@ -577,7 +641,12 @@ async function main() {
     writeFile(latestGreenFile, json(pointers.latestGreen), "utf8"),
   ]);
   await regenerateRunnerDashboard({ bundle: pagesRoot, historyFile });
-  await createBundleManifest(pagesRoot, campaign.campaignId);
+  await createBundleManifest(
+    pagesRoot,
+    campaign.campaignId,
+    false,
+    publicScreenshots,
+  );
   const landingDirectory = path.join(temporary, "landing");
   await regenerateRunnerDashboard({
     bundle: s3ReportRoot,
