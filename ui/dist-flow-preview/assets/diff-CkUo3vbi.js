@@ -1,1 +1,0 @@
-var i={"+":"inserted","-":"deleted","@":"meta"},r={name:"diff",token:function(e){var n=e.string.search(/[\t ]+?$/);if(!e.sol()||n===0)return e.skipToEnd(),("error "+(i[e.string.charAt(0)]||"")).replace(/ $/,"");var o=i[e.peek()]||e.skipToEnd();return n===-1?e.skipToEnd():e.pos=n,o}};export{r as diff};
