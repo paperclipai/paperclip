@@ -154,6 +154,24 @@ function renderCase(
     (entry?.valid ? "All invariants passed" : "Not selected");
   const screenshots = resolveScreenshots(entry);
   const billing = entry ? summarizeExecutionBilling(entry.result) : null;
+  const matcherResults = entry?.result.matcherResults ?? [];
+  const passedMatchers = matcherResults.filter(
+    (result) => result.passed,
+  ).length;
+  const searchText = [
+    execution.id,
+    execution.task.label,
+    execution.profile.label,
+    execution.profile.generation,
+    execution.profile.provider,
+    execution.profile.model,
+    execution.environment.label,
+    execution.environment.provider,
+    execution.suite.label,
+    label,
+  ]
+    .join(" ")
+    .toLowerCase();
   const availableFiles = entry?.evidenceFiles
     ? new Set(entry.evidenceFiles)
     : null;
@@ -197,6 +215,10 @@ function renderCase(
             data-gallery-environment-provider="${html(execution.environment.provider)}"
             data-gallery-execution-target="${html(execution.environment.expectedExecutionTarget.kind)}"
             data-gallery-runtime="${html(entry?.result.runtimeMode ?? execution.profile.expectedRuntimeMode)}"
+            data-gallery-status="${html(label)}"
+            data-gallery-duration="${html(entry ? durationLabel(entry.result.durationMs) : "Not run")}"
+            data-gallery-tokens="${html(billing ? `${tokenLabel(billing.llm.inputTokens)} in · ${tokenLabel(billing.llm.outputTokens)} out` : "Unavailable")}"
+            data-gallery-matchers="${html(matcherResults.length > 0 ? `${passedMatchers}/${matcherResults.length} matchers passed` : "No matchers recorded")}"
             aria-label="Open ${html(item.label)} for ${html(execution.id)} in gallery"
           >
             <span class="screenshot-frame"><img src="${html(item.href)}" loading="lazy" alt="${html(item.label)} for ${html(execution.id)}"></span>
@@ -212,7 +234,16 @@ function renderCase(
         <div><span>Execution</span><strong>${billing.runtime.estimatedListCostUsd === undefined ? html(billing.runtime.costStatus === "not_metered" ? "Local · not metered" : "Cost unavailable") : `${html(usdLabel(billing.runtime.estimatedListCostUsd))} est.`}</strong><small>${html(durationLabel(billing.runtime.agentRunDurationMs))} agent${billing.runtime.leaseDurationMs === null ? "" : ` · ${html(durationLabel(billing.runtime.leaseDurationMs))} lease`}</small></div>
       </div>`
     : "";
-  return `<article class="case case-${state}" data-execution-id="${html(execution.id)}">
+  return `<article
+    class="case case-${state}"
+    data-execution-id="${html(execution.id)}"
+    data-report-case
+    data-report-suite="${html(execution.suite.id)}"
+    data-report-profile="${html(execution.profile.id)}"
+    data-report-environment="${html(execution.environment.id)}"
+    data-report-status="${html(state)}"
+    data-report-search="${html(searchText)}"
+  >
     <div class="case-heading">
       <strong>${html(execution.task.label)}</strong>
       <span class="status">${html(label)}</span>
@@ -501,7 +532,7 @@ function renderSuiteMatrix(input: {
           </td>`;
         })
         .join("");
-      return `<tr><th scope="row" class="profile-cell"><div class="profile-sticky">
+      return `<tr data-report-profile-row><th scope="row" class="profile-cell"><div class="profile-sticky">
         <span class="agent-capsule agent-${(profileIndex % 10) + 1}" aria-hidden="true"></span>
         <span class="profile-copy"><span><strong>${html(profile.label)}</strong><span class="generation">${html(profile.generation)}</span></span><small>${html(profile.provider)} · ${html(profile.model)}</small></span>
       </div></th>${columns}</tr>`;
@@ -530,7 +561,7 @@ function renderSuiteMatrix(input: {
     <div class="section-heading"><div><p class="eyebrow">Test suite</p><h2>${html(suite.label)}</h2></div><p>${html(suite.description)}</p></div>
     ${summaryHtml}
     <div class="table-kicker"><strong>Configuration matrix</strong><span>${profiles.length} profiles · ${environments.length} environments · ${selected} selected</span></div>
-    <div class="table-wrap"><table class="matrix"><thead><tr><th scope="col">Agent profile</th>${environmentHeaders}</tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="table-wrap"><table class="matrix"><colgroup><col class="profile-column">${environments.map(() => '<col class="environment-column">').join("")}</colgroup><thead><tr><th scope="col">Agent profile</th>${environmentHeaders}</tr></thead><tbody>${rows}</tbody></table></div>
   </section>`;
 }
 
@@ -578,6 +609,22 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
   const publicSummaryImageHref = safePublicAssetHref(
     input.publicSummaryImageHref,
   );
+  const filterProfiles = [
+    ...new Map(
+      input.catalog.map((execution) => [
+        execution.profile.id,
+        execution.profile,
+      ]),
+    ).values(),
+  ];
+  const filterEnvironments = [
+    ...new Map(
+      input.catalog.map((execution) => [
+        execution.environment.id,
+        execution.environment,
+      ]),
+    ).values(),
+  ];
 
   return `<!doctype html>
 <html lang="en">
@@ -617,6 +664,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       --idle-text: #52585d;
       --idle-border: #a8aeb2;
       --radius: 8px;
+      --navigation-sticky-offset: 58px;
       --font-sans: "Paperclip Inter", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     }
@@ -672,23 +720,32 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .gallery-launch, .gallery-control, .gallery-close { border: 1px solid var(--border-strong); border-radius: calc(var(--radius) * .8); background: var(--background); color: var(--foreground); cursor: pointer; font-weight: 600; transition: background 150ms ease, color 150ms ease, border-color 150ms ease; }
     .gallery-launch { min-width: 138px; padding: 10px 15px; }
     .gallery-launch:hover, .gallery-control:hover, .gallery-close:hover { border-color: var(--foreground); background: var(--primary); color: var(--primary-foreground); }
-    .gallery-launch:focus-visible, .gallery-control:focus-visible, .gallery-close:focus-visible, .screenshot-trigger:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+    .gallery-launch:focus-visible, .gallery-control:focus-visible, .gallery-close:focus-visible, .screenshot-trigger:focus-visible, .report-filters input:focus-visible, .report-filters select:focus-visible, .filter-reset:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+    .report-filters { display: grid; grid-template-columns: minmax(240px, 1.6fr) repeat(4, minmax(130px, .7fr)) auto; align-items: end; gap: 10px; margin: 0 0 40px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+    .report-filters label { display: grid; gap: 5px; min-width: 0; }
+    .report-filters label > span { color: var(--muted-foreground); font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+    .report-filters input, .report-filters select, .filter-reset { width: 100%; min-height: 38px; padding: 7px 9px; border: 1px solid var(--border-strong); border-radius: calc(var(--radius) * .8); background: var(--background); color: var(--foreground); }
+    .filter-reset { width: auto; cursor: pointer; font-weight: 600; }
+    .filter-reset:hover { border-color: var(--foreground); }
+    .filter-result { grid-column: 1 / -1; margin: 0; color: var(--muted-foreground); font: 10px/1.4 var(--font-mono); }
     .table-kicker { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 1px solid var(--border); color: var(--muted-foreground); }
     .table-kicker strong { color: var(--foreground); font-weight: 600; }
     .table-kicker span { font: 11px/1.4 var(--font-mono); font-variant-numeric: tabular-nums; }
     .table-wrap { overflow: visible; }
-    .matrix { width: 100%; min-width: 1120px; border-collapse: separate; border-spacing: 0; }
+    .matrix { width: 100%; min-width: 1120px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
+    .matrix .profile-column { width: 260px; }
+    .matrix .environment-column { width: auto; }
     .matrix th, .matrix td { padding: 16px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); vertical-align: top; text-align: left; }
     .matrix tr:last-child th, .matrix tr:last-child td { border-bottom: 0; }
     .matrix th:last-child, .matrix td:last-child { border-right: 0; }
-    .matrix thead th { position: sticky; top: 0; z-index: 4; background: var(--raised); }
+    .matrix thead th { position: sticky; top: var(--navigation-sticky-offset); z-index: 4; background: var(--raised); }
     .matrix thead th:first-child { left: 0; z-index: 6; width: 260px; }
     .matrix thead small, .matrix tbody th small { display: block; margin-top: 4px; color: var(--muted-foreground); font-weight: 400; }
     .environment-label { font-size: 15px; font-weight: 650; }
     .mobile-environment-header { display: none; }
     .profile-cell { position: sticky; left: 0; z-index: 3; width: 260px; background: var(--card); }
     .profile-cell { display: table-cell; }
-    .profile-sticky { position: sticky; top: 76px; display: flex; align-items: flex-start; min-width: 0; }
+    .profile-sticky { position: sticky; top: calc(var(--navigation-sticky-offset) + 76px); display: flex; align-items: flex-start; min-width: 0; }
     .profile-sticky > .agent-capsule { flex: none; margin: 2px 12px 18px 0; }
     .profile-copy { display: block; min-width: 0; }
     .profile-copy strong { font-size: 14px; }
@@ -706,7 +763,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .agent-10 { background: linear-gradient(to bottom, #f2d95f, #4fbcba); }
     .generation { display: inline-block; margin-left: 7px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted-foreground); font: 500 10px/1.4 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
     .case-stack { display: grid; gap: 12px; }
-    .case { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+    .case { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden; }
     .case-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
     .case-heading strong { font-size: 14px; font-weight: 650; }
     .status, .matcher-state { display: inline-block; flex: none; padding: 3px 8px; border: 1px solid; border-radius: 999px; font: 600 10px/1.4 var(--font-sans); letter-spacing: .05em; text-transform: uppercase; }
@@ -732,13 +789,18 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .screenshot-caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; }
     .screenshot-caption span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-foreground); font-size: 10px; }
     .screenshot-caption span:last-child { font-size: 10px; font-weight: 650; }
-    .matcher-wrap { overflow-x: auto; margin: 12px 0; border: 1px solid var(--border); border-radius: calc(var(--radius) * .8); }
-    .matchers { width: 100%; min-width: 680px; border-collapse: collapse; font-size: 11px; }
+    .case-context { display: block; max-width: 100%; }
+    .matcher-wrap { width: 100%; max-width: 100%; overflow-x: auto; margin: 12px 0; border: 1px solid var(--border); border-radius: calc(var(--radius) * .8); }
+    .matchers { width: 100%; min-width: 680px; table-layout: fixed; border-collapse: collapse; font-size: 11px; }
+    .matchers th:nth-child(1) { width: 72px; }
+    .matchers th:nth-child(2) { width: 144px; }
+    .matchers th:nth-child(4) { width: 110px; }
     .matchers th, .matchers td { padding: 8px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); vertical-align: top; }
     .matchers tr:last-child td { border-bottom: 0; }
     .matchers th:last-child, .matchers td:last-child { border-right: 0; }
     .matchers th { background: var(--raised); color: var(--muted-foreground); font-weight: 600; }
     .matchers code { display: inline; color: var(--foreground); }
+    .matchers td { overflow-wrap: anywhere; }
     .usage { margin: 12px 0; color: var(--muted-foreground); }
     .billing-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 12px 0 10px; border: 1px solid var(--border); border-radius: calc(var(--radius) * .8); background: var(--raised); }
     .billing-strip > div { min-width: 0; padding: 9px 10px; border-right: 1px solid var(--border); }
@@ -753,10 +815,10 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .billing-metric strong { display: block; overflow-wrap: anywhere; font: 550 17px/1.25 var(--font-mono); font-variant-numeric: tabular-nums; }
     .billing-metric span { display: block; margin-top: 4px; color: var(--muted-foreground); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
     .billing-note { grid-column: 1 / -1; margin: 0; padding: 11px 16px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 11px; }
-    .suite-nav { position: sticky; top: 0; z-index: 12; display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 40px; padding: 10px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--background); }
+    .suite-nav { position: sticky; top: 0; z-index: 12; display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 24px; padding: 10px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--background); }
     .suite-nav a { padding: 7px 10px; border-radius: calc(var(--radius) * .8); color: var(--muted-foreground); font-size: 12px; font-weight: 600; text-decoration: none; }
     .suite-nav a:hover { background: var(--raised); color: var(--foreground); }
-    .suite-section, .history-section { scroll-margin-top: 72px; margin-top: 64px; }
+    .suite-section, .history-section { scroll-margin-top: calc(var(--navigation-sticky-offset) + 16px); margin-top: 64px; }
     .section-heading { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 520px); align-items: end; gap: 32px; margin-bottom: 24px; }
     .section-heading h2 { margin: 0; font-size: clamp(25px, 3vw, 38px); line-height: 1.05; letter-spacing: -.035em; }
     .section-heading > p { margin: 0; color: var(--muted-foreground); }
@@ -816,6 +878,13 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .gallery-context span { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
     .gallery-context strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
     .gallery-context em { color: #b8b8b5; font: 10px/1.4 var(--font-mono); font-style: normal; white-space: nowrap; }
+    .gallery-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-top: 8px; }
+    .gallery-facts > span { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+    .gallery-facts em { color: #b8b8b5; font: 10px/1.4 var(--font-mono); font-style: normal; text-transform: uppercase; }
+    .gallery-facts strong { font: 600 11px/1.4 var(--font-mono); }
+    .gallery-status { padding: 3px 8px; border: 1px solid rgb(255 255 255 / 36%); border-radius: 999px; font: 650 10px/1.4 var(--font-sans); letter-spacing: .05em; text-transform: uppercase; }
+    .gallery-status[data-status="passed"] { border-color: var(--pass-border); background: var(--pass-bg); color: #6ee79a; }
+    .gallery-status[data-status="failed"] { border-color: var(--fail-border); background: var(--fail-bg); color: #ff8181; }
     .gallery-execution { margin-top: 3px; color: #b8b8b5; font: 10px/1.4 var(--font-mono); }
     .gallery-close, .gallery-control { min-height: 38px; padding: 8px 12px; border-color: rgb(255 255 255 / 32%); background: transparent; color: #fafafa; }
     .gallery-stage { position: relative; display: grid; place-items: center; min-height: 0; padding: 24px 88px; overflow: hidden; touch-action: pan-y; }
@@ -853,6 +922,10 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       .section-heading { grid-template-columns: 1fr; gap: 12px; }
       .trend-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .history-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .report-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .report-search, .filter-result { grid-column: 1 / -1; }
+      .suite-nav { top: 0; }
+      .suite-section, .history-section { scroll-margin-top: 72px; }
     }
     @media (max-width: 640px) {
       .brand-bar { min-height: 56px; padding: 0 16px; }
@@ -875,6 +948,8 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       .suite-nav { top: 0; overflow-x: auto; flex-wrap: nowrap; }
       .suite-nav a { white-space: nowrap; }
       .history-pointers, .trend-grid, .history-filters { grid-template-columns: 1fr; }
+      .report-filters { grid-template-columns: 1fr; }
+      .report-search, .filter-result { grid-column: auto; }
       .suite-summary { grid-template-columns: 1fr; }
       .suite-summary > div, .suite-summary > div:nth-child(even) { border-right: 0; border-bottom: 1px solid var(--border); }
       .suite-summary > div:last-child { border-bottom: 0; }
@@ -906,7 +981,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <div>
         <p class="eyebrow">Full-stack acceptance campaign</p>
         <h1>${html(input.title)}</h1>
-        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Provider-produced visual evidence remains in the access-controlled workflow artifact; public history contains inert structured evidence and a trusted synthetic campaign summary.</p>
+        <p class="lede">A browser-verified matrix of runner profiles, execution environments, and deterministic task contracts. Visual evidence is retained in the access-controlled workflow artifact; public history contains inert structured evidence and a trusted synthetic campaign summary.</p>
       </div>
       <div class="report-actions">
         <div class="summary" aria-label="Campaign summary">
@@ -934,6 +1009,15 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       ${suites.map((suite) => `<a href="#suite-${html(suite.id)}">${html(suite.label)}</a>`).join("")}
       <a href="#history">History</a>
     </nav>
+    <section class="report-filters" aria-label="Filter test results">
+      <label class="report-search"><span>Search tests</span><input type="search" placeholder="Test, model, provider, execution ID…" autocomplete="off" data-report-query></label>
+      <label><span>Agent profile</span><select data-report-profile><option value="">All profiles</option>${filterProfiles.map((profile) => `<option value="${html(profile.id)}">${html(profile.label)}</option>`).join("")}</select></label>
+      <label><span>Environment</span><select data-report-environment><option value="">All environments</option>${filterEnvironments.map((environment) => `<option value="${html(environment.id)}">${html(environment.label)}</option>`).join("")}</select></label>
+      <label><span>Suite</span><select data-report-suite><option value="">All suites</option>${suites.map((suite) => `<option value="${html(suite.id)}">${html(suite.label)}</option>`).join("")}</select></label>
+      <label><span>Status</span><select data-report-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="missing">Missing</option><option value="not-selected">Not selected</option></select></label>
+      <button class="filter-reset" type="button" data-report-reset>Reset</button>
+      <p class="filter-result" data-report-result aria-live="polite"></p>
+    </section>
     ${suiteSections}
     ${historySection}
     <footer><span>Generated ${html(input.generatedAt)}</span><span>${input.catalog.length} catalog executions · Public history excludes provider-produced visual evidence</span></footer>
@@ -947,6 +1031,12 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
             <span><strong data-gallery-profile></strong><em data-gallery-profile-detail></em></span>
             <span><strong data-gallery-environment></strong><em data-gallery-environment-detail></em></span>
             <span><strong data-gallery-case></strong><em data-gallery-runtime></em></span>
+          </div>
+          <div class="gallery-facts">
+            <span class="gallery-status" data-gallery-status></span>
+            <span><em>Duration</em><strong data-gallery-duration></strong></span>
+            <span><em>Tokens</em><strong data-gallery-tokens></strong></span>
+            <span><em>Tests</em><strong data-gallery-matchers></strong></span>
           </div>
           <code class="gallery-execution" data-gallery-execution></code>
         </div>
@@ -976,13 +1066,24 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       const environmentDetail = dialog.querySelector("[data-gallery-environment-detail]");
       const caseLabel = dialog.querySelector("[data-gallery-case]");
       const runtime = dialog.querySelector("[data-gallery-runtime]");
+      const status = dialog.querySelector("[data-gallery-status]");
+      const duration = dialog.querySelector("[data-gallery-duration]");
+      const tokens = dialog.querySelector("[data-gallery-tokens]");
+      const matchers = dialog.querySelector("[data-gallery-matchers]");
       const position = dialog.querySelector("[data-gallery-position]");
       const stage = dialog.querySelector("[data-gallery-stage]");
-      let activeIndex = 0;
+      let activeItem = items[0];
       let pointerStartX = null;
 
       const render = () => {
-        const item = items[activeIndex];
+        const visibleItems = items.filter((item) => !item.closest("[data-report-case]").hidden);
+        if (visibleItems.length === 0) return;
+        let activeIndex = visibleItems.indexOf(activeItem);
+        if (activeIndex < 0) {
+          activeIndex = 0;
+          activeItem = visibleItems[0];
+        }
+        const item = activeItem;
         image.src = item.dataset.galleryHref;
         image.alt = item.dataset.galleryLabel + " for " + item.dataset.galleryExecution;
         title.textContent = item.dataset.galleryLabel;
@@ -993,14 +1094,23 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         environmentDetail.textContent = item.dataset.galleryEnvironmentProvider + " · " + item.dataset.galleryExecutionTarget;
         caseLabel.textContent = item.dataset.galleryCase;
         runtime.textContent = item.dataset.galleryRuntime + " runtime";
-        position.textContent = "Image " + (activeIndex + 1) + " of " + items.length;
+        status.textContent = item.dataset.galleryStatus;
+        status.dataset.status = item.dataset.galleryStatus;
+        duration.textContent = item.dataset.galleryDuration;
+        tokens.textContent = item.dataset.galleryTokens;
+        matchers.textContent = item.dataset.galleryMatchers;
+        position.textContent = "Image " + (activeIndex + 1) + " of " + visibleItems.length;
       };
       const move = (amount) => {
-        activeIndex = (activeIndex + amount + items.length) % items.length;
+        const visibleItems = items.filter((item) => !item.closest("[data-report-case]").hidden);
+        if (visibleItems.length === 0) return;
+        const activeIndex = Math.max(0, visibleItems.indexOf(activeItem));
+        activeItem = visibleItems[(activeIndex + amount + visibleItems.length) % visibleItems.length];
         render();
       };
-      const open = (index) => {
-        activeIndex = index;
+      const open = (item) => {
+        if (!item) return;
+        activeItem = item;
         render();
         if (typeof dialog.showModal === "function") dialog.showModal();
         else dialog.setAttribute("open", "");
@@ -1010,8 +1120,8 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         else dialog.removeAttribute("open");
       };
 
-      items.forEach((item, index) => item.addEventListener("click", () => open(index)));
-      document.querySelectorAll("[data-gallery-open]").forEach((button) => button.addEventListener("click", () => open(0)));
+      items.forEach((item) => item.addEventListener("click", () => open(item)));
+      document.querySelectorAll("[data-gallery-open]").forEach((button) => button.addEventListener("click", () => open(items.find((item) => !item.closest("[data-report-case]").hidden))));
       dialog.querySelector("[data-gallery-previous]").addEventListener("click", () => move(-1));
       dialog.querySelector("[data-gallery-next]").addEventListener("click", () => move(1));
       dialog.querySelector("[data-gallery-close]").addEventListener("click", close);
@@ -1029,6 +1139,69 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         move(distance > 0 ? -1 : 1);
       });
       stage.addEventListener("pointercancel", () => { pointerStartX = null; });
+    })();
+  </script>
+  <script>
+    (() => {
+      const cases = Array.from(document.querySelectorAll("[data-report-case]"));
+      if (cases.length === 0) return;
+      const query = document.querySelector("[data-report-query]");
+      const profile = document.querySelector("[data-report-profile]");
+      const environment = document.querySelector("[data-report-environment]");
+      const suite = document.querySelector("[data-report-suite]");
+      const status = document.querySelector("[data-report-status]");
+      const reset = document.querySelector("[data-report-reset]");
+      const result = document.querySelector("[data-report-result]");
+      const galleryLaunch = document.querySelector("[data-gallery-open]");
+      const apply = () => {
+        const search = query.value.trim().toLowerCase();
+        let visible = 0;
+        cases.forEach((item) => {
+          const matches =
+            (!search || item.dataset.reportSearch.includes(search)) &&
+            (!profile.value || item.dataset.reportProfile === profile.value) &&
+            (!environment.value || item.dataset.reportEnvironment === environment.value) &&
+            (!suite.value || item.dataset.reportSuite === suite.value) &&
+            (!status.value || item.dataset.reportStatus === status.value);
+          item.hidden = !matches;
+          if (matches) visible += 1;
+        });
+        document.querySelectorAll("[data-report-profile-row]").forEach((row) => {
+          row.hidden = !row.querySelector("[data-report-case]:not([hidden])");
+        });
+        document.querySelectorAll(".suite-section").forEach((section) => {
+          section.hidden = !section.querySelector("[data-report-case]:not([hidden])");
+        });
+        const visibleImages = cases.reduce(
+          (total, item) => total + (item.hidden ? 0 : item.querySelectorAll("[data-gallery-item]").length),
+          0,
+        );
+        result.textContent = visible + " of " + cases.length + " tests shown";
+        if (galleryLaunch) {
+          galleryLaunch.disabled = visibleImages === 0;
+          galleryLaunch.textContent = visibleImages === 0 ? "No visual evidence in selection" : "View gallery · " + visibleImages;
+        }
+      };
+      [query, profile, environment, suite, status].forEach((control) => {
+        control.addEventListener(control === query ? "input" : "change", apply);
+      });
+      reset.addEventListener("click", () => {
+        query.value = "";
+        profile.value = "";
+        environment.value = "";
+        suite.value = "";
+        status.value = "";
+        apply();
+        query.focus();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+        const target = event.target;
+        if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) return;
+        event.preventDefault();
+        query.focus();
+      });
+      apply();
     })();
   </script>
   <script>

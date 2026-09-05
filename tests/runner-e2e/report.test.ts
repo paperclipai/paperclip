@@ -212,6 +212,19 @@ describe("runner E2E report aggregation", () => {
     expect(dashboard).toContain('class="mobile-environment-header"');
     expect(dashboard).toContain("data-gallery-profile=");
     expect(dashboard).toContain("data-gallery-environment=");
+    expect(dashboard).toContain("data-gallery-duration=");
+    expect(dashboard).toContain("data-gallery-tokens=");
+    expect(dashboard).toContain("data-gallery-matchers=");
+    expect(dashboard).toContain("data-report-query");
+    expect(dashboard).toContain("data-report-profile");
+    expect(dashboard).toContain("data-report-environment");
+    expect(dashboard).toContain("data-report-status");
+    expect(dashboard.indexOf('class="report-filters"')).toBeGreaterThan(
+      dashboard.indexOf('class="suite-nav"'),
+    );
+    expect(dashboard).not.toContain(".report-filters { position: sticky");
+    expect(dashboard).toContain("table-layout: fixed");
+    expect(dashboard).toContain('class="profile-column"');
     expect(dashboard).toContain('aria-label="Previous"');
     expect(dashboard).toContain('aria-label="Next"');
     expect(dashboard).not.toContain("overflow: auto; max-height: calc(100vh");
