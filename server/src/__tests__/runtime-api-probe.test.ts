@@ -127,6 +127,45 @@ describe("probeRuntimeApiUrl", () => {
     expect(result.ok === false && result.reason).toContain("https://auth.example.com/cdn-cgi/access/login");
   });
 
+  it("redacts credentials an auth proxy put in its sign-in redirect", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: {
+          location:
+            "https://auth.example.com/cdn-cgi/access/login?code=oauth-grant-value&state=csrf-state-value&kid=team",
+        },
+      }),
+    );
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    const reason = result.ok === false ? result.reason : "";
+    expect(reason).not.toContain("oauth-grant-value");
+    expect(reason).not.toContain("csrf-state-value");
+    // The proxy still has to be identifiable: origin, path, and its non-secret
+    // query configuration are what name the misconfiguration.
+    expect(reason).toContain("https://auth.example.com/cdn-cgi/access/login");
+    expect(reason).toContain("kid=team");
+  });
+
+  it("resolves a relative redirect target so the path still names the front door", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "/cdn-cgi/access/login?token=proxy-ticket-value" },
+      }),
+    );
+
+    const result = await probeRuntimeApiUrl("https://board.example.com", { fetchImpl: fetchImpl as any });
+
+    expect(result.ok).toBe(false);
+    const reason = result.ok === false ? result.reason : "";
+    expect(reason).not.toContain("proxy-ticket-value");
+    expect(reason).toContain("https://board.example.com/cdn-cgi/access/login");
+  });
+
   it("rejects a JSON content-type carrying a non-JSON body", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response("<!doctype html>", { status: 200, headers: { "content-type": "application/json" } }),

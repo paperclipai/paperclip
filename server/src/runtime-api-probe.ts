@@ -121,6 +121,31 @@ export function loggableApiUrl(apiUrl: string): string {
   return redactRemoteUrlCredential(apiUrl, "the configured API URL");
 }
 
+/**
+ * Render a redirect target for a rejection reason.
+ *
+ * Naming the target is what identifies the front door that intercepted the
+ * probe, but an auth proxy's sign-in redirect is exactly where a grant `code`,
+ * a CSRF `state`, or a session ticket shows up — and this reason is logged at
+ * boot, durably, by the caller. The `Location` header is attacker-influenced
+ * and unvetted, so it never reaches the log unredacted.
+ *
+ * A `Location` may legitimately be relative. Resolving it against the probe URL
+ * keeps the path — the part that names the proxy — instead of collapsing the
+ * whole target to the unparseable fallback.
+ */
+function loggableRedirectTarget(location: string, probeUrl: string): string | null {
+  const trimmed = location.trim();
+  if (!trimmed) return null;
+  let absolute: string;
+  try {
+    absolute = new URL(trimmed, probeUrl).toString();
+  } catch {
+    return "an unparseable target";
+  }
+  return redactRemoteUrlCredential(absolute, "an unparseable target");
+}
+
 export type RuntimeApiProbeResult =
   | { ok: true; status: number }
   | { ok: false; reason: string };
@@ -162,9 +187,10 @@ export async function probeRuntimeApiUrl(
 
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
+      const target = location ? loggableRedirectTarget(location, probeUrl) : null;
       return {
         ok: false,
-        reason: `redirected (HTTP ${response.status}${location ? ` to ${location}` : ""}) instead of serving the API`,
+        reason: `redirected (HTTP ${response.status}${target ? ` to ${target}` : ""}) instead of serving the API`,
       };
     }
 
