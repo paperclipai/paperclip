@@ -1,0 +1,146 @@
+diff --git a/src/manifest.ts b/src/manifest.ts
+--- a/src/manifest.ts
++++ b/src/manifest.ts
+@@ -17,7 +17,9 @@ const manifest: PaperclipPluginManifestV1 = {
+     "issues.update",
+     "issue.comments.read",
+     "issue.comments.create",
++    "issue.interactions.read",
++    "issue.interactions.respond",
+     "agents.read",
+     "agents.invoke",
+     "agent.sessions.create",
+diff --git a/src/worker.ts b/src/worker.ts
+--- a/src/worker.ts
++++ b/src/worker.ts
+@@ -914,6 +914,53 @@ export const plugin = definePlugin({
+ 
+       await notify(ctx, rt, event, formatIssueAssigned);
+     });
++
++    ctx.events.on("issue.thread_interaction.created", async (event: PluginEvent) => {
++      const rt = ensureRuntime();
++      if (!rt) return;
++      const payload = event.payload as Record<string, unknown>;
++      const interactionId = String(payload.interactionId ?? "");
++      const issueId = event.entityId ? String(event.entityId) : "";
++      if (!interactionId || !issueId || String(payload.interactionKind ?? "") !== "request_confirmation") return;
++      if (!doneDedupe(`decision|${interactionId}`)) return;
++
++      try {
++        const interactions = await ctx.issues.listInteractions(issueId, event.companyId);
++        const interaction = interactions.find((value) => value.id === interactionId);
++        if (!interaction || interaction.kind !== "request_confirmation" || interaction.status !== "pending") return;
++        if (interaction.effectiveResolverPolicy !== "board_only") return;
++
++        const issue = await ctx.issues.get(issueId, event.companyId);
++        const issueLabel = issue?.identifier
++          ? `${issue.identifier}: ${issue.title}`
++          : issue?.title ?? "Owner decision";
++        const prompt = String(
++          interaction.payload.prompt
++          ?? interaction.title
++          ?? interaction.summary
++          ?? "Owner decision required",
++        );
++        const details = String(interaction.payload.detailsMarkdown ?? interaction.summary ?? "").trim();
++        const lines = ["Owner decision required", "", issueLabel, prompt];
++        if (details && details !== prompt) lines.push("", details);
++
++        await notify(
++          ctx,
++          rt,
++          event,
++          () => ({
++            text: lines.join("\n"),
++            options: {
++              inlineKeyboard: [[
++                { text: "Approve", callback_data: `decision_accept_${interactionId}` },
++                { text: "Revise", callback_data: `decision_revise_${interactionId}` },
++              ]],
++            },
++          }),
++          rt.config.approvalsChatId,
++          rt.config.approvalsTopicId,
++        );
++      } catch (err) {
++        ctx.logger.error("Failed to forward Owner decision to Telegram", {
++          issueId,
++          interactionId,
++          error: String(err),
++        });
++      }
++    });
+ 
+     ctx.events.on("approval.created", async (event: PluginEvent) => {
+       const rt = ensureRuntime();
+@@ -1563,6 +1610,57 @@ async function handleCallbackQuery(
+   const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
+   const messageId = query.message?.message_id;
+ 
++  if (data.startsWith("decision_accept_") || data.startsWith("decision_revise_")) {
++    const accept = data.startsWith("decision_accept_");
++    const interactionId = data.replace(accept ? "decision_accept_" : "decision_revise_", "");
++    if (!chatId || !messageId) {
++      await answerCallbackQuery(ctx, token, query.id, "Decision context missing");
++      return;
++    }
++
++    const mapping = await ctx.state.get({
++      scopeKind: "instance",
++      stateKey: `msg_${chatId}_${messageId}`,
++    }) as { companyId?: string; entityType?: string; entityId?: string } | null;
++    const companyId = mapping?.companyId ? String(mapping.companyId) : null;
++    const issueId = mapping?.entityType === "issue" && mapping.entityId ? String(mapping.entityId) : null;
++    if (!companyId || !issueId) {
++      await answerCallbackQuery(ctx, token, query.id, "Decision context invalid");
++      return;
++    }
++
++    try {
++      const interactions = await ctx.issues.listInteractions(issueId, companyId);
++      const interaction = interactions.find((value) => value.id === interactionId);
++      if (
++        !interaction
++        || interaction.kind !== "request_confirmation"
++        || interaction.status !== "pending"
++        || interaction.effectiveResolverPolicy !== "board_only"
++      ) {
++        await answerCallbackQuery(ctx, token, query.id, "Decision is no longer pending");
++        return;
++      }
++
++      const boardAccess = await loadBoardAccessState(ctx);
++      const actorUserId = (!boardAccess.companyId || boardAccess.companyId === companyId)
++        ? boardAccess.identity
++        : null;
++      if (!actorUserId) {
++        await answerCallbackQuery(ctx, token, query.id, "Board identity is not configured");
++        return;
++      }
++
++      const result = await ctx.issues.respondInteraction(
++        issueId,
++        interactionId,
++        accept
++          ? { action: "accept", actorUserId }
++          : { action: "reject", actorUserId, reason: "Revision requested via Telegram" },
++        companyId,
++      );
++      if (result.applied === false) {
++        await answerCallbackQuery(ctx, token, query.id, "Decision already resolved");
++        return;
++      }
++
++      await answerCallbackQuery(ctx, token, query.id, accept ? "Approved" : "Revision requested");
++      await editMessage(ctx, token, chatId, messageId, accept ? `Approved by ${actor}` : `Revision requested by ${actor}`, {});
++    } catch (err) {
++      ctx.logger.error("Telegram Owner decision callback failed", { interactionId, error: String(err) });
++      await answerCallbackQuery(ctx, token, query.id, "Decision action failed");
++    }
++    return;
++  }
++
+   if (data.startsWith("approve_")) {
+     const approvalId = data.replace("approve_", "");
+     ctx.logger.info("Approval button clicked", { approvalId, actor });
