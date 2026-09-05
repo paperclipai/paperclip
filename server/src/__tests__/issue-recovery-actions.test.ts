@@ -17,6 +17,10 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  projects,
+  routineRuns,
+  routines,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -143,6 +147,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
     await db.delete(issueInboxArchives);
+    await db.delete(routineRuns);
+    await db.delete(routineTriggers);
+    await db.delete(routines);
+    await db.delete(projects);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -431,6 +439,394 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(recoveryIssues).toHaveLength(0);
     expect(updatedIssue?.assigneeAgentId).toBe(coderId);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  // Back a routine_execution issue with a real routine + schedule trigger so the
+  // recovery guard can confirm whether it will fire again. `routine` selects the
+  // firing cadence: "recurring" seeds an enabled cron schedule on an active
+  // routine (a re-fire is guaranteed, so a dead firing is safe to cancel);
+  // "one_shot" seeds a disabled trigger (no re-fire, so recovery must block);
+  // "none" leaves the origin dangling (deleted routine — must also block).
+  async function seedRoutineExecutionIssue(input: {
+    companyId: string;
+    assigneeAgentId: string;
+    prefix: string;
+    issueNumber: number;
+    status?: string;
+    withExecutionRun?: boolean;
+    routine?: "recurring" | "one_shot" | "none";
+    // Source of THIS firing (the routineRuns row the issue's originRunId points
+    // at). Only "schedule" firings recur; "manual"/"api"/"webhook" are one-shot.
+    firingSource?: "schedule" | "manual" | "api" | "webhook";
+    // Attach the routine to a project and pause it. A paused project is a
+    // scheduler suppression gate: the tick is claimed but no replacement firing
+    // is created, so a dead firing must block (not cancel) even when recurring.
+    projectPaused?: boolean;
+  }) {
+    const issueId = randomUUID();
+    const originId = randomUUID();
+    const routineMode = input.routine ?? "recurring";
+    const firingSource = input.firingSource ?? "schedule";
+    let originRunId: string | null = null;
+    if (routineMode !== "none") {
+      let projectId: string | null = null;
+      if (input.projectPaused) {
+        projectId = randomUUID();
+        await db.insert(projects).values({
+          id: projectId,
+          companyId: input.companyId,
+          name: "Paused project",
+          pausedAt: new Date(),
+        });
+      }
+      await db.insert(routines).values({
+        id: originId,
+        companyId: input.companyId,
+        projectId,
+        title: "Nightly recurring digest",
+        status: "active",
+        priority: "medium",
+        assigneeAgentId: input.assigneeAgentId,
+      });
+      await db.insert(routineTriggers).values({
+        companyId: input.companyId,
+        routineId: originId,
+        kind: "schedule",
+        enabled: routineMode === "recurring",
+        cronExpression: "0 3 * * *",
+        timezone: "UTC",
+        nextRunAt: new Date("2099-01-01T03:00:00.000Z"),
+      });
+      originRunId = randomUUID();
+      await db.insert(routineRuns).values({
+        id: originRunId,
+        companyId: input.companyId,
+        routineId: originId,
+        source: firingSource,
+        status: "issue_created",
+      });
+    }
+    let executionRunId: string | null = null;
+    if (input.withExecutionRun) {
+      executionRunId = randomUUID();
+      await seedHeartbeatRun({
+        companyId: input.companyId,
+        agentId: input.assigneeAgentId,
+        runId: executionRunId,
+        issueId,
+        status: "failed",
+      });
+    }
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      title: "Nightly recurring digest",
+      status: input.status ?? "in_progress",
+      priority: "medium",
+      assigneeAgentId: input.assigneeAgentId,
+      issueNumber: input.issueNumber,
+      identifier: `${input.prefix}-${input.issueNumber}`,
+      originKind: "routine_execution",
+      originId,
+      originRunId,
+      originFingerprint: `routine_execution:${originId}`,
+      executionRunId,
+      executionLockedAt: executionRunId ? new Date() : null,
+    });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    return issue!;
+  }
+
+  it("cancels a dead routine_execution firing instead of leaving a blocked zombie (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 900,
+      withExecutionRun: true,
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    expect(result?.status).toBe("cancelled");
+    const [updated] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+    // Not a zombie: terminal `cancelled`, and the open-routine execution lock is
+    // released so the next scheduled firing can create a fresh execution issue.
+    expect(updated?.status).toBe("cancelled");
+    expect(updated?.executionRunId).toBeNull();
+    expect(updated?.checkoutRunId).toBeNull();
+
+    // No board escalation action and no owner wake for a disposable artifact.
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, routineIssue.id));
+    expect(actionRows).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, routineIssue.id));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("cancelled this recurring-run artifact");
+  });
+
+  it("still blocks a routine_execution firing that has a real first-class blocker (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 901,
+    });
+    // A genuine blocker means the blockers-resolved auto-wake can fire, so this
+    // is not a zombie and must keep blocking rather than being cancelled.
+    const blockerId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerId,
+      companyId,
+      title: "Upstream dependency",
+      status: "in_progress",
+      priority: "medium",
+      issueNumber: 902,
+      identifier: `${prefix}-902`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: routineIssue.id,
+      type: "blocks",
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    const [updated] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+    expect(updated?.status).toBe("blocked");
+  });
+
+  it("blocks a one-shot routine_execution firing that will not fire again instead of cancelling (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    // A disabled schedule trigger means no replacement firing is scheduled, so
+    // cancelling would lose the work with no re-drive. Recovery must fall back to
+    // the pre-existing block path rather than silently dropping the firing.
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 903,
+      withExecutionRun: true,
+      routine: "one_shot",
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    expect(result?.status).toBe("blocked");
+    const [updated] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+    expect(updated?.status).toBe("blocked");
+    // It fell through to the board-escalation path, not the cancel path.
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, routineIssue.id));
+    expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
+  });
+
+  it("blocks a routine_execution firing whose routine no longer exists instead of cancelling (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    // Origin points at a deleted routine: with no routine row we cannot confirm a
+    // re-fire, so recovery conservatively blocks rather than cancels.
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 904,
+      withExecutionRun: true,
+      routine: "none",
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    expect(result?.status).toBe("blocked");
+  });
+
+  it("blocks a manual firing even when its routine also owns an enabled schedule trigger (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    // The routine recurs (an enabled schedule trigger), but THIS firing came from
+    // a manual/api/webhook source — a one-shot. The schedule fires its own
+    // separate work and is not a replacement for this firing, so cancelling it
+    // would silently discard the one-shot work. Recovery must block, not cancel.
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 905,
+      withExecutionRun: true,
+      routine: "recurring",
+      firingSource: "manual",
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    expect(result?.status).toBe("blocked");
+    const [updated] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+    expect(updated?.status).toBe("blocked");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, routineIssue.id));
+    expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
+  });
+
+  it("blocks a recurring routine_execution firing whose project is paused instead of cancelling (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    // The routine recurs (enabled schedule trigger), but its project is paused.
+    // The scheduler suppresses the firing while the project is paused — it
+    // claims the tick and records a suppressed run but creates NO replacement
+    // firing. Cancelling would therefore lose the work with no re-drive, so
+    // recovery must fall through to the block path.
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 906,
+      withExecutionRun: true,
+      routine: "recurring",
+      projectPaused: true,
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    expect(result?.status).toBe("blocked");
+    const [updated] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+    expect(updated?.status).toBe("blocked");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, routineIssue.id));
+    expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
+  });
+
+  it("blocks a recurring routine_execution firing suppressed by the worktree run-execution cutoff instead of cancelling (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    // The routine recurs, but the instance is a worktree runtime whose
+    // run-execution activation is unarmed (no cutoff persisted). The scheduler's
+    // `getAutomaticRoutineDispatchEligibility` gate then suppresses every
+    // firing, so there is no replacement and recovery must block, not cancel.
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 907,
+      withExecutionRun: true,
+      routine: "recurring",
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const previousInWorktree = process.env.PAPERCLIP_IN_WORKTREE;
+    process.env.PAPERCLIP_IN_WORKTREE = "1";
+    let result;
+    try {
+      result = await recovery.escalateStrandedAssignedIssue({
+        issue: routineIssue,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: randomUUID(),
+          agentId: coderId,
+          status: "failed",
+          error: "adapter connection refused",
+          errorCode: "adapter_failed",
+          contextSnapshot: { retryReason: "issue_continuation_needed" },
+          livenessState: "needs_followup",
+        } as const,
+      });
+    } finally {
+      if (previousInWorktree === undefined) {
+        delete process.env.PAPERCLIP_IN_WORKTREE;
+      } else {
+        process.env.PAPERCLIP_IN_WORKTREE = previousInWorktree;
+      }
+    }
+
+    expect(result?.status).toBe("blocked");
+    const [updated] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+    expect(updated?.status).toBe("blocked");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, routineIssue.id));
+    expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
   });
 
   // Model the production payload: `requestedRef` keeps the operator spelling,
