@@ -58,6 +58,8 @@ describe("board-key route registry", () => {
     ["GET", "/api/cli-auth/me", "deny", "board_key_denied"],
     ["POST", "/runtime-tools/connections/request", "deny", "board_key_denied"],
     ["POST", "/api/connection-intents/11111111-1111-4111-8111-111111111111/complete", "deny", "board_key_denied"],
+    ["GET", "/api/companies/11111111-1111-4111-8111-111111111111/not-yet-registered", "deny", "board_key_denied"],
+    ["POST", "/api/companies/11111111-1111-4111-8111-111111111111/not-yet-registered/search", "deny", "board_key_denied"],
     ["GET", "/api/not-yet-registered", "deny", "undeclared"],
   ] as const)("classifies %s %s", (method, routePath, action, classification) => {
     expect(lookupBoardKeyRoute(method, routePath)).toMatchObject({ action, classification });

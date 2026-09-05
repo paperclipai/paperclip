@@ -151,9 +151,13 @@ function queryCompanyId(rawPath: string) {
   }
 }
 
-function companySubresourcePermission(method: string, subresource: string | undefined, tail: string[]) {
+function companySubresourcePermission(
+  method: string,
+  subresource: string | undefined,
+): BoardPermissionKey | null {
   const write = !SAFE_METHODS.has(method);
   switch (subresource) {
+    case undefined: return write ? "companies:write" : "companies:read";
     case "agents":
     case "org":
       return write ? "agents:write" : "agents:read";
@@ -204,9 +208,44 @@ function companySubresourcePermission(method: string, subresource: string | unde
     case "import":
     case "export":
     case "exports": return "companies:import_export";
-    default:
-      if (tail.some((segment) => segment === "search" || segment === "extract")) return "search:read";
-      return write ? "companies:write" : "companies:read";
+    // These company-owned surfaces intentionally retain their reviewed
+    // companies:read/write behavior. Listing them makes future subresources
+    // fail closed instead of inheriting that authority from a default branch.
+    case "archive":
+    case "attention":
+    case "branding":
+    case "budget-incidents":
+    case "case-events":
+    case "cases":
+    case "claude-oauth-token-status":
+    case "cost-events":
+    case "dashboard":
+    case "decision-archive-proposals":
+    case "decision-bundles":
+    case "decision-queue-seed-rules":
+    case "imports":
+    case "live-runs":
+    case "logo":
+    case "managed-agent-profiles":
+    case "onboarding-seed":
+    case "org.png":
+    case "org.svg":
+    case "pipelines":
+    case "pipelines-attention":
+    case "provider-traces":
+    case "recovery-observability":
+    case "remote-agent-profiles":
+    case "review-cases":
+    case "secret-proposals":
+    case "secret-providers":
+    case "setup-token-login-sessions":
+    case "sidebar-badges":
+    case "smoke-lab":
+    case "timeline":
+    case "user-directory":
+    case "user-secret-definitions":
+    case "workspace-overview": return write ? "companies:write" : "companies:read";
+    default: return null;
   }
 }
 
@@ -363,7 +402,8 @@ export function lookupBoardKeyRoute(methodInput: string, rawPath: string): Board
     if (isDeniedCompanyRoute(method, segments.slice(3))) {
       return denied(method, `/api/companies/${ID}/${segments.slice(3).join("/")}`);
     }
-    const action = companySubresourcePermission(method, segments[3], segments.slice(4));
+    const action = companySubresourcePermission(method, segments[3]);
+    if (!action) return denied(method, `/api/companies/${ID}/{*path}`);
     return declared(method, `/api/companies/${ID}/{*path}`, action, "company", "company", {
       companyId,
       concealment: segments.length > 3 ? "not_found" : "forbidden",
