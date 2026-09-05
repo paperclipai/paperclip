@@ -47,7 +47,8 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 //
 // Each branch treats the backslash the way its quoting context does. A
 // double-quoted value consumes escape pairs, so an escaped quote inside the
-// argument (`"X-API-Key: abc\"def"`) does not end the value early. Its opening
+// argument (`"X-API-Key: abc\"def"`) does not end the value early, and neither
+// does a backslash-newline line continuation. Its opening
 // quote must itself be unescaped, which keeps the branch off a serialized
 // diagnostic such as `\"X-API-Key: ...\"`, where the closing `\"` must survive.
 // A single-quoted value takes a backslash literally, because a shell single
@@ -95,7 +96,7 @@ const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN =
   "`" +
   String.raw`]+)`;
 const COMMAND_SECRET_HEADER_RE = new RegExp(
-  String.raw`(?<!\\)("${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\.|[^"\\\r\n])*(")` +
+  String.raw`(?<!\\)("${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\\r?\n|\\.|[^"\\\r\n])*(")` +
     String.raw`|('${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'][^'\r\n]*(')` +
     String.raw`|(\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}`,
   "gi",

@@ -286,6 +286,20 @@ describe("redactCommandText header secrets", () => {
     );
   });
 
+  it("redacts across a backslash-newline continuation inside a double-quoted value", () => {
+    // A shell line continuation inside double quotes is part of the argument.
+    const input = 'curl -H "X-API-Key: abc\\\ndef" https://example.test';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("def");
+    expect(output).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+    const crlf = 'curl -H "X-API-Key: abc\\\r\ndef" https://example.test';
+    expect(redactCommandText(crlf)).toBe(
+      `curl -H "X-API-Key: ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
+    );
+  });
+
   it("redacts a backslash inside a single-quoted header value", () => {
     // A shell single quote has no escapes, so the backslash is part of the value.
     const input = String.raw`curl -H 'X-API-Key: abc\def' https://example.test`;
