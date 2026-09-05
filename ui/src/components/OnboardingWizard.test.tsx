@@ -2178,6 +2178,42 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("shows the failure instead of starting a codex_local login when the active-session read fails", async () => {
+      // A transient active-session lookup failure is not proof that no
+      // session exists — only a successful lookup that resolves to null is.
+      // The step must not start a second login the server would reject
+      // against the per-owner cap; it shows the failure instead.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "unknown" });
+      mockAgentsApi.getActiveAdapterAuthLoginSession.mockReset();
+      mockAgentsApi.getActiveAdapterAuthLoginSession.mockRejectedValue(
+        new ApiError("Service unavailable", 503, null),
+      );
+      const { root } = await openStep4({ adapterType: "codex_local" });
+
+      await pressArcPrimary();
+
+      expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Service unavailable");
+
+      await act(async () => root.unmount());
+    });
+
+    it("shows the failure instead of starting a claude_local login when the active-session read fails", async () => {
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockReset();
+      mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockRejectedValue(
+        new ApiError("Service unavailable", 503, null),
+      );
+      const { root } = await openStep4({ adapterType: "claude_local" });
+
+      await pressArcPrimary();
+
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Service unavailable");
+
+      await act(async () => root.unmount());
+    });
+
     it("hires on Connect, with no sign-in, when the signal reports a ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
       const { root } = await openStep4({ adapterType: "claude_local" });

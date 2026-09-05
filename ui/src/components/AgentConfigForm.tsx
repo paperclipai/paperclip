@@ -2222,11 +2222,30 @@ function DisplayedCodeLoginPanel({
   const startLoginRef = useRef(startLogin.mutate);
   startLoginRef.current = startLogin.mutate;
   useEffect(() => {
-    if (!autoStart || autoStartedRef.current || !activeSessionQuery.isFetched) return;
+    if (!autoStart || autoStartedRef.current) return;
+    // A failed lookup is not proof that no session exists: only a successful
+    // lookup is. Show the failure to the user instead of starting a second
+    // login the server would reject against the per-owner cap.
+    if (activeSessionQuery.isError) {
+      autoStartedRef.current = true;
+      setStartError(
+        activeSessionQuery.error instanceof Error
+          ? activeSessionQuery.error.message
+          : "Could not check for an active login.",
+      );
+      return;
+    }
+    if (!activeSessionQuery.isSuccess) return;
     autoStartedRef.current = true;
     if (activeSessionQuery.data) return;
     startLoginRef.current();
-  }, [autoStart, activeSessionQuery.isFetched, activeSessionQuery.data]);
+  }, [
+    autoStart,
+    activeSessionQuery.isSuccess,
+    activeSessionQuery.isError,
+    activeSessionQuery.data,
+    activeSessionQuery.error,
+  ]);
 
   // Report success upward once. `authenticated` is this panel's terminal
   // success: unlike the Claude login there is no completion read after it, so
@@ -2838,11 +2857,30 @@ function SubmittedBrowserCodeLoginPanel({
   const startLoginRef = useRef(startLogin.mutate);
   startLoginRef.current = startLogin.mutate;
   useEffect(() => {
-    if (!autoStart || autoStartedRef.current || !activeSessionQuery.isFetched) return;
+    if (!autoStart || autoStartedRef.current) return;
+    // A failed lookup is not proof that no session exists: only a successful
+    // lookup is. Show the failure to the user instead of starting a second
+    // login the server would reject against the per-owner cap.
+    if (activeSessionQuery.isError) {
+      autoStartedRef.current = true;
+      setStartError(
+        activeSessionQuery.error instanceof Error
+          ? activeSessionQuery.error.message
+          : "Could not check for an active login.",
+      );
+      return;
+    }
+    if (!activeSessionQuery.isSuccess) return;
     autoStartedRef.current = true;
     if (activeSessionQuery.data) return;
     startLoginRef.current();
-  }, [autoStart, activeSessionQuery.isFetched, activeSessionQuery.data]);
+  }, [
+    autoStart,
+    activeSessionQuery.isSuccess,
+    activeSessionQuery.isError,
+    activeSessionQuery.data,
+    activeSessionQuery.error,
+  ]);
 
   /**
    * Submit the pasted code without a press.
