@@ -9235,6 +9235,61 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(afterGrants.grants).toEqual(beforeGrants.grants);
   });
 
+  it("preserves a concurrent grant change when an identity-changing revival fails", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      actorSource: "local_implicit" as const,
+    };
+    const fetchMock = mockToolsList([
+      { name: "get_file_contents", annotations: { readOnlyHint: true } },
+    ]);
+
+    const first = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "organization",
+      name: "GitHub concurrent rollback",
+      credentialValues: { "credentials.authorization": "old-organization-token" },
+    }, actor);
+    await service.archiveConnection(first.connectionId, company.id, actor);
+    fetchMock.mockImplementation(async () => {
+      const [personalGrant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.connectionId, first.connectionId),
+        eq(connectionGrants.kind, "user"),
+      )).limit(1);
+      expect(personalGrant).toBeTruthy();
+      const concurrentUpdateAt = new Date(Date.now() + 2_000);
+      await db.update(connectionGrants).set({
+        status: "revoked",
+        credentialSecretRefs: [],
+        revokedAt: concurrentUpdateAt,
+        updatedAt: concurrentUpdateAt,
+      }).where(eq(connectionGrants.id, personalGrant!.id));
+      throw new Error("provider unavailable");
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      grantKind: "user",
+      name: "GitHub concurrent rollback",
+      credentialValues: { "credentials.authorization": "new-personal-token" },
+    }, actor)).rejects.toMatchObject({ status: 502 });
+
+    await expect(service.getConnection(first.connectionId, company.id)).resolves.toMatchObject({
+      status: "archived",
+      credentialPolicy: "shared",
+    });
+    const afterGrants = await service.listConnectionGrants(first.connectionId, company.id);
+    expect(afterGrants.grants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "organization", status: "revoked" }),
+      expect.objectContaining({ kind: "user", status: "revoked", credentialSecretRefs: [] }),
+    ]));
+  });
+
   it("fails closed when an identity-changing revival cannot roll back", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

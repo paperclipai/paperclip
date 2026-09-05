@@ -3897,6 +3897,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function ensureDefaultOrganizationGrant(
     connection: typeof toolConnections.$inferSelect,
     dbClient: ToolAccessMutationDb = db,
+    onMutation?: (mutation: {
+      previous: typeof connectionGrants.$inferSelect | null;
+      current: typeof connectionGrants.$inferSelect;
+    }) => void,
   ) {
     const [existing] = await dbClient
       .select()
@@ -3929,6 +3933,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .where(eq(connectionGrants.id, existing.id))
         .returning();
       if (!updated) throw new Error("Failed to update default connection grant");
+      onMutation?.({ previous: existing, current: updated });
       return updated;
     }
     const [created] = await dbClient
@@ -3943,6 +3948,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       })
       .returning();
     if (!created) throw new Error("Failed to create default connection grant");
+    onMutation?.({ previous: null, current: created });
     return created;
   }
 
@@ -9103,12 +9109,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let applicationRow: typeof toolApplications.$inferSelect | null = null;
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = retainedConnection ?? null;
-    const revivedGrantSnapshots = revivedConnectionPrevious
-      ? await db.select().from(connectionGrants).where(and(
-          eq(connectionGrants.companyId, companyId),
-          eq(connectionGrants.connectionId, revivedConnectionPrevious.id),
-        ))
-      : [];
+    let revivedGrantMutation: {
+      previous: typeof connectionGrants.$inferSelect | null;
+      current: typeof connectionGrants.$inferSelect;
+    } | null = null;
 
     try {
       const credentialFields = credentialSource === "vercel_connect"
@@ -9343,17 +9347,29 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // "Connected" with nothing behind it, so the grant is left to the
         // callback and only the organization grant is suppressed.
         if (credentialSecretRefs.length > 0) {
+          let changedGrant: typeof connectionGrants.$inferSelect;
+          let previousGrant: typeof connectionGrants.$inferSelect | null = null;
           if (retainedPersonalIdentity?.grant) {
-            await db.update(connectionGrants).set({
+            const [currentGrant] = await db.select().from(connectionGrants).where(eq(
+              connectionGrants.id,
+              retainedPersonalIdentity.grant.id,
+            )).limit(1);
+            if (!currentGrant) throw conflict("The personal credential changed during setup. Please try again.");
+            previousGrant = currentGrant;
+            [changedGrant] = await db.update(connectionGrants).set({
               credentialSecretRefs,
               status: "active",
               revokedAt: null,
               revokedByAgentId: null,
               revokedByUserId: null,
               updatedAt: new Date(),
-            }).where(eq(connectionGrants.id, retainedPersonalIdentity.grant.id));
+            }).where(and(
+              eq(connectionGrants.id, currentGrant.id),
+              eq(connectionGrants.updatedAt, currentGrant.updatedAt),
+            )).returning();
+            if (!changedGrant) throw conflict("The personal credential changed during setup. Please try again.");
           } else {
-            await db.insert(connectionGrants).values({
+            [changedGrant] = await db.insert(connectionGrants).values({
               companyId,
               connectionId: connectionRow.id,
               kind: "user",
@@ -9362,7 +9378,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
               status: "active",
               isDefault: false,
               createdByUserId: personalIdentityUserId,
-            });
+            }).returning();
+            if (!changedGrant) throw new Error("Failed to create personal connection grant");
+          }
+          if (revivedConnectionPrevious) {
+            revivedGrantMutation = { previous: previousGrant, current: changedGrant };
           }
           await db.insert(toolAccessAuditEvents).values({
             companyId,
@@ -9381,7 +9401,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // Managed OAuth creates the credential-bearing grant in the callback.
         // Keep the connection free of organization secrets from the outset.
       } else {
-        await ensureDefaultOrganizationGrant(connectionRow);
+        const organizationGrant = await ensureDefaultOrganizationGrant(
+          connectionRow,
+          db,
+          revivedConnectionPrevious
+            ? (mutation) => {
+                revivedGrantMutation = mutation;
+              }
+            : undefined,
+        );
         if (credentialSource === "vercel_connect") {
           const derived = deriveVercelConnectSubject({
             credential: externalCredential!,
@@ -9389,20 +9417,37 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             companyId,
             grantKind: "organization",
           });
-          await db.update(connectionGrants).set({
-            externalCredential: {
-              provider: "vercel_connect",
-              subjectType: externalCredential!.principalMode,
-              ...(derived.subjectId ? { subjectId: derived.subjectId } : {}),
-            },
-            credentialSecretRefs: [],
-            updatedAt: now(),
-          }).where(and(
-            eq(connectionGrants.companyId, companyId),
-            eq(connectionGrants.connectionId, connectionRow.id),
-            eq(connectionGrants.kind, "organization"),
-            eq(connectionGrants.isDefault, true),
-          ));
+          const updatedOrganizationGrant = await db.transaction(async (tx) => {
+            const [lockedGrant] = await tx.select().from(connectionGrants).where(eq(
+              connectionGrants.id,
+              organizationGrant.id,
+            )).limit(1).for("update");
+            if (
+              !lockedGrant
+              || lockedGrant.updatedAt.getTime() !== organizationGrant.updatedAt.getTime()
+            ) {
+              throw conflict("The organization credential changed during setup. Please try again.");
+            }
+            const [updated] = await tx.update(connectionGrants).set({
+              externalCredential: {
+                provider: "vercel_connect",
+                subjectType: externalCredential!.principalMode,
+                ...(derived.subjectId ? { subjectId: derived.subjectId } : {}),
+              },
+              credentialSecretRefs: [],
+              updatedAt: now(),
+            }).where(eq(connectionGrants.id, organizationGrant.id)).returning();
+            return updated;
+          });
+          if (!updatedOrganizationGrant) {
+            throw conflict("The organization credential changed during setup. Please try again.");
+          }
+          if (revivedGrantMutation) {
+            revivedGrantMutation = {
+              previous: revivedGrantMutation.previous,
+              current: updatedOrganizationGrant,
+            };
+          }
         }
       }
       await syncCredentialBindings(connectionRow, personalIdentityUserId || dedicatedAgentId ? credentialSecretRefs : []);
@@ -9511,35 +9556,41 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
               updatedAt: new Date(),
             }).where(eq(toolConnections.id, revivedConnectionPrevious.id));
 
-            const retainedGrantIds = new Set(revivedGrantSnapshots.map((grant) => grant.id));
-            const currentGrants = await tx.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
-              eq(connectionGrants.companyId, companyId),
-              eq(connectionGrants.connectionId, revivedConnectionPrevious.id),
-            ));
-            const addedGrantIds = currentGrants
-              .map((grant) => grant.id)
-              .filter((grantId) => !retainedGrantIds.has(grantId));
-            if (addedGrantIds.length > 0) {
-              await tx.delete(connectionGrants).where(inArray(connectionGrants.id, addedGrantIds));
-            }
-            for (const grant of revivedGrantSnapshots) {
-              await tx.update(connectionGrants).set({
-                kind: grant.kind,
-                subjectUserId: grant.subjectUserId,
-                subjectAgentId: grant.subjectAgentId,
-                providerTenant: grant.providerTenant,
-                credentialSecretRefs: grant.credentialSecretRefs,
-                externalCredential: grant.externalCredential,
-                status: grant.status,
-                isDefault: grant.isDefault,
-                createdByAgentId: grant.createdByAgentId,
-                createdByUserId: grant.createdByUserId,
-                revokedAt: grant.revokedAt,
-                revokedByAgentId: grant.revokedByAgentId,
-                revokedByUserId: grant.revokedByUserId,
-                lastUsedAt: grant.lastUsedAt,
-                updatedAt: grant.updatedAt,
-              }).where(eq(connectionGrants.id, grant.id));
+            if (revivedGrantMutation) {
+              const { previous, current } = revivedGrantMutation;
+              const [latestGrant] = await tx.select().from(connectionGrants).where(eq(
+                connectionGrants.id,
+                current.id,
+              )).limit(1).for("update");
+              const mutationIsStillCurrent = Boolean(
+                latestGrant
+                && latestGrant.updatedAt.getTime() === current.updatedAt.getTime(),
+              );
+              // A grant manager may have changed this grant while provider
+              // setup was in flight. Restore/delete only the exact version this
+              // attempt wrote; a newer version is authoritative and remains
+              // untouched.
+              if (previous && mutationIsStillCurrent) {
+                await tx.update(connectionGrants).set({
+                  kind: previous.kind,
+                  subjectUserId: previous.subjectUserId,
+                  subjectAgentId: previous.subjectAgentId,
+                  providerTenant: previous.providerTenant,
+                  credentialSecretRefs: previous.credentialSecretRefs,
+                  externalCredential: previous.externalCredential,
+                  status: previous.status,
+                  isDefault: previous.isDefault,
+                  createdByAgentId: previous.createdByAgentId,
+                  createdByUserId: previous.createdByUserId,
+                  revokedAt: previous.revokedAt,
+                  revokedByAgentId: previous.revokedByAgentId,
+                  revokedByUserId: previous.revokedByUserId,
+                  lastUsedAt: previous.lastUsedAt,
+                  updatedAt: previous.updatedAt,
+                }).where(eq(connectionGrants.id, current.id));
+              } else if (!previous && mutationIsStillCurrent) {
+                await tx.delete(connectionGrants).where(eq(connectionGrants.id, current.id));
+              }
             }
           });
         } catch (rollbackError) {
