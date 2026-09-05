@@ -3452,7 +3452,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#turnStartResponsePending = true;
     let responseReady = false;
     try {
-      await this.#command("turn.start", { text: message });
+      // Persist a fresh requested identity with the durable command. ACPX uses
+      // it as its provider request identity, so a same-run recovery turn cannot
+      // alias an already-settled request from the retained provider session.
+      // Codex and OpenCode continue to return their provider-assigned identity.
+      await this.#command("turn.start", {
+        text: message,
+        turnId: pendingTurnId,
+      });
       // Command completion only means runnerd accepted the command. Codex assigns
       // the authoritative turn identity in the subsequent turn/started event, so
       // do not expose the temporary transport identity to the strict driver.

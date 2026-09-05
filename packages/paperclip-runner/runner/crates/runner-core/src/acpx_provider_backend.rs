@@ -32,6 +32,7 @@ use crate::provider_events::{
     project_acpx_state_event, AcpxEventProjectionContext, NormalizedProviderEvent,
 };
 use crate::qualified_launch::verify_launch_artifact;
+use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS};
 
 pub const ACPX_PROVIDER_STATE_FILE: &str = "acpx-provider-state.json";
 const ACPX_PROVIDER_STATE_SCHEMA: &str = "paperclip.runner.acpx-provider-state.v3";
@@ -866,6 +867,16 @@ impl AcpxCommandExecutor {
             .get("text")
             .and_then(Value::as_str)
             .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.text is required"))?;
+        let requested_provider_turn_id = payload
+            .get("turnId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DurableRunnerError::invalid("turn.start payload.turnId is required"))?;
+        let provider_turn_id = requested_provider_turn_id.to_owned();
+        if !is_stable_id(&provider_turn_id, DURABLE_STABLE_ID_CHARS) {
+            return Err(DurableRunnerError::invalid(
+                "turn.start payload.turnId is invalid",
+            ));
+        }
         if self.session.is_none() {
             return Err(DurableRunnerError::invalid("ACPX session is not open"));
         }
@@ -884,10 +895,13 @@ impl AcpxCommandExecutor {
                     "ACPX provider cannot start a turn in its current lifecycle",
                 ));
             }
-            state.active_turn_id = Some(self.context.turn_id.clone());
+            state.active_turn_id = Some(provider_turn_id.clone());
             state.semantic_result = None;
             state.lifecycle = "turn_starting".to_owned();
         }
+        // ACPX provider events are scoped to the requested provider turn while
+        // the runner's durable command remains bound to the immutable run.
+        self.context.turn_id = provider_turn_id.clone();
         self.save_state()?;
         let working_directory = self
             .state
@@ -898,7 +912,7 @@ impl AcpxCommandExecutor {
             .session
             .as_mut()
             .expect("ACPX session exists before turn start")
-            .start_turn(&self.context.turn_id, text, &working_directory)
+            .start_turn(&provider_turn_id, text, &working_directory)
         {
             let state = self
                 .state
@@ -935,7 +949,7 @@ impl AcpxCommandExecutor {
                     session.identity(),
                     previous_process_id,
                     session.process_id(),
-                    &self.context.turn_id,
+                    &provider_turn_id,
                 ),
             ));
         }
@@ -944,13 +958,13 @@ impl AcpxCommandExecutor {
             EventPriority::P0,
             json!({
                 "provider": "acpx",
-                "providerTurnId": self.context.turn_id,
+                "providerTurnId": provider_turn_id.clone(),
                 "status": "inProgress",
-                "turn": {"id": self.context.turn_id, "status": "inProgress"},
+                "turn": {"id": provider_turn_id.clone(), "status": "inProgress"},
             }),
         ));
         Ok(CommandExecution {
-            result: json!({"status": "accepted", "providerTurnId": self.context.turn_id}),
+            result: json!({"status": "accepted", "providerTurnId": provider_turn_id}),
             events,
         })
     }

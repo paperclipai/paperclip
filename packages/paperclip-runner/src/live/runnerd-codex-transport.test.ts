@@ -1361,6 +1361,25 @@ it("binds an immediately failed durable turn before exposing its terminal", asyn
       message: { role: "user", text: "Fail this test turn." },
     });
     expect(accepted.turnId).toBe("provider-turn-1");
+    const durableState = JSON.parse(
+      await readFile(
+        join(stateDirectory, "control-plane", "control-plane-state.json"),
+        "utf8",
+      ),
+    ) as {
+      commands: Array<{
+        type: string;
+        payload: Record<string, unknown>;
+      }>;
+    };
+    expect(
+      durableState.commands.find((command) => command.type === "turn.start"),
+    ).toMatchObject({
+      payload: {
+        text: "Fail this test turn.",
+        turnId: expect.stringMatching(/^turn_lab_[a-f0-9]{32}$/),
+      },
+    });
     const events = [];
     for await (const event of session.events()) {
       events.push(event);

@@ -204,7 +204,11 @@ fn preserves_acpx_semantic_disposition_in_the_run_terminal() {
         .execute(&command(2, "session.open", json!({})))
         .unwrap();
     executor
-        .execute(&command(3, "turn.start", json!({"text": "Wait."})))
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "Wait.", "turnId": "provider-turn-blocked"}),
+        ))
         .unwrap();
 
     let events = executor.poll_events().unwrap();
@@ -341,7 +345,7 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
         .execute(&command(
             3,
             "turn.start",
-            json!({"text": "Finish the task."}),
+            json!({"text": "Finish the task.", "turnId": "provider-turn-first"}),
         ))
         .unwrap();
     assert_eq!(started.events[0].0, "turn.started");
@@ -360,6 +364,62 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
     executor
         .execute(&command(4, "session.close", json!({})))
         .unwrap();
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn starts_a_distinct_acpx_provider_turn_for_same_run_recovery() {
+    let directory = temporary_directory("acpx-same-run-recovery");
+    let config = acpx_config(&directory, "turns-reserved-result-terminal");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+
+    executor
+        .execute(&command(
+            1,
+            "run.prepare",
+            prepare_payload(&directory, "codex"),
+        ))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let first = executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text": "First attempt.", "turnId": "provider-turn-first"}),
+        ))
+        .unwrap();
+    assert_eq!(first.result["providerTurnId"], "provider-turn-first");
+
+    let first_events = executor.poll_events().unwrap();
+    assert!(first_events
+        .iter()
+        .any(|event| event.event_type == "turn.completed"));
+    executor.acknowledge_events(first_events.len()).unwrap();
+
+    let recovered = executor
+        .execute(&command(
+            4,
+            "turn.start",
+            json!({
+                "text": "Recover the missing disposition.",
+                "turnId": "provider-turn-recovery",
+            }),
+        ))
+        .unwrap();
+    assert_eq!(recovered.result["providerTurnId"], "provider-turn-recovery");
+    assert!(recovered.events.iter().any(|(event_type, _, payload)| {
+        event_type == "turn.started" && payload["providerTurnId"] == "provider-turn-recovery"
+    }));
+    let recovered_events = executor.poll_events().unwrap();
+    assert!(recovered_events.iter().any(|event| {
+        event.event_type == "turn.completed"
+            && event.payload["providerTurnId"] == "provider-turn-recovery"
+    }));
+    executor.acknowledge_events(recovered_events.len()).unwrap();
+
     executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
