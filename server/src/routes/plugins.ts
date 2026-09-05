@@ -38,6 +38,7 @@ import {
 import type {
   PluginApiRouteDeclaration,
   PluginStatus,
+  PluginRecord,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
   PluginLauncherRenderContextSnapshot,
@@ -53,6 +54,7 @@ import {
   pluginLoader,
   REPO_ROOT,
 } from "../services/plugin-loader.js";
+import type { PluginManifestDrift } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
 import { issueService } from "../services/issues.js";
@@ -559,6 +561,27 @@ export function pluginRoutes(
       if (routeSegment !== requestSegment) return null;
     }
     return params;
+  }
+
+  /**
+   * Compare the stored manifest against the package on disk without letting a
+   * filesystem problem take down a read route: drift is diagnostic detail on
+   * responses that must still return the plugin record.
+   */
+  async function inspectManifestDriftSafely(plugin: PluginRecord): Promise<PluginManifestDrift> {
+    try {
+      return await loader.inspectManifestDrift(plugin);
+    } catch (err) {
+      return {
+        packageReadable: false,
+        drifted: false,
+        storedVersion: plugin.version,
+        packageVersion: null,
+        addedCapabilities: [],
+        removedCapabilities: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   function sanitizePluginRequestHeaders(req: Request): Record<string, string> {
@@ -1949,7 +1972,9 @@ export function pluginRoutes(
    * - Database UUID (e.g., "abc123-def456")
    * - Plugin key (e.g., "acme.linear")
    *
-   * Response: PluginRecord
+   * Response: PluginRecord, enriched with `supportsConfigTest` and
+   * `manifestDrift` — the diff between the stored manifest (the capability
+   * grant the host enforces) and the package currently on disk.
    * Errors: 404 if plugin not found
    */
   router.get("/plugins/:pluginId", async (req, res) => {
@@ -1967,7 +1992,9 @@ export function pluginRoutes(
       ? worker.supportedMethods.includes("validateConfig")
       : false;
 
-    res.json({ ...plugin, supportsConfigTest });
+    const manifestDrift = await inspectManifestDriftSafely(plugin);
+
+    res.json({ ...plugin, supportsConfigTest, manifestDrift });
   });
 
   /**
@@ -2096,6 +2123,7 @@ export function pluginRoutes(
    * 2. Manifest: Manifest is valid and parseable
    * 3. Status: Plugin is in 'ready' state
    * 4. Error state: Plugin has no unhandled errors
+   * 5. Manifest drift: the package on disk still matches the stored manifest
    *
    * Response: PluginHealthCheckResult
    * Errors: 404 if plugin not found
@@ -2145,10 +2173,44 @@ export function pluginRoutes(
       });
     }
 
+    // Check 5: The package on disk still matches the stored manifest.
+    // A package replaced in place without a re-activation keeps running against
+    // the capability set captured earlier, so every host call needing a newly
+    // declared capability is denied with nothing on the host reporting why.
+    const drift = await inspectManifestDriftSafely(plugin);
+    const capabilitiesDrifted =
+      drift.addedCapabilities.length > 0 || drift.removedCapabilities.length > 0;
+    if (!drift.packageReadable) {
+      checks.push({
+        name: "manifest_drift",
+        passed: false,
+        message: `Could not read the plugin package on disk: ${drift.error ?? "unknown error"}`,
+      });
+    } else if (capabilitiesDrifted) {
+      checks.push({
+        name: "manifest_drift",
+        passed: false,
+        message:
+          `Package on disk (v${drift.packageVersion}) declares a different capability set than the `
+          + `stored manifest (v${drift.storedVersion}). `
+          + `Not granted: [${drift.addedCapabilities.join(", ") || "none"}]. `
+          + `Granted but no longer declared: [${drift.removedCapabilities.join(", ") || "none"}]. `
+          + `Run POST /api/plugins/${plugin.id}/upgrade with approveCapabilities to resolve.`,
+      });
+    } else {
+      checks.push({
+        name: "manifest_drift",
+        passed: true,
+        message: drift.drifted
+          ? `Package on disk (v${drift.packageVersion}) differs from the stored manifest (v${drift.storedVersion}), but the capability set matches`
+          : "Stored manifest matches the package on disk",
+      });
+    }
+
     const result: PluginHealthCheckResult = {
       pluginId: plugin.id,
       status: plugin.status,
-      healthy: isHealthy && hasValidManifest && hasNoError,
+      healthy: isHealthy && hasValidManifest && hasNoError && drift.packageReadable && !capabilitiesDrifted,
       checks,
       lastError: plugin.lastError ?? undefined,
     };
@@ -2213,20 +2275,37 @@ export function pluginRoutes(
    *
    * Request body (optional):
    * - version: Target version (defaults to latest)
+   * - approveCapabilities: Capabilities the operator approves for this upgrade
    *
-   * If the upgrade adds new capabilities, the plugin transitions to
-   * 'upgrade_pending' state for board approval. Otherwise, it goes
-   * directly to 'ready'.
+   * If the upgrade adds capabilities that are not all listed in
+   * `approveCapabilities`, the new manifest is NOT adopted as the plugin's
+   * capability grant: the plugin transitions to 'upgrade_pending' and the
+   * response reports the added capabilities so the operator can re-issue the
+   * request with them approved (PLUGIN_SPEC.md §15.3). Otherwise the upgrade
+   * applies and the plugin goes directly to 'ready'.
    *
-   * Response: PluginRecord
+   * Response: PluginRecord plus an `upgrade` summary
+   *   `{ applied, addedCapabilities, requiresApproval }`.
    * Errors: 404 if plugin not found, 400 for lifecycle errors
    */
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
     assertInstanceAdmin(req);
     assertPluginManagementVisible();
     const { pluginId } = req.params;
-    const body = req.body as { version?: string } | undefined;
+    const body = req.body as { version?: string; approveCapabilities?: unknown } | undefined;
     const version = body?.version;
+
+    let approveCapabilities: string[] | undefined;
+    if (body?.approveCapabilities !== undefined) {
+      if (
+        !Array.isArray(body.approveCapabilities)
+        || body.approveCapabilities.some((cap) => typeof cap !== "string")
+      ) {
+        res.status(400).json({ error: "approveCapabilities must be an array of strings" });
+        return;
+      }
+      approveCapabilities = body.approveCapabilities as string[];
+    }
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2238,18 +2317,28 @@ export function pluginRoutes(
       // Upgrade the plugin - this would typically:
       // 1. Download the new version
       // 2. Compare capabilities
-      // 3. If new capabilities, mark as upgrade_pending
+      // 3. If unapproved new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await lifecycle.upgrade(plugin.id, version);
+      const result = await lifecycle.upgrade(plugin.id, version, { approveCapabilities });
       await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         previousVersion: plugin.version,
-        version: result?.version ?? plugin.version,
+        version: result.plugin?.version ?? plugin.version,
         targetVersion: version ?? null,
+        applied: result.applied,
+        addedCapabilities: result.addedCapabilities,
+        approvedCapabilities: approveCapabilities ?? [],
       });
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
-      res.json(result);
+      res.json({
+        ...result.plugin,
+        upgrade: {
+          applied: result.applied,
+          addedCapabilities: result.addedCapabilities,
+          requiresApproval: !result.applied,
+        },
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(400).json({ error: message });

@@ -332,6 +332,31 @@ export interface PluginInstallOptions {
   installDir?: string;
 }
 
+/**
+ * Difference between the manifest persisted for an installed plugin and the
+ * manifest exposed by the package currently on disk.
+ *
+ * The stored manifest is the grant of record: `buildHostHandlers` gates every
+ * host call on `manifestJson.capabilities`. A package replaced on disk without
+ * a re-activation therefore runs new code against the previously captured
+ * capability set, which the host used to report nowhere. Drift is recomputed
+ * on demand so no schema column has to track it.
+ */
+export interface PluginManifestDrift {
+  /** False when the package on disk could not be read (see `error`). */
+  packageReadable: boolean;
+  /** True when the stored manifest differs from the package manifest. */
+  drifted: boolean;
+  storedVersion: string;
+  packageVersion: string | null;
+  /** Capabilities the package declares that were never granted to the plugin. */
+  addedCapabilities: string[];
+  /** Capabilities still granted that the package no longer declares. */
+  removedCapabilities: string[];
+  /** Why the package manifest could not be read, when `packageReadable` is false. */
+  error?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Runtime options — services needed for initializing loaded plugins
 // ---------------------------------------------------------------------------
@@ -533,13 +558,43 @@ export interface PluginLoader {
    * 3. Updates the existing plugin record instead of creating a new one.
    * 4. Returns the old and new manifests for capability comparison.
    *
+   * An upgrade that adds capabilities is NOT applied unless the caller passes
+   * every added capability in `approveCapabilities`. The new package is still
+   * fetched and validated on disk, but the stored manifest — the capability
+   * grant of record — is left untouched and `applied` comes back false so the
+   * caller can park the plugin in `upgrade_pending` and ask the operator.
+   *
+   * @see PLUGIN_SPEC.md §15.3 — Upgrade Rules
    * @see PLUGIN_SPEC.md §25.3 — Upgrade Lifecycle
    */
-  upgradePlugin(pluginId: string, options: Omit<PluginInstallOptions, "installDir">): Promise<{
+  upgradePlugin(
+    pluginId: string,
+    options: Omit<PluginInstallOptions, "installDir"> & {
+      /**
+       * Capabilities the operator explicitly approved for this upgrade.
+       * Added capabilities not listed here block the upgrade from applying.
+       */
+      approveCapabilities?: string[];
+    },
+  ): Promise<{
     oldManifest: PaperclipPluginManifestV1;
     newManifest: PaperclipPluginManifestV1;
     discovered: DiscoveredPlugin;
+    /** Capabilities the new manifest declares that the old one did not. */
+    addedCapabilities: string[];
+    /** True when the new manifest was persisted as the active grant. */
+    applied: boolean;
   }>;
+
+  /**
+   * Compare the manifest stored for an installed plugin against the manifest
+   * exposed by the package currently on disk.
+   *
+   * Never throws: an unreadable or missing package comes back as
+   * `packageReadable: false` with the reason in `error`, so health checks and
+   * detail routes can report drift without failing.
+   */
+  inspectManifestDrift(plugin: PluginRecord): Promise<PluginManifestDrift>;
 
   /**
    * Check whether a plugin API version is supported by this host.
@@ -1383,6 +1438,26 @@ export function pluginLoader(
       return plugin;
     }
 
+    // Activation re-reads the package from disk, so a package swapped in place
+    // has its capability list adopted here. That grant is silent today; log it
+    // loudly so an operator can tell a routine version bump apart from a
+    // capability escalation that never went through the upgrade approval path
+    // (§15.3).
+    const storedCaps = new Set(plugin.manifestJson?.capabilities ?? []);
+    const grantedOnActivation = (manifest.capabilities ?? []).filter((c) => !storedCaps.has(c));
+    if (grantedOnActivation.length > 0) {
+      log.warn(
+        {
+          pluginId: plugin.id,
+          pluginKey: plugin.pluginKey,
+          grantedOnActivation,
+          storedVersion: plugin.version,
+          packageVersion: manifest.version,
+        },
+        "plugin-loader: package on disk declares capabilities the stored manifest did not — granting on activation",
+      );
+    }
+
     await registry.update(plugin.id, {
       packageName: plugin.packageName,
       version: manifest.version,
@@ -1773,11 +1848,15 @@ export function pluginLoader(
      */
     async upgradePlugin(
       pluginId: string,
-      upgradeOptions: Omit<PluginInstallOptions, "installDir">,
+      upgradeOptions: Omit<PluginInstallOptions, "installDir"> & {
+        approveCapabilities?: string[];
+      },
     ): Promise<{
       oldManifest: PaperclipPluginManifestV1;
       newManifest: PaperclipPluginManifestV1;
       discovered: DiscoveredPlugin;
+      addedCapabilities: string[];
+      applied: boolean;
     }> {
       const plugin = (await registry.getById(pluginId)) as {
         id: string;
@@ -1823,16 +1902,37 @@ export function pluginLoader(
       const oldCaps = new Set(oldManifest.capabilities ?? []);
       const newCaps = newManifest.capabilities ?? [];
       const escalated = newCaps.filter((c) => !oldCaps.has(c));
+      const approved = new Set(upgradeOptions.approveCapabilities ?? []);
+      const unapproved = escalated.filter((c) => !approved.has(c));
+
+      if (unapproved.length > 0) {
+        // Do NOT persist the new manifest: the stored capability list is the
+        // grant the host enforces at runtime, so writing it here would grant
+        // the escalation. The package stays on disk and the caller parks the
+        // plugin in `upgrade_pending` until an operator approves (§15.3).
+        log.warn(
+          {
+            pluginId,
+            escalated,
+            unapproved,
+            oldVersion: oldManifest.version,
+            newVersion: newManifest.version,
+          },
+          "plugin-loader: upgrade introduces new capabilities — awaiting operator approval",
+        );
+        return {
+          oldManifest,
+          newManifest,
+          discovered,
+          addedCapabilities: escalated,
+          applied: false,
+        };
+      }
 
       if (escalated.length > 0) {
-        log.warn(
-          { pluginId, escalated, oldVersion: oldManifest.version, newVersion: newManifest.version },
-          "plugin-loader: upgrade introduces new capabilities — requires admin approval",
-        );
-        throw new Error(
-          `Upgrade for "${pluginId}" introduces new capabilities that require approval: ${escalated.join(", ")}. ` +
-            `The previous version declared [${[...oldCaps].join(", ")}]. ` +
-            `Please review and approve the capability escalation before upgrading.`,
+        log.info(
+          { pluginId, escalated, newVersion: newManifest.version },
+          "plugin-loader: applying upgrade with operator-approved capability escalation",
         );
       }
 
@@ -1847,6 +1947,49 @@ export function pluginLoader(
         oldManifest,
         newManifest,
         discovered,
+        addedCapabilities: escalated,
+        applied: true,
+      };
+    },
+
+    // -----------------------------------------------------------------------
+    // inspectManifestDrift
+    // -----------------------------------------------------------------------
+
+    async inspectManifestDrift(plugin: PluginRecord): Promise<PluginManifestDrift> {
+      const storedManifest = plugin.manifestJson;
+      const storedCaps = storedManifest?.capabilities ?? [];
+      const base: PluginManifestDrift = {
+        packageReadable: false,
+        drifted: false,
+        storedVersion: plugin.version,
+        packageVersion: null,
+        addedCapabilities: [],
+        removedCapabilities: [],
+      };
+
+      let packageManifest: PaperclipPluginManifestV1 | null = null;
+      try {
+        const packageRoot = resolvePluginPackageRoot(plugin, localPluginDir);
+        packageManifest = await loadManifestFromPackageRoot(packageRoot);
+        if (!packageManifest) {
+          return { ...base, error: "Package on disk does not expose a Paperclip manifest" };
+        }
+      } catch (err) {
+        return { ...base, error: err instanceof Error ? err.message : String(err) };
+      }
+
+      const packageCaps = packageManifest.capabilities ?? [];
+      const storedCapSet = new Set(storedCaps);
+      const packageCapSet = new Set(packageCaps);
+
+      return {
+        packageReadable: true,
+        drifted: JSON.stringify(packageManifest) !== JSON.stringify(storedManifest),
+        storedVersion: plugin.version,
+        packageVersion: packageManifest.version,
+        addedCapabilities: packageCaps.filter((c) => !storedCapSet.has(c)),
+        removedCapabilities: storedCaps.filter((c) => !packageCapSet.has(c)),
       };
     },
 

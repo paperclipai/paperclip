@@ -61,6 +61,14 @@ async function createApp(
 
   const loader = {
     installPlugin: vi.fn(),
+    inspectManifestDrift: vi.fn(async () => ({
+      packageReadable: true,
+      drifted: false,
+      storedVersion: "1.0.0",
+      packageVersion: "1.0.0",
+      addedCapabilities: [],
+      removedCapabilities: [],
+    })),
     ...loaderOverrides,
   };
 
@@ -389,8 +397,9 @@ describe.sequential("plugin install and upgrade authz", () => {
       version: "1.0.0",
     });
     mockLifecycle.upgrade.mockResolvedValue({
-      id: pluginId,
-      version: "1.1.0",
+      plugin: { id: pluginId, version: "1.1.0" },
+      applied: true,
+      addedCapabilities: [],
     });
 
     const { app } = await createApp({
@@ -406,7 +415,100 @@ describe.sequential("plugin install and upgrade authz", () => {
       .send({ version: "1.1.0" });
 
     expect(res.status).toBe(200);
-    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(pluginId, "1.1.0");
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(pluginId, "1.1.0", {
+      approveCapabilities: undefined,
+    });
+  }, 20_000);
+
+  it("reports the capabilities an upgrade is waiting on approval for", async () => {
+    const pluginId = "11111111-1111-4111-8111-111111111111";
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+    });
+    mockLifecycle.upgrade.mockResolvedValue({
+      plugin: { id: pluginId, version: "1.0.0", status: "upgrade_pending" },
+      applied: false,
+      addedCapabilities: ["issues.wakeup"],
+    });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/upgrade`)
+      .send({ version: "1.1.0" });
+
+    // The operator learns exactly what to approve instead of getting a 400
+    // that says approval is required and offers no way to give it.
+    expect(res.status).toBe(200);
+    expect(res.body.upgrade).toEqual({
+      applied: false,
+      requiresApproval: true,
+      addedCapabilities: ["issues.wakeup"],
+    });
+  }, 20_000);
+
+  it("forwards operator-approved capabilities to the lifecycle", async () => {
+    const pluginId = "11111111-1111-4111-8111-111111111111";
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+    });
+    mockLifecycle.upgrade.mockResolvedValue({
+      plugin: { id: pluginId, version: "1.1.0" },
+      applied: true,
+      addedCapabilities: ["issues.wakeup"],
+    });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/upgrade`)
+      .send({ version: "1.1.0", approveCapabilities: ["issues.wakeup"] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.upgrade.applied).toBe(true);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(pluginId, "1.1.0", {
+      approveCapabilities: ["issues.wakeup"],
+    });
+  }, 20_000);
+
+  it("rejects a malformed approveCapabilities body", async () => {
+    const pluginId = "11111111-1111-4111-8111-111111111111";
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+    });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/upgrade`)
+      .send({ approveCapabilities: "issues.wakeup" });
+
+    expect(res.status).toBe(400);
+    expect(mockLifecycle.upgrade).not.toHaveBeenCalled();
   }, 20_000);
 });
 
