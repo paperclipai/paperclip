@@ -1089,6 +1089,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .expect(201);
     const generatedWebhookSecret = generatedSecretResponse.body
       .webhookSecret as string;
+    expect(generatedSecretResponse.headers["cache-control"]).toBe("no-store");
     expect(generatedWebhookSecret).toMatch(/^[a-f0-9]{64}$/);
     const endpointAfterGeneration = await request(app)
       .get(`/api/chat-endpoints/${endpoint.id}`)
@@ -1401,6 +1402,47 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(JSON.stringify(reconnected)).not.toContain(webhookSecret);
   });
 
+  it("does not rotate a GitHub webhook secret when stored credentials cannot be resolved", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service } =
+      await configuredGitHubEndpoint(fixture);
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active", setup: { step: "complete" } })
+      .where(eq(chatEndpoints.id, endpoint.id));
+
+    const [connectionBefore] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    const appIdRef = connectionBefore!.refs.find(
+      (ref) => ref.configPath === "credentials.appId",
+    );
+    if (!appIdRef) throw new Error("Expected stored GitHub App ID");
+    await db
+      .update(companySecrets)
+      .set({ status: "disabled" })
+      .where(eq(companySecrets.id, appIdRef.secretId));
+
+    await expect(
+      service.generateSetupSecret(endpoint.id, "owner-user"),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "secret_inactive" },
+    });
+
+    const [connectionAfter] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(connectionAfter!.refs).toEqual(connectionBefore!.refs);
+    expect(runtime.endpoints.has(endpoint.id)).toBe(true);
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "active",
+      setup: { step: "complete", webhookSecretConfigured: true },
+    });
+  });
+
   it("keeps GitHub issues, PR conversations, and inline review threads on distinct tasks", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint } = await configuredGitHubEndpoint(fixture);
@@ -1578,6 +1620,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toEqual([expect.objectContaining({ state: "published" })]);
   });
 
+  it("acknowledges signed GitHub webhooks from another installation without admitting them", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service } =
+      await configuredGitHubEndpoint(fixture);
+    await db
+      .update(chatEndpoints)
+      .set({ status: "active", setup: { step: "complete" } })
+      .where(eq(chatEndpoints.id, endpoint.id));
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected GitHub runtime");
+    providerRuntime.webhookRequest = null;
+    const payload = JSON.stringify({
+      action: "deleted",
+      installation: { id: 9999 },
+    });
+    const signature = createHmac("sha256", "github-webhook-secret")
+      .update(payload)
+      .digest("hex");
+
+    const response = await service.handleWebhook(
+      endpoint.publicId,
+      "github",
+      new Request("https://paperclip.example/github", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "installation",
+          "x-github-delivery": "foreign-installation-deleted",
+          "x-hub-signature-256": `sha256=${signature}`,
+        },
+        body: payload,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(providerRuntime.webhookRequest).toBeNull();
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "active",
+      setup: { step: "complete" },
+    });
+    await expect(
+      db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id)),
+    ).resolves.toHaveLength(0);
+  });
+
   it("configures a customer-owned Microsoft Teams bot with the entered credentials", async () => {
     const fixture = await seedCompany();
     const clientId = "00000000-0000-4000-8000-000000000001";
@@ -1720,7 +1810,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         idempotencyKey: `run:${runId}:${progressState}:${endpoint.id}`,
         payload: {
           text:
-            progressState === "queued" ? "Maya is queued." : "Maya is working…",
+            progressState === "queued"
+              ? "Maya is queued."
+              : "Maya is working…",
           progressState,
         },
         state: "pending",
@@ -7489,9 +7581,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         idempotencyKey: `run:${runId}:${progressState}:${endpoint.id}`,
         payload: {
           text:
-            progressState === "queued"
-              ? "Maya is queued."
-              : "Maya is working…",
+            progressState === "queued" ? "Maya is queued." : "Maya is working…",
           progressState,
         },
         state: "pending",

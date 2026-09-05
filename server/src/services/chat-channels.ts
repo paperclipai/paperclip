@@ -1,9 +1,11 @@
 import {
   createHash,
+  createHmac,
   createPrivateKey,
   createSign,
   randomBytes,
   randomUUID,
+  timingSafeEqual,
 } from "node:crypto";
 import {
   and,
@@ -1565,9 +1567,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
     }
     const webhookSecret = randomBytes(32).toString("hex");
-    const existing = await resolveCredentials(endpoint).catch(
-      () => ({}) as Record<string, string>,
-    );
+    // Rotation must fail closed if any existing credential cannot be resolved.
+    // Falling back to an empty object here would replace the full credential
+    // set with only the new webhook secret and strand an otherwise-live App.
+    const existing = await resolveCredentials(endpoint);
     const rotated = record.credentialSecretRefs.some(
       (ref) => ref.configPath === "credentials.webhookSecret",
     );
@@ -5363,6 +5366,41 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       (endpoint.status === "revoked" && !recoveringRevokedGitHubInstallation)
     )
       throw notFound("Chat endpoint not found");
+    if (provider === "github" && !recoveringRevokedGitHubInstallation) {
+      const inspection = request.clone();
+      const body = await inspection.text();
+      const signature = inspection.headers.get("x-hub-signature-256");
+      const credentials = await resolveCredentials(endpoint);
+      const expected = `sha256=${createHmac("sha256", credentials.webhookSecret).update(body).digest("hex")}`;
+      let signatureValid = false;
+      try {
+        signatureValid =
+          typeof signature === "string" &&
+          timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+      } catch {
+        signatureValid = false;
+      }
+      if (signatureValid) {
+        try {
+          const payload = JSON.parse(body) as {
+            installation?: { id?: unknown };
+          };
+          const incomingInstallationId = payload.installation?.id;
+          if (
+            incomingInstallationId !== undefined &&
+            String(incomingInstallationId) !== credentials.installationId
+          ) {
+            // A dedicated endpoint represents exactly one GitHub App
+            // installation. GitHub sends every installation's events to the
+            // App webhook, so acknowledge foreign signed traffic without
+            // admitting it to Paperclip or prompting endless redelivery.
+            return new Response("ignored", { status: 200 });
+          }
+        } catch {
+          // Let the adapter return its normal invalid-JSON response.
+        }
+      }
+    }
     const lifecycleInspection = request.clone();
     const githubInspection = provider === "github" ? request.clone() : null;
     const endpointRuntime = await runtimeFor(endpoint);

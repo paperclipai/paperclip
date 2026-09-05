@@ -125,6 +125,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
 
   router.post("/chat-endpoints/:endpointId/setup-secret", async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
+    res.set("Cache-Control", "no-store");
     res
       .status(201)
       .json(
