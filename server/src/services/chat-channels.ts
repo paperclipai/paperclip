@@ -351,6 +351,9 @@ const DELIVERY_DRAIN_LIMIT = 100;
 const SLACK_COMMAND_OWNER_WAIT_MS = 2_000;
 const SLACK_COMMAND_POST_STALE_MS = 60_000;
 const ORPHAN_FOLLOW_UP_GRACE_MS = 5_000;
+const CREDENTIAL_MUTATION_LEASE_TTL_MS = 90_000;
+const CREDENTIAL_MUTATION_LEASE_WAIT_MS = 10_000;
+const CREDENTIAL_MUTATION_LEASE_POLL_MS = 25;
 // Slack can deliver adjacent Events API callbacks on separate HTTP requests
 // out of timestamp order. Hold the first callback briefly so a rapid burst can
 // be sorted by the provider's message timestamp before any run is started.
@@ -1635,89 +1638,202 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return values;
   }
 
+  async function acquireCredentialMutationLease(endpoint: EndpointRow) {
+    const token = randomUUID();
+    const leaseKey = "credentials";
+    const deadline = Date.now() + CREDENTIAL_MUTATION_LEASE_WAIT_MS;
+    while (true) {
+      const now = new Date();
+      const expiresAt = new Date(
+        now.getTime() + CREDENTIAL_MUTATION_LEASE_TTL_MS,
+      );
+      const inserted = await db
+        .insert(chatEndpointLeases)
+        .values({
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          leaseKey,
+          token,
+          expiresAt,
+        })
+        .onConflictDoNothing()
+        .returning({ id: chatEndpointLeases.id });
+      if (inserted.length > 0) return { leaseKey, token };
+      const reclaimed = await db
+        .update(chatEndpointLeases)
+        .set({ token, expiresAt, updatedAt: now })
+        .where(
+          and(
+            eq(chatEndpointLeases.companyId, endpoint.companyId),
+            eq(chatEndpointLeases.endpointId, endpoint.id),
+            eq(chatEndpointLeases.leaseKey, leaseKey),
+            lte(chatEndpointLeases.expiresAt, now),
+          ),
+        )
+        .returning({ id: chatEndpointLeases.id });
+      if (reclaimed.length > 0) return { leaseKey, token };
+      if (Date.now() >= deadline) {
+        throw conflict(
+          "Another credential update is still in progress; try again",
+          { code: "chat_endpoint_credentials_busy" },
+        );
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, CREDENTIAL_MUTATION_LEASE_POLL_MS),
+      );
+    }
+  }
+
+  async function withCredentialMutationLease<T>(
+    endpoint: EndpointRow,
+    mutation: () => Promise<T>,
+  ): Promise<T> {
+    const lease = await acquireCredentialMutationLease(endpoint);
+    let renewal: Promise<void> | null = null;
+    const renewTimer = setInterval(() => {
+      if (renewal) return;
+      const now = new Date();
+      renewal = db
+        .update(chatEndpointLeases)
+        .set({
+          expiresAt: new Date(now.getTime() + CREDENTIAL_MUTATION_LEASE_TTL_MS),
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(chatEndpointLeases.companyId, endpoint.companyId),
+            eq(chatEndpointLeases.endpointId, endpoint.id),
+            eq(chatEndpointLeases.leaseKey, lease.leaseKey),
+            eq(chatEndpointLeases.token, lease.token),
+          ),
+        )
+        .then(() => undefined)
+        .catch((error) => {
+          logger.warn(
+            { endpointId: endpoint.id, error: redactError(error) },
+            "could not renew chat credential mutation lease",
+          );
+        })
+        .finally(() => {
+          renewal = null;
+        });
+    }, CREDENTIAL_MUTATION_LEASE_TTL_MS / 3);
+    renewTimer.unref?.();
+    try {
+      return await mutation();
+    } finally {
+      clearInterval(renewTimer);
+      await renewal;
+      await db
+        .delete(chatEndpointLeases)
+        .where(
+          and(
+            eq(chatEndpointLeases.companyId, endpoint.companyId),
+            eq(chatEndpointLeases.endpointId, endpoint.id),
+            eq(chatEndpointLeases.leaseKey, lease.leaseKey),
+            eq(chatEndpointLeases.token, lease.token),
+          ),
+        )
+        .catch((error) => {
+          logger.warn(
+            { endpointId: endpoint.id, error: redactError(error) },
+            "could not release chat credential mutation lease",
+          );
+        });
+    }
+  }
+
   async function generateSetupSecret(
     endpointId: string,
     actorUserId?: string | null,
   ) {
-    const record = await endpointRecord(endpointId);
-    if (!record) throw notFound("Chat endpoint not found");
-    const endpoint = record.endpoint;
-    if (endpoint.provider !== "github") {
+    const initial = await endpointRecord(endpointId);
+    if (!initial) throw notFound("Chat endpoint not found");
+    if (initial.endpoint.provider !== "github") {
       throw unprocessable(
         "Setup secret generation is only available for GitHub",
       );
     }
-    if (
-      ![
-        "draft",
-        "verifying",
-        "active",
-        "attention",
-        "revoked",
-        "paused",
-      ].includes(endpoint.status)
-    ) {
-      throw conflict(
-        "The GitHub webhook secret cannot be rotated in this connection state",
-        { code: "chat_endpoint_setup_secret_unavailable" },
+    return withCredentialMutationLease(initial.endpoint, async () => {
+      // A competing request may have completed while this request waited for
+      // the durable lease. Reload both endpoint state and credential refs only
+      // after ownership so each successful rotation starts from its immediate
+      // predecessor instead of replacing the credential set from a stale read.
+      const record = await endpointRecord(endpointId);
+      if (!record) throw notFound("Chat endpoint not found");
+      const endpoint = record.endpoint;
+      if (
+        ![
+          "draft",
+          "verifying",
+          "active",
+          "attention",
+          "revoked",
+          "paused",
+        ].includes(endpoint.status)
+      ) {
+        throw conflict(
+          "The GitHub webhook secret cannot be rotated in this connection state",
+          { code: "chat_endpoint_setup_secret_unavailable" },
+        );
+      }
+      const webhookSecret = randomBytes(32).toString("hex");
+      // Rotation must fail closed if any existing credential cannot be resolved.
+      // Falling back to an empty object here would replace the full credential
+      // set with only the new webhook secret and strand an otherwise-live App.
+      const existing = await resolveCredentials(endpoint);
+      const rotated = record.credentialSecretRefs.some(
+        (ref) => ref.configPath === "credentials.webhookSecret",
       );
-    }
-    const webhookSecret = randomBytes(32).toString("hex");
-    // Rotation must fail closed if any existing credential cannot be resolved.
-    // Falling back to an empty object here would replace the full credential
-    // set with only the new webhook secret and strand an otherwise-live App.
-    const existing = await resolveCredentials(endpoint);
-    const rotated = record.credentialSecretRefs.some(
-      (ref) => ref.configPath === "credentials.webhookSecret",
-    );
-    await persistCredentials(
-      endpoint,
-      { ...existing, webhookSecret },
-      actorUserId,
-    );
-    if (rotated) {
-      await runtime.removeEndpoint(endpoint.id).catch(() => undefined);
-      const updatedAt = new Date();
-      await db.transaction(async (tx) => {
-        await tx
-          .update(chatEndpoints)
-          .set({
-            status: "attention",
-            healthMessage:
-              "Update the GitHub webhook secret, then reconnect this App",
-            lastError: null,
-            setup: { ...endpoint.setup, step: "provider_setup" },
-            updatedAt,
-          })
-          .where(eq(chatEndpoints.id, endpoint.id));
-        await tx
-          .update(toolConnections)
-          .set({
-            status: "disabled",
-            enabled: false,
-            healthStatus: "degraded",
-            healthMessage: "GitHub webhook secret rotation needs reconnect",
-            lastError: null,
-            healthCheckedAt: updatedAt,
-            updatedAt,
-          })
-          .where(eq(toolConnections.id, endpoint.connectionId));
+      await persistCredentials(
+        endpoint,
+        { ...existing, webhookSecret },
+        actorUserId,
+      );
+      if (rotated) {
+        await runtime.removeEndpoint(endpoint.id).catch(() => undefined);
+        const updatedAt = new Date();
+        await db.transaction(async (tx) => {
+          await tx
+            .update(chatEndpoints)
+            .set({
+              status: "attention",
+              healthMessage:
+                "Update the GitHub webhook secret, then reconnect this App",
+              lastError: null,
+              setup: { ...endpoint.setup, step: "provider_setup" },
+              updatedAt,
+            })
+            .where(eq(chatEndpoints.id, endpoint.id));
+          await tx
+            .update(toolConnections)
+            .set({
+              status: "disabled",
+              enabled: false,
+              healthStatus: "degraded",
+              healthMessage: "GitHub webhook secret rotation needs reconnect",
+              lastError: null,
+              healthCheckedAt: updatedAt,
+              updatedAt,
+            })
+            .where(eq(toolConnections.id, endpoint.connectionId));
+        });
+      }
+      await logActivity(db, {
+        companyId: endpoint.companyId,
+        actorType: "user",
+        actorId: actorUserId ?? "board",
+        action: "chat_endpoint.setup_secret_generated",
+        entityType: "tool_connection",
+        entityId: endpoint.connectionId,
+        details: {
+          endpointId: endpoint.id,
+          provider: endpoint.provider,
+          rotated,
+        },
       });
-    }
-    await logActivity(db, {
-      companyId: endpoint.companyId,
-      actorType: "user",
-      actorId: actorUserId ?? "board",
-      action: "chat_endpoint.setup_secret_generated",
-      entityType: "tool_connection",
-      entityId: endpoint.connectionId,
-      details: {
-        endpointId: endpoint.id,
-        provider: endpoint.provider,
-        rotated,
-      },
+      return { webhookSecret };
     });
-    return { webhookSecret };
   }
 
   async function reconcileProviderResourceRows(
@@ -1999,6 +2115,26 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   async function configure(
+    endpointId: string,
+    input: ConfigureChatEndpointInput,
+    actorUserId?: string | null,
+  ) {
+    if (
+      input.action !== "configure" &&
+      input.action !== "reconnect" &&
+      input.action !== "resume" &&
+      input.action !== "remove"
+    ) {
+      return configureWithoutCredentialLease(endpointId, input, actorUserId);
+    }
+    const record = await endpointRecord(endpointId);
+    if (!record) throw notFound("Chat endpoint not found");
+    return withCredentialMutationLease(record.endpoint, () =>
+      configureWithoutCredentialLease(endpointId, input, actorUserId),
+    );
+  }
+
+  async function configureWithoutCredentialLease(
     endpointId: string,
     input: ConfigureChatEndpointInput,
     actorUserId?: string | null,
@@ -5447,21 +5583,29 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // while retaining the same App credentials. Resolve it server-side and
       // keep it only in the connection's vault-backed credential references.
       if (effect.kind === "endpoint" && effect.availability === "available") {
-        const currentCredentials = await resolveCredentials(endpoint);
-        const prepared = await prepareProviderInventory(
-          endpoint,
-          currentCredentials,
-        );
-        if (
-          endpoint.provider === "github" &&
-          prepared.credentials.installationId !==
-            currentCredentials.installationId
-        ) {
-          await persistCredentials(endpoint, prepared.credentials);
-          refreshRuntimeAfterLifecycle = true;
-        }
-        if (prepared.inventory)
-          await reconcileProviderResourceRows(endpoint, prepared.inventory);
+        await withCredentialMutationLease(endpoint, async () => {
+          const currentRecord = await endpointRecord(endpoint.id);
+          if (!currentRecord) throw notFound("Chat endpoint not found");
+          const currentEndpoint = currentRecord.endpoint;
+          const currentCredentials = await resolveCredentials(currentEndpoint);
+          const prepared = await prepareProviderInventory(
+            currentEndpoint,
+            currentCredentials,
+          );
+          if (
+            currentEndpoint.provider === "github" &&
+            prepared.credentials.installationId !==
+              currentCredentials.installationId
+          ) {
+            await persistCredentials(currentEndpoint, prepared.credentials);
+            refreshRuntimeAfterLifecycle = true;
+          }
+          if (prepared.inventory)
+            await reconcileProviderResourceRows(
+              currentEndpoint,
+              prepared.inventory,
+            );
+        });
       }
 
       await db.transaction(async (tx) => {

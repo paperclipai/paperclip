@@ -1624,6 +1624,128 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(JSON.stringify(reconnected)).not.toContain(webhookSecret);
   });
 
+  it("serializes concurrent GitHub setup-secret requests without losing stored credentials", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service } =
+      await configuredGitHubEndpoint(fixture);
+    const app = routesApp(db, fixture.companyId, service);
+
+    const [first, second] = await Promise.all([
+      request(app)
+        .post(`/api/chat-endpoints/${endpoint.id}/setup-secret`)
+        .send({})
+        .expect(201),
+      request(app)
+        .post(`/api/chat-endpoints/${endpoint.id}/setup-secret`)
+        .send({})
+        .expect(201),
+    ]);
+    const rotatedSecrets = [
+      first.body.webhookSecret as string,
+      second.body.webhookSecret as string,
+    ];
+    expect(rotatedSecrets[0]).toMatch(/^[a-f0-9]{64}$/);
+    expect(rotatedSecrets[1]).toMatch(/^[a-f0-9]{64}$/);
+    expect(rotatedSecrets[0]).not.toBe(rotatedSecrets[1]);
+
+    const [connection] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(connection!.refs.map((ref) => ref.configPath).sort()).toEqual([
+      "credentials.appId",
+      "credentials.installationId",
+      "credentials.privateKey",
+      "credentials.webhookSecret",
+    ]);
+    await expect(
+      db
+        .select()
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.entityId, endpoint.connectionId),
+            eq(activityLog.action, "chat_endpoint.setup_secret_generated"),
+          ),
+        ),
+    ).resolves.toHaveLength(2);
+    await expect(
+      db
+        .select()
+        .from(chatEndpointLeases)
+        .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+    ).resolves.toHaveLength(0);
+
+    await service.configure(endpoint.id, { action: "reconnect" }, "owner-user");
+    const providerConfig = runtime.configurations.get(
+      endpoint.id,
+    )?.providerConfig;
+    expect(providerConfig).toMatchObject({
+      provider: "github",
+      credentials: {
+        appId: "123456",
+        installationId: 2468,
+        privateKey: expect.stringContaining("BEGIN PRIVATE KEY"),
+      },
+    });
+    if (providerConfig?.provider !== "github")
+      throw new Error("Expected GitHub provider configuration");
+    expect(rotatedSecrets).toContain(providerConfig.credentials.webhookSecret);
+  });
+
+  it("serializes a GitHub secret rotation racing reconnect and preserves the rotated secret", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service } =
+      await configuredGitHubEndpoint(fixture);
+    const app = routesApp(db, fixture.companyId, service);
+
+    const [rotation] = await Promise.all([
+      request(app)
+        .post(`/api/chat-endpoints/${endpoint.id}/setup-secret`)
+        .send({})
+        .expect(201),
+      request(app)
+        .post(`/api/chat-endpoints/${endpoint.id}/setup`)
+        .send({ action: "reconnect" })
+        .expect(200),
+    ]);
+    const rotatedSecret = rotation.body.webhookSecret as string;
+    expect(rotatedSecret).toMatch(/^[a-f0-9]{64}$/);
+
+    // The final state depends on which request acquired the lease first. A
+    // final reconnect must consume the complete, most recent credential set
+    // in either ordering.
+    await service.configure(endpoint.id, { action: "reconnect" }, "owner-user");
+    const providerConfig = runtime.configurations.get(
+      endpoint.id,
+    )?.providerConfig;
+    expect(providerConfig).toMatchObject({
+      provider: "github",
+      credentials: {
+        appId: "123456",
+        installationId: 2468,
+        privateKey: expect.stringContaining("BEGIN PRIVATE KEY"),
+        webhookSecret: rotatedSecret,
+      },
+    });
+    const [connection] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(connection!.refs.map((ref) => ref.configPath).sort()).toEqual([
+      "credentials.appId",
+      "credentials.installationId",
+      "credentials.privateKey",
+      "credentials.webhookSecret",
+    ]);
+    await expect(
+      db
+        .select()
+        .from(chatEndpointLeases)
+        .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+    ).resolves.toHaveLength(0);
+  });
+
   it("does not rotate a GitHub webhook secret when stored credentials cannot be resolved", async () => {
     const fixture = await seedCompany();
     const { endpoint, runtime, service } =
