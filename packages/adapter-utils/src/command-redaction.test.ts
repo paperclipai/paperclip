@@ -178,6 +178,104 @@ describe("redactCommandText header secrets", () => {
     expect(redactDiagnosticText(once)).toBe(once);
   });
 
+  it("redacts an entire quoted digest credential, not just its first parameter", () => {
+    const input =
+      `curl -H 'Authorization: Digest username="alice", realm="r", nonce="n", uri="/x", response="deadbeef"' https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("alice");
+    expect(output).not.toContain("deadbeef");
+    expect(output).not.toContain("nonce");
+    expect(output).toBe(
+      `curl -H 'Authorization: Digest ${REDACTED_COMMAND_TEXT_VALUE}' https://example.test`,
+    );
+  });
+
+  it("redacts an unquoted digest credential and stops at the next field", () => {
+    // A log line carries the header without shell quoting. The parameter list
+    // ends at the last comma-joined `key=value`, so the trailing status field
+    // survives.
+    const input =
+      'Authorization: Digest username="alice", nonce="n", response="deadbeef" status=401';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("alice");
+    expect(output).not.toContain("deadbeef");
+    expect(output).toBe(
+      `Authorization: Digest ${REDACTED_COMMAND_TEXT_VALUE} status=401`,
+    );
+  });
+
+  it("redacts an entire quoted sigv4 credential, not just the scheme name", () => {
+    const input =
+      'curl -H "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260903/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123"';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("AKIAEXAMPLE");
+    expect(output).not.toContain("abc123");
+    expect(output).toBe(
+      `curl -H "Authorization: AWS4-HMAC-SHA256 ${REDACTED_COMMAND_TEXT_VALUE}"`,
+    );
+  });
+
+  it("redacts an unquoted sigv4 credential and stops at the next word", () => {
+    const input =
+      "Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260903/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123 retry";
+    const output = redactCommandText(input);
+    expect(output).not.toContain("AKIAEXAMPLE");
+    expect(output).not.toContain("abc123");
+    expect(output).toBe(
+      `Authorization: AWS4-HMAC-SHA256 ${REDACTED_COMMAND_TEXT_VALUE} retry`,
+    );
+  });
+
+  it("keeps an already redacted unquoted header bounded", () => {
+    // The server redaction feeds this shape in after its own rules. The trailing
+    // word must survive.
+    const input = `prefix Authorization: ${REDACTED_COMMAND_TEXT_VALUE} suffix`;
+    expect(redactCommandText(input)).toBe(input);
+  });
+
+  it("keeps hint words that are not header names untouched", () => {
+    expect(redactCommandText("GET /v1/tokens:list")).toBe("GET /v1/tokens:list");
+    expect(redactCommandText("auth: failed")).toBe("auth: failed");
+  });
+
+  it("keeps a www-authenticate challenge untouched", () => {
+    // The challenge parameters are diagnostics, not credentials.
+    const input =
+      'WWW-Authenticate: Bearer realm="paperclip", error="invalid_token"';
+    expect(redactCommandText(input)).toBe(input);
+  });
+
+  it("keeps an empty quoted header argument untouched", () => {
+    // A quoted value must open with a non-blank character, so there is nothing
+    // to hide here and the argument stays byte for byte.
+    const input = 'curl -H "X-API-Key: " -H "X-Auth-Token:" https://example.test';
+    expect(redactCommandText(input)).toBe(input);
+  });
+
+  it("redacts a bare apikey header value", () => {
+    // Supabase sends the key under an unhyphenated `apikey` header.
+    expect(redactCommandText("apikey: abc")).toBe(
+      `apikey: ${REDACTED_COMMAND_TEXT_VALUE}`,
+    );
+  });
+
+  it("redacts a proxy-authorization header value", () => {
+    const input = 'curl -H "Proxy-Authorization: Basic dXNlcjpwdw=="';
+    const output = redactCommandText(input);
+    expect(output).not.toContain("dXNlcjpwdw==");
+    expect(output).toBe(
+      `curl -H "Proxy-Authorization: Basic ${REDACTED_COMMAND_TEXT_VALUE}"`,
+    );
+  });
+
+  it("is idempotent over a multi-part credential", () => {
+    const input =
+      `curl -H 'Authorization: Digest username="alice", response="deadbeef"' https://example.test`;
+    const once = redactCommandText(input);
+    expect(redactCommandText(once)).toBe(once);
+    expect(redactDiagnosticText(once)).toBe(once);
+  });
+
   it("redacts a header secret inside a diagnostic and keeps a JSON secret field working", () => {
     const input = 'command failed: curl -H "X-API-Key: abc" -> {"token":"opaque-value"}';
     const output = redactDiagnosticText(input);

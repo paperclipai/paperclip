@@ -18,29 +18,80 @@ const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
 );
 const COMMAND_AUTHORIZATION_BEARER_RE =
   /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
-// A secret-bearing header names a credential in its own header name. The
-// public Paperclip API documents `X-API-Key`, and a run log can also carry
-// `Api-Key`, `X-Auth-Token`, or `X-Paperclip-Api-Key`. The command redaction
-// handled `Authorization: Bearer <value>` only, so a `curl -H "X-API-Key:
-// <value>"` command kept the credential in clear. This rule redacts the value
-// of any header whose name contains an api-key, token, secret, or auth hint.
+// A secret-bearing header names a credential in its own header name. The public
+// Paperclip API documents `X-API-Key`, and a run log can also carry `Api-Key`,
+// `X-Auth-Token`, `X-Paperclip-Api-Key`, or a bare `Authorization`. This rule
+// redacts the value of such a header wherever it appears in command text.
 //
-// The rule keeps an optional auth scheme in the output. The scheme is not a
-// secret, and it tells a reader which credential form the command used. This
-// also makes the rule agree byte for byte with the bearer rule above, so
+// A header name is either a hyphenated or underscored word carrying an api-key,
+// token, secret, or auth hint, or one of the bare names `authorization` and
+// `apikey`. Requiring the hinted form to open with an alphanumeric run and then
+// a `-` or `_` keeps the rule off prose and paths that merely contain a hint
+// word, such as `GET /v1/tokens:list` or `auth: failed`, and keeps a match from
+// opening at the hyphen inside a longer name. `www-authenticate` and
+// `proxy-authenticate` are excluded: they are response headers whose
+// `error="invalid_token"` parameters are diagnostics worth keeping.
+//
+// The value is bounded by its context, so a multi-part credential stays covered
+// end to end. Inside a double- or single-quoted shell argument the value runs to
+// the closing quote. Unquoted, the value is either a comma-separated `key=value`
+// list, the shape a `Digest` or `AWS4-HMAC-SHA256` credential takes, or a single
+// whitespace-delimited token. A continuation parameter must itself carry an `=`,
+// so a bare word after the last parameter (`... response="r" status=401`)
+// survives.
+//
+// An optional auth scheme stays in the output. The scheme is not a secret, and
+// it tells a reader which credential form the command used. This also makes the
+// rule agree byte for byte with the bearer rule above, so
 // `Authorization: Bearer <value>` produces the same output as before.
 //
-// The header name and the colon match on one line only, and the value ends at
-// the first quote, backslash, or whitespace. The rule therefore stops at the
-// end of one header argument and never runs past it. Excluding the backslash
-// also keeps the rule off an escaped-quote opener such as
-// `Authorization: \"Bearer ...\"` in a serialized diagnostic, which the
-// caller's own authorization rules already redact.
-const COMMAND_SECRET_HEADER_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|token|secret|auth)[A-Za-z0-9_-]*`;
+// Every value branch excludes the backslash. That keeps the rule off an
+// escaped-quote opener such as `Authorization: \"Bearer ...\"` in a serialized
+// diagnostic, which the caller's own authorization rules already redact. A
+// quoted value must open with a non-blank character, so an empty header
+// argument such as `-H "X-API-Key: "` stays as it is.
+//
+// The schemes come from the IANA HTTP Authentication Scheme Registry, plus
+// `AWS4-HMAC-SHA256` and `Token`, which are widely used but unregistered. A
+// longer alternative precedes a shorter one that shares its prefix.
+const COMMAND_AUTH_SCHEMES = [
+  "AWS4-HMAC-SHA256",
+  "Basic",
+  "Bearer",
+  "Digest",
+  "DPoP",
+  "GNAP",
+  "Hawk",
+  "HOBA",
+  "Mutual",
+  "Negotiate",
+  "OAuth",
+  "PrivateToken",
+  "SCRAM-SHA-256",
+  "SCRAM-SHA-1",
+  "Token",
+  "vapid",
+] as const;
+const COMMAND_SECRET_HEADER_HINT_PATTERN = String.raw`(?:api[-_]?key|token|secret|auth)`;
+const COMMAND_SECRET_HEADER_NAME_PATTERN =
+  String.raw`(?!(?:www|proxy)-authenticate\b)(?:(?=[A-Za-z0-9]+[-_])[A-Za-z0-9_-]*${COMMAND_SECRET_HEADER_HINT_PATTERN}[A-Za-z0-9_-]*|authorization|apikey)`;
+const COMMAND_SECRET_HEADER_PREFIX_PATTERN =
+  COMMAND_SECRET_HEADER_NAME_PATTERN +
+  String.raw`[ \t]*:[ \t]*(?:(?:${COMMAND_AUTH_SCHEMES.join("|")})[ \t]+)?`;
+const COMMAND_SECRET_HEADER_PARAM_PATTERN =
+  String.raw`[^\s"'` +
+  "`" +
+  String.raw`\\,=]+=(?:"[^"\\\r\n]*"|'[^'\\\r\n]*'|[^\s"'` +
+  "`" +
+  String.raw`\\,]*)`;
+const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN =
+  String.raw`(?:${COMMAND_SECRET_HEADER_PARAM_PATTERN}(?:[ \t]*,[ \t]*${COMMAND_SECRET_HEADER_PARAM_PATTERN})*|[^\s\\"'` +
+  "`" +
+  String.raw`]+)`;
 const COMMAND_SECRET_HEADER_RE = new RegExp(
-  String.raw`(\b${COMMAND_SECRET_HEADER_NAME_PATTERN}[ \t]*:[ \t]*(?:(?:Bearer|Basic|Digest|Token)[ \t]+)?)[^\s\\"'` +
-    "`" +
-    String.raw`]+`,
+  String.raw`("${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s"\\][^"\\\r\n]*(")` +
+    String.raw`|('${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'\\][^'\\\r\n]*(')` +
+    String.raw`|(\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}`,
   "gi",
 );
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
@@ -83,7 +134,22 @@ export function redactCommandText(
   if (!maybeContainsSecretText(command)) return command;
   return command
     .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
-    .replace(COMMAND_SECRET_HEADER_RE, `$1${redactedValue}`)
+    .replace(
+      COMMAND_SECRET_HEADER_RE,
+      (
+        _match,
+        doubleQuotedPrefix: string | undefined,
+        doubleQuoteClose: string | undefined,
+        singleQuotedPrefix: string | undefined,
+        singleQuoteClose: string | undefined,
+        unquotedPrefix: string | undefined,
+      ) => {
+        const prefix =
+          doubleQuotedPrefix ?? singleQuotedPrefix ?? unquotedPrefix ?? "";
+        const closingQuote = doubleQuoteClose ?? singleQuoteClose ?? "";
+        return `${prefix}${redactedValue}${closingQuote}`;
+      },
+    )
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
     .replace(
       COMMAND_ENV_SECRET_ASSIGNMENT_RE,
