@@ -1,7 +1,7 @@
 diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
 --- a/packages/shared/src/constants.ts
 +++ b/packages/shared/src/constants.ts
-@@
+@@ -1617,7 +1617,8 @@ export const PLUGIN_EVENT_TYPES = [
    "issue.document.updated",
    "issue.document.deleted",
    "issue.relations.updated",
@@ -12,7 +12,7 @@ diff --git a/packages/shared/src/constants.ts b/packages/shared/src/constants.ts
 diff --git a/server/src/services/activity-log.ts b/server/src/services/activity-log.ts
 --- a/server/src/services/activity-log.ts
 +++ b/server/src/services/activity-log.ts
-@@
+@@ -19,7 +19,8 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
    issue_document_updated: "issue.document.updated",
    issue_document_deleted: "issue.document.deleted",
    issue_blockers_updated: "issue.relations.updated",
