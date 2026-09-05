@@ -243,4 +243,60 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
 
     expect(row?.responsibleUserId).toBe("key-user");
   });
+
+  it("does not crash on a syntactically valid runId that has no heartbeat_runs row (RENA-56155)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const agentApiKeyId = randomUUID();
+    const nonExistentRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(agentApiKeys).values({
+      id: agentApiKeyId,
+      companyId,
+      agentId,
+      name: "test",
+      keyHash: `hash-${agentApiKeyId}`,
+      responsibleUserId: "key-user",
+    });
+
+    const postCommitPublications: ActivityPublication[] = [];
+    await expect(logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      entityType: "agent",
+      entityId: agentId,
+      agentApiKeyId,
+      runId: nonExistentRunId,
+    }), postCommitPublications)).resolves.toBeDefined();
+
+    expect(postCommitPublications[0]?.payload.runId).toBeNull();
+
+    const row = await db
+      .select({ runId: activityLog.runId, responsibleUserId: activityLog.responsibleUserId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .then((rows) => rows[0]);
+
+    expect(row?.runId).toBeNull();
+    expect(row?.responsibleUserId).toBe("key-user");
+  });
 });
