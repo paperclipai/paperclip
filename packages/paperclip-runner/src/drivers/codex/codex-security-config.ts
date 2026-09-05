@@ -9,6 +9,8 @@ export const CODEX_SKILLLESS_PERMISSION_PROFILE =
   "paperclip-runner-workspace-only";
 export const CODEX_PLANNING_PERMISSION_PROFILE =
   "paperclip-runner-workspace-read-only";
+export const CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE =
+  "paperclip-runner-external-sandbox";
 
 function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
   return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
@@ -107,13 +109,24 @@ export function createIsolatedCodexAppServerArgs(
   const commandEnv = Object.entries(codexCommandEnvironment(source))
     .map(([key, value]) => `${key}=${tomlString(value)}`)
     .join(",");
+  const defaultPermissionProfile = externalRunnerSandbox
+    ? CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE
+    : CODEX_SKILLLESS_PERMISSION_PROFILE;
   return [
     "-c",
-    `default_permissions=${tomlString(CODEX_SKILLLESS_PERMISSION_PROFILE)}`,
+    `default_permissions=${tomlString(defaultPermissionProfile)}`,
     "-c",
     `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.filesystem={${filesystemRules}}`,
     "-c",
     `permissions.${CODEX_SKILLLESS_PERMISSION_PROFILE}.network.enabled=${hasGitHubCredential}`,
+    ...(externalRunnerSandbox
+      ? [
+          "-c",
+          `permissions.${CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE}.filesystem={":root"="write"}`,
+          "-c",
+          `permissions.${CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE}.network.enabled=true`,
+        ]
+      : []),
     "-c",
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
     "-c",
@@ -149,7 +162,7 @@ export function createSecuredCodexThreadParams(
 ): Record<string, unknown> {
   const permissionProfile =
     mode === "default" && usesExternalRunnerSandbox(source)
-      ? "danger-full-access"
+      ? CODEX_EXTERNAL_SANDBOX_PERMISSION_PROFILE
       : mode === "plan"
       ? CODEX_PLANNING_PERMISSION_PROFILE
       : CODEX_SKILLLESS_PERMISSION_PROFILE;

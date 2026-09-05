@@ -624,7 +624,7 @@ const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
 
 fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static str {
     if provider == "codex" && external_sandbox {
-        "danger-full-access"
+        "paperclip-runner-external-sandbox"
     } else {
         "paperclip-runner-workspace-only"
     }
@@ -2975,7 +2975,7 @@ mod tests {
         assert!(!CODEX_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_SANDBOX_MODE"));
         assert_eq!(
             codex_permission_profile("codex", true),
-            "danger-full-access"
+            "paperclip-runner-external-sandbox"
         );
         assert_eq!(
             codex_permission_profile("codex", false),

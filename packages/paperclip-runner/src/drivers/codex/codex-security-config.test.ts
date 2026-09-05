@@ -93,8 +93,19 @@ describe("Codex security configuration", () => {
 
   it("uses the outer sandbox for default-mode commands only when the controller authorizes it", () => {
     const source = { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" };
-    expect(createIsolatedCodexAppServerArgs(source)).toContain(
+    const externalArgs = createIsolatedCodexAppServerArgs(source);
+    const serializedExternalArgs = externalArgs.join("\n");
+    expect(externalArgs).toContain(
       "--dangerously-bypass-approvals-and-sandbox",
+    );
+    expect(serializedExternalArgs).toContain(
+      'default_permissions="paperclip-runner-external-sandbox"',
+    );
+    expect(serializedExternalArgs).toContain(
+      'permissions.paperclip-runner-external-sandbox.filesystem={":root"="write"}',
+    );
+    expect(serializedExternalArgs).toContain(
+      "permissions.paperclip-runner-external-sandbox.network.enabled=true",
     );
     expect(
       createSecuredCodexThreadParams(
@@ -104,7 +115,9 @@ describe("Codex security configuration", () => {
         false,
         source,
       ),
-    ).toMatchObject({ permissions: "danger-full-access" });
+    ).toMatchObject({
+      permissions: "paperclip-runner-external-sandbox",
+    });
     expect(
       createSecuredCodexThreadParams(
         "/workspace",
