@@ -153,6 +153,8 @@ type LatestIssueRun = Pick<
   | "createdAt"
 > & {
   resultJson?: unknown;
+  // Optional: only the selects that need to reason about *when* a run died populate it.
+  finishedAt?: Date | null;
 } | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -400,6 +402,15 @@ export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 const UNROUTABLE_BLOCKED_REPAIR_DEFAULT_LIMIT = 25;
 // Bounds the candidate scan itself, because startup waits on that query.
 const UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT = 500;
+// How long after a run failure the `blocked` write still counts as caused by that failure. The
+// escalation runs off the periodic reconcile sweep, so it lands minutes after the run dies, never
+// hours. Anything outside this window is somebody else's decision and is left alone.
+const UNROUTABLE_BLOCKED_REPAIR_CAUSAL_WINDOW_MS = 2 * 60 * 60 * 1000;
+// The run's finish stamp and the issue's transition stamp are written by two different statements,
+// so allow a small inversion before treating the block as predating the failure.
+const UNROUTABLE_BLOCKED_REPAIR_CAUSAL_TOLERANCE_MS = 60 * 1000;
+// The periodic backstop does not repeat the scan on every scheduler tick.
+const UNROUTABLE_BLOCKED_REPAIR_MIN_INTERVAL_MS = 30 * 60 * 1000;
 
 // LUN-7056: `blocked` with no first-class blocker and no unblock descriptor is a dead end. Dependency
 // wakeups have nothing to resolve and `deliverAgentUnblockNotification` has nobody to wake, so the
@@ -469,6 +480,15 @@ export const FLEET_PAUSE_RECOVERY_BACKOFF_MS = 60 * 60 * 1000;
 // consecutive infra-classed failures on the same issue the cause is no longer plausibly transient,
 // so the issue escalates through the normal path — which now always attaches a routable descriptor.
 const INFRA_TRANSIENT_MAX_CONSECUTIVE_DEFERRALS = 3;
+// A fleet pause is not a crash: it is a deliberate hold that a human lifts when they mean to. Three
+// strikes at the hourly backoff would escalate a perfectly healthy hold after three hours and
+// describe it as a broken execution path. Give it its own, much longer rope — a hold still standing
+// after half a day is worth telling someone about, one standing for two hours is not.
+const FLEET_PAUSE_MAX_CONSECUTIVE_DEFERRALS = 12;
+const MAX_CONSECUTIVE_INFRA_DEFERRALS = Math.max(
+  INFRA_TRANSIENT_MAX_CONSECUTIVE_DEFERRALS,
+  FLEET_PAUSE_MAX_CONSECUTIVE_DEFERRALS,
+);
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
@@ -477,7 +497,15 @@ const CONFIGURATION_INCOMPLETE_ERROR_RE =
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
-  | { kind: "infra_transient"; retryAt: Date; parsedResetTime: false; errorCode: string }
+  | {
+      kind: "infra_transient";
+      retryAt: Date;
+      parsedResetTime: false;
+      errorCode: string;
+      // What kind of infrastructure cause this is. `fleet_pause` is deliberate and gets a longer
+      // rope than `engine`, which is a crash and stops being plausibly transient much sooner.
+      cause: "engine" | "fleet_pause";
+    }
   | { kind: "configuration_incomplete" }
   | null;
 
@@ -614,6 +642,7 @@ export function classifyAdapterFailureForRecovery(
         retryAt: new Date(now.getTime() + backoffMs),
         parsedResetTime: false,
         errorCode,
+        cause: isFleetPauseFailure ? "fleet_pause" : "engine",
       };
     }
     return null;
@@ -826,6 +855,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
         createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
@@ -3664,7 +3694,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         input.issue.id,
         input.now,
       );
-      if (consecutive >= INFRA_TRANSIENT_MAX_CONSECUTIVE_DEFERRALS) return { outcome: "exhausted" };
+      const maxDeferrals = input.classification.cause === "fleet_pause"
+        ? FLEET_PAUSE_MAX_CONSECUTIVE_DEFERRALS
+        : INFRA_TRANSIENT_MAX_CONSECUTIVE_DEFERRALS;
+      if (consecutive >= maxDeferrals) return { outcome: "exhausted" };
     }
     const monitored = await scheduleInfraRecoveryMonitor({
       issue: input.issue,
@@ -3693,7 +3726,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
-      .limit(INFRA_TRANSIENT_MAX_CONSECUTIVE_DEFERRALS + 1);
+      // Read enough tail to satisfy the largest bound any caller applies, otherwise a fleet-pause
+      // hold would look exhausted at the crash bound simply because the query stopped there.
+      .limit(MAX_CONSECUTIVE_INFRA_DEFERRALS + 1);
 
     let count = 0;
     for (const row of rows) {
@@ -3755,10 +3790,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // infrastructure cause. A descriptor-less `blocked` issue waiting on a human decision is a
   // legitimate business block and is left exactly as it is — mass-unblocking those would both
   // lose real state and spawn a wave of runs.
-  async function repairUnroutableBlockedIssues(opts?: { now?: Date; limit?: number }) {
+  let lastUnroutableBlockedRepairAt: number | null = null;
+
+  async function repairUnroutableBlockedIssues(opts?: { now?: Date; limit?: number; throttle?: boolean }) {
     const now = opts?.now ?? new Date();
     const limit = opts?.limit ?? UNROUTABLE_BLOCKED_REPAIR_DEFAULT_LIMIT;
-    const result = { inspected: 0, repaired: 0, skipped: 0, unevaluated: 0, issueIds: [] as string[] };
+    const result = {
+      inspected: 0,
+      repaired: 0,
+      skipped: 0,
+      unevaluated: 0,
+      throttled: false,
+      issueIds: [] as string[],
+    };
+
+    // The periodic backstop passes `throttle`: it must not re-run the scan on every scheduler tick,
+    // but it does have to run again without a restart, so a backlog left by a bounded pass — or a
+    // ticket that lands in this state after boot — is not stuck until someone restarts the process.
+    if (opts?.throttle) {
+      if (
+        lastUnroutableBlockedRepairAt !== null &&
+        now.getTime() - lastUnroutableBlockedRepairAt < UNROUTABLE_BLOCKED_REPAIR_MIN_INTERVAL_MS
+      ) {
+        result.throttled = true;
+        return result;
+      }
+    }
+    lastUnroutableBlockedRepairAt = now.getTime();
 
     const candidates = await db
       .select()
@@ -3796,6 +3854,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? classifyAdapterFailureForRecovery(latestRun, now)
         : null;
       if (!latestRun || !classification || classification.kind === "configuration_incomplete") {
+        result.skipped += 1;
+        continue;
+      }
+
+      // The failure has to be what put the issue here. Matching on "latest run failed on infra" alone
+      // is not enough: an issue whose last run died on `process_lost` and which a human then blocked
+      // deliberately — for an unrelated reason, leaving no descriptor, a shape this system produces
+      // routinely — has exactly the same candidate signature. Resuming it would override that
+      // decision silently. Require the `blocked` transition to sit just after the run's death.
+      const failedAt = latestRun.finishedAt ?? latestRun.startedAt ?? latestRun.createdAt;
+      const blockedAt = issue.blockedTransitionAt;
+      if (!blockedAt || !failedAt) {
+        result.skipped += 1;
+        continue;
+      }
+      const sinceFailure = blockedAt.getTime() - failedAt.getTime();
+      if (
+        sinceFailure < -UNROUTABLE_BLOCKED_REPAIR_CAUSAL_TOLERANCE_MS ||
+        sinceFailure > UNROUTABLE_BLOCKED_REPAIR_CAUSAL_WINDOW_MS
+      ) {
         result.skipped += 1;
         continue;
       }
@@ -3855,6 +3933,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           failureClass: "infra",
           recoveryClassification: classification.kind,
           retryAt: classification.retryAt.toISOString(),
+          // The causal evidence this repair acted on, so the decision is auditable after the fact.
+          latestRunFailedAt: failedAt.toISOString(),
+          blockedTransitionAt: blockedAt.toISOString(),
         },
       });
 
@@ -3863,11 +3944,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     if (result.unevaluated > 0 || result.inspected >= UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT) {
-      // Never let a bounded pass read as "everything was covered". This pass runs at startup only,
-      // so anything left here waits for the next restart rather than for some later sweep.
+      // Never let a bounded pass read as "everything was covered". The remainder is picked up by the
+      // throttled periodic backstop, not only by the next restart.
       logger.warn(
-        { ...result, limit, scanLimit: UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT },
-        "repairUnroutableBlockedIssues stopped at its bound; the remainder waits for the next startup",
+        {
+          ...result,
+          limit,
+          scanLimit: UNROUTABLE_BLOCKED_REPAIR_SCAN_LIMIT,
+          nextPassNotBeforeMs: UNROUTABLE_BLOCKED_REPAIR_MIN_INTERVAL_MS,
+        },
+        "repairUnroutableBlockedIssues stopped at its bound; the remainder waits for the next pass",
       );
     }
     return result;

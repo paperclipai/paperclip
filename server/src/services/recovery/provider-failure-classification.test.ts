@@ -162,12 +162,14 @@ describe("classifyAdapterFailureForRecovery", () => {
   // LUN-7056 AC1: the infrastructure causes that are not quota. Each one means the run could not
   // execute, so none of them may end in `blocked`.
   it.each([
-    ["process_lost", INFRA_TRANSIENT_RECOVERY_BACKOFF_MS],
-    ["acpx_timeout", INFRA_TRANSIENT_RECOVERY_BACKOFF_MS],
-    ["acpx_backend_unavailable", INFRA_TRANSIENT_RECOVERY_BACKOFF_MS],
-    ["codex_harness_crash", INFRA_TRANSIENT_RECOVERY_BACKOFF_MS],
-    ["issue_paused", FLEET_PAUSE_RECOVERY_BACKOFF_MS],
-  ])("classifies %s as a deferrable infrastructure failure", (errorCode, backoffMs) => {
+    ["process_lost", INFRA_TRANSIENT_RECOVERY_BACKOFF_MS, "engine"],
+    ["acpx_timeout", INFRA_TRANSIENT_RECOVERY_BACKOFF_MS, "engine"],
+    ["acpx_backend_unavailable", INFRA_TRANSIENT_RECOVERY_BACKOFF_MS, "engine"],
+    ["codex_harness_crash", INFRA_TRANSIENT_RECOVERY_BACKOFF_MS, "engine"],
+    // A pause is deliberate rather than a crash: same class, its own backoff, and — review feedback
+    // on this PR — its own, much longer rope before the deferral is called exhausted.
+    ["issue_paused", FLEET_PAUSE_RECOVERY_BACKOFF_MS, "fleet_pause"],
+  ])("classifies %s as a deferrable infrastructure failure", (errorCode, backoffMs, cause) => {
     const now = new Date("2026-09-04T20:00:00.000Z");
     expect(classifyAdapterFailureForRecovery({
       errorCode,
@@ -178,6 +180,7 @@ describe("classifyAdapterFailureForRecovery", () => {
       retryAt: new Date(now.getTime() + backoffMs),
       parsedResetTime: false,
       errorCode,
+      cause,
     });
   });
 

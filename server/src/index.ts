@@ -1681,6 +1681,17 @@ export async function startServer(): Promise<StartedServer> {
               }
             })
             .then(async () => {
+              // LUN-7056: startup is not the only moment an issue can land unroutable in `blocked`.
+              // The pass throttles itself, so this tick is a cheap no-op most of the time.
+              const blockedRepaired = await heartbeat.repairUnroutableBlockedIssues({ throttle: true });
+              if (blockedRepaired.repaired > 0 || blockedRepaired.unevaluated > 0) {
+                logger.warn(
+                  { ...blockedRepaired },
+                  "periodic sweep repaired issues left unroutable in blocked by an infrastructure failure",
+                );
+              }
+            })
+            .then(async () => {
               const reconciled = await heartbeat.reconcileResolvedDependencyWakes();
               if (reconciled.healed > 0) {
                 logger.warn({ ...reconciled }, "periodic dependency-wake reconciliation restored task execution paths");

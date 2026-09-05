@@ -17383,8 +17383,8 @@ export function heartbeatService(
     });
   }
 
-  async function repairUnroutableBlockedIssues() {
-    return recovery.repairUnroutableBlockedIssues();
+  async function repairUnroutableBlockedIssues(opts?: { throttle?: boolean }) {
+    return recovery.repairUnroutableBlockedIssues(opts);
   }
 
   async function sweepStaleIssueLocks() {
