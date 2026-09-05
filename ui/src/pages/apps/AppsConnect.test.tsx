@@ -199,6 +199,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    window.sessionStorage.clear();
     mockSearch.value = "";
     mockParams.appKey = undefined;
     container = document.createElement("div");
@@ -766,6 +767,96 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Continue to GitHub");
     expect(container.textContent).not.toContain("Connect GitHub as");
     expect(container.textContent).not.toContain("Connect with Paperclip");
+  });
+
+  it("preserves a dedicated agent identity across the full-page enrollment callback", async () => {
+    mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+      capabilities: {
+        canCreateOrganizationGrant: true,
+        organizationGrantReason: null,
+        canSetCompanyInstall: true,
+        companyInstallReason: null,
+      },
+    });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: false,
+      status: "not_configured",
+      brokerBaseUrl: "https://my-staging.paperclip.app",
+      instanceId: null,
+      environment: "staging",
+      origins: [],
+    });
+
+    await render();
+    await act(async () => {
+      radioContaining("A dedicated account for an agent")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonByText("Select agents")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      document.body.querySelector<HTMLElement>('[aria-label="Allow Ada"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    const accessContinue = buttonByText("Save and continue") ?? buttonByText("Continue to GitHub");
+    expect(accessContinue?.disabled).toBe(false);
+    await act(async () => {
+      accessContinue?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonByText("Connect with Paperclip")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(JSON.parse(window.sessionStorage.getItem(
+      "paperclip.connector-enrollment-access:company-1:github",
+    ) ?? "null")).toEqual({
+      grantKind: "agent",
+      installChoice: "specific",
+      agentIds: ["agent-1"],
+    });
+
+    await act(async () => mountedRoot?.unmount());
+    mountedRoot = null;
+    container.innerHTML = "";
+    mockParams.appKey = undefined;
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({
+      configured: true,
+      status: "active",
+      brokerBaseUrl: "https://my-staging.paperclip.app",
+      instanceId: "inst-test",
+      environment: "staging",
+      origins: ["https://paperclip.example.test"],
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Step 2 of 2");
+    expect(window.sessionStorage.getItem(
+      "paperclip.connector-enrollment-access:company-1:github",
+    )).toBeNull();
+    await act(async () => {
+      buttonByText("Continue to GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "github",
+      grantKind: "agent",
+      subjectAgentId: "agent-1",
+    }));
   });
 
   it("never renders self-host enrollment when the connector identity is already active", async () => {

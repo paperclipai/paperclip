@@ -96,6 +96,56 @@ import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayloa
 type Step = "gallery" | "access" | "key" | "success";
 export type OAuthConnectPhase = "entry" | "starting" | "redirecting" | "error";
 
+type EnrollmentAccessState = {
+  grantKind: ConnectionGrantKind;
+  installChoice: "specific" | "all";
+  agentIds: string[];
+};
+
+function enrollmentAccessStorageKey(companyId: string, appKey: string): string {
+  return `paperclip.connector-enrollment-access:${companyId}:${appKey}`;
+}
+
+function validEnrollmentAccessState(value: unknown): value is EnrollmentAccessState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (!(candidate.grantKind === "user" || candidate.grantKind === "agent" || candidate.grantKind === "organization")) {
+    return false;
+  }
+  if (candidate.installChoice !== "specific" && candidate.installChoice !== "all") return false;
+  if (!Array.isArray(candidate.agentIds) || candidate.agentIds.some((id) => typeof id !== "string" || !id.trim())) {
+    return false;
+  }
+  const agentIds = new Set(candidate.agentIds);
+  if (agentIds.size !== candidate.agentIds.length) return false;
+  if (candidate.grantKind === "agent") {
+    return candidate.installChoice === "specific" && agentIds.size === 1;
+  }
+  return candidate.installChoice === "all" ? agentIds.size === 0 : agentIds.size > 0;
+}
+
+function saveEnrollmentAccessState(companyId: string, appKey: string, state: EnrollmentAccessState): void {
+  try {
+    window.sessionStorage.setItem(enrollmentAccessStorageKey(companyId, appKey), JSON.stringify(state));
+  } catch {
+    // Browser storage can be unavailable under restrictive privacy settings.
+    // The callback will safely use the provider's defaults in that case.
+  }
+}
+
+function consumeEnrollmentAccessState(companyId: string, appKey: string): EnrollmentAccessState | null {
+  const key = enrollmentAccessStorageKey(companyId, appKey);
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    window.sessionStorage.removeItem(key);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    return validEnrollmentAccessState(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function githubRecoveryUrl(value: string | null): string | null {
   if (!value) return null;
   try {
@@ -489,6 +539,14 @@ export function ConnectionSetupFlow({
   const zapierSource = (serviceSlug ?? sourceSlug ?? appKey) === "zapier";
   const requestedAppKey = zapierSource ? undefined : routeAppKey;
   const byo = host === "page" && (byoOnly || searchParams.get("byo") === "1");
+  const [restoredEnrollmentAccess] = useState<EnrollmentAccessState | null>(() =>
+    host === "page"
+      && searchParams.get("cloud_connector") === "enrolled"
+      && selectedCompanyId
+      && requestedAppKey
+      ? consumeEnrollmentAccessState(selectedCompanyId, requestedAppKey)
+      : null,
+  );
 
   // Prefill arrives from the app page for reconnects; read once so later
   // wizard navigation doesn't fight the URL.
@@ -536,7 +594,7 @@ export function ConnectionSetupFlow({
   const [access, setAccess] = useState<"all" | "specific">("all");
   const [agentIds, setAgentIds] = useState<Set<string>>(new Set());
   const [installAgentIds, setInstallAgentIds] = useState<Set<string>>(
-    () => new Set(requestedAgentId ? [requestedAgentId] : []),
+    () => new Set(restoredEnrollmentAccess?.agentIds ?? (requestedAgentId ? [requestedAgentId] : [])),
   );
   /**
    * Access-step selections (PAP-17835). These are chosen before the credential
@@ -544,10 +602,10 @@ export function ConnectionSetupFlow({
    * backwards through the wizard.
    */
   const [grantKind, setGrantKind] = useState<ConnectionGrantKind>(
-    reconnectGrantKindHint ?? "organization",
+    restoredEnrollmentAccess?.grantKind ?? reconnectGrantKindHint ?? "organization",
   );
   const [installChoice, setInstallChoice] = useState<"specific" | "all">(
-    requestedAgentId ? "specific" : "all",
+    restoredEnrollmentAccess?.installChoice ?? (requestedAgentId ? "specific" : "all"),
   );
   const resumingAfterOAuthFailure = Boolean(
     resumeConnectionId
@@ -776,6 +834,14 @@ export function ConnectionSetupFlow({
     ),
   });
   const [connectorEnrollmentError, setConnectorEnrollmentError] = useState<string | null>(null);
+  const preserveEnrollmentAccess = useCallback(() => {
+    if (!selectedCompanyId || !requestedAppKey) return;
+    saveEnrollmentAccessState(selectedCompanyId, requestedAppKey, {
+      grantKind,
+      installChoice,
+      agentIds: installChoice === "specific" ? [...installAgentIds] : [],
+    });
+  }, [grantKind, installAgentIds, installChoice, requestedAppKey, selectedCompanyId]);
   const openConnectorEnrollment = useCallback((verificationUrl: string) => {
     const target = resolveAuthorizationTarget(verificationUrl);
     if (!target.ok) {
@@ -1209,9 +1275,11 @@ export function ConnectionSetupFlow({
       setGoogleSheetsLinks("");
       setGoogleSheetsError(null);
       setConnectResult(null);
-      setGrantKind(reconnectGrantKind ?? defaultGrantKindFor(initialMethod));
-      setInstallAgentIds(new Set(requestedAgentId ? [requestedAgentId] : []));
-      setInstallChoice(requestedAgentId ? "specific" : "all");
+      setGrantKind(reconnectGrantKind ?? restoredEnrollmentAccess?.grantKind ?? defaultGrantKindFor(initialMethod));
+      setInstallAgentIds(new Set(
+        restoredEnrollmentAccess?.agentIds ?? (requestedAgentId ? [requestedAgentId] : []),
+      ));
+      setInstallChoice(restoredEnrollmentAccess?.installChoice ?? (requestedAgentId ? "specific" : "all"));
       // Route/service selection initializes the wizard once. Later renders must
       // preserve the user's current step in both hosts instead of snapping back
       // to Access after they continue.
@@ -1254,6 +1322,7 @@ export function ConnectionSetupFlow({
     fullRequestedDefinition,
     requestedAppKey,
     requestedAgentId,
+    restoredEnrollmentAccess,
     routeStage,
     zapierSource,
   ]);
@@ -1868,6 +1937,7 @@ export function ConnectionSetupFlow({
                 disabled={connectorEnrollmentQuery.isLoading || startConnectorEnrollment.isPending}
                 onClick={() => {
                   setConnectorEnrollmentError(null);
+                  preserveEnrollmentAccess();
                   const verificationUrl = connectorEnrollmentQuery.data?.verificationUrl;
                   if (verificationUrl) openConnectorEnrollment(verificationUrl);
                   else startConnectorEnrollment.mutate();
