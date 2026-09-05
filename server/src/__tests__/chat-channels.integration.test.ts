@@ -2025,13 +2025,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
     expect(runtime.endpoints.has(endpoint.id)).toBe(false);
 
-    const comment = await issueService(db).addComment(
-      conversation.issueId,
+    const publication = await service.publishBoardMessage(
+      endpoint.id,
+      conversation.id,
       "Recovered GitHub response",
-      { agentId: fixture.assignedAgentId },
-      { authorType: "agent" },
+      "recovered-github-response",
+      "owner-user",
     );
-    await service.processPendingPublications();
     expect(
       runtime.configurations.get(endpoint.id)?.providerConfig,
     ).toMatchObject({
@@ -2042,7 +2042,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       db
         .select()
         .from(chatPublications)
-        .where(eq(chatPublications.commentId, comment.id)),
+        .where(eq(chatPublications.id, publication!.id)),
     ).resolves.toEqual([expect.objectContaining({ state: "published" })]);
   });
 
@@ -4719,7 +4719,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const [comment] = await db
       .select()
       .from(issueComments)
-      .where(eq(issueComments.issueId, conversation.issueId));
+      .where(
+        and(
+          eq(issueComments.issueId, conversation.issueId),
+          eq(issueComments.authorType, "user"),
+        ),
+      );
     expect(comment.authorType).toBe("user");
     expect(comment.authorUserId).toBe("linked-paperclip-user");
     const userCommentCountBeforeSuspend = (
