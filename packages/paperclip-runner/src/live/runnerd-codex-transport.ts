@@ -524,11 +524,14 @@ function turnStartResponseReady(input: {
   observedEpoch: number;
   requestedTurnId: string;
   boundTurnId: string;
+  requireRequestedIdentity: boolean;
 }): boolean {
   return (
     input.responseEpoch === input.observedEpoch &&
     input.requestedTurnId.length > 0 &&
-    input.boundTurnId.length > 0
+    input.boundTurnId.length > 0 &&
+    (!input.requireRequestedIdentity ||
+      input.boundTurnId === input.requestedTurnId)
   );
 }
 
@@ -3485,6 +3488,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           observedEpoch: this.#observedTurnStartEpoch,
           requestedTurnId: pendingTurnId,
           boundTurnId: this.#turnId,
+          requireRequestedIdentity: this.options.provider === "acpx",
         });
       while (!providerTurnStarted() && Date.now() < deadline) {
         this.#throwIfFailed();

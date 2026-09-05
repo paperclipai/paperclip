@@ -156,6 +156,25 @@ it("accepts an observed provider start that echoes the requested turn identity",
       observedEpoch: 2,
       requestedTurnId: turnId,
       boundTurnId: turnId,
+      requireRequestedIdentity: true,
+    }),
+  ).toBe(true);
+  expect(
+    runnerdRecoveryInternals.turnStartResponseReady({
+      responseEpoch: 2,
+      observedEpoch: 2,
+      requestedTurnId: turnId,
+      boundTurnId: "provider-turn-different",
+      requireRequestedIdentity: true,
+    }),
+  ).toBe(false);
+  expect(
+    runnerdRecoveryInternals.turnStartResponseReady({
+      responseEpoch: 2,
+      observedEpoch: 2,
+      requestedTurnId: turnId,
+      boundTurnId: "provider-turn-different",
+      requireRequestedIdentity: false,
     }),
   ).toBe(true);
   expect(
@@ -163,7 +182,8 @@ it("accepts an observed provider start that echoes the requested turn identity",
       responseEpoch: 2,
       observedEpoch: 1,
       requestedTurnId: turnId,
-      boundTurnId: "provider-turn-different",
+      boundTurnId: turnId,
+      requireRequestedIdentity: true,
     }),
   ).toBe(false);
 });
