@@ -16,6 +16,7 @@ import {
 import { fileURLToPath } from "node:url";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const HERMES_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,6 +26,32 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function extractProfileFromArgs(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+
+  for (let i = 0; i < value.length; i += 1) {
+    const raw = value[i];
+    if (typeof raw !== "string") continue;
+    const arg = raw.trim();
+    if (!arg) continue;
+
+    const profilePairMatch = arg.match(/^(--profile|-p)\s+(.+)$/);
+    if (profilePairMatch) return profilePairMatch[2].trim() || null;
+
+    if (arg === "--profile" || arg === "-p") {
+      const next = value[i + 1];
+      return typeof next === "string" && next.trim().length > 0 ? next.trim() : null;
+    }
+
+    if (arg.startsWith("--profile=") || arg.startsWith("-p=")) {
+      const [, profile = ""] = arg.split("=", 2);
+      return profile.trim() || null;
+    }
+  }
+
+  return null;
+}
+
 function resolveHermesHome(config: Record<string, unknown>): string {
   const env =
     typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
@@ -32,6 +59,26 @@ function resolveHermesHome(config: Record<string, unknown>): string {
       : {};
   const configuredHome = asString(env.HOME);
   return configuredHome ? path.resolve(configuredHome) : os.homedir();
+}
+
+export function resolveHermesSkillsHome(config: Record<string, unknown>): string {
+  const env =
+    typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+      ? (config.env as Record<string, unknown>)
+      : {};
+  const configuredHermesHome = asString(env.HERMES_HOME);
+  const hermesHome = configuredHermesHome
+    ? path.resolve(configuredHermesHome)
+    : path.join(resolveHermesHome(config), ".hermes");
+  const profile = extractProfileFromArgs(config.extraArgs);
+  if (profile && !HERMES_PROFILE_NAME_RE.test(profile)) {
+    throw new Error(
+      `Invalid Hermes profile name ${JSON.stringify(profile)}. Expected [a-z0-9][a-z0-9_-]{0,63}.`,
+    );
+  }
+  return profile
+    ? path.join(hermesHome, "profiles", profile, "skills")
+    : path.join(hermesHome, "skills");
 }
 
 interface SkillFrontmatter {
@@ -130,8 +177,7 @@ async function buildSkillEntry(
 // ---------------------------------------------------------------------------
 
 async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
-  const home = resolveHermesHome(config);
-  const hermesSkillsHome = path.join(home, ".hermes", "skills");
+  const hermesSkillsHome = resolveHermesSkillsHome(config);
 
   // 1. Scan Paperclip-managed skills (bundled with the adapter)
   const paperclipEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
@@ -224,7 +270,7 @@ export async function reconcileHermesPaperclipSkills(
       ]))
     : resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
   const desiredSet = new Set(desiredSkills);
-  const skillsHome = path.join(resolveHermesHome(config), ".hermes", "skills");
+  const skillsHome = resolveHermesSkillsHome(config);
   await fs.mkdir(skillsHome, { recursive: true });
   const installed = await readInstalledSkillTargets(skillsHome);
   const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
