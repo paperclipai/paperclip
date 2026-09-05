@@ -319,6 +319,39 @@ describe("redactCommandText header secrets", () => {
     );
   });
 
+  it("redacts an entire serialized digest credential", () => {
+    // The header argument is escaped inside a JSON string, so its quotes read as
+    // `\"` and its own embedded quotes as `\\\"`. The value must still run to the
+    // end of the argument.
+    const input = String.raw`{"command":"curl -H \"Authorization: Digest username=\\\"alice\\\", response=\\\"deadbeef\\\"\" https://x"}`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("alice");
+    expect(output).not.toContain("deadbeef");
+    expect(output).toBe(
+      String.raw`{"command":"curl -H \"Authorization: Digest ` +
+        REDACTED_COMMAND_TEXT_VALUE +
+        String.raw`\" https://x"}`,
+    );
+  });
+
+  it("redacts past an embedded escaped quote in a serialized header value", () => {
+    const input = String.raw`{"command":"curl -H \"X-API-Key: abc\\\"def\" https://x"}`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("def");
+    expect(output).toBe(
+      String.raw`{"command":"curl -H \"X-API-Key: ` +
+        REDACTED_COMMAND_TEXT_VALUE +
+        String.raw`\" https://x"}`,
+    );
+  });
+
+  it("is idempotent over a serialized multi-part credential", () => {
+    const input = String.raw`{"command":"curl -H \"Authorization: Digest username=\\\"alice\\\", response=\\\"deadbeef\\\"\" https://x"}`;
+    const once = redactCommandText(input);
+    expect(redactCommandText(once)).toBe(once);
+    expect(redactDiagnosticText(once)).toBe(once);
+  });
+
   it("redacts a header secret inside a diagnostic and keeps a JSON secret field working", () => {
     const input = 'command failed: curl -H "X-API-Key: abc" -> {"token":"opaque-value"}';
     const output = redactDiagnosticText(input);

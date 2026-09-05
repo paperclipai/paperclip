@@ -48,15 +48,19 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 // Each branch treats the backslash the way its quoting context does. A
 // double-quoted value consumes escape pairs, so an escaped quote inside the
 // argument (`"X-API-Key: abc\"def"`) does not end the value early, and neither
-// does a backslash-newline line continuation. Its opening
-// quote must itself be unescaped, which keeps the branch off a serialized
-// diagnostic such as `\"X-API-Key: ...\"`, where the closing `\"` must survive.
-// A single-quoted value takes a backslash literally, because a shell single
-// quote has no escapes. Only the unquoted branch stops at a backslash, so an
-// escaped-quote opener such as `Authorization: \"Bearer ...\"` is left to the
-// caller's own authorization rules. A quoted value must open with a non-blank
-// character, so an empty header argument such as `-H "X-API-Key: "` stays as it
-// is.
+// does a backslash-newline line continuation. Its opening quote must itself be
+// unescaped. A serialized command writes that same argument with escaped
+// quotes, so a fourth branch mirrors the double-quoted one over `\"`
+// delimiters: it opens at an unescaped `\"`, consumes the doubled escape
+// sequences an embedded `\"` or `\\` becomes, and closes at the next bare
+// `\"`. A multi-part credential in a serialized diagnostic is therefore covered
+// end to end, not truncated at its first escape. A single-quoted value takes a
+// backslash literally, because a shell single quote has no escapes. Only the
+// unquoted branch stops at a backslash, so an escaped-quote opener that does
+// not follow a header name, such as `Authorization: \"Bearer ...\"`, is left to
+// the caller's own authorization rules. A quoted value must open with a
+// non-blank character, so an empty header argument such as `-H "X-API-Key: "`
+// stays as it is.
 //
 // The schemes come from the IANA HTTP Authentication Scheme Registry, plus
 // `AWS4-HMAC-SHA256` and `Token`, which are widely used but unregistered. A
@@ -95,9 +99,18 @@ const COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN =
   String.raw`(?:${COMMAND_SECRET_HEADER_PARAM_PATTERN}(?:[ \t]*,[ \t]*${COMMAND_SECRET_HEADER_PARAM_PATTERN})*|[^\s\\"'` +
   "`" +
   String.raw`]+)`;
+// The escape units a serialized command writes inside an escaped-quoted
+// argument: an escaped backslash followed by another escape (an embedded
+// `\"` or `\\`), an escaped backslash followed by a plain character, or an
+// ordinary escape such as `\n`. A bare `\"` is not a unit, so it closes the
+// argument.
+const COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN = String.raw`\\\\\\.|\\\\[^\\]|\\[^"\\]`;
 const COMMAND_SECRET_HEADER_RE = new RegExp(
   String.raw`(?<!\\)("${COMMAND_SECRET_HEADER_PREFIX_PATTERN})(?:\\.|[^\s"\\])(?:\\\r?\n|\\.|[^"\\\r\n])*(")` +
     String.raw`|('${COMMAND_SECRET_HEADER_PREFIX_PATTERN})[^\s'][^'\r\n]*(')` +
+    String.raw`|(?<!\\)(\\"${COMMAND_SECRET_HEADER_PREFIX_PATTERN})` +
+    String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^\s"\\])` +
+    String.raw`(?:${COMMAND_SECRET_HEADER_JSON_ESCAPE_PATTERN}|[^"\\\r\n])*(\\")` +
     String.raw`|(\b${COMMAND_SECRET_HEADER_PREFIX_PATTERN})${COMMAND_SECRET_HEADER_UNQUOTED_VALUE_PATTERN}`,
   "gi",
 );
@@ -149,11 +162,18 @@ export function redactCommandText(
         doubleQuoteClose: string | undefined,
         singleQuotedPrefix: string | undefined,
         singleQuoteClose: string | undefined,
+        escapedQuotedPrefix: string | undefined,
+        escapedQuoteClose: string | undefined,
         unquotedPrefix: string | undefined,
       ) => {
         const prefix =
-          doubleQuotedPrefix ?? singleQuotedPrefix ?? unquotedPrefix ?? "";
-        const closingQuote = doubleQuoteClose ?? singleQuoteClose ?? "";
+          doubleQuotedPrefix ??
+          singleQuotedPrefix ??
+          escapedQuotedPrefix ??
+          unquotedPrefix ??
+          "";
+        const closingQuote =
+          doubleQuoteClose ?? singleQuoteClose ?? escapedQuoteClose ?? "";
         return `${prefix}${redactedValue}${closingQuote}`;
       },
     )
