@@ -10,6 +10,8 @@ const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const actorOwnedBlockerId = "88888888-8888-4888-8888-888888888888";
+const otherOwnedBlockerId = "99999999-9999-4999-8999-999999999999";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -837,6 +839,97 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it("allows a blocker assignee to remove only their blocker from another agent's active issue", async () => {
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [
+        { id: actorOwnedBlockerId, assigneeAgentId: peerAgentId },
+        { id: otherOwnedBlockerId, assigneeAgentId: ownerAgentId },
+      ],
+      blocks: [],
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [otherOwnedBlockerId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ blockedByIssueIds: [otherOwnedBlockerId] }),
+      expect.anything(),
+    );
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+  });
+
+  it("denies the removal when blocker ownership changes after the initial authorization check", async () => {
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: actorOwnedBlockerId, assigneeAgentId: peerAgentId }],
+        blocks: [],
+      })
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: actorOwnedBlockerId, assigneeAgentId: ownerAgentId }],
+        blocks: [],
+      });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.getByIdForUpdate).toHaveBeenCalledWith(issueId, expect.anything());
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("denies a blocker assignee removing another owner's blocker", async () => {
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [
+        { id: actorOwnedBlockerId, assigneeAgentId: peerAgentId },
+        { id: otherOwnedBlockerId, assigneeAgentId: ownerAgentId },
+      ],
+      blocks: [],
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("denies unrelated field mutations bundled with an actor-owned blocker removal", async () => {
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{ id: actorOwnedBlockerId, assigneeAgentId: peerAgentId }],
+      blocks: [],
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [], title: "Unauthorized title change" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("denies adding blockers through the actor-owned blocker removal grant", async () => {
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [{ id: actorOwnedBlockerId, assigneeAgentId: peerAgentId }],
+      blocks: [],
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [otherOwnedBlockerId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("allows mentioned peer agents to post comments without ownership of an active checkout", async () => {
