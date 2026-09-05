@@ -103,6 +103,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
       maxConcurrentAgentRuns,
     });
@@ -138,6 +139,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
       status: "running",
       startedAt: new Date(),
       contextSnapshot: {},
+      responsibleUserId: "responsible-user",
     });
     if (trackProcess) {
       runningProcesses.set(runId, {
@@ -171,6 +173,7 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
       status: "queued",
       wakeupRequestId,
       contextSnapshot: {},
+      responsibleUserId: "responsible-user",
     });
     await db
       .update(agentWakeupRequests)
