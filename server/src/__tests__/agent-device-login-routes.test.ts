@@ -669,10 +669,14 @@ describe("adapter device-login routes", () => {
     expect(start.status, JSON.stringify(start.body)).toBe(201);
     const sessionId = start.body.sessionId as string;
 
-    // The first authorized owner read receives the prompt.
+    // The first authorized owner read receives the prompt. The response
+    // repeats the live prompt on every read, so it carries the same private
+    // no-store policy as the `.../login-sessions/active` route (see the tests
+    // below).
     const first = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(first.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+    expect(first.headers["cache-control"]).toBe("no-store, private");
 
     // A second authorized owner read still carries the prompt while the
     // session is active. The status stays available too, so the owner still
@@ -682,10 +686,7 @@ describe("adapter device-login routes", () => {
     expect(second.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
     expect(second.body.status).toBe(first.body.status);
 
-    // Once the login reaches a terminal state, the prompt is gone. The route
-    // also sends `Cache-Control: no-store, private` on the new
-    // `.../login-sessions/active` route (see the tests below); this
-    // session-id route predates that header and does not carry it.
+    // Once the login reaches a terminal state, the prompt is gone.
     harness.releaseGate();
     await vi.waitFor(async () => {
       const afterTerminal = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);

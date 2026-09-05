@@ -252,9 +252,13 @@ export const agentsApi = {
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
       data,
     ),
+  // The owner response repeats the live prompt on every read while the
+  // session holds an active public status, so this polling call carries the
+  // same no-store request option as the active-session read below.
   getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string) =>
     api.get<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
+      { cache: "no-store" },
     ),
   // Reads the caller's active login session for one company and adapter, with
   // no session id, so the browser rediscovers its own session after a reload
