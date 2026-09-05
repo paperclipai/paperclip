@@ -68,8 +68,11 @@ The paid jobs read only the credential selected for each roster:
 Claude Managed also requires the four nonsecret
 `PAPERCLIP_CLAUDE_MANAGED_*` profile variables. AgentCore requires the
 nonsecret `PAPERCLIP_AWS_AGENTCORE_*` profile variables, including
-`PAPERCLIP_AWS_AGENTCORE_EXECUTION_ROLE_ARN`; the workflow writes the GitHub
-OIDC token to a mode-`0600` file and never forwards long-lived AWS access keys.
+`PAPERCLIP_AWS_AGENTCORE_EXECUTION_ROLE_ARN` and the immutable
+`PAPERCLIP_AWS_AGENTCORE_QUALIFICATION_REVISION`; the eval fails closed when
+that deployed revision differs from the pinned roster config. The workflow
+writes the GitHub OIDC token to a mode-`0600` file and never forwards long-lived
+AWS access keys.
 Provision the AgentCore stack with `--github-oidc-provider-arn` so that scoped
 role admits only the `paperclipai/paperclip` repository's protected
 `runner-e2e-paid` environment as its web-identity subject.
