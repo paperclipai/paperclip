@@ -4043,6 +4043,18 @@ describe("IssueDetail", () => {
       expect(container.textContent).toContain("Subtree pause is active.");
     });
 
+    const pauseBannerTitle = Array.from(container.querySelectorAll("span")).find(
+      (element) => element.textContent?.trim() === "Subtree pause is active.",
+    );
+    expect(pauseBannerTitle?.closest(".rounded-md")?.classList).toContain(
+      "mt-3",
+    );
+    const taskChatShell = container.querySelector<HTMLElement>(
+      "[data-task-chat-shell]",
+    );
+    expect(taskChatShell?.classList).toContain("gap-3");
+    expect(taskChatShell?.classList).not.toContain("gap-6");
+
     const resumeButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Resume subtree",
     );

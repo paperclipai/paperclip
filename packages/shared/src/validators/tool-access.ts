@@ -65,13 +65,13 @@ export const vercelConnectGrantSummarySchema = z.object({
   expiresAt: z.string().datetime({ offset: true }).optional(),
   lastVerifiedAt: z.string().datetime({ offset: true }).optional(),
 }).strict();
-export const connectionGrantKindSchema = z.enum(["organization", "user"]);
+export const connectionGrantKindSchema = z.enum(["organization", "user", "agent"]);
 export const connectionGrantStatusSchema = z.enum(["active", "revoked", "expired", "needs_reauthorization"]);
 export const createConnectionGrantDelegationSchema = z.object({
   agentId: z.string().guid(),
 });
 export type CreateConnectionGrantDelegation = z.infer<typeof createConnectionGrantDelegationSchema>;
-export const toolConnectionCredentialPolicySchema = z.enum(["shared", "per_user", "per_user_with_fallback"]);
+export const toolConnectionCredentialPolicySchema = z.enum(["shared", "per_user", "per_user_with_fallback", "per_agent"]);
 export const toolConnectionStatusSchema = z.enum(["draft", "active", "disabled", "archived"]);
 export const toolConnectionInstallTargetTypeSchema = z.enum(["company", "agent"]);
 export const toolCredentialPlacementSchema = z.enum(["header", "env", "url"]);
@@ -207,14 +207,33 @@ export const connectionGrantSchema = z.object({
   connectionId: z.string().guid(),
   kind: connectionGrantKindSchema,
   subjectUserId: z.string().nullable(),
+  subjectAgentId: z.string().guid().nullable().optional(),
   providerTenant: z.object({
     name: z.string().trim().min(1).max(200).optional(),
     externalId: z.string().trim().min(1).max(400).optional(),
     oauth: z.object({
       strategy: z.string().trim().min(1).max(100).optional(),
-      accessTokenExpiresAt: z.string().datetime().optional(),
+      accessTokenExpiresAt: z.string().datetime().nullable().optional(),
       scopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
       tokenType: z.string().trim().min(1).max(100).optional(),
+      refreshTokenExpiresAt: z.string().datetime().optional(),
+      refreshedAt: z.string().datetime().optional(),
+    }).optional(),
+    github: z.object({
+      userId: z.string().regex(/^[1-9][0-9]{0,30}$/),
+      login: z.string().trim().min(1).max(100),
+      avatarUrl: z.string().url().max(2000).optional(),
+      installationCount: z.number().int().nonnegative(),
+      repositoryCount: z.number().int().nonnegative(),
+      repositorySelection: z.enum(["all", "selected", "mixed", "none"]),
+      installationIds: z.array(z.string().regex(/^[1-9][0-9]{0,30}$/)).max(100),
+      installationOwnerLogins: z.array(z.string().trim().min(1).max(100)).max(100),
+      installationUrl: z.string().url().max(2000).optional(),
+      managementUrl: z.string().url().max(2000).optional(),
+      appSlug: z.string().regex(/^[a-z0-9-]{1,100}$/).optional(),
+      lastAccessRefreshAt: z.string().datetime().optional(),
+      lastWebhookAt: z.string().datetime().optional(),
+      webhookHealth: z.enum(["pending", "healthy", "unhealthy"]).optional(),
     }).optional(),
   }).nullable(),
   credentialSecretRefs: z.array(toolCredentialSecretRefSchema),
@@ -230,8 +249,11 @@ export const connectionGrantSchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 }).superRefine((grant, ctx) => {
-  if ((grant.kind === "user") !== Boolean(grant.subjectUserId)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; organization grants must not have one" });
+  const validSubject = (grant.kind === "user" && Boolean(grant.subjectUserId) && !grant.subjectAgentId)
+    || (grant.kind === "agent" && Boolean(grant.subjectAgentId) && !grant.subjectUserId)
+    || (grant.kind === "organization" && !grant.subjectUserId && !grant.subjectAgentId);
+  if (!validSubject) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["kind"], message: "User and agent grants require exactly their matching subject; organization grants cannot have a subject" });
   }
   if (grant.externalCredential && grant.credentialSecretRefs.length > 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["credentialSecretRefs"], message: "External grants cannot also contain Paperclip secret references" });
@@ -404,9 +426,14 @@ export const connectToolAppSchema = z.object({
    * Omitted keeps the historical shared-credential behaviour.
    */
   grantKind: connectionGrantKindSchema.optional(),
+  /** Same-company agent that owns a dedicated provider identity. */
+  subjectAgentId: z.string().guid().optional(),
 }).superRefine((value, ctx) => {
   if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
   if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);
+  if ((value.grantKind === "agent") !== Boolean(value.subjectAgentId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectAgentId"], message: "subjectAgentId is required exactly for an agent grant" });
+  }
   if (value.authMode && value.galleryKey) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -473,8 +500,13 @@ export type FinalizeOAuthAccess = z.infer<typeof finalizeOAuthAccessSchema>;
 
 export const startToolOAuthSchema = z.object({
   asCurrentUser: z.boolean().optional(),
+  asAgentId: z.string().uuid().optional(),
   interactionId: z.string().uuid().optional(),
-}).strict().default({});
+}).strict().superRefine((value, ctx) => {
+  if (value.asCurrentUser && value.asAgentId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["asAgentId"], message: "Choose either the current user or one dedicated agent" });
+  }
+}).default({});
 
 export type StartToolOAuth = z.infer<typeof startToolOAuthSchema>;
 

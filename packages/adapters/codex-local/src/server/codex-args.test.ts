@@ -2,6 +2,31 @@ import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
+  it("forwards GPT-6 Astra, its ultra reasoning effort, and fast mode", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-6-astra",
+      modelReasoningEffort: "ultra",
+      fastMode: true,
+    });
+
+    expect(result.model).toBe("gpt-6-astra");
+    expect(result.fastModeApplied).toBe(true);
+    expect(result.fastModeIgnoredReason).toBeNull();
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      "gpt-6-astra",
+      "-c",
+      'model_reasoning_effort="ultra"',
+      "-c",
+      'service_tier="fast"',
+      "-c",
+      "features.fast_mode=true",
+      "-",
+    ]);
+  });
+
   it("rewrites the legacy bare gpt-5.6 alias to gpt-5.6-sol and applies fast mode", () => {
     const result = buildCodexExecArgs({
       model: "gpt-5.6",
@@ -111,7 +136,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toContain(
-      "currently only supported on gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 or manually configured model IDs",
+      "currently only supported on gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 or manually configured model IDs",
     );
     expect(result.args).toEqual([
       "exec",

@@ -30,6 +30,13 @@ export interface CodexAppServerDriverOptions {
   includeCollaborationModeInstructions?: boolean;
   transportFactory?: (context?: {
     providerRecoveryPolicy?: PersistedHarnessSession["providerRecoveryPolicy"];
+    persistedSession?: Pick<
+      PersistedHarnessSession,
+      | "driverSessionId"
+      | "providerSessionId"
+      | "providerIdentity"
+      | "activeTurnId"
+    >;
   }) => CodexAppServerTransport;
   /** Additional control-plane tools exposed to the provider for this run. */
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];

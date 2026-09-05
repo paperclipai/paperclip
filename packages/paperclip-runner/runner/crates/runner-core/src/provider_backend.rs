@@ -2673,7 +2673,10 @@ impl CodexCommandExecutor {
             "status": state.lifecycle,
             "provider": state.config.provider,
             "driver": state.config.driver,
+            "driverSessionId": state.thread_id,
             "providerSessionId": state.thread_id,
+            "sessionId": state.provider_session_id,
+            "providerAccountSessionId": state.provider_session_id,
             "activeProviderTurnId": state.active_provider_turn_id,
             "cwd": state.config.cwd,
         })))

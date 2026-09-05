@@ -27,6 +27,13 @@ const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }
 
 const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
 const GITHUB = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "github")!;
+const GITHUB_MANAGED = {
+  ...GITHUB,
+  ownershipAvailability: {
+    ...GITHUB.ownershipAvailability,
+    platform_shared: true,
+  },
+};
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
 const ASANA = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "asana")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
@@ -37,6 +44,7 @@ const GOOGLE_CALENDAR = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "
 const GOOGLE_DRIVE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
 const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
 const PAGERDUTY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "pagerduty")!;
+const COMPOSIO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "composio")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -334,39 +342,39 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   // credential is entered.
   // -------------------------------------------------------------------------
 
-  it("asks both access questions and defaults to company-wide access", async () => {
+  it("asks for a GitHub identity and defaults to the current user and every agent", async () => {
     mockParams.appKey = "github";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
     await render();
 
     expect(container.textContent).toContain("Access");
-    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Which GitHub identity should this use?");
     expect(container.textContent).toContain("Which agents can use this connection?");
     expect(container.textContent).not.toContain("Choose access before adding credentials");
     expect(container.textContent).not.toContain("Set the identity and agent reach first");
-    expect(container.textContent).not.toContain("Whose GitHub account should agents act as?");
+    expect(container.textContent).not.toContain("Which humans can use this credential?");
     expect(container.textContent).not.toContain("Choose where this connection will be available.");
     // Nothing about the credential itself is on screen yet.
     expect(container.querySelector('input[type="password"]')).toBeNull();
 
     const radios = Array.from(document.body.querySelectorAll('[role="radio"]'));
-    const justMe = radios.find((r) => r.textContent?.includes("Just me"));
-    const wholeOrg = radios.find((r) => r.textContent?.includes("Any human in the company"));
+    const myAccount = radios.find((r) => r.textContent?.includes("My GitHub account"));
+    const dedicated = radios.find((r) => r.textContent?.includes("A dedicated account for an agent"));
     const agentsIPick = radios.find((r) => r.textContent?.includes("Just agents I pick"));
     const anyAgent = radios.find((r) => r.textContent?.includes("Any agent"));
-    expect(justMe).toBeTruthy();
-    expect(wholeOrg).toBeTruthy();
-    expect(justMe?.textContent).toBe("Just me");
-    expect(wholeOrg?.textContent).toBe("Any human in the company");
+    expect(myAccount).toBeTruthy();
+    expect(dedicated).toBeTruthy();
+    expect(myAccount?.textContent).toBe("My GitHub account");
+    expect(dedicated?.textContent).toBe("A dedicated account for an agent");
     expect(agentsIPick?.textContent).toBe("Just agents I pick");
     expect(anyAgent?.textContent).toBe("Any agent");
-    expect(justMe?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
-    expect(wholeOrg?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
+    expect(myAccount?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
+    expect(dedicated?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
     expect(agentsIPick?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(1);
     expect(anyAgent?.querySelectorAll('[data-slot="radio-card-icon"] svg')).toHaveLength(2);
-    // A flexible connection method defaults to the company identity...
-    expect(wholeOrg?.getAttribute("aria-checked")).toBe("true");
-    expect(justMe?.getAttribute("aria-checked")).toBe("false");
-    // ...and every agent is the product default for both access and install.
+    expect(myAccount?.getAttribute("aria-checked")).toBe("true");
+    expect(dedicated?.getAttribute("aria-checked")).toBe("false");
+    // Every agent is the default reach for the responsible person's identity.
     expect(agentsIPick?.getAttribute("aria-checked")).toBe("false");
     expect(anyAgent?.getAttribute("aria-checked")).toBe("true");
   });
@@ -414,7 +422,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await act(async () => {
       Array.from(document.body.querySelectorAll('[role="radio"]'))
-        .find((r) => r.textContent?.includes("Just me"))
+        .find((r) => r.textContent?.includes("My GitHub account"))
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
@@ -438,7 +446,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     // Moving backward must not silently reset the identity the operator chose.
     const radios = Array.from(document.body.querySelectorAll('[role="radio"]'));
-    expect(radios.find((r) => r.textContent?.includes("Just me"))?.getAttribute("aria-checked"))
+    expect(radios.find((r) => r.textContent?.includes("My GitHub account"))?.getAttribute("aria-checked"))
       .toBe("true");
     expect(radios.find((r) => r.textContent?.includes("Any agent"))?.getAttribute("aria-checked"))
       .toBe("true");
@@ -460,7 +468,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
    * methods must still let the operator deliberately choose a personal identity.
    */
   it("defaults flexible methods to company identity and keeps personal credentials submittable", async () => {
-    listGalleryMock.mockResolvedValue({ apps: [GITHUB, POSTHOG] });
+    listGalleryMock.mockResolvedValue({ apps: [COMPOSIO, POSTHOG] });
 
     const identityChoices = () => {
       const radios = Array.from(
@@ -475,7 +483,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     // --- API-key-only method: shared by default, personal still offered ------
     let root = await render();
     await act(async () => {
-      buttonContaining("GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonContaining("Composio")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -505,7 +513,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
-    await act(async () => setInputValue(keyField!, "github-personal-token"));
+    await act(async () => setInputValue(keyField!, "composio-personal-token"));
     await flushReact();
     await act(async () => {
       buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -516,7 +524,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     // a personal grant. A disabled "Just me" would make this unreachable.
     expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(connectAppMock.mock.calls[0]?.[1]).toMatchObject({
-      galleryKey: "github",
+      galleryKey: "composio",
       grantKind: "user",
     });
 
@@ -786,9 +794,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
    * returned with the gallery reaches the real create flow.
    */
   it("disables Any agent and blocks Continue when the member cannot install company-wide", async () => {
-    mockParams.appKey = "github";
+    mockParams.appKey = "posthog";
     listGalleryMock.mockResolvedValueOnce({
-      apps: [GITHUB],
+      apps: [POSTHOG],
       capabilities: {
         canCreateOrganizationGrant: false,
         organizationGrantReason: "Only connection managers can share this credential.",
@@ -836,7 +844,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     // A deep-linked app lands on Access first: identity and reach are chosen
     // before the credential (PAP-17835).
-    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Which GitHub identity should this use?");
     await passAccessStep();
 
     expect(container.textContent).toContain("Connect GitHub");
@@ -2191,7 +2199,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Which GitHub identity should this use?");
 
     await act(async () => {
       buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

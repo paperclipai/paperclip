@@ -1,16 +1,24 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { MotionConfig } from "motion/react";
+import { MotionConfig, motion } from "motion/react";
 import { isValidBrowserCode } from "@paperclipai/shared";
+import {
+  CARD_ENTER,
+  CARD_EXIT,
+  CARD_EXIT_MS,
+  CONNECTED_HOLD_MS,
+  MAKE_ROOM,
+  MAKE_ROOM_MS,
+  SOURCE_COLLAPSE_MS,
+  SOURCE_LINK_EXIT,
+} from "./components/onboarding/onboarding-motion";
 
 import {
   OnboardingLoginCard,
-  OnboardingLoginCodeInput,
+  OnboardingCardField,
   OnboardingLoginCodeRow,
-  OnboardingLoginUrlRow,
 } from "./components/AdapterLoginChrome";
 import { AgentPreview } from "./components/onboarding/AgentPreview";
-import { ConnectInputCanvas } from "./components/onboarding/ConnectInputCanvas";
 import { CredentialModeLink } from "./components/onboarding/CredentialModeLink";
 import { FooterNav } from "./components/onboarding/FooterNav";
 import {
@@ -43,9 +51,6 @@ import "./index.css";
  * it needs a query client, a router and a company.
  */
 
-const PROMPT_DELAY_MS = 1200;
-const SUBMIT_DELAY_MS = 900;
-const POLL_DELAY_MS = 3200;
 
 /**
  * OpenAI's blossom, inlined — the shipped step inlines it for the same reason.
@@ -73,8 +78,41 @@ const MODEL_SOURCES: ModelSource[] = [
   { id: "codex_local", label: "OpenAI", icon: <OpenAiBlossom className="size-full" /> },
 ];
 
-/** Where the flow is. `auth` splits by source, exactly as the step does. */
-type Phase = "idle" | "connecting" | "auth" | "submitting" | "done";
+/**
+ * Where the sequence is.
+ *
+ * `loading` and `ready` are the same card at the same height — only its
+ * contents differ — so the footer is pushed down once, when the card arrives,
+ * and never again.
+ */
+type Phase =
+  | "idle"
+  /** The row answering: chosen tile travelling to centre, the other leaving. */
+  | "collapsing"
+  /** The card arriving on a spinner, pushing the footer down as it does. */
+  | "loading"
+  | "ready"
+  | "waiting"
+  | "connecting"
+  /** Back 1: the card fades while still holding its space. */
+  | "unwindCard"
+  /** Back 2: the room closes — everything slides back, the link's space returns. */
+  | "unwindRoom"
+  /** Back 3: the row reopens, the link fades back, the button reverts. */
+  | "unwindRow"
+  | "done";
+
+/** Stand-ins for the round trips a real sign-in makes. */
+const PROMPT_DELAY_MS = 1400;
+/** The displayed-code login's wait, standing in for the authorisation poll. */
+const POLL_DELAY_MS = 3000;
+/** The code OpenAI's login hands over. */
+const DISPLAYED_CODE = "Q2RJ-E1YIF";
+
+const OAUTH_URL: Record<string, string> = {
+  claude_local: "https://claude.ai/oauth/authorize?code=true&client=paperclip",
+  codex_local: "https://auth.openai.com/codex/device",
+};
 
 function ConnectFlowPreview({
   initialSourceId,
@@ -87,66 +125,176 @@ function ConnectFlowPreview({
   const [useApiKeys, setUseApiKeys] = useState(false);
   const [phase, setPhase] = useState<Phase>(initialPhase);
   const [code, setCode] = useState("");
-  const [polled, setPolled] = useState(false);
+  const [apiKey, setApiKey] = useState("");
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
-  const submitsBrowserCode = selectedId === "claude_local";
   const mode: CredentialMode = useApiKeys ? "api" : "subscription";
+  const providerName = selectedId === "codex_local" ? "OpenAI" : "Claude";
+  const signInLabel = `Sign in to ${providerName}`;
+  /*
+    Claude takes a code back from the customer; OpenAI hands one over. That is
+    the only difference between the two cards — the sentence and the last row —
+    and everything around them, every transition included, is shared.
+  */
+  const apiMode = mode === "api";
+  const handsOverCode = !apiMode && selectedId === "codex_local";
+  const instructionTail = handsOverCode
+    ? " by providing the authorization code below"
+    : " then come back and enter authorization code";
+  const authUrl = OAUTH_URL[selectedId ?? "claude_local"]!;
 
   const after = (ms: number, fn: () => void) => {
     timers.current.push(setTimeout(fn, ms));
   };
   useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
-  // The prompt round trip.
-  useEffect(() => {
-    if (phase !== "connecting") return;
-    after(PROMPT_DELAY_MS, () => setPhase("auth"));
-  }, [phase]);
+  /*
+    The sequence, one beat handing to the next.
 
-  // The poll that lands while the customer is away in another tab, for the
-  // displayed-code login only. Armed on *reaching* `auth` rather than on
-  // leaving `connecting`, so a `?state=openai` deep link arms it too — hung off
-  // the transition, that link opened on a Next that never enabled.
+    Each wait is the duration of the animation before it, so a beat never
+    starts over the top of the one still running — which is what made the
+    collapse and the card's arrival read as two unrelated things happening at
+    once rather than one causing the other.
+  */
   useEffect(() => {
-    if (phase !== "auth" || submitsBrowserCode || polled) return;
-    after(POLL_DELAY_MS, () => setPolled(true));
-  }, [phase, submitsBrowserCode, polled]);
+    if (phase === "collapsing") {
+      // The row finishes answering before the card starts arriving.
+      //
+      // A key goes straight to `ready`. There is no prompt to fetch for one —
+      // the field is available the moment the source is chosen — and the
+      // canvas's own notes are explicit that a spinner standing in for no work
+      // is a slower screen that also says something untrue.
+      after(SOURCE_COLLAPSE_MS, () => setPhase(apiMode ? "ready" : "loading"));
+    } else if (phase === "loading") {
+      after(PROMPT_DELAY_MS, () => setPhase("ready"));
+    } else if (phase === "waiting" && handsOverCode) {
+      // Nothing comes back to this screen for the displayed-code login: the
+      // customer authorises in the other tab and the server says so. Stood in
+      // for here so the sequence can be walked end to end.
+      after(POLL_DELAY_MS, () => setPhase("connecting"));
+    } else if (phase === "connecting" && handsOverCode) {
+      after(CONNECTED_HOLD_MS, () => setPhase("done"));
+    } else if (phase === "unwindCard") {
+      // The card's own fade, with its space still held. The fields are emptied
+      // at the end of it, once nothing is legible, so the reset is never seen.
+      after(CARD_EXIT_MS, () => {
+        setCode("");
+        setApiKey("");
+        setPhase("unwindRoom");
+      });
+    } else if (phase === "unwindRoom") {
+      // The room closing: the card's height going and the link's coming back,
+      // together, so the column slides once rather than twice.
+      after(MAKE_ROOM_MS, () => setPhase("unwindRow"));
+    } else if (phase === "unwindRow") {
+      // Let the selection go as the row starts back, not after it has arrived.
+      // Held until the end, the tile changed colour with nothing else moving,
+      // which is the hard cut — released here it fades across the travel and
+      // the tile settles into its default rather than snapping to it.
+      setSelectedId(null);
+      after(SOURCE_COLLAPSE_MS, () => setPhase("idle"));
+    }
+  }, [phase, handsOverCode, apiMode]);
 
-  const finishSubmit = () => {
-    setPhase("submitting");
-    after(SUBMIT_DELAY_MS, () => setPhase("done"));
+  /**
+   * A key is submitted by the step's button, not by arriving. It goes straight
+   * to the hold: there is nothing to wait for once it has been handed over.
+   */
+  const submitKey = () => {
+    if (!apiKey.trim() || phase !== "ready") return;
+    setPhase("connecting");
+    after(CONNECTED_HOLD_MS, () => setPhase("done"));
   };
 
-  // The same two-part rule the shipped panel uses: the paste arms the submit,
-  // and the value gates it. Both halves matter here. Running it from the paste
-  // handler alone would submit whatever was in the field *before* the paste —
-  // the handler fires first — and skipping the check would advance the flow on
-  // an empty or malformed paste, which is a worse lie than not previewing it,
-  // since demonstrating this interaction is what the page is for.
+  /** Back: two beats, card first, row second. */
+  const unwind = () => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
+    // What was typed stays until the card has gone. Clearing it here emptied
+    // the field while it was still on screen, so the placeholder appeared under
+    // the fade — the card left saying "Enter API key here" over a field the
+    // customer had just filled in.
+    setPhase("unwindCard");
+  };
+
+  const reset = () => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
+    setCode("");
+    setApiKey("");
+    setSelectedId(null);
+    setPhase("idle");
+  };
+
+  // Picking a source is what starts the sign-in — the row collapses, the link
+  // goes, and the card opens on a wait, all from the one press.
+  const pick = (id: string) => {
+    if (phase !== "idle") return;
+    setSelectedId(id);
+    setPhase("collapsing");
+  };
+
+  // The paste is the answer; see the shipped panel for why it is the paste and
+  // not the value. The hold after it is deliberate — `CONNECTED_HOLD_MS`.
   const pastedRef = useRef(false);
   useEffect(() => {
     if (!pastedRef.current) return;
     pastedRef.current = false;
     if (!isValidBrowserCode(code.trim())) return;
-    finishSubmit();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setPhase("connecting");
+    after(CONNECTED_HOLD_MS, () => setPhase("done"));
   }, [code]);
 
-  const reset = () => {
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
-    setPhase("idle");
-    setCode("");
-    setPolled(false);
-  };
+  // Collapsed from the moment a tile is pressed until the row is asked to
+  // reopen — `unwindRow` is where it expands, one beat after the card left.
+  const collapsed =
+    phase !== "idle" &&
+    phase !== "unwindRow" &&
+    phase !== "done";
 
-  const loggingIn = phase === "connecting" || phase === "auth" || phase === "submitting";
+  /*
+    Space and visibility are separate throughout, and that separation is the
+    whole fix. The link fades on the first beat but keeps its space until the
+    second, so pressing a tile moves nothing vertically; the card takes its
+    space on the second beat but only becomes visible on the third, so the
+    column has finished sliding before anything appears in it.
+  */
+  const cardLive =
+    phase === "loading" || phase === "ready" || phase === "waiting" || phase === "connecting";
+  const cardSpace = cardLive || phase === "unwindCard";
+  const linkSpace =
+    phase === "idle" || phase === "collapsing" || phase === "unwindRoom" || phase === "unwindRow";
+  const linkVisible = phase === "idle" || phase === "unwindRow";
   const done = phase === "done";
+
+  // Four labels, three shapes. The button is only ever pressable on `ready`:
+  // before that there is nothing to sign in to, and after it the sign-in is
+  // happening somewhere this screen cannot hurry.
+  const cta =
+    // `unwindCard` keeps whatever the button said: the first beat of Back is
+    // the card leaving, and changing the label at the same time would make two
+    // things happen in a beat meant to carry one.
+    phase === "unwindCard"
+      ? { label: signInLabel, icon: "none" as const, disabled: true }
+      : done
+      ? { label: "Start over", icon: "arrow" as const, disabled: false }
+      : phase === "ready" && apiMode
+        ? // A key is typed here rather than fetched elsewhere, so the button is
+          // the submit and stays dead until there is something to submit.
+          { label: "Connect", icon: "arrow" as const, disabled: !apiKey.trim() }
+        : phase === "ready"
+        ? { label: signInLabel, icon: "none" as const, disabled: false }
+        : phase === "waiting"
+          ? { label: "Waiting for code", icon: "spinner" as const, disabled: true }
+          : phase === "connecting"
+            ? { label: "Connecting", icon: "spinner" as const, disabled: true }
+            : { label: "Next", icon: "arrow" as const, disabled: true };
 
   return (
     <MotionConfig reducedMotion="user">
-      <div className="w-(--sz-560px) max-w-full p-10">
+      {/* 40px inset, not 64: the sequence draws a 480px column inside the 560
+          frame, wider than the arc's other steps. */}
+      <div className="w-(--sz-560px) max-w-full px-10 py-10">
         <Stepper step={done ? 3 : 2} />
 
         <div className="flex flex-col items-center">
@@ -177,93 +325,164 @@ function ConnectFlowPreview({
                 sources={MODEL_SOURCES}
                 mode={mode}
                 selectedId={selectedId}
-                onSelect={(id) => {
-                  if (loggingIn) return;
-                  setSelectedId(id);
-                }}
+                onSelect={pick}
+                collapsed={collapsed}
+                settling={phase === "unwindRow"}
               />
-              <CredentialModeLink
-                mode={mode}
-                onChange={(next) => {
-                  setUseApiKeys(next === "api");
-                  reset();
-                }}
-              />
+              {/* Gone as soon as a source is picked, and faster than the row
+                  collapses. Once a sign-in is running there is no switching to
+                  keys without abandoning it, so leaving the control on screen
+                  would invite a press that cannot be honoured. */}
+              {/*
+                Always rendered; only its height and opacity move, and they move
+                on different beats. Fading it and removing its space together is
+                what produced the jump on the very first press — the row above
+                had not moved yet, so the column shortened for no visible
+                reason.
+              */}
+              <motion.div
+                className="overflow-hidden"
+                initial={false}
+                animate={{ opacity: linkVisible ? 1 : 0, height: linkSpace ? "auto" : 0 }}
+                transition={{ opacity: SOURCE_LINK_EXIT, height: MAKE_ROOM }}
+              >
+                <CredentialModeLink
+                  mode={mode}
+                  onChange={(next) => setUseApiKeys(next === "api")}
+                />
+              </motion.div>
             </div>
 
-            {/* Opens on the press, not on the selection — the card is the
-                sign-in, so there is nothing to hold before one starts. */}
-            <ConnectInputCanvas
-              open={phase === "auth" || phase === "submitting"}
-              contentKey={`${selectedId}:${mode}`}
+            {/*
+              Room first, card second. `height` opens the space over MAKE_ROOM
+              — which the link's collapse shares, so the column slides once —
+              and the opacity only starts once that has finished. Reversed on
+              the way out: fade, then give the room back.
+
+              Nothing mounts or unmounts here. A mount changes layout in one
+              frame, and no easing can smooth a step that has already happened.
+            */}
+            <motion.div
+              className="overflow-hidden"
+              /*
+                Inert whenever the card is not live.
+
+                Animating height instead of mounting means the card is always in
+                the DOM, and a clipped element is still focusable and still
+                announced — at state 1 the authorization field was reachable by
+                keyboard inside a card nobody could see. `inert` removes the
+                whole subtree from focus order and the accessibility tree
+                without giving up the height animation that made the column
+                slide.
+              */
+              inert={!cardLive}
+              initial={false}
+              animate={{
+                height: cardSpace ? "auto" : 0,
+                marginTop: cardSpace ? 20 : 0,
+                opacity: cardLive ? 1 : 0,
+              }}
+              transition={{
+                height: MAKE_ROOM,
+                marginTop: MAKE_ROOM,
+                opacity: cardLive
+                  ? { ...CARD_ENTER, delay: MAKE_ROOM.duration }
+                  : CARD_EXIT,
+              }}
             >
-              {submitsBrowserCode ? (
-                <OnboardingLoginCard
-                  instruction="Open Claude link then come back and enter code"
-                  onCancel={reset}
-                >
-                  <OnboardingLoginUrlRow url="https://claude.ai/oauth/authorize?code=true&client=paperclip&scope=all" />
-                  <OnboardingLoginCodeInput
-                    value={code}
-                    onChange={setCode}
-                    disabled={phase === "submitting"}
-                    onSubmit={() => {
-                      if (code.trim()) finishSubmit();
-                    }}
-                    onPaste={() => {
-                      pastedRef.current = true;
-                    }}
-                  />
-                </OnboardingLoginCard>
-              ) : (
-                <OnboardingLoginCard
-                  instruction="Copy this code then open the authentication link"
-                  onCancel={reset}
-                >
-                  {/* Code above link — see the same order in the shipped panel.
-                      Pressing the link leaves for another tab that wants this
-                      code, so it is read before the link is there to press. */}
-                  <OnboardingLoginCodeRow code="Q2RJ-E1YIF" />
-                  <OnboardingLoginUrlRow url="https://auth.openai.com/codex/device" />
-                </OnboardingLoginCard>
-              )}
-            </ConnectInputCanvas>
+                  <OnboardingLoginCard
+                    loading={phase === "loading"}
+                    instruction={
+                      apiMode ? (
+                        // No link, because there is nowhere to sign in to. The
+                        // key is pasted straight in, so the sentence only has
+                        // to say what is wanted.
+                        `Provide your ${providerName} API key to connect`
+                      ) : (
+                        <>
+                          {/* The same destination as the button below. Two ways
+                              to reach one link: the button for the customer
+                              following the flow, the anchor for anyone who
+                              wants to copy it into another browser. */}
+                          <a
+                            href={authUrl}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="underline underline-offset-2 hover:text-foreground"
+                          >
+                            {signInLabel}
+                          </a>
+                          {instructionTail}
+                        </>
+                      )
+                    }
+              >
+                    {/* The one place the three paths differ. */}
+                    {apiMode ? (
+                      <OnboardingCardField
+                        label="API key"
+                        placeholder="Enter API key here"
+                        masked
+                        value={apiKey}
+                        onChange={setApiKey}
+                        disabled={phase === "connecting"}
+                        onSubmit={submitKey}
+                      />
+                    ) : handsOverCode ? (
+                      <OnboardingLoginCodeRow code={DISPLAYED_CODE} autoCopy={cardLive} />
+                    ) : (
+                      <OnboardingCardField
+                        value={code}
+                        onChange={setCode}
+                        disabled={phase === "connecting"}
+                        onSubmit={() => {
+                          if (isValidBrowserCode(code.trim())) {
+                            setPhase("connecting");
+                            after(CONNECTED_HOLD_MS, () => setPhase("done"));
+                          }
+                        }}
+                        onPaste={() => {
+                          pastedRef.current = true;
+                        }}
+                      />
+                    )}
+                      </OnboardingLoginCard>
+            </motion.div>
           </>
         )}
 
+        {/*
+          Back unwinds the sign-in before it leaves the step. Once the row has
+          collapsed there is a live session behind the card, and the nearest
+          thing to "back" is the state before it started — the row open again,
+          both sources offered. Only from there does Back mean the previous
+          step.
+
+          It is also the only way out now that the card has no Cancel of its
+          own: one control, and what it undoes depends on how far in you are.
+        */}
         <FooterNav
-          onBack={phase === "idle" ? () => {} : undefined}
-          primaryLabel={
-            // "Start over" is preview-only: the real step has left for Review
-            // by now, and this page has nowhere to send you but back.
-            done ? "Start over" : loggingIn && !submitsBrowserCode ? "Next" : "Connect"
-          }
-          loadingLabel="Connecting"
-          // Busy only where the work is happening on this screen. The
-          // displayed-code login finishes in another tab, so its button is
-          // waiting rather than working, and stays still.
-          loading={loggingIn && submitsBrowserCode}
-          primaryDisabled={
-            done ? false : selectedId === null || (loggingIn && !(polled && !submitsBrowserCode))
-          }
+          onBack={() => {
+            if (phase === "idle" || phase === "unwindCard" || phase === "unwindRow") return;
+            unwind();
+          }}
+          primaryLabel={cta.label}
+          primaryIcon={cta.icon}
+          primaryDisabled={cta.disabled}
           onPrimary={() => {
-            if (done) reset();
-            else if (phase === "idle") setPhase("connecting");
-            else if (polled && !submitsBrowserCode) setPhase("done");
+            if (done) {
+              reset();
+              return;
+            }
+            if (phase !== "ready") return;
+            if (apiMode) {
+              submitKey();
+              return;
+            }
+            window.open(authUrl, "_blank", "noreferrer,noopener");
+            setPhase("waiting");
           }}
         />
-
-        {/* Preview-only. A real paste carries the code; here anything will do. */}
-        {phase === "auth" && submitsBrowserCode && (
-          <p className="pt-4 text-center text-xs text-muted-foreground/70">
-            Preview: paste any text into the field to see the auto-submit.
-          </p>
-        )}
-        {phase === "auth" && !submitsBrowserCode && !polled && (
-          <p className="pt-4 text-center text-xs text-muted-foreground/70">
-            Preview: Next enables when the poll lands, a few seconds from now.
-          </p>
-        )}
       </div>
     </MotionConfig>
   );
@@ -272,10 +491,10 @@ function ConnectFlowPreview({
 /** `?state=` opens on a frame; everything stays clickable afterwards. */
 const STATES: Record<string, { initialSourceId: string | null; initialPhase: Phase }> = {
   default: { initialSourceId: null, initialPhase: "idle" },
-  selected: { initialSourceId: "claude_local", initialPhase: "idle" },
-  connecting: { initialSourceId: "claude_local", initialPhase: "connecting" },
-  claude: { initialSourceId: "claude_local", initialPhase: "auth" },
-  openai: { initialSourceId: "codex_local", initialPhase: "auth" },
+  loading: { initialSourceId: "claude_local", initialPhase: "loading" },
+  ready: { initialSourceId: "claude_local", initialPhase: "ready" },
+  waiting: { initialSourceId: "claude_local", initialPhase: "waiting" },
+  openai: { initialSourceId: "codex_local", initialPhase: "ready" },
 };
 
 const requested = new URLSearchParams(window.location.search).get("state") ?? "default";
@@ -283,9 +502,6 @@ const initial = STATES[requested] ?? STATES.default!;
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    {/* Centred against the viewport with `min-h-dvh` and `my-auto`, the way the
-        sibling preview is: align-items would put the top of a too-tall step out
-        of scroll reach, and auto margins collapse instead. */}
     <div className="flex min-h-dvh justify-center">
       <div className="my-auto">
         <ConnectFlowPreview {...initial} />

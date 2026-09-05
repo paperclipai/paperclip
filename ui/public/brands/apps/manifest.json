@@ -171,7 +171,7 @@
     {
       "slug": "github",
       "provider": "GitHub",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/github.svg",
       "darkAsset": "/brands/apps/github-dark.svg",
       "officialSourceUrl": "https://github.com/logos",

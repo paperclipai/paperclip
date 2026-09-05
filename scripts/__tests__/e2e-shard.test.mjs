@@ -241,11 +241,20 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   );
 
   const verify = jobs.get("verify");
-  assert.match(verify, /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, build\]$/m);
+  assert.match(
+    verify,
+    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity\]$/m,
+  );
   assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
   assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
   assert.match(verify, /test "\$GENERAL_TESTS_RESULT" = "skipped"/);
   assert.match(verify, /test "\$BUILD_RESULT" = "skipped"/);
+  // Both halves of the docker-context lane's gating: the result must be
+  // wired into the aggregate's env AND asserted successful on full CI —
+  // dropping either would let `verify` pass after the lane fails.
+  assert.match(verify, /DOCKER_CONTEXT_INTEGRITY_RESULT: \$\{\{ needs\.docker_context_integrity\.result \}\}/);
+  assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"/);
+  assert.match(verify, /test "\$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"/);
 
   const e2e = jobs.get("e2e");
   assert.match(e2e, /^ {4}needs: \[gate, policy, e2e_shards\]$/m);

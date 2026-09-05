@@ -6,7 +6,6 @@ import type { ToolConnectionOwnership } from "./types/tool-access.js";
 export const CONNECTABLE_APP_SLUGS = new Set([
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "zapier",
-  "github",
   "slack",
   "notion",
   "posthog",
@@ -23,6 +22,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "google-chat",
   "google-people",
   "google-workspace-search",
+  "github",
 ]);
 
 export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>
@@ -45,7 +45,6 @@ export const APP_STORE_HIDDEN_SLUGS = new Set([
   "context7",
   "egnyte",
   "embat",
-  "github",
   "kernel",
   "local-falcon",
   "make",

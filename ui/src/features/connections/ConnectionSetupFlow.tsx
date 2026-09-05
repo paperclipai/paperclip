@@ -96,6 +96,28 @@ import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayloa
 type Step = "gallery" | "access" | "key" | "success";
 export type OAuthConnectPhase = "entry" | "starting" | "redirecting" | "error";
 
+function githubRecoveryUrl(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com"
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function oauthCallbackErrorMessage(outcome: string | null, code: string | null): string {
+  if (outcome === "denied") {
+    return "Authorization was cancelled or declined. Your saved connection was not changed.";
+  }
+  if (code === "github_installation_required") {
+    return "GitHub access is required. Install Paperclip and grant at least one repository, then try again.";
+  }
+  return "Authorization did not complete. Your saved connection is still here, so you can try again.";
+}
+
 const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
   access: "access",
   key: "setup",
@@ -226,7 +248,15 @@ const ZAPIER_STEP_LABELS = ["Access", "Add MCP URL"];
  */
 function defaultGrantKindFor(method: ConnectionMethodDef | null): ConnectionGrantKind {
   if (method?.grantKinds?.length === 1) return method.grantKinds[0]!;
+  if (method?.grantKinds && !method.grantKinds.includes("organization")) return method.grantKinds[0]!;
   return "organization";
+}
+
+function configuredAgentIdentity(connection: ToolConnection): string | undefined {
+  const oauth = connection.config?.oauth;
+  if (!oauth || typeof oauth !== "object" || Array.isArray(oauth)) return undefined;
+  const value = (oauth as Record<string, unknown>).connectorSubjectAgentId;
+  return typeof value === "string" ? value : undefined;
 }
 
 function isGoogleSheetsRobotMethod(
@@ -263,8 +293,11 @@ function recommendedSetupConnectionMethod(
   const recommended = getRecommendedConnectionMethod(methods);
   // Capability choices (for example Google Workspace read versus write) have
   // an intentional default. Unrelated region/authentication variants should
-  // still ask the operator to choose unless only one is available.
-  return methods.length === 1 || recommended?.capabilityProfile
+  // still ask the operator to choose unless only one is available. A method
+  // that supports an agent-owned identity must also be selected before the
+  // Access step: that ownership decision cannot be represented by a legacy
+  // compatibility method such as GitHub's advanced PAT option.
+  return methods.length === 1 || recommended?.capabilityProfile || recommended?.grantKinds?.includes("agent")
     ? recommended
     : null;
 }
@@ -409,6 +442,9 @@ export function ConnectionSetupFlow({
   const createNewConnection = searchParams.get("new") === "1";
   const resumeConnectionId = searchParams.get("resume")?.trim() || null;
   const oauthCallbackOutcome = searchParams.get("oauth");
+  const oauthCallbackCode = searchParams.get("code");
+  const githubInstallationUrl = githubRecoveryUrl(searchParams.get("installation_url"));
+  const githubManagementUrl = githubRecoveryUrl(searchParams.get("management_url"));
   const reconnectConnectionId = searchParams.get("reconnect")?.trim() || null;
   const reconnectGrantKindHint: ConnectionGrantKind | null = searchParams.get("identity") === "user"
     ? "user"
@@ -495,9 +531,7 @@ export function ConnectionSetupFlow({
   );
   const [oauthError, setOAuthError] = useState<string | null>(() => {
     if (!resumingAfterOAuthFailure) return null;
-    return oauthCallbackOutcome === "denied"
-      ? "Authorization was cancelled or declined. Your saved connection was not changed."
-      : "Authorization did not complete. Your saved connection is still here, so you can try again.";
+    return oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode);
   });
   /** Host of the page the operator is about to be sent to, shown while redirecting. */
   const [authorizationHost, setAuthorizationHost] = useState<string | null>(null);
@@ -792,6 +826,8 @@ export function ConnectionSetupFlow({
   const reconnectGrantKind: ConnectionGrantKind | null = identityConnection
     ? identityConnection.credentialPolicy === "per_user"
       ? "user"
+      : identityConnection.credentialPolicy === "per_agent"
+        ? "agent"
       : "organization"
     : reconnectGrantKindHint;
   const resumableOAuthConnection = resumeConnection?.authKind === "oauth"
@@ -800,6 +836,8 @@ export function ConnectionSetupFlow({
   const existingOAuthGrantKind: ConnectionGrantKind | null = existingOAuthConnection
     ? existingOAuthConnection.credentialPolicy === "per_user"
       ? "user"
+      : existingOAuthConnection.credentialPolicy === "per_agent"
+        ? "agent"
       : "organization"
     : null;
   const fixedGrantKind = reconnectGrantKind ?? existingOAuthGrantKind;
@@ -839,6 +877,9 @@ export function ConnectionSetupFlow({
     // scoped, while a personal one must put its token back on that user grant.
     mutationFn: (connection: ToolConnection) => toolsApi.startOAuth(connection.id, {
       asCurrentUser: connection.credentialPolicy === "per_user",
+      ...(connection.credentialPolicy === "per_agent"
+        ? { asAgentId: configuredAgentIdentity(connection) ?? [...installAgentIds][0] }
+        : {}),
       ...(connectionIntentId ? { interactionId: connectionIntentId } : {}),
     }),
     onSuccess: (start) => void prepareAndOpenOAuth(start),
@@ -870,7 +911,8 @@ export function ConnectionSetupFlow({
    * apply the same selection.
    */
   const applyAccessInstalls = async (connectionId: string) => {
-    const installState = installChoice === "all"
+    const dedicatedIdentity = (fixedGrantKind ?? grantKind) === "agent";
+    const installState = !dedicatedIdentity && installChoice === "all"
       ? { onAll: true, agentIds: new Set<string>() }
       : { onAll: false, agentIds: installAgentIds };
     await toolsApi.putConnectionInstalls(connectionId, installPayload(selectedCompanyId!, installState));
@@ -916,7 +958,8 @@ export function ConnectionSetupFlow({
               : undefined,
           applicationId: prefill.applicationId,
           ...(resumeConnectionId ? { resumeConnectionId } : {}),
-          ...(requestedGrantKind === "user" ? { grantKind: requestedGrantKind } : {}),
+          ...(requestedGrantKind !== "organization" ? { grantKind: requestedGrantKind } : {}),
+          ...(requestedGrantKind === "agent" ? { subjectAgentId: [...installAgentIds][0] } : {}),
         });
       } else {
         const genericPayload = genericConnectPayload({
@@ -947,7 +990,8 @@ export function ConnectionSetupFlow({
             : {}),
           name: connectionName,
           applicationId: prefill.applicationId,
-          ...(effectiveGrantKind === "user" ? { grantKind: effectiveGrantKind } : {}),
+          ...(effectiveGrantKind !== "organization" ? { grantKind: effectiveGrantKind } : {}),
+          ...(effectiveGrantKind === "agent" ? { subjectAgentId: [...installAgentIds][0] } : {}),
         });
       }
       // A resumable draft already owns its identity and install reach. Replacing
@@ -1226,11 +1270,7 @@ export function ConnectionSetupFlow({
     // intentionally blank.
     if (oauthCallbackOutcome === "failed" || oauthCallbackOutcome === "denied") {
       setOAuthPhase("error");
-      setOAuthError(
-        oauthCallbackOutcome === "denied"
-          ? "Authorization was cancelled or declined. Your saved connection was not changed."
-          : "Authorization did not complete. Your saved connection is still here, so you can try again.",
-      );
+      setOAuthError(oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode));
     } else {
       setOAuthPhase("entry");
       setOAuthError(null);
@@ -1238,7 +1278,7 @@ export function ConnectionSetupFlow({
     setStep("key");
     hydratedResumeConnectionIdRef.current = resumeConnection.id;
     setHydratedResumeConnectionId(resumeConnection.id);
-  }, [credentialSource, entry, oauthCallbackOutcome, resumeConnection]);
+  }, [credentialSource, entry, oauthCallbackCode, oauthCallbackOutcome, resumeConnection]);
 
   /**
    * Commit the connection: action defaults, agent reach, and installs.
@@ -1510,6 +1550,10 @@ export function ConnectionSetupFlow({
         resuming={Boolean(resumeConnectionId)}
         phase={oauthPhase}
         error={oauthError}
+        recoveryActions={oauthCallbackCode === "github_installation_required" ? {
+          installationUrl: githubInstallationUrl,
+          managementUrl: githubManagementUrl,
+        } : undefined}
         authorizationHost={authorizationHost}
         onRetry={async () => {
           setOAuthError(null);
@@ -1550,7 +1594,13 @@ export function ConnectionSetupFlow({
             );
             if (!directOAuthAccessConfirmedRef.current && !resumeConnectionId) {
               if (refreshedConnection) {
-                setGrantKind(refreshedConnection.credentialPolicy === "per_user" ? "user" : "organization");
+                setGrantKind(
+                  refreshedConnection.credentialPolicy === "per_user"
+                    ? "user"
+                    : refreshedConnection.credentialPolicy === "per_agent"
+                      ? "agent"
+                      : "organization",
+                );
               }
               setOAuthPhase("entry");
               setOAuthError(null);
@@ -1913,6 +1963,7 @@ export function ConnectionSetupFlow({
           setInstallAgentIds={setInstallAgentIds}
           lockedAgentId={requestedAgentId}
           capabilities={galleryQuery.data?.capabilities}
+          githubIdentity={entry?.slug === "github"}
           submitLabel={accessSubmitLabel}
           identityLoading={Boolean(automaticOAuthEntry) && directOAuthLookupPending}
           preserveAgentAccess={Boolean(automaticOAuthEntry && (resumableOAuthConnection || reconnectConnection))}
@@ -2017,6 +2068,7 @@ export function OAuthConnectStateScreen({
   resuming = false,
   phase,
   error,
+  recoveryActions,
   authorizationHost,
   onRetry,
   onBack,
@@ -2030,6 +2082,7 @@ export function OAuthConnectStateScreen({
   resuming?: boolean;
   phase: OAuthConnectPhase;
   error?: string | null;
+  recoveryActions?: { installationUrl: string | null; managementUrl: string | null };
   /**
    * Host of the authorization page being opened. A valid HTTPS authorization
    * page can still be a phishing page, so the operator sees exactly which host
@@ -2096,6 +2149,26 @@ export function OAuthConnectStateScreen({
             {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-2" /> : null}
           </div>
         </div>
+
+        {phase === "error" && recoveryActions && (recoveryActions.installationUrl || recoveryActions.managementUrl) ? (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {recoveryActions.installationUrl ? (
+              <Button type="button" variant="outline" asChild>
+                <a href={recoveryActions.installationUrl} target="_blank" rel="noreferrer">
+                  Install Paperclip on GitHub
+                  <ArrowUpRight className="ml-1.5 h-3.5 w-3.5" />
+                </a>
+              </Button>
+            ) : null}
+            {recoveryActions.managementUrl ? (
+              <Button type="button" variant="ghost" asChild>
+                <a href={recoveryActions.managementUrl} target="_blank" rel="noreferrer">
+                  Manage repositories on GitHub
+                </a>
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="mt-6 flex items-center gap-2">
           {phase === "error" || phase === "entry" ? (
@@ -3337,6 +3410,7 @@ export function AccessStep({
   setInstallAgentIds,
   lockedAgentId,
   capabilities,
+  githubIdentity = false,
   submitLabel,
   identityLoading = false,
   preserveAgentAccess = false,
@@ -3360,6 +3434,7 @@ export function AccessStep({
     companyInstallReason?: string | null;
     editableAgentIds?: string[];
   } | null;
+  githubIdentity?: boolean;
   submitLabel: string;
   /** Wait for a durable OAuth connection before showing a reconnect identity. */
   identityLoading?: boolean;
@@ -3390,11 +3465,14 @@ export function AccessStep({
   const allowedGrantKinds = grantKinds ?? (["user", "organization"] satisfies ConnectionGrantKind[]);
   const identityChoiceAllowed = !needsIdentityChoice
     || grantKind === "user"
+    || grantKind === "agent"
     || canCreateOrganizationGrant;
   const canContinue = identityChoiceAllowed && (preserveAgentAccess
     ? true
     : lockedAgentId
     ? installAgentIds.has(lockedAgentId)
+    : grantKind === "agent"
+    ? installChoice === "specific" && installAgentIds.size === 1
     : installChoice === "all"
     ? canSetCompanyInstall
     : installAgentIds.size > 0);
@@ -3407,7 +3485,7 @@ export function AccessStep({
       <div className="overflow-hidden rounded-xl border border-border">
         <div className="divide-y divide-border">
           <section className="p-6">
-            <h2 className="text-sm font-semibold text-foreground">Which humans can use this credential?</h2>
+            <h2 className="text-sm font-semibold text-foreground">{githubIdentity ? "Which GitHub identity should this use?" : "Which humans can use this credential?"}</h2>
             {identityLoading ? (
               <div className="mt-4 grid gap-2 sm:grid-cols-2" aria-label="Loading connection identity">
                 <Skeleton className="h-20 w-full rounded-md" />
@@ -3417,11 +3495,17 @@ export function AccessStep({
               <div className="mt-4 flex items-center gap-3 rounded-md border border-border p-4">
                 {allowedGrantKinds[0] === "user" ? (
                   <UserRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                ) : allowedGrantKinds[0] === "agent" ? (
+                  <Bot className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 ) : (
                   <UsersRound className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 )}
                 <div className="text-sm font-medium text-foreground">
-                  {allowedGrantKinds[0] === "user" ? "Just me" : "Any human in the company"}
+                  {allowedGrantKinds[0] === "user"
+                    ? githubIdentity ? "My GitHub account" : "Just me"
+                    : allowedGrantKinds[0] === "agent"
+                      ? "A dedicated account for an agent"
+                      : "Any human in the company"}
                 </div>
               </div>
             ) : needsIdentityChoice ? (
@@ -3429,12 +3513,24 @@ export function AccessStep({
                 ariaLabel="Which humans can use this credential?"
                 className="mt-4 sm:grid-cols-2"
                 value={grantKind}
-                onValueChange={(next) => setGrantKind(next as ConnectionGrantKind)}
+                onValueChange={(next) => {
+                  const kind = next as ConnectionGrantKind;
+                  setGrantKind(kind);
+                  if (kind === "agent") {
+                    setInstallChoice("specific");
+                    if (installAgentIds.size > 1) setInstallAgentIds(new Set([[...installAgentIds][0]!]));
+                  }
+                }}
                 options={[
                   {
                     value: "user",
-                    title: "Just me",
+                    title: githubIdentity ? "My GitHub account" : "Just me",
                     icon: <UserRound className="h-4 w-4" aria-hidden="true" />,
+                  },
+                  {
+                    value: "agent",
+                    title: "A dedicated account for an agent",
+                    icon: <Bot className="h-4 w-4" aria-hidden="true" />,
                   },
                   {
                     value: "organization",
@@ -3460,7 +3556,7 @@ export function AccessStep({
           </section>
 
           <section className="p-6">
-            <h2 className="text-sm font-semibold text-foreground">Which agents can use this connection?</h2>
+            <h2 className="text-sm font-semibold text-foreground">{grantKind === "agent" ? "Which agent owns this GitHub account?" : "Which agents can use this connection?"}</h2>
             {preserveAgentAccess ? (
               <div className="mt-4 flex items-start gap-3 rounded-md border border-border bg-muted/40 p-4">
                 <UsersRound className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
@@ -3477,7 +3573,9 @@ export function AccessStep({
                 Existing connection access is left unchanged.
               </p>
             ) : (
-              <RadioCardGroup
+              grantKind === "agent" ? (
+                <p className="mt-2 text-sm text-muted-foreground">Choose exactly one agent. This identity cannot be shared with other agents.</p>
+              ) : <RadioCardGroup
                 ariaLabel="Which agents can use this connection?"
                 className="mt-4 sm:grid-cols-2"
                 value={installChoice}
@@ -3510,7 +3608,9 @@ export function AccessStep({
                 <AgentMultiSelect
                   agents={agents}
                   selectedAgentIds={installAgentIds}
-                  onChange={setInstallAgentIds}
+                  onChange={(next) => setInstallAgentIds(
+                    grantKind === "agent" && next.size > 1 ? new Set([[...next].at(-1)!]) : next,
+                  )}
                   loading={agentsQuery.isLoading}
                   emptyMessage="You cannot edit any agents yet."
                   showSelectionPreview={false}
@@ -3565,6 +3665,8 @@ export function accessSummaryLines(input: {
     ? "No identity required"
     : input.grantKind === "user"
       ? "Your identity"
+      : input.grantKind === "agent"
+        ? "Dedicated agent identity"
       : "Organization identity";
   const availableTo = input.installChoice === "all"
     ? "Any agent"

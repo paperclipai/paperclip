@@ -438,6 +438,11 @@ class HarnessNativeSession implements NativeSession {
     this.#explicitlyCancelled = false;
   }
 
+  async detachControllerForRestart(): Promise<void> {
+    if (this.#session.detachControllerForRestart === undefined) return;
+    await this.#session.detachControllerForRestart();
+  }
+
   async *events(): AsyncIterable<PrpEvent> {
     let sourceInstanceId: string | null = null;
     let lastSourceSequence = 0;

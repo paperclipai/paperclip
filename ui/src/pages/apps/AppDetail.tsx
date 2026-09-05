@@ -140,11 +140,18 @@ export function AppDetail() {
   const currentUserPersonalGrant = grantRows.find((grant) => (
     grant.kind === "user" && grant.subjectUserId === grantsQuery.data?.currentUserId
   )) ?? null;
+  const retainedAgentGrant = connection?.credentialPolicy === "per_agent"
+    ? grantRows.find((grant) => grant.kind === "agent" && grant.status === "active")
+      ?? grantRows.find((grant) => grant.kind === "agent")
+      ?? null
+    : null;
   const retainedOrganizationGrant = grantRows.find((grant) => (
     grant.kind === "organization" && grant.isDefault
   )) ?? grantRows.find((grant) => grant.kind === "organization") ?? null;
   const managedIdentityGrant = connection?.credentialPolicy === "per_user"
     ? retainedPersonalGrant
+    : connection?.credentialPolicy === "per_agent"
+      ? retainedAgentGrant
     : connection?.credentialPolicy === "per_user_with_fallback"
       ? currentUserPersonalGrant ?? retainedOrganizationGrant
       : retainedOrganizationGrant;
@@ -280,7 +287,7 @@ export function AppDetail() {
   });
 
   const startOAuth = useMutation({
-    mutationFn: () => toolsApi.startOAuth(connectionId),
+    mutationFn: (input?: { asAgentId?: string }) => toolsApi.startOAuth(connectionId, input),
     onSuccess: async (start) => {
       try {
         const target = await prepareOAuthNavigation(start);
@@ -391,6 +398,24 @@ export function AppDetail() {
         body: error instanceof Error ? error.message : "Please try again.",
         tone: "error",
       }),
+  });
+  const refreshGitHubAccess = useMutation({
+    mutationFn: () => toolsApi.checkConnectionHealth(connectionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connectionGrants(connectionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      pushToast({
+        title: "GitHub access refreshed",
+        body: "Account, installation, and repository access are current.",
+        tone: "success",
+      });
+    },
+    onError: (error) => pushToast({
+      title: "Couldn't refresh GitHub access",
+      body: error instanceof Error ? error.message : "Please try again.",
+      tone: "error",
+    }),
   });
 
   const apply = (mutate: {
@@ -537,6 +562,9 @@ export function AppDetail() {
                 credentialPolicy={connection.credentialPolicy}
                 ownerUserId={connection.createdByUserId}
                 connectedUser={owner}
+                dedicatedAgent={managedIdentityGrant?.kind === "agent"
+                  ? agents.find((agent) => agent.id === managedIdentityGrant.subjectAgentId) ?? null
+                  : null}
                 grantsQuery={grantsQuery.data}
                 loading={grantsQuery.isLoading}
                 error={grantsQuery.isError}
@@ -554,6 +582,9 @@ export function AppDetail() {
                 }}
                 onConnectAsMe={() => startPersonalAuth.mutate()}
                 onConnectOrganization={() => startOAuth.mutate()}
+                onConnectAgent={(agentId) => startOAuth.mutate({ asAgentId: agentId })}
+                onRefreshAccess={() => refreshGitHubAccess.mutate()}
+                refreshAccessPending={refreshGitHubAccess.isPending}
                 onReplaceAudience={(grant, memberUserIds) =>
                   replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
               />

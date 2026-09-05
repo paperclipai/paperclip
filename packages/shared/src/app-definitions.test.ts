@@ -140,9 +140,9 @@ describe("AppDefinition catalog",()=>{
  });
  it("withholds unverified and reserved providers from the app store without deleting their definitions",()=>{
   expect([...APP_STORE_HIDDEN_SLUGS].sort()).toEqual([
-   "beehiiv","bitly","brex","candid","coda","composio","context7","egnyte","embat","github","kernel","local-falcon","make","manufact","oreilly","planetscale","razorpay","sanity","similarweb","slack","ticket-tailor","ticktick","xero",
+   "beehiiv","bitly","brex","candid","coda","composio","context7","egnyte","embat","kernel","local-falcon","make","manufact","oreilly","planetscale","razorpay","sanity","similarweb","slack","ticket-tailor","ticktick","xero",
   ]);
-  expect(APP_STORE_DEFINITIONS).toHaveLength(35);
+  expect(APP_STORE_DEFINITIONS).toHaveLength(36);
   const connectableSlugs=new Set(CONNECTABLE_APP_DEFINITIONS.map((entry)=>entry.slug));
   const storeSlugs=new Set(APP_STORE_DEFINITIONS.map((entry)=>entry.slug));
   for(const slug of APP_STORE_HIDDEN_SLUGS){
@@ -150,13 +150,13 @@ describe("AppDefinition catalog",()=>{
    expect(storeSlugs.has(slug),slug).toBe(false);
   }
  });
- it("ships complete local branding provenance for all 35 store-visible providers",()=>{
+ it("ships complete local branding provenance for all 36 store-visible providers",()=>{
   const uiPublic=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../../../ui/public");
   const manifest=JSON.parse(fs.readFileSync(path.join(uiPublic,"brands/apps/manifest.json"),"utf8")) as {providers:Array<{slug:string;catalogVisible:boolean;localAsset:string;darkAsset?:string;officialSourceUrl:string;upstreamAssetUrl:string;assetType:"svg"|"png";darkVariantRequired:boolean}>};
   const visible=manifest.providers.filter((entry)=>entry.catalogVisible);
-  expect(visible).toHaveLength(35);
-  expect(new Set(visible.map((entry)=>entry.slug))).toHaveProperty("size",35);
-  expect(new Set(visible.map((entry)=>entry.localAsset))).toHaveProperty("size",35);
+  expect(visible).toHaveLength(36);
+  expect(new Set(visible.map((entry)=>entry.slug))).toHaveProperty("size",36);
+  expect(new Set(visible.map((entry)=>entry.localAsset))).toHaveProperty("size",36);
   expect(new Set(APP_STORE_DEFINITIONS.map((entry)=>entry.slug))).toEqual(new Set(visible.map((entry)=>entry.slug)));
   for(const app of APP_STORE_DEFINITIONS){
    const provenance=visible.find((entry)=>entry.slug===app.slug)!;

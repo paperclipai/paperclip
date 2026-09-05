@@ -32,7 +32,13 @@ type BackendFactoryOptions = {
   runnerInstanceId?: string;
   acpxRuntimeDirectory?: string;
   workingDirectoryAuthority?: "local_filesystem" | "remote_runner";
-  codexTransportFactory?: () => unknown;
+  codexTransportFactory?: (recoveryContext?: {
+    persistedSession?: {
+      driverSessionId: string;
+      providerSessionId?: string | null;
+      activeTurnId?: string | null;
+    };
+  }) => unknown;
   dynamicToolHandler?: (call: unknown) => Promise<unknown>;
   onSpawn?: (meta: {
     pid: number;
@@ -53,6 +59,12 @@ type RunnerTransportOptions = {
   opencodePermissionMode?: "allow" | "ask" | "deny";
   acpxAgent?: "claude" | "codex";
   acpxPermissionMode?: "approve-all" | "approve-reads" | "deny-all";
+  resumeActiveTurnId?: string | null;
+  resumeProviderSession?: {
+    driverSessionId: string;
+    providerSessionId?: string | null;
+    activeTurnId?: string | null;
+  };
 };
 
 const durableControlPlaneState = (identity: Record<string, unknown>) => ({
@@ -2339,6 +2351,100 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  it("preserves the active turn when a warm checkpoint resumes the same run", async () => {
+    const stateBase = await mkdtemp(
+      join(tmpdir(), "paperclip-warm-same-run-recovery-"),
+    );
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = stateBase;
+    const activeRun = {
+      ...execution,
+      binding: {
+        ...execution.binding,
+        runId: "run-warm-same-run-recovery",
+        executionWorkspaceId: "workspace-warm-same-run-recovery",
+      },
+      session: {
+        ...execution.session,
+        normalizedSessionId: "session-warm-same-run-recovery",
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 20 },
+      },
+    } as NativeExecutionInputV1;
+    const checkpoint = {
+      identity: {
+        runId: activeRun.binding.runId,
+        sessionId: activeRun.session.normalizedSessionId,
+        companyId: activeRun.binding.companyId,
+        issueId: activeRun.binding.issueId,
+        agentId: activeRun.binding.agentId,
+      },
+      sessionId: activeRun.session.normalizedSessionId,
+      driverSessionId: "driver-warm-same-run-recovery",
+      providerSessionId: "provider-warm-same-run-recovery",
+      activeTurnId: "provider-turn-warm-same-run-recovery",
+      semanticResult: null,
+      terminal: null,
+      terminalTurns: [],
+      pendingRuntimeRequests: [],
+    };
+    const result = {
+      result: { summary: "completed" },
+      terminal: { runTerminalState: "succeeded" },
+      turnId: checkpoint.activeTurnId,
+      normalizedSessionId: activeRun.session.normalizedSessionId,
+      providerSessionId: checkpoint.providerSessionId,
+      driverKind: "test",
+      driverVersion: "1",
+      nativeEventCount: 1,
+      highestContiguousSourceSeq: 1,
+      usage: null,
+    };
+    const firstClose = vi.fn(async () => undefined);
+    state.execute
+      .mockReset()
+      .mockImplementationOnce(async (options) => {
+        await options.onCheckpoint?.(checkpoint);
+        options.onSession?.({ close: firstClose });
+        return result;
+      })
+      .mockImplementationOnce(async (options) => {
+        expect(options.persistedSession).toEqual(
+          expect.objectContaining({
+            identity: checkpoint.identity,
+            driverSessionId: checkpoint.driverSessionId,
+            providerSessionId: checkpoint.providerSessionId,
+            activeTurnId: checkpoint.activeTurnId,
+          }),
+        );
+        return result;
+      });
+
+    try {
+      await executePaperclipNativeSession({
+        db: leaseDb(activeRun),
+        execution: activeRun,
+        runnerInstanceId: "runner-warm-same-run-recovery",
+      });
+      await vi.waitFor(() => expect(firstClose).toHaveBeenCalled(), {
+        timeout: 500,
+      });
+      await expect(
+        executePaperclipNativeSession({
+          db: leaseDb(activeRun),
+          execution: activeRun,
+          runnerInstanceId: "runner-warm-same-run-recovery",
+        }),
+      ).resolves.toBeDefined();
+    } finally {
+      if (previousPaperclipHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      }
+      await rm(stateBase, { recursive: true, force: true });
+    }
+  });
+
   it("reuses one session across distinct governed runs and closes it after idle expiry", async () => {
     const close = vi.fn(async () => undefined);
     const sharedSession = { close };
@@ -2470,6 +2576,7 @@ describe("native warm session supervision", () => {
             agentId: first.binding.agentId,
           },
           providerSessionId: "provider-runnerd-warm",
+          activeTurnId: "provider-turn-runnerd-warm-first",
         });
         options.onSession?.(firstSession);
         return result;
@@ -2483,6 +2590,7 @@ describe("native warm session supervision", () => {
               sessionId: second.session.normalizedSessionId,
             }),
             providerSessionId: "provider-runnerd-warm",
+            activeTurnId: null,
           }),
         );
         options.onSession?.(secondSession);
@@ -3029,6 +3137,36 @@ describe("runnerd provider runtime wiring", () => {
       process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
     }
     await rm(isolatedStateDirectory, { recursive: true, force: true });
+  });
+
+  it("passes the run checkpoint active turn into restart recovery", async () => {
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-active-turn-recovery",
+    });
+
+    state.createTransport.mockClear();
+    state.createBackend.mock.calls[0]![1].codexTransportFactory!({
+      persistedSession: {
+        driverSessionId: "driver-session-active-turn",
+        providerSessionId: "provider-session-active-turn",
+        activeTurnId: "provider-turn-active",
+      },
+    });
+
+    expect(state.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resumeActiveTurnId: "provider-turn-active",
+        resumeProviderSession: expect.objectContaining({
+          driverSessionId: "driver-session-active-turn",
+          providerSessionId: "provider-session-active-turn",
+          activeTurnId: "provider-turn-active",
+        }),
+      }),
+    );
   });
 
   it("rejects overlapping runs for the same runnerd provider session scope", async () => {

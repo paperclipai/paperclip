@@ -26,6 +26,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { InlineBanner } from "@/components/InlineBanner";
 import { BuiltInLifecycleChip } from "@/components/BuiltInAgentBadges";
@@ -539,6 +540,16 @@ export function DesignGuide() {
             actions={<Button variant="ghost" size="xs">More</Button>}
           />
         </div>
+      </Section>
+
+      <Section title="Theme Toggle">
+        <SubSection title="Variants">
+          <div className="flex max-w-sm flex-col items-start gap-3">
+            <ThemeToggle />
+            <ThemeToggle variant="menu-action" />
+            <ThemeToggle variant="compact-menu-action" />
+          </div>
+        </SubSection>
       </Section>
 
       {/* ============================================================ */}

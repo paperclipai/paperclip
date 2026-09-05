@@ -1112,7 +1112,11 @@ impl AcpxCommandExecutor {
             "status": state.lifecycle,
             "provider": "acpx",
             "driver": "acpx_runtime",
+            "driverSessionId": state.identity.as_ref().map(|value| value.acpx_record_id.as_str()),
             "providerSessionId": state.identity.as_ref().map(|value| value.acpx_record_id.as_str()),
+            "sessionId": state.identity.as_ref().map(|value| value.agent_session_id.as_str()),
+            "providerAccountSessionId": state.identity.as_ref().map(|value| value.agent_session_id.as_str()),
+            "providerIdentity": state.identity,
             "activeProviderTurnId": state.active_turn_id,
         })))
     }

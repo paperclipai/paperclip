@@ -36,10 +36,10 @@ import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, 
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
+  connectSourceName,
   OnboardingLoginCard,
-  OnboardingLoginCodeInput,
+  OnboardingCardField,
   OnboardingLoginCodeRow,
-  OnboardingLoginUrlRow,
   type AdapterLoginChrome,
 } from "./AdapterLoginChrome";
 import {
@@ -83,6 +83,7 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
 /* ---- Create mode values ---- */
 
@@ -199,15 +200,6 @@ function formatArgList(value: unknown): string {
   }
   return typeof value === "string" ? value : "";
 }
-
-const codexThinkingEffortOptions = [
-  { id: "", label: "Auto" },
-  { id: "minimal", label: "Minimal" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
-] as const;
 
 const openCodeThinkingEffortOptions = [
   { id: "", label: "Auto" },
@@ -1094,7 +1086,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
-      ? codexThinkingEffortOptions
+      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
+          id: option.value,
+          label: option.label,
+        }))
       : adapterType === "cursor"
         ? cursorModeOptions
         : adapterType === "opencode_local"
@@ -1564,11 +1559,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               <ModelDropdown
                 models={models}
                 value={currentModelId}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
-                }
+                onChange={(v) => {
+                  const supportedEfforts = codexReasoningEffortOptions(v, "Auto");
+                  const clearUnsupportedEffort = adapterType === "codex_local"
+                    && Boolean(currentThinkingEffort)
+                    && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
+                  if (isCreate) {
+                    set!({
+                      model: v,
+                      ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
+                    });
+                    return;
+                  }
+                  mark("adapterConfig", "model", v || undefined);
+                  if (clearUnsupportedEffort) {
+                    mark("adapterConfig", thinkingEffortKey, undefined);
+                    mark("adapterConfig", "reasoningEffort", undefined);
+                  }
+                }}
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 allowDefault={adapterType !== "opencode_local"}
@@ -2032,6 +2040,18 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // it would appear on is already gone.
   onConnected?: () => void;
   chrome?: AdapterLoginChrome;
+  /**
+   * The address the customer has to open, once the server has produced one.
+   *
+   * The one fact about a running login that the step needs outside the card:
+   * its own button is what sends the customer there, and a prompt arriving is
+   * what moves the step from waiting to ready. Everything else it needs the
+   * panel already does — the paste submits itself, success is reported through
+   * `onConnected`, and the customer's own Cancel press is reported through
+   * `onCancel` — so this stays a single value rather than a whole session
+   * handed upward.
+   */
+  onPromptReady?: (authorizationUrl: string | null) => void;
 };
 
 // The login panel dispatcher. It picks the panel from the projected panel mode,
@@ -2074,6 +2094,7 @@ function DisplayedCodeLoginPanel({
   onCancel,
   onConnected,
   chrome = "panel",
+  onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2259,55 +2280,49 @@ function DisplayedCodeLoginPanel({
     onConnectedRef.current?.();
   }, [status]);
 
+  // Report the prompt's URL upward, the way the submitted-browser-code panel
+  // does. The caller's loading beat ends when this arrives, so without it the
+  // onboarding step waits on a card that has already opened: the code is on
+  // screen and the button stays disabled. Fires with null on mount, before the
+  // one-time prompt lands, which is the same null the caller starts from.
+  const onPromptReadyRef = useRef(onPromptReady);
+  onPromptReadyRef.current = onPromptReady;
+  useEffect(() => {
+    onPromptReadyRef.current?.(prompt?.url ?? null);
+  }, [prompt]);
+
   const handleCancel = () => {
     cancelLogin.mutate();
     onCancel?.();
   };
 
   if (chrome === "onboarding") {
+    const failed = isTerminal && status && status !== "authenticated";
     return (
       <OnboardingLoginCard
-        // Reads in the order the rows sit in, and in the order they are used:
-        // the code first, because the link is what leaves this screen. The
-        // sibling card's "Open Claude link then come back and enter code" has
-        // the same shape — one sentence, "then" for the hand-off — because
-        // there the returning is the part worth saying.
+        loading={!prompt && !startError && !failed}
         instruction={
-          prompt ? "Copy this code then open the authentication link" : "Starting the sign-in…"
+          <>
+            {/* The same destination as the step's own button. Two ways to one
+                link: the button for the customer following the flow, the anchor
+                for anyone finishing in another browser. */}
+            <a
+              href={prompt?.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Sign in to {connectSourceName(adapterType)}
+            </a>
+            {" by providing the authorization code below"}
+          </>
         }
-        onCancel={isActive ? handleCancel : undefined}
       >
-        {/* The two rows are the whole card once the prompt lands. Before it
-            does there is nothing to show but the wait, and after a failure
-            there is nothing to act on — so both of those are a line of text,
-            not a row. */}
-        {startError && (
+        {startError ? (
           <p role="alert" className="pl-2 text-xs text-destructive">
             {startError}
           </p>
-        )}
-        {isActive && !prompt && !startError && (
-          <p className="flex items-center gap-2 pl-2 text-xs text-muted-foreground">
-            <Loader2 className="size-3 shrink-0 animate-spin" />
-            Preparing…
-          </p>
-        )}
-        {/* Code above link, which is the reverse of the settings panel below.
-            The panel numbers its two rows and its instruction reads "open the
-            page and enter the code", so there the order follows the sentence.
-
-            Here the order follows the hands. The link is the last thing touched
-            and the first thing that takes attention away — press it and the
-            next screen is a device-code form in another tab, wanting the code
-            that was on this one. Putting the code above it means it has already
-            been read, and copied, before the link is there to be pressed. */}
-        {prompt && (
-          <>
-            <OnboardingLoginCodeRow code={prompt.code} />
-            <OnboardingLoginUrlRow url={prompt.url} />
-          </>
-        )}
-        {isTerminal && status && status !== "authenticated" && (
+        ) : failed ? (
           <p role="alert" className="pl-2 text-xs text-destructive">
             {status === "timed_out"
               ? "The login timed out. Start it again."
@@ -2315,6 +2330,8 @@ function DisplayedCodeLoginPanel({
                 ? "The login was cancelled."
                 : "The login did not finish. Start it again."}
           </p>
+        ) : (
+          <OnboardingLoginCodeRow code={prompt?.code ?? ""} autoCopy />
         )}
       </OnboardingLoginCard>
     );
@@ -2480,6 +2497,7 @@ function SubmittedBrowserCodeLoginPanel({
   onCancel,
   onConnected,
   chrome = "panel",
+  onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2932,25 +2950,35 @@ function SubmittedBrowserCodeLoginPanel({
     onCancel?.();
   };
 
+  const onPromptReadyRef = useRef(onPromptReady);
+  onPromptReadyRef.current = onPromptReady;
+  useEffect(() => {
+    onPromptReadyRef.current?.(authorizationUrl);
+  }, [authorizationUrl]);
+
   if (chrome === "onboarding") {
+    const failedNow = isFailure || timedOut;
     return (
       <OnboardingLoginCard
+        loading={!authorizationUrl && !startError && !failedNow}
         instruction={
-          authorizationUrl
-            ? "Open Claude link then come back and enter code"
-            : "Starting the sign-in…"
+          <>
+            <a
+              href={authorizationUrl ?? undefined}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Sign in to {connectSourceName(adapterType)}
+            </a>
+            {" then come back and enter authorization code"}
+          </>
         }
-        onCancel={isActive ? handleCancel : undefined}
       >
-        {startError && (
-          <p role="alert" className="pl-2 text-xs text-destructive">
-            {startError}
-          </p>
-        )}
-        {/* The plain-HTTP advisory survives the redesign. It is the one thing
-            on this card that is not about getting the login done, and dropping
-            it to keep the card tidy would remove a warning about a code
-            travelling in clear text. */}
+        {/* The plain-HTTP advisory survives the redesign. It is the one thing on
+            this card not about getting the login done, and dropping it to keep
+            the card tidy would remove a warning about a code travelling in
+            clear text. */}
         {transportInsecure && (
           <p className="flex items-start gap-2 pl-2 text-xs text-amber-700 dark:text-amber-200">
             <TriangleAlert className="mt-0.5 size-3 shrink-0" />
@@ -2958,35 +2986,24 @@ function SubmittedBrowserCodeLoginPanel({
             network. Continue only on a network you trust.
           </p>
         )}
-        {isActive && !authorizationUrl && !startError && (
-          <p className="flex items-center gap-2 pl-2 text-xs text-muted-foreground">
-            <Loader2 className="size-3 shrink-0 animate-spin" />
-            Preparing…
-          </p>
-        )}
-        {authorizationUrl && (
-          <>
-            <OnboardingLoginUrlRow url={authorizationUrl} />
-            {/* Disabled while the submitted code is in flight and while the
-                completion read runs, so a second paste cannot land on top of a
-                login that is already finishing. */}
-            <OnboardingLoginCodeInput
-              value={browserCode}
-              onChange={setBrowserCode}
-              onSubmit={handleSubmit}
-              onPaste={() => {
-                pastedRef.current = true;
-              }}
-              disabled={submitCode.isPending || isCompleting}
-            />
-          </>
-        )}
-        {(isFailure || timedOut) && (
+        {startError ? (
           <p role="alert" className="pl-2 text-xs text-destructive">
-            {timedOut && !isFailure
-              ? CLAUDE_LOGIN_TIMED_OUT_MESSAGE
-              : CLAUDE_LOGIN_FAILED_MESSAGE}
+            {startError}
           </p>
+        ) : failedNow ? (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {timedOut && !isFailure ? CLAUDE_LOGIN_TIMED_OUT_MESSAGE : CLAUDE_LOGIN_FAILED_MESSAGE}
+          </p>
+        ) : (
+          <OnboardingCardField
+            value={browserCode}
+            onChange={setBrowserCode}
+            onSubmit={handleSubmit}
+            onPaste={() => {
+              pastedRef.current = true;
+            }}
+            disabled={submitCode.isPending || isCompleting}
+          />
         )}
       </OnboardingLoginCard>
     );

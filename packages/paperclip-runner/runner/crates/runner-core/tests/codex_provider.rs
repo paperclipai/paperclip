@@ -3393,6 +3393,13 @@ fn durable_backend_resumes_the_active_thread_without_restarting_the_turn() {
         .execute(&command("snapshot", 4, "session.snapshot", json!({})))
         .expect("restore provider session");
     assert_eq!(snapshot.result["status"], "turn_active");
+    assert_eq!(snapshot.result["driverSessionId"], "codex-thread-1");
+    assert_eq!(snapshot.result["providerSessionId"], "codex-thread-1");
+    assert_eq!(snapshot.result["sessionId"], "codex-account-session");
+    assert_eq!(
+        snapshot.result["providerAccountSessionId"],
+        "codex-account-session"
+    );
     assert_eq!(snapshot.result["activeProviderTurnId"], "provider-turn-1");
     assert_eq!(call_count(&directory, "turn/start"), 1);
     assert_eq!(call_count(&directory, "thread/resume"), 1);

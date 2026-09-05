@@ -25,7 +25,7 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=notion"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=jira"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=asana"))).toBe(true);
-    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown"))).toBe(false);
@@ -43,8 +43,8 @@ describe("app connect policy", () => {
   });
 
   it("admits retained hidden-provider reconnects without opening fresh setup", () => {
-    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(false);
-    expect(canEnterAppsConnect(new URLSearchParams("source=github&reconnect=connection-1"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=slack"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=slack&reconnect=connection-1"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown&reconnect=connection-1"))).toBe(false);
   });
 

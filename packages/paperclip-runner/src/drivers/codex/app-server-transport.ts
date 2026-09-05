@@ -46,6 +46,8 @@ export interface CodexAppServerTransport {
     resolution: HarnessRuntimeRequestResolution;
   }): Promise<void>;
   close(): Promise<void>;
+  /** Relinquish controller authority while leaving durable runner work alive. */
+  detachControllerForRestart?(): Promise<void>;
   processInfo?(): CodexTransportProcessInfo;
   attachRun?(input: {
     runId: string;
@@ -445,7 +447,9 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
     );
     this.#process.stdout.on("end", () => {
       this.#stdoutDecoder.end();
-      this.#fatal(new Error("codex app-server stdout ended before transport closure"));
+      this.#fatal(
+        new Error("codex app-server stdout ended before transport closure"),
+      );
     });
     this.#process.stdout.on("error", (error) => this.#fatal(error));
     this.#process.stdout.on("close", () => {
