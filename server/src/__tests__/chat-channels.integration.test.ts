@@ -6595,6 +6595,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         text: "Corrected Telegram request",
       },
     };
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: {
+        ...makeMessage({
+          id: `${chatId}:41`,
+          text: "Corrected Telegram request",
+          userId: chatId,
+        }),
+        raw: editPayload.edited_message,
+      } as Message,
+      trigger: "direct_message",
+    });
     const sendEdit = () =>
       service.handleWebhook(
         endpoint.publicId,
@@ -6640,6 +6655,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         state: "processed",
       }),
     ]);
+    const [originalDelivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(
+            chatDeliveries.providerEventId,
+            `telegram:${chatId}:${chatId}:41`,
+          ),
+        ),
+      );
+    expect(originalDelivery.normalizedEvent.deduplication).toBeUndefined();
     expect(wakeup).toHaveBeenCalledTimes(3);
   });
 

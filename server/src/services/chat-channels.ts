@@ -569,6 +569,15 @@ function telegramLifecycleEventFromPayload(
   };
 }
 
+function isTelegramEditedMessageRaw(raw: unknown): boolean {
+  return (
+    !!raw &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    typeof (raw as { edit_date?: unknown }).edit_date === "number"
+  );
+}
+
 async function githubLifecycleEventFromRequest(
   request: Request,
 ): Promise<GitHubLifecycleEvent | null> {
@@ -2630,6 +2639,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     ingressOnly = false,
     recoveredProviderUrl: string | null = null,
   ) {
+    // The Telegram adapter currently emits edited_message through the normal
+    // message callback with the original message id. Paperclip records that
+    // verified payload through its supplemental message_updated lifecycle
+    // ledger instead; letting it reach normal dedupe would falsely report the
+    // edit as a duplicate provider delivery.
+    if (
+      endpoint.provider === "telegram" &&
+      isTelegramEditedMessageRaw(message.raw)
+    )
+      return;
     if (
       message.author.isMe ||
       message.author.isBot === true ||
