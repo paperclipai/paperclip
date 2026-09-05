@@ -369,6 +369,57 @@ const SECRET_TEXT_HINTS = [
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
+export type ConfigurationRedactionSurface = "adapter" | "runtime" | "generic";
+
+const PUBLIC_ADAPTER_CONFIGURATION_SCALAR_KEYS = new Set([
+  "effort",
+  "graceSec",
+  "mode",
+  "model",
+  "modelReasoningEffort",
+  "provider",
+  "reasoningEffort",
+  "search",
+  "timeoutSec",
+  "variant",
+]);
+
+// These are closed, presentation-safe fields consumed by AgentConfigForm.
+// Path checks are exact: a same-named scalar below an unknown object remains
+// redacted, and bindings always take the binding-specific redaction path.
+const PUBLIC_RUNTIME_HEARTBEAT_SCALAR_PATHS = new Set([
+  "heartbeat.cooldownSec",
+  "heartbeat.enabled",
+  "heartbeat.intervalSec",
+  "heartbeat.maxConcurrentRuns",
+  "heartbeat.maxTurnContinuation.delayMs",
+  "heartbeat.maxTurnContinuation.enabled",
+  "heartbeat.maxTurnContinuation.maxAttempts",
+  "heartbeat.wakeOnDemand",
+]);
+
+function isPublicConfigurationScalar(path: string[], surface: ConfigurationRedactionSurface) {
+  if (surface === "adapter") {
+    return path.length === 1 && PUBLIC_ADAPTER_CONFIGURATION_SCALAR_KEYS.has(path[0] ?? "");
+  }
+  if (surface === "runtime") {
+    const joinedPath = path.join(".");
+    if (PUBLIC_RUNTIME_HEARTBEAT_SCALAR_PATHS.has(joinedPath)) return true;
+    if (joinedPath === "debug.providerTrace") return true;
+    return (
+      path.length === 3
+      && path[0] === "modelProfiles"
+      && (path[2] === "enabled" || path[2] === "label")
+    ) || (
+      path.length === 4
+      && path[0] === "modelProfiles"
+      && path[2] === "adapterConfig"
+      && PUBLIC_ADAPTER_CONFIGURATION_SCALAR_KEYS.has(path[3] ?? "")
+    );
+  }
+  return path.length === 1 && (path[0] === "model" || path[0] === "provider");
+}
+
 function maybeContainsSecretText(input: string) {
   const lower = input.toLowerCase();
   return (
@@ -732,7 +783,7 @@ function sanitizeValue(value: unknown): unknown {
     const version = safeSecretVersion(value.version);
     return {
       type: "secret_ref",
-      secretId: value.secretId,
+      secretId: safeSecretReferenceId(value.secretId),
       ...(version === undefined ? {} : { version }),
       ...(value.projectionClass === "unclassified" ||
       value.projectionClass === "class_3_static_lease"
@@ -763,7 +814,7 @@ function sanitizeValue(value: unknown): unknown {
     };
   }
   if (isPlainBinding(value))
-    return { type: "plain", value: sanitizeValue(value.value) };
+    return { type: "plain", value: REDACTED_EVENT_VALUE };
   if (!isPlainObject(value)) return value;
   return sanitizeRecord(value);
 }
@@ -791,9 +842,12 @@ function isSecretRefBinding(value: unknown): value is {
   if (!isPlainObject(value)) return false;
   return (
     value.type === "secret_ref" &&
-    typeof value.secretId === "string" &&
-    SECRET_REFERENCE_ID_RE.test(value.secretId)
+    typeof value.secretId === "string"
   );
+}
+
+function safeSecretReferenceId(value: string): string {
+  return SECRET_REFERENCE_ID_RE.test(value) ? value : REDACTED_EVENT_VALUE;
 }
 
 function isUserSecretRefBinding(value: unknown): value is {
@@ -817,6 +871,30 @@ function isPlainBinding(
 ): value is { type: "plain"; value: unknown } {
   if (!isPlainObject(value)) return false;
   return value.type === "plain" && "value" in value;
+}
+
+function isPublicSecretVersion(value: unknown): value is number | "latest" {
+  return value === "latest" || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+}
+
+function redactSecretRefBinding(
+  value: { type: "secret_ref"; secretId: string; version?: unknown },
+): { type: "secret_ref"; secretId: string; version?: number | "latest" } {
+  return {
+    type: value.type,
+    secretId: safeSecretReferenceId(value.secretId),
+    ...(isPublicSecretVersion(value.version) ? { version: value.version } : {}),
+  };
+}
+
+function redactUserSecretRefBinding(
+  value: { type: "user_secret_ref"; key: string; version?: unknown },
+): { type: "user_secret_ref"; key: string; version?: number | "latest" } {
+  return {
+    type: value.type,
+    key: value.key,
+    ...(isPublicSecretVersion(value.version) ? { version: value.version } : {}),
+  };
 }
 
 function sanitizeCommandArgs(args: unknown[]): unknown[] {
@@ -969,7 +1047,79 @@ export function redactAgentAdapterConfig(
     Object.entries(env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
   );
 
-  return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
+  return { ...(redactConfigurationPayload(rest, "adapter") ?? {}), env: redactedEnv };
+}
+
+function redactConfigurationValue(
+  value: unknown,
+  path: string[] = [],
+  surface: ConfigurationRedactionSurface = "generic",
+): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map((entry) => redactConfigurationValue(entry, path, surface));
+  if (isSecretRefBinding(value)) return redactSecretRefBinding(value);
+  if (isUserSecretRefBinding(value)) return redactUserSecretRefBinding(value);
+  if (isPlainBinding(value)) return { type: value.type, value: REDACTED_EVENT_VALUE };
+  if (!isPlainObject(value)) {
+    return isPublicConfigurationScalar(path, surface) ? value : REDACTED_EVENT_VALUE;
+  }
+  return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [
+    childKey,
+    redactConfigurationValue(child, [...path, childKey], surface),
+  ]));
+}
+
+/** Redact executable configuration deny-by-default while retaining its shape. */
+export function redactConfigurationPayload(
+  payload: Record<string, unknown> | null,
+  surface: ConfigurationRedactionSurface = "generic",
+): Record<string, unknown> | null {
+  if (!payload) return null;
+  if (!isPlainObject(payload)) return {};
+  return redactConfigurationValue(payload, [], surface) as Record<string, unknown>;
+}
+
+function restoreRedactedConfigurationValue(
+  value: unknown,
+  existing: unknown,
+  literalPaths: ReadonlySet<string>,
+  path: string[] = [],
+): unknown {
+  // A marker can only stand in for a value that actually existed in the
+  // response source. At a new path it is ordinary caller-supplied data.
+  if (value === REDACTED_EVENT_VALUE) {
+    if (literalPaths.has(JSON.stringify(path))) return value;
+    return existing === undefined ? value : existing;
+  }
+  if (Array.isArray(value)) {
+    const existingArray = Array.isArray(existing) ? existing : [];
+    return value.map((entry, index) => restoreRedactedConfigurationValue(
+      entry,
+      existingArray[index],
+      literalPaths,
+      [...path, String(index)],
+    ));
+  }
+  if (!isPlainObject(value)) return value;
+  const existingRecord = isPlainObject(existing) ? existing : {};
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key,
+    restoreRedactedConfigurationValue(child, existingRecord[key], literalPaths, [...path, key]),
+  ]));
+}
+
+/**
+ * Treat the response-only redaction marker as an unchanged value when a client
+ * explicitly opts into round-trip restoration. Callers that do not opt in can
+ * persist the marker string literally; every other value is intentional.
+ */
+export function restoreRedactedConfigurationPayload(
+  payload: Record<string, unknown>,
+  existing: Record<string, unknown> | null | undefined,
+  literalPaths: readonly (readonly string[])[] = [],
+): Record<string, unknown> {
+  const encodedLiteralPaths = new Set(literalPaths.map((path) => JSON.stringify(path)));
+  return restoreRedactedConfigurationValue(payload, existing ?? {}, encodedLiteralPaths) as Record<string, unknown>;
 }
 
 export function redactSensitiveText(input: string): string {

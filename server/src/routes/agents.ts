@@ -109,7 +109,9 @@ import {
 import {
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
+  redactConfigurationPayload,
   redactEventPayload,
+  restoreRedactedConfigurationPayload,
 } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import {
@@ -2836,7 +2838,13 @@ export function agentRoutes(
     if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return agent;
     return {
       ...agent,
-      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
+      adapterConfig: redactAgentAdapterConfig(
+        agent.adapterConfig as Record<string, unknown>,
+      ),
+      runtimeConfig: redactConfigurationPayload(
+        (agent as { runtimeConfig?: unknown }).runtimeConfig as Record<string, unknown>,
+        "runtime",
+      ),
     };
   }
 
@@ -2851,8 +2859,8 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig),
-      runtimeConfig: redactEventPayload(agent.runtimeConfig),
+      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig) ?? {},
+      runtimeConfig: redactConfigurationPayload(agent.runtimeConfig, "runtime") ?? {},
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
     };
@@ -2890,10 +2898,11 @@ export function agentRoutes(
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
       ),
-      runtimeConfig: redactEventPayload(
+      runtimeConfig: redactConfigurationPayload(
         typeof record.runtimeConfig === "object" && record.runtimeConfig !== null
           ? (record.runtimeConfig as Record<string, unknown>)
           : {},
+        "runtime",
       ),
       metadata:
         typeof record.metadata === "object" && record.metadata !== null
@@ -4198,7 +4207,7 @@ export function agentRoutes(
       });
     }
 
-    res.status(201).json({ agent, approval });
+    res.status(201).json({ agent: redactAgentRowForResponse(agent), approval });
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -4660,6 +4669,15 @@ export function agentRoutes(
     const patchData = { ...(req.body as Record<string, unknown>) };
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
+    // Profile responses use a visible marker for hidden configuration values.
+    // Restoration is opt-in so an API caller can still persist that same
+    // string literally without the server silently reinterpreting it.
+    const preserveRedactedConfigValues = patchData.preserveRedactedConfigValues === true;
+    delete patchData.preserveRedactedConfigValues;
+    const literalRedactedConfigPaths = Array.isArray(patchData.literalRedactedConfigPaths)
+      ? patchData.literalRedactedConfigPaths as string[][]
+      : [];
+    delete patchData.literalRedactedConfigPaths;
     // The apply-existing flag is not an agent column. The server binds the fixed
     // reference to the owner stored value with no login round trip. Remove it
     // from the patch so it never reaches the update values.
@@ -4671,12 +4689,21 @@ export function agentRoutes(
         res.status(422).json({ error: "adapterConfig must be an object" });
         return;
       }
-      assertNoAgentAdapterConfigMutation(req, adapterConfig);
-      const changingInstructionsConfig = adapterConfigTouchesInstructionsConfig(adapterConfig);
+      const restoredAdapterConfig = preserveRedactedConfigValues
+        ? restoreRedactedConfigurationPayload(
+            adapterConfig,
+            asRecord(existing.adapterConfig),
+            literalRedactedConfigPaths
+              .filter(([surface]) => surface === "adapterConfig")
+              .map((path) => path.slice(1)),
+          )
+        : adapterConfig;
+      assertNoAgentAdapterConfigMutation(req, restoredAdapterConfig);
+      const changingInstructionsConfig = adapterConfigTouchesInstructionsConfig(restoredAdapterConfig);
       if (changingInstructionsConfig) {
         await assertCanManageInstructionsPath(req, existing);
       }
-      patchData.adapterConfig = adapterConfig;
+      patchData.adapterConfig = restoredAdapterConfig;
     }
 
     // Switching an existing agent ONTO another adapter is a new selection, so
@@ -4696,12 +4723,22 @@ export function agentRoutes(
         res.status(422).json({ error: "runtimeConfig must be an object" });
         return;
       }
+      const restoredRuntimeConfig = preserveRedactedConfigValues
+        ? restoreRedactedConfigurationPayload(
+            runtimeConfig,
+            asRecord(existing.runtimeConfig),
+            literalRedactedConfigPaths
+              .filter(([surface]) => surface === "runtimeConfig")
+              .map((path) => path.slice(1)),
+          )
+        : runtimeConfig;
       assertProviderTraceSettingTransition(
         req,
-        runtimeConfig,
+        restoredRuntimeConfig,
         existing.runtimeConfig,
       );
-      requestedRuntimeConfig = runtimeConfig;
+      patchData.runtimeConfig = restoredRuntimeConfig;
+      requestedRuntimeConfig = restoredRuntimeConfig;
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
@@ -4842,7 +4879,21 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(redactAgentRowForResponse(agent));
+    res.json(
+      replaceAdapterConfig
+        ? {
+            ...agent,
+            adapterConfig: redactConfigurationPayload(
+              asRecord(agent.adapterConfig) ?? {},
+              "adapter",
+            ),
+            runtimeConfig: redactConfigurationPayload(
+              asRecord(agent.runtimeConfig) ?? {},
+              "runtime",
+            ),
+          }
+        : redactAgentRowForResponse(agent),
+    );
   });
 
   router.post("/agents/:id/pause", async (req, res) => {

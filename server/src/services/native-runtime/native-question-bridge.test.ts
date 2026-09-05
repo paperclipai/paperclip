@@ -58,6 +58,15 @@ describeEmbeddedPostgres("native question bridge", () => {
   let sessionId: string;
   let runnerInstanceId: string;
 
+  function isPostgresDeadlock(error: unknown) {
+    let current = error;
+    for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth += 1) {
+      if ("code" in current && (current as { code?: unknown }).code === "40P01") return true;
+      current = "cause" in current ? (current as { cause?: unknown }).cause : undefined;
+    }
+    return false;
+  }
+
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-question-");
     db = createDb(temporary.connectionString);
@@ -73,17 +82,25 @@ describeEmbeddedPostgres("native question bridge", () => {
     // TRUNCATE below and can deadlock.
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     nativeQuestionBridgeInternals.resetForTests();
-    await db.execute(sql.raw(`
-      TRUNCATE TABLE
-        "activity_log",
-        "issue_thread_interactions",
-        "heartbeat_runs",
-        "agent_wakeup_requests",
-        "issues",
-        "agents",
-        "companies"
-      RESTART IDENTITY CASCADE
-    `));
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await db.execute(sql.raw(`
+          TRUNCATE TABLE
+            "activity_log",
+            "issue_thread_interactions",
+            "heartbeat_runs",
+            "agent_wakeup_requests",
+            "issues",
+            "agents",
+            "companies"
+          RESTART IDENTITY CASCADE
+        `));
+        break;
+      } catch (error) {
+        if (!isPostgresDeadlock(error) || attempt === 2) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
   });
 
   afterAll(async () => temporary?.cleanup());

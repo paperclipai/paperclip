@@ -466,7 +466,7 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({
-      command: "pnpm agent:run",
+      command: "***REDACTED***",
       env: {
         LEGACY_VALUE: { type: "plain", value: "***REDACTED***" },
         PLAIN_VALUE: { type: "plain", value: "***REDACTED***" },
@@ -521,7 +521,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(1);
     expect(res.body[0].adapterConfig).toMatchObject({
-      command: "pnpm agent:run",
+      command: "***REDACTED***",
       env: {
         LEGACY_VALUE: { type: "plain", value: "***REDACTED***" },
         PLAIN_VALUE: { type: "plain", value: "***REDACTED***" },
