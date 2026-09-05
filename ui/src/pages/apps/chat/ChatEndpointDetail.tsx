@@ -58,7 +58,7 @@ const activityKindLabels: Record<ChatActivityItem["kind"], string> = {
   repair: "Connection repair",
 };
 
-const replayableFailureStates = new Set(["failed", "delivery_unknown"]);
+const replayableFailureStates = new Set(["failed"]);
 
 export function isReplayEligible(item: ChatActivityItem): boolean {
   if (!item.replayable || !replayableFailureStates.has(item.status)) {
@@ -549,6 +549,9 @@ function Activity({
   const navigate = useNavigate();
   const { pushToast } = useToast();
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [resolutionItem, setResolutionItem] = useState<ChatActivityItem | null>(
+    null,
+  );
   const query = useQuery({
     queryKey: queryKeys.chatEndpoints.activity(endpointId),
     queryFn: () => chatEndpointsApi.listActivity(endpointId),
@@ -570,6 +573,38 @@ function Activity({
     onError: (error) =>
       pushToast({
         title: "Couldn't replay activity",
+        body: error instanceof Error ? error.message : "Try again.",
+        tone: "error",
+      }),
+  });
+  const resolvePublication = useMutation({
+    mutationFn: (input: {
+      item: ChatActivityItem;
+      action: "mark_delivered" | "retry_anyway" | "cancel";
+    }) =>
+      chatEndpointsApi.resolvePublication(
+        endpointId,
+        input.item.id,
+        input.action,
+      ),
+    onSuccess: async (_result, input) => {
+      setResolutionItem(null);
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.chatEndpoints.activity(endpointId),
+      });
+      pushToast({
+        title:
+          input.action === "mark_delivered"
+            ? "Publication marked delivered"
+            : input.action === "retry_anyway"
+              ? "Publication queued for retry"
+              : "Publication cancelled",
+        tone: "success",
+      });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't resolve publication",
         body: error instanceof Error ? error.message : "Try again.",
         tone: "error",
       }),
@@ -749,6 +784,17 @@ function Activity({
                     Replay
                   </Button>
                 )}
+                {item.kind === "publication" &&
+                  item.status === "delivery_unknown" &&
+                  (item.resolutionActions?.length ?? 0) > 0 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setResolutionItem(item)}
+                    >
+                      Resolve
+                    </Button>
+                  )}
               </div>
             ))}
           {!query.isLoading && !query.isError && rows.length === 0 && (
@@ -758,6 +804,65 @@ function Activity({
           )}
         </div>
       </div>
+      <AlertDialog
+        open={resolutionItem !== null}
+        onOpenChange={(open) => !open && setResolutionItem(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Resolve unconfirmed delivery</AlertDialogTitle>
+            <AlertDialogDescription>
+              Paperclip lost confirmation after sending. Check the provider
+              conversation first. Retrying can create a duplicate message.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="sm:flex-wrap">
+            <AlertDialogCancel disabled={resolvePublication.isPending}>
+              Keep unresolved
+            </AlertDialogCancel>
+            <Button
+              variant="outline"
+              disabled={resolvePublication.isPending}
+              onClick={() =>
+                resolutionItem &&
+                resolvePublication.mutate({
+                  item: resolutionItem,
+                  action: "cancel",
+                })
+              }
+            >
+              Cancel publication
+            </Button>
+            <Button
+              variant="outline"
+              disabled={resolvePublication.isPending}
+              onClick={() =>
+                resolutionItem &&
+                resolvePublication.mutate({
+                  item: resolutionItem,
+                  action: "retry_anyway",
+                })
+              }
+            >
+              Retry anyway
+            </Button>
+            <AlertDialogAction
+              disabled={resolvePublication.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                if (resolutionItem) {
+                  resolvePublication.mutate({
+                    item: resolutionItem,
+                    action: "mark_delivered",
+                  });
+                }
+              }}
+            >
+              Mark delivered
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={removeOpen} onOpenChange={setRemoveOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>

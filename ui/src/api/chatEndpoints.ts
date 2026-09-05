@@ -11,12 +11,7 @@ export type ChatEndpointStatus =
   | "archived";
 
 export type ChatEndpointSetupAction =
-  | "configure"
-  | "verify"
-  | "pause"
-  | "resume"
-  | "reconnect"
-  | "remove";
+  "configure" | "verify" | "pause" | "resume" | "reconnect" | "remove";
 
 export interface ChatEndpointResource {
   id: string;
@@ -67,6 +62,7 @@ export interface ChatActivityItem {
   detail?: string | null;
   createdAt: string;
   replayable?: boolean;
+  resolutionActions?: Array<"mark_delivered" | "retry_anyway" | "cancel">;
 }
 
 export interface ExternalChannelBindingSummary {
@@ -124,7 +120,12 @@ export interface ChatEndpoint {
     webhookUrl?: string | null;
     messagingEndpoint?: string | null;
     command?: string | null;
+    webhookSecretConfigured?: boolean;
   };
+}
+
+export interface ChatEndpointSetupSecret {
+  webhookSecret: string;
 }
 
 type ListResponse<T> =
@@ -182,6 +183,11 @@ export const chatEndpointsApi = {
       credentials?: Record<string, string>;
     },
   ) => api.post<ChatEndpoint>(`/chat-endpoints/${endpointId}/setup`, input),
+  generateSetupSecret: (endpointId: string) =>
+    api.post<ChatEndpointSetupSecret>(
+      `/chat-endpoints/${endpointId}/setup-secret`,
+      {},
+    ),
   test: (endpointId: string) =>
     api.post<ChatEndpoint>(`/chat-endpoints/${endpointId}/test`, {}),
   listResources: async (endpointId: string) =>
@@ -246,6 +252,15 @@ export const chatEndpointsApi = {
       `/chat-endpoints/${endpointId}/publications/${publicationId}/replay`,
       {},
     ),
+  resolvePublication: (
+    endpointId: string,
+    publicationId: string,
+    action: "mark_delivered" | "retry_anyway" | "cancel",
+  ) =>
+    api.post<void>(
+      `/chat-endpoints/${endpointId}/publications/${publicationId}/resolve`,
+      { action },
+    ),
   publishComment: (
     endpointId: string,
     conversationId: string,
@@ -254,5 +269,15 @@ export const chatEndpointsApi = {
     api.post<void>(
       `/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`,
       { commentId },
+    ),
+  publishBoardMessage: (
+    endpointId: string,
+    conversationId: string,
+    body: string,
+    idempotencyKey: string,
+  ) =>
+    api.post<void>(
+      `/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`,
+      { body, idempotencyKey },
     ),
 };

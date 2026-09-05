@@ -58,7 +58,6 @@ describe("chat connector UI contract", () => {
       "botToken",
       "signingSecret",
       "appId",
-      "webhookSecret",
       "clientId",
       "tenantId",
       "clientSecret",
@@ -70,9 +69,11 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("Create or connect a GitHub App");
     expect(setup).toContain("create a single-tenant app registration");
     expect(setup).toContain("Create a bot with BotFather");
-    expect(setup).toContain("Leave privacy mode enabled");
-    expect(setup).toContain("groups, supergroups, and forum topics");
-    expect(setup).toContain("replaces any webhook already registered");
+    expect(setup).toContain("Generate webhook secret");
+    expect(setup).toContain("will not show it again");
+    expect(setup).toContain(
+      "immediately invalidates GitHub webhook signatures",
+    );
     expect(setup).not.toContain("/setprivacy");
     expect(setup).toContain("Create Azure Bot");
     expect(setup).toContain("Client secret value");
@@ -97,13 +98,13 @@ describe("chat connector UI contract", () => {
     expect(setup).not.toContain("- im:write");
     expect(setup).toContain("- reactions:write");
     expect(setup).not.toContain("always_online");
-    expect(setup).not.toContain("- reactions:read");
-    expect(setup).not.toContain("reaction_added");
-    expect(setup).not.toContain("reaction_removed");
+    expect(setup).toContain("- reactions:read");
+    expect(setup).toContain("reaction_added");
+    expect(setup).toContain("reaction_removed");
     expect(setup).not.toContain("No credentials");
     expect(setup).not.toContain("managed Microsoft app");
     expect(setup).toContain("endpoint.providerAccountId && !repairing");
-    expect(setup).not.toContain("endpoint.setup?.webhookSecret");
+    expect(setup).not.toContain('field("webhookSecret"');
     expect(setup).not.toContain("@paperclipai/teams-connect");
     expect(setup).not.toContain("Copy setup command");
     expect(setup).not.toContain("Add {agentName} to Slack");

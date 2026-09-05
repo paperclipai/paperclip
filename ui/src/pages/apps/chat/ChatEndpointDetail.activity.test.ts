@@ -15,19 +15,19 @@ function activity(overrides: Partial<ChatActivityItem> = {}): ChatActivityItem {
 }
 
 describe("chat endpoint activity replay eligibility", () => {
-  it.each([
-    activity(),
-    activity({ kind: "publication" }),
-    activity({ kind: "publication", status: "delivery_unknown" }),
-  ])("allows server-approved failed activity %#", (item) => {
-    expect(isReplayEligible(item)).toBe(true);
-  });
+  it.each([activity(), activity({ kind: "publication" })])(
+    "allows server-approved failed activity %#",
+    (item) => {
+      expect(isReplayEligible(item)).toBe(true);
+    },
+  );
 
   it.each([
     activity({ replayable: false }),
     activity({ replayable: undefined }),
     activity({ status: "processed" }),
     activity({ kind: "delivery", status: "delivery_unknown" }),
+    activity({ kind: "publication", status: "delivery_unknown" }),
     activity({ kind: "health" }),
     activity({ kind: "repair" }),
   ])("hides replay for ineligible activity %#", (item) => {

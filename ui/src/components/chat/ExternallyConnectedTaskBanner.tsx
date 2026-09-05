@@ -1,8 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ExternalLink, Radio } from "lucide-react";
 import { chatEndpointsApi, type ChatProvider } from "@/api/chatEndpoints";
-import { issuesApi } from "@/api/issues";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/context/ToastContext";
@@ -35,16 +34,18 @@ export function ExternallyConnectedTaskBanner({
   const { pushToast } = useToast();
   const [composing, setComposing] = useState(false);
   const [body, setBody] = useState("");
+  const idempotencyKey = useRef<string | null>(null);
   const publish = useMutation({
-    mutationFn: async () => {
-      const comment = await issuesApi.addComment(issueId, body.trim());
-      await chatEndpointsApi.publishComment(
+    mutationFn: async (input: { body: string; idempotencyKey: string }) => {
+      await chatEndpointsApi.publishBoardMessage(
         binding!.endpointId,
         binding!.conversationId,
-        comment.id,
+        input.body,
+        input.idempotencyKey,
       );
     },
     onSuccess: () => {
+      idempotencyKey.current = null;
       setBody("");
       setComposing(false);
       pushToast({
@@ -105,7 +106,10 @@ export function ExternallyConnectedTaskBanner({
           <Textarea
             id="external-board-update"
             value={body}
-            onChange={(event) => setBody(event.target.value)}
+            onChange={(event) => {
+              setBody(event.target.value);
+              idempotencyKey.current = null;
+            }}
             placeholder="Write only what should be visible in the provider conversation."
           />
           <div className="flex items-center justify-between gap-3">
@@ -115,7 +119,13 @@ export function ExternallyConnectedTaskBanner({
             <Button
               size="sm"
               disabled={!body.trim() || publish.isPending}
-              onClick={() => publish.mutate()}
+              onClick={() => {
+                idempotencyKey.current ??= crypto.randomUUID();
+                publish.mutate({
+                  body: body.trim(),
+                  idempotencyKey: idempotencyKey.current,
+                });
+              }}
             >
               {publish.isPending ? "Sending…" : "Send to channel"}
             </Button>

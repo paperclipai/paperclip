@@ -21,41 +21,35 @@ The persistent step rail is sufficient context. **Save & exit** preserves the dr
 
 ## Slack
 
-### Normal path: Add to Slack
+### Required path: customer-owned Slack App
 
-1. **Add Maya to Slack:** one page with one sentence, **Add Maya to Slack**, and the customer-owned-App fallback.
-2. Slack asks the operator to choose a workspace and approve the installation.
+1. **Create and install:** Paperclip opens Slack's official app-from-manifest URL. In Slack, choose the workspace, review the manifest, create the App, and install it.
+2. **Connect:** copy **Bot User OAuth Token** from **OAuth & Permissions** and **Signing Secret** from **Basic Information → App Credentials**; paste those two values into Paperclip.
 3. **Try Maya:** open a channel, use `/invite @Maya` if required, post `@Maya help me test this` as a new channel message, and reply once in Maya's thread.
 
 The tested Slack channel is enabled when the test succeeds. Inviting Maya to another channel later only makes it available; Paperclip remains silent there until an administrator enables that channel in Settings.
 
-No credential, scope, event, callback, delivery, capability, installation-summary, or verification-report rows appear. Slack describes Add to Slack as a few-click agent deployment path where the platform handles authentication and permission scoping. See [Slack's Add to Slack announcement](https://slack.com/blog/news/add-to-slack).
+The prepared manifest contains Maya's app identity, callback URLs, least-privilege bot scopes, event subscriptions, interactivity, commands, and file behavior. The operator does not configure those individually. Slack documents [shared manifest URLs](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/) and the [install/token/signing-secret locations](https://api.slack.com/tutorials/tracks/app-home-and-modals).
 
-### Customer-owned Slack App fallback
+### Optional managed install
 
-This branch is required for self-hosted deployments, organizations that require their own App, or environments where Paperclip cannot use Add to Slack.
-
-1. **Create and install:** Paperclip opens Slack's official app-from-manifest URL. In Slack, choose the workspace, click **Next**, review the manifest, click **Create**, open **OAuth & Permissions**, click **Install to Workspace**, then **Allow**.
-2. **Connect:** copy **Bot User OAuth Token** from **OAuth & Permissions** and **Signing Secret** from **Basic Information → App Credentials**; paste those two values into Paperclip.
-3. **Try Maya:** use the same channel mention and thread-reply test as the normal path.
-
-The prepared manifest contains Maya's app identity, callback URLs, least-privilege bot scopes, event subscriptions, interactivity, commands, and file behavior. The operator does not configure those individually. Slack documents both [shared manifest URLs](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/) and the [install/token/signing-secret locations](https://api.slack.com/tutorials/tracks/app-home-and-modals).
+An **Add to Slack** flow may be added when Paperclip participates in Slack's managed agent-deployment program. It is an optional convenience and cannot gate the first release or replace the customer-owned App path.
 
 ## GitHub
 
-### Normal App Manifest path
+### Required customer-owned GitHub App path
 
-1. **Create GitHub App:** click **Create in GitHub**, choose the owning account or organization, keep or resolve the unique App name, and click **Create GitHub App**.
+1. **Create GitHub App:** copy Paperclip's webhook URL, click **Generate webhook secret**, then create a GitHub App with those values, **Issues: write**, **Pull requests: write**, **Metadata: read**, and the selectable issue/review-comment events. GitHub supplies installation lifecycle events automatically.
 2. **Choose repositories:** click **Install in GitHub**, choose the account or organization, choose all or selected repositories, review permissions, and install.
 3. **Try Maya:** open an issue or pull request in an installed repository, comment `@paperclip-maya help me test this`, then add another comment to continue the same Paperclip task.
 
 The tested repository is enabled when the test succeeds. Any other repository in the App installation remains disabled in Paperclip until enabled in Settings.
 
-The App Manifest fixes the webhook, Issue/PR permissions, and comment/review events. GitHub returns a one-time code that Paperclip exchanges for the App credentials, so the normal path has no credential form. See [GitHub App Manifest registration](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest).
+Paperclip returns the webhook secret only once and never exposes it from normal endpoint reads. After GitHub creates the App, the operator enters the App ID and private-key PEM; Paperclip verifies the App permissions and subscribed events before retaining the credentials.
 
-### Existing GitHub App fallback
+### Existing GitHub App
 
-1. Copy Paperclip's generated webhook URL and secret into the existing GitHub App and make the webhook active.
+1. Copy Paperclip's generated webhook URL and one-time secret into the existing GitHub App and make the webhook active. Regenerating rotates the stored secret and requires updating GitHub before further deliveries can verify.
 2. Grant **Issues: write**, **Pull requests: write**, and **Metadata: read**; subscribe to **Issue comment** and **Pull request review comment**.
 3. Generate a private key in the App settings.
 4. Paste the App ID and upload the PEM file to Paperclip, then connect and verify.
@@ -65,25 +59,19 @@ The webhook secret is generated and already stored by Paperclip; it is copied ou
 
 ## Microsoft Teams
 
-### Normal guided path
+### Required customer-owned bot path
 
-1. **Create Teams app:** copy and run the one-time `npx @paperclipai/teams-connect --setup …` command. The planned Paperclip helper invokes Microsoft's Teams Developer CLI, opens Microsoft 365 sign-in, creates the app/bot registration against Paperclip's endpoint, and returns the resulting identity to the setup draft.
-2. **Install Maya:** click the Microsoft install link returned by the command, then click **Add** and choose a team/channel if Microsoft asks.
-3. **Try Maya:** open an installed channel, start a new post, send `@Maya help me test this`, and reply once beneath the post.
+1. Copy Paperclip's messaging endpoint.
+2. Create a single-tenant Entra App registration and client secret, then create an Azure Bot using the Application ID, enable its Microsoft Teams channel, and set Paperclip's messaging endpoint.
+3. Paste the Application ID, Directory/Tenant ID, and client-secret value into Paperclip.
+4. Install the generated Teams package and choose a team/channel if Microsoft asks.
+5. **Try Maya:** open an installed channel, start a new post, send `@Maya help me test this`, and reply once beneath the post.
 
 The tested Teams channel is enabled when the test succeeds. Installing Maya into another team or channel later makes that destination available but does not enable Paperclip work there.
 
-This helper is a required implementation deliverable; the literal command does not exist yet. Microsoft's current CLI can create bot infrastructure for an existing endpoint and returns an install link. See the [Teams registration quickstart](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/get-started/quickstart-register).
+A future helper around Microsoft's Teams Developer CLI may automate these provider-owned steps, but it is optional and cannot gate release. See the [Teams registration quickstart](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/get-started/quickstart-register).
 
 If tenant policy requires administrator approval, Microsoft owns that state inside the same install step. Paperclip preserves the draft; it does not add another configuration page.
-
-### Manual Microsoft fallback
-
-1. Copy Paperclip's messaging endpoint.
-2. Create a single-tenant Entra App registration and client secret.
-3. Create an Azure Bot using the Application ID, enable its Microsoft Teams channel, and set Paperclip's messaging endpoint.
-4. Paste the Application ID, Directory/Tenant ID, and client-secret value into Paperclip.
-5. Click **Connect and create Teams app**, then continue through the normal install-link and test steps.
 
 Those three identity values are the minimum portable credentials for the manual customer-owned registration. Paperclip does not show authentication-strategy, cloud, webhook, relay, package, scope, or capability choices on the normal path. For tenants that require package submission rather than direct sideloading, the install step may return a Microsoft admin-approval state; Microsoft documents the [custom-app upload and approval paths](https://learn.microsoft.com/en-us/microsoftteams/platform/concepts/deploy-and-publish/apps-upload).
 
@@ -100,11 +88,11 @@ Group and forum installation is deliberately post-connect configuration. The min
 
 ## Resulting screen inventory
 
-| Provider        |                      Normal setup screens | Advanced fallback                                          |
-| --------------- | ----------------------------------------: | ---------------------------------------------------------- |
-| Slack           |                    Add to Slack; Try Maya | Create/install custom App; copy two secrets                |
-| GitHub          | Create App; choose repositories; Try Maya | Configure existing App; App ID and private key             |
-| Microsoft Teams |       Run command; install link; Try Maya | Manual Entra/Azure Bot registration; three identity values |
-| Telegram        |                 BotFather token; Try Maya | None in first release                                      |
+| Provider        |                                                                  Normal setup screens | Advanced fallback                          |
+| --------------- | ------------------------------------------------------------------------------------: | ------------------------------------------ |
+| Slack           |                                 Create/install custom App; copy two secrets; Try Maya | Optional managed install                   |
+| GitHub          |     Generate secret; configure App; App ID/private key; choose repositories; Try Maya | Existing App uses the same credential path |
+| Microsoft Teams | Manual Entra/Azure Bot registration; three identity values; install package; Try Maya | Optional future CLI helper                 |
+| Telegram        |                                                             BotFather token; Try Maya | None in first release                      |
 
 The current viewer contains 14 setup phases and every provider-specific Settings, Access, Conversations, and Activity tab. The read-only Overview and non-product interaction-walkthrough pages are absent in v8.

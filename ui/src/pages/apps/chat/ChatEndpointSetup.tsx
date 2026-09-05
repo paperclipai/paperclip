@@ -93,6 +93,7 @@ export function ChatEndpointSetup() {
   const [agentId, setAgentId] = useState(preselectedAgent);
   const [endpoint, setEndpoint] = useState<ChatEndpoint | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [generatedWebhookSecret, setGeneratedWebhookSecret] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([
@@ -155,6 +156,30 @@ export function ChatEndpointSetup() {
           error instanceof Error
             ? error.message
             : "Check the required values and try again.",
+        tone: "error",
+      }),
+  });
+  const generateSetupSecret = useMutation({
+    mutationFn: () => chatEndpointsApi.generateSetupSecret(endpoint!.id),
+    onSuccess: ({ webhookSecret }) => {
+      setGeneratedWebhookSecret(webhookSecret);
+      setEndpoint((current) =>
+        current
+          ? {
+              ...current,
+              setup: {
+                ...current.setup,
+                step: current.setup?.step ?? "provider_setup",
+                webhookSecretConfigured: true,
+              },
+            }
+          : current,
+      );
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't generate webhook secret",
+        body: error instanceof Error ? error.message : "Try again.",
         tone: "error",
       }),
   });
@@ -284,6 +309,9 @@ export function ChatEndpointSetup() {
             setCredentials={setCredentials}
             repairing={repairing}
             pending={setupAction.isPending}
+            generatedWebhookSecret={generatedWebhookSecret}
+            generatingSetupSecret={generateSetupSecret.isPending}
+            onGenerateSetupSecret={() => generateSetupSecret.mutate()}
             onAction={(action, values) =>
               setupAction.mutate({ action, values })
             }
@@ -317,6 +345,9 @@ function ProviderConnectStep({
   setCredentials,
   repairing,
   pending,
+  generatedWebhookSecret,
+  generatingSetupSecret,
+  onGenerateSetupSecret,
   onAction,
 }: {
   provider: ChatProvider;
@@ -326,6 +357,9 @@ function ProviderConnectStep({
   setCredentials: (next: Record<string, string>) => void;
   repairing: boolean;
   pending: boolean;
+  generatedWebhookSecret: string;
+  generatingSetupSecret: boolean;
+  onGenerateSetupSecret: () => void;
   onAction: (
     action: ChatEndpointSetupAction,
     values?: Record<string, string>,
@@ -402,6 +436,7 @@ oauth_config:
       - im:read
       - mpim:history
       - mpim:read
+      - reactions:read
       - reactions:write
       - users:read
 settings:
@@ -418,6 +453,8 @@ settings:
       - message.mpim
       - member_joined_channel
       - member_left_channel
+      - reaction_added
+      - reaction_removed
       - channel_archive
       - channel_unarchive
       - channel_deleted
@@ -472,17 +509,7 @@ settings:
           <li>
             Choose an available username ending in <code>bot</code>.
           </li>
-          <li>
-            Leave privacy mode enabled. Paperclip supports private chats,
-            groups, supergroups, and forum topics. In a group or topic, start
-            with an <code>@mention</code> or command and continue with replies
-            addressed to the bot.
-          </li>
         </ol>
-        <p className="text-sm text-muted-foreground">
-          Connect bot replaces any webhook already registered for this token, so
-          use a bot dedicated to this Paperclip connection.
-        </p>
         <Button
           variant="outline"
           onClick={() => openProviderSetup("https://t.me/BotFather")}
@@ -626,8 +653,8 @@ settings:
           </li>
           <li>
             Keep <strong>Webhooks · Active</strong> on. Enter the Paperclip
-            webhook URL and a new webhook secret, and keep{" "}
-            <strong>Enable SSL verification</strong> selected.
+            webhook URL and the Paperclip-generated webhook secret below, and
+            keep <strong>Enable SSL verification</strong> selected.
           </li>
           <li>
             Under Repository permissions, set <strong>Issues</strong> and{" "}
@@ -636,11 +663,12 @@ settings:
             read-only.
           </li>
           <li>
-            Subscribe to exactly <strong>Issue comment</strong> (
-            <code>issue_comment</code>), <strong>Pull request</strong> (
-            <code>pull_request</code>), and{" "}
+            Subscribe to <strong>Issue comment</strong> (
+            <code>issue_comment</code>),{" "}
             <strong>Pull request review comment</strong> (
-            <code>pull_request_review_comment</code>).
+            <code>pull_request_review_comment</code>). GitHub sends{" "}
+            <code>installation</code> and <code>installation_repositories</code>{" "}
+            to every GitHub App automatically; they are not selectable here.
           </li>
           <li>
             Choose <strong>Only on this account</strong>, create the App, copy
@@ -698,7 +726,60 @@ settings:
             </Button>
           </div>
         </label>
-        {field("webhookSecret", "Webhook secret")}
+        <div className="grid gap-2">
+          <p className="text-sm font-medium">Webhook secret</p>
+          {generatedWebhookSecret ? (
+            <>
+              <Input
+                aria-label="Generated webhook secret"
+                className="font-mono text-xs"
+                readOnly
+                value={generatedWebhookSecret}
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    navigator.clipboard.writeText(generatedWebhookSecret)
+                  }
+                >
+                  Copy webhook secret
+                </Button>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Copy this value now. Paperclip will not show it again.
+              </p>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {endpoint.setup?.webhookSecretConfigured
+                ? "A webhook secret is configured and cannot be shown again."
+                : "Generate the secret in Paperclip, then paste it into the GitHub App."}
+            </p>
+          )}
+          <div>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={generatingSetupSecret}
+              onClick={onGenerateSetupSecret}
+            >
+              {generatingSetupSecret && (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+              {endpoint.setup?.webhookSecretConfigured
+                ? "Regenerate webhook secret"
+                : "Generate webhook secret"}
+            </Button>
+          </div>
+          {endpoint.setup?.webhookSecretConfigured && (
+            <p className="text-sm text-muted-foreground">
+              Regenerating immediately invalidates GitHub webhook signatures
+              until you replace the secret in the GitHub App settings.
+            </p>
+          )}
+        </div>
         {!endpoint.setup?.webhookUrl && (
           <p className="text-sm text-destructive">
             Configure a public HTTPS URL for this Paperclip instance before
@@ -709,11 +790,16 @@ settings:
           disabled={
             !credentials.appId ||
             !credentials.privateKey ||
-            !credentials.webhookSecret ||
+            !endpoint.setup?.webhookSecretConfigured ||
             !endpoint.setup?.webhookUrl ||
             pending
           }
-          onClick={() => onAction("configure", credentials)}
+          onClick={() =>
+            onAction("configure", {
+              appId: credentials.appId!,
+              privateKey: credentials.privateKey!,
+            })
+          }
         >
           {pending && <Loader2 className="h-4 w-4 animate-spin" />}
           Connect and verify

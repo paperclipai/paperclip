@@ -134,6 +134,12 @@ export interface ChatEndpointSetupState {
   command?: string | null;
   webhookUrl?: string | null;
   messagingEndpoint?: string | null;
+  /** Safe presence signal only; the secret value is returned once by its generation endpoint. */
+  webhookSecretConfigured?: boolean;
+}
+
+export interface ChatEndpointSetupSecret {
+  webhookSecret: string;
 }
 
 export interface ChatEndpoint {
@@ -343,13 +349,7 @@ export interface UpdateChatEndpointInput {
 }
 
 export interface ConfigureChatEndpointInput {
-  action:
-    | "configure"
-    | "verify"
-    | "pause"
-    | "resume"
-    | "reconnect"
-    | "remove";
+  action: "configure" | "verify" | "pause" | "resume" | "reconnect" | "remove";
   credentials?: Record<string, string>;
 }
 

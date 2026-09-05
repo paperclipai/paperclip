@@ -86,15 +86,14 @@ The connection-purpose choice is conditional, not a permanent extra wizard step.
 
 Provider setup then uses a persistent step-rail wizard with one focused external handoff per phase. The completed agent-selection step remains visible in the rail, but the page body never repeats the selected agent. The wizard preserves completed steps across provider redirects/admin waits and gives every button an explicit consequence. It does not repeat reach, behavior, route, capability, transport, automatic work, or successful verification results. A setup screen may contain only something the operator must click, choose, copy, paste, upload, run, or perform at the provider during that phase. Errors and missing prerequisites appear only when they occur. A successful real provider message completes the connection; **Save & exit** preserves an unfinished draft.
 
-Default installation must minimize exposed credentials:
+Default installation must minimize exposed credentials while keeping the bring-your-own path complete:
 
-- authenticated provider handoffs store returned installation credentials directly in Paperclip's secret store and never show them in connector UI;
-- GitHub's App Manifest path exchanges the one-time provider code server-to-server and stores the returned App ID/private key/webhook secret;
-- customer-owned/manual branches request only secrets the provider cannot return to Paperclip and treat them as write-only;
-- Teams uses a planned one-time Paperclip helper around Microsoft's Teams Developer CLI so the normal path can register the app/bot and return its identity without a credential form; the manual fallback requests Client ID, tenant ID, and client secret;
+- customer-owned Slack Apps request only Bot User OAuth Token and Signing Secret and treat them as write-only;
+- Paperclip generates and stores GitHub's webhook secret, reveals it once for copying to GitHub, and requests only the App ID and private-key PEM;
+- Teams requests Client ID, tenant ID, and client secret from the customer-owned Entra App/Azure Bot registration;
 - Telegram requests the BotFather bot token because BotFather has no OAuth installation callback.
 
-Slack's standardized **Add to Slack** agent handoff is the preferred cloud path when Paperclip has access to that program. That screen contains only the Add action and the customer-owned-App fallback. The fallback opens a prepared Slack App Manifest, instructs the operator to create and install it, then requests only Bot User OAuth Token and Signing Secret before converging on the same channel mention/thread-reply test. Managed provisioning convenience may not change runtime authority or gate the BYO path.
+The customer-owned Slack App path opens a prepared Slack App Manifest, instructs the operator to create and install it, then requests only Bot User OAuth Token and Signing Secret before the channel mention/thread-reply test. A standardized **Add to Slack** handoff may be added later when Paperclip has access to that program; it is optional, may not change runtime authority, and cannot gate the BYO path or release.
 
 All nonessential configuration is post-connect. A chat connection reuses the current connector-detail shell with provider-specific `Settings`, `Access`, `Conversations`, and `Activity` tabs. There is no read-only Overview tab. Settings contain only destination reach that an operator can plausibly change: allowed channels, repositories, chats, or topics, plus direct-message and group-chat toggles where the provider supports those surfaces. The assigned agent, provider account/workspace, task boundaries, activation rules, delivery transport, credentials, installation drift, and response capabilities are not settings.
 
@@ -354,7 +353,7 @@ A private instance opens an outbound authenticated WebSocket to a lightweight re
 
 ### Managed installation
 
-Slack's Add to Slack agent deployment is the preferred default where Paperclip can participate in the Slack program. It returns scoped installation state to Paperclip and keeps Slack credentials out of the user-facing wizard. GitHub's App Manifest flow supplies the equivalent default convenience for a customer-owned dedicated GitHub App. These are provisioning conveniences, not separate runtime or permission models. The UI continues to support guided customer-owned Slack Apps and existing GitHub Apps without blocking activation.
+Bring-your-own provider credentials are the required first-release default. Managed Slack or GitHub provisioning may later reduce credential handling, but these are optional conveniences rather than separate runtime or permission models and cannot block activation or release.
 
 Slack Socket Mode and Telegram polling are not ordinary endpoint choices. They are instance-level developer/on-premises escape hatches used only when the deployment cannot accept provider callbacks and has no configured relay. Enabling either requires explicit instance administration and provider-specific credentials; normal connector setup continues to say only that delivery is automatic.
 
@@ -362,7 +361,7 @@ Slack Socket Mode and Telegram polling are not ordinary endpoint choices. They a
 
 1. **Core contracts and mock adapter:** shared types, first-party schema and migrations, Paperclip state adapter, public ingress, delivery/outbox workers, safe projection, thread-provisioning state machine, and exhaustive mock-provider tests.
 2. **Apps and task surfaces:** extend the existing `/apps` setup shell with the registry-driven conditional purpose choice, immutable single-agent selector, persistent provider step rail, resumable external handoffs, and documented action consequences; add chat-specific connector-detail navigation, the agent Channels view, task binding banner, identity linking, and diagnostics. Delivery and capability mechanics never become onboarding questions.
-3. **Slack:** implement Add to Slack when platform access is available plus the complete guided custom-app fallback, signed callbacks/relay inheritance, root-mention-to-thread activation, one-thread/one-issue binding, threaded follow-ups, DMs, reactions, files, streaming/edit fallback, cards/actions/modals/commands, and a real-workspace harness.
+3. **Slack:** implement the complete guided customer-owned App path, signed callbacks/relay inheritance, root-mention-to-thread activation, one-thread/one-issue binding, threaded follow-ups, DMs, reactions, files, streaming/edit fallback, cards/actions/modals/commands, and a real-workspace harness. Add to Slack remains optional when platform access becomes available.
 4. **Teams, Discord, Telegram, and GitHub:** implement adapter-specific setup and capability tests against the same contracts. Teams and Discord exercise native thread behavior; Telegram exercises active linear-chat generations and forum-topic boundaries; GitHub exercises existing issue/PR/review-comment bindings. GitHub Discussions are deferred unless adapter support is added and tested.
 5. **Private relay:** outbound registration, rotation, reconnect, backlog limits, and failover diagnostics.
 6. **Agent routes:** directed allowlists, causal stamps, loop/hop protection, and multi-bot channel tests.

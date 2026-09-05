@@ -223,6 +223,30 @@ const REQUIRED_CREDENTIALS: Record<
   telegram: ["botToken"],
 };
 
+const REQUIRED_SLACK_BOT_SCOPES = [
+  "app_mentions:read",
+  "channels:history",
+  "channels:read",
+  "chat:write",
+  "commands",
+  "files:read",
+  "files:write",
+  "groups:history",
+  "groups:read",
+  "im:history",
+  "im:read",
+  "mpim:history",
+  "mpim:read",
+  "reactions:read",
+  "reactions:write",
+  "users:read",
+] as const;
+
+const REQUIRED_GITHUB_EVENTS = [
+  "issue_comment",
+  "pull_request_review_comment",
+] as const;
+
 const CREDENTIAL_ALIASES: Record<string, string> = {
   appPassword: "clientSecret",
   appTenantId: "tenantId",
@@ -718,6 +742,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         assignedAgentName: agents.name,
         connectionName: toolConnections.name,
         applicationId: toolConnections.applicationId,
+        credentialSecretRefs: toolConnections.credentialSecretRefs,
       })
       .from(chatEndpoints)
       .innerJoin(
@@ -765,7 +790,16 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       allowUnlinkedPeople: endpoint.allowUnlinkedPeople,
       replyMode: "subscribed",
       capabilities: endpoint.capabilities,
-      setup: providerSetupState(endpoint, publicBaseUrl, row.assignedAgentName),
+      setup: {
+        ...providerSetupState(endpoint, publicBaseUrl, row.assignedAgentName),
+        ...(endpoint.provider === "github"
+          ? {
+              webhookSecretConfigured: row.credentialSecretRefs.some(
+                (ref) => ref.configPath === "credentials.webhookSecret",
+              ),
+            }
+          : {}),
+      },
       healthMessage: endpoint.healthMessage,
       lastError: endpoint.lastError,
       lastActivityAt: iso(endpoint.lastEventAt),
@@ -783,6 +817,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         assignedAgentName: agents.name,
         connectionName: toolConnections.name,
         applicationId: toolConnections.applicationId,
+        credentialSecretRefs: toolConnections.credentialSecretRefs,
       })
       .from(chatEndpoints)
       .innerJoin(
@@ -964,7 +999,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     endpoint: EndpointRow,
     supplied: Record<string, string> | undefined,
   ) {
-    const values: Record<string, string> = {};
+    const values = await resolveCredentials(endpoint).catch(
+      () => ({}) as Record<string, string>,
+    );
     for (const [rawKey, rawValue] of Object.entries(supplied ?? {})) {
       const key =
         endpoint.provider === "microsoft-teams" && rawKey === "appId"
@@ -1014,6 +1051,25 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         throw unprocessable(
           `Slack rejected the bot token: ${result.error ?? response.status}`,
         );
+      const grantedScopes = new Set(
+        (response.headers.get("x-oauth-scopes") ?? "")
+          .split(",")
+          .map((scope) => scope.trim())
+          .filter(Boolean),
+      );
+      const missingScopes = REQUIRED_SLACK_BOT_SCOPES.filter(
+        (scope) => !grantedScopes.has(scope),
+      );
+      if (missingScopes.length > 0) {
+        throw unprocessable(
+          `Slack app is missing required bot scopes: ${missingScopes.join(", ")}`,
+          {
+            code: "chat_provider_permissions_missing",
+            provider: "slack",
+            missingScopes,
+          },
+        );
+      }
       return {
         providerAccountId: result.team_id,
         providerAccountLabel: result.team,
@@ -1058,11 +1114,40 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         name?: string;
         message?: string;
         owner?: { login?: string };
+        permissions?: Record<string, string>;
+        events?: string[];
       };
       if (!response.ok)
         throw unprocessable(
           `GitHub rejected the app credentials: ${result.message ?? response.status}`,
         );
+      const missingPermissions = ["issues", "pull_requests"].filter(
+        (permission) => result.permissions?.[permission] !== "write",
+      );
+      const configuredEvents = new Set(result.events ?? []);
+      const missingEvents = REQUIRED_GITHUB_EVENTS.filter(
+        (event) => !configuredEvents.has(event),
+      );
+      if (missingPermissions.length > 0 || missingEvents.length > 0) {
+        throw unprocessable(
+          [
+            missingPermissions.length > 0
+              ? `GitHub App needs read and write access for: ${missingPermissions.join(", ")}`
+              : null,
+            missingEvents.length > 0
+              ? `GitHub App must subscribe to: ${missingEvents.join(", ")}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(". "),
+          {
+            code: "chat_provider_permissions_missing",
+            provider: "github",
+            missingPermissions,
+            missingEvents,
+          },
+        );
+      }
       return {
         providerAccountId: result.owner?.login,
         providerAccountLabel: result.owner?.login ?? result.name,
@@ -1320,6 +1405,53 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
     }
     return values;
+  }
+
+  async function generateSetupSecret(
+    endpointId: string,
+    actorUserId?: string | null,
+  ) {
+    const record = await endpointRecord(endpointId);
+    if (!record) throw notFound("Chat endpoint not found");
+    const endpoint = record.endpoint;
+    if (endpoint.provider !== "github") {
+      throw unprocessable(
+        "Setup secret generation is only available for GitHub",
+      );
+    }
+    if (
+      !["draft", "attention", "revoked", "paused"].includes(endpoint.status)
+    ) {
+      throw conflict(
+        "The GitHub webhook secret cannot be rotated in this connection state",
+        { code: "chat_endpoint_setup_secret_unavailable" },
+      );
+    }
+    const webhookSecret = randomBytes(32).toString("hex");
+    const existing = await resolveCredentials(endpoint).catch(
+      () => ({}) as Record<string, string>,
+    );
+    await persistCredentials(
+      endpoint,
+      { ...existing, webhookSecret },
+      actorUserId,
+    );
+    await logActivity(db, {
+      companyId: endpoint.companyId,
+      actorType: "user",
+      actorId: actorUserId ?? "board",
+      action: "chat_endpoint.setup_secret_generated",
+      entityType: "tool_connection",
+      entityId: endpoint.connectionId,
+      details: {
+        endpointId: endpoint.id,
+        provider: endpoint.provider,
+        rotated: record.credentialSecretRefs.some(
+          (ref) => ref.configPath === "credentials.webhookSecret",
+        ),
+      },
+    });
+    return { webhookSecret };
   }
 
   async function reconcileProviderResourceRows(
@@ -5454,6 +5586,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           detail: row.redactedError,
           createdAt: row.createdAt.toISOString(),
           replayable: row.state === "failed" && Boolean(row.conversationId),
+          resolutionActions: [],
         };
       }),
       ...publications.map((row) => {
@@ -5470,7 +5603,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           summary,
           detail: row.redactedError,
           createdAt: row.createdAt.toISOString(),
-          replayable: ["delivery_unknown", "failed"].includes(row.state),
+          replayable: row.state === "failed",
+          resolutionActions:
+            row.state === "delivery_unknown"
+              ? (["mark_delivered", "retry_anyway", "cancel"] as const)
+              : [],
         };
       }),
     ]
@@ -5546,11 +5683,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       )
       .then((rows) => rows[0] ?? null);
     if (!publication) throw notFound("Publication not found");
-    if (!["delivery_unknown", "failed"].includes(publication.state)) {
-      throw conflict(
-        "Only a failed or unconfirmed publication can be replayed",
-        { code: "chat_publication_not_replayable" },
-      );
+    if (publication.state !== "failed") {
+      throw conflict("Only a failed publication can be replayed", {
+        code:
+          publication.state === "delivery_unknown"
+            ? "chat_publication_resolution_required"
+            : "chat_publication_not_replayable",
+      });
     }
     const claimed = await db
       .update(chatPublications)
@@ -5574,6 +5713,96 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       });
     }
     await processPendingPublications(1);
+  }
+
+  async function resolvePublication(
+    endpointId: string,
+    publicationId: string,
+    action: "mark_delivered" | "retry_anyway" | "cancel",
+    userId: string,
+  ) {
+    await db.transaction(async (tx) => {
+      const publication = await tx
+        .select()
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.endpointId, endpointId),
+            eq(chatPublications.id, publicationId),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!publication) throw notFound("Publication not found");
+      if (publication.state !== "delivery_unknown") {
+        throw conflict(
+          "Only an unconfirmed publication needs an operator resolution",
+          { code: "chat_publication_resolution_not_required" },
+        );
+      }
+
+      const now = new Date();
+      await tx
+        .update(chatPublications)
+        .set(
+          action === "mark_delivered"
+            ? {
+                state: "published",
+                publishedAt: now,
+                nextAttemptAt: null,
+                redactedError: null,
+                updatedAt: now,
+              }
+            : action === "retry_anyway"
+              ? {
+                  state: "retry",
+                  nextAttemptAt: now,
+                  redactedError: null,
+                  updatedAt: now,
+                }
+              : {
+                  state: "cancelled",
+                  nextAttemptAt: null,
+                  redactedError:
+                    "Cancelled by an operator after an unconfirmed provider delivery",
+                  updatedAt: now,
+                },
+        )
+        .where(
+          and(
+            eq(chatPublications.id, publication.id),
+            eq(chatPublications.state, "delivery_unknown"),
+          ),
+        );
+      if (action === "mark_delivered") {
+        await tx
+          .update(chatEndpoints)
+          .set({ lastPublicationAt: now, updatedAt: now })
+          .where(eq(chatEndpoints.id, endpointId));
+      }
+      await logActivity(tx as unknown as Db, {
+        companyId: publication.companyId,
+        actorType: "user",
+        actorId: userId,
+        action: `chat.publication_${action}`,
+        entityType: "chat_publication",
+        entityId: publication.id,
+        issueId: publication.issueId,
+        details: {
+          endpointId,
+          conversationId: publication.conversationId,
+          previousState: "delivery_unknown",
+          nextState:
+            action === "mark_delivered"
+              ? "published"
+              : action === "retry_anyway"
+                ? "retry"
+                : "cancelled",
+          duplicateRiskAccepted: action === "retry_anyway",
+        },
+      });
+    });
+    await processPendingPublications();
   }
 
   async function publishComment(
@@ -5638,6 +5867,91 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           ),
         )
         .then((rows) => rows[0])
+    );
+  }
+
+  async function publishBoardMessage(
+    endpointId: string,
+    conversationId: string,
+    body: string,
+    clientIdempotencyKey: string,
+    userId: string,
+  ) {
+    const idempotencyKey = `explicit-board:${endpointId}:${clientIdempotencyKey}`;
+    const publication = await db.transaction(async (tx) => {
+      const conversation = await tx
+        .select()
+        .from(chatConversations)
+        .where(
+          and(
+            eq(chatConversations.id, conversationId),
+            eq(chatConversations.endpointId, endpointId),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!conversation) throw notFound("Conversation not found");
+
+      const existing = await tx
+        .select()
+        .from(chatPublications)
+        .where(
+          and(
+            eq(chatPublications.companyId, conversation.companyId),
+            eq(chatPublications.idempotencyKey, idempotencyKey),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (existing) return existing;
+
+      const comment = await issueService(tx as unknown as Db).addComment(
+        conversation.issueId,
+        body,
+        { userId },
+        { authorType: "user" },
+        tx,
+      );
+      const [created] = await tx
+        .insert(chatPublications)
+        .values({
+          companyId: conversation.companyId,
+          endpointId,
+          conversationId,
+          issueId: conversation.issueId,
+          commentId: comment.id,
+          idempotencyKey,
+          payload: projectSafeChatPublication({
+            classification: "external",
+            source: "explicit_board_send",
+            text: comment.body,
+          }),
+          state: "pending",
+        })
+        .returning();
+      await logActivity(tx as unknown as Db, {
+        companyId: conversation.companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "chat.publication_requested",
+        entityType: "chat_publication",
+        entityId: created.id,
+        issueId: conversation.issueId,
+        details: {
+          endpointId,
+          conversationId,
+          commentId: comment.id,
+          source: "explicit_board_send",
+        },
+      });
+      return created;
+    });
+    await processPendingPublications();
+    return (
+      (await db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.id, publication.id))
+        .then((rows) => rows[0] ?? null)) ?? publication
     );
   }
 
@@ -6086,6 +6400,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     get,
     create,
     update,
+    generateSetupSecret,
     configure,
     test,
     handleWebhook,
@@ -6100,7 +6415,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     listActivity,
     replayDelivery,
     replayPublication,
+    resolvePublication,
     publishComment,
+    publishBoardMessage,
     processPendingPublications,
     processPendingDeliveries,
     getIssueBinding,

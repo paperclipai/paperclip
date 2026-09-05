@@ -1,4 +1,8 @@
-import { Router, type Request as ExpressRequest, type Response as ExpressResponse } from "express";
+import {
+  Router,
+  type Request as ExpressRequest,
+  type Response as ExpressResponse,
+} from "express";
 import type { Db } from "@paperclipai/db";
 import {
   CHAT_PROVIDERS,
@@ -6,8 +10,9 @@ import {
   confirmChatIdentityLinkSchema,
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
-  publishChatCommentSchema,
+  publishChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
+  resolveChatPublicationSchema,
   updateChatEndpointSchema,
   type ChatProvider,
 } from "@paperclipai/shared";
@@ -85,7 +90,9 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       assertBoard(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      res.status(201).json(await service.create(companyId, req.body, actorUserId(req)));
+      res
+        .status(201)
+        .json(await service.create(companyId, req.body, actorUserId(req)));
     },
   );
 
@@ -99,7 +106,9 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     validate(updateChatEndpointSchema),
     async (req, res) => {
       if (!(await assertEndpointAccess(req, res, service))) return;
-      res.json(await service.update(endpointId(req), req.body, actorUserId(req)));
+      res.json(
+        await service.update(endpointId(req), req.body, actorUserId(req)),
+      );
     },
   );
 
@@ -108,9 +117,20 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     validate(configureChatEndpointSchema),
     async (req, res) => {
       if (!(await assertEndpointAccess(req, res, service))) return;
-      res.json(await service.configure(endpointId(req), req.body, actorUserId(req)));
+      res.json(
+        await service.configure(endpointId(req), req.body, actorUserId(req)),
+      );
     },
   );
+
+  router.post("/chat-endpoints/:endpointId/setup-secret", async (req, res) => {
+    if (!(await assertEndpointAccess(req, res, service))) return;
+    res
+      .status(201)
+      .json(
+        await service.generateSetupSecret(endpointId(req), actorUserId(req)),
+      );
+  });
 
   router.post("/chat-endpoints/:endpointId/test", async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
@@ -127,7 +147,9 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     validate(replaceChatEndpointResourcesSchema),
     async (req, res) => {
       if (!(await assertEndpointAccess(req, res, service))) return;
-      res.json(await service.replaceResources(endpointId(req), req.body.resources));
+      res.json(
+        await service.replaceResources(endpointId(req), req.body.resources),
+      );
     },
   );
 
@@ -141,19 +163,29 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     validate(createChatIdentityLinkIntentSchema),
     async (req, res) => {
       if (!(await assertEndpointAccess(req, res, service))) return;
-      res.status(201).json(await service.createLinkIntent(
-        endpointId(req),
-        req.params.principalId as string,
-        req.body.expiresInSeconds,
-      ));
+      res
+        .status(201)
+        .json(
+          await service.createLinkIntent(
+            endpointId(req),
+            req.params.principalId as string,
+            req.body.expiresInSeconds,
+          ),
+        );
     },
   );
 
-  router.delete("/chat-endpoints/:endpointId/principals/:principalId/link", async (req, res) => {
-    if (!(await assertEndpointAccess(req, res, service))) return;
-    await service.revokeLink(endpointId(req), req.params.principalId as string);
-    res.status(204).end();
-  });
+  router.delete(
+    "/chat-endpoints/:endpointId/principals/:principalId/link",
+    async (req, res) => {
+      if (!(await assertEndpointAccess(req, res, service))) return;
+      await service.revokeLink(
+        endpointId(req),
+        req.params.principalId as string,
+      );
+      res.status(204).end();
+    },
+  );
 
   router.post(
     "/chat-identity-links/confirm",
@@ -169,7 +201,8 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   router.get("/chat-identity-links/preview", async (req, res) => {
     assertBoard(req);
     const token = typeof req.query.token === "string" ? req.query.token : "";
-    if (token.length < 32 || token.length > 4096) throw badRequest("A valid identity-link token is required");
+    if (token.length < 32 || token.length > 4096)
+      throw badRequest("A valid identity-link token is required");
     const preview = await service.previewIdentityLink(token);
     assertCompanyAccess(req, preview.companyId);
     res.json(preview);
@@ -185,11 +218,17 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     res.json(await service.listActivity(endpointId(req)));
   });
 
-  router.post("/chat-endpoints/:endpointId/deliveries/:deliveryId/replay", async (req, res) => {
-    if (!(await assertEndpointAccess(req, res, service))) return;
-    await service.replayDelivery(endpointId(req), req.params.deliveryId as string);
-    res.status(204).end();
-  });
+  router.post(
+    "/chat-endpoints/:endpointId/deliveries/:deliveryId/replay",
+    async (req, res) => {
+      if (!(await assertEndpointAccess(req, res, service))) return;
+      await service.replayDelivery(
+        endpointId(req),
+        req.params.deliveryId as string,
+      );
+      res.status(204).end();
+    },
+  );
 
   router.post(
     "/chat-endpoints/:endpointId/publications/:publicationId/replay",
@@ -204,15 +243,52 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   );
 
   router.post(
-    "/chat-endpoints/:endpointId/conversations/:conversationId/publications",
-    validate(publishChatCommentSchema),
+    "/chat-endpoints/:endpointId/publications/:publicationId/resolve",
+    validate(resolveChatPublicationSchema),
     async (req, res) => {
       if (!(await assertEndpointAccess(req, res, service))) return;
-      res.status(201).json(await service.publishComment(
+      const userId = actorUserId(req);
+      if (!userId) throw badRequest("A board user is required");
+      await service.resolvePublication(
         endpointId(req),
-        req.params.conversationId as string,
-        req.body.commentId,
-      ));
+        req.params.publicationId as string,
+        req.body.action,
+        userId,
+      );
+      res.status(204).end();
+    },
+  );
+
+  router.post(
+    "/chat-endpoints/:endpointId/conversations/:conversationId/publications",
+    validate(publishChatPublicationSchema),
+    async (req, res) => {
+      if (!(await assertEndpointAccess(req, res, service))) return;
+      if ("commentId" in req.body) {
+        res
+          .status(201)
+          .json(
+            await service.publishComment(
+              endpointId(req),
+              req.params.conversationId as string,
+              req.body.commentId,
+            ),
+          );
+        return;
+      }
+      const userId = actorUserId(req);
+      if (!userId) throw badRequest("A board user is required");
+      res
+        .status(201)
+        .json(
+          await service.publishBoardMessage(
+            endpointId(req),
+            req.params.conversationId as string,
+            req.body.body,
+            req.body.idempotencyKey,
+            userId,
+          ),
+        );
     },
   );
 
@@ -240,25 +316,35 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
 function standardRequest(req: ExpressRequest): Request {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
-    if (Array.isArray(value)) value.forEach((entry) => headers.append(name, entry));
+    if (Array.isArray(value))
+      value.forEach((entry) => headers.append(name, entry));
     else if (value !== undefined) headers.set(name, value);
   }
   const host = req.get("host") ?? "localhost";
   const protocol = req.protocol || "https";
   const capturedBody = (req as ExpressRequest & { rawBody?: Buffer }).rawBody;
-  const rawBody = capturedBody ?? (Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body ?? {})));
+  const rawBody =
+    capturedBody ??
+    (Buffer.isBuffer(req.body)
+      ? req.body
+      : Buffer.from(JSON.stringify(req.body ?? {})));
   return new Request(`${protocol}://${host}${req.originalUrl}`, {
     method: req.method,
     headers,
-    body: req.method === "GET" || req.method === "HEAD"
-      ? undefined
-      : new Uint8Array(rawBody),
+    body:
+      req.method === "GET" || req.method === "HEAD"
+        ? undefined
+        : new Uint8Array(rawBody),
   });
 }
 
 async function writeStandardResponse(response: Response, res: ExpressResponse) {
   response.headers.forEach((value, name) => {
-    if (!["content-encoding", "content-length", "transfer-encoding"].includes(name.toLowerCase())) {
+    if (
+      !["content-encoding", "content-length", "transfer-encoding"].includes(
+        name.toLowerCase(),
+      )
+    ) {
       res.setHeader(name, value);
     }
   });
@@ -295,7 +381,8 @@ export function chatWebhookRoutes(
       });
     }
     const provider = req.params.provider as ChatProvider;
-    if (!CHAT_PROVIDERS.includes(provider)) throw badRequest("Unsupported chat provider");
+    if (!CHAT_PROVIDERS.includes(provider))
+      throw badRequest("Unsupported chat provider");
     const response = await service.handleWebhook(
       req.params.publicId as string,
       provider,

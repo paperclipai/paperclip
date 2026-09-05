@@ -10,7 +10,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -245,6 +245,9 @@ class FakeChatSdkRuntime {
   }
 }
 
+const TEST_SLACK_BOT_SCOPES =
+  "app_mentions:read,channels:history,channels:read,chat:write,commands,files:read,files:write,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,reactions:read,reactions:write,users:read";
+
 function fakeSlackFetch(botId = `U-BOT-${randomUUID()}`) {
   return (input: string | URL | Request) => {
     const url = String(input);
@@ -258,7 +261,13 @@ function fakeSlackFetch(botId = `U-BOT-${randomUUID()}`) {
             user_id: botId,
             user: `maya-${botId.slice(-8)}`,
           }),
-          { status: 200, headers: { "content-type": "application/json" } },
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-oauth-scopes": TEST_SLACK_BOT_SCOPES,
+            },
+          },
         ),
       );
     }
@@ -864,6 +873,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               slug: "maya-paperclip",
               name: "Maya Paperclip",
               owner: { login: "paperclipai" },
+              permissions: { issues: "write", pull_requests: "write" },
+              events: ["issue_comment", "pull_request_review_comment"],
             }),
             { status: 200, headers: { "content-type": "application/json" } },
           );
@@ -926,6 +937,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
+    const app = routesApp(db, fixture.companyId, service);
+    const generatedSecretResponse = await request(app)
+      .post(`/api/chat-endpoints/${endpoint.id}/setup-secret`)
+      .send({})
+      .expect(201);
+    const generatedWebhookSecret = generatedSecretResponse.body
+      .webhookSecret as string;
+    expect(generatedWebhookSecret).toMatch(/^[a-f0-9]{64}$/);
+    const endpointAfterGeneration = await request(app)
+      .get(`/api/chat-endpoints/${endpoint.id}`)
+      .expect(200);
+    expect(endpointAfterGeneration.body.setup.webhookSecretConfigured).toBe(
+      true,
+    );
+    expect(JSON.stringify(endpointAfterGeneration.body)).not.toContain(
+      generatedWebhookSecret,
+    );
 
     const configured = await service.configure(
       endpoint.id,
@@ -934,7 +962,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         credentials: {
           appId,
           privateKey,
-          webhookSecret: "github-webhook-secret",
         },
       },
       "owner-user",
@@ -955,7 +982,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         appId,
         privateKey,
         installationId: 2468,
-        webhookSecret: "github-webhook-secret",
+        webhookSecret: generatedWebhookSecret,
       },
     });
     const [connection] = await db
@@ -1056,6 +1083,119 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       healthMessage: "GitHub App installation was suspended",
     });
     expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+  });
+
+  it("rejects under-scoped Slack and GitHub apps before saving credentials", async () => {
+    const fixture = await seedCompany();
+    const slack = createService(new FakeChatSdkRuntime(), (async (
+      input: string | URL | Request,
+    ) => {
+      if (String(input) !== "https://slack.com/api/auth.test") {
+        throw new Error(`Unexpected provider request: ${String(input)}`);
+      }
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          team_id: "T-UNDER-SCOPED",
+          team: "Under-scoped",
+          user_id: "U-UNDER-SCOPED",
+          user: "maya-under-scoped",
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-oauth-scopes": "chat:write",
+          },
+        },
+      );
+    }) as typeof globalThis.fetch);
+    const slackEndpoint = await slack.service.create(
+      fixture.companyId,
+      { provider: "slack", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await expect(
+      slack.service.configure(
+        slackEndpoint.id,
+        {
+          action: "configure",
+          credentials: {
+            botToken: "xoxb-under-scoped",
+            signingSecret: "signing-secret",
+          },
+        },
+        "owner-user",
+      ),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "chat_provider_permissions_missing",
+        provider: "slack",
+      },
+    });
+
+    const appId = "991122";
+    const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
+      .privateKey.export({ type: "pkcs8", format: "pem" })
+      .toString();
+    const github = createService(new FakeChatSdkRuntime(), (async (
+      input: string | URL | Request,
+    ) => {
+      if (String(input) !== "https://api.github.com/app") {
+        throw new Error(`Unexpected provider request: ${String(input)}`);
+      }
+      return new Response(
+        JSON.stringify({
+          id: 991122,
+          slug: "maya-under-scoped",
+          name: "Maya Under-scoped",
+          owner: { login: "paperclipai" },
+          permissions: { issues: "read", pull_requests: "write" },
+          events: ["issue_comment"],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof globalThis.fetch);
+    const githubEndpoint = await github.service.create(
+      fixture.companyId,
+      { provider: "github", assignedAgentId: fixture.assignedAgentId },
+      "owner-user",
+    );
+    await expect(
+      github.service.configure(
+        githubEndpoint.id,
+        {
+          action: "configure",
+          credentials: {
+            appId,
+            privateKey,
+            webhookSecret: "github-webhook-secret",
+          },
+        },
+        "owner-user",
+      ),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "chat_provider_permissions_missing",
+        provider: "github",
+        missingPermissions: ["issues"],
+      },
+    });
+
+    const connections = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(
+        inArray(toolConnections.id, [
+          slackEndpoint.connectionId,
+          githubEndpoint.connectionId,
+        ]),
+      );
+    expect(
+      connections.every((connection) => connection.refs.length === 0),
+    ).toBe(true);
   });
 
   it("configures a customer-owned Microsoft Teams bot with the entered credentials", async () => {
@@ -1270,7 +1410,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             user_id: "U-RECONCILE",
             user: "maya-reconcile",
           }),
-          { status: 200, headers: { "content-type": "application/json" } },
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-oauth-scopes": TEST_SLACK_BOT_SCOPES,
+            },
+          },
         );
       }
       if (url.startsWith("https://slack.com/api/conversations.list")) {
@@ -2412,7 +2558,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             user_id: "U-PREFIXED-BOT",
             user: "maya-prefixed",
           }),
-          { status: 200, headers: { "content-type": "application/json" } },
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-oauth-scopes": TEST_SLACK_BOT_SCOPES,
+            },
+          },
         );
       }
       if (url.startsWith("https://slack.com/api/conversations.list")) {
@@ -4380,7 +4532,74 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(runtime.endpoints.has(endpoint.id)).toBe(false);
   });
 
-  it("holds ambiguous provider sends for explicit operator replay without reordering", async () => {
+  it("creates an explicit board comment and publication exactly once across retries", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredSlackEndpoint(fixture);
+    const channel = makeThread({
+      channelId: "C-BOARD-SEND",
+      id: "slack:C-BOARD-SEND:4400.1",
+      name: "board-send",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "4400.1",
+        text: "@maya start a board-send task",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+
+    const first = await service.publishBoardMessage(
+      endpoint.id,
+      conversation.id,
+      "Visible board update",
+      "same-browser-request-1234",
+      "owner-user",
+    );
+    const second = await service.publishBoardMessage(
+      endpoint.id,
+      conversation.id,
+      "Visible board update",
+      "same-browser-request-1234",
+      "owner-user",
+    );
+
+    expect(second.id).toBe(first.id);
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.issueId, conversation.issueId),
+          eq(issueComments.body, "Visible board update"),
+        ),
+      );
+    const publications = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.idempotencyKey, first.idempotencyKey));
+    expect(comments).toHaveLength(1);
+    expect(publications).toHaveLength(1);
+    expect(publications[0]).toMatchObject({
+      state: "published",
+      commentId: comments[0].id,
+    });
+    expect(runtime.endpoints.get(endpoint.id)?.posts).toEqual([
+      { threadId: channel.thread.id, text: "Visible board update" },
+    ]);
+  });
+
+  it("holds ambiguous provider sends for an audited duplicate-risk resolution without reordering", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
@@ -4451,11 +4670,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toMatchObject({
       kind: "publication",
       status: "delivery_unknown",
-      replayable: true,
+      replayable: false,
+      resolutionActions: ["mark_delivered", "retry_anyway", "cancel"],
+    });
+    await expect(
+      service.replayPublication(endpoint.id, firstPublication.id),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: { code: "chat_publication_resolution_required" },
     });
 
     providerRuntime.postError = null;
-    await service.replayPublication(endpoint.id, firstPublication.id);
+    await service.resolvePublication(
+      endpoint.id,
+      firstPublication.id,
+      "retry_anyway",
+      "owner-user",
+    );
     await service.processPendingPublications();
     const replayed = await db
       .select()
@@ -4473,6 +4704,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "First safe response",
       "Second safe response",
     ]);
+    const [resolutionActivity] = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, firstPublication.id));
+    expect(resolutionActivity).toMatchObject({
+      actorType: "user",
+      actorId: "owner-user",
+      action: "chat.publication_retry_anyway",
+    });
   });
 
   it("wakes the bound task when an operator replays a failed delivery", async () => {
@@ -5195,6 +5435,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             slug: "maya-paperclip-lifecycle",
             name: "Maya Paperclip",
             owner: { login: "paperclipai" },
+            permissions: { issues: "write", pull_requests: "write" },
+            events: [
+              "installation",
+              "installation_repositories",
+              "issue_comment",
+              "pull_request_review_comment",
+            ],
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );

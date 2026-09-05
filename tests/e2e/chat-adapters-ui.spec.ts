@@ -231,6 +231,7 @@ function endpointFixture(provider: ProviderCase, seed: Seed) {
       messagingEndpoint: `https://paperclip.example.test/api/chat-webhooks/public-${provider.provider}/microsoft-teams`,
       command: provider.provider === "slack" ? "/maya-public" : undefined,
       webhookVerifiedAt: null,
+      webhookSecretConfigured: false,
     },
     healthMessage: null,
     lastActivityAt: now,
@@ -348,6 +349,15 @@ async function installChatControlPlaneMock(
         await fulfill(route, endpoint);
         return;
       }
+    }
+
+    if (
+      pathname === `/api/chat-endpoints/${endpoint.id}/setup-secret` &&
+      method === "POST"
+    ) {
+      endpoint.setup.webhookSecretConfigured = true;
+      await fulfill(route, { webhookSecret: "github-webhook-secret" }, 201);
+      return;
     }
 
     if (
@@ -576,13 +586,16 @@ async function fillProviderSetup(page: Page, provider: ProviderCase) {
     await page.getByLabel("Bot User OAuth Token").fill("xoxb-e2e-redacted");
     await page.getByLabel("Signing Secret").fill("slack-signing-secret");
   } else if (provider.provider === "github") {
+    await page.getByRole("button", { name: "Generate webhook secret" }).click();
+    await expect(page.getByLabel("Generated webhook secret")).toHaveValue(
+      "github-webhook-secret",
+    );
     await page.getByLabel("GitHub App ID").fill("123456");
     await page
       .getByLabel("Private key (PEM)")
       .fill(
         "-----BEGIN PRIVATE KEY-----\ne2e-redacted\n-----END PRIVATE KEY-----",
       );
-    await page.getByLabel("Webhook secret").fill("github-webhook-secret");
   } else if (provider.provider === "microsoft-teams") {
     await page
       .getByLabel("Application / Client ID")
@@ -599,7 +612,7 @@ async function fillProviderSetup(page: Page, provider: ProviderCase) {
 
 function expectedCredentialKeys(provider: Provider): string[] {
   if (provider === "slack") return ["botToken", "signingSecret"];
-  if (provider === "github") return ["appId", "privateKey", "webhookSecret"];
+  if (provider === "github") return ["appId", "privateKey"];
   if (provider === "microsoft-teams")
     return ["clientId", "clientSecret", "tenantId"];
   return ["botToken"];
@@ -642,6 +655,7 @@ oauth_config:
       - im:read
       - mpim:history
       - mpim:read
+      - reactions:read
       - reactions:write
       - users:read
 settings:
@@ -658,6 +672,8 @@ settings:
       - message.mpim
       - member_joined_channel
       - member_left_channel
+      - reaction_added
+      - reaction_removed
       - channel_archive
       - channel_unarchive
       - channel_deleted
@@ -707,10 +723,9 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
       "type",
       "text",
     );
-    await expect(page.getByLabel("Webhook secret")).toHaveAttribute(
-      "type",
-      "password",
-    );
+    await expect(
+      page.getByRole("button", { name: "Generate webhook secret" }),
+    ).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Open GitHub App settings" }),
     ).toBeVisible();
@@ -761,7 +776,6 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
 
   await expect(page.getByText("/newbot", { exact: true })).toBeVisible();
   await expect(page.getByText(/username ending in/)).toBeVisible();
-  await expect(page.getByText(/Leave privacy mode enabled/)).toBeVisible();
   await expect(page.getByLabel("Bot token")).toHaveAttribute(
     "type",
     "password",

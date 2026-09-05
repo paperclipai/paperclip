@@ -30,16 +30,20 @@ describe("chatEndpointsApi", () => {
     );
   });
 
-  it("publishes only through an explicit conversation action", async () => {
+  it("publishes a board message with a stable idempotency key", async () => {
     mockApi.post.mockResolvedValue(undefined);
-    await chatEndpointsApi.publishComment(
+    await chatEndpointsApi.publishBoardMessage(
       "endpoint-1",
       "conversation-1",
-      "comment-1",
+      "Visible update",
+      "client-request-1234",
     );
     expect(mockApi.post).toHaveBeenCalledWith(
       "/chat-endpoints/endpoint-1/conversations/conversation-1/publications",
-      { commentId: "comment-1" },
+      {
+        body: "Visible update",
+        idempotencyKey: "client-request-1234",
+      },
     );
   });
 
@@ -47,7 +51,7 @@ describe("chatEndpointsApi", () => {
     mockApi.post.mockResolvedValue({ id: "endpoint-1", status: "verifying" });
     await chatEndpointsApi.setup("endpoint-1", {
       action: "configure",
-      credentials: { appId: "123", privateKey: "pem", webhookSecret: "secret" },
+      credentials: { appId: "123", privateKey: "pem" },
     });
     expect(mockApi.post).toHaveBeenCalledWith(
       "/chat-endpoints/endpoint-1/setup",
@@ -56,9 +60,19 @@ describe("chatEndpointsApi", () => {
         credentials: {
           appId: "123",
           privateKey: "pem",
-          webhookSecret: "secret",
         },
       },
+    );
+  });
+
+  it("generates a one-time setup secret through the endpoint-scoped route", async () => {
+    mockApi.post.mockResolvedValue({ webhookSecret: "generated-secret" });
+    await expect(
+      chatEndpointsApi.generateSetupSecret("endpoint-1"),
+    ).resolves.toEqual({ webhookSecret: "generated-secret" });
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/chat-endpoints/endpoint-1/setup-secret",
+      {},
     );
   });
 });

@@ -97,19 +97,19 @@ Purpose: Choose the one agent represented by this connection.
 
 Rationale: This is the only shared Paperclip-specific setup decision.
 
-### 13 · Add Maya to Slack
+### 13 · Create and install Maya in Slack
 
-Purpose: Install Maya in your Slack workspace.
+Purpose: Create the customer-owned Slack App that represents Maya.
 
 1. The step rail is the only repeated setup context; the selected agent is not restated in the page body.
-2. The page contains only the installation action and the necessary customer-owned-App fallback.
+2. The page contains only the prepared-manifest handoff required for the customer-owned App.
 
 Actions:
 
-- **Add Maya to Slack:** Opens Slack's Add to Slack flow. The operator chooses a workspace and approves the installation; Slack then returns to the Try Maya step.
-- **Set up a custom Slack app:** Opens the customer-owned Slack App instructions for self-hosted deployments or organizations that cannot use Add to Slack.
+- **Open Slack app setup:** Opens Slack's official app-from-manifest URL with Paperclip's generated manifest encoded in the link.
+- **Continue after installing:** Advances to the two credential fields after the operator installs the App in Slack.
 
-Rationale: Nothing else on this page requires operator attention.
+Rationale: Bring-your-own Slack credentials are the required first-release path. A managed Add to Slack flow is an optional later convenience and cannot gate release.
 
 ### 42 · Create and install the Slack app
 
@@ -199,18 +199,19 @@ Rationale: Diagnostics and conditional repairs live here instead of Settings.
 
 ### 16 · Create Maya in GitHub
 
-Purpose: Create a dedicated GitHub App from Paperclip's prepared manifest.
+Purpose: Create or update a dedicated customer-owned GitHub App.
 
-1. Only the two choices GitHub presents during App creation are described.
-2. The normal action uses the GitHub App Manifest handoff; credentials never pass through the operator.
-3. The existing-App branch remains available without cluttering the default path.
+1. Paperclip shows the exact webhook URL and generates a 32-byte webhook secret.
+2. The secret is shown once for copying to GitHub and remains write-only afterward.
+3. The operator returns only the App ID and private-key PEM to Paperclip.
 
 Actions:
 
-- **Create in GitHub:** Posts Paperclip's App Manifest to GitHub. GitHub returns to Paperclip after creation, and Paperclip stores the returned App credentials.
-- **Use an existing GitHub App:** Opens the advanced path for an App the organization already owns.
+- **Generate webhook secret:** Creates and stores the secret, then exposes the one-time copy value.
+- **Open GitHub:** Opens GitHub App registration so the operator can set the callback, permissions, and required events.
+- **Connect and verify:** Authenticates with the App ID/private key and rejects missing permissions or events.
 
-Rationale: The manifest already fixes permissions, events, and webhook configuration.
+Rationale: The customer-owned credential path is complete without depending on an App Manifest exchange.
 
 ### 45 · Choose GitHub repositories
 
@@ -253,9 +254,9 @@ Actions:
 
 - **Copy Paperclip webhook settings:** Copies the endpoint URL and generated webhook secret needed in the existing GitHub App settings.
 - **Connect and verify:** Stores the PEM file write-only, authenticates as the App, and verifies webhook, events, and least-privilege permissions.
-- **Back:** Returns to the credential-free App Manifest path.
+- **Back:** Returns to the customer-owned GitHub App setup.
 
-Rationale: Existing Apps lack the manifest callback, so this advanced page contains the complete minimum manual configuration.
+Rationale: New and existing Apps use the same minimal credential path and the same Paperclip-generated webhook secret.
 
 ### 17 · GitHub settings
 
@@ -300,18 +301,19 @@ Rationale: Diagnostics and conditional repairs live here instead of Settings.
 
 ### 19 · Create Maya for Microsoft Teams
 
-Purpose: Run one command to register Maya with Microsoft.
+Purpose: Register a customer-owned Entra App and Azure Bot with Microsoft.
 
-1. The generated command is the only normal-path configuration artifact.
-2. Both instructions are actions the operator performs locally or in Microsoft's login.
-3. The manual path is available without exposing Azure choices on the default screen.
+1. Paperclip provides the exact public messaging endpoint.
+2. The operator creates the single-tenant Entra App, client secret, Azure Bot, and Teams channel in Microsoft.
+3. Paperclip asks only for Application ID, Directory/Tenant ID, and the client-secret value.
 
 Actions:
 
-- **Copy setup command:** Copies a one-time Paperclip command that invokes Microsoft's Teams Developer CLI, signs the operator in, creates the Teams App and bot registration, and sends the resulting identity to this setup draft.
-- **Set up Microsoft manually:** Opens the Azure/Teams manual fallback for tenants that cannot run the guided command.
+- **Copy messaging endpoint:** Copies the public callback for the Azure Bot configuration.
+- **Open Microsoft setup:** Opens the provider-owned registration flow.
+- **Connect and verify:** Stores the client secret write-only and verifies the tenant and application identity.
 
-Rationale: The helper collapses Microsoft registration into one attended command while Microsoft remains the authority for sign-in and tenant policy.
+Rationale: Bring-your-own credentials are sufficient to ship. A future CLI helper may automate these steps but is optional and cannot gate release.
 
 ### 49 · Install Maya in Microsoft Teams
 

@@ -47,79 +47,73 @@ The direct callback is preferred because it has the fewest moving parts. A priva
 
 ## Credentials retained after simplification
 
-| Provider path                        | Values typed or uploaded by the operator                                                    | Why they remain                                                                                                                                                                                                                                                  |
-| ------------------------------------ | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Slack — Add to Slack                 | None                                                                                        | Slack's authorization return identifies the installation; Paperclip stores the returned installation credentials internally.                                                                                                                                     |
-| Slack — custom customer-owned app    | Bot token and signing secret                                                                | Slack's app-from-manifest handoff preconfigures the App but does not return these two customer-owned values to Paperclip. No webhook URL, app token, or delivery choice is requested.                                                                            |
-| GitHub — App Manifest                | None                                                                                        | Paperclip exchanges GitHub's one-time return code for the App ID, private key, webhook secret, and client values server-to-server.                                                                                                                               |
-| GitHub — existing customer-owned App | App ID, private-key PEM, webhook secret; GitHub Enterprise Server host only when applicable | An existing App has no manifest creation exchange. Paperclip must authenticate and verify its callback, events, and permissions.                                                                                                                                 |
-| Microsoft Teams — customer-owned bot | Application/client ID, tenant ID, client secret                                             | The recommended Microsoft provisioning command creates resources in the customer's tenant and emits these values; Microsoft does not return them through a Paperclip installation callback. Managed identity remains an instance-level advanced deployment path. |
-| Telegram — BotFather bot             | Bot token                                                                                   | Telegram has no OAuth or app-manifest installation callback. BotFather gives the operator the bot password once.                                                                                                                                                 |
+| Provider path                        | Values typed or uploaded by the operator                                       | Why they remain                                                                                                                                                                                                                             |
+| ------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Slack — customer-owned app           | Bot token and signing secret                                                   | Slack's app-from-manifest handoff preconfigures the App but does not return these two customer-owned values to Paperclip. No webhook URL, app token, or delivery choice is requested.                                                       |
+| GitHub — customer-owned App          | App ID and private-key PEM; GitHub Enterprise Server host only when applicable | Paperclip generates, stores, and reveals the webhook secret once for copying to GitHub. It then authenticates and verifies the App callback, events, and permissions without asking the operator to paste the secret back.                  |
+| Microsoft Teams — customer-owned bot | Application/client ID, tenant ID, client secret                                | These values come from the customer's Entra App and Azure Bot registration. A future CLI helper may automate provisioning, but it is optional and cannot gate release. Managed identity remains an instance-level advanced deployment path. |
+| Telegram — BotFather bot             | Bot token                                                                      | Telegram has no OAuth or app-manifest installation callback. BotFather gives the operator the bot password once.                                                                                                                            |
 
 All secrets are write-only inputs to Paperclip's existing secret store. Setup and connector detail retain only secret references, redacted suffixes, health, and rotation actions.
 
 ## Slack setup inventory
 
-### Default path
+### Required customer-owned App path
 
-| Screen | Phase             | Retained action            | What happens                                                                                                                                                                                                                                                                                         |
-| ------ | ----------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 13     | Add Maya to Slack | **Add Maya to Slack**      | Opens Slack's authorization/install experience. Slack owns workspace choice, administrator approval, and permission review. On return, Paperclip binds the installation to the locked agent, stores credentials internally, registers delivery automatically, and verifies the granted capabilities. |
-| 13     | Add Maya to Slack | **Use a custom Slack app** | Enters the advanced customer-owned-App branch. This is shown only when the managed/default installation is unavailable or organizational policy requires a dedicated app.                                                                                                                            |
-| 41     | Try Maya          | **Open Slack**             | Opens the installed workspace while Paperclip waits for a signed root mention. A valid mention creates the Slack thread and its one Paperclip task.                                                                                                                                                  |
-| 41     | Try Maya          | **Finish without testing** | Activates the endpoint after installation checks and leaves first-event verification visible on Overview.                                                                                                                                                                                            |
+| Screen | Phase            | Retained action                | What happens                                                                                                                                        |
+| ------ | ---------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 13     | Create Slack app | **Open prefilled Slack setup** | Opens Slack's app-from-manifest URL with identity, callback URLs, scopes, events, interactivity, commands, and files prepared.                      |
+| 13     | Connect app      | **Save and verify**            | Stores the bot token and signing secret write-only, calls Slack identity APIs, and verifies required scopes.                                        |
+| 41     | Try Maya         | **Open Slack**                 | Opens the installed workspace while Paperclip waits for a signed root mention. A valid mention creates the Slack thread and its one Paperclip task. |
+| 41     | Try Maya         | **Finish without testing**     | Activates the endpoint after installation checks and leaves first-event verification visible on Overview.                                           |
 
-Normal Slack setup has no visible credential, callback, relay, Socket Mode, app-token, event, scope, or feature form.
+Normal Slack setup has only the unavoidable bot-token and signing-secret inputs. Callback, relay, Socket Mode, app-token, event, scope, and feature choices remain absent.
 
-### Custom-app branch
+### Optional managed install
 
-| Screen | Phase            | Retained action                | What happens                                                                                                                                                        |
-| ------ | ---------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 42     | Create Slack app | **Open prefilled Slack setup** | Opens Slack's app-from-manifest URL with identity, callback URLs, scopes, events, interactivity, commands, and files already prepared.                              |
-| 42     | Create Slack app | **Back to Add to Slack**       | Returns to the default managed path without changing the selected agent.                                                                                            |
-| 43     | Connect app      | **Save and verify**            | Stores the bot token and signing secret write-only, calls Slack identity APIs, and verifies required scopes. Partial secrets are not retained on Back.              |
-| 44     | Verify           | **Activate Maya**              | Activates only after bot identity, request verification, scopes, features, and callbacks pass. Delivery is reported read-only as the path selected by the instance. |
+An Add to Slack flow can be introduced when Paperclip participates in Slack's managed agent-deployment program. It is a convenience only and is not a first-release dependency.
 
 Slack's OAuth installation redirects through Slack, and its app manifest can create a preconfigured customer-owned app. Socket Mode remains an instance-level exception because Slack documents it as an outbound WebSocket connection using an app-level token and notes distribution limitations. See [Slack OAuth installation](https://docs.slack.dev/authentication/installing-with-oauth/), [Slack App Manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/), [Slack Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/), and [Add to Slack](https://slack.com/intl/en-ie/blog/news/add-to-slack).
 
 ## GitHub setup inventory
 
-### Default App Manifest path
+### Required customer-owned App path
 
-| Screen | Phase               | Retained action                | What happens                                                                                                                                                                |
-| ------ | ------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 16     | Create GitHub App   | **Create in GitHub**           | Posts Paperclip's App Manifest to GitHub. GitHub confirms owner/name and redirects with a one-time code; Paperclip exchanges it for credentials and stores them internally. |
-| 16     | Create GitHub App   | **Use an existing GitHub App** | Enters the advanced path for organizations that already own the dedicated chat App.                                                                                         |
-| 45     | Choose repositories | **Install in GitHub**          | GitHub owns account/organization approval and all-vs-selected repository choice, then returns the installation ID.                                                          |
-| 46     | Try Maya            | **Open GitHub**                | Opens an installed repository while Paperclip waits for a signed mention in an issue, PR conversation, or inline review thread.                                             |
-| 46     | Try Maya            | **Finish without testing**     | Activates after App and installation verification; first-delivery status remains on Overview.                                                                               |
+| Screen | Phase               | Retained action             | What happens                                                                                                                          |
+| ------ | ------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 16     | Create GitHub App   | **Generate webhook secret** | Paperclip generates and stores a 32-byte secret and reveals it once for copying into the GitHub App.                                  |
+| 16     | Connect GitHub App  | **Connect and verify**      | Accepts the App ID and private-key PEM, authenticates as the App, and verifies the callback, events, and least-privilege permissions. |
+| 45     | Choose repositories | **Install in GitHub**       | GitHub owns account/organization approval and all-vs-selected repository choice, then returns the installation ID.                    |
+| 46     | Try Maya            | **Open GitHub**             | Opens an installed repository while Paperclip waits for a signed mention in an issue, PR conversation, or inline review thread.       |
+| 46     | Try Maya            | **Finish without testing**  | Activates after App and installation verification; first-delivery status remains on Overview.                                         |
 
-The default path has no credential form. Contents, Actions, and Administration permissions are absent because this is a chat connection; a GitHub tool connection is separate.
+The required path asks only for the App ID and private-key PEM after Paperclip has generated the webhook secret. Contents, Actions, and Administration permissions are absent because this is a chat connection; a GitHub tool connection is separate.
 
-### Existing-App branch
+### Existing App
 
-| Screen | Phase                | Retained action           | What happens                                                                                                                                                         |
-| ------ | -------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 47     | Connect existing App | **Connect and verify**    | Stores the private key and webhook secret, authenticates as the App, and verifies callback, event, and least-privilege permission configuration before installation. |
-| 47     | Connect existing App | **Back to manifest flow** | Returns to the default credential-free creation flow.                                                                                                                |
+| Screen                                                                                                                                                                                                  | Phase | Retained action | What happens |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | --------------- | ------------ |
+| An existing App uses the same generated-secret, App ID, and private-key path. Regenerating the webhook secret is an explicit rotation and requires updating GitHub before signed deliveries can resume. |
 
-GitHub explicitly supports creating an App from a manifest and exchanging the returned code for App credentials, then uses its own installation UI for repository selection. See [registering a GitHub App from a manifest](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) and [installing a GitHub App from a third party](https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party).
+GitHub's App Manifest exchange remains a possible managed convenience, not a release dependency. GitHub still owns repository installation and scope selection. See [registering a GitHub App from a manifest](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) and [installing a GitHub App from a third party](https://docs.github.com/en/apps/using-github-apps/installing-a-github-app-from-a-third-party).
 
 ## Microsoft Teams setup inventory
 
 Microsoft currently requires more customer-owned infrastructure than the other default paths. v5 does not present multiple authentication or delivery strategies. It chooses a single-tenant client-secret flow for the portable first release and moves managed identity/federation to instance-level advanced deployment.
 
-| Screen | Phase              | Retained action              | What happens                                                                                                                                                                                |
-| ------ | ------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 19     | Register Teams bot | **Copy setup command**       | Copies a generated Teams Developer CLI command. The operator runs it locally; Microsoft authenticates them and creates the Entra App, Azure Bot, Teams channel, and endpoint configuration. |
-| 19     | Register Teams bot | **Use Azure Portal instead** | Opens manual instructions for tenants that disallow the CLI. The result is the same three identity values, not a different Paperclip configuration.                                         |
-| 48     | Connect identity   | **Save and verify**          | Stores the client secret write-only, requests a Microsoft bot token, and verifies tenant, application, and messaging endpoint.                                                              |
-| 49     | Install app        | **Download Teams package**   | Downloads a validated ZIP containing public manifest metadata and icons; it contains no secret.                                                                                             |
-| 49     | Install app        | **Open Teams**               | Opens Teams app management for upload/install. Tenant policy decides self-service vs administrator approval.                                                                                |
-| 50     | Try Maya           | **Open Microsoft Teams**     | Opens Teams while Paperclip waits for the first authenticated activity from an installed scope.                                                                                             |
-| 50     | Try Maya           | **Finish without testing**   | Activates after identity and package checks; installation delivery remains pending on Overview until a real activity arrives.                                                               |
+| Screen | Phase              | Retained action             | What happens                                                                                                                          |
+| ------ | ------------------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 19     | Register Teams bot | **Open Microsoft setup**    | Guides the operator through a customer-owned single-tenant Entra App and Azure Bot registration using Paperclip's messaging endpoint. |
+| 19     | Register Teams bot | **Copy messaging endpoint** | Copies the exact public callback to enter in the Azure Bot configuration.                                                             |
+| 48     | Connect identity   | **Save and verify**         | Stores the client secret write-only, requests a Microsoft bot token, and verifies tenant, application, and messaging endpoint.        |
+| 49     | Install app        | **Download Teams package**  | Downloads a validated ZIP containing public manifest metadata and icons; it contains no secret.                                       |
+| 49     | Install app        | **Open Teams**              | Opens Teams app management for upload/install. Tenant policy decides self-service vs administrator approval.                          |
+| 50     | Try Maya           | **Open Microsoft Teams**    | Opens Teams while Paperclip waits for the first authenticated activity from an installed scope.                                       |
+| 50     | Try Maya           | **Finish without testing**  | Activates after identity and package checks; installation delivery remains pending on Overview until a real activity arrives.         |
 
 Paperclip generates the endpoint, manifest values, and package. Microsoft owns tenant sign-in, Azure/Entra resource creation, app approval, and installation scope. See [Teams SDK registration quickstart](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/get-started/quickstart-register), [Teams app authentication](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/essentials/app-authentication/overview), [Azure configuration](https://learn.microsoft.com/en-us/microsoftteams/platform/teams-sdk/teams/azure-configuration), and [publishing/installing Teams apps](https://learn.microsoft.com/en-us/microsoftteams/platform/toolkit/publish).
+
+A future Teams Developer CLI helper may automate the provider-owned registration steps, but it is optional and cannot gate the first release.
 
 ## Telegram setup inventory
 
