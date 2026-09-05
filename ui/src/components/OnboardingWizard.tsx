@@ -1353,8 +1353,9 @@ function OnboardingWizardInner({
   // A login belongs to one source in one credential mode. Switching either
   // means the card on screen is answering a question nobody asked any more, so
   // the step goes back to offering Connect. The panel is keyed on the adapter
-  // as well, so it unmounts on the same change and releases its server session
-  // on the way out.
+  // as well, so it unmounts on the same change, but the server session stays
+  // reachable for a later resume. The owner releases it with the Cancel
+  // button.
   useEffect(() => {
     setLoginStarted(false);
     setLoginConnected(false);

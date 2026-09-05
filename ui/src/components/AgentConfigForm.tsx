@@ -2012,10 +2012,10 @@ export type AdapterLoginDescriptor = {
 //
 // They are props on the existing panels rather than a second implementation
 // because the part onboarding needs unchanged is the whole of it: the session
-// start, the two polls, the server deadline, the one-shot completion read, the
-// unmount release. A copy drawn to the new design would have had to reproduce
-// all of that correctly, and the first thing to rot would have been the
-// timeout and cleanup paths, which are the ones nobody exercises by hand.
+// start, the two polls, the server deadline, the one-shot completion read. A
+// copy drawn to the new design would have had to reproduce all of that
+// correctly, and the first thing to rot would have been the timeout and
+// cleanup paths, which are the ones nobody exercises by hand.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
@@ -2592,7 +2592,7 @@ function SubmittedBrowserCodeLoginPanel({
   });
 
   // Release the server session at once, without a change to the panel state. The
-  // client-cutoff timer and the unmount path both use this. The server holds a
+  // client-cutoff timer uses this. The server holds a
   // per-owner reservation until the session reaches a terminal state, so an
   // abandoned session locks the owner out until the server deadline. A best-
   // effort cancel frees that reservation now, so the same owner can start a new
