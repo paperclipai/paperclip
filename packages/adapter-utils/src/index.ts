@@ -145,6 +145,9 @@ export type {
 } from "./paperclip-runner-permissions.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
+// `managed-credential-home.js` uses `node:fs/promises`, so it stays off this
+// root entry too — a server-only caller reaches it through the dedicated
+// subpath export, `@paperclipai/adapter-utils/managed-credential-home`.
 export type {
   SandboxCallbackBridgeRequest,
   SandboxCallbackBridgeResponse,

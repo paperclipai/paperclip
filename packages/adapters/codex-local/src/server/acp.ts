@@ -15,6 +15,10 @@ import {
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
 import {
+  assertManagedCredentialHome,
+  ManagedCredentialHomeRejectedError,
+} from "@paperclipai/adapter-utils/managed-credential-home";
+import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -39,10 +43,10 @@ import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/works
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
+import { ensureCodexAuthCacheEntryDir } from "./codex-auth-cache.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
   evaluateCodexCredentialReadiness,
-  resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
@@ -187,7 +191,7 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
 async function prepareCodexRemoteManagedHome(
   input: AcpxRemoteManagedHomeContext,
 ): Promise<AcpxRemoteManagedHomeResult> {
-  const { env, runId, onLog } = input;
+  const { env, runId, onLog, companyId } = input;
   // The host managed Codex home the engine seeded and set on env.CODEX_HOME.
   const effectiveCodexHome = env.CODEX_HOME;
   if (!effectiveCodexHome) {
@@ -209,14 +213,43 @@ async function prepareCodexRemoteManagedHome(
         provision: buildCodexAuthInboundProvision(),
         // Outbound (sandbox→host) copy-back at teardown, under the same
         // direction-agnostic decision predicate + directory merge-lock +
-        // atomic-rename + 0600 guard. Target is the SHARED host auth.json
-        // (the symlink source managed homes point at), never an in-sandbox copy.
-        restore: async ({ assetDir, readFile }) =>
+        // atomic-rename + 0600 guard. Target is the SELECTED account home
+        // (`effectiveCodexHome`: the account home the engine seeded, or the
+        // company default home), never an in-sandbox copy.
+        // `assertManagedCredentialHome` re-checks the target is still inside
+        // this company's tree right before the write: a rejected target makes
+        // the copy-back a no-operation instead of a write to an arbitrary path.
+        restore: async ({ assetDir, readFile }) => {
+          let guardedCodexHome: string;
+          try {
+            guardedCodexHome = await assertManagedCredentialHome({
+              env: process.env,
+              companyId,
+              candidateDir: effectiveCodexHome,
+            });
+          } catch (error) {
+            if (!(error instanceof ManagedCredentialHomeRejectedError)) {
+              throw error;
+            }
+            await onLog(
+              "stderr",
+              "[paperclip] Codex auth copy-back: skipped (the configured Codex home is outside the managed directory tree).\n",
+            );
+            return;
+          }
           void (await copyBackCodexAuth({
             readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-            hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+            hostAuthPath: path.join(guardedCodexHome, "auth.json"),
+            companyId,
             log: (line) => onLog("stdout", `${line}\n`),
-          })),
+            // Additive cache write (sandbox to host): also refresh the sandbox
+            // subscription credential's own per-identity slot, keyed by the
+            // real `account_id`. The off-switch (default on) is read inside.
+            resolveCacheEntryPath: (accountId) =>
+              ensureCodexAuthCacheEntryDir(process.env, accountId, companyId),
+            env: process.env,
+          }));
+        },
       },
     ]);
   } catch (err) {

@@ -618,3 +618,224 @@ describe("codex remote execution", () => {
     expect(call?.[3].remoteExecution?.remoteCwd).toBe("/app");
   });
 });
+
+describe("codex remote auth copy-back target selection", () => {
+  const cleanupDirs: string[] = [];
+  const OLDER = "2026-07-09T01:00:00Z";
+  const NEWER = "2026-07-09T02:00:00Z";
+
+  afterEach(async () => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  function subscriptionAuth(input: { accountId: string; lastRefresh: string; marker: string }): string {
+    return JSON.stringify({
+      tokens: {
+        id_token: `id-token-${input.marker}`,
+        access_token: `access-token-${input.marker}`,
+        refresh_token: `refresh-token-${input.marker}`,
+        account_id: input.accountId,
+      },
+      last_refresh: input.lastRefresh,
+    });
+  }
+
+  async function runExecuteAgainstConfiguredHome(input: {
+    workspaceDir: string;
+    companyId: string;
+    configuredCodexHome: string;
+    sandboxAuth: string;
+  }): Promise<{ logs: string[] }> {
+    const logs: string[] = [];
+    runSshCommand.mockImplementationOnce(async () => ({
+      stdout: Buffer.from(input.sandboxAuth, "utf8").toString("base64"),
+      stderr: "",
+    }));
+    await execute({
+      runId: "run-copyback-target",
+      agent: {
+        id: "agent-1",
+        companyId: input.companyId,
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: "codex",
+        env: { CODEX_HOME: input.configuredCodexHome },
+      },
+      context: { paperclipWorkspace: { cwd: input.workspaceDir, source: "project_primary" } },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async (stream, line) => {
+        logs.push(`${stream}:${line}`);
+      },
+    });
+    return { logs };
+  }
+
+  it("writes the selected account home, not the shared host home", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-selected-home-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const paperclipHome = path.join(rootDir, "paperclip-home");
+    const accountHome = path.join(
+      paperclipHome, "instances", "default", "companies", "company-1", "codex-auth-cache", "acct-handle",
+    );
+    const legacySharedHome = path.join(rootDir, "legacy-shared-home");
+    await mkdir(accountHome, { recursive: true });
+    await mkdir(legacySharedHome, { recursive: true });
+    await writeFile(
+      path.join(accountHome, "auth.json"),
+      subscriptionAuth({ accountId: "acct-1", lastRefresh: OLDER, marker: "old" }),
+      { mode: 0o600 },
+    );
+
+    // The fixed shared host home the copy-back no longer targets. Stub the
+    // OS-level CODEX_HOME so a regression back to that target is observable.
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    vi.stubEnv("CODEX_HOME", legacySharedHome);
+
+    const sandboxAuth = subscriptionAuth({ accountId: "acct-1", lastRefresh: NEWER, marker: "sandbox" });
+    await runExecuteAgainstConfiguredHome({
+      workspaceDir,
+      companyId: "company-1",
+      configuredCodexHome: accountHome,
+      sandboxAuth,
+    });
+
+    expect(await readFile(path.join(accountHome, "auth.json"), "utf8")).toBe(sandboxAuth);
+    await expect(readFile(path.join(legacySharedHome, "auth.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("still writes the company default home when no account home is selected", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-default-home-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const paperclipHome = path.join(rootDir, "paperclip-home");
+    const defaultHome = path.join(paperclipHome, "instances", "default", "companies", "company-1", "codex-home");
+    const emptySharedHome = path.join(rootDir, "empty-shared-home");
+    await mkdir(defaultHome, { recursive: true });
+    await mkdir(emptySharedHome, { recursive: true });
+    await writeFile(
+      path.join(defaultHome, "auth.json"),
+      subscriptionAuth({ accountId: "acct-default", lastRefresh: OLDER, marker: "old" }),
+      { mode: 0o600 },
+    );
+
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    vi.stubEnv("CODEX_HOME", emptySharedHome);
+
+    const sandboxAuth = subscriptionAuth({ accountId: "acct-default", lastRefresh: NEWER, marker: "sandbox" });
+    await runExecuteAgainstConfiguredHome({
+      workspaceDir,
+      companyId: "company-1",
+      configuredCodexHome: defaultHome,
+      sandboxAuth,
+    });
+
+    expect(await readFile(path.join(defaultHome, "auth.json"), "utf8")).toBe(sandboxAuth);
+  });
+
+  it("writes no file when the configured home is outside the company root", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-outside-root-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const paperclipHome = path.join(rootDir, "paperclip-home");
+    const outsideHome = path.join(rootDir, "outside-instance-home");
+
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+
+    const sandboxAuth = subscriptionAuth({ accountId: "acct-outside", lastRefresh: NEWER, marker: "sandbox" });
+    const { logs } = await runExecuteAgainstConfiguredHome({
+      workspaceDir,
+      companyId: "company-1",
+      configuredCodexHome: outsideHome,
+      sandboxAuth,
+    });
+
+    await expect(readFile(path.join(outsideHome, "auth.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(logs.some((line) => line.includes("Codex auth copy-back: skipped"))).toBe(true);
+  });
+
+  it("writes no file when the configured home is under another company", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-other-company-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const paperclipHome = path.join(rootDir, "paperclip-home");
+    const otherCompanyHome = path.join(
+      paperclipHome, "instances", "default", "companies", "company-2", "codex-home",
+    );
+
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+
+    const sandboxAuth = subscriptionAuth({ accountId: "acct-other", lastRefresh: NEWER, marker: "sandbox" });
+    await runExecuteAgainstConfiguredHome({
+      workspaceDir,
+      companyId: "company-1",
+      configuredCodexHome: otherCompanyHome,
+      sandboxAuth,
+    });
+
+    await expect(readFile(path.join(otherCompanyHome, "auth.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("logs one fixed warning and keeps the run result when the copy-back target is rejected", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-rejected-target-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const paperclipHome = path.join(rootDir, "paperclip-home");
+    const outsideHome = path.join(rootDir, "outside-instance-home");
+
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+
+    const sandboxAuth = subscriptionAuth({ accountId: "acct-rejected", lastRefresh: NEWER, marker: "sandbox" });
+    // execute() resolving (not rejecting) is itself evidence that a rejected
+    // copy-back target never fails the run.
+    const { logs } = await runExecuteAgainstConfiguredHome({
+      workspaceDir,
+      companyId: "company-1",
+      configuredCodexHome: outsideHome,
+      sandboxAuth,
+    });
+
+    const warnings = logs.filter((line) => line.startsWith("stderr:") && line.includes("Codex auth copy-back"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      "[paperclip] Codex auth copy-back: skipped (the configured Codex home is outside the managed directory tree).",
+    );
+  });
+});

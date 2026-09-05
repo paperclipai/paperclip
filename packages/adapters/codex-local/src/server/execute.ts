@@ -1,7 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
+import {
+  assertManagedCredentialHome,
+  ManagedCredentialHomeRejectedError,
+} from "@paperclipai/adapter-utils/managed-credential-home";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -822,16 +830,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // Outbound (sandbox→host) auth copy-back contribution: at
                 // teardown, read the sandbox's `auth.json` and — guarded by the
                 // same direction-agnostic decision predicate under a directory
-                // lock — atomically install it onto the shared host credential
-                // when it is a strictly-newer same-identity subscription copy.
-                // The sandbox core stays adapter-agnostic; it just awaits this
-                // generic `restore` seam per asset before destroying the sandbox.
-                // Target is the shared symlink SOURCE (what managed homes point
-                // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) =>
+                // lock — atomically install it onto the SELECTED account home
+                // (`effectiveCodexHome`: the configured account home, or the
+                // company default home) when it is a strictly-newer same-
+                // identity subscription copy. The sandbox core stays adapter-
+                // agnostic; it just awaits this generic `restore` seam per asset
+                // before destroying the sandbox. `assertManagedCredentialHome`
+                // re-checks the target is still inside this company's tree right
+                // before the write: a rejected target makes the copy-back a
+                // no-operation instead of a write to an arbitrary path.
+                restore: async ({ assetDir, readFile }) => {
+                  let guardedCodexHome: string;
+                  try {
+                    guardedCodexHome = await assertManagedCredentialHome({
+                      env: process.env,
+                      companyId: agent.companyId,
+                      candidateDir: effectiveCodexHome,
+                    });
+                  } catch (error) {
+                    if (!(error instanceof ManagedCredentialHomeRejectedError)) {
+                      throw error;
+                    }
+                    await onLog(
+                      "stderr",
+                      "[paperclip] Codex auth copy-back: skipped (the configured Codex home is outside the managed directory tree).\n",
+                    );
+                    return;
+                  }
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                    hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+                    hostAuthPath: path.join(guardedCodexHome, "auth.json"),
+                    companyId: agent.companyId,
                     log: (line) => onLog("stdout", `${line}\n`),
                     // Additive cache write (sandbox to host): also cache the
                     // sandbox subscription credential in its per-identity slot,
@@ -841,7 +870,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                     resolveCacheEntryPath: (accountId) =>
                       ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
                     env: process.env,
-                  })),
+                  }));
+                },
                 // No `exclude` denylist: `stagedCodexHomeDir` already contains
                 // ONLY the allowlisted files (auth/config/skills), so there is
                 // nothing to filter out.
