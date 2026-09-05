@@ -4879,7 +4879,17 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(redactAgentRowForResponse(agent));
+    res.json(
+      replaceAdapterConfig
+        ? {
+            ...agent,
+            adapterConfig: redactConfigurationPayload(
+              asRecord(agent.adapterConfig) ?? {},
+              "adapter",
+            ),
+          }
+        : redactAgentRowForResponse(agent),
+    );
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
