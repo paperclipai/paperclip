@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -40,6 +41,7 @@ import type {
   RejectIssueThreadInteraction,
   SkipIssueThreadInteraction,
   RespondIssueThreadInteraction,
+  SourceTrustMetadata,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
   SubmitIssueThreadInteractionVerdicts,
@@ -71,6 +73,7 @@ import {
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { resolveActorTrustDecisionForIssue } from "./source-trust.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
@@ -2954,6 +2957,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             id: issues.id,
             identifier: issues.identifier,
             companyId: issues.companyId,
+            projectId: issues.projectId,
           })
           .from(issues)
           .where(and(eq(issues.companyId, issue.companyId), inArray(issues.id, explicitParentIds)));
@@ -2997,22 +3001,62 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           }
 
           // The route's effects check authorized each assigned task against
-          // `task.projectId ?? issue.projectId` before anything existed, so a
-          // parent created earlier in this same batch was invisible to it.
-          // When that batch parent carries a project (typically attached by
-          // the inference backstop) and this task would inherit it through
-          // ordinary parent inheritance, an assigned task still needs the
-          // tasks:assign decision the route would have made had it seen the
-          // real landing project — otherwise a two-step batch reaches a
-          // protected project no check ever authorized.
-          const batchParentProjectId = task.parentClientKey
+          // `task.projectId ?? issue.projectId` before anything existed, so
+          // the parent's own project was invisible to it — whether that
+          // parent was created earlier in this same batch (typically with a
+          // project the inference backstop attached) or is a pre-existing
+          // issue named by `parentId`/`defaultParentId`. Either way the task
+          // inherits that project through ordinary parent inheritance, so it
+          // still needs the decisions the route would have made had it seen
+          // the real landing project.
+          const parentProjectId = task.parentClientKey
             ? createdProjectByClientKey.get(task.parentClientKey) ?? null
-            : null;
+            : parentById.get(parentIssueId)?.projectId ?? null;
+          const inheritsParentProject =
+            (task.projectId ?? issue.projectId) == null && parentProjectId != null;
+
+          // The routes decide source trust for every create against the
+          // project the issue actually lands in, and the inference backstop
+          // re-evaluates the creating agent when it attaches a project
+          // itself. Parent inheritance is the one remaining path: the project
+          // arrives at createChild explicit, so neither decision ever sees
+          // it. Re-evaluate the resolving actor here and stamp a low-trust
+          // verdict on the child — otherwise a quarantined root's subtasks
+          // land in the very project the quarantine is about, unquarantined.
+          let inheritedProjectChildId: string | null = null;
+          let inheritedProjectSourceTrust: SourceTrustMetadata | null = null;
+          if (actor.agentId && inheritsParentProject) {
+            inheritedProjectChildId = randomUUID();
+            const trustDecision = await resolveActorTrustDecisionForIssue({
+              db: tx as unknown as Db,
+              issue: {
+                id: inheritedProjectChildId,
+                companyId: issue.companyId,
+                projectId: parentProjectId,
+              },
+              actor: {
+                actorType: "agent",
+                actorId: actor.agentId,
+                agentId: actor.agentId,
+                runId: actor.runId ?? null,
+              },
+            });
+            if (trustDecision.kind === "denied") {
+              throw issueThreadInteractionResolutionError(
+                403,
+                "interaction_governed_action_denied",
+                "Suggested-task creation requires independent authorization for every selected task",
+              );
+            }
+            if (trustDecision.kind === "low_trust_review") {
+              inheritedProjectSourceTrust = trustDecision.sourceTrust;
+            }
+          }
+
           if (
             actor.agentId &&
             (task.assigneeAgentId || task.assigneeUserId) &&
-            (task.projectId ?? issue.projectId) == null &&
-            batchParentProjectId != null
+            inheritsParentProject
           ) {
             let assignmentActor: AuthorizationActor | null = actor.authorization ?? null;
             if (!assignmentActor) {
@@ -3041,13 +3085,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               resource: {
                 type: "issue",
                 companyId: issue.companyId,
-                projectId: batchParentProjectId,
+                projectId: parentProjectId,
                 parentIssueId,
                 assigneeAgentId: task.assigneeAgentId ?? null,
                 assigneeUserId: task.assigneeUserId ?? null,
               },
               scope: {
-                projectId: batchParentProjectId,
+                projectId: parentProjectId,
                 parentIssueId,
                 assigneeAgentId: task.assigneeAgentId ?? null,
                 assigneeUserId: task.assigneeUserId ?? null,
@@ -3082,6 +3126,11 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             // run so a restricted run's acceptance stays quarantined.
             actorRunId: actor.runId ?? null,
             actorAuthorization: actor.authorization ?? null,
+            // The id rides along only when the inherited-project trust
+            // decision above ran, so its sourceTrust points at the issue it
+            // was decided for.
+            ...(inheritedProjectChildId ? { id: inheritedProjectChildId } : {}),
+            ...(inheritedProjectSourceTrust ? { sourceTrust: inheritedProjectSourceTrust } : {}),
           } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
 
           const parentIdentifier = createdByClientKey.get(task.parentClientKey ?? "")?.identifier
