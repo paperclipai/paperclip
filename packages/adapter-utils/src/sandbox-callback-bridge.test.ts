@@ -14,6 +14,7 @@ import {
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
+  getSandboxBridgeProcessBodyLedgerSource,
   getSandboxCallbackBridgeServerSource,
   HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
   sandboxCallbackBridgeDirectories,
@@ -3381,6 +3382,79 @@ describe("sandbox callback bridge", () => {
     expect(forwardCalls).toBe(0);
   }, 15_000);
 
+  /** A resolvable gate a test can await, then release on its own schedule. */
+  function createGate(): { reached: Promise<void>; reach: () => void } {
+    let reach!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      reach = resolve;
+    });
+    return { reached, reach };
+  }
+
+  it("denies a body once concurrent reservations reach the gateway's own process ledger ceiling, then admits again once they release", async () => {
+    // The per-body maxBodyBytes cap alone does not bound how many bodies
+    // this gateway process holds in memory at once. The generated gateway's
+    // own process ledger gives it a second, independent ceiling: 4
+    // concurrent max-size bodies, each counted twice (the retained chunk
+    // array and the concatenated copy), exactly fills maxBodyBytes * 8. This
+    // drives 4 concurrent requests to that exact ceiling, held open by a
+    // forward call that does not return, then proves a 5th is denied and a
+    // later one succeeds once the 4 held requests release their bytes.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const maxBodyBytes = 400;
+    const holdBody = Buffer.alloc(maxBodyBytes, 0x42);
+    const HOLD_COUNT = 4;
+    const reachedGates = Array.from({ length: HOLD_COUNT }, () => createGate());
+    const releaseGates = Array.from({ length: HOLD_COUNT }, () => createGate());
+    let forwardCalls = 0;
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      maxBodyBytes,
+      forwardRequest: async () => {
+        const callIndex = forwardCalls;
+        forwardCalls += 1;
+        if (callIndex < HOLD_COUNT) {
+          reachedGates[callIndex]!.reach();
+          await releaseGates[callIndex]!.reached;
+        }
+        return { status: 200, headers: {}, body: Buffer.alloc(0) };
+      },
+    });
+
+    const postHoldBody = () =>
+      fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
+        body: holdBody,
+      });
+
+    const holdResponses = Promise.all(Array.from({ length: HOLD_COUNT }, () => postHoldBody()));
+    // Each held request's own forward call started, which only happens
+    // after readBodyBytes already reserved that request's bytes, so all 4
+    // reservations are live once every gate below resolves.
+    await Promise.all(reachedGates.map((gate) => gate.reached));
+
+    const deniedResponse = await postHoldBody();
+    expect(deniedResponse.status).toBe(503);
+    await expect(deniedResponse.json()).resolves.toMatchObject({
+      error: "The bridge gateway process reached its reserved body byte ceiling. Retry later.",
+    });
+    // The denial happened during the body read, before this stream's own
+    // forward call ever ran.
+    expect(forwardCalls).toBe(HOLD_COUNT);
+
+    releaseGates.forEach((gate) => gate.reach());
+    const responses = await holdResponses;
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+    }
+
+    // Every held reservation released once its own forward call settled: a
+    // fresh request at the same size now succeeds again.
+    const recoveredResponse = await postHoldBody();
+    expect(recoveredResponse.status).toBe(200);
+  }, 15_000);
+
   it("rejects a request body over maxBodyBytes on the queue path before it writes the queue file", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-queue-maxbody-"));
     cleanupDirs.push(rootDir);
@@ -3499,5 +3573,42 @@ describe("sandbox callback bridge", () => {
     expect(seenRequests).toHaveLength(1);
     expect(typeof seenRequests[0]?.body).toBe("string");
     expect(seenRequests[0]?.body).toBe(requestBodyText);
+  });
+});
+
+interface EmbeddedBridgeProcessBodyLedger {
+  reserve(byteCount: number): boolean;
+  release(byteCount: number): void;
+  readonly reservedBytes: number;
+}
+
+// This describe block covers the zero-dependency process body-byte ledger
+// every generated gateway embeds (`BRIDGE_PROCESS_BODY_LEDGER_SOURCE`),
+// exercised directly with no spawned process involved, the same way the
+// codec source in `execution-target-sandbox.test.ts` gets its own direct
+// coverage.
+describe("embedded sandbox gateway process body ledger", () => {
+  it("reserves and releases bytes against its own ceiling, denying only once it is exceeded", () => {
+    const ledgerFactory = new Function(
+      `${getSandboxBridgeProcessBodyLedgerSource()}\nreturn createBridgeProcessBodyLedger;`,
+    ) as unknown as () => (maxBytes: number) => EmbeddedBridgeProcessBodyLedger;
+    const createBridgeProcessBodyLedger = ledgerFactory();
+    const ledger = createBridgeProcessBodyLedger(100);
+
+    expect(ledger.reserve(60)).toBe(true);
+    expect(ledger.reservedBytes).toBe(60);
+    // A denied reservation reserves nothing: the total stays exactly what
+    // the first call reserved.
+    expect(ledger.reserve(41)).toBe(false);
+    expect(ledger.reservedBytes).toBe(60);
+    expect(ledger.reserve(40)).toBe(true);
+    expect(ledger.reservedBytes).toBe(100);
+
+    ledger.release(60);
+    expect(ledger.reservedBytes).toBe(40);
+    // Room freed by the release admits a request the full ceiling would
+    // have denied.
+    expect(ledger.reserve(60)).toBe(true);
+    expect(ledger.reservedBytes).toBe(100);
   });
 });

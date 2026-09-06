@@ -783,4 +783,17 @@ but it can never spend the whole process-wide total and deny every sibling
 route admission. This accounting covers source-level full-body buffers only:
 internal Node.js and Undici copies (socket buffers, HTTP/2 frame buffers,
 decompression buffers) stay outside it.
+
+The generated gateway process inside the sandbox (`getSandboxCallbackBridgeServerSource`
+in `sandbox-callback-bridge.ts`) enforces its own separate ledger, independent
+of the two host-side ledgers above: each side bounds only the memory in its
+own process. `readBodyBytes` reserves a request body's chunk bytes as they
+arrive, then reserves the concatenated buffer's own byte count before
+`Buffer.concat` allocates it, against a ceiling of `maxBodyBytes * 8` (4
+concurrent bodies, each counted twice for its two live copies). A denied
+reservation answers 503 with no forward call. Each request handler releases
+its own reservation once the whole request settles: a completed response, a
+thrown error, a client abort, or a deadline timeout all reach the same
+release call.
+
 Keep every dimension low-cardinality and free of user content.
