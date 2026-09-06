@@ -635,11 +635,17 @@ it("derives the ACPX package authority only from the verified dist/cli layout", 
 });
 
 it("keeps a deployed ACPX package inside its pnpm-owned dependency root", async () => {
-  const deployedPackageRoot = await mkdtemp(
-    join(tmpdir(), "paperclip-deployed-provider-package-"),
+  const deploymentRoot = await mkdtemp(
+    join(tmpdir(), "paperclip-deployed-provider-root-"),
+  );
+  const deployedPackageRoot = join(
+    deploymentRoot,
+    "node_modules",
+    "@paperclipai",
+    "paperclip-runner",
   );
   await mkdir(join(deployedPackageRoot, "dist", "cli"), { recursive: true });
-  await mkdir(join(deployedPackageRoot, "node_modules", ".pnpm"), {
+  await mkdir(join(deploymentRoot, "node_modules", ".pnpm"), {
     recursive: true,
   });
   try {
@@ -654,11 +660,11 @@ it("keeps a deployed ACPX package inside its pnpm-owned dependency root", async 
         deployedPackageRoot,
       ),
     ).toEqual({
-      root: deployedPackageRoot,
+      root: deploymentRoot,
       manifest: join(deployedPackageRoot, "package.json"),
     });
   } finally {
-    await rm(deployedPackageRoot, { recursive: true, force: true });
+    await rm(deploymentRoot, { recursive: true, force: true });
   }
 });
 
