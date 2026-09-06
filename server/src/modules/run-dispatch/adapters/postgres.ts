@@ -537,7 +537,7 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<PromoteScheduledRetryOutcome> {
     const now = input.now;
 
-    return db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
       const factsResult = await loadGateFacts(
         {
           runId: input.runId,
@@ -562,17 +562,14 @@ export function createPostgresRunDispatchAdapter(
           issueId: factsResult.issueId,
           details: { agentId: input.agentId },
         });
-        if (cancelled.applied) {
-          void emitAgentTaskRun(db, cancelled.run as unknown as typeof heartbeatRuns.$inferSelect);
-        }
         return cancelled.applied
           ? {
-              outcome: "gate_suppressed",
+              outcome: "gate_suppressed" as const,
               run: cancelled.run,
               reason: "Scheduled retry suppressed because the agent no longer exists",
-              errorCode: "agent_not_invokable",
+              errorCode: "agent_not_invokable" as const,
             }
-          : { outcome: "not_promoted", run: null };
+          : { outcome: "not_promoted" as const, run: null };
       }
 
       const gate = decideScheduledRetryGate(factsResult.facts, now);
@@ -596,17 +593,14 @@ export function createPostgresRunDispatchAdapter(
           issueId: gate.issueId,
           details: gate.details,
         });
-        if (cancelled.applied) {
-          void emitAgentTaskRun(db, cancelled.run as unknown as typeof heartbeatRuns.$inferSelect);
-        }
         return cancelled.applied
           ? {
-              outcome: "gate_suppressed",
+              outcome: "gate_suppressed" as const,
               run: cancelled.run,
               reason: gate.reason,
               errorCode: gate.errorCode,
             }
-          : { outcome: "not_promoted", run: null };
+          : { outcome: "not_promoted" as const, run: null };
       }
 
       const promoted = await promoteDueRetryInTx(tx as unknown as Db, {
@@ -615,9 +609,19 @@ export function createPostgresRunDispatchAdapter(
         now,
       });
       return promoted.applied
-        ? { outcome: "promoted", run: promoted.run, postCommitEffects: promoted.postCommitEffects }
-        : { outcome: "not_promoted", run: null };
+        ? { outcome: "promoted" as const, run: promoted.run, postCommitEffects: promoted.postCommitEffects }
+        : { outcome: "not_promoted" as const, run: null };
     });
+
+    // Telemetry is best-effort background work; fire it only after the
+    // transaction above has committed, so a suppressed retry is never
+    // published before its cancellation is durable, and never published at
+    // all if the transaction rolled back.
+    if (outcome.outcome === "gate_suppressed") {
+      void emitAgentTaskRun(db, outcome.run as unknown as typeof heartbeatRuns.$inferSelect);
+    }
+
+    return outcome;
   }
 
   async function cancelStaleQueuedRun(
