@@ -1809,13 +1809,16 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     // row from a second transaction, require the acceptance to queue
     // behind it (proving the chain is locked), move the ancestor out of
     // the root, and require the acceptance to deny against the moved
-    // chain.
+    // chain. The outsider id is pinned above every other id so the chase
+    // of the moved ancestor stays within the sorted lock order and reaches
+    // the boundary decision; an outsider sorting below the held ids aborts
+    // with a retryable conflict instead (covered in issues-service tests).
     const companyId = randomUUID();
     const issueId = randomUUID();
     const rootIssueId = randomUUID();
     const midIssueId = randomUUID();
     const parentIssueId = randomUUID();
-    const outsiderIssueId = randomUUID();
+    const outsiderIssueId = "ffffffff-ffff-4fff-8fff-fffffffffff2";
     const resolverAgentId = randomUUID();
     const runId = randomUUID();
 

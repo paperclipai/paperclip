@@ -29,9 +29,11 @@ const ANCESTRY_LOCK_VERIFY_ATTEMPTS = 3;
  *
  * The chain is discovered without locks first, then verified against the
  * rows as actually locked; a reparent that lands inside that window is
- * chased with a bounded number of follow-up lock passes (the only
- * acquisitions that can run out of global order) before giving up with a
- * retryable conflict.
+ * chased with a bounded number of follow-up lock passes, but only while
+ * every escaped row sorts above the ids already held, so the acquisition
+ * sequence stays globally sorted. An escaped row that would have to be
+ * taken out of order — or a chase that keeps escaping — gives up with a
+ * retryable conflict instead.
  *
  * The returned map's rows carry each locked row's current values, in
  * acquisition order.
@@ -103,6 +105,8 @@ export const lockIssueAncestryForAuthorization = async (
       }
     }
     if (escaped.size === 0) return locked;
+    const highestLockedId = [...locked.keys()].reduce((max, id) => (id > max ? id : max), "");
+    if ([...escaped].some((id) => id <= highestLockedId)) break;
     await lockBatch(escaped);
   }
   throw conflict("Issue ancestry changed concurrently during authorization; retry the request");
