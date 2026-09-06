@@ -1537,6 +1537,72 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     }
   });
 
+  it("test_a_response_reservation_denial_answers_503_on_the_wire", async () => {
+    // The response reader on the sandbox target side
+    // (`readBridgeForwardResponseBody`) denies its own reservation and
+    // throws `BridgeProcessCapacityError` from inside `forwardRequest`,
+    // after the forward handler already ran — a different call site than
+    // the request-body denial above, but the same 503-before-destroy
+    // contract must hold: the stream must stay alive long enough to answer
+    // 503 for real, on the wire, not merely destroy and leave the caller
+    // with a bare reset.
+    const forwarderTracker = createForwarderCallTracker();
+    // Only the first call denies: the surviving-request check below reuses
+    // the same session for a second, independent request, which must
+    // succeed once this first stream's reservation released.
+    let forwardCalls = 0;
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      forwardRequest: async () => {
+        forwarderTracker.markCalled();
+        forwardCalls += 1;
+        if (forwardCalls === 1) {
+          throw new BridgeProcessCapacityError();
+        }
+        return { status: 200 };
+      },
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = rawClient.request({
+          ":method": "GET",
+          ":path": "/api/agents/me",
+          authorization: `Bearer ${bridgeToken}`,
+        });
+        let status = 0;
+        let body = "";
+        req.setEncoding("utf8");
+        req.on("response", (headers) => {
+          status = Number(headers[":status"]) || 0;
+        });
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => resolve({ status, body }));
+        req.on("error", reject);
+        req.end();
+      });
+      expect(response.status).toBe(503);
+      expect(forwarderTracker.called).toBe(true);
+      // A raw reset delivers no body at all: parsing it here proves the
+      // full JSON response actually reached the client, not merely the
+      // status line.
+      expect(JSON.parse(response.body)).toEqual({
+        error: "The bridge host reached its reserved process body byte ceiling. Retry later.",
+      });
+
+      // The stream ended with a real response, not a raw reset: the session
+      // stays healthy, so a second, complete request still succeeds.
+      const survivingResponse = await expectSessionStillServesARequest(rawClient, {
+        method: "GET",
+        path: "/api/agents/me",
+        token: bridgeToken,
+      });
+      expect(survivingResponse.status).toBe(200);
+    } finally {
+      rawClient.close();
+      await handle.close();
+    }
+  });
+
   it("test_a_denied_concatenated_request_body_never_allocates_the_copy", async () => {
     // The chunk-array copy and the concatenated copy are two separate live
     // buffers, so each must reserve on its own. Leave room for the first but

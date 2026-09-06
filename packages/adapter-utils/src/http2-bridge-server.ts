@@ -1229,6 +1229,20 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
           reservation,
         });
       } catch (error) {
+        if (error instanceof BridgeProcessCapacityError) {
+          // The forward handler's own response reader denies its reservation
+          // and cancels there, but leaves this stream open exactly so this
+          // 503 can reach the wire — the same contract the request-body
+          // capacity denial above keeps. `respondJson` only queues the
+          // write, so wait for it to settle first (bounded, so a stalled
+          // peer that grants no flow-control credit cannot hold this
+          // stream's reservation and slot open forever), then destroy to
+          // free the slot.
+          respondJson(stream, 503, { error: error.message });
+          await waitForHttp2StreamWriteToSettle(stream, capacityDenialSettleDeadlineMs);
+          if (!stream.destroyed) stream.destroy();
+          return;
+        }
         respondJson(stream, 502, { error: error instanceof Error ? error.message : String(error) });
         return;
       }
