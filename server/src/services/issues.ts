@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -529,6 +529,25 @@ async function resolveChatOriginPublicationBindings(
         eq(chatMessageLinks.direction, "inbound"),
         inArray(chatMessageLinks.commentId, wakeCommentIds),
         eq(chatConversations.issueId, issueId),
+        // A naturally completed task may still have serialized chat wakes
+        // that Paperclip already accepted and owes a response. Only a
+        // provider-visible /new or /close is a generation boundary that keeps
+        // those later run comments internal.
+        notExists(
+          dbOrTx
+            .select({ id: chatPublications.id })
+            .from(chatPublications)
+            .where(
+              and(
+                eq(chatPublications.conversationId, chatConversations.id),
+                eq(chatPublications.state, "published"),
+                or(
+                  like(chatPublications.idempotencyKey, "control:new:%"),
+                  like(chatPublications.idempotencyKey, "control:close:%"),
+                ),
+              ),
+            ),
+        ),
       ),
     );
   return [

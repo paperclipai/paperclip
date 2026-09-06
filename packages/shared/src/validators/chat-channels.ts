@@ -24,6 +24,48 @@ export const chatResourceAvailabilitySchema = z.enum(
   CHAT_RESOURCE_AVAILABILITIES,
 );
 
+/**
+ * Microsoft emits Entra application and tenant identifiers in canonical UUID
+ * form in Bot Framework activities. Tenant aliases such as `common` or an
+ * `onmicrosoft.com` domain can be accepted by the token endpoint, but cannot
+ * be compared safely with the activity tenant id used by Paperclip's runtime
+ * fence. Normalize the UUIDs at the API boundary instead.
+ */
+export const microsoftTeamsCredentialIdSchema = z
+  .string()
+  .trim()
+  .uuid()
+  .refine((value) => value !== "00000000-0000-0000-0000-000000000000", {
+    message: "Microsoft Teams credential IDs cannot be the nil UUID",
+  })
+  .transform((value) => value.toLowerCase());
+
+const chatEndpointCredentialsSchema = z
+  .record(z.string(), z.string().min(1))
+  .superRefine((credentials, ctx) => {
+    for (const key of ["clientId", "tenantId"] as const) {
+      const value = credentials[key];
+      if (value === undefined) continue;
+      const parsed = microsoftTeamsCredentialIdSchema.safeParse(value);
+      if (parsed.success) continue;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `${key} must be a canonical Microsoft Entra UUID`,
+      });
+    }
+  })
+  .transform((credentials) => {
+    const normalized = { ...credentials };
+    for (const key of ["clientId", "tenantId"] as const) {
+      const value = normalized[key];
+      if (value !== undefined) {
+        normalized[key] = microsoftTeamsCredentialIdSchema.parse(value);
+      }
+    }
+    return normalized;
+  });
+
 export const createChatEndpointSchema = z
   .object({
     provider: chatProviderSchema,
@@ -54,7 +96,7 @@ export const configureChatEndpointSchema = z
       "reconnect",
       "remove",
     ]),
-    credentials: z.record(z.string(), z.string().min(1)).optional(),
+    credentials: chatEndpointCredentialsSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -105,6 +147,12 @@ export const publishChatPublicationSchema = z.union([
 ]);
 
 export const resolveChatPublicationSchema = z
+  .object({
+    action: z.enum(["mark_delivered", "retry_anyway", "cancel"]),
+  })
+  .strict();
+
+export const resolveChatActionSchema = z
   .object({
     action: z.enum(["mark_delivered", "retry_anyway", "cancel"]),
   })

@@ -607,7 +607,9 @@ settings:
           This setup requires a Microsoft 365 work or school organization where
           you can register an Entra app, create an Azure Bot, and upload or
           install a Teams app. Personal or free Teams accounts at teams.live.com
-          cannot complete this setup.
+          cannot complete this setup. This release supports Microsoft 365
+          commercial cloud tenants only; GCC, GCC High, DoD, and Microsoft 365
+          operated by 21Vianet are not supported yet.
         </p>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
           <li>

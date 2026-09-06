@@ -74,12 +74,19 @@ export function classifyChatPublicationError(
           retry_after?: unknown;
           status?: unknown;
           statusCode?: unknown;
+          subCode?: unknown;
+          providerCodes?: unknown;
           data?: { error?: unknown };
           response?: {
             status?: unknown;
             headers?: Headers | Record<string, unknown>;
           };
-          details?: { code?: unknown };
+          details?: {
+            code?: unknown;
+            providerStatus?: unknown;
+            providerSubCode?: unknown;
+            providerCodes?: unknown;
+          };
           innerHttpError?: { statusCode?: unknown };
         })
       : null;
@@ -96,7 +103,18 @@ export function classifyChatPublicationError(
     value?.statusCode,
     value?.response?.status,
     value?.innerHttpError?.statusCode,
+    value?.details?.providerStatus,
   ].find((candidate): candidate is number => typeof candidate === "number");
+  const teamsProviderCodes = [
+    value?.subCode,
+    value?.details?.providerSubCode,
+    ...(Array.isArray(value?.providerCodes) ? value.providerCodes : []),
+    ...(Array.isArray(value?.details?.providerCodes)
+      ? value.details.providerCodes
+      : []),
+  ]
+    .filter((candidate): candidate is string => typeof candidate === "string")
+    .map((candidate) => candidate.toLowerCase());
   const reason = text(error);
   const retryAfterHeader = positiveNumber(
     responseHeader(value?.response?.headers, "retry-after"),
@@ -161,6 +179,24 @@ export function classifyChatPublicationError(
     adapter === "telegram" &&
     name === "PermissionError" &&
     code === "PERMISSION_DENIED"
+  ) {
+    return { kind: "resource_unavailable", reason };
+  }
+
+  if (
+    // A Teams app can remain healthy while Microsoft rejects writes to one
+    // conversation after the bot is blocked, uninstalled, or loses access.
+    // The pinned adapter preserves only bounded provider code tokens from the
+    // 403 response body; never use the free-form message for this distinction.
+    adapter === "teams" &&
+    name === "PermissionError" &&
+    code === "PERMISSION_DENIED" &&
+    status === 403 &&
+    teamsProviderCodes.some((providerCode) =>
+      ["messagewritesblocked", "forbiddenoperationexception"].includes(
+        providerCode,
+      ),
+    )
   ) {
     return { kind: "resource_unavailable", reason };
   }

@@ -360,14 +360,32 @@ const TEAMS_THREAD_SCOPED_METHODS = [
   "postChannelMessage",
 ] as const;
 
-const OFFICIAL_TEAMS_CONNECTOR_HOSTS = new Set([
-  // Microsoft documents these public and sovereign Bot Framework service URL
-  // families for Teams replies and proactive conversations.
+const OFFICIAL_TEAMS_CONNECTOR_HOST_SUFFIXES = [
+  // Signed Teams activity can carry regional Microsoft-owned Bot Framework
+  // service URLs, so the egress trust boundary recognizes these exact domain
+  // families. Host acceptance is defensive routing validation, not a claim
+  // that Paperclip's commercial-cloud-only credential flow supports every
+  // Microsoft cloud represented by a first-party hostname.
+  "botframework.com",
   "smba.trafficmanager.net",
-  "smba.infra.gcc.teams.microsoft.com",
-  "smba.infra.gov.teams.microsoft.us",
-  "smba.infra.dod.teams.microsoft.us",
-]);
+  "teams.microsoft.com",
+  "teams.microsoft.us",
+] as const;
+
+function isOfficialTeamsConnectorHost(hostname: string): boolean {
+  return OFFICIAL_TEAMS_CONNECTOR_HOST_SUFFIXES.some(
+    (suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`),
+  );
+}
+
+function isCanonicalTeamsConnectorPath(pathname: string): boolean {
+  // A Bot Connector service URL is a base URL, not an arbitrary connector API
+  // route. Microsoft-owned URLs use either no path or one bounded
+  // region/service segment such as /amer, /amer-client-ss.msg, or /teams.
+  return (
+    pathname === "/" || /^\/[a-z0-9][a-z0-9._-]{0,127}\/?$/i.test(pathname)
+  );
+}
 
 export class TeamsServiceUrlValidationError extends Error {
   readonly code = "CHAT_PROVIDER_PRETRANSPORT_REJECTED";
@@ -439,10 +457,19 @@ function trustedTeamsServiceUrl(
   value: unknown,
   configuredApiUrl: string | null,
 ): string {
+  const rawValue = typeof value === "string" ? value : "";
   const normalized = normalizedTeamsServiceUrl(value);
   const parsed = new URL(normalized);
+  const rawParsed = new URL(rawValue);
   const officialHost =
-    parsed.port === "" && OFFICIAL_TEAMS_CONNECTOR_HOSTS.has(parsed.hostname);
+    rawValue === rawValue.trim() &&
+    parsed.port === "" &&
+    isOfficialTeamsConnectorHost(parsed.hostname) &&
+    // Encoded path bytes can be normalized away by URL parsing. Microsoft
+    // connector base URLs do not require them, so reject them before applying
+    // the canonical one-segment path policy.
+    !/%[0-9a-f]{2}/i.test(rawValue) &&
+    isCanonicalTeamsConnectorPath(rawParsed.pathname);
   if (officialHost || normalized === configuredApiUrl) return normalized;
   throw new TeamsServiceUrlValidationError(
     "Teams destination contains an untrusted service URL",

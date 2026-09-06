@@ -12,6 +12,7 @@ import {
   createChatIdentityLinkIntentSchema,
   publishChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
+  resolveChatActionSchema,
   resolveChatPublicationSchema,
   updateChatEndpointSchema,
   type ChatProvider,
@@ -291,6 +292,23 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       await service.resolvePublication(
         endpointId(req),
         req.params.publicationId as string,
+        req.body.action,
+        userId,
+      );
+      res.status(204).end();
+    },
+  );
+
+  router.post(
+    "/chat-endpoints/:endpointId/actions/:actionId/resolve",
+    validate(resolveChatActionSchema),
+    async (req, res) => {
+      if (!(await assertEndpointManagementAccess(req, res))) return;
+      const userId = actorUserId(req);
+      if (!userId) throw badRequest("A board user is required");
+      await service.resolveAction(
+        endpointId(req),
+        req.params.actionId as string,
         req.body.action,
         userId,
       );

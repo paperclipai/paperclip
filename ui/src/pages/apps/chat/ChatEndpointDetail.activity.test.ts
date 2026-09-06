@@ -3,6 +3,7 @@ import type { ChatActivityItem } from "@/api/chatEndpoints";
 import {
   isIndividuallyToggleableResource,
   isReplayEligible,
+  isResolutionEligible,
 } from "./ChatEndpointDetail";
 
 function activity(overrides: Partial<ChatActivityItem> = {}): ChatActivityItem {
@@ -35,6 +36,42 @@ describe("chat endpoint activity replay eligibility", () => {
     activity({ kind: "repair" }),
   ])("hides replay for ineligible activity %#", (item) => {
     expect(isReplayEligible(item)).toBe(false);
+  });
+});
+
+describe("chat endpoint ambiguous-delivery resolution eligibility", () => {
+  it.each([
+    activity({
+      kind: "publication",
+      status: "delivery_unknown",
+      replayable: false,
+      resolutionActions: ["mark_delivered", "retry_anyway", "cancel"],
+    }),
+    activity({
+      kind: "action",
+      actionType: "provider_effect",
+      status: "delivery_unknown",
+      replayable: false,
+      resolutionActions: ["mark_delivered", "retry_anyway", "cancel"],
+    }),
+  ])("shows explicit resolution for server-approved activity %#", (item) => {
+    expect(isResolutionEligible(item)).toBe(true);
+  });
+
+  it.each([
+    activity({ kind: "action", status: "processed" }),
+    activity({
+      kind: "action",
+      status: "delivery_unknown",
+      resolutionActions: [],
+    }),
+    activity({
+      kind: "delivery",
+      status: "delivery_unknown",
+      resolutionActions: ["cancel"],
+    }),
+  ])("hides resolution when the server did not offer it %#", (item) => {
+    expect(isResolutionEligible(item)).toBe(false);
   });
 });
 

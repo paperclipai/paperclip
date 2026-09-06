@@ -373,7 +373,9 @@ Run C5 and C6, then verify specifically:
 3. Complete that task in Paperclip and send `ECHO <run-id>-DM2`; confirm a new task.
 4. Pause the connection; address Maya in an enabled channel; verify no new run/publication.
 5. Resume and send a new marker; verify recovery.
-6. For the scheduled recovery qualification, revoke or uninstall only the disposable Slack app, verify Activity shows the contextual reconnect/reinstall action, then repair it.
+6. Run the registered slash command with a task body. Verify Slack gets exactly one `Starting a task…` root, the Conversations row uses that message as its native thread boundary, and every Paperclip response remains under that root. In a DM, verify the next `status` and `close` commands target that same task rather than creating or controlling an unrelated base-DM task.
+7. During deterministic fault injection, simulate a connection loss after Slack may have accepted the starter root. Verify Activity labels the task start unconfirmed and does not replay it automatically. After checking Slack, exercise both explicit paths: **Retry anyway** warns that it can duplicate both the starter and task, while **Cancel task start** leaves no Paperclip task. Verify a concurrent double-click produces at most one retry and each operator decision has an activity-log audit row.
+8. For the scheduled recovery qualification, revoke or uninstall only the disposable Slack app, verify Activity shows the contextual reconnect/reinstall action, then repair it.
 
 ### S7 — Slack evidence and cleanup
 
@@ -467,6 +469,7 @@ Capture the App permission screen, selected repositories, issue/PR/review conver
 ### Teams prerequisites
 
 - Microsoft Teams personal/free accounts at `teams.live.com` cannot complete this setup. Use a Microsoft 365 work or school organization with Entra, Azure Bot, and custom Teams app access.
+- The shipped setup is qualified only for Microsoft 365 commercial cloud tenants. GCC, GCC High, DoD, and Microsoft 365 operated by 21Vianet are not supported yet; do not infer sovereign-cloud support from Microsoft-owned service URLs accepted during signed activity handling.
 - Dedicated Microsoft 365 developer tenant with Dana as permitted app installer and Ari/Jules as members.
 - Team `Paperclip Chat E2E` with the Enabled and Disabled channels.
 - Permission to create an Entra application and Azure Bot. A future guided helper is optional and does not gate the required customer-owned setup path.
@@ -477,7 +480,7 @@ Capture the App permission screen, selected repositories, issue/PR/review conver
 Run before stable release and after identity, Teams manifest, or permission changes:
 
 1. In Paperclip, perform C1 and select Microsoft Teams. Keep **Connect Maya to Microsoft Teams** open and copy the displayed Paperclip messaging endpoint.
-   Confirm the setup screen explicitly says that a Microsoft 365 work or school organization is required and that `teams.live.com` personal/free accounts are unsupported.
+   Confirm the setup screen explicitly says that a Microsoft 365 work or school organization is required, that `teams.live.com` personal/free accounts are unsupported, and that this release is commercial-cloud-only.
 2. In the sandbox tenant's Microsoft Entra admin center, create a **single-tenant** app registration. Record its Application (client) ID and Directory (tenant) ID, create one client secret, and keep the secret value available only for immediate entry.
 3. In Azure, create an **Azure Bot** using that existing Application ID and the single-tenant identity type. Set its messaging endpoint to Paperclip's displayed URL and enable its Microsoft Teams channel.
 4. In Teams Developer Portal, create a Teams app for this bot. Add a bot using the same Application ID and enable Personal, Team, and Group chat scopes.
@@ -488,7 +491,7 @@ Run before stable release and after identity, Teams manifest, or permission chan
 9. In the Enabled channel, create a new post containing `@Maya ECHO <run-id>-SETUP`, then reply beneath it without another mention.
 10. Return to Paperclip, run the setup test once, and verify Settings opens with the tested channel enabled.
 
-**Pass:** only the three portable identity values are requested; the messaging endpoint and Teams app are correctly wired; the real post/reply conversation completes setup; no delivery-mode or cloud-strategy choice appears.
+**Pass:** only the three portable identity values are requested; the messaging endpoint and Teams app are correctly wired; the real post/reply conversation completes setup; commercial-cloud-only scope is explicit and no delivery-mode or cloud-strategy choice appears.
 
 ### T2 — Conditional guided Microsoft setup
 

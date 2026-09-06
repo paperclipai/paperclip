@@ -86,6 +86,9 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("Create Azure Bot");
     expect(setup).toContain("Microsoft 365 work or school organization");
     expect(setup).toContain("teams.live.com");
+    expect(setup).toContain("commercial cloud tenants only");
+    expect(setup).toContain("GCC High");
+    expect(setup).toContain("operated by 21Vianet");
     expect(setup).toContain("Client secret value");
     expect(setup).toContain('scopes: ["personal", "team", "groupchat"]');
     expect(setup).toContain("resourceSpecific");

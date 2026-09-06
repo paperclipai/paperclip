@@ -253,6 +253,7 @@ import {
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
   publishChatPublicationSchema,
+  resolveChatActionSchema,
   resolveChatPublicationSchema,
   replaceChatEndpointResourcesSchema,
   updateChatEndpointSchema,
@@ -867,7 +868,8 @@ const chatConversationResponseSchema = z
 const chatActivityResponseSchema = z
   .object({
     id: z.string().uuid(),
-    kind: z.enum(["delivery", "publication", "health", "repair"]),
+    kind: z.enum(["delivery", "publication", "action", "health", "repair"]),
+    actionType: z.enum(["slash_task_start", "provider_effect"]).optional(),
     status: z.union([
       chatDeliveryStateSchema,
       chatPublicationStateSchema,
@@ -1390,6 +1392,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-endpoints/{endpointId}/deliveries/{deliveryId}/replay",
   "POST /api/chat-endpoints/{endpointId}/publications/{publicationId}/replay",
   "POST /api/chat-endpoints/{endpointId}/publications/{publicationId}/resolve",
+  "POST /api/chat-endpoints/{endpointId}/actions/{actionId}/resolve",
   "POST /api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications",
   "GET /api/issues/{issueId}/chat-binding",
 ]);
@@ -2290,6 +2293,31 @@ registry.registerPath({
     403: r.forbidden,
     404: r.notFound,
     409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/actions/{actionId}/resolve",
+  tags: ["chat-channels"],
+  summary: "Resolve an unconfirmed provider action",
+  description:
+    "After checking the provider, an operator may mark an ambiguous durable provider reply delivered, retry it while accepting duplicate risk, or cancel it. Slack slash-command task starts support explicit retry or cancel only. Paperclip never replays an ambiguous provider action automatically, and every resolution is audited.",
+  request: {
+    params: z.object({
+      endpointId: z.string().uuid(),
+      actionId: z.string().uuid(),
+    }),
+    body: jsonBody(resolveChatActionSchema),
+  },
+  responses: {
+    204: r.noContent,
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
   },
 });
 

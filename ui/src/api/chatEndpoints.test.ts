@@ -89,4 +89,17 @@ describe("chatEndpointsApi", () => {
       {},
     );
   });
+
+  it("resolves an ambiguous provider action through its narrow endpoint route", async () => {
+    mockApi.post.mockResolvedValue(undefined);
+    await chatEndpointsApi.resolveAction(
+      "endpoint-1",
+      "action-1",
+      "mark_delivered",
+    );
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/chat-endpoints/endpoint-1/actions/action-1/resolve",
+      { action: "mark_delivered" },
+    );
+  });
 });

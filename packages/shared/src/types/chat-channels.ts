@@ -316,12 +316,14 @@ export interface ChatPublication {
 
 export interface ChatActivityItem {
   id: string;
-  kind: "delivery" | "publication" | "health" | "repair";
+  kind: "delivery" | "publication" | "action" | "health" | "repair";
+  actionType?: "slash_task_start" | "provider_effect";
   status: string;
   summary: string;
   detail?: string | null;
   createdAt: string;
   replayable?: boolean;
+  resolutionActions?: Array<"mark_delivered" | "retry_anyway" | "cancel">;
 }
 
 export interface ExternalChannelBindingSummary {

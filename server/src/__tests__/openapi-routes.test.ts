@@ -396,6 +396,7 @@ describe("openapi routes", () => {
         "post",
         "/api/chat-endpoints/{endpointId}/publications/{publicationId}/resolve",
       ],
+      ["post", "/api/chat-endpoints/{endpointId}/actions/{actionId}/resolve"],
       [
         "post",
         "/api/chat-endpoints/{endpointId}/conversations/{conversationId}/publications",
@@ -490,6 +491,25 @@ describe("openapi routes", () => {
     });
     expect(setupSecret.responses["409"]).toBeDefined();
     expect(setupSecret.responses["422"]).toBeDefined();
+
+    const resolveAction =
+      spec.paths["/api/chat-endpoints/{endpointId}/actions/{actionId}/resolve"]
+        .post;
+    expect(
+      resolveAction.requestBody.content["application/json"].schema.properties
+        .action.enum,
+    ).toEqual(["mark_delivered", "retry_anyway", "cancel"]);
+    expect(resolveAction.responses["409"]).toBeDefined();
+    expect(resolveAction.responses["422"]).toBeDefined();
+
+    const activity =
+      spec.paths["/api/chat-endpoints/{endpointId}/activity"].get.responses[
+        "200"
+      ].content["application/json"].schema.items;
+    expect(activity.properties.actionType.enum).toEqual([
+      "slash_task_start",
+      "provider_effect",
+    ]);
 
     const replaceResources =
       spec.paths["/api/chat-endpoints/{endpointId}/resources"].put;

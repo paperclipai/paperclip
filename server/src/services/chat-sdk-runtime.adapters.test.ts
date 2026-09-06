@@ -176,6 +176,138 @@ describe("Chat SDK published adapter integration", () => {
 
   it.each([
     {
+      label: "JSON response body subCode",
+      providerCode: "MessageWritesBlocked",
+      rawError: Object.assign(new Error("Teams request was forbidden"), {
+        innerHttpError: {
+          statusCode: 403,
+          body: JSON.stringify({
+            error: {
+              code: "Forbidden",
+              innerError: {
+                subCode: "MessageWritesBlocked",
+                message: "sensitive-provider-detail-must-not-survive",
+              },
+            },
+          }),
+        },
+      }),
+    },
+    {
+      label: "structured response code",
+      providerCode: "ForbiddenOperationException",
+      rawError: Object.assign(new Error("Teams request was forbidden"), {
+        status: 403,
+        response: {
+          data: {
+            error: { code: "ForbiddenOperationException" },
+          },
+        },
+      }),
+    },
+  ])(
+    "retains bounded Teams 403 metadata from a $label",
+    async ({ providerCode, rawError }) => {
+      const runtime = createChatSdkEndpointRuntime({
+        callbacks: { onMessage() {} },
+        companyId: "company-teams-errors",
+        endpointId: `endpoint-teams-${providerCode}`,
+        logger: "silent",
+        persistence,
+        providerConfig: {
+          provider: "microsoft-teams",
+          userName: "Paperclip Agent",
+          credentials: {
+            appId: "00000000-0000-4000-8000-000000000000",
+            appPassword: "secret",
+          },
+        },
+      });
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        app: { activitySender: { send: () => Promise<never> } };
+        postMessage(
+          threadId: string,
+          message: { markdown: string },
+        ): Promise<unknown>;
+      };
+      adapter.app.activitySender.send = async () => {
+        throw rawError;
+      };
+      const threadId = `teams:${Buffer.from("19:blocked-thread@thread.tacv2").toString("base64url")}:${Buffer.from("https://smba.trafficmanager.net/amer/").toString("base64url")}:channel`;
+
+      try {
+        const error = await adapter
+          .postMessage(threadId, { markdown: "Safe Teams response" })
+          .catch((caught: unknown) => caught);
+        expect(error).toMatchObject({
+          name: "PermissionError",
+          adapter: "teams",
+          code: "PERMISSION_DENIED",
+          status: 403,
+          statusCode: 403,
+          subCode: providerCode,
+          details: {
+            providerStatus: 403,
+            providerSubCode: providerCode,
+          },
+        });
+        expect((error as { providerCodes: string[] }).providerCodes).toContain(
+          providerCode,
+        );
+        expect(JSON.stringify(error)).not.toContain(
+          "sensitive-provider-detail-must-not-survive",
+        );
+      } finally {
+        await runtime.shutdown();
+      }
+    },
+  );
+
+  it("keeps a Teams 401 as an endpoint authentication error", async () => {
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-teams-auth-error",
+      endpointId: "endpoint-teams-auth-error",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "microsoft-teams",
+        userName: "Paperclip Agent",
+        credentials: {
+          appId: "00000000-0000-4000-8000-000000000000",
+          appPassword: "secret",
+        },
+      },
+    });
+    const adapter = runtime.getProviderAdapter() as unknown as {
+      app: { activitySender: { send: () => Promise<never> } };
+      postMessage(
+        threadId: string,
+        message: { markdown: string },
+      ): Promise<unknown>;
+    };
+    adapter.app.activitySender.send = async () => {
+      throw Object.assign(new Error("expired credential"), {
+        innerHttpError: { statusCode: 401 },
+      });
+    };
+    const threadId = `teams:${Buffer.from("19:auth-thread@thread.tacv2").toString("base64url")}:${Buffer.from("https://smba.trafficmanager.net/amer/").toString("base64url")}:channel`;
+
+    try {
+      await expect(
+        adapter.postMessage(threadId, { markdown: "Do not deliver" }),
+      ).rejects.toMatchObject({
+        name: "AuthenticationError",
+        adapter: "teams",
+        code: "AUTH_FAILED",
+      });
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it.each([
+    {
       provider: "slack",
       providerConfig: {
         provider: "slack" as const,
@@ -536,7 +668,7 @@ describe("Chat SDK published adapter integration", () => {
     expect(adapter.app.api).toBe(originalApi);
   });
 
-  it("scopes direct Teams edit, reaction, and delete API calls to sovereign service URLs", async () => {
+  it("scopes direct Teams edit, reaction, and delete calls to signed Microsoft service URLs", async () => {
     const runtime = createChatSdkEndpointRuntime({
       callbacks: { onMessage() {} },
       companyId: "company-teams-direct-api",
@@ -767,6 +899,57 @@ describe("Chat SDK published adapter integration", () => {
     expect(adapter.app.api).toBe(originalApi);
   });
 
+  it("accepts canonical Microsoft first-party Teams service URL suffixes", async () => {
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-teams-egress-first-party",
+      endpointId: "endpoint-teams-egress-first-party",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "microsoft-teams",
+        userName: "Paperclip Agent",
+        credentials: {
+          appId: "00000000-0000-4000-8000-000000000000",
+          appPassword: "secret",
+        },
+      },
+    });
+    const adapter = runtime.getProviderAdapter() as unknown as {
+      app: {
+        activitySender: {
+          send: (
+            activity: unknown,
+            reference: { serviceUrl: string },
+          ) => Promise<{ id: string }>;
+        };
+      };
+      postMessage: (
+        threadId: string,
+        message: { markdown: string },
+      ) => Promise<unknown>;
+    };
+    const observed: string[] = [];
+    adapter.app.activitySender.send = async (_activity, reference) => {
+      observed.push(reference.serviceUrl);
+      return { id: `first-party-${observed.length}` };
+    };
+    const serviceUrls = [
+      "https://skype.botframework.com/",
+      "https://regional.botframework.com/teams/",
+      "https://smba.trafficmanager.net/amer-client-ss.msg/",
+      "https://smba.infra.gcc.teams.microsoft.com/teams/",
+      "https://smba.infra.gov.teams.microsoft.us/teams/",
+    ];
+
+    for (const [index, serviceUrl] of serviceUrls.entries()) {
+      const threadId = `teams:${Buffer.from(`19:first-party-${index}@thread.tacv2`).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}:channel`;
+      await adapter.postMessage(threadId, { markdown: "Safe response" });
+    }
+
+    expect(observed).toEqual(serviceUrls.map((url) => url.replace(/\/$/, "")));
+  });
+
   it("rejects unsafe Teams thread service URLs before transport", async () => {
     const runtime = createChatSdkEndpointRuntime({
       callbacks: { onMessage() {} },
@@ -801,7 +984,15 @@ describe("Chat SDK published adapter integration", () => {
       "http://127.0.0.1:1234/internal",
       "https://127.0.0.1/internal",
       "https://smba.trafficmanager.net.attacker.example/teams",
+      "https://botframework.com.attacker.example/teams",
+      "https://attackerbotframework.com/teams",
       "https://smba.trafficmanager.net:8443/teams",
+      "https://user@skype.botframework.com/teams",
+      "https://skype.botframework.com/teams/v3",
+      "https://skype.botframework.com/teams///",
+      "https://skype.botframework.com/%2e%2e/teams",
+      "https://skype.botframework.com/teams?redirect=attacker",
+      "https://skype.botframework.com/teams#fragment",
     ];
     for (const serviceUrl of unsafeServiceUrls) {
       const threadId = `teams:${Buffer.from("19:unsafe-thread@thread.tacv2").toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}:channel`;

@@ -152,6 +152,54 @@ describe("chat publication error classification", () => {
     ).toMatchObject({ kind: "endpoint_attention" });
   });
 
+  it.each(["MessageWritesBlocked", "ForbiddenOperationException"])(
+    "quarantines a Teams destination rejected with %s",
+    (providerSubCode) => {
+      expect(
+        classifyChatPublicationError(
+          providerError("PermissionError", "PERMISSION_DENIED", {
+            adapter: "teams",
+            status: 403,
+            subCode: providerSubCode,
+            providerCodes: ["Forbidden", providerSubCode],
+            details: {
+              providerStatus: 403,
+              providerSubCode,
+              providerCodes: ["Forbidden", providerSubCode],
+            },
+          }),
+          1,
+        ),
+      ).toEqual({
+        kind: "resource_unavailable",
+        reason: "PermissionError test",
+      });
+    },
+  );
+
+  it("keeps Teams authentication and generic permission failures endpoint-scoped", () => {
+    expect(
+      classifyChatPublicationError(
+        providerError("AuthenticationError", "AUTH_FAILED", {
+          adapter: "teams",
+          status: 401,
+        }),
+        1,
+      ),
+    ).toMatchObject({ kind: "endpoint_attention" });
+
+    expect(
+      classifyChatPublicationError(
+        providerError("PermissionError", "PERMISSION_DENIED", {
+          adapter: "teams",
+          status: 403,
+          providerCodes: ["Authorization_RequestDenied"],
+        }),
+        1,
+      ),
+    ).toMatchObject({ kind: "endpoint_attention" });
+  });
+
   it("marks a missing provider destination unavailable", () => {
     expect(
       classifyChatPublicationError(

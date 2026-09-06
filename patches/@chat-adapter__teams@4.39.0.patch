@@ -1,0 +1,66 @@
+diff --git a/dist/index.js b/dist/index.js
+index b0383953a27e4426ce544128a26bf3c8d8964b06..7cb10b871875869c4308e2619e334d5253596a09 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -504,6 +504,52 @@ import {
+   NetworkError as NetworkError2,
+   PermissionError
+ } from "@chat-adapter/shared";
++function teamsErrorRecord(value) {
++  return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
++}
++function teamsErrorBody(value) {
++  if (typeof value === "string") {
++    if (value.length > 16384) return void 0;
++    try {
++      return teamsErrorRecord(JSON.parse(value));
++    } catch {
++      return void 0;
++    }
++  }
++  return teamsErrorRecord(value);
++}
++function teamsErrorCode(value) {
++  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/.test(value) ? value : void 0;
++}
++function teamsErrorCodes(value, depth = 0, seen = /* @__PURE__ */ new Set()) {
++  if (depth > 4) return [];
++  const record = teamsErrorBody(value);
++  if (!record || seen.has(record)) return [];
++  seen.add(record);
++  const codes = [teamsErrorCode(record.code), teamsErrorCode(record.subCode), teamsErrorCode(record.subcode)].filter(Boolean);
++  for (const key of ["error", "innerError", "details", "body", "data"]) {
++    codes.push(...teamsErrorCodes(record[key], depth + 1, seen));
++  }
++  return [...new Set(codes)].slice(0, 8);
++}
++function teamsPermissionError(error, operation, statusCode) {
++  const err = teamsErrorRecord(error) || {};
++  const innerError = teamsErrorRecord(err.innerHttpError);
++  const response = teamsErrorRecord(innerError?.response) || teamsErrorRecord(err.response);
++  const bodies = [innerError, response, err];
++  const providerCodes = [...new Set(bodies.flatMap((body) => teamsErrorCodes(body)))].slice(0, 8);
++  const permissionError = new PermissionError("teams", operation);
++  permissionError.status = statusCode;
++  permissionError.statusCode = statusCode;
++  permissionError.providerCodes = providerCodes;
++  permissionError.subCode = providerCodes.find((code) => code === "MessageWritesBlocked" || code === "ForbiddenOperationException");
++  permissionError.details = {
++    providerStatus: statusCode,
++    providerCodes,
++    ...permissionError.subCode ? { providerSubCode: permissionError.subCode } : {}
++  };
++  return permissionError;
++}
+ function handleTeamsError(error, operation) {
+   if (error && typeof error === "object") {
+     const err = error;
+@@ -516,7 +562,7 @@ function handleTeamsError(error, operation) {
+       );
+     }
+     if (statusCode === 403 || err.message && typeof err.message === "string" && err.message.toLowerCase().includes("permission")) {
+-      throw new PermissionError("teams", operation);
++      throw teamsPermissionError(error, operation, statusCode);
+     }
+     if (statusCode === 404) {
+       throw new NetworkError2(

@@ -1,16 +1,11 @@
-import {
-  createHash,
-  createHmac,
-  generateKeyPairSync,
-  randomUUID,
-} from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, like } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -42,10 +37,7 @@ import {
 import type { ChatProvider } from "@paperclipai/shared";
 import type { Attachment, Author, Message, Thread } from "chat";
 import { errorHandler } from "../middleware/index.js";
-import {
-  chatChannelRoutes,
-  chatWebhookRoutes,
-} from "../routes/chat-channels.js";
+import { chatChannelRoutes, chatWebhookRoutes } from "../routes/chat-channels.js";
 import {
   chatChannelService,
   type ChatChannelServiceOptions,
@@ -57,6 +49,7 @@ import type {
   ChatSdkRuntime,
 } from "../services/chat-sdk-runtime.js";
 import { issueService } from "../services/issues.js";
+import { logActivity } from "../services/activity-log.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import type { StorageService } from "../storage/types.js";
 import {
@@ -64,18 +57,11 @@ import {
   telegramChatSdkCallbackData,
 } from "../services/chat-interaction-publications.js";
 import { enqueueChatRunMilestones } from "../services/chat-run-publications.js";
-import {
-  getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
-} from "./helpers/embedded-postgres.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
-const embeddedPostgresSupport = externalTestDatabaseUrl
-  ? { supported: true }
-  : await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported
-  ? describe.sequential
-  : describe.skip;
+const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -142,20 +128,15 @@ class FakeEndpointRuntime {
       conversation?: { tenantId?: unknown };
       channelData?: { tenant?: { id?: unknown } };
     };
-    const tenantIds = [
-      payload.conversation?.tenantId,
-      payload.channelData?.tenant?.id,
-    ].filter((value): value is string => typeof value === "string");
-    return (
-      tenantIds.length > 0 && tenantIds.every((value) => value === expected)
+    const tenantIds = [payload.conversation?.tenantId, payload.channelData?.tenant?.id].filter(
+      (value): value is string => typeof value === "string",
     );
+    return tenantIds.length > 0 && tenantIds.every((value) => value === expected);
   }
 
   thread(threadId: string) {
     const channelId = threadId.split(":")[1] ?? threadId;
-    const isTelegramDirectMessage =
-      this.options.providerConfig.provider === "telegram" &&
-      /^\d+$/.test(channelId);
+    const isTelegramDirectMessage = this.options.providerConfig.provider === "telegram" && /^\d+$/.test(channelId);
     return {
       id: threadId,
       channelId,
@@ -165,29 +146,19 @@ class FakeEndpointRuntime {
         name: "command-thread",
       },
       adapter: {
-        addReaction: async (
-          reactionThreadId: string,
-          messageId: string,
-          emoji: string,
-        ) => {
+        addReaction: async (reactionThreadId: string, messageId: string, emoji: string) => {
           this.reactions.push({
             threadId: reactionThreadId,
             messageId,
             emoji,
           });
         },
-        editMessage: async (
-          editedThreadId: string,
-          messageId: string,
-          editedMessage: unknown,
-        ) => {
+        editMessage: async (editedThreadId: string, messageId: string, editedMessage: unknown) => {
           this.editAttempts.push({ threadId: editedThreadId, messageId });
           if (this.editError) throw this.editError;
           if (this.postError) throw this.postError;
           const text =
-            editedMessage &&
-            typeof editedMessage === "object" &&
-            "markdown" in editedMessage
+            editedMessage && typeof editedMessage === "object" && "markdown" in editedMessage
               ? String((editedMessage as { markdown: unknown }).markdown)
               : JSON.stringify(editedMessage);
           this.edits.push({
@@ -207,20 +178,11 @@ class FakeEndpointRuntime {
         let chunks: string[] | undefined;
         let files: unknown[] | undefined;
         if (typeof message === "string") text = message;
-        else if (
-          message &&
-          typeof message === "object" &&
-          Symbol.asyncIterator in message
-        ) {
+        else if (message && typeof message === "object" && Symbol.asyncIterator in message) {
           chunks = [];
-          for await (const chunk of message as AsyncIterable<unknown>)
-            chunks.push(String(chunk));
+          for await (const chunk of message as AsyncIterable<unknown>) chunks.push(String(chunk));
           text = chunks.join("");
-        } else if (
-          message &&
-          typeof message === "object" &&
-          "markdown" in message
-        ) {
+        } else if (message && typeof message === "object" && "markdown" in message) {
           text = String((message as { markdown: unknown }).markdown);
         } else text = JSON.stringify(message);
         if (
@@ -289,10 +251,7 @@ class FakeEndpointRuntime {
 
 class FakeChatSdkRuntime {
   readonly endpoints = new Map<string, FakeEndpointRuntime>();
-  readonly configurations = new Map<
-    string,
-    CreateChatSdkEndpointRuntimeOptions
-  >();
+  readonly configurations = new Map<string, CreateChatSdkEndpointRuntimeOptions>();
   initializeHook: (() => Promise<void>) | undefined;
   replaceCount = 0;
 
@@ -305,11 +264,7 @@ class FakeChatSdkRuntime {
   async replaceEndpoint(options: CreateChatSdkEndpointRuntimeOptions) {
     this.replaceCount += 1;
     this.configurations.set(options.endpointId, options);
-    const endpoint = new FakeEndpointRuntime(
-      options,
-      this.attachmentBodies,
-      this.initializeHook,
-    );
+    const endpoint = new FakeEndpointRuntime(options, this.attachmentBodies, this.initializeHook);
     this.endpoints.set(options.endpointId, endpoint);
     return endpoint;
   }
@@ -323,9 +278,7 @@ class FakeChatSdkRuntime {
   }
 
   async shutdown() {
-    await Promise.all(
-      [...this.endpoints.values()].map(async (endpoint) => endpoint.shutdown()),
-    );
+    await Promise.all([...this.endpoints.values()].map(async (endpoint) => endpoint.shutdown()));
     this.endpoints.clear();
   }
 }
@@ -372,9 +325,7 @@ function fakeSlackFetch(botId = `U-BOT-${randomUUID()}`) {
   };
 }
 
-function fakeTelegramFetch(
-  botId = Number.parseInt(randomUUID().replaceAll("-", "").slice(0, 12), 16),
-) {
+function fakeTelegramFetch(botId = Number.parseInt(randomUUID().replaceAll("-", "").slice(0, 12), 16)) {
   return async (input: string | URL | Request) => {
     const url = String(input);
     if (url.endsWith("/getMe")) {
@@ -406,12 +357,7 @@ function fakeTelegramFetch(
   };
 }
 
-function makeThread(input: {
-  channelId: string;
-  id: string;
-  isDM?: boolean;
-  name?: string;
-}) {
+function makeThread(input: { channelId: string; id: string; isDM?: boolean; name?: string }) {
   const addReaction = vi.fn(async () => undefined);
   const startTyping = vi.fn(async () => undefined);
   const subscribe = vi.fn(async () => undefined);
@@ -483,12 +429,7 @@ function boardActor(companyId: string, userId = "owner-user") {
   };
 }
 
-function routesApp(
-  db: TestDb,
-  companyId: string,
-  service: ChatChannelService,
-  userId = "owner-user",
-) {
+function routesApp(db: TestDb, companyId: string, service: ChatChannelService, userId = "owner-user") {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -516,35 +457,24 @@ function webhookApp(service: ChatChannelService) {
 
 describeEmbeddedPostgres("chat channel control-plane integration", () => {
   let db!: TestDb;
-  let tempDb: Awaited<
-    ReturnType<typeof startEmbeddedPostgresTestDatabase>
-  > | null = null;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
-  const secretsTmpDir = path.join(
-    os.tmpdir(),
-    `paperclip-chat-channels-${randomUUID()}`,
-  );
+  const secretsTmpDir = path.join(os.tmpdir(), `paperclip-chat-channels-${randomUUID()}`);
 
   beforeAll(async () => {
     mkdirSync(secretsTmpDir, { recursive: true });
-    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(
-      secretsTmpDir,
-      "master.key",
-    );
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(secretsTmpDir, "master.key");
     if (externalTestDatabaseUrl) {
       db = createDb(externalTestDatabaseUrl);
     } else {
-      tempDb = await startEmbeddedPostgresTestDatabase(
-        "paperclip-chat-channels-",
-      );
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-chat-channels-");
       db = createDb(tempDb.connectionString);
     }
   }, 30_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
-    if (previousKeyFile === undefined)
-      delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    if (previousKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previousKeyFile;
     rmSync(secretsTmpDir, { recursive: true, force: true });
   });
@@ -619,7 +549,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     overrides: Partial<
       Pick<
         ChatChannelServiceOptions,
-        "deferWebhookProcessing" | "scheduleDeferredWork" | "storage"
+        | "deferWebhookProcessing"
+        | "scheduleDeferredWork"
+        | "setupSecretActivityLogger"
+        | "setupSecretCredentialPersistBarrier"
+        | "storage"
       >
     > = {},
   ) {
@@ -670,65 +604,42 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     return { objects, putFile, storage };
   }
 
-  async function recordSlackUrlVerification(
-    service: ChatChannelService,
-    publicId: string,
-  ) {
+  async function recordSlackUrlVerification(service: ChatChannelService, publicId: string) {
     await service.handleWebhook(
       publicId,
       "slack",
-      new Request(
-        `https://paperclip.example/api/chat-webhooks/${publicId}/slack`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            type: "url_verification",
-            challenge: "verified-challenge",
-          }),
-        },
-      ),
+      new Request(`https://paperclip.example/api/chat-webhooks/${publicId}/slack`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          type: "url_verification",
+          challenge: "verified-challenge",
+        }),
+      }),
     );
   }
 
-  function githubWebhookVerificationResponse(
-    service: ChatChannelService,
-    publicId: string,
-    webhookSecret: string,
-  ) {
+  function githubWebhookVerificationResponse(service: ChatChannelService, publicId: string, webhookSecret: string) {
     const body = JSON.stringify({ zen: "Keep it logically awesome." });
-    const signature = createHmac("sha256", webhookSecret)
-      .update(body)
-      .digest("hex");
+    const signature = createHmac("sha256", webhookSecret).update(body).digest("hex");
     return service.handleWebhook(
       publicId,
       "github",
-      new Request(
-        `https://paperclip.example/api/chat-webhooks/${publicId}/github`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-github-delivery": `github-setup-ping-${randomUUID()}`,
-            "x-github-event": "ping",
-            "x-hub-signature-256": `sha256=${signature}`,
-          },
-          body,
+      new Request(`https://paperclip.example/api/chat-webhooks/${publicId}/github`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-github-delivery": `github-setup-ping-${randomUUID()}`,
+          "x-github-event": "ping",
+          "x-hub-signature-256": `sha256=${signature}`,
         },
-      ),
+        body,
+      }),
     );
   }
 
-  async function recordGitHubWebhookVerification(
-    service: ChatChannelService,
-    publicId: string,
-    webhookSecret: string,
-  ) {
-    const response = await githubWebhookVerificationResponse(
-      service,
-      publicId,
-      webhookSecret,
-    );
+  async function recordGitHubWebhookVerification(service: ChatChannelService, publicId: string, webhookSecret: string) {
+    const response = await githubWebhookVerificationResponse(service, publicId, webhookSecret);
     expect(response.status).toBe(200);
   }
 
@@ -750,9 +661,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       )
       .then((rows) => rows[0]?.commentId ?? null);
     if (!wakeCommentId) {
-      throw new Error(
-        `Expected inbound comment link ${input.providerMessageId}`,
-      );
+      throw new Error(`Expected inbound comment link ${input.providerMessageId}`);
     }
     return {
       issueId: input.issueId,
@@ -762,11 +671,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
   }
 
-  async function qualifySetupRoundTrip(
-    service: ChatChannelService,
-    endpointId: string,
-    userId = "U-EXTERNAL",
-  ) {
+  async function qualifySetupRoundTrip(service: ChatChannelService, endpointId: string, userId = "U-EXTERNAL") {
     const endpoint = await service.get(endpointId);
     const conversation = await db
       .select()
@@ -793,10 +698,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         text: "Setup follow-up",
         userId,
       }),
-      trigger:
-        endpoint.provider === "telegram"
-          ? "direct_message"
-          : "subscribed_message",
+      trigger: endpoint.provider === "telegram" ? "direct_message" : "subscribed_message",
     });
     const contextSnapshot = await chatWakeContext({
       endpointId,
@@ -826,17 +728,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   async function configuredSlackEndpoint(
     fixture: Awaited<ReturnType<typeof seedCompany>>,
     overrides: { allowUnlinkedPeople?: boolean } & Partial<
-      Pick<
-        ChatChannelServiceOptions,
-        "deferWebhookProcessing" | "scheduleDeferredWork"
-      >
+      Pick<ChatChannelServiceOptions, "deferWebhookProcessing" | "scheduleDeferredWork">
     > = {},
   ) {
-    const context = createService(
-      new FakeChatSdkRuntime(),
-      fakeSlackFetch() as typeof globalThis.fetch,
-      overrides,
-    );
+    const context = createService(new FakeChatSdkRuntime(), fakeSlackFetch() as typeof globalThis.fetch, overrides);
     const endpoint = await context.service.create(
       fixture.companyId,
       {
@@ -867,26 +762,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "owner-user",
     );
     await recordSlackUrlVerification(context.service, endpoint.publicId);
-    await context.service.configure(
-      endpoint.id,
-      { action: "verify" },
-      "owner-user",
-    );
-    const callbacks = context.runtime.configurations.get(
-      endpoint.id,
-    )?.callbacks;
-    if (!callbacks)
-      throw new Error("Fake runtime did not receive endpoint callbacks");
+    await context.service.configure(endpoint.id, { action: "verify" }, "owner-user");
+    const callbacks = context.runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Fake runtime did not receive endpoint callbacks");
     return { ...context, endpoint, callbacks };
   }
 
   async function configuredTeamsEndpoint(
     fixture: Awaited<ReturnType<typeof seedCompany>>,
     overrides: Partial<
-      Pick<
-        ChatChannelServiceOptions,
-        "deferWebhookProcessing" | "scheduleDeferredWork" | "storage"
-      >
+      Pick<ChatChannelServiceOptions, "deferWebhookProcessing" | "scheduleDeferredWork" | "storage">
     > = {},
   ) {
     const context = createService(
@@ -919,11 +804,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    const callbacks = context.runtime.configurations.get(
-      endpoint.id,
-    )?.callbacks;
-    if (!callbacks)
-      throw new Error("Fake runtime did not receive Teams callbacks");
+    const callbacks = context.runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Fake runtime did not receive Teams callbacks");
     return { ...context, endpoint, callbacks };
   }
 
@@ -932,7 +814,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     overrides: Partial<
       Pick<
         ChatChannelServiceOptions,
-        "deferWebhookProcessing" | "scheduleDeferredWork" | "storage"
+        | "deferWebhookProcessing"
+        | "scheduleDeferredWork"
+        | "setupSecretActivityLogger"
+        | "setupSecretCredentialPersistBarrier"
+        | "storage"
       >
     > = {},
   ) {
@@ -959,10 +845,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "issue_comment",
       "pull_request_review_comment",
     ];
-    const appRegistrationId = Number.parseInt(
-      fixture.companyId.replaceAll("-", "").slice(0, 8),
-      16,
-    );
+    const appRegistrationId = Number.parseInt(fixture.companyId.replaceAll("-", "").slice(0, 8), 16);
     const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
       .privateKey.export({ type: "pkcs8", format: "pem" })
       .toString();
@@ -1001,19 +884,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
-      if (
-        url ===
-        `https://api.github.com/app/installations/${installationId}/access_tokens`
-      ) {
+      if (url === `https://api.github.com/app/installations/${installationId}/access_tokens`) {
         return new Response(JSON.stringify({ token: "installation-token" }), {
           status: 201,
           headers: { "content-type": "application/json" },
         });
       }
-      if (
-        url ===
-        "https://api.github.com/installation/repositories?per_page=100&page=1"
-      ) {
+      if (url === "https://api.github.com/installation/repositories?per_page=100&page=1") {
         return new Response(JSON.stringify({ repositories }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -1021,11 +898,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       throw new Error(`Unexpected provider request: ${url}`);
     }) as typeof globalThis.fetch;
-    const context = createService(
-      new FakeChatSdkRuntime(),
-      providerFetch,
-      overrides,
-    );
+    const context = createService(new FakeChatSdkRuntime(), providerFetch, overrides);
     const endpoint = await context.service.create(
       fixture.companyId,
       {
@@ -1035,15 +908,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    const { webhookSecret } = await context.service.generateSetupSecret(
-      endpoint.id,
-      "owner-user",
-    );
-    await recordGitHubWebhookVerification(
-      context.service,
-      endpoint.publicId,
-      webhookSecret,
-    );
+    const { webhookSecret } = await context.service.generateSetupSecret(endpoint.id, "owner-user");
+    await recordGitHubWebhookVerification(context.service, endpoint.publicId, webhookSecret);
     await context.service.configure(
       endpoint.id,
       {
@@ -1056,14 +922,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "owner-user",
     );
     const resources = await context.service.listResources(endpoint.id);
-    await context.service.replaceResources(endpoint.id, [
-      { id: resources[0]!.id, enabled: true },
-    ]);
-    const callbacks = context.runtime.configurations.get(
-      endpoint.id,
-    )?.callbacks;
-    if (!callbacks)
-      throw new Error("Fake runtime did not receive GitHub callbacks");
+    await context.service.replaceResources(endpoint.id, [{ id: resources[0]!.id, enabled: true }]);
+    const callbacks = context.runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Fake runtime did not receive GitHub callbacks");
     return {
       ...context,
       endpoint,
@@ -1086,23 +947,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ) {
         repositories = value;
       },
-      setAppAccess(input: {
-        permissions?: Record<string, string>;
-        events?: string[];
-      }) {
+      setAppAccess(input: { permissions?: Record<string, string>; events?: string[] }) {
         if (input.permissions) appPermissions = input.permissions;
         if (input.events) appEvents = input.events;
       },
     };
   }
 
-  async function configuredTelegramEndpoint(
-    fixture: Awaited<ReturnType<typeof seedCompany>>,
-  ) {
-    const context = createService(
-      new FakeChatSdkRuntime(),
-      fakeTelegramFetch() as typeof globalThis.fetch,
-    );
+  async function configuredTelegramEndpoint(fixture: Awaited<ReturnType<typeof seedCompany>>) {
+    const context = createService(new FakeChatSdkRuntime(), fakeTelegramFetch() as typeof globalThis.fetch);
     const endpoint = await context.service.create(
       fixture.companyId,
       {
@@ -1120,11 +973,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    const callbacks = context.runtime.configurations.get(
-      endpoint.id,
-    )?.callbacks;
-    if (!callbacks)
-      throw new Error("Fake runtime did not receive Telegram callbacks");
+    const callbacks = context.runtime.configurations.get(endpoint.id)?.callbacks;
+    if (!callbacks) throw new Error("Fake runtime did not receive Telegram callbacks");
     return { ...context, endpoint, callbacks };
   }
 
@@ -1188,13 +1038,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(stored.assignedAgentId).toBe(fixture.assignedAgentId);
     expect(stored.setup.command).toBe(createdCommand);
 
-    await db
-      .update(agents)
-      .set({ name: "Maya Renamed" })
-      .where(eq(agents.id, fixture.assignedAgentId));
-    expect((await service.get(createResponse.body.id)).setup.command).toBe(
-      createdCommand,
-    );
+    await db.update(agents).set({ name: "Maya Renamed" }).where(eq(agents.id, fixture.assignedAgentId));
+    expect((await service.get(createResponse.body.id)).setup.command).toBe(createdCommand);
   });
 
   it("rejects chat endpoints for non-invokable agents", async () => {
@@ -1203,10 +1048,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const app = routesApp(db, fixture.companyId, service);
 
     for (const status of ["paused", "terminated"] as const) {
-      await db
-        .update(agents)
-        .set({ status })
-        .where(eq(agents.id, fixture.assignedAgentId));
+      await db.update(agents).set({ status }).where(eq(agents.id, fixture.assignedAgentId));
 
       const response = await request(app)
         .post(`/api/companies/${fixture.companyId}/chat-endpoints`)
@@ -1255,55 +1097,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
 
     const memberApp = routesApp(db, fixture.companyId, service, memberUserId);
-    await request(memberApp)
-      .get(`/api/chat-endpoints/${endpoint.id}`)
-      .expect(200);
-    await request(memberApp)
-      .get(`/api/companies/${fixture.companyId}/chat-endpoints`)
-      .expect(200);
+    await request(memberApp).get(`/api/chat-endpoints/${endpoint.id}`).expect(200);
+    await request(memberApp).get(`/api/companies/${fixture.companyId}/chat-endpoints`).expect(200);
 
     const deniedMutations = [
       request(memberApp)
         .post(`/api/companies/${fixture.companyId}/chat-endpoints`)
         .send({ provider: "slack", assignedAgentId: fixture.assignedAgentId }),
-      request(memberApp)
-        .patch(`/api/chat-endpoints/${endpoint.id}`)
-        .send({ allowDirectMessages: true }),
-      request(memberApp)
-        .post(`/api/chat-endpoints/${endpoint.id}/setup`)
-        .send({ action: "pause" }),
-      request(memberApp).post(
-        `/api/chat-endpoints/${endpoint.id}/setup-secret`,
-      ),
+      request(memberApp).patch(`/api/chat-endpoints/${endpoint.id}`).send({ allowDirectMessages: true }),
+      request(memberApp).post(`/api/chat-endpoints/${endpoint.id}/setup`).send({ action: "pause" }),
+      request(memberApp).post(`/api/chat-endpoints/${endpoint.id}/setup-secret`),
       request(memberApp).post(`/api/chat-endpoints/${endpoint.id}/test`),
+      request(memberApp).put(`/api/chat-endpoints/${endpoint.id}/resources`).send({ resources: [] }),
+      request(memberApp).post(`/api/chat-endpoints/${endpoint.id}/principals/${randomUUID()}/link-intent`).send({}),
+      request(memberApp).delete(`/api/chat-endpoints/${endpoint.id}/principals/${randomUUID()}/link`),
+      request(memberApp).post(`/api/chat-endpoints/${endpoint.id}/deliveries/${randomUUID()}/replay`),
+      request(memberApp).post(`/api/chat-endpoints/${endpoint.id}/publications/${randomUUID()}/replay`),
       request(memberApp)
-        .put(`/api/chat-endpoints/${endpoint.id}/resources`)
-        .send({ resources: [] }),
+        .post(`/api/chat-endpoints/${endpoint.id}/publications/${randomUUID()}/resolve`)
+        .send({ action: "cancel" }),
       request(memberApp)
-        .post(
-          `/api/chat-endpoints/${endpoint.id}/principals/${randomUUID()}/link-intent`,
-        )
-        .send({}),
-      request(memberApp).delete(
-        `/api/chat-endpoints/${endpoint.id}/principals/${randomUUID()}/link`,
-      ),
-      request(memberApp).post(
-        `/api/chat-endpoints/${endpoint.id}/deliveries/${randomUUID()}/replay`,
-      ),
-      request(memberApp).post(
-        `/api/chat-endpoints/${endpoint.id}/publications/${randomUUID()}/replay`,
-      ),
-      request(memberApp)
-        .post(
-          `/api/chat-endpoints/${endpoint.id}/publications/${randomUUID()}/resolve`,
-        )
+        .post(`/api/chat-endpoints/${endpoint.id}/actions/${randomUUID()}/resolve`)
         .send({ action: "cancel" }),
     ];
     for (const mutation of deniedMutations) {
       const response = await mutation.expect(403);
-      expect(response.body.error).toBe(
-        "Missing permission: tools:manage_connections",
-      );
+      expect(response.body.error).toBe("Missing permission: tools:manage_connections");
     }
 
     const managerApp = routesApp(db, fixture.companyId, service);
@@ -1331,10 +1150,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const app = routesApp(db, viewerCompany.companyId, service);
 
     await request(app).get(`/api/chat-endpoints/${endpoint.id}`).expect(404);
-    await request(app)
-      .patch(`/api/chat-endpoints/${endpoint.id}`)
-      .send({ allowDirectMessages: true })
-      .expect(404);
+    await request(app).patch(`/api/chat-endpoints/${endpoint.id}`).send({ allowDirectMessages: true }).expect(404);
   });
 
   it("does not let two live agent connections claim the same native bot or spoof its verified identity", async () => {
@@ -1416,100 +1232,86 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .toString();
     let observedIssuer: string | null = null;
     let appRegistrationId = 789;
-    const providerFetch = vi.fn(
-      async (input: string | URL | Request, init?: RequestInit) => {
-        const url = String(input);
-        if (url === "https://api.github.com/app") {
-          const authorization = new Headers(init?.headers).get("authorization");
-          const token = authorization?.replace(/^Bearer\s+/i, "");
-          const payload = token?.split(".")[1];
-          if (!payload) throw new Error("GitHub App JWT was not sent");
-          observedIssuer = String(
-            (
-              JSON.parse(
-                Buffer.from(payload, "base64url").toString("utf8"),
-              ) as { iss?: unknown }
-            ).iss,
-          );
-          return new Response(
-            JSON.stringify({
-              id: appRegistrationId,
-              slug: "maya-paperclip",
-              name: "Maya Paperclip",
-              owner: { login: "paperclipai" },
-              permissions: {
-                issues: "write",
-                metadata: "read",
-                pull_requests: "write",
+    const providerFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://api.github.com/app") {
+        const authorization = new Headers(init?.headers).get("authorization");
+        const token = authorization?.replace(/^Bearer\s+/i, "");
+        const payload = token?.split(".")[1];
+        if (!payload) throw new Error("GitHub App JWT was not sent");
+        observedIssuer = String(
+          (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { iss?: unknown }).iss,
+        );
+        return new Response(
+          JSON.stringify({
+            id: appRegistrationId,
+            slug: "maya-paperclip",
+            name: "Maya Paperclip",
+            owner: { login: "paperclipai" },
+            permissions: {
+              issues: "write",
+              metadata: "read",
+              pull_requests: "write",
+            },
+            events: [
+              "github_app_authorization",
+              "installation",
+              "installation_repositories",
+              "issue_comment",
+              "pull_request_review_comment",
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "https://api.github.com/app/installations?per_page=100") {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 2468,
+              account: {
+                id: 1357,
+                login: "paperclipai",
+                type: "Organization",
               },
-              events: [
-                "github_app_authorization",
-                "installation",
-                "installation_repositories",
-                "issue_comment",
-                "pull_request_review_comment",
-              ],
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (url === "https://api.github.com/app/installations?per_page=100") {
-          return new Response(
-            JSON.stringify([
+              suspended_at: null,
+            },
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "https://api.github.com/app/installations/2468/access_tokens") {
+        return new Response(JSON.stringify({ token: "installation-token" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://api.github.com/installation/repositories?per_page=100&page=1") {
+        return new Response(
+          JSON.stringify({
+            repositories: [
               {
-                id: 2468,
-                account: {
-                  id: 1357,
-                  login: "paperclipai",
-                  type: "Organization",
-                },
-                suspended_at: null,
+                id: 97531,
+                full_name: "paperclipai/paperclip",
+                html_url: "https://github.com/paperclipai/paperclip",
+                owner: { id: 1357, login: "paperclipai" },
+                private: false,
               },
-            ]),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (
-          url === "https://api.github.com/app/installations/2468/access_tokens"
-        ) {
-          return new Response(JSON.stringify({ token: "installation-token" }), {
-            status: 201,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        if (
-          url ===
-          "https://api.github.com/installation/repositories?per_page=100&page=1"
-        ) {
-          return new Response(
-            JSON.stringify({
-              repositories: [
-                {
-                  id: 97531,
-                  full_name: "paperclipai/paperclip",
-                  html_url: "https://github.com/paperclipai/paperclip",
-                  owner: { id: 1357, login: "paperclipai" },
-                  private: false,
-                },
-                {
-                  id: 97532,
-                  full_name: "paperclipai/paperclip-disabled",
-                  html_url: "https://github.com/paperclipai/paperclip-disabled",
-                  owner: { id: 1357, login: "paperclipai" },
-                  private: false,
-                },
-              ],
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        throw new Error(`Unexpected provider request: ${url}`);
-      },
-    ) as unknown as typeof globalThis.fetch;
-    const { runtime, service } = createService(
-      new FakeChatSdkRuntime(),
-      providerFetch,
-    );
+              {
+                id: 97532,
+                full_name: "paperclipai/paperclip-disabled",
+                html_url: "https://github.com/paperclipai/paperclip-disabled",
+                owner: { id: 1357, login: "paperclipai" },
+                private: false,
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected provider request: ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+    const { runtime, service } = createService(new FakeChatSdkRuntime(), providerFetch);
     const endpoint = await service.create(
       fixture.companyId,
       {
@@ -1523,19 +1325,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .post(`/api/chat-endpoints/${endpoint.id}/setup-secret`)
       .send({})
       .expect(201);
-    const generatedWebhookSecret = generatedSecretResponse.body
-      .webhookSecret as string;
+    const generatedWebhookSecret = generatedSecretResponse.body.webhookSecret as string;
     expect(generatedSecretResponse.headers["cache-control"]).toBe("no-store");
     expect(generatedWebhookSecret).toMatch(/^[a-f0-9]{64}$/);
-    const endpointAfterGeneration = await request(app)
-      .get(`/api/chat-endpoints/${endpoint.id}`)
-      .expect(200);
-    expect(endpointAfterGeneration.body.setup.webhookSecretConfigured).toBe(
-      true,
-    );
-    expect(JSON.stringify(endpointAfterGeneration.body)).not.toContain(
-      generatedWebhookSecret,
-    );
+    const endpointAfterGeneration = await request(app).get(`/api/chat-endpoints/${endpoint.id}`).expect(200);
+    expect(endpointAfterGeneration.body.setup.webhookSecretConfigured).toBe(true);
+    expect(JSON.stringify(endpointAfterGeneration.body)).not.toContain(generatedWebhookSecret);
     await expect(
       service.configure(
         endpoint.id,
@@ -1549,11 +1344,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: 409,
       details: { code: "chat_webhook_not_verified" },
     });
-    await recordGitHubWebhookVerification(
-      service,
-      endpoint.publicId,
-      generatedWebhookSecret,
-    );
+    await recordGitHubWebhookVerification(service, endpoint.publicId, generatedWebhookSecret);
 
     const configured = await service.configure(
       endpoint.id,
@@ -1575,9 +1366,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       botUsername: "maya-paperclip[bot]",
       setup: { step: "test", webhookVerifiedAt: expect.any(String) },
     });
-    expect(
-      runtime.configurations.get(endpoint.id)?.providerConfig,
-    ).toMatchObject({
+    expect(runtime.configurations.get(endpoint.id)?.providerConfig).toMatchObject({
       provider: "github",
       credentials: {
         appId,
@@ -1587,10 +1376,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     expect(
-      runtime.configurations.get(endpoint.id)?.providerConfig.provider ===
-        "github" &&
-        runtime.configurations.get(endpoint.id)?.providerConfig.credentials
-          .botUserId,
+      runtime.configurations.get(endpoint.id)?.providerConfig.provider === "github" &&
+        runtime.configurations.get(endpoint.id)?.providerConfig.credentials.botUserId,
     ).toBeUndefined();
     appRegistrationId = 790;
     await expect(
@@ -1655,10 +1442,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "mention",
     });
     await expect(
-      db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id)),
+      db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id)),
     ).resolves.toHaveLength(1);
     expect(
       (await service.listResources(endpoint.id)).map((resource) => ({
@@ -1733,12 +1517,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("atomically admits only one first GitHub repository under concurrent root mentions", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredGitHubEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredGitHubEndpoint(fixture);
     const [firstResource] = await service.listResources(endpoint.id);
-    await service.replaceResources(endpoint.id, [
-      { id: firstResource!.id, enabled: false },
-    ]);
+    await service.replaceResources(endpoint.id, [{ id: firstResource!.id, enabled: false }]);
     await db.insert(chatEndpointResources).values({
       companyId: endpoint.companyId,
       endpointId: endpoint.id,
@@ -1807,15 +1588,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "github", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
-    const { webhookSecret } = await service.generateSetupSecret(
-      endpoint.id,
-      "owner-user",
-    );
-    await recordGitHubWebhookVerification(
-      service,
-      endpoint.publicId,
-      webhookSecret,
-    );
+    const { webhookSecret } = await service.generateSetupSecret(endpoint.id, "owner-user");
+    await recordGitHubWebhookVerification(service, endpoint.publicId, webhookSecret);
     const app = routesApp(db, fixture.companyId, service);
 
     await request(app)
@@ -1857,9 +1631,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select({ refs: toolConnections.credentialSecretRefs })
       .from(toolConnections)
       .where(eq(toolConnections.id, endpoint.connectionId));
-    expect(connection!.refs).toEqual([
-      expect.objectContaining({ configPath: "credentials.webhookSecret" }),
-    ]);
+    expect(connection!.refs).toEqual([expect.objectContaining({ configPath: "credentials.webhookSecret" })]);
   });
 
   it("rejects over-scoped GitHub Apps while tolerating unavoidable lifecycle events", async () => {
@@ -1867,9 +1639,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
       .privateKey.export({ type: "pkcs8", format: "pem" })
       .toString();
-    const { service } = createService(new FakeChatSdkRuntime(), (async (
-      input: string | URL | Request,
-    ) => {
+    const { service } = createService(new FakeChatSdkRuntime(), (async (input: string | URL | Request) => {
       if (String(input) !== "https://api.github.com/app") {
         throw new Error(`Unexpected provider request: ${String(input)}`);
       }
@@ -1902,15 +1672,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "github", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
-    const { webhookSecret } = await service.generateSetupSecret(
-      endpoint.id,
-      "owner-user",
-    );
-    await recordGitHubWebhookVerification(
-      service,
-      endpoint.publicId,
-      webhookSecret,
-    );
+    const { webhookSecret } = await service.generateSetupSecret(endpoint.id, "owner-user");
+    await recordGitHubWebhookVerification(service, endpoint.publicId, webhookSecret);
 
     await expect(
       service.configure(
@@ -1933,16 +1696,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select({ refs: toolConnections.credentialSecretRefs })
       .from(toolConnections)
       .where(eq(toolConnections.id, endpoint.connectionId));
-    expect(connection!.refs).toEqual([
-      expect.objectContaining({ configPath: "credentials.webhookSecret" }),
-    ]);
+    expect(connection!.refs).toEqual([expect.objectContaining({ configPath: "credentials.webhookSecret" })]);
   });
 
   it("rejects under-scoped Slack and GitHub apps before saving provider credentials", async () => {
     const fixture = await seedCompany();
-    const slack = createService(new FakeChatSdkRuntime(), (async (
-      input: string | URL | Request,
-    ) => {
+    const slack = createService(new FakeChatSdkRuntime(), (async (input: string | URL | Request) => {
       if (String(input) !== "https://slack.com/api/auth.test") {
         throw new Error(`Unexpected provider request: ${String(input)}`);
       }
@@ -1992,9 +1751,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
       .privateKey.export({ type: "pkcs8", format: "pem" })
       .toString();
-    const github = createService(new FakeChatSdkRuntime(), (async (
-      input: string | URL | Request,
-    ) => {
+    const github = createService(new FakeChatSdkRuntime(), (async (input: string | URL | Request) => {
       if (String(input) !== "https://api.github.com/app") {
         throw new Error(`Unexpected provider request: ${String(input)}`);
       }
@@ -2019,15 +1776,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "github", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
-    const { webhookSecret } = await github.service.generateSetupSecret(
-      githubEndpoint.id,
-      "owner-user",
-    );
-    await recordGitHubWebhookVerification(
-      github.service,
-      githubEndpoint.publicId,
-      webhookSecret,
-    );
+    const { webhookSecret } = await github.service.generateSetupSecret(githubEndpoint.id, "owner-user");
+    await recordGitHubWebhookVerification(github.service, githubEndpoint.publicId, webhookSecret);
     await expect(
       github.service.configure(
         githubEndpoint.id,
@@ -2055,45 +1805,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         refs: toolConnections.credentialSecretRefs,
       })
       .from(toolConnections)
-      .where(
-        inArray(toolConnections.id, [
-          slackEndpoint.connectionId,
-          githubEndpoint.connectionId,
-        ]),
-      );
-    expect(
-      connections.find(
-        (connection) => connection.id === slackEndpoint.connectionId,
-      )?.refs,
-    ).toEqual([]);
-    expect(
-      connections.find(
-        (connection) => connection.id === githubEndpoint.connectionId,
-      )?.refs,
-    ).toEqual([
+      .where(inArray(toolConnections.id, [slackEndpoint.connectionId, githubEndpoint.connectionId]));
+    expect(connections.find((connection) => connection.id === slackEndpoint.connectionId)?.refs).toEqual([]);
+    expect(connections.find((connection) => connection.id === githubEndpoint.connectionId)?.refs).toEqual([
       expect.objectContaining({ configPath: "credentials.webhookSecret" }),
     ]);
   });
 
   it("rotates a live GitHub webhook secret fail-closed and reconnects with stored credentials", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } =
-      await configuredGitHubEndpoint(fixture);
+    const { endpoint, runtime, service } = await configuredGitHubEndpoint(fixture);
     await db
       .update(chatEndpoints)
       .set({ status: "active", setup: { step: "complete" } })
       .where(eq(chatEndpoints.id, endpoint.id));
 
-    const { webhookSecret } = await service.generateSetupSecret(
-      endpoint.id,
-      "owner-user",
-    );
+    const { webhookSecret } = await service.generateSetupSecret(endpoint.id, "owner-user");
     expect(webhookSecret).toMatch(/^[a-f0-9]{64}$/);
     expect(runtime.endpoints.has(endpoint.id)).toBe(false);
     await expect(service.get(endpoint.id)).resolves.toMatchObject({
       status: "attention",
-      healthMessage:
-        "Update the GitHub webhook secret, then reconnect this App",
+      healthMessage: "Update the GitHub webhook secret, then reconnect this App",
       setup: { step: "provider_setup", webhookSecretConfigured: true },
     });
     const [disabledConnection] = await db
@@ -2109,25 +1841,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       enabled: false,
       healthStatus: "degraded",
     });
-    await recordGitHubWebhookVerification(
-      service,
-      endpoint.publicId,
-      webhookSecret,
-    );
+    await recordGitHubWebhookVerification(service, endpoint.publicId, webhookSecret);
 
-    const reconnected = await service.configure(
-      endpoint.id,
-      { action: "reconnect" },
-      "owner-user",
-    );
+    const reconnected = await service.configure(endpoint.id, { action: "reconnect" }, "owner-user");
 
     expect(reconnected).toMatchObject({
       status: "verifying",
       setup: { step: "test", webhookSecretConfigured: true },
     });
-    expect(
-      runtime.configurations.get(endpoint.id)?.providerConfig,
-    ).toMatchObject({
+    expect(runtime.configurations.get(endpoint.id)?.providerConfig).toMatchObject({
       provider: "github",
       credentials: {
         appId: "123456",
@@ -2135,6 +1857,113 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     expect(JSON.stringify(reconnected)).not.toContain(webhookSecret);
+  });
+
+  it("reveals a rotated GitHub secret despite a later completion-audit failure and makes retry a new rotation", async () => {
+    const fixture = await seedCompany();
+    let failedAuditAction: string | null = null;
+    let failCredentialPersistence = false;
+    const setupSecretActivityLogger: typeof logActivity = async (database, input, publications) => {
+      if (failedAuditAction === input.action) {
+        failedAuditAction = null;
+        throw new Error("simulated setup-secret audit outage");
+      }
+      return logActivity(database, input, publications);
+    };
+    const setupSecretCredentialPersistBarrier = async () => {
+      if (!failCredentialPersistence) return;
+      failCredentialPersistence = false;
+      throw new Error("simulated setup-secret credential persistence outage");
+    };
+    const {
+      endpoint,
+      runtime,
+      service,
+      webhookSecret: originalSecret,
+    } = await configuredGitHubEndpoint(fixture, {
+      setupSecretActivityLogger,
+      setupSecretCredentialPersistBarrier,
+    });
+
+    failedAuditAction = "chat_endpoint.setup_secret_rotation_started";
+    await expect(service.generateSetupSecret(endpoint.id, "owner-user")).rejects.toThrow(
+      "simulated setup-secret audit outage",
+    );
+    expect(runtime.endpoints.has(endpoint.id)).toBe(true);
+    await expect(githubWebhookVerificationResponse(service, endpoint.publicId, originalSecret)).resolves.toMatchObject({
+      status: 200,
+    });
+
+    const [refsBeforePersistenceFailure] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    failCredentialPersistence = true;
+    await expect(service.generateSetupSecret(endpoint.id, "owner-user")).rejects.toThrow(
+      "simulated setup-secret credential persistence outage",
+    );
+    const [refsAfterPersistenceFailure] = await db
+      .select({ refs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, endpoint.connectionId));
+    expect(refsAfterPersistenceFailure!.refs).toEqual(refsBeforePersistenceFailure!.refs);
+    expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "attention",
+      healthMessage: "Update the GitHub webhook secret, then reconnect this App",
+      setup: { step: "provider_setup", webhookSecretConfigured: true },
+    });
+    await expect(githubWebhookVerificationResponse(service, endpoint.publicId, originalSecret)).resolves.toMatchObject({
+      status: 200,
+    });
+
+    failedAuditAction = "chat_endpoint.setup_secret_generated";
+    const first = await service.generateSetupSecret(endpoint.id, "owner-user");
+    expect(first.webhookSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.webhookSecret).not.toBe(originalSecret);
+    expect(runtime.endpoints.has(endpoint.id)).toBe(false);
+    await expect(githubWebhookVerificationResponse(service, endpoint.publicId, originalSecret)).resolves.toMatchObject({
+      status: 401,
+    });
+    await expect(
+      githubWebhookVerificationResponse(service, endpoint.publicId, first.webhookSecret),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "attention",
+      setup: {
+        step: "provider_setup",
+        webhookSecretConfigured: true,
+      },
+    });
+
+    // A caller that lost the successful response may explicitly retry. That
+    // retry is another serialized rotation: only the newly returned value is
+    // valid, so the caller can converge without reusing hidden plaintext.
+    const second = await service.generateSetupSecret(endpoint.id, "owner-user");
+    expect(second.webhookSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(second.webhookSecret).not.toBe(first.webhookSecret);
+    await expect(
+      githubWebhookVerificationResponse(service, endpoint.publicId, first.webhookSecret),
+    ).resolves.toMatchObject({ status: 401 });
+    await expect(
+      githubWebhookVerificationResponse(service, endpoint.publicId, second.webhookSecret),
+    ).resolves.toMatchObject({ status: 200 });
+
+    const auditRows = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, endpoint.connectionId));
+    const started = auditRows.filter((row) => row.action === "chat_endpoint.setup_secret_rotation_started");
+    const completed = auditRows.filter((row) => row.action === "chat_endpoint.setup_secret_generated");
+    const failed = auditRows.filter((row) => row.action === "chat_endpoint.setup_secret_rotation_failed");
+    expect(started).toHaveLength(4);
+    expect(completed).toHaveLength(2);
+    expect(failed).toHaveLength(1);
+    const startedRotationIds = started.map((row) => row.details.rotationId);
+    const terminalRotationIds = new Set([...completed, ...failed].map((row) => row.details.rotationId));
+    expect(startedRotationIds.filter((rotationId) => !terminalRotationIds.has(rotationId))).toHaveLength(1);
+    expect(JSON.stringify(auditRows)).not.toContain(first.webhookSecret);
+    expect(JSON.stringify(auditRows)).not.toContain(second.webhookSecret);
   });
 
   it("replaces a pre-connect GitHub webhook secret without inventing a broken existing App", async () => {
@@ -2146,21 +1975,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "owner-user",
     );
     const first = await service.generateSetupSecret(endpoint.id, "owner-user");
-    await recordGitHubWebhookVerification(
-      service,
-      endpoint.publicId,
-      first.webhookSecret,
-    );
+    await recordGitHubWebhookVerification(service, endpoint.publicId, first.webhookSecret);
 
     const second = await service.generateSetupSecret(endpoint.id, "owner-user");
 
     expect(second.webhookSecret).not.toBe(first.webhookSecret);
     await expect(
-      githubWebhookVerificationResponse(
-        service,
-        endpoint.publicId,
-        first.webhookSecret,
-      ),
+      githubWebhookVerificationResponse(service, endpoint.publicId, first.webhookSecret),
     ).resolves.toMatchObject({ status: 401 });
     await expect(service.get(endpoint.id)).resolves.toMatchObject({
       status: "draft",
@@ -2193,20 +2014,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ],
     });
 
-    await recordGitHubWebhookVerification(
-      service,
-      endpoint.publicId,
-      second.webhookSecret,
-    );
+    await recordGitHubWebhookVerification(service, endpoint.publicId, second.webhookSecret);
     const setupActions = await db
       .select({ action: activityLog.action, details: activityLog.details })
       .from(activityLog)
       .where(eq(activityLog.entityId, endpoint.connectionId));
-    expect(
-      setupActions.filter(
-        (item) => item.action === "chat_endpoint.setup_secret_generated",
-      ),
-    ).toEqual([
+    expect(setupActions.filter((item) => item.action === "chat_endpoint.setup_secret_generated")).toEqual([
       expect.objectContaining({
         details: expect.objectContaining({ rotated: false }),
       }),
@@ -2217,17 +2030,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
       }),
     ]);
-    expect(
-      setupActions.filter(
-        (item) => item.action === "chat_endpoint.webhook_verified",
-      ),
-    ).toHaveLength(2);
+    expect(setupActions.filter((item) => item.action === "chat_endpoint.webhook_verified")).toHaveLength(2);
   });
 
   it("preserves GitHub webhook verification through setup completion and reconnect", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredGitHubEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredGitHubEndpoint(fixture);
     const setupThread = makeThread({
       channelId: "paperclipai/paperclip",
       id: "github:paperclipai/paperclip:issue:811",
@@ -2257,11 +2065,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     const verifiedAt = activated.setup.webhookVerifiedAt;
 
-    const reconnected = await service.configure(
-      endpoint.id,
-      { action: "reconnect" },
-      "owner-user",
-    );
+    const reconnected = await service.configure(endpoint.id, { action: "reconnect" }, "owner-user");
     expect(reconnected).toMatchObject({
       status: "verifying",
       setup: {
@@ -2282,24 +2086,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("serializes concurrent GitHub setup-secret requests without losing stored credentials", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } =
-      await configuredGitHubEndpoint(fixture);
+    const { endpoint, runtime, service } = await configuredGitHubEndpoint(fixture);
     const app = routesApp(db, fixture.companyId, service);
 
     const [first, second] = await Promise.all([
-      request(app)
-        .post(`/api/chat-endpoints/${endpoint.id}/setup-secret`)
-        .send({})
-        .expect(201),
-      request(app)
-        .post(`/api/chat-endpoints/${endpoint.id}/setup-secret`)
-        .send({})
-        .expect(201),
+      request(app).post(`/api/chat-endpoints/${endpoint.id}/setup-secret`).send({}).expect(201),
+      request(app).post(`/api/chat-endpoints/${endpoint.id}/setup-secret`).send({}).expect(201),
     ]);
-    const rotatedSecrets = [
-      first.body.webhookSecret as string,
-      second.body.webhookSecret as string,
-    ];
+    const rotatedSecrets = [first.body.webhookSecret as string, second.body.webhookSecret as string];
     expect(rotatedSecrets[0]).toMatch(/^[a-f0-9]{64}$/);
     expect(rotatedSecrets[1]).toMatch(/^[a-f0-9]{64}$/);
     expect(rotatedSecrets[0]).not.toBe(rotatedSecrets[1]);
@@ -2326,26 +2120,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ),
     ).resolves.toHaveLength(3);
     await expect(
-      db
-        .select()
-        .from(chatEndpointLeases)
-        .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+      db.select().from(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, endpoint.id)),
     ).resolves.toHaveLength(0);
 
     let currentWebhookSecret: string | null = null;
     for (const candidate of rotatedSecrets) {
-      const response = await githubWebhookVerificationResponse(
-        service,
-        endpoint.publicId,
-        candidate,
-      );
+      const response = await githubWebhookVerificationResponse(service, endpoint.publicId, candidate);
       if (response.status === 200) currentWebhookSecret = candidate;
     }
     expect(currentWebhookSecret).not.toBeNull();
     await service.configure(endpoint.id, { action: "reconnect" }, "owner-user");
-    const providerConfig = runtime.configurations.get(
-      endpoint.id,
-    )?.providerConfig;
+    const providerConfig = runtime.configurations.get(endpoint.id)?.providerConfig;
     expect(providerConfig).toMatchObject({
       provider: "github",
       credentials: {
@@ -2354,25 +2139,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         privateKey: expect.stringContaining("BEGIN PRIVATE KEY"),
       },
     });
-    if (providerConfig?.provider !== "github")
-      throw new Error("Expected GitHub provider configuration");
+    if (providerConfig?.provider !== "github") throw new Error("Expected GitHub provider configuration");
     expect(providerConfig.credentials.webhookSecret).toBe(currentWebhookSecret);
   });
 
   it("serializes a GitHub secret rotation racing reconnect and preserves the rotated secret", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } =
-      await configuredGitHubEndpoint(fixture);
+    const { endpoint, runtime, service } = await configuredGitHubEndpoint(fixture);
     const app = routesApp(db, fixture.companyId, service);
 
     const [rotation, reconnect] = await Promise.all([
-      request(app)
-        .post(`/api/chat-endpoints/${endpoint.id}/setup-secret`)
-        .send({})
-        .expect(201),
-      request(app)
-        .post(`/api/chat-endpoints/${endpoint.id}/setup`)
-        .send({ action: "reconnect" }),
+      request(app).post(`/api/chat-endpoints/${endpoint.id}/setup-secret`).send({}).expect(201),
+      request(app).post(`/api/chat-endpoints/${endpoint.id}/setup`).send({ action: "reconnect" }),
     ]);
     expect([200, 409]).toContain(reconnect.status);
     const rotatedSecret = rotation.body.webhookSecret as string;
@@ -2381,15 +2159,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // The final state depends on which request acquired the lease first. A
     // final reconnect must consume the complete, most recent credential set
     // in either ordering.
-    await recordGitHubWebhookVerification(
-      service,
-      endpoint.publicId,
-      rotatedSecret,
-    );
+    await recordGitHubWebhookVerification(service, endpoint.publicId, rotatedSecret);
     await service.configure(endpoint.id, { action: "reconnect" }, "owner-user");
-    const providerConfig = runtime.configurations.get(
-      endpoint.id,
-    )?.providerConfig;
+    const providerConfig = runtime.configurations.get(endpoint.id)?.providerConfig;
     expect(providerConfig).toMatchObject({
       provider: "github",
       credentials: {
@@ -2410,17 +2182,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "credentials.webhookSecret",
     ]);
     await expect(
-      db
-        .select()
-        .from(chatEndpointLeases)
-        .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+      db.select().from(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, endpoint.id)),
     ).resolves.toHaveLength(0);
   });
 
   it("does not rotate a GitHub webhook secret when stored credentials cannot be resolved", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } =
-      await configuredGitHubEndpoint(fixture);
+    const { endpoint, runtime, service } = await configuredGitHubEndpoint(fixture);
     await db
       .update(chatEndpoints)
       .set({ status: "active", setup: { step: "complete" } })
@@ -2430,18 +2198,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select({ refs: toolConnections.credentialSecretRefs })
       .from(toolConnections)
       .where(eq(toolConnections.id, endpoint.connectionId));
-    const appIdRef = connectionBefore!.refs.find(
-      (ref) => ref.configPath === "credentials.appId",
-    );
+    const appIdRef = connectionBefore!.refs.find((ref) => ref.configPath === "credentials.appId");
     if (!appIdRef) throw new Error("Expected stored GitHub App ID");
-    await db
-      .update(companySecrets)
-      .set({ status: "disabled" })
-      .where(eq(companySecrets.id, appIdRef.secretId));
+    await db.update(companySecrets).set({ status: "disabled" }).where(eq(companySecrets.id, appIdRef.secretId));
 
-    await expect(
-      service.generateSetupSecret(endpoint.id, "owner-user"),
-    ).rejects.toMatchObject({
+    await expect(service.generateSetupSecret(endpoint.id, "owner-user")).rejects.toMatchObject({
       status: 422,
       details: { code: "secret_inactive" },
     });
@@ -2511,35 +2272,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(chatConversations.endpointId, endpoint.id));
     expect(conversations).toHaveLength(3);
     expect(new Set(conversations.map((row) => row.issueId)).size).toBe(3);
-    expect(conversations.map((row) => row.externalThreadId).sort()).toEqual(
-      cases.map((item) => item.id).sort(),
-    );
-    const deliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(conversations.map((row) => row.externalThreadId).sort()).toEqual(cases.map((item) => item.id).sort());
+    const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(deliveries).toHaveLength(6);
     expect(deliveries.every((row) => row.state === "processed")).toBe(true);
-    expect(
-      deliveries.find((row) => row.providerEventId.endsWith(":51001")),
-    ).toMatchObject({
+    expect(deliveries.find((row) => row.providerEventId.endsWith(":51001"))).toMatchObject({
       normalizedEvent: { deduplication: { duplicateCount: 1 } },
     });
-    expect(
-      deliveries.filter(
-        (row) => row.normalizedEvent.trigger === "subscribed_message",
-      ),
-    ).toHaveLength(3);
+    expect(deliveries.filter((row) => row.normalizedEvent.trigger === "subscribed_message")).toHaveLength(3);
   });
 
   it("reorders same-second GitHub callbacks by comment id before starting the task", async () => {
     const fixture = await seedCompany();
     const deferred: Array<() => void> = [];
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredGitHubEndpoint(fixture, {
-        deferWebhookProcessing: true,
-        scheduleDeferredWork: (task) => deferred.push(task),
-      });
+    const { callbacks, endpoint, service, wakeup } = await configuredGitHubEndpoint(fixture, {
+      deferWebhookProcessing: true,
+      scheduleDeferredWork: (task) => deferred.push(task),
+    });
     const thread = makeThread({
       channelId: "github:paperclipai/paperclip",
       id: "github:paperclipai/paperclip:issue:71",
@@ -2574,27 +2323,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "mention",
     });
 
-    const durable = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const durable = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(durable).toHaveLength(2);
-    expect(durable.every((delivery) => delivery.nextAttemptAt !== null)).toBe(
-      true,
-    );
-    expect(
-      new Set(
-        durable.map((delivery) => delivery.nextAttemptAt?.getTime() ?? null),
-      ).size,
-    ).toBe(1);
+    expect(durable.every((delivery) => delivery.nextAttemptAt !== null)).toBe(true);
+    expect(new Set(durable.map((delivery) => delivery.nextAttemptAt?.getTime() ?? null)).size).toBe(1);
     expect(deferred).toHaveLength(1);
 
     deferred.shift()?.();
     await vi.waitFor(async () => {
-      const rows = await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id));
+      const rows = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id));
       expect(rows).toHaveLength(1);
     });
     const [conversation] = await db
@@ -2619,11 +2356,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   it("holds a GitHub follow-up that arrives after the reorder window until its older root mention arrives", async () => {
     const fixture = await seedCompany();
     const deferred: Array<() => void> = [];
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredGitHubEndpoint(fixture, {
-        deferWebhookProcessing: true,
-        scheduleDeferredWork: (task) => deferred.push(task),
-      });
+    const { callbacks, endpoint, service, wakeup } = await configuredGitHubEndpoint(fixture, {
+      deferWebhookProcessing: true,
+      scheduleDeferredWork: (task) => deferred.push(task),
+    });
     const thread = makeThread({
       channelId: "github:paperclipai/paperclip",
       id: "github:paperclipai/paperclip:issue:72",
@@ -2642,23 +2378,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       message: laterReply,
       trigger: "unaddressed_message",
     });
-    const [replyDelivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
-    await db
-      .update(chatDeliveries)
-      .set({ nextAttemptAt: new Date() })
-      .where(eq(chatDeliveries.id, replyDelivery!.id));
+    const [replyDelivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+    await db.update(chatDeliveries).set({ nextAttemptAt: new Date() }).where(eq(chatDeliveries.id, replyDelivery!.id));
 
     await service.processPendingDeliveries(25, replyDelivery!.id);
 
-    await expect(
-      db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.id, replyDelivery!.id)),
-    ).resolves.toEqual([
+    await expect(db.select().from(chatDeliveries).where(eq(chatDeliveries.id, replyDelivery!.id))).resolves.toEqual([
       expect.objectContaining({
         state: "retry",
         attempts: 1,
@@ -2666,10 +2391,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
     ]);
     await expect(
-      db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id)),
+      db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id)),
     ).resolves.toHaveLength(0);
     expect(wakeup).not.toHaveBeenCalled();
 
@@ -2708,10 +2430,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
     expect(conversation).toBeDefined();
-    await db
-      .update(chatDeliveries)
-      .set({ nextAttemptAt: new Date() })
-      .where(eq(chatDeliveries.id, replyDelivery!.id));
+    await db.update(chatDeliveries).set({ nextAttemptAt: new Date() }).where(eq(chatDeliveries.id, replyDelivery!.id));
     await service.processPendingDeliveries(25, replyDelivery!.id);
 
     const comments = await db
@@ -2731,11 +2450,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   it("filters a standalone unaddressed GitHub comment after one orphan grace attempt", async () => {
     const fixture = await seedCompany();
     const deferred: Array<() => void> = [];
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredGitHubEndpoint(fixture, {
-        deferWebhookProcessing: true,
-        scheduleDeferredWork: (task) => deferred.push(task),
-      });
+    const { callbacks, endpoint, service, wakeup } = await configuredGitHubEndpoint(fixture, {
+      deferWebhookProcessing: true,
+      scheduleDeferredWork: (task) => deferred.push(task),
+    });
     const thread = makeThread({
       channelId: "github:paperclipai/paperclip",
       id: "github:paperclipai/paperclip:issue:73",
@@ -2752,15 +2470,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "unaddressed_message",
     });
-    const [delivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     for (const expectedAttempt of [1, 2]) {
-      await db
-        .update(chatDeliveries)
-        .set({ nextAttemptAt: new Date() })
-        .where(eq(chatDeliveries.id, delivery!.id));
+      await db.update(chatDeliveries).set({ nextAttemptAt: new Date() }).where(eq(chatDeliveries.id, delivery!.id));
       await service.processPendingDeliveries(25, delivery!.id);
       const current = await db
         .select()
@@ -2773,10 +2485,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
     }
     await expect(
-      db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id)),
+      db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id)),
     ).resolves.toHaveLength(0);
     expect(wakeup).not.toHaveBeenCalled();
     expect(deferred).toHaveLength(1);
@@ -2879,18 +2588,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "recovered-github-response",
       "owner-user",
     );
-    expect(
-      runtime.configurations.get(endpoint.id)?.providerConfig,
-    ).toMatchObject({
+    expect(runtime.configurations.get(endpoint.id)?.providerConfig).toMatchObject({
       provider: "github",
       credentials: { installationId: 8642 },
     });
-    await expect(
-      db
-        .select()
-        .from(chatPublications)
-        .where(eq(chatPublications.id, publication!.id)),
-    ).resolves.toEqual([expect.objectContaining({ state: "published" })]);
+    await expect(db.select().from(chatPublications).where(eq(chatPublications.id, publication!.id))).resolves.toEqual([
+      expect.objectContaining({ state: "published" }),
+    ]);
   });
 
   it("fails closed when GitHub App permissions drift before installation recovery", async () => {
@@ -2973,8 +2677,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     await expect(service.get(endpoint.id)).resolves.toMatchObject({
       status: "attention",
-      healthMessage:
-        "GitHub App credentials, permissions, events, or identity need attention",
+      healthMessage: "GitHub App credentials, permissions, events, or identity need attention",
       lastError: expect.stringContaining("issues"),
     });
     const [connection] = await db
@@ -3003,10 +2706,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(
         and(
           eq(chatDeliveries.endpointId, endpoint.id),
-          eq(
-            chatDeliveries.providerEventId,
-            "lifecycle:github-installation-unsuspended-with-drift",
-          ),
+          eq(chatDeliveries.providerEventId, "lifecycle:github-installation-unsuspended-with-drift"),
         ),
       )
       .then((rows) => rows[0]);
@@ -3043,15 +2743,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       );
 
     context.setRepositories([]);
-    await send(
-      "github-repositories-canonical-empty",
-      "installation_repositories",
-      {
-        action: "removed",
-        repositories_added: [],
-        repositories_removed: [repository],
-      },
-    );
+    await send("github-repositories-canonical-empty", "installation_repositories", {
+      action: "removed",
+      repositories_added: [],
+      repositories_removed: [repository],
+    });
     await expect(service.listResources(endpoint.id)).resolves.toEqual([
       expect.objectContaining({
         providerResourceId: "paperclipai/paperclip",
@@ -3098,12 +2794,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("does not let GitHub lifecycle recovery undo a webhook-secret rotation", async () => {
     const fixture = await seedCompany();
-    const {
-      endpoint,
-      runtime,
-      service,
-      webhookSecret: oldWebhookSecret,
-    } = await configuredGitHubEndpoint(fixture);
+    const { endpoint, runtime, service, webhookSecret: oldWebhookSecret } = await configuredGitHubEndpoint(fixture);
     const providerRuntime = runtime.endpoints.get(endpoint.id);
     if (!providerRuntime) throw new Error("Expected GitHub runtime");
     let releaseWebhook!: () => void;
@@ -3122,9 +2813,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       action: "unsuspend",
       installation: { id: 2468 },
     });
-    const signature = createHmac("sha256", oldWebhookSecret)
-      .update(body)
-      .digest("hex");
+    const signature = createHmac("sha256", oldWebhookSecret).update(body).digest("hex");
 
     const staleCallback = service.handleWebhook(
       endpoint.publicId,
@@ -3149,10 +2838,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: "attention",
       setup: { step: "provider_setup", webhookVerifiedAt: null },
     });
-    const [connection] = await db
-      .select()
-      .from(toolConnections)
-      .where(eq(toolConnections.id, endpoint.connectionId));
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpoint.connectionId));
     expect(connection).toMatchObject({
       status: "disabled",
       enabled: false,
@@ -3165,16 +2851,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(
         and(
           eq(chatDeliveries.endpointId, endpoint.id),
-          eq(
-            chatDeliveries.providerEventId,
-            "lifecycle:github-available-during-secret-rotation",
-          ),
+          eq(chatDeliveries.providerEventId, "lifecycle:github-available-during-secret-rotation"),
         ),
       );
     expect(delivery).toMatchObject({
       state: "filtered",
-      redactedError:
-        "Provider lifecycle callback belonged to a superseded runtime",
+      redactedError: "Provider lifecycle callback belonged to a superseded runtime",
     });
   });
 
@@ -3229,8 +2911,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("acknowledges signed GitHub webhooks from another installation without admitting them", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service, webhookSecret } =
-      await configuredGitHubEndpoint(fixture);
+    const { endpoint, runtime, service, webhookSecret } = await configuredGitHubEndpoint(fixture);
     await db
       .update(chatEndpoints)
       .set({ status: "active", setup: { step: "complete" } })
@@ -3242,9 +2923,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       action: "deleted",
       installation: { id: 9999 },
     });
-    const signature = createHmac("sha256", webhookSecret)
-      .update(payload)
-      .digest("hex");
+    const signature = createHmac("sha256", webhookSecret).update(payload).digest("hex");
 
     const response = await service.handleWebhook(
       endpoint.publicId,
@@ -3268,10 +2947,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       setup: { step: "complete" },
     });
     await expect(
-      db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id)),
+      db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id)),
     ).resolves.toHaveLength(0);
   });
 
@@ -3288,14 +2964,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    const { webhookSecret } = await service.generateSetupSecret(
-      endpoint.id,
-      "owner-user",
-    );
+    const { webhookSecret } = await service.generateSetupSecret(endpoint.id, "owner-user");
     const body = JSON.stringify({ zen: "Keep it logically awesome." });
-    const signature = createHmac("sha256", webhookSecret)
-      .update(body)
-      .digest("hex");
+    const signature = createHmac("sha256", webhookSecret).update(body).digest("hex");
     const setupPing = (signatureHeader?: string) =>
       service.handleWebhook(
         endpoint.publicId,
@@ -3305,9 +2976,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           headers: {
             "content-type": "application/json",
             "x-github-event": "ping",
-            ...(signatureHeader
-              ? { "x-hub-signature-256": signatureHeader }
-              : {}),
+            ...(signatureHeader ? { "x-hub-signature-256": signatureHeader } : {}),
           },
           body,
         }),
@@ -3333,8 +3002,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("singleflights concurrent cold GitHub runtime initialization", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service, webhookSecret } =
-      await configuredGitHubEndpoint(fixture);
+    const { endpoint, runtime, service, webhookSecret } = await configuredGitHubEndpoint(fixture);
     await runtime.removeEndpoint(endpoint.id);
     const replacementsBeforeBurst = runtime.replaceCount;
     let releaseInitialization!: () => void;
@@ -3343,9 +3011,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     runtime.initializeHook = () => initializationGate;
     const body = JSON.stringify({ installation: { id: 2468 } });
-    const signature = createHmac("sha256", webhookSecret)
-      .update(body)
-      .digest("hex");
+    const signature = createHmac("sha256", webhookSecret).update(body).digest("hex");
     const send = (delivery: string) =>
       service.handleWebhook(
         endpoint.publicId,
@@ -3371,9 +3037,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     expect(responses.map((response) => response.status)).toEqual([202, 202]);
     expect(runtime.replaceCount).toBe(replacementsBeforeBurst + 1);
-    expect(
-      runtime.endpoints.get(endpoint.id)?.initialize,
-    ).toHaveBeenCalledTimes(1);
+    expect(runtime.endpoints.get(endpoint.id)?.initialize).toHaveBeenCalledTimes(1);
   });
 
   it("configures a customer-owned Microsoft Teams bot with the entered credentials", async () => {
@@ -3382,24 +3046,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const tenantId = "00000000-0000-4000-8000-000000000002";
     const clientSecret = "teams-client-secret";
     let observedTokenRequest: URLSearchParams | null = null;
-    const providerFetch = vi.fn(
-      async (input: string | URL | Request, init?: RequestInit) => {
-        const url = String(input);
-        expect(url).toBe(
-          `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
-        );
-        expect(init?.method).toBe("POST");
-        observedTokenRequest = new URLSearchParams(String(init?.body));
-        return new Response(JSON.stringify({ access_token: "teams-access" }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      },
-    ) as unknown as typeof globalThis.fetch;
-    const { runtime, service } = createService(
-      new FakeChatSdkRuntime(),
-      providerFetch,
-    );
+    const providerFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      expect(url).toBe(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`);
+      expect(init?.method).toBe("POST");
+      observedTokenRequest = new URLSearchParams(String(init?.body));
+      return new Response(JSON.stringify({ access_token: "teams-access" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const { runtime, service } = createService(new FakeChatSdkRuntime(), providerFetch);
     const endpoint = await service.create(
       fixture.companyId,
       {
@@ -3436,9 +3093,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       setup: { step: "test" },
     });
-    expect(
-      runtime.configurations.get(endpoint.id)?.providerConfig,
-    ).toMatchObject({
+    expect(runtime.configurations.get(endpoint.id)?.providerConfig).toMatchObject({
       provider: "microsoft-teams",
       credentials: {
         appId: clientId,
@@ -3479,9 +3134,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
       "owner-user",
     );
-    const callbacks = context.runtime.configurations.get(
-      endpoint.id,
-    )?.callbacks;
+    const callbacks = context.runtime.configurations.get(endpoint.id)?.callbacks;
     if (!callbacks) throw new Error("Expected Teams callbacks");
     const thread = makeThread({
       channelId: "teams-personal-run",
@@ -3527,8 +3180,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         issueId: conversation.issueId,
         idempotencyKey: `run:${runId}:${progressState}:${endpoint.id}`,
         payload: {
-          text:
-            progressState === "queued" ? "Maya is queued." : "Maya is working…",
+          text: progressState === "queued" ? "Maya is queued." : "Maya is working…",
           progressState,
         },
         state: "pending",
@@ -3544,9 +3196,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await context.service.processPendingPublications();
 
     const providerRuntime = context.runtime.endpoints.get(endpoint.id);
-    expect(providerRuntime?.posts).toEqual([
-      { threadId: thread.thread.id, text: "Maya is queued." },
-    ]);
+    expect(providerRuntime?.posts).toEqual([{ threadId: thread.thread.id, text: "Maya is queued." }]);
     expect(providerRuntime?.edits).toEqual([
       {
         threadId: thread.thread.id,
@@ -3566,9 +3216,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(publications).toHaveLength(3);
     expect(
       publications.every(
-        (publication) =>
-          publication.state === "published" &&
-          publication.providerMessageId === "outbound-1",
+        (publication) => publication.state === "published" && publication.providerMessageId === "outbound-1",
       ),
     ).toBe(true);
   });
@@ -3576,69 +3224,55 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   it("configures Telegram by verifying getMe and registering the Paperclip webhook", async () => {
     const fixture = await seedCompany();
     const botToken = "123456:telegram-test-token";
-    const botId = Number.parseInt(
-      randomUUID().replaceAll("-", "").slice(0, 12),
-      16,
-    );
+    const botId = Number.parseInt(randomUUID().replaceAll("-", "").slice(0, 12), 16);
     const observedUrls: string[] = [];
     let existingWebhookUrl = "";
     let observedWebhook: Record<string, unknown> | null = null;
     let observedWebhookDelete: Record<string, unknown> | null = null;
-    const providerFetch = vi.fn(
-      async (input: string | URL | Request, init?: RequestInit) => {
-        const url = String(input);
-        observedUrls.push(url);
-        if (url.endsWith("/getMe")) {
-          expect(init).toBeUndefined();
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              result: {
-                id: botId,
-                username: "maya_paperclip_bot",
-                first_name: "Maya",
-              },
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (url.endsWith("/getWebhookInfo")) {
-          expect(init).toBeUndefined();
-          return new Response(
-            JSON.stringify({ ok: true, result: { url: existingWebhookUrl } }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (url.endsWith("/setWebhook")) {
-          expect(init?.method).toBe("POST");
-          observedWebhook = JSON.parse(String(init?.body)) as Record<
-            string,
-            unknown
-          >;
-          existingWebhookUrl = String(observedWebhook.url ?? "");
-          return new Response(JSON.stringify({ ok: true, result: true }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        if (url.endsWith("/deleteWebhook")) {
-          expect(init?.method).toBe("POST");
-          observedWebhookDelete = JSON.parse(String(init?.body)) as Record<
-            string,
-            unknown
-          >;
-          return new Response(JSON.stringify({ ok: true, result: true }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        throw new Error(`Unexpected provider request: ${url}`);
-      },
-    ) as unknown as typeof globalThis.fetch;
-    const { runtime, service } = createService(
-      new FakeChatSdkRuntime(),
-      providerFetch,
-    );
+    const providerFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      observedUrls.push(url);
+      if (url.endsWith("/getMe")) {
+        expect(init).toBeUndefined();
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              id: botId,
+              username: "maya_paperclip_bot",
+              first_name: "Maya",
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.endsWith("/getWebhookInfo")) {
+        expect(init).toBeUndefined();
+        return new Response(JSON.stringify({ ok: true, result: { url: existingWebhookUrl } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/setWebhook")) {
+        expect(init?.method).toBe("POST");
+        observedWebhook = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        existingWebhookUrl = String(observedWebhook.url ?? "");
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/deleteWebhook")) {
+        expect(init?.method).toBe("POST");
+        observedWebhookDelete = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected provider request: ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+    const { runtime, service } = createService(new FakeChatSdkRuntime(), providerFetch);
     const endpoint = await service.create(
       fixture.companyId,
       {
@@ -3670,25 +3304,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       capabilities: { messageEdits: true, messageDeletes: false },
       setup: { step: "test" },
     });
-    const providerConfig = runtime.configurations.get(
-      endpoint.id,
-    )?.providerConfig;
+    const providerConfig = runtime.configurations.get(endpoint.id)?.providerConfig;
     expect(providerConfig).toMatchObject({
       provider: "telegram",
       credentials: { botToken, secretToken: expect.any(String) },
     });
-    if (providerConfig?.provider !== "telegram")
-      throw new Error("Telegram runtime configuration was not created");
+    if (providerConfig?.provider !== "telegram") throw new Error("Telegram runtime configuration was not created");
     expect(observedWebhook).toEqual({
       url: `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`,
       secret_token: providerConfig.credentials.secretToken,
-      allowed_updates: [
-        "message",
-        "edited_message",
-        "callback_query",
-        "message_reaction",
-        "my_chat_member",
-      ],
+      allowed_updates: ["message", "edited_message", "callback_query", "message_reaction", "my_chat_member"],
       drop_pending_updates: true,
     });
     const [connection] = await db
@@ -3704,16 +3329,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .update(chatEndpoints)
       .set({ status: "active", setup: { step: "complete" } })
       .where(eq(chatEndpoints.id, endpoint.id));
-    existingWebhookUrl =
-      "https://expired.example/api/chat-webhooks/old-public-id/telegram";
+    existingWebhookUrl = "https://expired.example/api/chat-webhooks/old-public-id/telegram";
     observedUrls.length = 0;
     observedWebhook = null;
 
-    const reconnected = await service.configure(
-      endpoint.id,
-      { action: "reconnect" },
-      "owner-user",
-    );
+    const reconnected = await service.configure(endpoint.id, { action: "reconnect" }, "owner-user");
 
     expect(reconnected).toMatchObject({
       status: "verifying",
@@ -3731,16 +3351,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     await service.configure(endpoint.id, { action: "remove" }, "owner-user");
     expect(observedWebhookDelete).toEqual({ drop_pending_updates: false });
-    expect(observedUrls.at(-1)).toBe(
-      `https://api.telegram.org/bot${encodeURIComponent(botToken)}/deleteWebhook`,
-    );
+    expect(observedUrls.at(-1)).toBe(`https://api.telegram.org/bot${encodeURIComponent(botToken)}/deleteWebhook`);
   });
 
   it("reconciles Slack membership during configure, resume, and reconnect", async () => {
     const fixture = await seedCompany();
-    let channels = [
-      { id: "C-ONE", name: "one", is_member: true, is_archived: false },
-    ];
+    let channels = [{ id: "C-ONE", name: "one", is_member: true, is_archived: false }];
     const providerFetch = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       if (url === "https://slack.com/api/auth.test") {
@@ -3803,9 +3419,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ status: "active", setup: { step: "complete" } })
       .where(eq(chatEndpoints.id, endpoint.id));
     await service.configure(endpoint.id, { action: "pause" }, "owner-user");
-    channels = [
-      { id: "C-TWO", name: "two", is_member: true, is_archived: false },
-    ];
+    channels = [{ id: "C-TWO", name: "two", is_member: true, is_archived: false }];
     await service.configure(endpoint.id, { action: "resume" }, "owner-user");
     expect(
       (await service.listResources(endpoint.id)).map((resource) => ({
@@ -3817,13 +3431,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { id: "C-TWO", availability: "available" },
     ]);
 
-    await db
-      .update(chatEndpoints)
-      .set({ status: "attention" })
-      .where(eq(chatEndpoints.id, endpoint.id));
-    channels = [
-      { id: "C-THREE", name: "three", is_member: true, is_archived: false },
-    ];
+    await db.update(chatEndpoints).set({ status: "attention" }).where(eq(chatEndpoints.id, endpoint.id));
+    channels = [{ id: "C-THREE", name: "three", is_member: true, is_archived: false }];
     await service.configure(
       endpoint.id,
       {
@@ -3934,8 +3543,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("persists verified Slack membership and uninstall lifecycle before acknowledging", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const configuredEndpoint = await service.get(endpoint.id);
     const send = (payload: unknown) =>
       service.handleWebhook(
@@ -3967,9 +3575,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       availability: "available",
       enabled: false,
     });
-    await service.replaceResources(endpoint.id, [
-      { id: resource.id, enabled: true },
-    ]);
+    await service.replaceResources(endpoint.id, [{ id: resource.id, enabled: true }]);
 
     const thread = makeThread({
       channelId: "C-LIFECYCLE",
@@ -4016,9 +3622,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(chatConversations)
         .where(eq(chatConversations.id, conversation.id)),
     ).toEqual([{ state: "unavailable" }]);
-    expect(
-      await db.select().from(issues).where(eq(issues.id, conversation.issueId)),
-    ).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.id, conversation.issueId))).toHaveLength(1);
     await deliverMessage({
       callbacks,
       endpointId: endpoint.id,
@@ -4034,12 +3638,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "mention",
     });
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
     await expect(service.listResources(endpoint.id)).resolves.toEqual([
       expect.objectContaining({ availability: "unavailable", enabled: true }),
     ]);
@@ -4056,12 +3655,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect.objectContaining({ availability: "unavailable", enabled: true }),
     ]);
     expect(
-      (
-        await db
-          .select()
-          .from(chatDeliveries)
-          .where(eq(chatDeliveries.endpointId, endpoint.id))
-      ).filter(
+      (await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id))).filter(
         (delivery) => delivery.providerEventId === "lifecycle:Ev-member-left",
       ),
     ).toHaveLength(1);
@@ -4075,10 +3669,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       healthMessage: "Slack app was uninstalled",
     });
     expect(runtime.endpoints.has(endpoint.id)).toBe(false);
-    const [connection] = await db
-      .select()
-      .from(toolConnections)
-      .where(eq(toolConnections.id, endpoint.connectionId));
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpoint.connectionId));
     expect(connection).toMatchObject({
       status: "disabled",
       enabled: false,
@@ -4121,9 +3712,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const teamsPayload = (
       action: "add" | "remove",
       id = `teams-${action}`,
-      timestamp = action === "add"
-        ? "2026-09-05T14:00:00.000Z"
-        : "2026-09-05T14:01:00.000Z",
+      timestamp = action === "add" ? "2026-09-05T14:00:00.000Z" : "2026-09-05T14:01:00.000Z",
     ) => ({
       id,
       type: "installationUpdate",
@@ -4154,38 +3743,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     foreignTenantPayload.id = "teams-foreign-tenant";
     foreignTenantPayload.conversation.tenantId = "foreign-tenant";
     foreignTenantPayload.channelData.tenant.id = "foreign-tenant";
-    await expect(
-      deliverTeamsLifecycle(foreignTenantPayload),
-    ).resolves.toMatchObject({ status: 202 });
+    await expect(deliverTeamsLifecycle(foreignTenantPayload)).resolves.toMatchObject({ status: 202 });
     const missingTenantPayload = teamsPayload("add") as Omit<
       ReturnType<typeof teamsPayload>,
       "conversation" | "channelData"
     > & {
-      conversation: Omit<
-        ReturnType<typeof teamsPayload>["conversation"],
-        "tenantId"
-      >;
-      channelData: Omit<
-        ReturnType<typeof teamsPayload>["channelData"],
-        "tenant"
-      >;
+      conversation: Omit<ReturnType<typeof teamsPayload>["conversation"], "tenantId">;
+      channelData: Omit<ReturnType<typeof teamsPayload>["channelData"], "tenant">;
     };
-    delete (missingTenantPayload.conversation as { tenantId?: string })
-      .tenantId;
-    delete (missingTenantPayload.channelData as { tenant?: { id: string } })
-      .tenant;
+    delete (missingTenantPayload.conversation as { tenantId?: string }).tenantId;
+    delete (missingTenantPayload.channelData as { tenant?: { id: string } }).tenant;
     missingTenantPayload.id = "teams-missing-tenant";
+    await expect(deliverTeamsLifecycle(missingTenantPayload)).resolves.toMatchObject({ status: 202 });
+    await expect(teams.service.listResources(teamsEndpoint.id)).resolves.toEqual([]);
     await expect(
-      deliverTeamsLifecycle(missingTenantPayload),
-    ).resolves.toMatchObject({ status: 202 });
-    await expect(
-      teams.service.listResources(teamsEndpoint.id),
-    ).resolves.toEqual([]);
-    await expect(
-      db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, teamsEndpoint.id)),
+      db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, teamsEndpoint.id)),
     ).resolves.toHaveLength(0);
 
     await deliverTeamsLifecycle(teamsPayload("add"));
@@ -4195,12 +3767,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       availability: "available",
       enabled: false,
     });
-    await teams.service.replaceResources(teamsEndpoint.id, [
-      { id: teamsResource!.id, enabled: true },
-    ]);
-    const teamsCallbacks = teams.runtime.configurations.get(
-      teamsEndpoint.id,
-    )?.callbacks;
+    await teams.service.replaceResources(teamsEndpoint.id, [{ id: teamsResource!.id, enabled: true }]);
+    const teamsCallbacks = teams.runtime.configurations.get(teamsEndpoint.id)?.callbacks;
     if (!teamsCallbacks) throw new Error("Expected Teams callbacks");
     const teamsServiceUrl = "https://smba.trafficmanager.net/amer/";
     const teamsConversationId = "19:conversation@thread.tacv2";
@@ -4223,27 +3791,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "mention",
     });
     await expect(
-      db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, teamsEndpoint.id)),
+      db.select().from(chatConversations).where(eq(chatConversations.endpointId, teamsEndpoint.id)),
     ).resolves.toHaveLength(1);
     await deliverTeamsLifecycle(teamsPayload("remove"));
-    await expect(
-      teams.service.listResources(teamsEndpoint.id),
-    ).resolves.toEqual([
+    await expect(teams.service.listResources(teamsEndpoint.id)).resolves.toEqual([
       expect.objectContaining({
         providerResourceId: "19:conversation@thread.tacv2",
         label: "Engineering",
         availability: "removed",
       }),
     ]);
-    await deliverTeamsLifecycle(
-      teamsPayload("add", "teams-stale-add", "2026-09-05T14:00:30.000Z"),
-    );
-    await expect(
-      teams.service.listResources(teamsEndpoint.id),
-    ).resolves.toEqual([
+    await deliverTeamsLifecycle(teamsPayload("add", "teams-stale-add", "2026-09-05T14:00:30.000Z"));
+    await expect(teams.service.listResources(teamsEndpoint.id)).resolves.toEqual([
       expect.objectContaining({
         providerResourceId: "19:conversation@thread.tacv2",
         availability: "removed",
@@ -4269,10 +3828,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(
           and(
             eq(chatEndpointResources.endpointId, teamsEndpoint.id),
-            eq(
-              chatEndpointResources.providerResourceId,
-              "a:teams-personal-conversation",
-            ),
+            eq(chatEndpointResources.providerResourceId, "a:teams-personal-conversation"),
           ),
         ),
     ).resolves.toEqual([
@@ -4290,10 +3846,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(
           and(
             eq(chatEndpointResources.endpointId, teamsEndpoint.id),
-            eq(
-              chatEndpointResources.providerResourceId,
-              "a:teams-personal-conversation",
-            ),
+            eq(chatEndpointResources.providerResourceId, "a:teams-personal-conversation"),
           ),
         ),
     ).resolves.toEqual([
@@ -4315,9 +3868,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       channelData: { tenant: { id: teamsTenantId } },
       membersAdded: [{ id: `28:${teamsClientId}` }],
     });
-    await expect(
-      teams.service.listResources(teamsEndpoint.id),
-    ).resolves.toEqual(
+    await expect(teams.service.listResources(teamsEndpoint.id)).resolves.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           providerResourceId: "19:teams-group-conversation@unq.gbl.spaces",
@@ -4337,9 +3888,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       channelData: { tenant: { id: teamsTenantId } },
       membersRemoved: [{ id: `28:${teamsClientId}` }],
     });
-    await expect(
-      teams.service.listResources(teamsEndpoint.id),
-    ).resolves.toEqual(
+    await expect(teams.service.listResources(teamsEndpoint.id)).resolves.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           providerResourceId: "19:teams-group-conversation@unq.gbl.spaces",
@@ -4349,10 +3898,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ]),
     );
 
-    const telegram = createService(
-      new FakeChatSdkRuntime(),
-      fakeTelegramFetch(445566) as typeof globalThis.fetch,
-    );
+    const telegram = createService(new FakeChatSdkRuntime(), fakeTelegramFetch(445566) as typeof globalThis.fetch);
     const telegramEndpoint = await telegram.service.create(
       fixture.companyId,
       { provider: "telegram", assignedAgentId: fixture.replacementAgentId },
@@ -4383,15 +3929,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
       );
     await telegramMembership(1, "member");
-    const [telegramResource] = await telegram.service.listResources(
-      telegramEndpoint.id,
-    );
-    await telegram.service.replaceResources(telegramEndpoint.id, [
-      { id: telegramResource!.id, enabled: true },
-    ]);
-    const telegramCallbacks = telegram.runtime.configurations.get(
-      telegramEndpoint.id,
-    )?.callbacks;
+    const [telegramResource] = await telegram.service.listResources(telegramEndpoint.id);
+    await telegram.service.replaceResources(telegramEndpoint.id, [{ id: telegramResource!.id, enabled: true }]);
+    const telegramCallbacks = telegram.runtime.configurations.get(telegramEndpoint.id)?.callbacks;
     if (!telegramCallbacks) throw new Error("Expected Telegram callbacks");
     await deliverMessage({
       callbacks: telegramCallbacks,
@@ -4410,15 +3950,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "mention",
     });
     await expect(
-      db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, telegramEndpoint.id)),
+      db.select().from(chatConversations).where(eq(chatConversations.endpointId, telegramEndpoint.id)),
     ).resolves.toHaveLength(1);
     await telegramMembership(2, "left");
-    await expect(
-      telegram.service.listResources(telegramEndpoint.id),
-    ).resolves.toEqual([
+    await expect(telegram.service.listResources(telegramEndpoint.id)).resolves.toEqual([
       expect.objectContaining({
         providerResourceId: "-100123",
         label: "Engineering",
@@ -4426,9 +3961,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
     ]);
     await telegramMembership(0, "administrator");
-    await expect(
-      telegram.service.listResources(telegramEndpoint.id),
-    ).resolves.toEqual([
+    await expect(telegram.service.listResources(telegramEndpoint.id)).resolves.toEqual([
       expect.objectContaining({
         providerResourceId: "-100123",
         availability: "unavailable",
@@ -4438,8 +3971,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("does not acknowledge lifecycle callbacks whose durable write fails", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const configuredEndpoint = await service.get(endpoint.id);
     const providerRuntime = runtime.endpoints.get(endpoint.id);
     if (!providerRuntime) throw new Error("Expected provider runtime");
@@ -4472,9 +4004,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const { endpoint, service } = await configuredSlackEndpoint(fixture);
     const configuredEndpoint = await service.get(endpoint.id);
     const transaction = vi.spyOn(db, "transaction");
-    transaction.mockRejectedValueOnce(
-      new Error("injected lifecycle persistence failure"),
-    );
+    transaction.mockRejectedValueOnce(new Error("injected lifecycle persistence failure"));
     await expect(
       service.handleWebhook(
         endpoint.publicId,
@@ -4507,10 +4037,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     await service.processPendingDeliveries(25, retry!.id);
     await expect(
-      db
-        .select({ state: chatDeliveries.state })
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.id, retry!.id)),
+      db.select({ state: chatDeliveries.state }).from(chatDeliveries).where(eq(chatDeliveries.id, retry!.id)),
     ).resolves.toEqual([{ state: "processed" }]);
     await expect(service.listResources(endpoint.id)).resolves.toEqual([
       expect.objectContaining({
@@ -4558,19 +4085,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       runtimeGeneration: expect.any(Number),
     });
 
-    await expect(
-      service.configure(endpoint.id, { action: "verify" }, "owner-user"),
-    ).rejects.toMatchObject({
+    await expect(service.configure(endpoint.id, { action: "verify" }, "owner-user")).rejects.toMatchObject({
       status: 409,
       details: { code: "chat_webhook_not_verified" },
     });
     await recordSlackUrlVerification(service, endpoint.publicId);
 
-    const providerVerified = await service.configure(
-      endpoint.id,
-      { action: "verify" },
-      "owner-user",
-    );
+    const providerVerified = await service.configure(endpoint.id, { action: "verify" }, "owner-user");
     expect(providerVerified).toMatchObject({
       status: "verifying",
       setup: { step: "test" },
@@ -4589,8 +4110,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
 
     const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
-    if (!callbacks)
-      throw new Error("Fake runtime did not receive endpoint callbacks");
+    if (!callbacks) throw new Error("Fake runtime did not receive endpoint callbacks");
     const testThread = makeThread({
       channelId: "C-SETUP",
       id: "slack:C-SETUP:9000.1",
@@ -4634,8 +4154,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("does not let an old Slack runtime verify a reconnected configuration", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const oldRuntime = runtime.endpoints.get(endpoint.id);
     if (!oldRuntime) throw new Error("Expected configured Slack runtime");
     let releaseWebhook!: () => void;
@@ -4681,8 +4200,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("accepts a published terminal failure for setup transport qualification", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
     const testThread = makeThread({
       channelId: "C-SETUP-FAILED",
       id: "slack:C-SETUP-FAILED:9001.1",
@@ -4836,21 +4354,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
     }
 
-    const durable = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const durable = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(durable).toHaveLength(8);
-    expect(durable.every((delivery) => delivery.nextAttemptAt !== null)).toBe(
-      true,
-    );
+    expect(durable.every((delivery) => delivery.nextAttemptAt !== null)).toBe(true);
     // The first callback fixes one bounded batch deadline. Later arrivals do
     // not slide it forward and therefore cannot starve a busy conversation.
-    expect(
-      new Set(
-        durable.map((delivery) => delivery.nextAttemptAt?.getTime() ?? null),
-      ).size,
-    ).toBe(1);
+    expect(new Set(durable.map((delivery) => delivery.nextAttemptAt?.getTime() ?? null)).size).toBe(1);
     expect(durable).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -4865,12 +4374,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
       ]),
     );
-    expect(
-      await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id)),
-    ).toHaveLength(0);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id))).toHaveLength(
+      0,
+    );
     expect(deferred).toHaveLength(1);
 
     const competingService = chatChannelService(db, {
@@ -4884,10 +4390,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // the same time as the webhook process's deferred drain.
     await competingService.processPendingDeliveries();
     await vi.waitFor(async () => {
-      const rows = await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id));
+      const rows = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id));
       expect(rows).toHaveLength(1);
     });
     const [conversation] = await db
@@ -4917,14 +4420,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "follow-up 8",
     ]);
     expect(wakeup).toHaveBeenCalledTimes(8);
+    expect(wakeup.mock.calls.map((call) => call[1]?.payload?.wakeCommentId)).toEqual(
+      comments.map((comment) => comment.id),
+    );
     expect(
-      wakeup.mock.calls.map((call) => call[1]?.payload?.wakeCommentId),
-    ).toEqual(comments.map((comment) => comment.id));
-    expect(
-      await db
-        .select()
-        .from(chatEndpointLeases)
-        .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+      await db.select().from(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, endpoint.id)),
     ).toHaveLength(0);
     await competingService.shutdown();
     await service.shutdown();
@@ -4998,19 +4498,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "direct_message",
     });
 
-    const durable = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const durable = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(durable).toHaveLength(2);
-    expect(durable.every((delivery) => delivery.nextAttemptAt !== null)).toBe(
-      true,
-    );
-    expect(
-      new Set(
-        durable.map((delivery) => delivery.nextAttemptAt?.getTime() ?? null),
-      ).size,
-    ).toBe(1);
+    expect(durable.every((delivery) => delivery.nextAttemptAt !== null)).toBe(true);
+    expect(new Set(durable.map((delivery) => delivery.nextAttemptAt?.getTime() ?? null)).size).toBe(1);
     expect(durable.map((delivery) => delivery.normalizedEvent)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -5027,12 +4518,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
       ]),
     );
-    expect(
-      await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id)),
-    ).toHaveLength(0);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id))).toHaveLength(
+      0,
+    );
     expect(wakeup).not.toHaveBeenCalled();
     expect(deferred).toHaveLength(1);
 
@@ -5050,13 +4538,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(issueComments)
       .where(eq(issueComments.issueId, conversation.issueId))
       .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
-    expect(comments.map((comment) => comment.body)).toEqual([
-      "first Telegram turn",
-      "second Telegram turn",
-    ]);
-    expect(
-      wakeup.mock.calls.map((call) => call[1]?.payload?.wakeCommentId),
-    ).toEqual(comments.map((comment) => comment.id));
+    expect(comments.map((comment) => comment.body)).toEqual(["first Telegram turn", "second Telegram turn"]);
+    expect(wakeup.mock.calls.map((call) => call[1]?.payload?.wakeCommentId)).toEqual(
+      comments.map((comment) => comment.id),
+    );
     await service.shutdown();
   });
 
@@ -5087,8 +4572,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "owner-user",
     );
     const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
-    if (!callbacks?.onSlashCommand)
-      throw new Error("Expected Telegram slash-command callbacks");
+    if (!callbacks?.onSlashCommand) throw new Error("Expected Telegram slash-command callbacks");
 
     const providerSecond = new Date(Math.floor(Date.now() / 1_000) * 1_000);
     const thread = makeThread({
@@ -5146,10 +4630,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "direct_message",
     });
 
-    const durable = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const durable = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(durable).toHaveLength(2);
     expect(durable).toEqual(
       expect.arrayContaining([
@@ -5183,9 +4664,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(service.listConversations(endpoint.id)).resolves.toEqual([
       expect.objectContaining({ state: "active", sessionGeneration: 1 }),
     ]);
-    expect(runtime.endpoints.get(endpoint.id)?.posts[0]?.text).toBe(
-      "Send your request to start a new Paperclip task.",
-    );
+    expect(runtime.endpoints.get(endpoint.id)?.posts[0]?.text).toBe("Send your request to start a new Paperclip task.");
     // Unlike Slack slash callbacks, Telegram commands retain the provider's
     // real chat/message tuple and therefore still receive the normal receipt
     // reaction.
@@ -5199,8 +4678,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("holds a delayed Slack thread reply until its older root mention arrives", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     await db.insert(chatEndpointResources).values({
       companyId: fixture.companyId,
       endpointId: endpoint.id,
@@ -5228,10 +4706,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "subscribed_message",
     });
 
-    const [deferredReply] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const [deferredReply] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(deferredReply).toMatchObject({
       state: "retry",
       attempts: 1,
@@ -5267,17 +4742,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(issueComments)
         .where(eq(issueComments.issueId, conversation!.issueId))
         .orderBy(asc(issueComments.createdAt), asc(issueComments.id)),
-    ).resolves.toEqual([
-      { body: "@maya keep both messages" },
-      { body: "follow-up whose callback arrived first" },
-    ]);
+    ).resolves.toEqual([{ body: "@maya keep both messages" }, { body: "follow-up whose callback arrived first" }]);
     expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
   it("filters a standalone unaddressed Slack thread reply after one grace attempt", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     await db.insert(chatEndpointResources).values({
       companyId: fixture.companyId,
       endpointId: endpoint.id,
@@ -5299,10 +4770,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       message: makeMessage({ id: "9120.2", text: "not for the bot" }),
       trigger: "subscribed_message",
     });
-    const [delivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
 
     await db
@@ -5326,8 +4794,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("keeps Teams group chat closed by default without consuming first-channel setup enablement", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredTeamsEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredTeamsEndpoint(fixture);
     await expect(service.get(endpoint.id)).resolves.toMatchObject({
       status: "verifying",
       allowGroupChats: false,
@@ -5353,6 +4820,33 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "mention",
     });
     expect(wakeup).not.toHaveBeenCalled();
+    const [filteredGroupDelivery] = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(filteredGroupDelivery).toMatchObject({
+      state: "filtered",
+      attempts: 0,
+      principalId: null,
+      redactedError: "Destination is not enabled in Paperclip",
+      normalizedEvent: {
+        filtering: { contentRetained: false },
+        message: { providerMessageId: "teams-setup-group-disabled" },
+      },
+    });
+    expect(JSON.stringify(filteredGroupDelivery?.normalizedEvent)).not.toContain("this group is still closed");
+    expect(JSON.stringify(filteredGroupDelivery?.normalizedEvent)).not.toContain("U-EXTERNAL");
+    await expect(
+      db
+        .select({ id: chatExternalPrincipals.id })
+        .from(chatExternalPrincipals)
+        .where(
+          and(
+            eq(chatExternalPrincipals.companyId, fixture.companyId),
+            eq(chatExternalPrincipals.provider, "microsoft-teams"),
+          ),
+        ),
+    ).resolves.toHaveLength(0);
 
     const channelConversationId = "19:teams-first-channel@thread.tacv2";
     const rootMessageId = "1740000000091";
@@ -5399,12 +4893,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("uses the Teams group-chat toggle without weakening channel resource gates", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredTeamsEndpoint(fixture);
-    await db
-      .update(chatEndpoints)
-      .set({ status: "active" })
-      .where(eq(chatEndpoints.id, endpoint.id));
+    const { callbacks, endpoint, service } = await configuredTeamsEndpoint(fixture);
+    await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
     await service.update(endpoint.id, { allowGroupChats: false }, "owner-user");
 
     const serviceUrl = "https://smba.trafficmanager.net/amer/";
@@ -5435,9 +4925,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "mention",
     });
-    await expect(service.listConversations(endpoint.id)).resolves.toHaveLength(
-      0,
-    );
+    await expect(service.listConversations(endpoint.id)).resolves.toHaveLength(0);
 
     await service.update(endpoint.id, { allowGroupChats: true }, "owner-user");
     await deliverMessage({
@@ -5497,16 +4985,46 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         id: channelRootId,
         text: "@maya channel still requires enablement",
         mentioned: true,
+        userId: "U-TEAMS-DISABLED-CHANNEL",
+        userName: "disabled-channel-user",
       }),
       trigger: "mention",
     });
-    await expect(service.listConversations(endpoint.id)).resolves.toHaveLength(
-      1,
-    );
+    await expect(service.listConversations(endpoint.id)).resolves.toHaveLength(1);
+    const disabledChannelDelivery = await db
+      .select()
+      .from(chatDeliveries)
+      .where(
+        and(
+          eq(chatDeliveries.endpointId, endpoint.id),
+          eq(chatDeliveries.providerEventId, `${channelThread.thread.id}:${channelRootId}`),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(disabledChannelDelivery).toMatchObject({
+      state: "filtered",
+      attempts: 0,
+      principalId: null,
+      normalizedEvent: {
+        filtering: { contentRetained: false },
+        message: { providerMessageId: channelRootId },
+      },
+    });
+    expect(JSON.stringify(disabledChannelDelivery?.normalizedEvent)).not.toContain("channel still requires enablement");
+    await expect(
+      db
+        .select({ id: chatExternalPrincipals.id })
+        .from(chatExternalPrincipals)
+        .where(
+          and(
+            eq(chatExternalPrincipals.companyId, fixture.companyId),
+            eq(chatExternalPrincipals.provider, "microsoft-teams"),
+            eq(chatExternalPrincipals.externalId, "U-TEAMS-DISABLED-CHANNEL"),
+          ),
+        ),
+    ).resolves.toHaveLength(0);
 
-    await service.replaceResources(endpoint.id, [
-      { id: channelResource!.id, enabled: true },
-    ]);
+    await service.replaceResources(endpoint.id, [{ id: channelResource!.id, enabled: true }]);
     await deliverMessage({
       callbacks,
       endpointId: endpoint.id,
@@ -5516,21 +5034,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         id: `${channelRootId}-enabled`,
         text: "@maya channel is enabled now",
         mentioned: true,
+        userId: "U-TEAMS-DISABLED-CHANNEL",
+        userName: "disabled-channel-user",
       }),
       trigger: "mention",
     });
-    await expect(service.listConversations(endpoint.id)).resolves.toHaveLength(
-      2,
+    await expect(service.listConversations(endpoint.id)).resolves.toHaveLength(2);
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "microsoft-teams",
+      thread: channelThread.thread,
+      message: makeMessage({
+        id: `${channelRootId}-reply`,
+        text: "continue the now-authorized Teams task",
+        userId: "U-TEAMS-DISABLED-CHANNEL",
+        userName: "disabled-channel-user",
+      }),
+      trigger: "subscribed_message",
+    });
+    const channelConversation = (await service.listConversations(endpoint.id)).find(
+      (conversation) => conversation.externalThreadId === channelThread.thread.id,
     );
+    if (!channelConversation) throw new Error("Expected enabled Teams channel conversation");
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, channelConversation.issueId))
+        .orderBy(asc(issueComments.createdAt), asc(issueComments.id)),
+    ).resolves.toEqual([{ body: "@maya channel is enabled now" }, { body: "continue the now-authorized Teams task" }]);
+    await expect(
+      db
+        .select({ id: chatExternalPrincipals.id })
+        .from(chatExternalPrincipals)
+        .where(
+          and(
+            eq(chatExternalPrincipals.companyId, fixture.companyId),
+            eq(chatExternalPrincipals.provider, "microsoft-teams"),
+            eq(chatExternalPrincipals.externalId, "U-TEAMS-DISABLED-CHANNEL"),
+          ),
+        ),
+    ).resolves.toHaveLength(1);
   });
 
   it("ingests Teams files only from personal chats and keeps non-DM references link-only", async () => {
     const fixture = await seedCompany();
     const storage = createStorageService();
-    const { callbacks, endpoint, service } = await configuredTeamsEndpoint(
-      fixture,
-      { storage: storage.storage },
-    );
+    const { callbacks, endpoint, service } = await configuredTeamsEndpoint(fixture, { storage: storage.storage });
     const serviceUrl = "https://smba.trafficmanager.net/amer/";
     const fileBody = Buffer.from("teams personal file", "utf8");
     const channelFetch = vi.fn(async () => fileBody);
@@ -5599,14 +5150,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     expect(personalFetch).toHaveBeenCalledTimes(1);
     expect(storage.putFile).toHaveBeenCalledTimes(1);
-    const deliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     const channelDelivery = deliveries.find(
-      (delivery) =>
-        delivery.providerEventId ===
-        `${channelThread.thread.id}:${channelRootId}`,
+      (delivery) => delivery.providerEventId === `${channelThread.thread.id}:${channelRootId}`,
     );
     const personalDelivery = deliveries.find((delivery) =>
       delivery.providerEventId.endsWith(":teams-personal-file-message"),
@@ -5636,10 +5182,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const comments = await db
       .select({ body: issueComments.body })
       .from(issueComments)
-      .innerJoin(
-        chatConversations,
-        eq(chatConversations.issueId, issueComments.issueId),
-      )
+      .innerJoin(chatConversations, eq(chatConversations.issueId, issueComments.issueId))
       .where(eq(chatConversations.endpointId, endpoint.id));
     expect(comments).toEqual(
       expect.arrayContaining([
@@ -5659,11 +5202,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("holds a delayed first Teams setup reply until its older root mention enables the channel", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredTeamsEndpoint(fixture, {
-        deferWebhookProcessing: true,
-        scheduleDeferredWork: () => undefined,
-      });
+    const { callbacks, endpoint, service, wakeup } = await configuredTeamsEndpoint(fixture, {
+      deferWebhookProcessing: true,
+      scheduleDeferredWork: () => undefined,
+    });
     const conversationId = "19:teams-delayed-root@thread.tacv2";
     const serviceUrl = "https://smba.trafficmanager.net/amer/";
     const rootMessageId = "1740000000001";
@@ -5675,6 +5217,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const laterReply = makeMessage({
       id: "1740000000002",
       text: "Teams follow-up whose callback arrived first",
+      userId: "U-TEAMS-PROVISIONAL-PRIVATE",
+      userName: "provisional-private-user",
     });
     laterReply.metadata.dateSent = new Date("2026-09-05T18:20:02.000Z");
     await deliverMessage({
@@ -5691,15 +5235,39 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(chatDeliveries.endpointId, endpoint.id));
     await service.processPendingDeliveries();
 
-    const [deferredReply] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const [deferredReply] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(deferredReply).toMatchObject({
       state: "retry",
       attempts: 1,
+      principalId: null,
       redactedError: "Waiting briefly for an earlier root mention",
+      normalizedEvent: {
+        providerEventId: `${thread.thread.id}:${laterReply.id}`,
+        kind: "message",
+        trigger: "subscribed_message",
+        resource: {
+          type: "channel",
+          providerResourceId: conversationId,
+        },
+        conversation: { externalThreadId: thread.thread.id },
+        message: {
+          providerMessageId: laterReply.id,
+          providerSentAt: "2026-09-05T18:20:02.000Z",
+        },
+        filtering: { contentRetained: false },
+      },
     });
+    const serializedDeferredReply = JSON.stringify(deferredReply);
+    expect(serializedDeferredReply).not.toContain(laterReply.text);
+    expect(serializedDeferredReply).not.toContain("Alex External");
+    expect(serializedDeferredReply).not.toContain("provisional-private-user");
+    expect(serializedDeferredReply).not.toContain("U-TEAMS-PROVISIONAL-PRIVATE");
+    await expect(
+      db
+        .select({ id: chatExternalPrincipals.id })
+        .from(chatExternalPrincipals)
+        .where(eq(chatExternalPrincipals.companyId, fixture.companyId)),
+    ).resolves.toHaveLength(0);
     expect(deferredReply.nextAttemptAt).not.toBeNull();
     expect(await service.listConversations(endpoint.id)).toHaveLength(0);
     await expect(service.listResources(endpoint.id)).resolves.toEqual([
@@ -5727,12 +5295,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await db
       .update(chatDeliveries)
       .set({ nextAttemptAt: new Date(0) })
-      .where(
-        and(
-          eq(chatDeliveries.endpointId, endpoint.id),
-          eq(chatDeliveries.state, "received"),
-        ),
-      );
+      .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.state, "received")));
     await service.processPendingDeliveries();
     await db
       .update(chatDeliveries)
@@ -5759,16 +5322,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { body: "@maya keep both Teams messages" },
       { body: "Teams follow-up whose callback arrived first" },
     ]);
+    const [hydratedReply] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, deferredReply.id));
+    expect(hydratedReply).toMatchObject({
+      state: "processed",
+      principalId: expect.any(String),
+      normalizedEvent: {
+        principal: {
+          externalId: "U-TEAMS-PROVISIONAL-PRIVATE",
+          displayName: "Alex External",
+          handle: "provisional-private-user",
+        },
+        message: {
+          providerMessageId: laterReply.id,
+          text: laterReply.text,
+        },
+      },
+    });
+    expect((hydratedReply.normalizedEvent as { filtering?: unknown }).filtering).toBeUndefined();
     expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
   it("orders rapid Teams follow-ups by provider time when callbacks arrive reversed", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredTeamsEndpoint(fixture, {
-        deferWebhookProcessing: true,
-        scheduleDeferredWork: () => undefined,
-      });
+    const { callbacks, endpoint, service, wakeup } = await configuredTeamsEndpoint(fixture, {
+      deferWebhookProcessing: true,
+      scheduleDeferredWork: () => undefined,
+    });
     const conversationId = "19:teams-follow-up-order@thread.tacv2";
     const serviceUrl = "https://smba.trafficmanager.net/amer/";
     const rootMessageId = "1740000000020";
@@ -5839,12 +5418,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await db
       .update(chatDeliveries)
       .set({ nextAttemptAt: new Date(0) })
-      .where(
-        and(
-          eq(chatDeliveries.endpointId, endpoint.id),
-          inArray(chatDeliveries.state, ["received", "retry"]),
-        ),
-      );
+      .where(and(eq(chatDeliveries.endpointId, endpoint.id), inArray(chatDeliveries.state, ["received", "retry"])));
     await service.processPendingDeliveries();
 
     const [conversation] = await service.listConversations(endpoint.id);
@@ -5862,24 +5436,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(wakeup).toHaveBeenCalledTimes(2);
   });
 
-  it("filters a standalone unaddressed Teams channel reply after one grace attempt", async () => {
+  it("keeps a first-channel Teams orphan payload-free during grace and filters it without a live retry", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredTeamsEndpoint(fixture, {
-        deferWebhookProcessing: true,
-        scheduleDeferredWork: () => undefined,
-      });
+    const { callbacks, endpoint, service, wakeup } = await configuredTeamsEndpoint(fixture, {
+      deferWebhookProcessing: true,
+      scheduleDeferredWork: () => undefined,
+    });
     const conversationId = "19:teams-orphan-only@thread.tacv2";
     const serviceUrl = "https://smba.trafficmanager.net/amer/";
-    await db.insert(chatEndpointResources).values({
-      companyId: fixture.companyId,
-      endpointId: endpoint.id,
-      type: "channel",
-      providerResourceId: conversationId,
-      label: "orphan-only",
-      availability: "available",
-      enabled: true,
-    });
     const thread = makeThread({
       channelId: `teams:${Buffer.from(conversationId).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
       id: `teams:${Buffer.from(`${conversationId};messageid=1740000000011`).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
@@ -5892,26 +5456,48 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       thread: thread.thread,
       message: makeMessage({
         id: "1740000000012",
-        text: "not for the Teams bot",
+        text: "private orphan content not for the Teams bot",
+        userId: "U-TEAMS-ORPHAN-PRIVATE",
+        userName: "orphan-private-user",
       }),
-      trigger: "subscribed_message",
+      trigger: "unaddressed_message",
     });
     await db
       .update(chatDeliveries)
       .set({ nextAttemptAt: new Date(0) })
       .where(eq(chatDeliveries.endpointId, endpoint.id));
     await service.processPendingDeliveries();
-    const [delivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
-    expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(delivery).toMatchObject({
+      state: "retry",
+      attempts: 1,
+      principalId: null,
+      normalizedEvent: {
+        filtering: { contentRetained: false },
+        resource: { providerResourceId: conversationId, type: "channel" },
+        conversation: { externalThreadId: thread.thread.id },
+        message: { providerMessageId: "1740000000012" },
+      },
+    });
+    const serializedDelivery = JSON.stringify(delivery);
+    expect(serializedDelivery).not.toContain("private orphan content");
+    expect(serializedDelivery).not.toContain("Alex External");
+    expect(serializedDelivery).not.toContain("orphan-private-user");
+    expect(serializedDelivery).not.toContain("U-TEAMS-ORPHAN-PRIVATE");
+    await expect(
+      db
+        .select({ id: chatExternalPrincipals.id })
+        .from(chatExternalPrincipals)
+        .where(eq(chatExternalPrincipals.companyId, fixture.companyId)),
+    ).resolves.toHaveLength(0);
 
+    await service.shutdown();
+    const restarted = createService();
     await db
       .update(chatDeliveries)
       .set({ nextAttemptAt: new Date(0) })
       .where(eq(chatDeliveries.id, delivery.id));
-    await service.processPendingDeliveries();
+    await restarted.service.processPendingDeliveries();
 
     await expect(
       db
@@ -5921,9 +5507,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         })
         .from(chatDeliveries)
         .where(eq(chatDeliveries.id, delivery.id)),
-    ).resolves.toEqual([{ state: "filtered", attempts: 2 }]);
-    expect(await service.listConversations(endpoint.id)).toHaveLength(0);
+    ).resolves.toEqual([{ state: "filtered", attempts: 1 }]);
+    expect(await restarted.service.listConversations(endpoint.id)).toHaveLength(0);
+    await expect(
+      db
+        .select({ id: chatExternalPrincipals.id })
+        .from(chatExternalPrincipals)
+        .where(eq(chatExternalPrincipals.companyId, fixture.companyId)),
+    ).resolves.toHaveLength(0);
     expect(wakeup).not.toHaveBeenCalled();
+    await restarted.service.shutdown();
   });
 
   it("rehydrates a durable attachment descriptor after restart and stores the file on the issue", async () => {
@@ -5934,15 +5527,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const firstRuntime = new FakeChatSdkRuntime(attachmentBodies);
     const deferred: Array<() => void> = [];
     const storage = createStorageService();
-    const first = createService(
-      firstRuntime,
-      fakeSlackFetch() as typeof globalThis.fetch,
-      {
-        deferWebhookProcessing: true,
-        scheduleDeferredWork: (task) => deferred.push(task),
-        storage: storage.storage,
-      },
-    );
+    const first = createService(firstRuntime, fakeSlackFetch() as typeof globalThis.fetch, {
+      deferWebhookProcessing: true,
+      scheduleDeferredWork: (task) => deferred.push(task),
+      storage: storage.storage,
+    });
     const endpoint = await first.service.create(
       fixture.companyId,
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
@@ -5960,11 +5549,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "owner-user",
     );
     await recordSlackUrlVerification(first.service, endpoint.publicId);
-    await first.service.configure(
-      endpoint.id,
-      { action: "verify" },
-      "owner-user",
-    );
+    await first.service.configure(endpoint.id, { action: "verify" }, "owner-user");
     const callbacks = firstRuntime.configurations.get(endpoint.id)?.callbacks;
     if (!callbacks) throw new Error("Expected first-process callbacks");
     const thread = makeThread({
@@ -5996,37 +5581,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "mention",
     });
-    const [durableDelivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const [durableDelivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(durableDelivery).toMatchObject({ state: "received", attempts: 0 });
-    expect(JSON.stringify(durableDelivery.normalizedEvent)).not.toContain(
-      "xoxb-restart-attachment",
-    );
+    expect(JSON.stringify(durableDelivery.normalizedEvent)).not.toContain("xoxb-restart-attachment");
     expect(deferred).toHaveLength(1);
     expect(liveFetch).not.toHaveBeenCalled();
     await first.service.shutdown();
     // Restart after the bounded Slack reorder window has elapsed.
-    await db
-      .update(chatDeliveries)
-      .set({ nextAttemptAt: new Date() })
-      .where(eq(chatDeliveries.id, durableDelivery.id));
+    await db.update(chatDeliveries).set({ nextAttemptAt: new Date() }).where(eq(chatDeliveries.id, durableDelivery.id));
 
     const restartedRuntime = new FakeChatSdkRuntime(attachmentBodies);
-    const restarted = createService(
-      restartedRuntime,
-      fakeSlackFetch() as typeof globalThis.fetch,
-      { storage: storage.storage },
-    );
+    const restarted = createService(restartedRuntime, fakeSlackFetch() as typeof globalThis.fetch, {
+      storage: storage.storage,
+    });
     await restarted.service.processPendingDeliveries();
 
-    const restartedEndpointRuntime = restartedRuntime.endpoints.get(
-      endpoint.id,
-    );
-    expect(
-      restartedEndpointRuntime?.rehydratedAttachmentDescriptors,
-    ).toHaveLength(1);
+    const restartedEndpointRuntime = restartedRuntime.endpoints.get(endpoint.id);
+    expect(restartedEndpointRuntime?.rehydratedAttachmentDescriptors).toHaveLength(1);
     expect(storage.putFile).toHaveBeenCalledTimes(1);
     expect(storage.putFile).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -6068,15 +5639,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const recoveryKey = `retry-attachment-${randomUUID()}`;
     const attachmentBody = Buffer.from("retry-safe attachment body", "utf8");
-    const runtime = new FakeChatSdkRuntime(
-      new Map([[recoveryKey, attachmentBody]]),
-    );
+    const runtime = new FakeChatSdkRuntime(new Map([[recoveryKey, attachmentBody]]));
     const storage = createStorageService();
-    const { service } = createService(
-      runtime,
-      fakeSlackFetch() as typeof globalThis.fetch,
-      { storage: storage.storage },
-    );
+    const { service } = createService(runtime, fakeSlackFetch() as typeof globalThis.fetch, {
+      storage: storage.storage,
+    });
     const endpoint = await service.create(
       fixture.companyId,
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
@@ -6102,9 +5669,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       id: "slack:C-RETRY-FILE:9160.1",
       name: "retry-files",
     });
-    channel.subscribe.mockRejectedValueOnce(
-      new Error("injected provider subscription failure"),
-    );
+    channel.subscribe.mockRejectedValueOnce(new Error("injected provider subscription failure"));
     await expect(
       deliverMessage({
         callbacks,
@@ -6129,10 +5694,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
     ).rejects.toThrow("injected provider subscription failure");
 
-    const [delivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(delivery).toMatchObject({ state: "retry", attempts: 1 });
     expect(storage.putFile).toHaveBeenCalledTimes(1);
     await db
@@ -6149,10 +5711,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(issueAttachments.companyId, fixture.companyId)),
     ).resolves.toHaveLength(1);
     await expect(
-      db
-        .select({ state: chatDeliveries.state })
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.id, delivery.id)),
+      db.select({ state: chatDeliveries.state }).from(chatDeliveries).where(eq(chatDeliveries.id, delivery.id)),
     ).resolves.toEqual([{ state: "processed" }]);
     await service.shutdown();
   });
@@ -6160,10 +5719,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   it("ignores signed Slack callbacks from a different workspace before SDK dispatch", async () => {
     const fixture = await seedCompany();
     const runtime = new FakeChatSdkRuntime();
-    const { service } = createService(
-      runtime,
-      fakeSlackFetch("U-BOT-WORKSPACE-SCOPE") as typeof globalThis.fetch,
-    );
+    const { service } = createService(runtime, fakeSlackFetch("U-BOT-WORKSPACE-SCOPE") as typeof globalThis.fetch);
     const endpoint = await service.create(
       fixture.companyId,
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
@@ -6186,24 +5742,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     const signedRequest = (body: string, contentType: string) => {
       const timestamp = String(Math.floor(Date.now() / 1000));
-      const signature = `v0=${createHmac("sha256", signingSecret)
-        .update(`v0:${timestamp}:${body}`)
-        .digest("hex")}`;
-      return new Request(
-        `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": contentType,
-            "x-slack-request-timestamp": timestamp,
-            "x-slack-signature": signature,
-          },
-          body,
+      const signature = `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:${body}`).digest("hex")}`;
+      return new Request(`https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`, {
+        method: "POST",
+        headers: {
+          "content-type": contentType,
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": signature,
         },
-      );
+        body,
+      });
     };
-    const formBody = (values: Record<string, string>) =>
-      new URLSearchParams(values).toString();
+    const formBody = (values: Record<string, string>) => new URLSearchParams(values).toString();
     const cases = [
       {
         name: "Events API JSON",
@@ -6290,16 +5840,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     // An invalid request must continue to the SDK so it receives the normal
     // authentication failure instead of Paperclip acknowledging it as foreign.
     endpointRuntime.webhookRequest = null;
-    const forgedForeign = signedRequest(
-      cases[0]!.foreignBody,
-      cases[0]!.contentType,
-    );
+    const forgedForeign = signedRequest(cases[0]!.foreignBody, cases[0]!.contentType);
     forgedForeign.headers.set("x-slack-signature", "v0=forged");
-    const forgedResponse = await service.handleWebhook(
-      endpoint.publicId,
-      "slack",
-      forgedForeign,
-    );
+    const forgedResponse = await service.handleWebhook(endpoint.publicId, "slack", forgedForeign);
     expect(forgedResponse.status).toBe(202);
     expect(endpointRuntime.webhookRequest).not.toBeNull();
 
@@ -6349,117 +5892,70 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     const timestamp = String(Math.floor(Date.now() / 1000));
-    const signature = `v0=${createHmac("sha256", signingSecret)
-      .update(`v0:${timestamp}:${body}`)
-      .digest("hex")}`;
+    const signature = `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:${body}`).digest("hex")}`;
     const providerRequest = (retry = false) =>
-      new Request(
-        `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-slack-request-timestamp": timestamp,
-            "x-slack-signature": signature,
-            ...(retry ? { "x-slack-retry-num": "1" } : {}),
-          },
-          body,
+      new Request(`https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": signature,
+          ...(retry ? { "x-slack-retry-num": "1" } : {}),
         },
-      );
+        body,
+      });
 
     const forged = await service.handleWebhook(
       endpoint.publicId,
       "slack",
-      new Request(
-        `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-slack-request-timestamp": timestamp,
-            "x-slack-signature": "v0=forged",
-          },
-          body,
+      new Request(`https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": "v0=forged",
         },
-      ),
+        body,
+      }),
     );
     expect(forged.status).toBe(401);
-    expect(
-      await db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id)),
-    ).toHaveLength(0);
+    expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id))).toHaveLength(0);
 
     const transactionSpy = vi
       .spyOn(db, "transaction")
       .mockRejectedValueOnce(new Error("injected durable admission failure"));
 
-    const rejected = await service.handleWebhook(
-      endpoint.publicId,
-      "slack",
-      providerRequest(),
-    );
+    const rejected = await service.handleWebhook(endpoint.publicId, "slack", providerRequest());
     expect(rejected.status).toBe(503);
     expect(rejected.headers.get("retry-after")).toBe("1");
-    expect(
-      await db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id)),
-    ).toHaveLength(0);
+    expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id))).toHaveLength(0);
 
     transactionSpy.mockRestore();
-    const acceptedRetry = await service.handleWebhook(
-      endpoint.publicId,
-      "slack",
-      providerRequest(true),
-    );
+    const acceptedRetry = await service.handleWebhook(endpoint.publicId, "slack", providerRequest(true));
     expect(acceptedRetry.status).toBe(200);
     await vi.waitFor(async () => {
-      const deliveries = await db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id));
+      const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
       expect(deliveries).toHaveLength(1);
       expect(deliveries[0].state).toBe("processed");
     });
-    const [initialDelivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
-    const initialDuplicateCount = Number(
-      initialDelivery.normalizedEvent.deduplication?.duplicateCount ?? 0,
-    );
+    const [initialDelivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+    const initialDuplicateCount = Number(initialDelivery.normalizedEvent.deduplication?.duplicateCount ?? 0);
     expect(initialDuplicateCount).toBe(0);
-    const acceptedRedelivery = await service.handleWebhook(
-      endpoint.publicId,
-      "slack",
-      providerRequest(true),
-    );
+    const acceptedRedelivery = await service.handleWebhook(endpoint.publicId, "slack", providerRequest(true));
     expect(acceptedRedelivery.status).toBe(200);
     await vi.waitFor(async () => {
-      const [delivery] = await db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id));
-      expect(
-        Number(delivery.normalizedEvent.deduplication?.duplicateCount ?? 0),
-      ).toBeGreaterThan(initialDuplicateCount);
-      expect(
-        await db
-          .select()
-          .from(issues)
-          .where(eq(issues.companyId, fixture.companyId)),
-      ).toHaveLength(1);
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(Number(delivery.normalizedEvent.deduplication?.duplicateCount ?? 0)).toBeGreaterThan(
+        initialDuplicateCount,
+      );
+      expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
     });
     await service.shutdown();
   });
 
   it("cannot publish a runtime whose initialization is overtaken by pause", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const [beforeActivation] = await db
       .select({ setup: chatEndpoints.setup })
       .from(chatEndpoints)
@@ -6543,11 +6039,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ status: "active", setup: { step: "complete" } })
       .where(eq(chatEndpoints.id, endpoint.id));
 
-    const signedRequest = (input: {
-      eventId: string;
-      messageId: string;
-      text: string;
-    }) => {
+    const signedRequest = (input: { eventId: string; messageId: string; text: string }) => {
       const body = JSON.stringify({
         type: "event_callback",
         event_id: input.eventId,
@@ -6565,21 +6057,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
       });
       const timestamp = String(Math.floor(Date.now() / 1000));
-      const signature = `v0=${createHmac("sha256", signingSecret)
-        .update(`v0:${timestamp}:${body}`)
-        .digest("hex")}`;
-      return new Request(
-        `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-slack-request-timestamp": timestamp,
-            "x-slack-signature": signature,
-          },
-          body,
+      const signature = `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:${body}`).digest("hex")}`;
+      return new Request(`https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/slack`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": signature,
         },
-      );
+        body,
+      });
     };
 
     const activeResponse = await service.handleWebhook(
@@ -6619,29 +6106,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .orderBy(asc(chatDeliveries.receivedAt));
     expect(deliveries).toHaveLength(1);
     expect(deliveries.map((delivery) => delivery.state)).toEqual(["filtered"]);
-    expect(deliveries.map((delivery) => delivery.redactedError)).toEqual([
-      "Connection was paused before processing",
-    ]);
+    expect(deliveries.map((delivery) => delivery.redactedError)).toEqual(["Connection was paused before processing"]);
     expect(deliveries.every((delivery) => delivery.processedAt)).toBe(true);
     expect(await service.get(endpoint.id)).toMatchObject({ status: "active" });
     expect(wakeup).not.toHaveBeenCalled();
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.companyId))).toHaveLength(0);
     expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(0);
-    expect(
-      await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.companyId, fixture.companyId)),
-    ).toHaveLength(0);
-    expect(
-      await db
-        .select()
-        .from(chatPublications)
-        .where(eq(chatPublications.companyId, fixture.companyId)),
+      await db.select().from(chatPublications).where(eq(chatPublications.companyId, fixture.companyId)),
     ).toHaveLength(0);
   });
 
@@ -6698,9 +6170,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       companyId: fixture.companyId,
       endpointId: endpoint.id,
       providerEventId,
-      deduplicationKey: createHash("sha256")
-        .update(providerEventId)
-        .digest("hex"),
+      deduplicationKey: createHash("sha256").update(providerEventId).digest("hex"),
       eventKind: "mention",
       normalizedEvent: {},
       state: "processing",
@@ -6721,11 +6191,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(chatDeliveries.providerEventId, providerEventId));
     expect(processingDuplicate.state).toBe("processing");
     expect(processingDuplicate.processedAt).toBeNull();
-    expect(
-      Number(
-        processingDuplicate.normalizedEvent.deduplication?.duplicateCount ?? 0,
-      ),
-    ).toBe(1);
+    expect(Number(processingDuplicate.normalizedEvent.deduplication?.duplicateCount ?? 0)).toBe(1);
 
     await service.configure(endpoint.id, { action: "resume" }, "owner-user");
     const staleMessage = makeMessage({
@@ -6795,16 +6261,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       redactedError: "Connection activation changed before admission",
       processedAt: expect.any(Date),
     });
-    expect(JSON.stringify(await service.get(endpoint.id))).not.toContain(
-      "runtimeGeneration",
-    );
+    expect(JSON.stringify(await service.get(endpoint.id))).not.toContain("runtimeGeneration");
     expect(wakeup).not.toHaveBeenCalled();
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(0);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
 
     const freshCallbacks = runtime.configurations.get(endpoint.id)?.callbacks;
     if (!freshCallbacks) throw new Error("Expected resumed endpoint callbacks");
@@ -6828,19 +6287,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await service.processPendingDeliveries();
     await vi.waitFor(() => expect(wakeup).toHaveBeenCalledTimes(1));
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
     await service.shutdown();
   });
 
   it("deduplicates inbound events, keeps one task per thread, and requires enablement for newly discovered channels", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     const serializedEndpointResponses = JSON.stringify({
       detail: await service.get(endpoint.id),
       list: await service.list(fixture.companyId),
@@ -6877,18 +6330,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "mention",
     });
 
-    let conversations = await db
-      .select()
-      .from(chatConversations)
-      .where(eq(chatConversations.endpointId, endpoint.id));
-    let endpointIssues = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.companyId, fixture.companyId));
-    let deliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    let conversations = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id));
+    let endpointIssues = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
+    let deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     let comments = await db
       .select()
       .from(issueComments)
@@ -6903,14 +6347,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         lastDuplicateAt: expect.any(String),
       },
     });
-    expect(comments.map((comment) => comment.body)).toEqual([
-      "@maya investigate the deploy",
-    ]);
-    expect(first.addReaction).toHaveBeenCalledWith(
-      first.thread.id,
-      firstMessage.id,
-      "eyes",
-    );
+    expect(comments.map((comment) => comment.body)).toEqual(["@maya investigate the deploy"]);
+    expect(first.addReaction).toHaveBeenCalledWith(first.thread.id, firstMessage.id, "eyes");
     expect(first.startTyping).not.toHaveBeenCalled();
     expect(first.subscribe).toHaveBeenCalledTimes(1);
     expect(wakeup).toHaveBeenCalledTimes(1);
@@ -6922,14 +6360,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       message: makeMessage({ id: "1000.2", text: "Here is another detail" }),
       trigger: "subscribed_message",
     });
-    conversations = await db
-      .select()
-      .from(chatConversations)
-      .where(eq(chatConversations.endpointId, endpoint.id));
-    endpointIssues = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.companyId, fixture.companyId));
+    conversations = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id));
+    endpointIssues = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
     comments = await db
       .select()
       .from(issueComments)
@@ -6937,10 +6369,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
     expect(conversations).toHaveLength(1);
     expect(endpointIssues).toHaveLength(1);
-    expect(comments.map((comment) => comment.body)).toEqual([
-      "@maya investigate the deploy",
-      "Here is another detail",
-    ]);
+    expect(comments.map((comment) => comment.body)).toEqual(["@maya investigate the deploy", "Here is another detail"]);
 
     const second = makeThread({
       channelId: "C-FINANCE",
@@ -6968,26 +6397,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { label: "engineering", enabled: true },
       { label: "finance", enabled: false },
     ]);
-    deliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
-    expect(
-      deliveries.find((delivery) => delivery.providerEventId.includes("2000.1"))
-        ?.state,
-    ).toBe("filtered");
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(1);
+    deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(deliveries.find((delivery) => delivery.providerEventId.includes("2000.1"))?.state).toBe("filtered");
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
 
     const finance = resources.find((resource) => resource.label === "finance");
     if (!finance) throw new Error("Expected discovered finance resource");
-    await service.replaceResources(endpoint.id, [
-      { id: finance.id, enabled: true },
-    ]);
+    await service.replaceResources(endpoint.id, [{ id: finance.id, enabled: true }]);
     await deliverMessage({
       callbacks,
       endpointId: endpoint.id,
@@ -6999,18 +6415,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "mention",
     });
-    expect(
-      await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id)),
-    ).toHaveLength(2);
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(2);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id))).toHaveLength(
+      2,
+    );
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(2);
   });
 
   it.each([
@@ -7028,8 +6436,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         status: 403,
       }),
       expectedAttempts: 1,
-      expectedDiagnostic:
-        /Receipt reaction failed after 1 attempt \(endpoint_attention\): GitHub reaction forbidden/,
+      expectedDiagnostic: /Receipt reaction failed after 1 attempt \(endpoint_attention\): GitHub reaction forbidden/,
     },
     {
       label: "retries a GitHub 429 receipt reaction with bounded backoff",
@@ -7059,78 +6466,55 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expectedAttempts: 3,
       expectedDiagnostic: null as RegExp | null,
     },
-  ])(
-    "$label",
-    async ({
-      expectedAttempts,
-      expectedDiagnostic,
-      failures,
-      terminalFailure,
-    }) => {
-      const fixture = await seedCompany();
-      const { callbacks, endpoint, service, wakeup } =
-        await configuredGitHubEndpoint(fixture);
-      const github = makeThread({
-        channelId: "github:paperclipai/paperclip",
-        id: "github:paperclipai/paperclip:issue:receipt-reaction",
-        name: "paperclipai/paperclip",
-      });
-      github.addReaction.mockReset();
-      for (const failure of failures) {
-        github.addReaction.mockRejectedValueOnce(failure);
-      }
-      if (terminalFailure) {
-        github.addReaction.mockRejectedValue(terminalFailure);
-      } else {
-        github.addReaction.mockResolvedValue(undefined);
-      }
+  ])("$label", async ({ expectedAttempts, expectedDiagnostic, failures, terminalFailure }) => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service, wakeup } = await configuredGitHubEndpoint(fixture);
+    const github = makeThread({
+      channelId: "github:paperclipai/paperclip",
+      id: "github:paperclipai/paperclip:issue:receipt-reaction",
+      name: "paperclipai/paperclip",
+    });
+    github.addReaction.mockReset();
+    for (const failure of failures) {
+      github.addReaction.mockRejectedValueOnce(failure);
+    }
+    if (terminalFailure) {
+      github.addReaction.mockRejectedValue(terminalFailure);
+    } else {
+      github.addReaction.mockResolvedValue(undefined);
+    }
 
-      await deliverMessage({
-        callbacks,
-        endpointId: endpoint.id,
-        provider: "github",
-        thread: github.thread,
-        message: makeMessage({
-          id: "880011",
-          text: "@maya verify receipt reaction reliability",
-          mentioned: true,
-        }),
-        trigger: "mention",
-      });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "github",
+      thread: github.thread,
+      message: makeMessage({
+        id: "880011",
+        text: "@maya verify receipt reaction reliability",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
 
-      expect(github.addReaction).toHaveBeenCalledTimes(expectedAttempts);
-      expect(github.addReaction).toHaveBeenCalledWith(
-        github.thread.id,
-        "880011",
-        "eyes",
-      );
-      const [delivery] = await db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id));
-      expect(delivery).toMatchObject({ state: "processed", attempts: 1 });
-      expect(wakeup).toHaveBeenCalledTimes(1);
-      expect(
-        await db
-          .select()
-          .from(issues)
-          .where(eq(issues.companyId, fixture.companyId)),
-      ).toHaveLength(1);
-      const activity = (await service.listActivity(endpoint.id)).find(
-        (item) => item.id === delivery.id,
-      );
-      if (expectedDiagnostic) {
-        expect(delivery.redactedError).toMatch(expectedDiagnostic);
-        expect(activity?.detail).toMatch(expectedDiagnostic);
-        await expect(service.get(endpoint.id)).resolves.toMatchObject({
-          status: "verifying",
-        });
-      } else {
-        expect(delivery.redactedError).toBeNull();
-        expect(activity?.detail).toBeNull();
-      }
-    },
-  );
+    expect(github.addReaction).toHaveBeenCalledTimes(expectedAttempts);
+    expect(github.addReaction).toHaveBeenCalledWith(github.thread.id, "880011", "eyes");
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(delivery).toMatchObject({ state: "processed", attempts: 1 });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
+    const activity = (await service.listActivity(endpoint.id)).find((item) => item.id === delivery.id);
+    if (expectedDiagnostic) {
+      expect(delivery.redactedError).toMatch(expectedDiagnostic);
+      expect(activity?.detail).toMatch(expectedDiagnostic);
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({
+        status: "verifying",
+      });
+    } else {
+      expect(delivery.redactedError).toBeNull();
+      expect(activity?.detail).toBeNull();
+    }
+  });
 
   it("canonicalizes prefixed Chat SDK channel ids onto provider inventory resources", async () => {
     const fixture = await seedCompany();
@@ -7192,9 +6576,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "owner-user",
     );
     const [inventoryResource] = await service.listResources(endpoint.id);
-    await service.replaceResources(endpoint.id, [
-      { id: inventoryResource!.id, enabled: true },
-    ]);
+    await service.replaceResources(endpoint.id, [{ id: inventoryResource!.id, enabled: true }]);
     const callbacks = runtime.configurations.get(endpoint.id)?.callbacks;
     if (!callbacks) throw new Error("Expected Slack callbacks");
     const thread = makeThread({
@@ -7229,8 +6611,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("refuses to enable a destination the provider no longer exposes", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-REMOVED",
       id: "slack:C-REMOVED:2100.1",
@@ -7255,11 +6636,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ availability: "removed", updatedAt: new Date() })
       .where(eq(chatEndpointResources.id, resource.id));
 
-    await expect(
-      service.replaceResources(endpoint.id, [
-        { id: resource.id, enabled: true },
-      ]),
-    ).rejects.toMatchObject({
+    await expect(service.replaceResources(endpoint.id, [{ id: resource.id, enabled: true }])).rejects.toMatchObject({
       status: 409,
       details: {
         code: "chat_resource_unavailable",
@@ -7270,10 +6647,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("filters unlinked people when configured, then honors a confirmed active-member identity link", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } = await configuredSlackEndpoint(
-      fixture,
-      { allowUnlinkedPeople: false },
-    );
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
     const channel = makeThread({
       channelId: "C-PRIVATE",
       id: "slack:C-PRIVATE:3000.1",
@@ -7292,16 +6666,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "mention",
     });
-    expect(
-      await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id)),
-    ).toHaveLength(0);
-    const [filtered] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id))).toHaveLength(
+      0,
+    );
+    const [filtered] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(filtered.state).toBe("filtered");
 
     const now = new Date();
@@ -7324,11 +6692,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(chatExternalPrincipals)
       .where(eq(chatExternalPrincipals.externalId, "U-LINK-ME"));
-    const intent = await service.createLinkIntent(
-      endpoint.id,
-      principal.id,
-      1_800,
-    );
+    const intent = await service.createLinkIntent(endpoint.id, principal.id, 1_800);
     const token = new URL(intent.confirmationUrl).searchParams.get("token");
     if (!token) throw new Error("Identity-link confirmation token was absent");
     await expect(service.previewIdentityLink(token)).resolves.toMatchObject({
@@ -7337,9 +6701,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       provider: "slack",
       externalLabel: "Alex External",
     });
-    await expect(
-      service.confirmIdentityLink(token, "linked-paperclip-user"),
-    ).resolves.toEqual({
+    await expect(service.confirmIdentityLink(token, "linked-paperclip-user")).resolves.toEqual({
       ok: true,
       endpointId: endpoint.id,
     });
@@ -7356,19 +6718,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "mention",
     });
-    expect(
-      await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id)),
-    ).toHaveLength(0);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id))).toHaveLength(
+      0,
+    );
     const viewerDelivery = await db
       .select()
       .from(chatDeliveries)
       .where(eq(chatDeliveries.endpointId, endpoint.id))
-      .then((rows) =>
-        rows.find((delivery) => delivery.providerEventId.includes("3000.2")),
-      );
+      .then((rows) => rows.find((delivery) => delivery.providerEventId.includes("3000.2")));
     expect(viewerDelivery?.state).toBe("filtered");
 
     await db
@@ -7397,19 +6754,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const [comment] = await db
       .select()
       .from(issueComments)
-      .where(
-        and(
-          eq(issueComments.issueId, conversation.issueId),
-          eq(issueComments.authorType, "user"),
-        ),
-      );
+      .where(and(eq(issueComments.issueId, conversation.issueId), eq(issueComments.authorType, "user")));
     expect(comment.authorType).toBe("user");
     expect(comment.authorUserId).toBe("linked-paperclip-user");
     const userCommentCountBeforeSuspend = (
-      await db
-        .select()
-        .from(issueComments)
-        .where(eq(issueComments.issueId, conversation.issueId))
+      await db.select().from(issueComments).where(eq(issueComments.issueId, conversation.issueId))
     ).filter((candidate) => candidate.authorType === "user").length;
 
     await db
@@ -7427,28 +6776,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "subscribed_message",
     });
-    const allComments = await db
-      .select()
-      .from(issueComments)
-      .where(eq(issueComments.issueId, conversation.issueId));
-    expect(
-      allComments.filter((candidate) => candidate.authorType === "user"),
-    ).toHaveLength(userCommentCountBeforeSuspend);
-    const allDeliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
-    expect(
-      allDeliveries.find((delivery) =>
-        delivery.providerEventId.includes("3000.4"),
-      )?.state,
-    ).toBe("filtered");
+    const allComments = await db.select().from(issueComments).where(eq(issueComments.issueId, conversation.issueId));
+    expect(allComments.filter((candidate) => candidate.authorType === "user")).toHaveLength(
+      userCommentCountBeforeSuspend,
+    );
+    const allDeliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(allDeliveries.find((delivery) => delivery.providerEventId.includes("3000.4"))?.state).toBe("filtered");
   });
 
   it("filters an unlinked guest when the endpoint sponsor is suspended and exposes the reason and duplicate count", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
     await db
       .update(companyMemberships)
       .set({ status: "suspended" })
@@ -7481,10 +6819,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
 
     expect(await service.listConversations(endpoint.id)).toEqual([]);
-    const [delivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(delivery).toMatchObject({
       state: "filtered",
       redactedError: "Endpoint sponsor can no longer authorize external guests",
@@ -7506,8 +6841,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("guides empty Slack mentions once without creating a task or run", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     const configured = await service.get(endpoint.id);
     const variants = [
       "",
@@ -7544,41 +6878,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
 
       expect(root.post).toHaveBeenCalledTimes(1);
-      expect(root.post).toHaveBeenCalledWith(
-        "Please include a request after mentioning me.",
-      );
+      expect(root.post).toHaveBeenCalledWith("Please include a request after mentioning me.");
       expect(root.addReaction).toHaveBeenCalledTimes(1);
     }
 
     expect(await service.listConversations(endpoint.id)).toEqual([]);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.companyId))).toHaveLength(0);
     expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
+      await db.select().from(chatPublications).where(eq(chatPublications.companyId, fixture.companyId)),
     ).toHaveLength(0);
-    expect(
-      await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.companyId, fixture.companyId)),
-    ).toHaveLength(0);
-    expect(
-      await db
-        .select()
-        .from(chatPublications)
-        .where(eq(chatPublications.companyId, fixture.companyId)),
-    ).toHaveLength(0);
-    const deliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(deliveries).toHaveLength(variants.length);
     expect(
       deliveries.every(
-        (delivery) =>
-          delivery.state === "processed" &&
-          delivery.normalizedEvent.deduplication?.duplicateCount === 1,
+        (delivery) => delivery.state === "processed" && delivery.normalizedEvent.deduplication?.duplicateCount === 1,
       ),
     ).toBe(true);
     expect(wakeup).not.toHaveBeenCalled();
@@ -7626,14 +6940,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "owner-user",
       );
       await recordSlackUrlVerification(context.service, endpoint.publicId);
-      await context.service.configure(
-        endpoint.id,
-        { action: "verify" },
-        "owner-user",
-      );
-      const callbacks = context.runtime.configurations.get(
-        endpoint.id,
-      )?.callbacks;
+      await context.service.configure(endpoint.id, { action: "verify" }, "owner-user");
+      const callbacks = context.runtime.configurations.get(endpoint.id)?.callbacks;
       if (!callbacks) throw new Error("Expected endpoint callbacks");
       const thread = makeThread({
         channelId: `C-IDENTITY-${suffix.toUpperCase()}`,
@@ -7694,35 +7002,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(chatExternalPrincipals)
       .where(eq(chatExternalPrincipals.externalId, "U-SHARED-HUMAN"))
       .then((rows) => rows[0]);
-    const firstIntent = await firstContext.service.createLinkIntent(
-      first.id,
-      principal.id,
-      1_800,
-    );
-    const firstToken = new URL(firstIntent.confirmationUrl).searchParams.get(
-      "token",
-    );
+    const firstIntent = await firstContext.service.createLinkIntent(first.id, principal.id, 1_800);
+    const firstToken = new URL(firstIntent.confirmationUrl).searchParams.get("token");
     if (!firstToken) throw new Error("First identity token was absent");
-    await firstContext.service.confirmIdentityLink(
-      firstToken,
-      "paperclip-user-a",
-    );
+    await firstContext.service.confirmIdentityLink(firstToken, "paperclip-user-a");
 
-    const secondIntent = await secondContext.service.createLinkIntent(
-      second.id,
-      principal.id,
-      1_800,
-    );
-    const secondToken = new URL(secondIntent.confirmationUrl).searchParams.get(
-      "token",
-    );
+    const secondIntent = await secondContext.service.createLinkIntent(second.id, principal.id, 1_800);
+    const secondToken = new URL(secondIntent.confirmationUrl).searchParams.get("token");
     if (!secondToken) throw new Error("Second identity token was absent");
-    await expect(
-      secondContext.service.confirmIdentityLink(
-        secondToken,
-        "paperclip-user-b",
-      ),
-    ).rejects.toMatchObject({
+    await expect(secondContext.service.confirmIdentityLink(secondToken, "paperclip-user-b")).rejects.toMatchObject({
       status: 409,
       details: { code: "chat_identity_link_conflict" },
     });
@@ -7730,8 +7018,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("publishes only the safe projection once and locks reassignment of a bound task", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-SAFE",
       id: "slack:C-SAFE:4000.1",
@@ -7761,51 +7048,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { authorType: "user" },
     );
 
-    const first = await service.publishComment(
-      endpoint.id,
-      conversation.id,
-      comment.id,
-    );
-    const second = await service.publishComment(
-      endpoint.id,
-      conversation.id,
-      comment.id,
-    );
+    const first = await service.publishComment(endpoint.id, conversation.id, comment.id);
+    const second = await service.publishComment(endpoint.id, conversation.id, comment.id);
     expect(first.id).toBe(second.id);
     // The first call returns the newly inserted outbox row, while the second
     // observes that same durable row after the synchronous delivery attempt.
     expect(first.state).toBe("pending");
     expect(second.state).toBe("published");
     const providerRuntime = runtime.endpoints.get(endpoint.id);
-    expect(providerRuntime?.posts).toEqual([
-      { threadId: channel.thread.id, text: "Visible answer." },
-    ]);
-    const publications = await db
-      .select()
-      .from(chatPublications)
-      .where(eq(chatPublications.endpointId, endpoint.id));
-    const links = await db
-      .select()
-      .from(chatMessageLinks)
-      .where(eq(chatMessageLinks.endpointId, endpoint.id));
-    const explicitPublications = publications.filter(
-      (publication) => publication.commentId === comment.id,
-    );
+    expect(providerRuntime?.posts).toEqual([{ threadId: channel.thread.id, text: "Visible answer." }]);
+    const publications = await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpoint.id));
+    const links = await db.select().from(chatMessageLinks).where(eq(chatMessageLinks.endpointId, endpoint.id));
+    const explicitPublications = publications.filter((publication) => publication.commentId === comment.id);
     expect(explicitPublications).toHaveLength(1);
     expect(explicitPublications[0]).toMatchObject({
       state: "published",
       providerMessageId: expect.stringMatching(/^outbound-\d+$/),
     });
+    expect(links.filter((link) => link.direction === "inbound" || link.commentId === comment.id)).toHaveLength(3);
     expect(
-      links.filter(
-        (link) => link.direction === "inbound" || link.commentId === comment.id,
-      ),
-    ).toHaveLength(3);
-    expect(
-      links.find(
-        (link) =>
-          link.direction === "outbound" && link.commentId === comment.id,
-      )?.providerMessageId,
+      links.find((link) => link.direction === "outbound" && link.commentId === comment.id)?.providerMessageId,
     ).toBe(explicitPublications[0]?.providerMessageId);
 
     await expect(
@@ -7820,10 +7082,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         conversationId: conversation.id,
       },
     });
-    const [boundIssue] = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, conversation.issueId));
+    const [boundIssue] = await db.select().from(issues).where(eq(issues.id, conversation.issueId));
     expect(boundIssue.assigneeAgentId).toBe(fixture.assignedAgentId);
 
     await service.configure(endpoint.id, { action: "remove" }, "owner-user");
@@ -7839,9 +7098,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         conversationId: conversation.id,
       },
     });
-    await expect(
-      service.getIssueBinding(conversation.issueId),
-    ).resolves.toMatchObject({
+    await expect(service.getIssueBinding(conversation.issueId)).resolves.toMatchObject({
       endpointId: endpoint.id,
       conversationId: conversation.id,
       assignedAgentLocked: true,
@@ -7850,8 +7107,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("coalesces one GitHub run's progress and final response into one provider comment", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredGitHubEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredGitHubEndpoint(fixture);
     const thread = makeThread({
       channelId: "github:paperclipai/paperclip",
       id: "github:paperclipai/paperclip:issue:417",
@@ -7940,20 +7196,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(publications).toHaveLength(3);
     expect(
       publications.every(
-        (publication) =>
-          publication.state === "published" &&
-          publication.providerMessageId === "outbound-1",
+        (publication) => publication.state === "published" && publication.providerMessageId === "outbound-1",
       ),
     ).toBe(true);
     const [providerLink] = await db
       .select()
       .from(chatMessageLinks)
-      .where(
-        and(
-          eq(chatMessageLinks.conversationId, conversation.id),
-          eq(chatMessageLinks.direction, "outbound"),
-        ),
-      );
+      .where(and(eq(chatMessageLinks.conversationId, conversation.id), eq(chatMessageLinks.direction, "outbound")));
     expect(providerLink).toMatchObject({
       providerMessageId: "outbound-1",
       commentId: finalComment.id,
@@ -8004,12 +7253,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const replacementEdit = await db
       .select()
       .from(chatPublications)
-      .where(
-        eq(
-          chatPublications.idempotencyKey,
-          `run:${replacementRunId}:working:${endpoint.id}`,
-        ),
-      )
+      .where(eq(chatPublications.idempotencyKey, `run:${replacementRunId}:working:${endpoint.id}`))
       .then((rows) => rows[0]);
     expect(replacementEdit).toMatchObject({
       state: "published",
@@ -8067,12 +7311,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const ambiguousEdit = await db
       .select()
       .from(chatPublications)
-      .where(
-        eq(
-          chatPublications.idempotencyKey,
-          `run:${ambiguousRunId}:working:${endpoint.id}`,
-        ),
-      )
+      .where(eq(chatPublications.idempotencyKey, `run:${ambiguousRunId}:working:${endpoint.id}`))
       .then((rows) => rows[0]);
     expect(ambiguousEdit).toMatchObject({
       state: "delivery_unknown",
@@ -8088,8 +7327,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("keeps a Telegram status reply ordered before a later final answer and refreshes its task state", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
     if (!callbacks.onSlashCommand) {
       throw new Error("Telegram slash command callback was not registered");
     }
@@ -8178,17 +7416,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     const providerRuntime = runtime.endpoints.get(endpoint.id);
-    expect(providerRuntime?.posts.map((post) => post.text)).toEqual([
-      "Maya is working…",
-    ]);
+    expect(providerRuntime?.posts.map((post) => post.text)).toEqual(["Maya is working…"]);
     const statusPublication = (
-      await db
-        .select()
-        .from(chatPublications)
-        .where(eq(chatPublications.endpointId, endpoint.id))
-    ).find((publication) =>
-      publication.idempotencyKey.startsWith("control:status:"),
-    );
+      await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpoint.id))
+    ).find((publication) => publication.idempotencyKey.startsWith("control:status:"));
     expect(statusPublication).toMatchObject({
       conversationId: conversation.id,
       state: "pending",
@@ -8236,24 +7467,284 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
+  it("publishes the old final before /new and suppresses later output from the completed generation", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Telegram slash command callback was not registered");
+    }
+    const chatId = "77118898";
+    const thread = makeThread({
+      channelId: chatId,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram generation ordering",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: `${chatId}:910`,
+        raw: { message_id: 910 },
+        text: "Finish the old generation before starting another",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, chatId);
+    await service.test(endpoint.id, "owner-user");
+    const [oldConversation] = await service.listConversations(endpoint.id);
+    const oldRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: oldRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "succeeded",
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: oldConversation.issueId,
+        provider: "telegram",
+        providerMessageId: `${chatId}:910`,
+      }),
+    });
+    await issueService(db).addComment(
+      oldConversation.issueId,
+      "old-generation-final",
+      { agentId: fixture.assignedAgentId, runId: oldRunId },
+      { authorType: "agent" },
+    );
+
+    const newEvent = {
+      endpointId: endpoint.id,
+      provider: "telegram" as const,
+      event: {
+        channel: {
+          id: thread.thread.id,
+          name: "Telegram generation ordering",
+          isDM: true,
+        } as never,
+        command: "/new",
+        text: "",
+        user: {
+          userId: chatId,
+          userName: "telegram-generation-user",
+          fullName: "Telegram Generation User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: {
+          message_id: 911,
+          date: 1_788_622_911,
+          chat: { id: Number(chatId), type: "private" },
+          from: { id: Number(chatId), is_bot: false },
+          text: "/new",
+          entities: [{ offset: 0, length: 4, type: "bot_command" }],
+        },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    };
+    await callbacks.onSlashCommand(newEvent);
+    expect(runtime.endpoints.get(endpoint.id)?.posts).toEqual([]);
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ id: oldConversation.id, state: "active" }),
+    ]);
+
+    await service.processPendingPublications();
+    expect(runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text)).toEqual([
+      "old-generation-final",
+      "Send your request to start a new Paperclip task.",
+    ]);
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ id: oldConversation.id, state: "completed" }),
+    ]);
+
+    const lateOldFinal = await issueService(db).addComment(
+      oldConversation.issueId,
+      "late-old-generation-final-stays-in-paperclip",
+      { agentId: fixture.assignedAgentId, runId: oldRunId },
+      { authorType: "agent" },
+    );
+    await expect(
+      db
+        .select({ id: chatPublications.id })
+        .from(chatPublications)
+        .where(eq(chatPublications.commentId, lateOldFinal.id)),
+    ).resolves.toEqual([]);
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: `${chatId}:912`,
+        raw: { message_id: 912 },
+        text: "Start the new generation",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+    const conversations = await service.listConversations(endpoint.id);
+    const newConversation = conversations.find((conversation) => conversation.id !== oldConversation.id);
+    if (!newConversation) throw new Error("Expected a new chat generation");
+    expect(newConversation.sessionGeneration).toBe(oldConversation.sessionGeneration + 1);
+    const newRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: newRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "succeeded",
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: newConversation.issueId,
+        provider: "telegram",
+        providerMessageId: `${chatId}:912`,
+      }),
+    });
+    await issueService(db).addComment(
+      newConversation.issueId,
+      "new-generation-final",
+      { agentId: fixture.assignedAgentId, runId: newRunId },
+      { authorType: "agent" },
+    );
+    await service.processPendingPublications();
+
+    expect(runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text)).toEqual([
+      "old-generation-final",
+      "Send your request to start a new Paperclip task.",
+      "new-generation-final",
+    ]);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(2);
+  });
+
+  it("keeps task-bound /close active after an ambiguous publication commit until explicit confirmation", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Telegram slash command callback was not registered");
+    }
+    const chatId = "77118897";
+    const thread = makeThread({
+      channelId: chatId,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram close commit crash",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: `${chatId}:920`,
+        raw: { message_id: 920 },
+        text: "Keep this task active until close is visible",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, chatId);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await service.listConversations(endpoint.id);
+    await callbacks.onSlashCommand({
+      endpointId: endpoint.id,
+      provider: "telegram",
+      event: {
+        channel: {
+          id: thread.thread.id,
+          name: "Telegram close commit crash",
+          isDM: true,
+        } as never,
+        command: "/close",
+        text: "",
+        user: {
+          userId: chatId,
+          userName: "telegram-close-user",
+          fullName: "Telegram Close User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: {
+          message_id: 921,
+          date: 1_788_622_921,
+          chat: { id: Number(chatId), type: "private" },
+          from: { id: Number(chatId), is_bot: false },
+          text: "/close",
+          entities: [{ offset: 0, length: 6, type: "bot_command" }],
+        },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    });
+    const closePublication = await db
+      .select()
+      .from(chatPublications)
+      .where(
+        and(eq(chatPublications.endpointId, endpoint.id), like(chatPublications.idempotencyKey, "control:close:%")),
+      )
+      .then((rows) => rows[0]);
+    expect(closePublication).toMatchObject({ state: "pending" });
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ id: conversation.id, state: "active" }),
+    ]);
+
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    const originalTransaction = db.transaction.bind(db);
+    let injectedCrash = false;
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation((async (
+      ...args: Parameters<typeof originalTransaction>
+    ) => {
+      if (!injectedCrash && providerRuntime.posts.length === 1) {
+        injectedCrash = true;
+        throw new Error("injected task-control publication commit crash");
+      }
+      return originalTransaction(...args);
+    }) as typeof db.transaction);
+    try {
+      await expect(service.processPendingPublications()).resolves.toBe(1);
+    } finally {
+      transactionSpy.mockRestore();
+    }
+
+    expect(injectedCrash).toBe(true);
+    expect(providerRuntime.posts.map((post) => post.text)).toEqual([
+      "This task is closed. Send another message to start a new task.",
+    ]);
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ id: conversation.id, state: "active" }),
+    ]);
+    await expect(
+      db
+        .select({ state: chatPublications.state })
+        .from(chatPublications)
+        .where(eq(chatPublications.id, closePublication!.id)),
+    ).resolves.toEqual([{ state: "delivery_unknown" }]);
+
+    await service.processPendingPublications();
+    expect(providerRuntime.posts).toHaveLength(1);
+    await service.resolvePublication(endpoint.id, closePublication!.id, "mark_delivered", "owner-user");
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ id: conversation.id, state: "completed" }),
+    ]);
+    expect(providerRuntime.posts).toHaveLength(1);
+  });
+
   it.each(["slack", "github"] as const)(
     "preserves every %s agent comment after replacing one run placeholder",
     async (provider) => {
       const fixture = await seedCompany();
       const configured =
-        provider === "slack"
-          ? await configuredSlackEndpoint(fixture)
-          : await configuredGitHubEndpoint(fixture);
+        provider === "slack" ? await configuredSlackEndpoint(fixture) : await configuredGitHubEndpoint(fixture);
       const { callbacks, endpoint, runtime, service } = configured;
       const thread = makeThread({
-        channelId:
-          provider === "slack"
-            ? "C-MULTI-FINAL"
-            : "github:paperclipai/paperclip",
-        id:
-          provider === "slack"
-            ? "slack:C-MULTI-FINAL:4045.1"
-            : "github:paperclipai/paperclip:issue:418",
+        channelId: provider === "slack" ? "C-MULTI-FINAL" : "github:paperclipai/paperclip",
+        id: provider === "slack" ? "slack:C-MULTI-FINAL:4045.1" : "github:paperclipai/paperclip:issue:418",
         name: provider === "slack" ? "multi-final" : "paperclipai/paperclip",
       });
       await deliverMessage({
@@ -8357,12 +7848,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await db
           .select()
           .from(chatMessageLinks)
-          .where(
-            and(
-              eq(chatMessageLinks.conversationId, conversation.id),
-              eq(chatMessageLinks.direction, "outbound"),
-            ),
-          ),
+          .where(and(eq(chatMessageLinks.conversationId, conversation.id), eq(chatMessageLinks.direction, "outbound"))),
       ).toHaveLength(3);
       await service.shutdown();
     },
@@ -8370,8 +7856,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("coalesces one Slack run's lifecycle and final response into one thread reply", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
       channelId: "C-QUIET-RUN",
       id: "slack:C-QUIET-RUN:4050.1",
@@ -8420,8 +7905,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       await service.processPendingPublications();
     }
-    const finalText =
-      `Final Slack result ${"with enough safe detail. ".repeat(20)}`.trim();
+    const finalText = `Final Slack result ${"with enough safe detail. ".repeat(20)}`.trim();
     const finalComment = await issueService(db).addComment(
       conversation.issueId,
       finalText,
@@ -8431,9 +7915,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
 
     const providerRuntime = runtime.endpoints.get(endpoint.id);
-    expect(providerRuntime?.posts).toEqual([
-      { threadId: thread.thread.id, text: "Maya is queued." },
-    ]);
+    expect(providerRuntime?.posts).toEqual([{ threadId: thread.thread.id, text: "Maya is queued." }]);
     expect(providerRuntime?.edits).toEqual([
       {
         threadId: thread.thread.id,
@@ -8453,21 +7935,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(publications).toHaveLength(3);
     expect(
       publications.every(
-        (publication) =>
-          publication.state === "published" &&
-          publication.providerMessageId === "outbound-1",
+        (publication) => publication.state === "published" && publication.providerMessageId === "outbound-1",
       ),
     ).toBe(true);
     expect(
       await db
         .select()
         .from(chatMessageLinks)
-        .where(
-          and(
-            eq(chatMessageLinks.conversationId, conversation.id),
-            eq(chatMessageLinks.direction, "outbound"),
-          ),
-        ),
+        .where(and(eq(chatMessageLinks.conversationId, conversation.id), eq(chatMessageLinks.direction, "outbound"))),
     ).toEqual([
       expect.objectContaining({
         providerMessageId: "outbound-1",
@@ -8478,8 +7953,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("edits a Slack working reply into one terminal failure reply", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
       channelId: "C-FAILED-RUN",
       id: "slack:C-FAILED-RUN:4060.1",
@@ -8516,10 +7990,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         issueId: conversation.issueId,
         idempotencyKey: `run:${runId}:${milestone}:${endpoint.id}`,
         payload: {
-          text:
-            milestone === "working"
-              ? "Maya is working…"
-              : "Maya stopped before completing this turn.",
+          text: milestone === "working" ? "Maya is working…" : "Maya stopped before completing this turn.",
           progressState: milestone,
         },
         state: "pending",
@@ -8528,9 +7999,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
 
     const providerRuntime = runtime.endpoints.get(endpoint.id);
-    expect(providerRuntime?.posts).toEqual([
-      { threadId: thread.thread.id, text: "Maya is working…" },
-    ]);
+    expect(providerRuntime?.posts).toEqual([{ threadId: thread.thread.id, text: "Maya is working…" }]);
     expect(providerRuntime?.edits).toEqual([
       {
         threadId: thread.thread.id,
@@ -8632,25 +8101,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(chatPublications)
       .where(eq(chatPublications.conversationId, conversation.id));
     expect(publications).toHaveLength(3);
-    expect(
-      new Set(publications.map((publication) => publication.idempotencyKey)),
-    ).toEqual(
-      new Set(
-        runCases.map(
-          ({ id, milestone }) => `run:${id}:${milestone}:${endpoint.id}`,
-        ),
-      ),
+    expect(new Set(publications.map((publication) => publication.idempotencyKey))).toEqual(
+      new Set(runCases.map(({ id, milestone }) => `run:${id}:${milestone}:${endpoint.id}`)),
     );
     expect(
-      publications.find((publication) =>
-        publication.idempotencyKey.startsWith(`run:${internalRunId}:`),
-      ),
+      publications.find((publication) => publication.idempotencyKey.startsWith(`run:${internalRunId}:`)),
     ).toBeUndefined();
-    expect(
-      publications.find((publication) =>
-        publication.idempotencyKey.includes(":failed:"),
-      )?.payload,
-    ).toMatchObject({
+    expect(publications.find((publication) => publication.idempotencyKey.includes(":failed:"))?.payload).toMatchObject({
       progressState: "failed",
       text: expect.stringContaining(
         "Link your identity to Paperclip, or ask a Paperclip admin to enable isolated guest execution.",
@@ -8660,8 +8117,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("publishes equal-time Slack outbox rows once in stable order across concurrent drains", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
       channelId: "C-STABLE-OUTBOX",
       id: "slack:C-STABLE-OUTBOX:4075.1",
@@ -8710,10 +8166,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     ]);
 
-    await Promise.all([
-      service.processPendingPublications(),
-      service.processPendingPublications(),
-    ]);
+    await Promise.all([service.processPendingPublications(), service.processPendingPublications()]);
 
     expect(runtime.endpoints.get(endpoint.id)?.posts).toEqual([
       { threadId: thread.thread.id, text: "First publication" },
@@ -8733,8 +8186,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("does not let one blocked Slack conversation starve another outbox head", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const blockedThread = makeThread({
       channelId: "C-OUTBOX-FAIRNESS",
       id: "slack:C-OUTBOX-FAIRNESS:4080.1",
@@ -8762,8 +8214,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
     const blockedConversation = conversations.find(
-      (conversation) =>
-        conversation.externalThreadId === blockedThread.thread.id,
+      (conversation) => conversation.externalThreadId === blockedThread.thread.id,
     );
     const readyConversation = conversations.find(
       (conversation) => conversation.externalThreadId === readyThread.thread.id,
@@ -8815,9 +8266,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       db
         .select({ state: chatPublications.state })
         .from(chatPublications)
-        .where(
-          eq(chatPublications.idempotencyKey, `fairness:ready:${endpoint.id}`),
-        ),
+        .where(eq(chatPublications.idempotencyKey, `fairness:ready:${endpoint.id}`)),
     ).resolves.toEqual([{ state: "published" }]);
     expect(
       await db
@@ -8834,8 +8283,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("does not let pause return while a Slack publication is still in provider transport", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
       channelId: "C-PAUSE-OUTBOX",
       id: "slack:C-PAUSE-OUTBOX:4090.1",
@@ -8897,17 +8345,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     const processing = service.processPendingPublications();
     await postStarted;
-    const pausing = service.configure(
-      endpoint.id,
-      { action: "pause" },
-      "owner-user",
-    );
+    const pausing = service.configure(endpoint.id, { action: "pause" }, "owner-user");
     await expect(
       Promise.race([
         pausing.then(() => "paused"),
-        new Promise<string>((resolve) =>
-          setTimeout(() => resolve("transport-in-flight"), 100),
-        ),
+        new Promise<string>((resolve) => setTimeout(() => resolve("transport-in-flight"), 100)),
       ]),
     ).resolves.toBe("transport-in-flight");
 
@@ -8920,10 +8362,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(chatPublications.id, publication.id)),
     ).resolves.toEqual([{ state: "published" }]);
     await expect(
-      db
-        .select({ status: chatEndpoints.status })
-        .from(chatEndpoints)
-        .where(eq(chatEndpoints.id, endpoint.id)),
+      db.select({ status: chatEndpoints.status }).from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id)),
     ).resolves.toEqual([{ status: "paused" }]);
     expect(endpointRuntime.posts).toContainEqual({
       threadId: thread.thread.id,
@@ -8934,8 +8373,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("streams long output in bounded chunks after applying the safe external projection", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-LONG-SAFE",
       id: "slack:C-LONG-SAFE:4100.1",
@@ -8967,10 +8405,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
 
     await service.publishComment(endpoint.id, conversation.id, comment.id);
-    const [publication] = await db
-      .select()
-      .from(chatPublications)
-      .where(eq(chatPublications.commentId, comment.id));
+    const [publication] = await db.select().from(chatPublications).where(eq(chatPublications.commentId, comment.id));
     expect(publication).toMatchObject({
       state: "published",
       payload: { text: publicParagraph },
@@ -8978,9 +8413,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const providerRuntime = runtime.endpoints.get(endpoint.id);
     const streamed = providerRuntime?.posts.at(-1);
     expect(streamed?.chunks?.length).toBeGreaterThan(1);
-    expect(
-      streamed?.chunks?.every((chunk) => Array.from(chunk).length <= 280),
-    ).toBe(true);
+    expect(streamed?.chunks?.every((chunk) => Array.from(chunk).length <= 280)).toBe(true);
     expect(streamed?.chunks?.join("")).toBe(publication.payload.text);
     expect(streamed?.text).toBe(publicParagraph);
     expect(JSON.stringify(streamed)).not.toContain("private chain of thought");
@@ -9039,8 +8472,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expectedResourceAvailability,
     }) => {
       const fixture = await seedCompany();
-      const { callbacks, endpoint, runtime, service } =
-        await configuredSlackEndpoint(fixture);
+      const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
       const channelId = `C-PUBLICATION-ERROR-${randomUUID().slice(0, 8)}`;
       const channel = makeThread({
         channelId,
@@ -9076,19 +8508,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const beforeAttempt = Date.now();
       await service.publishComment(endpoint.id, conversation.id, comment.id);
 
-      const [publication] = await db
-        .select()
-        .from(chatPublications)
-        .where(eq(chatPublications.commentId, comment.id));
+      const [publication] = await db.select().from(chatPublications).where(eq(chatPublications.commentId, comment.id));
       expect(publication).toMatchObject({
         state: expectedPublicationState,
         attempts: 1,
         redactedError: error.message,
       });
       if (expectedPublicationState === "retry") {
-        expect(publication.nextAttemptAt?.getTime()).toBeGreaterThanOrEqual(
-          beforeAttempt + 4_500,
-        );
+        expect(publication.nextAttemptAt?.getTime()).toBeGreaterThanOrEqual(beforeAttempt + 4_500);
       } else {
         expect(publication.nextAttemptAt).toBeNull();
       }
@@ -9123,15 +8550,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   it.each([
     {
       label: "a blocked destination",
-      error: Object.assign(
-        new Error("Permission denied: cannot sendMessage in telegram"),
-        {
-          name: "PermissionError",
-          adapter: "telegram",
-          code: "PERMISSION_DENIED",
-          action: "sendMessage",
-        },
-      ),
+      error: Object.assign(new Error("Permission denied: cannot sendMessage in telegram"), {
+        name: "PermissionError",
+        adapter: "telegram",
+        code: "PERMISSION_DENIED",
+        action: "sendMessage",
+      }),
       expectedPublicationState: "cancelled",
       expectedEndpointStatus: "active",
       expectedConversationState: "unavailable",
@@ -9173,8 +8597,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       runtimeRetained,
     }) => {
       const fixture = await seedCompany();
-      const { callbacks, endpoint, runtime, service } =
-        await configuredTelegramEndpoint(fixture);
+      const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
       const chatId = `-10077${randomUUID().replaceAll("-", "").slice(0, 8)}`;
       const [resource] = await db
         .insert(chatEndpointResources)
@@ -9228,10 +8651,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       providerRuntime.postError = error;
       await service.publishComment(endpoint.id, conversation.id, comment.id);
 
-      const [publication] = await db
-        .select()
-        .from(chatPublications)
-        .where(eq(chatPublications.commentId, comment.id));
+      const [publication] = await db.select().from(chatPublications).where(eq(chatPublications.commentId, comment.id));
       expect(publication).toMatchObject({
         state: expectedPublicationState,
         attempts: 1,
@@ -9268,12 +8688,271 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
+  it("orders a Telegram destination failure before concurrent membership recovery", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
+    const chatId = "-10091234567";
+    const [resource] = await db
+      .insert(chatEndpointResources)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "chat",
+        providerResourceId: chatId,
+        label: "Telegram recovery race",
+        availability: "available",
+        enabled: true,
+      })
+      .returning();
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: makeThread({
+        channelId: chatId,
+        id: `telegram:${chatId}`,
+        name: "Telegram recovery race",
+      }).thread,
+      message: makeMessage({
+        id: `${chatId}:1`,
+        raw: { message_id: 1 },
+        text: "@paperclip establish a recovery race fixture",
+        userId: "91234567",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, chatId);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const comment = await issueService(db).addComment(
+      conversation.issueId,
+      "Safe response during membership recovery",
+      { userId: "owner-user" },
+      { authorType: "user" },
+    );
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+
+    let markPostEntered!: () => void;
+    let releasePost!: () => void;
+    const postEntered = new Promise<void>((resolve) => {
+      markPostEntered = resolve;
+    });
+    const postRelease = new Promise<void>((resolve) => {
+      releasePost = resolve;
+    });
+    providerRuntime.postHook = async () => {
+      markPostEntered();
+      await postRelease;
+    };
+    providerRuntime.postError = Object.assign(new Error("Permission denied: cannot sendMessage in telegram"), {
+      name: "PermissionError",
+      adapter: "telegram",
+      code: "PERMISSION_DENIED",
+      action: "sendMessage",
+    });
+
+    const publicationPromise = service.publishComment(endpoint.id, conversation.id, comment.id);
+    await postEntered;
+
+    const originalTransaction = db.transaction.bind(db);
+    let recoveryPromise!: Promise<Response>;
+    let interceptedFailureTransaction = false;
+    let failureFinalizedWhileLeaseHeld = false;
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation((async (
+      ...args: Parameters<typeof originalTransaction>
+    ) => {
+      if (!interceptedFailureTransaction) {
+        interceptedFailureTransaction = true;
+        const lease = await db
+          .select({ id: chatEndpointLeases.id })
+          .from(chatEndpointLeases)
+          .where(and(eq(chatEndpointLeases.endpointId, endpoint.id), eq(chatEndpointLeases.leaseKey, "credentials")));
+        failureFinalizedWhileLeaseHeld = lease.length === 1;
+        // This branch simulates the pre-fix ordering deterministically: if
+        // failure finalization escaped the lease, allow the newer provider
+        // recovery to commit first so the stale failure would overwrite it.
+        if (!failureFinalizedWhileLeaseHeld) await recoveryPromise;
+      }
+      return originalTransaction(...args);
+    }) as typeof db.transaction);
+    recoveryPromise = service.handleWebhook(
+      endpoint.publicId,
+      "telegram",
+      new Request("https://paperclip.example/telegram", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          update_id: 91234568,
+          my_chat_member: {
+            chat: {
+              id: Number(chatId),
+              type: "supergroup",
+              title: "Telegram recovery race",
+            },
+            new_chat_member: { status: "member" },
+          },
+        }),
+      }),
+    );
+    releasePost();
+    try {
+      const [, response] = await Promise.all([publicationPromise, recoveryPromise]);
+      expect(response.status).toBe(202);
+    } finally {
+      transactionSpy.mockRestore();
+    }
+
+    expect(interceptedFailureTransaction).toBe(true);
+    expect(failureFinalizedWhileLeaseHeld).toBe(true);
+    await expect(
+      db
+        .select({ state: chatPublications.state })
+        .from(chatPublications)
+        .where(eq(chatPublications.commentId, comment.id)),
+    ).resolves.toEqual([{ state: "cancelled" }]);
+    await expect(
+      db
+        .select({ state: chatConversations.state })
+        .from(chatConversations)
+        .where(eq(chatConversations.id, conversation.id)),
+    ).resolves.toEqual([{ state: "active" }]);
+    await expect(
+      db
+        .select({ availability: chatEndpointResources.availability })
+        .from(chatEndpointResources)
+        .where(eq(chatEndpointResources.id, resource.id)),
+    ).resolves.toEqual([{ availability: "available" }]);
+    await service.shutdown();
+  });
+
+  it("orders a Telegram authentication failure before concurrent reconnect", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
+    const chatId = "-10092345678";
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "chat",
+      providerResourceId: chatId,
+      label: "Telegram reconnect race",
+      availability: "available",
+      enabled: true,
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: makeThread({
+        channelId: chatId,
+        id: `telegram:${chatId}`,
+        name: "Telegram reconnect race",
+      }).thread,
+      message: makeMessage({
+        id: `${chatId}:1`,
+        raw: { message_id: 1 },
+        text: "@paperclip establish a reconnect race fixture",
+        userId: "92345678",
+        mentioned: true,
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, chatId);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const comment = await issueService(db).addComment(
+      conversation.issueId,
+      "Safe response during credential reconnect",
+      { userId: "owner-user" },
+      { authorType: "user" },
+    );
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+
+    let markPostEntered!: () => void;
+    let releasePost!: () => void;
+    const postEntered = new Promise<void>((resolve) => {
+      markPostEntered = resolve;
+    });
+    const postRelease = new Promise<void>((resolve) => {
+      releasePost = resolve;
+    });
+    providerRuntime.postHook = async () => {
+      markPostEntered();
+      await postRelease;
+    };
+    providerRuntime.postError = Object.assign(new Error("Unauthorized"), {
+      name: "AuthenticationError",
+      adapter: "telegram",
+      code: "AUTH_FAILED",
+    });
+
+    const publicationPromise = service.publishComment(endpoint.id, conversation.id, comment.id);
+    await postEntered;
+
+    const originalTransaction = db.transaction.bind(db);
+    let reconnectPromise!: ReturnType<typeof service.configure>;
+    let interceptedFailureTransaction = false;
+    let failureFinalizedWhileLeaseHeld = false;
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation((async (
+      ...args: Parameters<typeof originalTransaction>
+    ) => {
+      if (!interceptedFailureTransaction) {
+        interceptedFailureTransaction = true;
+        const lease = await db
+          .select({ id: chatEndpointLeases.id })
+          .from(chatEndpointLeases)
+          .where(and(eq(chatEndpointLeases.endpointId, endpoint.id), eq(chatEndpointLeases.leaseKey, "credentials")));
+        failureFinalizedWhileLeaseHeld = lease.length === 1;
+        if (!failureFinalizedWhileLeaseHeld) await reconnectPromise;
+      }
+      return originalTransaction(...args);
+    }) as typeof db.transaction);
+    reconnectPromise = service.configure(endpoint.id, { action: "reconnect" }, "owner-user");
+    releasePost();
+    try {
+      await Promise.all([publicationPromise, reconnectPromise]);
+    } finally {
+      transactionSpy.mockRestore();
+    }
+
+    expect(interceptedFailureTransaction).toBe(true);
+    expect(failureFinalizedWhileLeaseHeld).toBe(true);
+    await expect(
+      db
+        .select({ state: chatPublications.state })
+        .from(chatPublications)
+        .where(eq(chatPublications.commentId, comment.id)),
+    ).resolves.toEqual([{ state: "failed" }]);
+    await expect(service.get(endpoint.id)).resolves.toMatchObject({
+      status: "verifying",
+      healthMessage: "Waiting for a test conversation",
+    });
+    await expect(
+      db
+        .select({
+          status: toolConnections.status,
+          enabled: toolConnections.enabled,
+          healthStatus: toolConnections.healthStatus,
+        })
+        .from(toolConnections)
+        .where(eq(toolConnections.id, endpoint.connectionId)),
+    ).resolves.toEqual([{ status: "active", enabled: true, healthStatus: "healthy" }]);
+    expect(runtime.endpoints.has(endpoint.id)).toBe(true);
+    await service.shutdown();
+  });
+
   it("publishes a closed-choice question and resolves only its exact issued action as a linked writer", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
-    if (!callbacks.onAction)
-      throw new Error("Slack question action callback was not registered");
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
+    if (!callbacks.onAction) throw new Error("Slack question action callback was not registered");
     const channel = makeThread({
       channelId: "C-QUESTION",
       id: "slack:C-QUESTION:4500.1",
@@ -9332,17 +9011,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const publication = await db
       .select()
       .from(chatPublications)
-      .where(
-        and(
-          eq(chatPublications.endpointId, endpoint.id),
-          eq(chatPublications.issueId, conversation.issueId),
-        ),
-      )
-      .then((rows) =>
-        rows.find((row) => row.idempotencyKey.startsWith("interaction:")),
-      );
-    if (!publication?.providerMessageId)
-      throw new Error("Question publication was not delivered");
+      .where(and(eq(chatPublications.endpointId, endpoint.id), eq(chatPublications.issueId, conversation.issueId)))
+      .then((rows) => rows.find((row) => row.idempotencyKey.startsWith("interaction:")));
+    if (!publication?.providerMessageId) throw new Error("Question publication was not delivered");
     expect(publication).toMatchObject({
       state: "published",
       payload: {
@@ -9354,15 +9025,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
       },
     });
-    const callbackActions = publication.payload.card?.actions?.filter(
-      (action) => action.type === "callback",
-    );
+    const callbackActions = publication.payload.card?.actions?.filter((action) => action.type === "callback");
     expect(callbackActions).toHaveLength(2);
-    const highAction = callbackActions?.find(
-      (action) => action.label === "High",
-    );
-    if (!highAction || highAction.type !== "callback")
-      throw new Error("High-priority callback was not projected");
+    const highAction = callbackActions?.find((action) => action.label === "High");
+    if (!highAction || highAction.type !== "callback") throw new Error("High-priority callback was not projected");
 
     const linkedUserId = `question-user-${randomUUID()}`;
     const now = new Date();
@@ -9386,11 +9052,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(chatExternalPrincipals)
       .where(eq(chatExternalPrincipals.externalId, externalUserId))
       .then((rows) => rows[0]);
-    const intent = await service.createLinkIntent(
-      endpoint.id,
-      principal.id,
-      1_800,
-    );
+    const intent = await service.createLinkIntent(endpoint.id, principal.id, 1_800);
     const token = new URL(intent.confirmationUrl).searchParams.get("token");
     if (!token) throw new Error("Question-user identity token was absent");
     await service.confirmIdentityLink(token, linkedUserId);
@@ -9431,21 +9093,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await callbacks.onAction(unlinkedAction);
     await callbacks.onAction(unlinkedAction);
-    expect(channel.postEphemeral).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(channel.postEphemeral).toHaveBeenCalledTimes(1));
     expect(channel.postEphemeral).toHaveBeenCalledWith(
-      unlinkedAction.event.user,
+      unlinkedAction.event.user.userId,
       "This action is no longer available. Open the linked Paperclip task or ask an operator to link this account.",
       { fallbackToDM: false },
     );
     const deniedSlackActions = await db
       .select()
       .from(chatDeliveries)
-      .where(
-        and(
-          eq(chatDeliveries.endpointId, endpoint.id),
-          eq(chatDeliveries.eventKind, "action"),
-        ),
-      );
+      .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "action")));
     expect(deniedSlackActions).toEqual([
       expect.objectContaining({
         conversationId: null,
@@ -9454,17 +9111,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         attempts: 1,
         redactedError: "External action denied by Paperclip authorization",
         normalizedEvent: {
-          providerEventId: expect.stringMatching(
-            /^action-denied:[a-f0-9]{64}$/,
-          ),
+          providerEventId: expect.stringMatching(/^action-denied:[a-f0-9]{64}$/),
           kind: "action",
           authorization: { outcome: "denied" },
         },
       }),
     ]);
-    expect(JSON.stringify(deniedSlackActions[0])).not.toContain(
-      highAction.actionId,
-    );
+    expect(JSON.stringify(deniedSlackActions[0])).not.toContain(highAction.actionId);
     expect(JSON.stringify(deniedSlackActions[0])).not.toContain(interaction.id);
     expect(await service.listActivity(endpoint.id)).toEqual(
       expect.arrayContaining([
@@ -9479,33 +9132,25 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ]),
     );
     channel.postEphemeral.mockRejectedValueOnce(
-      new Error("injected Slack ephemeral failure"),
+      Object.assign(new Error("injected Slack ephemeral failure"), {
+        name: "ValidationError",
+      }),
     );
-    await callbacks.onAction(
-      actionEvent({ userId: `U-UNLINKED-FALLBACK-${randomUUID()}` }),
-    );
-    expect(channel.post).toHaveBeenCalledWith(
-      "This Paperclip action is no longer available.",
-    );
+    await callbacks.onAction(actionEvent({ userId: `U-UNLINKED-FALLBACK-${randomUUID()}` }));
+    await vi.waitFor(() => expect(channel.post).toHaveBeenCalledWith("This Paperclip action is no longer available."));
     expect(channel.postEphemeral).toHaveBeenCalledTimes(2);
     await db
       .update(companyMemberships)
       .set({ membershipRole: "viewer" })
       .where(
-        and(
-          eq(companyMemberships.companyId, fixture.companyId),
-          eq(companyMemberships.principalId, linkedUserId),
-        ),
+        and(eq(companyMemberships.companyId, fixture.companyId), eq(companyMemberships.principalId, linkedUserId)),
       );
     await callbacks.onAction(actionEvent());
     await db
       .update(companyMemberships)
       .set({ membershipRole: "operator" })
       .where(
-        and(
-          eq(companyMemberships.companyId, fixture.companyId),
-          eq(companyMemberships.principalId, linkedUserId),
-        ),
+        and(eq(companyMemberships.companyId, fixture.companyId), eq(companyMemberships.principalId, linkedUserId)),
       );
 
     const otherChannel = makeThread({
@@ -9547,18 +9192,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await db
         .select()
         .from(issueQuestionResponseDeliveries)
-        .where(
-          eq(issueQuestionResponseDeliveries.interactionId, interaction.id),
-        ),
+        .where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id)),
     ).toHaveLength(1);
     const actions = await db
       .select()
       .from(chatActions)
-      .where(eq(chatActions.endpointId, endpoint.id));
+      .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "question_answer")));
     expect(actions).toHaveLength(2);
-    expect(
-      actions.find((action) => action.status === "processed"),
-    ).toMatchObject({
+    expect(actions.find((action) => action.status === "processed")).toMatchObject({
       status: "processed",
       kind: "question_answer",
       payload: {
@@ -9568,12 +9209,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         optionId: "high",
       },
     });
-    expect(actions.find((action) => action.status === "expired")).toMatchObject(
-      {
-        kind: "question_answer",
-        result: { code: "interaction_resolved_by_sibling_action" },
-      },
-    );
+    expect(actions.find((action) => action.status === "expired")).toMatchObject({
+      kind: "question_answer",
+      result: { code: "interaction_resolved_by_sibling_action" },
+    });
     const answeredActivity = await db
       .select()
       .from(activityLog)
@@ -9601,403 +9240,349 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await db
         .select()
         .from(issueQuestionResponseDeliveries)
-        .where(
-          eq(issueQuestionResponseDeliveries.interactionId, interaction.id),
-        ),
+        .where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id)),
     ).toHaveLength(1);
   });
 
   it.each([
     { provider: "slack" as const, label: "Slack" },
     { provider: "microsoft-teams" as const, label: "Microsoft Teams" },
-  ])(
-    "round-trips a $label question modal and rejects forged or replayed tokens",
-    async ({ provider }) => {
-      const fixture = await seedCompany();
-      const context =
-        provider === "slack"
-          ? await configuredSlackEndpoint(fixture)
-          : await (async () => {
-              const created = createService(
-                new FakeChatSdkRuntime(),
-                (async () =>
-                  new Response(
-                    JSON.stringify({ access_token: "teams-modal-access" }),
-                    {
-                      status: 200,
-                      headers: { "content-type": "application/json" },
-                    },
-                  )) as typeof globalThis.fetch,
-              );
-              const endpoint = await created.service.create(
-                fixture.companyId,
-                {
-                  provider: "microsoft-teams",
-                  assignedAgentId: fixture.assignedAgentId,
-                },
-                "owner-user",
-              );
-              await created.service.configure(
-                endpoint.id,
-                {
-                  action: "configure",
-                  credentials: {
-                    clientId: "00000000-0000-4000-8000-000000000311",
-                    tenantId: "00000000-0000-4000-8000-000000000322",
-                    clientSecret: "teams-modal-secret",
-                  },
-                },
-                "owner-user",
-              );
-              const callbacks = created.runtime.configurations.get(
-                endpoint.id,
-              )?.callbacks;
-              if (!callbacks) throw new Error("Expected Teams modal callbacks");
-              return { ...created, endpoint, callbacks };
-            })();
-      const { callbacks, endpoint, service } = context;
-      if (!callbacks.onAction || !callbacks.onModalSubmit) {
-        throw new Error("Expected question action and modal callbacks");
-      }
-      const externalUserId = `${provider}-modal-user-${randomUUID()}`;
-      const teamsConversationId = "19:modal-conversation@thread.tacv2";
-      const teamsServiceUrl = "https://smba.trafficmanager.net/amer/";
-      const channel =
-        provider === "slack"
-          ? makeThread({
-              channelId: "C-MODAL-ROUNDTRIP",
-              id: `slack:C-MODAL-ROUNDTRIP:${randomUUID()}`,
-              name: "modal-roundtrip",
-            })
-          : makeThread({
-              channelId: `teams:${Buffer.from(teamsConversationId).toString("base64url")}:${Buffer.from(teamsServiceUrl).toString("base64url")}`,
-              id: `teams:${Buffer.from(`${teamsConversationId};messageid=modal-root`).toString("base64url")}:${Buffer.from(teamsServiceUrl).toString("base64url")}`,
-              name: "modal-roundtrip",
-            });
-      await deliverMessage({
-        callbacks,
-        endpointId: endpoint.id,
-        provider,
-        thread: channel.thread,
-        message: makeMessage({
-          id: `modal-root-${randomUUID()}`,
-          text: "@maya collect the deployment details",
-          mentioned: true,
-          userId: externalUserId,
-        }),
-        trigger: "mention",
-      });
-      await qualifySetupRoundTrip(service, endpoint.id, externalUserId);
-      await service.test(endpoint.id, "owner-user");
-      const [conversation] = await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id));
-
-      const linkedUserId = `modal-paperclip-user-${randomUUID()}`;
-      const now = new Date();
-      await db.insert(authUsers).values({
-        id: linkedUserId,
-        name: "Modal User",
-        email: `${linkedUserId}@example.com`,
-        emailVerified: true,
-        createdAt: now,
-        updatedAt: now,
-      });
-      await db.insert(companyMemberships).values({
-        companyId: fixture.companyId,
-        principalType: "user",
-        principalId: linkedUserId,
-        status: "active",
-        membershipRole: "operator",
-      });
-      const principal = await db
-        .select()
-        .from(chatExternalPrincipals)
-        .where(
-          and(
-            eq(chatExternalPrincipals.companyId, fixture.companyId),
-            eq(chatExternalPrincipals.provider, provider),
-            eq(chatExternalPrincipals.externalId, externalUserId),
-          ),
-        )
-        .then((rows) => rows[0]);
-      const intent = await service.createLinkIntent(
-        endpoint.id,
-        principal.id,
-        1_800,
-      );
-      const identityToken = new URL(intent.confirmationUrl).searchParams.get(
-        "token",
-      );
-      if (!identityToken) throw new Error("Modal identity token was absent");
-      await service.confirmIdentityLink(identityToken, linkedUserId);
-
-      const interaction = await issueThreadInteractionService(db).create(
-        { id: conversation.issueId, companyId: fixture.companyId },
-        {
-          kind: "ask_user_questions",
-          continuationPolicy: "wake_assignee",
-          title: "Deployment details",
-          payload: {
-            version: 1,
-            title: "Deployment details",
-            submitLabel: "Continue",
-            questions: [
+  ])("round-trips a $label question modal and rejects forged or replayed tokens", async ({ provider }) => {
+    const fixture = await seedCompany();
+    const context =
+      provider === "slack"
+        ? await configuredSlackEndpoint(fixture)
+        : await (async () => {
+            const created = createService(
+              new FakeChatSdkRuntime(),
+              (async () =>
+                new Response(JSON.stringify({ access_token: "teams-modal-access" }), {
+                  status: 200,
+                  headers: { "content-type": "application/json" },
+                })) as typeof globalThis.fetch,
+            );
+            const endpoint = await created.service.create(
+              fixture.companyId,
               {
-                id: "environment",
-                prompt: "Where should I deploy?",
-                selectionMode: "single",
-                required: true,
-                allowOther: false,
-                options: [
-                  { id: "staging", label: "Staging" },
-                  { id: "production", label: "Production" },
-                ],
+                provider: "microsoft-teams",
+                assignedAgentId: fixture.assignedAgentId,
               },
+              "owner-user",
+            );
+            await created.service.configure(
+              endpoint.id,
               {
-                id: "reason",
-                prompt: "What should the release note say?",
-                selectionMode: "single",
-                required: true,
-                allowOther: true,
-                options: [
-                  {
-                    id: "__paperclip_text__",
-                    label: "Type an answer",
-                    freeText: true,
-                  },
-                ],
+                action: "configure",
+                credentials: {
+                  clientId: "00000000-0000-4000-8000-000000000311",
+                  tenantId: "00000000-0000-4000-8000-000000000322",
+                  clientSecret: "teams-modal-secret",
+                },
               },
-            ],
-          },
-        },
-        { agentId: fixture.assignedAgentId },
-      );
-      await service.processPendingPublications();
-      const publication = await db
-        .select()
-        .from(chatPublications)
-        .where(
-          and(
-            eq(chatPublications.endpointId, endpoint.id),
-            eq(chatPublications.issueId, conversation.issueId),
-          ),
-        )
-        .then((rows) =>
-          rows.find((row) => row.payload.interactionId === interaction.id),
-        );
-      if (!publication?.providerMessageId) {
-        throw new Error("Question form publication was not delivered");
-      }
-      const openAction = publication.payload.card?.actions?.find(
-        (action) => action.type === "callback",
-      );
-      if (!openAction || openAction.type !== "callback") {
-        throw new Error("Question form opener was not projected");
-      }
-      const modalUser = {
+              "owner-user",
+            );
+            const callbacks = created.runtime.configurations.get(endpoint.id)?.callbacks;
+            if (!callbacks) throw new Error("Expected Teams modal callbacks");
+            return { ...created, endpoint, callbacks };
+          })();
+    const { callbacks, endpoint, service } = context;
+    if (!callbacks.onAction || !callbacks.onModalSubmit) {
+      throw new Error("Expected question action and modal callbacks");
+    }
+    const externalUserId = `${provider}-modal-user-${randomUUID()}`;
+    const teamsConversationId = "19:modal-conversation@thread.tacv2";
+    const teamsServiceUrl = "https://smba.trafficmanager.net/amer/";
+    const channel =
+      provider === "slack"
+        ? makeThread({
+            channelId: "C-MODAL-ROUNDTRIP",
+            id: `slack:C-MODAL-ROUNDTRIP:${randomUUID()}`,
+            name: "modal-roundtrip",
+          })
+        : makeThread({
+            channelId: `teams:${Buffer.from(teamsConversationId).toString("base64url")}:${Buffer.from(teamsServiceUrl).toString("base64url")}`,
+            id: `teams:${Buffer.from(`${teamsConversationId};messageid=modal-root`).toString("base64url")}:${Buffer.from(teamsServiceUrl).toString("base64url")}`,
+            name: "modal-roundtrip",
+          });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider,
+      thread: channel.thread,
+      message: makeMessage({
+        id: `modal-root-${randomUUID()}`,
+        text: "@maya collect the deployment details",
+        mentioned: true,
         userId: externalUserId,
-        userName: "modal-user",
-        fullName: "Modal User",
-        isBot: false,
-        isMe: false,
-        isSystem: false,
-      };
-      const actionEvent = (actionId: string) => ({
-        endpointId: endpoint.id,
-        provider,
-        event: {
-          actionId,
-          adapter: {} as never,
-          messageId: publication.providerMessageId!,
-          openModal: vi.fn(async () => ({ viewId: "modal-view" })),
-          raw: {},
-          thread: channel.thread,
-          threadId: channel.thread.id,
-          user: modalUser,
-          value: interaction.id,
-        },
-      });
-      await callbacks.onAction(
-        actionEvent(`pcf:${"A".repeat(22)}`) as Parameters<
-          NonNullable<typeof callbacks.onAction>
-        >[0],
-      );
-      expect(channel.postEphemeral).toHaveBeenCalledWith(
-        modalUser,
-        "This action is no longer available. Open the linked Paperclip task or ask an operator to link this account.",
-        { fallbackToDM: false },
-      );
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, externalUserId);
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
 
-      const validOpen = actionEvent(openAction.actionId);
-      await callbacks.onAction(
-        validOpen as Parameters<NonNullable<typeof callbacks.onAction>>[0],
-      );
-      expect(validOpen.event.openModal).toHaveBeenCalledTimes(1);
-      const modal = validOpen.event.openModal.mock.calls[0]?.[0] as {
-        callbackId: string;
-        children: Array<{
-          id: string;
-          options?: Array<{ label: string; value: string }>;
-          type: string;
-        }>;
-        privateMetadata?: string;
-      };
-      const selectField = modal.children.find(
-        (child) => child.type === "select",
-      );
-      const textField = modal.children.find(
-        (child) => child.type === "text_input",
-      );
-      const productionValue = selectField?.options?.find(
-        (option) => option.label === "Production",
-      )?.value;
-      if (!selectField || !textField || !productionValue) {
-        throw new Error("Question modal fields were incomplete");
-      }
-      const modalEvent = (callbackId: string) => ({
-        endpointId: endpoint.id,
-        provider,
-        event: {
-          adapter: {} as never,
-          callbackId,
-          ...(provider === "slack"
-            ? { privateMetadata: modal.privateMetadata }
-            : {}),
-          raw: {},
-          relatedMessage: { id: publication.providerMessageId } as never,
-          relatedThread: channel.thread,
-          user: modalUser,
-          values: {
-            [selectField.id]: productionValue,
-            [textField.id]: "Add regional failover",
-          },
-          viewId: "modal-view",
-        },
-      });
-      await expect(
-        callbacks.onModalSubmit(
-          modalEvent(`pcfs:${"A".repeat(22)}`) as Parameters<
-            NonNullable<typeof callbacks.onModalSubmit>
-          >[0],
+    const linkedUserId = `modal-paperclip-user-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: linkedUserId,
+      name: "Modal User",
+      email: `${linkedUserId}@example.com`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: fixture.companyId,
+      principalType: "user",
+      principalId: linkedUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const principal = await db
+      .select()
+      .from(chatExternalPrincipals)
+      .where(
+        and(
+          eq(chatExternalPrincipals.companyId, fixture.companyId),
+          eq(chatExternalPrincipals.provider, provider),
+          eq(chatExternalPrincipals.externalId, externalUserId),
         ),
-      ).rejects.toMatchObject({ status: 403 });
+      )
+      .then((rows) => rows[0]);
+    const intent = await service.createLinkIntent(endpoint.id, principal.id, 1_800);
+    const identityToken = new URL(intent.confirmationUrl).searchParams.get("token");
+    if (!identityToken) throw new Error("Modal identity token was absent");
+    await service.confirmIdentityLink(identityToken, linkedUserId);
 
-      const validSubmit = modalEvent(modal.callbackId);
-      await expect(
-        callbacks.onModalSubmit(
-          validSubmit as Parameters<
-            NonNullable<typeof callbacks.onModalSubmit>
-          >[0],
-        ),
-      ).resolves.toEqual({ action: "clear" });
-      const [answered] = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, interaction.id));
-      expect(answered).toMatchObject({
-        status: "answered",
-        resolvedByUserId: linkedUserId,
-        result: {
+    const interaction = await issueThreadInteractionService(db).create(
+      { id: conversation.issueId, companyId: fixture.companyId },
+      {
+        kind: "ask_user_questions",
+        continuationPolicy: "wake_assignee",
+        title: "Deployment details",
+        payload: {
           version: 1,
-          answers: [
-            { questionId: "environment", optionIds: ["production"] },
+          title: "Deployment details",
+          submitLabel: "Continue",
+          questions: [
             {
-              questionId: "reason",
-              optionIds: [],
-              otherText: "Add regional failover",
+              id: "environment",
+              prompt: "Where should I deploy?",
+              selectionMode: "single",
+              required: true,
+              allowOther: false,
+              options: [
+                { id: "staging", label: "Staging" },
+                { id: "production", label: "Production" },
+              ],
+            },
+            {
+              id: "reason",
+              prompt: "What should the release note say?",
+              selectionMode: "single",
+              required: true,
+              allowOther: true,
+              options: [
+                {
+                  id: "__paperclip_text__",
+                  label: "Type an answer",
+                  freeText: true,
+                },
+              ],
             },
           ],
         },
-      });
-      await expect(
-        callbacks.onModalSubmit(
-          validSubmit as Parameters<
-            NonNullable<typeof callbacks.onModalSubmit>
-          >[0],
-        ),
-      ).rejects.toMatchObject({ status: 403 });
-      expect(
-        await db
-          .select()
-          .from(issueQuestionResponseDeliveries)
-          .where(
-            eq(issueQuestionResponseDeliveries.interactionId, interaction.id),
-          ),
-      ).toHaveLength(1);
-    },
-  );
+      },
+      { agentId: fixture.assignedAgentId },
+    );
+    await service.processPendingPublications();
+    const publication = await db
+      .select()
+      .from(chatPublications)
+      .where(and(eq(chatPublications.endpointId, endpoint.id), eq(chatPublications.issueId, conversation.issueId)))
+      .then((rows) => rows.find((row) => row.payload.interactionId === interaction.id));
+    if (!publication?.providerMessageId) {
+      throw new Error("Question form publication was not delivered");
+    }
+    const openAction = publication.payload.card?.actions?.find((action) => action.type === "callback");
+    if (!openAction || openAction.type !== "callback") {
+      throw new Error("Question form opener was not projected");
+    }
+    const modalUser = {
+      userId: externalUserId,
+      userName: "modal-user",
+      fullName: "Modal User",
+      isBot: false,
+      isMe: false,
+      isSystem: false,
+    };
+    const actionEvent = (actionId: string) => ({
+      endpointId: endpoint.id,
+      provider,
+      event: {
+        actionId,
+        adapter: {} as never,
+        messageId: publication.providerMessageId!,
+        openModal: vi.fn(async () => ({ viewId: "modal-view" })),
+        raw: {},
+        thread: channel.thread,
+        threadId: channel.thread.id,
+        user: modalUser,
+        value: interaction.id,
+      },
+    });
+    await callbacks.onAction(
+      actionEvent(`pcf:${"A".repeat(22)}`) as Parameters<NonNullable<typeof callbacks.onAction>>[0],
+    );
+    await vi.waitFor(() =>
+      expect(channel.postEphemeral).toHaveBeenCalledWith(
+        modalUser.userId,
+        "This action is no longer available. Open the linked Paperclip task or ask an operator to link this account.",
+        { fallbackToDM: false },
+      ),
+    );
+
+    const validOpen = actionEvent(openAction.actionId);
+    await callbacks.onAction(validOpen as Parameters<NonNullable<typeof callbacks.onAction>>[0]);
+    expect(validOpen.event.openModal).toHaveBeenCalledTimes(1);
+    const modal = validOpen.event.openModal.mock.calls[0]?.[0] as {
+      callbackId: string;
+      children: Array<{
+        id: string;
+        options?: Array<{ label: string; value: string }>;
+        type: string;
+      }>;
+      privateMetadata?: string;
+    };
+    const selectField = modal.children.find((child) => child.type === "select");
+    const textField = modal.children.find((child) => child.type === "text_input");
+    const productionValue = selectField?.options?.find((option) => option.label === "Production")?.value;
+    if (!selectField || !textField || !productionValue) {
+      throw new Error("Question modal fields were incomplete");
+    }
+    const modalEvent = (callbackId: string) => ({
+      endpointId: endpoint.id,
+      provider,
+      event: {
+        adapter: {} as never,
+        callbackId,
+        ...(provider === "slack" ? { privateMetadata: modal.privateMetadata } : {}),
+        raw: {},
+        relatedMessage: { id: publication.providerMessageId } as never,
+        relatedThread: channel.thread,
+        user: modalUser,
+        values: {
+          [selectField.id]: productionValue,
+          [textField.id]: "Add regional failover",
+        },
+        viewId: "modal-view",
+      },
+    });
+    await expect(
+      callbacks.onModalSubmit(
+        modalEvent(`pcfs:${"A".repeat(22)}`) as Parameters<NonNullable<typeof callbacks.onModalSubmit>>[0],
+      ),
+    ).rejects.toMatchObject({ status: 403 });
+
+    const validSubmit = modalEvent(modal.callbackId);
+    await expect(
+      callbacks.onModalSubmit(validSubmit as Parameters<NonNullable<typeof callbacks.onModalSubmit>>[0]),
+    ).resolves.toEqual({ action: "clear" });
+    const [answered] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interaction.id));
+    expect(answered).toMatchObject({
+      status: "answered",
+      resolvedByUserId: linkedUserId,
+      result: {
+        version: 1,
+        answers: [
+          { questionId: "environment", optionIds: ["production"] },
+          {
+            questionId: "reason",
+            optionIds: [],
+            otherText: "Add regional failover",
+          },
+        ],
+      },
+    });
+    await expect(
+      callbacks.onModalSubmit(validSubmit as Parameters<NonNullable<typeof callbacks.onModalSubmit>>[0]),
+    ).rejects.toMatchObject({ status: 403 });
+    expect(
+      await db
+        .select()
+        .from(issueQuestionResponseDeliveries)
+        .where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id)),
+    ).toHaveLength(1);
+  });
 
   it("acknowledges denied Telegram actions after one durable, payload-free notice", async () => {
     const fixture = await seedCompany();
-    const botId = Number.parseInt(
-      fixture.companyId.replaceAll("-", "").slice(0, 12),
-      16,
-    );
+    const botId = Number.parseInt(fixture.companyId.replaceAll("-", "").slice(0, 12), 16);
     const botToken = `${botId}:telegram-denial-webhook-test`;
     const apiCalls: Array<{ body: string; method: string }> = [];
     let webhookSecret = "";
-    const telegramFetch = vi.fn(
-      async (input: string | URL | Request, init?: RequestInit) => {
-        const method = new URL(String(input)).pathname.split("/").at(-1) ?? "";
-        const body = typeof init?.body === "string" ? init.body : "";
-        apiCalls.push({ body, method });
-        if (method === "getMe") {
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              result: {
-                id: botId,
-                username: "paperclip_denial_test_bot",
-                first_name: "Paperclip Denial Test",
+    const telegramFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const method = new URL(String(input)).pathname.split("/").at(-1) ?? "";
+      const body = typeof init?.body === "string" ? init.body : "";
+      apiCalls.push({ body, method });
+      if (method === "getMe") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              id: botId,
+              username: "paperclip_denial_test_bot",
+              first_name: "Paperclip Denial Test",
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (method === "getWebhookInfo") {
+        return new Response(JSON.stringify({ ok: true, result: { url: "" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (method === "setWebhook") {
+        webhookSecret = String((JSON.parse(body) as { secret_token?: unknown }).secret_token ?? "");
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (method === "answerCallbackQuery") {
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (method === "sendMessage") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              message_id: 9001,
+              date: Math.floor(Date.now() / 1_000),
+              chat: {
+                id: 417200359,
+                type: "private",
+                first_name: "Telegram User",
               },
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (method === "getWebhookInfo") {
-          return new Response(
-            JSON.stringify({ ok: true, result: { url: "" } }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (method === "setWebhook") {
-          webhookSecret = String(
-            (JSON.parse(body) as { secret_token?: unknown }).secret_token ?? "",
-          );
-          return new Response(JSON.stringify({ ok: true, result: true }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        if (method === "answerCallbackQuery") {
-          return new Response(JSON.stringify({ ok: true, result: true }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        if (method === "sendMessage") {
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              result: {
-                message_id: 9001,
-                date: Math.floor(Date.now() / 1_000),
-                chat: {
-                  id: 417200359,
-                  type: "private",
-                  first_name: "Telegram User",
-                },
-                text: "This Paperclip action is no longer available.",
-              },
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        throw new Error(`Unexpected Telegram API call: ${method}`);
-      },
-    ) as typeof globalThis.fetch;
+              text: "This Paperclip action is no longer available.",
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected Telegram API call: ${method}`);
+    }) as typeof globalThis.fetch;
     const previousFetch = globalThis.fetch;
     globalThis.fetch = telegramFetch;
     const service = chatChannelService(db, {
@@ -10011,57 +9596,43 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         { provider: "telegram", assignedAgentId: fixture.assignedAgentId },
         "owner-user",
       );
-      await service.configure(
-        endpoint.id,
-        { action: "configure", credentials: { botToken } },
-        "owner-user",
-      );
+      await service.configure(endpoint.id, { action: "configure", credentials: { botToken } }, "owner-user");
       expect(webhookSecret).not.toBe("");
-      await db
-        .update(chatEndpoints)
-        .set({ status: "active" })
-        .where(eq(chatEndpoints.id, endpoint.id));
+      await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
 
       const actionId = "pcq:telegram-webhook-secret-token";
       const callbackData = telegramChatSdkCallbackData(actionId);
-      const providerRequest = (
-        updateId: number,
-        callbackId: string,
-        data = callbackData,
-      ) =>
-        new Request(
-          `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`,
-          {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "x-telegram-bot-api-secret-token": webhookSecret,
-            },
-            body: JSON.stringify({
-              update_id: updateId,
-              callback_query: {
-                id: callbackId,
-                data,
-                from: {
-                  id: 417200359,
-                  is_bot: false,
-                  first_name: "Telegram User",
-                  username: "telegram-user",
-                },
-                message: {
-                  message_id: 444,
-                  date: Math.floor(Date.now() / 1_000),
-                  chat: {
-                    id: 417200359,
-                    type: "private",
-                    first_name: "Telegram User",
-                  },
-                  text: "Choose a priority",
-                },
-              },
-            }),
+      const providerRequest = (updateId: number, callbackId: string, data = callbackData) =>
+        new Request(`https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-telegram-bot-api-secret-token": webhookSecret,
           },
-        );
+          body: JSON.stringify({
+            update_id: updateId,
+            callback_query: {
+              id: callbackId,
+              data,
+              from: {
+                id: 417200359,
+                is_bot: false,
+                first_name: "Telegram User",
+                username: "telegram-user",
+              },
+              message: {
+                message_id: 444,
+                date: Math.floor(Date.now() / 1_000),
+                chat: {
+                  id: 417200359,
+                  type: "private",
+                  first_name: "Telegram User",
+                },
+                text: "Choose a priority",
+              },
+            },
+          }),
+        });
 
       const first = await service.handleWebhook(
         endpoint.publicId,
@@ -10078,32 +9649,31 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       );
       expect(providerRetry.status).toBe(200);
       await expect(providerRetry.text()).resolves.toBe("OK");
+      await vi.waitFor(() => {
+        expect(apiCalls.filter(({ method }) => method === "sendMessage")).toHaveLength(1);
+      });
+      await vi.waitFor(async () => {
+        const effects = await db
+          .select({ status: chatActions.status })
+          .from(chatActions)
+          .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "provider_effect")));
+        expect(effects).toEqual([{ status: "processed" }]);
+      });
 
       const unrecordedActionId = "pcq:durable-denial-insert-failure";
-      const unrecordedCallbackData =
-        telegramChatSdkCallbackData(unrecordedActionId);
-      const originalInsert = db.insert.bind(db);
-      const insertSpy = vi.spyOn(db, "insert").mockImplementation(((
-        table: unknown,
-      ) => {
-        if (table === chatDeliveries) {
-          throw new Error("injected denied-action persistence failure");
-        }
-        return originalInsert(table as Parameters<typeof originalInsert>[0]);
-      }) as typeof db.insert);
+      const unrecordedCallbackData = telegramChatSdkCallbackData(unrecordedActionId);
+      const transactionSpy = vi
+        .spyOn(db, "transaction")
+        .mockRejectedValueOnce(new Error("injected denied-action persistence failure"));
       let unrecorded: Response;
       try {
         unrecorded = await service.handleWebhook(
           endpoint.publicId,
           "telegram",
-          providerRequest(
-            7003,
-            "denied-callback-persistence-failure",
-            unrecordedCallbackData,
-          ),
+          providerRequest(7003, "denied-callback-persistence-failure", unrecordedCallbackData),
         );
       } finally {
-        insertSpy.mockRestore();
+        transactionSpy.mockRestore();
       }
       expect(unrecorded.status).toBe(503);
       expect(unrecorded.headers.get("retry-after")).toBe("1");
@@ -10123,21 +9693,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const denials = await db
         .select()
         .from(chatDeliveries)
-        .where(
-          and(
-            eq(chatDeliveries.endpointId, endpoint.id),
-            eq(chatDeliveries.eventKind, "action"),
-          ),
-        );
+        .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "action")));
       expect(denials).toHaveLength(1);
       expect(denials[0]).toMatchObject({
         state: "filtered",
         attempts: 1,
         redactedError: "External action denied by Paperclip authorization",
         normalizedEvent: {
-          providerEventId: expect.stringMatching(
-            /^action-denied:[a-f0-9]{64}$/,
-          ),
+          providerEventId: expect.stringMatching(/^action-denied:[a-f0-9]{64}$/),
           kind: "action",
           authorization: { outcome: "denied" },
         },
@@ -10154,8 +9717,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("uses compact single-use Telegram action tokens and filters forged, expired, and oversized callbacks", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredTelegramEndpoint(fixture);
     const externalUserId = "771234567";
     const channel = makeThread({
       channelId: externalUserId,
@@ -10204,14 +9766,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(chatExternalPrincipals)
       .where(eq(chatExternalPrincipals.externalId, externalUserId))
       .then((rows) => rows[0]);
-    const intent = await service.createLinkIntent(
-      endpoint.id,
-      principal.id,
-      1_800,
-    );
-    const identityToken = new URL(intent.confirmationUrl).searchParams.get(
-      "token",
-    );
+    const intent = await service.createLinkIntent(endpoint.id, principal.id, 1_800);
+    const identityToken = new URL(intent.confirmationUrl).searchParams.get("token");
     if (!identityToken) throw new Error("Telegram identity token was absent");
     await service.confirmIdentityLink(identityToken, linkedUserId);
 
@@ -10249,36 +9805,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const publication = await db
         .select()
         .from(chatPublications)
-        .where(
-          and(
-            eq(chatPublications.endpointId, endpoint.id),
-            eq(chatPublications.issueId, conversation.issueId),
-          ),
-        )
-        .then((rows) =>
-          rows.find(
-            (row) =>
-              row.payload.interactionId === interaction.id &&
-              row.state === "published",
-          ),
-        );
-      if (!publication?.providerMessageId)
-        throw new Error("Telegram question publication was not delivered");
+        .where(and(eq(chatPublications.endpointId, endpoint.id), eq(chatPublications.issueId, conversation.issueId)))
+        .then((rows) => rows.find((row) => row.payload.interactionId === interaction.id && row.state === "published"));
+      if (!publication?.providerMessageId) throw new Error("Telegram question publication was not delivered");
       const action = publication.payload.card?.actions?.find(
-        (candidate) =>
-          candidate.type === "callback" && candidate.label === "High",
+        (candidate) => candidate.type === "callback" && candidate.label === "High",
       );
-      if (!action || action.type !== "callback")
-        throw new Error("Telegram callback action was not projected");
+      if (!action || action.type !== "callback") throw new Error("Telegram callback action was not projected");
       const token = await db
         .select()
         .from(chatActions)
-        .where(
-          and(
-            eq(chatActions.endpointId, endpoint.id),
-            eq(chatActions.providerActionId, action.actionId),
-          ),
-        )
+        .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.providerActionId, action.actionId)))
         .then((rows) => rows[0]);
       if (!token) throw new Error("Telegram action token was not persisted");
       return { interaction, publication, action, token };
@@ -10287,9 +9824,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const first = await publishQuestion("Choose the initial priority");
     const callbackData = telegramChatSdkCallbackData(first.action.actionId);
     expect(Buffer.byteLength(callbackData, "utf8")).toBe(39);
-    expect(Buffer.byteLength(callbackData, "utf8")).toBeLessThanOrEqual(
-      TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
-    );
+    expect(Buffer.byteLength(callbackData, "utf8")).toBeLessThanOrEqual(TELEGRAM_CALLBACK_DATA_LIMIT_BYTES);
     expect(first.token).toMatchObject({
       companyId: fixture.companyId,
       endpointId: endpoint.id,
@@ -10308,11 +9843,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
 
-    const actionEvent = (input: {
-      actionId: string;
-      callbackData: string;
-      messageId?: string;
-    }) => ({
+    const actionEvent = (input: { actionId: string; callbackData: string; messageId?: string }) => ({
       endpointId: endpoint.id,
       provider: "telegram" as const,
       event: {
@@ -10345,28 +9876,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       callbackData: telegramChatSdkCallbackData(forgedActionId),
     });
     await callbacks.onAction(forgedTelegramAction);
+    await vi.waitFor(() => {
+      expect(channel.post).toHaveBeenCalledTimes(1);
+    });
     expect(channel.post).toHaveBeenCalledTimes(1);
-    expect(channel.post).toHaveBeenCalledWith(
-      "This Paperclip action is no longer available.",
-    );
-    expect(JSON.stringify(channel.post.mock.calls)).not.toContain(
-      forgedActionId,
-    );
-    expect(JSON.stringify(channel.post.mock.calls)).not.toContain(
-      telegramChatSdkCallbackData(forgedActionId),
-    );
+    expect(channel.post).toHaveBeenCalledWith("This Paperclip action is no longer available.");
+    expect(JSON.stringify(channel.post.mock.calls)).not.toContain(forgedActionId);
+    expect(JSON.stringify(channel.post.mock.calls)).not.toContain(telegramChatSdkCallbackData(forgedActionId));
     channel.post.mockClear();
     await callbacks.onAction(forgedTelegramAction);
     expect(channel.post).not.toHaveBeenCalled();
     const deniedTelegramActions = await db
       .select()
       .from(chatDeliveries)
-      .where(
-        and(
-          eq(chatDeliveries.endpointId, endpoint.id),
-          eq(chatDeliveries.eventKind, "action"),
-        ),
-      );
+      .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "action")));
     expect(deniedTelegramActions).toEqual([
       expect.objectContaining({
         conversationId: conversation.id,
@@ -10375,20 +9898,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         attempts: 1,
         redactedError: "External action denied by Paperclip authorization",
         normalizedEvent: {
-          providerEventId: expect.stringMatching(
-            /^action-denied:[a-f0-9]{64}$/,
-          ),
+          providerEventId: expect.stringMatching(/^action-denied:[a-f0-9]{64}$/),
           kind: "action",
           authorization: { outcome: "denied" },
         },
       }),
     ]);
-    expect(JSON.stringify(deniedTelegramActions[0])).not.toContain(
-      forgedActionId,
-    );
-    expect(JSON.stringify(deniedTelegramActions[0])).not.toContain(
-      telegramChatSdkCallbackData(forgedActionId),
-    );
+    expect(JSON.stringify(deniedTelegramActions[0])).not.toContain(forgedActionId);
+    expect(JSON.stringify(deniedTelegramActions[0])).not.toContain(telegramChatSdkCallbackData(forgedActionId));
     expect(await service.listActivity(endpoint.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -10402,9 +9919,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ]),
     );
 
-    const oversizedCallbackData = "x".repeat(
-      TELEGRAM_CALLBACK_DATA_LIMIT_BYTES + 1,
-    );
+    const oversizedCallbackData = "x".repeat(TELEGRAM_CALLBACK_DATA_LIMIT_BYTES + 1);
     expect(Buffer.byteLength(oversizedCallbackData, "utf8")).toBe(65);
     await callbacks.onAction(
       actionEvent({
@@ -10423,10 +9938,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         callbackData,
       }),
     );
-    await db
-      .update(chatActions)
-      .set({ payload: first.token.payload })
-      .where(eq(chatActions.id, first.token.id));
+    await db.update(chatActions).set({ payload: first.token.payload }).where(eq(chatActions.id, first.token.id));
 
     await callbacks.onAction(
       actionEvent({
@@ -10456,13 +9968,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await db
         .select()
         .from(issueQuestionResponseDeliveries)
-        .where(
-          eq(
-            issueQuestionResponseDeliveries.interactionId,
-            first.interaction.id,
-          ),
-        ),
+        .where(eq(issueQuestionResponseDeliveries.interactionId, first.interaction.id)),
     ).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(channel.post).toHaveBeenCalledTimes(1);
+    });
     channel.post.mockClear();
 
     const expired = await publishQuestion("Choose an expired priority");
@@ -10475,9 +9985,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
       })
       .where(eq(chatActions.id, expired.token.id));
-    const expiredCallbackData = telegramChatSdkCallbackData(
-      expired.action.actionId,
-    );
+    const expiredCallbackData = telegramChatSdkCallbackData(expired.action.actionId);
     await callbacks.onAction(
       actionEvent({
         actionId: expired.action.actionId,
@@ -10485,20 +9993,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         messageId: expired.publication.providerMessageId!,
       }),
     );
+    await vi.waitFor(() => {
+      expect(channel.post).toHaveBeenCalledTimes(1);
+    });
     expect(channel.post).toHaveBeenCalledTimes(1);
     for (const call of channel.post.mock.calls) {
       expect(call).toEqual(["This Paperclip action is no longer available."]);
     }
-    expect(JSON.stringify(channel.post.mock.calls)).not.toContain(
-      expired.action.actionId,
-    );
-    expect(JSON.stringify(channel.post.mock.calls)).not.toContain(
-      expiredCallbackData,
-    );
-    const [expiredToken] = await db
-      .select()
-      .from(chatActions)
-      .where(eq(chatActions.id, expired.token.id));
+    expect(JSON.stringify(channel.post.mock.calls)).not.toContain(expired.action.actionId);
+    expect(JSON.stringify(channel.post.mock.calls)).not.toContain(expiredCallbackData);
+    const [expiredToken] = await db.select().from(chatActions).where(eq(chatActions.id, expired.token.id));
     expect(expiredToken).toMatchObject({
       status: "expired",
       result: { code: "question_action_token_expired" },
@@ -10512,8 +10016,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("publishes complex question sets as non-executable Paperclip fallbacks", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-COMPLEX-QUESTION",
       id: "slack:C-COMPLEX-QUESTION:4550.1",
@@ -10560,9 +10063,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               selectionMode: "single",
               required: false,
               allowOther: true,
-              options: [
-                { id: "other", label: "Describe them", freeText: true },
-              ],
+              options: [{ id: "other", label: "Describe them", freeText: true }],
             },
           ],
         },
@@ -10572,28 +10073,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const publications = await db
       .select()
       .from(chatPublications)
-      .where(
-        and(
-          eq(chatPublications.endpointId, endpoint.id),
-          eq(chatPublications.issueId, conversation.issueId),
-        ),
-      );
-    const publication = publications.find(
-      (candidate) => candidate.payload.interactionId === interaction.id,
-    );
+      .where(and(eq(chatPublications.endpointId, endpoint.id), eq(chatPublications.issueId, conversation.issueId)));
+    const publication = publications.find((candidate) => candidate.payload.interactionId === interaction.id);
     expect(publication).toBeDefined();
     if (!publication) throw new Error("Expected interaction publication");
     expect(publication.payload).toMatchObject({
       interactionId: interaction.id,
     });
-    expect(
-      publication.payload.card?.actions?.filter(
-        (action) => action.type === "callback",
-      ) ?? [],
-    ).toEqual([]);
-    expect(publication.payload.text).toContain(
-      "Open the task in Paperclip to respond",
-    );
+    expect(publication.payload.card?.actions?.filter((action) => action.type === "callback") ?? []).toEqual([]);
+    expect(publication.payload.text).toContain("Open the task in Paperclip to respond");
     expect(callbacks.onModalSubmit).toBeTypeOf("function");
     expect(callbacks.onModalClose).toBeUndefined();
     expect(callbacks.onReaction).toBeTypeOf("function");
@@ -10601,11 +10089,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("preserves the raw webhook request and returns the provider adapter response", async () => {
     const fixture = await seedCompany();
-    const { endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const providerRuntime = runtime.endpoints.get(endpoint.id);
-    if (!providerRuntime)
-      throw new Error("Expected configured fake provider runtime");
+    if (!providerRuntime) throw new Error("Expected configured fake provider runtime");
     const payload = JSON.stringify({
       type: "event_callback",
       event_id: "Ev-123",
@@ -10620,9 +10106,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     expect(response.text).toBe("accepted");
     expect(response.headers["x-chat-test"]).toBe("accepted");
-    expect(
-      providerRuntime.webhookRequest?.headers.get("x-slack-signature"),
-    ).toBe("v0=test-signature");
+    expect(providerRuntime.webhookRequest?.headers.get("x-slack-signature")).toBe("v0=test-signature");
     await expect(providerRuntime.webhookRequest?.text()).resolves.toBe(payload);
 
     await request(webhookApp(service))
@@ -10656,9 +10140,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(toolConnections)
       .where(eq(toolConnections.id, endpoint.connectionId));
-    const firstIds = new Set(
-      firstConnection.credentialSecretRefs.map((ref) => ref.secretId),
-    );
+    const firstIds = new Set(firstConnection.credentialSecretRefs.map((ref) => ref.secretId));
     expect(firstIds.size).toBe(2);
 
     await service.configure(
@@ -10677,15 +10159,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(toolConnections)
       .where(eq(toolConnections.id, endpoint.connectionId));
     expect(rotatedConnection.credentialSecretRefs).toHaveLength(2);
-    expect(
-      rotatedConnection.credentialSecretRefs.every(
-        (ref) => !firstIds.has(ref.secretId),
-      ),
-    ).toBe(true);
-    const afterRotation = await db
-      .select()
-      .from(companySecrets)
-      .where(eq(companySecrets.companyId, fixture.companyId));
+    expect(rotatedConnection.credentialSecretRefs.every((ref) => !firstIds.has(ref.secretId))).toBe(true);
+    const afterRotation = await db.select().from(companySecrets).where(eq(companySecrets.companyId, fixture.companyId));
     expect(afterRotation.map((secret) => secret.id).sort()).toEqual(
       rotatedConnection.credentialSecretRefs.map((ref) => ref.secretId).sort(),
     );
@@ -10696,12 +10171,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(toolConnections)
       .where(eq(toolConnections.id, endpoint.connectionId));
     expect(removedConnection.credentialSecretRefs).toEqual([]);
-    expect(
-      await db
-        .select()
-        .from(companySecrets)
-        .where(eq(companySecrets.companyId, fixture.companyId)),
-    ).toHaveLength(0);
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, fixture.companyId))).toHaveLength(
+      0,
+    );
   });
 
   it("retries credential cleanup after archival made a remove partially complete", async () => {
@@ -10716,23 +10188,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ status: "archived", enabled: false })
       .where(eq(toolConnections.id, endpoint.connectionId));
 
-    await expect(
-      service.configure(endpoint.id, { action: "remove" }, "owner-user"),
-    ).resolves.toMatchObject({ status: "archived" });
+    await expect(service.configure(endpoint.id, { action: "remove" }, "owner-user")).resolves.toMatchObject({
+      status: "archived",
+    });
     const [cleaned] = await db
       .select({ refs: toolConnections.credentialSecretRefs })
       .from(toolConnections)
       .where(eq(toolConnections.id, endpoint.connectionId));
     expect(cleaned!.refs).toEqual([]);
     await expect(
-      db
-        .select()
-        .from(companySecrets)
-        .where(eq(companySecrets.companyId, fixture.companyId)),
+      db.select().from(companySecrets).where(eq(companySecrets.companyId, fixture.companyId)),
     ).resolves.toHaveLength(0);
-    await expect(
-      service.configure(endpoint.id, { action: "remove" }, "owner-user"),
-    ).rejects.toMatchObject({
+    await expect(service.configure(endpoint.id, { action: "remove" }, "owner-user")).rejects.toMatchObject({
       status: 409,
       details: { code: "chat_endpoint_already_removed" },
     });
@@ -10761,20 +10228,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         });
       }
       if (url.endsWith("/setWebhook")) {
-        return new Response(
-          JSON.stringify({ ok: false, description: "webhook unavailable" }),
-          {
-            status: 400,
-            headers: { "content-type": "application/json" },
-          },
-        );
+        return new Response(JSON.stringify({ ok: false, description: "webhook unavailable" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
       }
       throw new Error(`Unexpected provider request: ${url}`);
     }) as unknown as typeof globalThis.fetch;
-    const { service, runtime } = createService(
-      new FakeChatSdkRuntime(),
-      providerFetch,
-    );
+    const { service, runtime } = createService(new FakeChatSdkRuntime(), providerFetch);
     const endpoint = await service.create(
       fixture.companyId,
       {
@@ -10799,10 +10260,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       healthMessage: "Provider setup needs attention",
       lastError: "Telegram could not register the webhook: webhook unavailable",
     });
-    const [connection] = await db
-      .select()
-      .from(toolConnections)
-      .where(eq(toolConnections.id, endpoint.connectionId));
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpoint.connectionId));
     expect(connection).toMatchObject({
       healthStatus: "degraded",
       healthMessage: "Provider setup failed",
@@ -10831,8 +10289,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           },
         );
       }
-      if (url.endsWith("/getWebhookInfo"))
-        throw new Error(`network failed for ${url}; token ${botToken}`);
+      if (url.endsWith("/getWebhookInfo")) throw new Error(`network failed for ${url}; token ${botToken}`);
       throw new Error(`Unexpected provider request: ${url}`);
     }) as unknown as typeof globalThis.fetch;
     const { service } = createService(new FakeChatSdkRuntime(), providerFetch);
@@ -10870,15 +10327,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(configured).toMatchObject({
       status: "attention",
       healthMessage: "Provider setup needs attention",
-      lastError:
-        "network failed for https://api.telegram.org/bot***REDACTED***/getWebhookInfo; token ***REDACTED***",
+      lastError: "network failed for https://api.telegram.org/bot***REDACTED***/getWebhookInfo; token ***REDACTED***",
     });
   });
 
   it("creates an explicit board comment and publication exactly once across retries", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-BOARD-SEND",
       id: "slack:C-BOARD-SEND:4400.1",
@@ -10921,12 +10376,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const comments = await db
       .select()
       .from(issueComments)
-      .where(
-        and(
-          eq(issueComments.issueId, conversation.issueId),
-          eq(issueComments.body, "Visible board update"),
-        ),
-      );
+      .where(and(eq(issueComments.issueId, conversation.issueId), eq(issueComments.body, "Visible board update")));
     const publications = await db
       .select()
       .from(chatPublications)
@@ -10944,8 +10394,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("publishes a serialized Telegram run response after the preceding run completes the conversation", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
     const dm = makeThread({
       channelId: "77119922",
       id: "telegram:77119922",
@@ -10992,18 +10441,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         and(
           eq(chatMessageLinks.endpointId, endpoint.id),
           eq(chatMessageLinks.direction, "inbound"),
-          inArray(chatMessageLinks.providerMessageId, [
-            "77119922:2",
-            "77119922:3",
-          ]),
+          inArray(chatMessageLinks.providerMessageId, ["77119922:2", "77119922:3"]),
         ),
       );
-    const firstWakeCommentId = inboundLinks.find(
-      (link) => link.providerMessageId === "77119922:2",
-    )?.commentId;
-    const secondWakeCommentId = inboundLinks.find(
-      (link) => link.providerMessageId === "77119922:3",
-    )?.commentId;
+    const firstWakeCommentId = inboundLinks.find((link) => link.providerMessageId === "77119922:2")?.commentId;
+    const secondWakeCommentId = inboundLinks.find((link) => link.providerMessageId === "77119922:3")?.commentId;
     if (!firstWakeCommentId || !secondWakeCommentId) {
       throw new Error("Expected both inbound Telegram comments to be linked");
     }
@@ -11078,14 +10520,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       createdByAgentId: fixture.assignedAgentId,
       createdByRunId: internalRecoveryRunId,
     });
-    await db
-      .update(issues)
-      .set({ status: "done" })
-      .where(eq(issues.id, conversation.issueId));
-    await db
-      .update(chatConversations)
-      .set({ state: "completed" })
-      .where(eq(chatConversations.id, conversation.id));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, conversation.issueId));
+    await db.update(chatConversations).set({ state: "completed" }).where(eq(chatConversations.id, conversation.id));
 
     const secondResponse = await issueService(db).addComment(
       conversation.issueId,
@@ -11125,32 +10561,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
       ]),
     );
-    for (const internalCommentId of [
-      activeInternalComment.id,
-      lateInternalComment.id,
-    ]) {
-      expect(
-        responsePublications.find(
-          (publication) => publication.commentId === internalCommentId,
-        ),
-      ).toBeUndefined();
+    for (const internalCommentId of [activeInternalComment.id, lateInternalComment.id]) {
+      expect(responsePublications.find((publication) => publication.commentId === internalCommentId)).toBeUndefined();
     }
     expect(
       await db
         .select()
         .from(chatPublications)
-        .where(
-          eq(
-            chatPublications.idempotencyKey,
-            `attachment:${internalAttachment.id}:${endpoint.id}`,
-          ),
-        ),
+        .where(eq(chatPublications.idempotencyKey, `attachment:${internalAttachment.id}:${endpoint.id}`)),
     ).toHaveLength(0);
 
     await service.processPendingPublications();
-    expect(
-      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
-    ).toEqual(["First queued answer", "Second queued answer"]);
+    expect(runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text)).toEqual([
+      "First queued answer",
+      "Second queued answer",
+    ]);
 
     const chatAttachment = await issueService(db).createAttachment({
       issueId: conversation.issueId,
@@ -11168,12 +10593,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       db
         .select()
         .from(chatPublications)
-        .where(
-          eq(
-            chatPublications.idempotencyKey,
-            `attachment:${chatAttachment.id}:${endpoint.id}`,
-          ),
-        ),
+        .where(eq(chatPublications.idempotencyKey, `attachment:${chatAttachment.id}:${endpoint.id}`)),
     ).resolves.toEqual([
       expect.objectContaining({
         commentId: secondResponse.id,
@@ -11185,8 +10605,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("holds ambiguous provider sends for an audited duplicate-risk resolution without reordering", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-UNKNOWN",
       id: "slack:C-UNKNOWN:4500.1",
@@ -11237,11 +10656,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       providerMessageId: null,
     });
 
-    await service.publishComment(
-      endpoint.id,
-      conversation.id,
-      secondComment.id,
-    );
+    await service.publishComment(endpoint.id, conversation.id, secondComment.id);
     const secondPublication = await db
       .select()
       .from(chatPublications)
@@ -11249,28 +10664,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .then((rows) => rows[0]);
     expect(secondPublication.state).toBe("pending");
     const activity = await service.listActivity(endpoint.id);
-    expect(
-      activity.find((item) => item.id === firstPublication.id),
-    ).toMatchObject({
+    expect(activity.find((item) => item.id === firstPublication.id)).toMatchObject({
       kind: "publication",
       status: "delivery_unknown",
       replayable: false,
       resolutionActions: ["mark_delivered", "retry_anyway", "cancel"],
     });
-    await expect(
-      service.replayPublication(endpoint.id, firstPublication.id),
-    ).rejects.toMatchObject({
+    await expect(service.replayPublication(endpoint.id, firstPublication.id)).rejects.toMatchObject({
       status: 409,
       details: { code: "chat_publication_resolution_required" },
     });
 
     providerRuntime.postError = null;
-    await service.resolvePublication(
-      endpoint.id,
-      firstPublication.id,
-      "retry_anyway",
-      "owner-user",
-    );
+    await service.resolvePublication(endpoint.id, firstPublication.id, "retry_anyway", "owner-user");
     await service.processPendingPublications();
     const replayed = await db
       .select()
@@ -11284,10 +10690,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .then((rows) => rows[0]);
     expect(replayed.state).toBe("published");
     expect(releasedSecond.state).toBe("published");
-    expect(providerRuntime.posts.map((post) => post.text)).toEqual([
-      "First safe response",
-      "Second safe response",
-    ]);
+    expect(providerRuntime.posts.map((post) => post.text)).toEqual(["First safe response", "Second safe response"]);
     const [resolutionActivity] = await db
       .select()
       .from(activityLog)
@@ -11301,8 +10704,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("wakes the bound task when an operator replays a failed delivery", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-REPLAY",
       id: "slack:C-REPLAY:5000.1",
@@ -11319,10 +10721,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "mention",
     });
-    const [delivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     await db
       .update(chatDeliveries)
       .set({ state: "failed", redactedError: "temporary failure" })
@@ -11338,10 +10737,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         wakeCommentId: expect.any(String),
       },
     });
-    const [replayed] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.id, delivery.id));
+    const [replayed] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, delivery.id));
     expect(replayed).toMatchObject({
       state: "processed",
       attempts: 2,
@@ -11351,8 +10747,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("turns a Slack slash command into a new native thread and one Paperclip task", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     const command = endpoint.setup.command;
     if (!command) throw new Error("Slack endpoint did not expose its command");
     await db
@@ -11360,8 +10755,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ name: "Maya Renamed After Slack Registration" })
       .where(eq(agents.id, fixture.assignedAgentId));
     expect((await service.get(endpoint.id)).setup.command).toBe(command);
-    if (!callbacks.onSlashCommand)
-      throw new Error("Slack slash command callback was not registered");
+    if (!callbacks.onSlashCommand) throw new Error("Slack slash command callback was not registered");
     await db.insert(chatEndpointResources).values({
       companyId: fixture.companyId,
       endpointId: endpoint.id,
@@ -11374,7 +10768,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const starterThreadId = "slack:C-COMMANDS:6000.1";
     const post = vi.fn(async () => ({
       id: "6000.1",
-      threadId: starterThreadId,
+      // The real Chat SDK channel wrapper returns its channel id here. The
+      // Slack message timestamp above is the native thread root.
+      threadId: "slack:C-COMMANDS",
     }));
     const postEphemeral = vi.fn(async () => ({
       id: "ephemeral-6000",
@@ -11414,13 +10810,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       externalThreadId: starterThreadId,
       state: "active",
     });
-    const comments = await db
-      .select()
-      .from(issueComments)
-      .where(eq(issueComments.issueId, conversation.issueId));
-    expect(comments.map((comment) => comment.body)).toEqual([
-      "investigate the command path",
-    ]);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, conversation.issueId));
+    expect(comments.map((comment) => comment.body)).toEqual(["investigate the command path"]);
     expect(runtime.endpoints.get(endpoint.id)?.reactions).toEqual([]);
     await expect(
       db
@@ -11447,12 +10838,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("admits concurrent and retried Slack slash commands only once", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     const command = endpoint.setup.command;
     if (!command) throw new Error("Slack endpoint did not expose its command");
-    if (!callbacks.onSlashCommand)
-      throw new Error("Slack slash command callback was not registered");
+    if (!callbacks.onSlashCommand) throw new Error("Slack slash command callback was not registered");
     await db.insert(chatEndpointResources).values({
       companyId: fixture.companyId,
       endpointId: endpoint.id,
@@ -11527,10 +10916,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(issueComments)
         .where(eq(issueComments.issueId, conversations[0]!.issueId)),
     ).resolves.toEqual([{ body: "investigate one retried command" }]);
-    const [action] = await db
-      .select()
-      .from(chatActions)
-      .where(eq(chatActions.endpointId, endpoint.id));
+    const [action] = await db.select().from(chatActions).where(eq(chatActions.endpointId, endpoint.id));
     expect(action).toMatchObject({
       kind: "slash_task_start",
       status: "processed",
@@ -11551,20 +10937,370 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: action!.id,
-          kind: "delivery",
+          kind: "action",
           status: "delivery_unknown",
           summary: "Slack slash-command task start delivery unknown",
           detail: expect.stringContaining("will not replay it automatically"),
           replayable: false,
+          resolutionActions: ["retry_anyway", "cancel"],
         }),
       ]),
     );
   });
 
+  it("reconciles a provider-confirmed Slack starter into one task without replaying Slack", async () => {
+    const fixture = await seedCompany();
+    const { endpoint, runtime, service, wakeup } = await configuredSlackEndpoint(fixture);
+    const configured = await service.get(endpoint.id);
+    if (!configured.providerAccountId) {
+      throw new Error("Slack endpoint did not expose its provider account");
+    }
+    const command = configured.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    const [resource] = await db
+      .insert(chatEndpointResources)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        type: "channel",
+        providerResourceId: "C-CONFIRMED-STARTER",
+        label: "confirmed-starter",
+        availability: "available",
+        enabled: true,
+      })
+      .returning();
+    const [principal] = await db
+      .insert(chatExternalPrincipals)
+      .values({
+        companyId: fixture.companyId,
+        provider: "slack",
+        providerAccountId: configured.providerAccountId,
+        externalId: "U-CONFIRMED-STARTER",
+        kind: "user",
+        displayName: "Confirmed Starter User",
+        handle: "confirmed-starter",
+        isBot: false,
+      })
+      .returning();
+    const syntheticMessageId = `confirmed-starter-${randomUUID()}`;
+    const starterThreadId = "slack:C-CONFIRMED-STARTER:6200.1";
+    const [action] = await db
+      .insert(chatActions)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        principalId: principal!.id,
+        kind: "slash_task_start",
+        providerActionId: `slash_task:${randomUUID()}`,
+        payload: {
+          version: 1,
+          channelId: "C-CONFIRMED-STARTER",
+          command,
+          syntheticMessageId,
+          taskText: "admit this already-confirmed starter exactly once",
+        },
+        status: "provider_confirmed",
+        result: {
+          threadId: starterThreadId,
+          providerMessageId: "6200.1",
+        },
+      })
+      .returning();
+
+    // This row models the crash window after Slack returned the root timestamp
+    // but before the original callback could durably admit the Paperclip task.
+    await service.processPendingDeliveries();
+    await db
+      .update(chatDeliveries)
+      .set({ nextAttemptAt: new Date(0) })
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    await service.processPendingDeliveries();
+
+    expect(runtime.endpoints.get(endpoint.id)?.posts).toEqual([]);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    await expect(
+      db
+        .select({ status: chatActions.status, result: chatActions.result })
+        .from(chatActions)
+        .where(eq(chatActions.id, action!.id)),
+    ).resolves.toEqual([
+      {
+        status: "processed",
+        result: {
+          threadId: starterThreadId,
+          providerMessageId: "6200.1",
+        },
+      },
+    ]);
+    const conversations = await service.listConversations(endpoint.id);
+    expect(conversations).toEqual([
+      expect.objectContaining({
+        resourceId: resource!.id,
+        externalThreadId: starterThreadId,
+        state: "active",
+      }),
+    ]);
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversations[0]!.issueId)),
+    ).resolves.toEqual([{ body: "admit this already-confirmed starter exactly once" }]);
+    await expect(
+      db.select({ state: chatDeliveries.state }).from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id)),
+    ).resolves.toEqual([{ state: "processed" }]);
+  });
+
+  it("recovers an ambiguous Slack slash-task start only after an audited explicit retry", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
+    const command = endpoint.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Slack slash command callback was not registered");
+    }
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "channel",
+      providerResourceId: "C-COMMAND-RECOVERY",
+      label: "command-recovery",
+      availability: "available",
+      enabled: true,
+    });
+    const post = vi.fn(async () => {
+      throw new Error("socket reset after write");
+    });
+    await expect(
+      callbacks.onSlashCommand({
+        endpointId: endpoint.id,
+        provider: "slack",
+        event: {
+          channel: {
+            id: "C-COMMAND-RECOVERY",
+            name: "command-recovery",
+            isDM: false,
+            post,
+            postEphemeral: vi.fn(),
+          } as never,
+          command,
+          text: "recover this ambiguous command exactly once",
+          triggerId: "trigger-command-recovery",
+          user: {
+            userId: "U-COMMAND-RECOVERY",
+            userName: "command-recovery",
+            fullName: "Command Recovery User",
+            isBot: false,
+            isMe: false,
+            isSystem: false,
+          },
+          raw: { trigger_id: "trigger-command-recovery" },
+          adapter: {} as never,
+          openModal: async () => undefined,
+        },
+      }),
+    ).rejects.toThrow("socket reset after write");
+    expect(post).toHaveBeenCalledTimes(1);
+
+    const [action] = await db.select().from(chatActions).where(eq(chatActions.endpointId, endpoint.id));
+    expect(action).toMatchObject({
+      kind: "slash_task_start",
+      status: "delivery_unknown",
+      payload: {
+        channelId: "C-COMMAND-RECOVERY",
+        taskText: "recover this ambiguous command exactly once",
+        syntheticMessageId: expect.any(String),
+      },
+    });
+    expect(await service.listActivity(endpoint.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: action!.id,
+          kind: "action",
+          status: "delivery_unknown",
+          replayable: false,
+          resolutionActions: ["retry_anyway", "cancel"],
+        }),
+      ]),
+    );
+
+    const app = routesApp(db, fixture.companyId, service);
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Slack provider runtime");
+    let releaseRetryPost!: () => void;
+    const retryPostEntered = vi.fn();
+    providerRuntime.postHook = async () => {
+      retryPostEntered();
+      await new Promise<void>((resolve) => {
+        releaseRetryPost = resolve;
+      });
+    };
+    const firstRetry = request(app)
+      .post(`/api/chat-endpoints/${endpoint.id}/actions/${action!.id}/resolve`)
+      .send({ action: "retry_anyway" })
+      .then((response) => response);
+    await vi.waitFor(() => expect(retryPostEntered).toHaveBeenCalledTimes(1));
+    const concurrentRetry = request(app)
+      .post(`/api/chat-endpoints/${endpoint.id}/actions/${action!.id}/resolve`)
+      .send({ action: "retry_anyway" })
+      .then((response) => response);
+    releaseRetryPost();
+    const retryResponses = await Promise.all([firstRetry, concurrentRetry]);
+    expect(retryResponses.map((response) => response.status).sort()).toEqual([204, 409]);
+    providerRuntime.postHook = undefined;
+
+    expect(runtime.endpoints.get(endpoint.id)?.posts).toEqual([
+      {
+        threadId: "slack:C-COMMAND-RECOVERY:",
+        text: "Starting a task…",
+      },
+    ]);
+    const conversations = await service.listConversations(endpoint.id);
+    expect(conversations).toHaveLength(1);
+    expect(conversations[0]?.externalThreadId).toBe("slack:C-COMMAND-RECOVERY:outbound-1");
+    await expect(
+      db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, conversations[0]!.issueId)),
+    ).resolves.toEqual([{ body: "recover this ambiguous command exactly once" }]);
+    await expect(
+      db.select({ status: chatActions.status }).from(chatActions).where(eq(chatActions.id, action!.id)),
+    ).resolves.toEqual([{ status: "processed" }]);
+    await expect(
+      db
+        .select({ action: activityLog.action, actorId: activityLog.actorId })
+        .from(activityLog)
+        .where(eq(activityLog.entityId, action!.id)),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        {
+          action: "chat.slack_command_retry_anyway",
+          actorId: "owner-user",
+        },
+      ]),
+    );
+
+    expect(runtime.endpoints.get(endpoint.id)?.posts).toHaveLength(1);
+
+    const [cancelAction] = await db
+      .insert(chatActions)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        kind: "slash_task_start",
+        providerActionId: `slash_task:cancel-${randomUUID()}`,
+        payload: {},
+        status: "received",
+        updatedAt: new Date(Date.now() - 2 * 60_000),
+      })
+      .returning();
+    expect(await service.listActivity(endpoint.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: cancelAction!.id,
+          kind: "action",
+          status: "delivery_unknown",
+          resolutionActions: ["cancel"],
+        }),
+      ]),
+    );
+    await expect(
+      db.select({ status: chatActions.status }).from(chatActions).where(eq(chatActions.id, cancelAction!.id)),
+    ).resolves.toEqual([{ status: "received" }]);
+    await request(app)
+      .post(`/api/chat-endpoints/${endpoint.id}/actions/${cancelAction!.id}/resolve`)
+      .send({ action: "mark_delivered" })
+      .expect(409);
+    await request(app)
+      .post(`/api/chat-endpoints/${endpoint.id}/actions/${cancelAction!.id}/resolve`)
+      .send({ action: "cancel" })
+      .expect(204);
+    await expect(
+      db.select({ status: chatActions.status }).from(chatActions).where(eq(chatActions.id, cancelAction!.id)),
+    ).resolves.toEqual([{ status: "cancelled" }]);
+    await expect(
+      db
+        .select({ action: activityLog.action, actorId: activityLog.actorId })
+        .from(activityLog)
+        .where(eq(activityLog.entityId, cancelAction!.id)),
+    ).resolves.toEqual([{ action: "chat.slack_command_cancel", actorId: "owner-user" }]);
+  });
+
+  it("binds Slack DM slash controls to the native root returned for the latest task", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
+    const command = endpoint.setup.command;
+    if (!command) throw new Error("Slack endpoint did not expose its command");
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Slack slash command callback was not registered");
+    }
+    const starterThreadId = "slack:D09SLASHTASK:6100.1";
+    const post = vi.fn(async () => ({
+      id: "6100.1",
+      threadId: starterThreadId,
+    }));
+    const slashChannel = {
+      id: "slack:D09SLASHTASK",
+      name: "direct message",
+      isDM: false,
+      post,
+      postEphemeral: vi.fn(),
+    } as never;
+    const invoke = async (text: string) =>
+      callbacks.onSlashCommand!({
+        endpointId: endpoint.id,
+        provider: "slack",
+        event: {
+          channel: slashChannel,
+          command,
+          text,
+          triggerId: `trigger-dm-slash-${text}-${randomUUID()}`,
+          user: {
+            userId: "U-DM-SLASH-TASK",
+            userName: "dm-slash-task",
+            fullName: "DM Slash Task User",
+            isBot: false,
+            isMe: false,
+            isSystem: false,
+          },
+          raw: { command, text },
+          adapter: {} as never,
+          openModal: async () => undefined,
+        },
+      });
+
+    await invoke("Start a task from this DM slash command");
+    expect(post).toHaveBeenCalledTimes(1);
+    const [conversation] = await service.listConversations(endpoint.id);
+    expect(conversation.externalThreadId).toBe(starterThreadId);
+
+    await invoke("status");
+    await service.processPendingPublications();
+    expect(runtime.endpoints.get(endpoint.id)?.posts.at(-1)).toMatchObject({
+      threadId: starterThreadId,
+      text: expect.stringMatching(/— todo$/),
+    });
+    await invoke("close");
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        externalThreadId: starterThreadId,
+        state: "active",
+      }),
+    ]);
+    await service.processPendingPublications();
+    expect(await service.listConversations(endpoint.id)).toEqual([
+      expect.objectContaining({
+        externalThreadId: starterThreadId,
+        state: "completed",
+      }),
+    ]);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
+  });
+
   it("rejects a Slack retry while its command root is still unrecorded instead of falsely acknowledging it", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
     const command = endpoint.setup.command;
     if (!command) throw new Error("Slack endpoint did not expose its command");
     if (!callbacks.onSlashCommand) {
@@ -11629,15 +11365,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await owner;
     expect(post).toHaveBeenCalledTimes(1);
-    await expect(service.listConversations(endpoint.id)).resolves.toHaveLength(
-      1,
-    );
+    await expect(service.listConversations(endpoint.id)).resolves.toHaveLength(1);
   });
 
   it("treats D-prefixed Slack status, new, and close callbacks as DM task controls even when the SDK flag is false", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredSlackEndpoint(fixture);
     if (!callbacks.onSlashCommand) {
       throw new Error("Slack slash command callback was not registered");
     }
@@ -11703,29 +11436,25 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
       });
     };
-    const issuesBeforeStatus = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.companyId, fixture.companyId));
+    const controlPostOffset = runtime.endpoints.get(endpoint.id)?.posts.length ?? 0;
+    const issuesBeforeStatus = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
+    const firstIssue = issuesBeforeStatus.find((issue) => issue.title === "Start the first DM task");
+    if (!firstIssue) throw new Error("First Slack DM task was not created");
     await invokeControl("status");
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(issuesBeforeStatus.length);
-    await service.processPendingPublications();
-    expect(runtime.endpoints.get(endpoint.id)?.posts.at(-1)?.text).toMatch(
-      /— todo$/,
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(
+      issuesBeforeStatus.length,
     );
+    await service.processPendingPublications();
+    expect(runtime.endpoints.get(endpoint.id)?.posts.at(-1)?.text).toMatch(/— todo$/);
 
     await invokeControl("new");
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(issuesBeforeStatus.length);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(
+      issuesBeforeStatus.length,
+    );
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ state: "active" }),
+    ]);
+    await service.processPendingPublications();
     await expect(service.listConversations(endpoint.id)).resolves.toEqual([
       expect.objectContaining({ state: "completed" }),
     ]);
@@ -11741,46 +11470,63 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "direct_message",
     });
-    const issuesBeforeClose = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.companyId, fixture.companyId));
+    const issuesBeforeClose = await db.select().from(issues).where(eq(issues.companyId, fixture.companyId));
     expect(issuesBeforeClose).toHaveLength(issuesBeforeStatus.length + 1);
     await invokeControl("close");
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(
+      issuesBeforeClose.length,
+    );
+    expect((await service.listConversations(endpoint.id)).map((conversation) => conversation.state)).toContain(
+      "active",
+    );
+    await service.processPendingPublications();
+    expect((await service.listConversations(endpoint.id)).map((conversation) => conversation.state)).toEqual([
+      "completed",
+      "completed",
+    ]);
+    expect(await db.select().from(chatActions).where(eq(chatActions.endpointId, endpoint.id))).toEqual([]);
     expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(issuesBeforeClose.length);
+      runtime.endpoints
+        .get(endpoint.id)
+        ?.posts.slice(controlPostOffset)
+        .map((providerPost) => ({ threadId: providerPost.threadId, text: providerPost.text })),
+    ).toEqual([
+      {
+        threadId: dm.thread.id,
+        text: `${firstIssue.identifier}: Start the first DM task — todo`,
+      },
+      {
+        threadId: dm.thread.id,
+        text: "Send your request to start a new Paperclip task.",
+      },
+      {
+        threadId: dm.thread.id,
+        text: "This task is closed. Send another message to start a new task.",
+      },
+    ]);
     expect(
-      (await service.listConversations(endpoint.id)).map(
-        (conversation) => conversation.state,
-      ),
-    ).toEqual(["completed", "completed"]);
-    expect(
-      await db
-        .select()
-        .from(chatActions)
-        .where(eq(chatActions.endpointId, endpoint.id)),
-    ).toHaveLength(0);
+      (
+        await db
+          .select()
+          .from(chatPublications)
+          .where(eq(chatPublications.endpointId, endpoint.id))
+          .orderBy(asc(chatPublications.createdAt), asc(chatPublications.id))
+      )
+        .filter((publication) => publication.idempotencyKey.startsWith("control:"))
+        .map((publication) => publication.idempotencyKey.split(":")[1]),
+    ).toEqual(["status", "new", "close"]);
     expect(post).not.toHaveBeenCalled();
     expect(postEphemeral).not.toHaveBeenCalled();
     // Slack slash callbacks have no native message timestamp. Their synthetic
     // IDs remain durable for dedupe/audit, but must never reach reactions.add.
     expect(runtime.endpoints.get(endpoint.id)?.reactions).toEqual([]);
     const controlDeliveries = (
-      await db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id))
+      await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id))
     ).filter((delivery) => {
       const normalized = delivery.normalizedEvent as {
         message?: { text?: unknown };
       };
-      return ["/status", "/new", "/close"].includes(
-        String(normalized.message?.text),
-      );
+      return ["/status", "/new", "/close"].includes(String(normalized.message?.text));
     });
     expect(controlDeliveries).toHaveLength(3);
     expect(controlDeliveries).toEqual(
@@ -11801,8 +11547,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("returns ephemeral guidance for exact Slack controls in channels without creating tasks or actions", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
     if (!callbacks.onSlashCommand) {
       throw new Error("Slack slash command callback was not registered");
     }
@@ -11855,7 +11600,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
     }
     expect(post).not.toHaveBeenCalled();
-    expect(postEphemeral).toHaveBeenCalledTimes(3);
+    await vi.waitFor(() => expect(postEphemeral).toHaveBeenCalledTimes(3));
     for (const call of postEphemeral.mock.calls) {
       expect(call[1]).toBe(
         "Use status, new, and close in a direct message with this agent. In a channel, open the Paperclip task from its Slack thread.",
@@ -11863,24 +11608,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(call[2]).toEqual({ fallbackToDM: false });
     }
     expect(await service.listConversations(endpoint.id)).toEqual([]);
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(0);
-    expect(
-      await db
-        .select()
-        .from(chatActions)
-        .where(eq(chatActions.endpointId, endpoint.id)),
-    ).toHaveLength(0);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
+    expect(await db.select().from(chatActions).where(eq(chatActions.endpointId, endpoint.id))).toEqual([
+      expect.objectContaining({ kind: "provider_effect", status: "processed" }),
+      expect.objectContaining({ kind: "provider_effect", status: "processed" }),
+      expect.objectContaining({ kind: "provider_effect", status: "processed" }),
+    ]);
   });
 
   it("keeps Telegram start and unknown commands as terse guidance without creating work", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service, wakeup } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service, wakeup } = await configuredTelegramEndpoint(fixture);
     if (!callbacks.onSlashCommand) {
       throw new Error("Telegram slash command callback was not registered");
     }
@@ -11911,9 +11649,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             chat: { id: 77112233, type: "private" },
             from: { id: 77112233, is_bot: false },
             text: `${command} ${text}`.trim(),
-            entities: [
-              { offset: 0, length: command.length, type: "bot_command" },
-            ],
+            entities: [{ offset: 0, length: command.length, type: "bot_command" }],
           },
           adapter: {} as never,
           openModal: async () => undefined,
@@ -11923,30 +11659,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await invoke("/start", "ignored payload", 501);
     await invoke("/danger", "create an administrator action", 502);
 
-    expect(
-      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
-    ).toEqual([
+    expect(runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text)).toEqual([
       "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
       "Available commands: /status, /new, and /close.",
     ]);
     expect(wakeup).not.toHaveBeenCalled();
     expect(await service.listConversations(endpoint.id)).toEqual([]);
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(0);
-    expect(
-      await db
-        .select()
-        .from(chatActions)
-        .where(eq(chatActions.endpointId, endpoint.id)),
-    ).toHaveLength(0);
-    const deliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
+    expect(await db.select().from(chatActions).where(eq(chatActions.endpointId, endpoint.id))).toEqual([
+      expect.objectContaining({ kind: "provider_effect", status: "processed" }),
+      expect.objectContaining({ kind: "provider_effect", status: "processed" }),
+    ]);
+    const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(deliveries).toHaveLength(2);
     expect(deliveries).toEqual(
       expect.arrayContaining([
@@ -11964,10 +11688,569 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
   });
 
+  it("does not commit a Telegram close control when its provider reply is definitively rejected", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Telegram slash command callback was not registered");
+    }
+    const dm = makeThread({
+      channelId: "78112233",
+      id: "telegram:78112233",
+      isDM: true,
+      name: "Telegram direct message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: "78112233:1",
+        raw: { message_id: 1 },
+        text: "Start a task before close",
+        userId: "78112233",
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "78112233");
+    await service.test(endpoint.id, "owner-user");
+    await db
+      .update(chatConversations)
+      .set({ state: "completed", updatedAt: new Date() })
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    providerRuntime.postError = Object.assign(new Error("Telegram rejected the control reply"), {
+      name: "ValidationError",
+      code: "VALIDATION_ERROR",
+    });
+    const closeEvent = {
+      endpointId: endpoint.id,
+      provider: "telegram" as const,
+      event: {
+        channel: {
+          id: "telegram:78112233",
+          name: "Telegram direct message",
+          isDM: true,
+        } as never,
+        command: "/close",
+        text: "",
+        user: {
+          userId: "78112233",
+          userName: "telegram-user",
+          fullName: "Telegram User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: {
+          message_id: 800,
+          date: 1_788_622_800,
+          chat: { id: 78112233, type: "private" },
+          from: { id: 78112233, is_bot: false },
+          text: "/close",
+          entities: [{ offset: 0, length: 6, type: "bot_command" }],
+        },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    };
+
+    await expect(callbacks.onSlashCommand(closeEvent)).rejects.toThrow("Telegram rejected the control reply");
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ state: "completed" }),
+    ]);
+    await expect(
+      db
+        .select({ status: chatActions.status })
+        .from(chatActions)
+        .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "provider_effect"))),
+    ).resolves.toEqual([{ status: "failed" }]);
+    await expect(
+      db
+        .select({ state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(
+          and(
+            eq(chatDeliveries.endpointId, endpoint.id),
+            eq(chatDeliveries.providerEventId, "telegram:78112233:78112233:800"),
+          ),
+        ),
+    ).resolves.toEqual([{ state: "failed" }]);
+    expect(providerRuntime.posts).toHaveLength(0);
+
+    await expect(callbacks.onSlashCommand(closeEvent)).resolves.toBeUndefined();
+    expect(providerRuntime.posts).toHaveLength(0);
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ state: "completed" }),
+    ]);
+  });
+
+  it("quarantines a Telegram control when the reply lands but its state commit crashes", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Telegram slash command callback was not registered");
+    }
+    const dm = makeThread({
+      channelId: "79112233",
+      id: "telegram:79112233",
+      isDM: true,
+      name: "Telegram direct message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: "79112233:1",
+        raw: { message_id: 1 },
+        text: "Start a task before ambiguous close",
+        userId: "79112233",
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "79112233");
+    await service.test(endpoint.id, "owner-user");
+    await db
+      .update(chatConversations)
+      .set({ state: "completed", updatedAt: new Date() })
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    const closeEvent = {
+      endpointId: endpoint.id,
+      provider: "telegram" as const,
+      event: {
+        channel: {
+          id: "telegram:79112233",
+          name: "Telegram direct message",
+          isDM: true,
+        } as never,
+        command: "/close",
+        text: "",
+        user: {
+          userId: "79112233",
+          userName: "telegram-user",
+          fullName: "Telegram User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: {
+          message_id: 801,
+          date: 1_788_622_801,
+          chat: { id: 79112233, type: "private" },
+          from: { id: 79112233, is_bot: false },
+          text: "/close",
+          entities: [{ offset: 0, length: 6, type: "bot_command" }],
+        },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    };
+    const originalTransaction = db.transaction.bind(db);
+    let injectedCrash = false;
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation((async (
+      ...args: Parameters<typeof originalTransaction>
+    ) => {
+      if (!injectedCrash && providerRuntime.posts.length === 1) {
+        injectedCrash = true;
+        throw new Error("injected provider-effect commit crash");
+      }
+      return originalTransaction(...args);
+    }) as typeof db.transaction);
+    try {
+      await expect(callbacks.onSlashCommand(closeEvent)).rejects.toThrow("injected provider-effect commit crash");
+    } finally {
+      transactionSpy.mockRestore();
+    }
+
+    expect(injectedCrash).toBe(true);
+    expect(providerRuntime.posts).toHaveLength(1);
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ state: "completed" }),
+    ]);
+    await expect(
+      db
+        .select({ status: chatActions.status })
+        .from(chatActions)
+        .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "provider_effect"))),
+    ).resolves.toEqual([{ status: "delivery_unknown" }]);
+    await expect(
+      db
+        .select({ state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(
+          and(
+            eq(chatDeliveries.endpointId, endpoint.id),
+            eq(chatDeliveries.providerEventId, "telegram:79112233:79112233:801"),
+          ),
+        ),
+    ).resolves.toEqual([{ state: "failed" }]);
+
+    await expect(callbacks.onSlashCommand(closeEvent)).resolves.toBeUndefined();
+    await service.processPendingProviderEffects();
+    expect(providerRuntime.posts).toHaveLength(1);
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({ state: "completed" }),
+    ]);
+  });
+
+  it("resolves ambiguous provider effects explicitly and never lets terminal failures starve reconciliation", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Telegram slash command callback was not registered");
+    }
+    const dm = makeThread({
+      channelId: "71112233",
+      id: "telegram:71112233",
+      isDM: true,
+      name: "Telegram direct message",
+    });
+
+    await callbacks.onSlashCommand({
+      endpointId: endpoint.id,
+      provider: "telegram",
+      event: {
+        channel: dm.thread as never,
+        command: "/start",
+        text: "",
+        user: {
+          userId: "71112233",
+          userName: "telegram-user",
+          fullName: "Telegram User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: {
+          message_id: 901,
+          date: 1_788_622_901,
+          chat: { id: 71112233, type: "private" },
+          from: { id: 71112233, is_bot: false },
+          text: "/start",
+          entities: [{ offset: 0, length: 6, type: "bot_command" }],
+        },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    });
+    const seedEffect = await db
+      .select()
+      .from(chatActions)
+      .where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "provider_effect")))
+      .then((rows) => rows[0]);
+    if (!seedEffect) throw new Error("Expected a provider-effect fixture");
+
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: dm.thread,
+      message: makeMessage({
+        id: "71112233:902",
+        raw: { message_id: 902 },
+        text: "Create a task for provider-effect recovery",
+        userId: "71112233",
+      }),
+      trigger: "direct_message",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "71112233");
+    await service.test(endpoint.id, "owner-user");
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    if (!conversation) throw new Error("Expected a bound conversation");
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    if (!providerRuntime) throw new Error("Expected Telegram runtime");
+    const initialPostCount = providerRuntime.posts.length;
+    const app = routesApp(db, fixture.companyId, service);
+
+    const insertAmbiguousEffect = async (suffix: string, text: string) => {
+      const [delivery] = await db
+        .insert(chatDeliveries)
+        .values({
+          companyId: fixture.companyId,
+          endpointId: endpoint.id,
+          conversationId: conversation.id,
+          providerEventId: `provider-effect-resolution:${suffix}`,
+          deduplicationKey: `provider-effect-resolution:${suffix}`,
+          eventKind: "message",
+          normalizedEvent: {},
+          state: "failed",
+          redactedError: "Provider response is unconfirmed",
+        })
+        .returning();
+      const [action] = await db
+        .insert(chatActions)
+        .values({
+          companyId: fixture.companyId,
+          endpointId: endpoint.id,
+          deliveryId: delivery!.id,
+          conversationId: conversation.id,
+          kind: "provider_effect",
+          providerActionId: `provider_effect:resolution:${suffix}`,
+          payload: {
+            ...seedEffect.payload,
+            text,
+            settleDelivery: true,
+            completeConversationId: conversation.id,
+          },
+          status: "delivery_unknown",
+          result: {
+            code: "provider_effect_delivery_unknown",
+            attempts: 1,
+            retryable: false,
+          },
+        })
+        .returning();
+      return { action: action!, delivery: delivery! };
+    };
+
+    const marked = await insertAmbiguousEffect("mark", "Close after mark");
+    const activity = await service.listActivity(endpoint.id);
+    expect(activity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: marked.action.id,
+          kind: "action",
+          actionType: "provider_effect",
+          status: "delivery_unknown",
+          replayable: false,
+          resolutionActions: ["mark_delivered", "retry_anyway", "cancel"],
+        }),
+        expect.objectContaining({
+          id: marked.delivery.id,
+          kind: "delivery",
+          status: "failed",
+          replayable: false,
+        }),
+      ]),
+    );
+    await request(app)
+      .post(`/api/chat-endpoints/${endpoint.id}/deliveries/${marked.delivery.id}/replay`)
+      .send({})
+      .expect(409);
+    await request(app)
+      .post(`/api/chat-endpoints/${endpoint.id}/actions/${marked.action.id}/resolve`)
+      .send({ action: "mark_delivered" })
+      .expect(204);
+    await expect(
+      db.select({ status: chatActions.status }).from(chatActions).where(eq(chatActions.id, marked.action.id)),
+    ).resolves.toEqual([{ status: "processed" }]);
+    await expect(
+      db.select({ state: chatDeliveries.state }).from(chatDeliveries).where(eq(chatDeliveries.id, marked.delivery.id)),
+    ).resolves.toEqual([{ state: "processed" }]);
+    await expect(
+      db
+        .select({ state: chatConversations.state })
+        .from(chatConversations)
+        .where(eq(chatConversations.id, conversation.id)),
+    ).resolves.toEqual([{ state: "completed" }]);
+    expect(providerRuntime.posts).toHaveLength(initialPostCount);
+
+    await db
+      .update(chatConversations)
+      .set({ state: "active", updatedAt: new Date() })
+      .where(eq(chatConversations.id, conversation.id));
+    const retried = await insertAmbiguousEffect("retry", "Close after retry");
+    const retryResponses = await Promise.all([
+      request(app)
+        .post(`/api/chat-endpoints/${endpoint.id}/actions/${retried.action.id}/resolve`)
+        .send({ action: "retry_anyway" }),
+      request(app)
+        .post(`/api/chat-endpoints/${endpoint.id}/actions/${retried.action.id}/resolve`)
+        .send({ action: "retry_anyway" }),
+    ]);
+    expect(retryResponses.map((response) => response.status).sort()).toEqual([204, 409]);
+    expect(providerRuntime.posts).toHaveLength(initialPostCount + 1);
+    await expect(
+      db.select({ status: chatActions.status }).from(chatActions).where(eq(chatActions.id, retried.action.id)),
+    ).resolves.toEqual([{ status: "processed" }]);
+    await expect(
+      db.select({ state: chatDeliveries.state }).from(chatDeliveries).where(eq(chatDeliveries.id, retried.delivery.id)),
+    ).resolves.toEqual([{ state: "processed" }]);
+
+    await db
+      .update(chatConversations)
+      .set({ state: "active", updatedAt: new Date() })
+      .where(eq(chatConversations.id, conversation.id));
+    const cancelled = await insertAmbiguousEffect("cancel", "Do not send this reply");
+    await request(app)
+      .post(`/api/chat-endpoints/${endpoint.id}/actions/${cancelled.action.id}/resolve`)
+      .send({ action: "cancel" })
+      .expect(204);
+    await expect(
+      db.select({ status: chatActions.status }).from(chatActions).where(eq(chatActions.id, cancelled.action.id)),
+    ).resolves.toEqual([{ status: "cancelled" }]);
+    await expect(
+      db
+        .select({ state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.id, cancelled.delivery.id)),
+    ).resolves.toEqual([{ state: "filtered" }]);
+    await expect(
+      db
+        .select({ state: chatConversations.state })
+        .from(chatConversations)
+        .where(eq(chatConversations.id, conversation.id)),
+    ).resolves.toEqual([{ state: "active" }]);
+    expect(providerRuntime.posts).toHaveLength(initialPostCount + 1);
+
+    const terminalCreatedAt = new Date("2026-01-01T00:00:00.000Z");
+    await db.insert(chatActions).values(
+      Array.from({ length: 25 }, (_, index) => ({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        kind: "provider_effect",
+        providerActionId: `provider_effect:terminal:${randomUUID()}`,
+        payload: seedEffect.payload,
+        status: "failed",
+        result: { retryable: false },
+        createdAt: new Date(terminalCreatedAt.getTime() + index),
+        updatedAt: terminalCreatedAt,
+      })),
+    );
+    const [actionable] = await db
+      .insert(chatActions)
+      .values({
+        companyId: fixture.companyId,
+        endpointId: endpoint.id,
+        kind: "provider_effect",
+        providerActionId: `provider_effect:actionable:${randomUUID()}`,
+        payload: {
+          ...seedEffect.payload,
+          text: "This newer actionable effect must not starve",
+          settleDelivery: false,
+          completeConversationId: undefined,
+        },
+        status: "received",
+      })
+      .returning();
+    await service.processPendingProviderEffects(1);
+    await expect(
+      db.select({ status: chatActions.status }).from(chatActions).where(eq(chatActions.id, actionable!.id)),
+    ).resolves.toEqual([{ status: "processed" }]);
+
+    await expect(
+      db
+        .select({ action: activityLog.action, actorId: activityLog.actorId })
+        .from(activityLog)
+        .where(inArray(activityLog.entityId, [marked.action.id, retried.action.id, cancelled.action.id])),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        {
+          action: "chat.provider_effect_mark_delivered",
+          actorId: "owner-user",
+        },
+        {
+          action: "chat.provider_effect_retry_anyway",
+          actorId: "owner-user",
+        },
+        {
+          action: "chat.provider_effect_cancel",
+          actorId: "owner-user",
+        },
+      ]),
+    );
+  });
+
+  it("acknowledges a denied Slack action before its durable notice completes and deduplicates redelivery", async () => {
+    const scheduled: Array<() => void> = [];
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture, {
+      scheduleDeferredWork: (task) => scheduled.push(task),
+    });
+    if (!callbacks.onAction) {
+      throw new Error("Slack action callback was not registered");
+    }
+    const channel = makeThread({
+      channelId: "C-DENIAL-OUTBOX",
+      id: "slack:C-DENIAL-OUTBOX:9000.1",
+      name: "denial-outbox",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      thread: channel.thread,
+      message: makeMessage({
+        id: "9000.1",
+        text: "@maya create a denial fixture",
+        mentioned: true,
+        userId: "U-DENIAL-OUTBOX",
+      }),
+      trigger: "mention",
+    });
+    await qualifySetupRoundTrip(service, endpoint.id, "U-DENIAL-OUTBOX");
+    await service.test(endpoint.id, "owner-user");
+    let releaseNotice!: () => void;
+    const noticeRelease = new Promise<void>((resolve) => {
+      releaseNotice = resolve;
+    });
+    channel.postEphemeral.mockImplementation(async () => {
+      await noticeRelease;
+      return {
+        id: "ephemeral-denial-outbox",
+        threadId: channel.thread.id,
+        usedFallback: false,
+      };
+    });
+    const deniedAction = {
+      endpointId: endpoint.id,
+      provider: "slack" as const,
+      event: {
+        actionId: "pcq:unissued-denial-outbox",
+        adapter: {} as never,
+        messageId: "outbound-unissued",
+        openModal: async () => undefined,
+        raw: { type: "block_actions" },
+        thread: channel.thread,
+        threadId: channel.thread.id,
+        user: {
+          userId: "U-DENIAL-OUTBOX",
+          userName: "denial-user",
+          fullName: "Denial User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        value: "unissued",
+      },
+    };
+
+    await expect(callbacks.onAction(deniedAction)).resolves.toBeUndefined();
+    expect(channel.postEphemeral).not.toHaveBeenCalled();
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()!();
+    await vi.waitFor(() => expect(channel.postEphemeral).toHaveBeenCalledTimes(1));
+    await expect(callbacks.onAction(deniedAction)).resolves.toBeUndefined();
+    expect(scheduled).toHaveLength(0);
+    expect(channel.postEphemeral).toHaveBeenCalledTimes(1);
+
+    releaseNotice();
+    await service.shutdown();
+    await expect(
+      db
+        .select({ kind: chatActions.kind, status: chatActions.status })
+        .from(chatActions)
+        .where(eq(chatActions.endpointId, endpoint.id)),
+    ).resolves.toEqual([expect.objectContaining({ kind: "provider_effect", status: "processed" })]);
+    await expect(
+      db
+        .select({ state: chatDeliveries.state })
+        .from(chatDeliveries)
+        .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "action"))),
+    ).resolves.toEqual([{ state: "filtered" }]);
+  });
+
   it("queues Telegram guidance on the durable publication FIFO when a task is active", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service, wakeup } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service, wakeup } = await configuredTelegramEndpoint(fixture);
     if (!callbacks.onSlashCommand) {
       throw new Error("Telegram slash command callback was not registered");
     }
@@ -12045,24 +12328,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     await service.processPendingPublications();
     await service.processPendingPublications();
-    expect(
-      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
-    ).toEqual([
+    expect(runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text)).toEqual([
       "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
     ]);
     expect(wakeup).toHaveBeenCalledTimes(1);
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(1);
-    expect(
-      await db
-        .select()
-        .from(issueComments)
-        .where(eq(issueComments.companyId, fixture.companyId)),
-    ).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
+    expect(await db.select().from(issueComments).where(eq(issueComments.companyId, fixture.companyId))).toHaveLength(1);
   });
 
   it("durably deduplicates Telegram guidance webhook retries and filters disabled DMs", async () => {
@@ -12073,72 +12344,68 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const wakeup = vi.fn(async () => ({ accepted: true }));
     let webhookSecret = "";
     let nextProviderMessageId = 9_000;
-    const telegramFetch = vi.fn(
-      async (input: string | URL | Request, init?: RequestInit) => {
-        const method = new URL(String(input)).pathname.split("/").at(-1) ?? "";
-        const body = typeof init?.body === "string" ? init.body : "";
-        apiCalls.push({ body, method });
-        if (method === "getMe") {
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              result: {
-                id: botId,
-                username: "paperclip_guidance_test_bot",
-                first_name: "Paperclip Guidance Test",
+    const telegramFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const method = new URL(String(input)).pathname.split("/").at(-1) ?? "";
+      const body = typeof init?.body === "string" ? init.body : "";
+      apiCalls.push({ body, method });
+      if (method === "getMe") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              id: botId,
+              username: "paperclip_guidance_test_bot",
+              first_name: "Paperclip Guidance Test",
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (method === "getWebhookInfo") {
+        return new Response(JSON.stringify({ ok: true, result: { url: "" } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (method === "setWebhook") {
+        webhookSecret = String((JSON.parse(body) as { secret_token?: unknown }).secret_token ?? "");
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (method === "sendMessage") {
+        const payload = JSON.parse(body) as {
+          chat_id?: string;
+          message_thread_id?: number;
+          text?: string;
+        };
+        nextProviderMessageId += 1;
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: {
+              message_id: nextProviderMessageId,
+              date: Math.floor(Date.now() / 1_000),
+              chat: {
+                id: Number(payload.chat_id),
+                type: "private",
+                first_name: "Telegram User",
               },
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (method === "getWebhookInfo") {
-          return new Response(
-            JSON.stringify({ ok: true, result: { url: "" } }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (method === "setWebhook") {
-          webhookSecret = String(
-            (JSON.parse(body) as { secret_token?: unknown }).secret_token ?? "",
-          );
-          return new Response(JSON.stringify({ ok: true, result: true }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        if (method === "sendMessage") {
-          const payload = JSON.parse(body) as {
-            chat_id?: string;
-            message_thread_id?: number;
-            text?: string;
-          };
-          nextProviderMessageId += 1;
-          return new Response(
-            JSON.stringify({
-              ok: true,
-              result: {
-                message_id: nextProviderMessageId,
-                date: Math.floor(Date.now() / 1_000),
-                chat: {
-                  id: Number(payload.chat_id),
-                  type: "private",
-                  first_name: "Telegram User",
-                },
-                text: payload.text,
-              },
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (method === "sendChatAction" || method === "setMessageReaction") {
-          return new Response(JSON.stringify({ ok: true, result: true }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        throw new Error(`Unexpected Telegram API call: ${method}`);
-      },
-    ) as typeof globalThis.fetch;
+              text: payload.text,
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (method === "sendChatAction" || method === "setMessageReaction") {
+        return new Response(JSON.stringify({ ok: true, result: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected Telegram API call: ${method}`);
+    }) as typeof globalThis.fetch;
     const previousFetch = globalThis.fetch;
     globalThis.fetch = telegramFetch;
     const service = chatChannelService(db, {
@@ -12152,69 +12419,47 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         { provider: "telegram", assignedAgentId: fixture.assignedAgentId },
         "owner-user",
       );
-      await service.configure(
-        endpoint.id,
-        { action: "configure", credentials: { botToken } },
-        "owner-user",
-      );
+      await service.configure(endpoint.id, { action: "configure", credentials: { botToken } }, "owner-user");
       expect(webhookSecret).not.toBe("");
-      await db
-        .update(chatEndpoints)
-        .set({ status: "active" })
-        .where(eq(chatEndpoints.id, endpoint.id));
+      await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
 
-      const providerRequest = (input: {
-        command: string;
-        messageId: number;
-        updateId: number;
-      }) =>
-        new Request(
-          `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`,
-          {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "x-telegram-bot-api-secret-token": webhookSecret,
-            },
-            body: JSON.stringify({
-              update_id: input.updateId,
-              message: {
-                message_id: input.messageId,
-                date: 1_788_620_500 + input.messageId,
-                chat: {
-                  id: 417200359,
-                  type: "private",
-                  first_name: "Telegram User",
-                },
-                from: {
-                  id: 417200359,
-                  is_bot: false,
-                  first_name: "Telegram User",
-                  username: "telegram-user",
-                },
-                text: input.command,
-                entities: [
-                  {
-                    offset: 0,
-                    length: input.command.length,
-                    type: "bot_command",
-                  },
-                ],
-              },
-            }),
+      const providerRequest = (input: { command: string; messageId: number; updateId: number }) =>
+        new Request(`https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-telegram-bot-api-secret-token": webhookSecret,
           },
-        );
-      const deliverTwice = async (input: {
-        command: string;
-        messageId: number;
-        updateId: number;
-      }) => {
+          body: JSON.stringify({
+            update_id: input.updateId,
+            message: {
+              message_id: input.messageId,
+              date: 1_788_620_500 + input.messageId,
+              chat: {
+                id: 417200359,
+                type: "private",
+                first_name: "Telegram User",
+              },
+              from: {
+                id: 417200359,
+                is_bot: false,
+                first_name: "Telegram User",
+                username: "telegram-user",
+              },
+              text: input.command,
+              entities: [
+                {
+                  offset: 0,
+                  length: input.command.length,
+                  type: "bot_command",
+                },
+              ],
+            },
+          }),
+        });
+      const deliverTwice = async (input: { command: string; messageId: number; updateId: number }) => {
         for (let attempt = 0; attempt < 2; attempt += 1) {
-          const response = await service.handleWebhook(
-            endpoint.publicId,
-            "telegram",
-            providerRequest(input),
-          );
+          const response = await service.handleWebhook(endpoint.publicId, "telegram", providerRequest(input));
           expect(response.status).toBe(200);
           await expect(response.text()).resolves.toBe("OK");
         }
@@ -12235,20 +12480,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "Available commands: /status, /new, and /close.",
       ]);
 
-      await service.update(
-        endpoint.id,
-        { allowDirectMessages: false },
-        "owner-user",
-      );
+      await service.update(endpoint.id, { allowDirectMessages: false }, "owner-user");
       await deliverTwice({ command: "/start", messageId: 603, updateId: 7603 });
-      expect(
-        apiCalls.filter(({ method }) => method === "sendMessage"),
-      ).toHaveLength(2);
+      expect(apiCalls.filter(({ method }) => method === "sendMessage")).toHaveLength(2);
 
-      const deliveries = await db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id));
+      const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
       expect(deliveries).toHaveLength(3);
       for (const messageId of [601, 602]) {
         expect(deliveries).toContainEqual(
@@ -12276,12 +12512,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
       );
       expect(await service.listConversations(endpoint.id)).toEqual([]);
-      expect(
-        await db
-          .select()
-          .from(issues)
-          .where(eq(issues.companyId, fixture.companyId)),
-      ).toHaveLength(0);
+      expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(0);
       expect(wakeup).not.toHaveBeenCalled();
     } finally {
       await service.shutdown();
@@ -12291,8 +12522,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("consumes Telegram forum-topic controls without remapping or waking the topic task", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service, wakeup } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service, wakeup } = await configuredTelegramEndpoint(fixture);
     if (!callbacks.onSlashCommand) {
       throw new Error("Telegram slash command callback was not registered");
     }
@@ -12334,10 +12564,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(wakeup).toHaveBeenCalledTimes(1);
     const [initialConversation] = await service.listConversations(endpoint.id);
     if (!initialConversation) throw new Error("Expected topic conversation");
-    const invoke = async (
-      command: "/status" | "/new" | "/close",
-      messageId: number,
-    ) => {
+    const invoke = async (command: "/status" | "/new" | "/close", messageId: number) => {
       await callbacks.onSlashCommand!({
         endpointId: endpoint.id,
         provider: "telegram",
@@ -12365,9 +12592,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             chat: { id: Number(chatId), type: "supergroup" },
             from: { id: 77112233, is_bot: false },
             text: command,
-            entities: [
-              { offset: 0, length: command.length, type: "bot_command" },
-            ],
+            entities: [{ offset: 0, length: command.length, type: "bot_command" }],
           },
           adapter: {} as never,
           openModal: async () => undefined,
@@ -12378,6 +12603,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await invoke("/status", 201);
     await service.processPendingPublications();
     await invoke("/new", 202);
+    await service.processPendingPublications();
     await expect(service.listConversations(endpoint.id)).resolves.toEqual([
       expect.objectContaining({
         id: initialConversation.id,
@@ -12386,6 +12612,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
     ]);
     await invoke("/close", 203);
+    await service.processPendingPublications();
 
     const conversations = await service.listConversations(endpoint.id);
     expect(conversations).toEqual([
@@ -12395,12 +12622,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         state: "completed",
       }),
     ]);
-    expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(1);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
     expect(
       await db
         .select({ body: issueComments.body })
@@ -12408,21 +12630,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(eq(issueComments.issueId, initialConversation.issueId)),
     ).toEqual([{ body: "@maya investigate the forum alert" }]);
     expect(wakeup).toHaveBeenCalledTimes(1);
-    expect(
-      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
-    ).toEqual([
+    expect(runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text)).toEqual([
       expect.stringMatching(/— todo$/),
-      expect.stringContaining(
-        "Open a new Telegram forum topic to start a new Paperclip task.",
-      ),
+      expect.stringContaining("Open a new Telegram forum topic to start a new Paperclip task."),
       "This forum topic is closed. A later message here will continue the same Paperclip task.",
     ]);
   });
 
   it("keeps successive Telegram DM messages on one active Paperclip task", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredTelegramEndpoint(fixture);
     const dm = makeThread({
       channelId: "77112233",
       id: "telegram:77112233",
@@ -12460,35 +12677,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
 
     const conversations = await service.listConversations(endpoint.id);
-    expect(conversations).toEqual([
-      expect.objectContaining({ state: "active", sessionGeneration: 1 }),
-    ]);
+    expect(conversations).toEqual([expect.objectContaining({ state: "active", sessionGeneration: 1 })]);
+    expect(await db.select().from(issues).where(eq(issues.companyId, fixture.companyId))).toHaveLength(1);
     expect(
-      await db
-        .select()
-        .from(issues)
-        .where(eq(issues.companyId, fixture.companyId)),
-    ).toHaveLength(1);
-    expect(
-      (
-        await db
-          .select()
-          .from(issueComments)
-          .where(eq(issueComments.issueId, conversations[0]!.issueId))
-      ).map((comment) => comment.body),
-    ).toEqual(
-      expect.arrayContaining([
-        "Start one DM task",
-        "Continue that same DM task",
-      ]),
-    );
+      (await db.select().from(issueComments).where(eq(issueComments.issueId, conversations[0]!.issueId))).map(
+        (comment) => comment.body,
+      ),
+    ).toEqual(expect.arrayContaining(["Start one DM task", "Continue that same DM task"]));
     expect(wakeup).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed for unbound rich callbacks and unknown slash commands", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
     const command = endpoint.setup.command;
     if (!command) throw new Error("Slack endpoint did not expose its command");
     expect(callbacks.onAction).toBeTypeOf("function");
@@ -12496,8 +12697,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(callbacks.onModalClose).toBeUndefined();
     expect(callbacks.onOptionsLoad).toBeUndefined();
     expect(callbacks.onReaction).toBeTypeOf("function");
-    if (!callbacks.onSlashCommand)
-      throw new Error("Slack slash command callback was not registered");
+    if (!callbacks.onSlashCommand) throw new Error("Slack slash command callback was not registered");
     await db.insert(chatEndpointResources).values({
       companyId: fixture.companyId,
       endpointId: endpoint.id,
@@ -12543,27 +12743,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     expect(post).not.toHaveBeenCalled();
-    expect(postEphemeral).toHaveBeenCalledWith(
-      expect.anything(),
-      `This connection only accepts ${command}.`,
-      { fallbackToDM: false },
+    await vi.waitFor(() =>
+      expect(postEphemeral).toHaveBeenCalledWith("U-COMMANDER", `This connection only accepts ${command}.`, {
+        fallbackToDM: false,
+      }),
     );
     expect(await service.listConversations(endpoint.id)).toEqual([]);
   });
 
   it("applies the direct-message toggle to Slack slash commands", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
     const command = endpoint.setup.command;
     if (!command) throw new Error("Slack endpoint did not expose its command");
-    if (!callbacks.onSlashCommand)
-      throw new Error("Slack slash command callback was not registered");
-    await service.update(
-      endpoint.id,
-      { allowDirectMessages: false },
-      "owner-user",
-    );
+    if (!callbacks.onSlashCommand) throw new Error("Slack slash command callback was not registered");
+    await service.update(endpoint.id, { allowDirectMessages: false }, "owner-user");
     const post = vi.fn(async () => ({
       id: "unexpected-dm-post",
       threadId: "slack:D-COMMANDS:6200.1",
@@ -12600,17 +12794,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     expect(post).not.toHaveBeenCalled();
-    expect(postEphemeral).toHaveBeenCalledWith(
-      expect.anything(),
-      "This channel or account is not allowed to start Paperclip work.",
-      { fallbackToDM: false },
+    await vi.waitFor(() =>
+      expect(postEphemeral).toHaveBeenCalledWith(
+        "U-COMMANDER",
+        "This channel or account is not allowed to start Paperclip work.",
+        { fallbackToDM: false },
+      ),
     );
   });
 
   it("records message edits and deletes durably and deduplicates lifecycle callbacks", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-LIFECYCLE",
       id: "slack:C-LIFECYCLE:7000.1",
@@ -12666,10 +12861,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await callbacks.onMessageDeleted(deleteEvent);
     await callbacks.onMessageDeleted(deleteEvent);
 
-    const deliveries = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(deliveries.map((delivery) => delivery.eventKind).sort()).toEqual([
       "mention",
       "message",
@@ -12680,17 +12872,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
-    const comments = await db
-      .select()
-      .from(issueComments)
-      .where(eq(issueComments.issueId, conversation.issueId));
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, conversation.issueId));
     expect(
       comments
-        .filter(
-          (comment) =>
-            comment.body !== "Setup round trip complete" &&
-            comment.body !== "Setup follow-up",
-        )
+        .filter((comment) => comment.body !== "Setup round trip complete" && comment.body !== "Setup follow-up")
         .map((comment) => comment.body)
         .sort(),
     ).toEqual(
@@ -12737,16 +12922,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(
             and(
               eq(chatDeliveries.endpointId, first.endpoint.id),
-              eq(
-                chatDeliveries.providerEventId,
-                `${thread.thread.id}:${original.id}`,
-              ),
+              eq(chatDeliveries.providerEventId, `${thread.thread.id}:${original.id}`),
             ),
           ),
       ).resolves.toEqual([{ state: "processed" }]);
     });
-    if (!first.callbacks.onMessageUpdated)
-      throw new Error("Slack lifecycle callback was not registered");
+    if (!first.callbacks.onMessageUpdated) throw new Error("Slack lifecycle callback was not registered");
     await first.callbacks.onMessageUpdated({
       endpointId: first.endpoint.id,
       provider: "slack",
@@ -12765,12 +12946,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const [lifecycle] = await db
       .select()
       .from(chatDeliveries)
-      .where(
-        and(
-          eq(chatDeliveries.endpointId, first.endpoint.id),
-          eq(chatDeliveries.eventKind, "message_updated"),
-        ),
-      );
+      .where(and(eq(chatDeliveries.endpointId, first.endpoint.id), eq(chatDeliveries.eventKind, "message_updated")));
     expect(lifecycle).toMatchObject({ state: "received", attempts: 0 });
 
     await db
@@ -12802,10 +12978,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(
           and(
             eq(issueComments.issueId, conversation.issueId),
-            eq(
-              issueComments.body,
-              "An external message was edited:\n\n@maya corrected after restart",
-            ),
+            eq(issueComments.body, "An external message was edited:\n\n@maya corrected after restart"),
           ),
         ),
     ).resolves.toHaveLength(0);
@@ -12822,10 +12995,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })
       .where(eq(chatDeliveries.id, lifecycle.id));
     await first.service.shutdown();
-    const restarted = createService(
-      new FakeChatSdkRuntime(),
-      fakeSlackFetch() as typeof globalThis.fetch,
-    );
+    const restarted = createService(new FakeChatSdkRuntime(), fakeSlackFetch() as typeof globalThis.fetch);
     await restarted.service.processPendingDeliveries(25, lifecycle.id);
     await restarted.service.processPendingDeliveries(25, lifecycle.id);
 
@@ -12845,10 +13015,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .where(
           and(
             eq(issueComments.issueId, conversation.issueId),
-            eq(
-              issueComments.body,
-              "An external message was edited:\n\n@maya corrected after restart",
-            ),
+            eq(issueComments.body, "An external message was edited:\n\n@maya corrected after restart"),
           ),
         ),
     ).resolves.toHaveLength(1);
@@ -12857,8 +13024,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("filters a claimed message lifecycle delivery after pause and reconnect supersede its runtime", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-LIFECYCLE-FENCE",
       id: "slack:C-LIFECYCLE-FENCE:7060.1",
@@ -12878,10 +13044,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await qualifySetupRoundTrip(service, endpoint.id);
     await service.test(endpoint.id, "owner-user");
-    if (!callbacks.onMessageUpdated)
-      throw new Error("Slack lifecycle callback was not registered");
-    const correction =
-      "An external message was edited:\n\n@maya stale correction";
+    if (!callbacks.onMessageUpdated) throw new Error("Slack lifecycle callback was not registered");
+    const correction = "An external message was edited:\n\n@maya stale correction";
     await callbacks.onMessageUpdated({
       endpointId: endpoint.id,
       provider: "slack",
@@ -12900,12 +13064,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const [lifecycle] = await db
       .select()
       .from(chatDeliveries)
-      .where(
-        and(
-          eq(chatDeliveries.endpointId, endpoint.id),
-          eq(chatDeliveries.eventKind, "message_updated"),
-        ),
-      );
+      .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "message_updated")));
     expect(lifecycle.normalizedEvent).toMatchObject({
       runtimeContext: {
         credentialFingerprint: expect.any(String),
@@ -12918,12 +13077,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(chatConversations.endpointId, endpoint.id));
     await db
       .delete(issueComments)
-      .where(
-        and(
-          eq(issueComments.issueId, conversation.issueId),
-          eq(issueComments.body, correction),
-        ),
-      );
+      .where(and(eq(issueComments.issueId, conversation.issueId), eq(issueComments.body, correction)));
     await db
       .update(chatDeliveries)
       .set({
@@ -12948,28 +13102,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toEqual([
       {
         state: "filtered",
-        redactedError:
-          "Message lifecycle callback belonged to a superseded runtime",
+        redactedError: "Message lifecycle callback belonged to a superseded runtime",
       },
     ]);
     await expect(
       db
         .select({ id: issueComments.id })
         .from(issueComments)
-        .where(
-          and(
-            eq(issueComments.issueId, conversation.issueId),
-            eq(issueComments.body, correction),
-          ),
-        ),
+        .where(and(eq(issueComments.issueId, conversation.issueId), eq(issueComments.body, correction))),
     ).resolves.toHaveLength(0);
     await service.shutdown();
   });
 
   it("acknowledges Telegram edits while verifying and when processing is suspended", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredTelegramEndpoint(fixture);
     const chatId = "77112234";
     const dm = makeThread({
       channelId: `telegram:${chatId}`,
@@ -13011,52 +13158,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       );
 
     const transaction = vi.spyOn(db, "transaction");
-    transaction.mockRejectedValueOnce(
-      new Error("injected lifecycle transaction failure"),
+    transaction.mockRejectedValueOnce(new Error("injected lifecycle transaction failure"));
+    await expect(sendEdit(1_788_620_100, "Edited during setup")).rejects.toThrow(
+      "injected lifecycle transaction failure",
     );
-    await expect(
-      sendEdit(1_788_620_100, "Edited during setup"),
-    ).rejects.toThrow("injected lifecycle transaction failure");
     transaction.mockRestore();
     await expect(
       db
         .select()
         .from(chatDeliveries)
-        .where(
-          and(
-            eq(chatDeliveries.endpointId, endpoint.id),
-            eq(chatDeliveries.eventKind, "message_updated"),
-          ),
-        ),
+        .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "message_updated"))),
     ).resolves.toEqual([]);
 
-    await expect(
-      sendEdit(1_788_620_100, "Edited during setup"),
-    ).resolves.toMatchObject({ ok: true });
+    await expect(sendEdit(1_788_620_100, "Edited during setup")).resolves.toMatchObject({ ok: true });
     expect(wakeup).toHaveBeenCalledTimes(1);
 
     for (const status of ["paused", "attention"] as const) {
-      await db
-        .update(chatEndpoints)
-        .set({ status, updatedAt: new Date() })
-        .where(eq(chatEndpoints.id, endpoint.id));
+      await db.update(chatEndpoints).set({ status, updatedAt: new Date() }).where(eq(chatEndpoints.id, endpoint.id));
       await expect(
-        sendEdit(
-          status === "paused" ? 1_788_620_101 : 1_788_620_102,
-          `Edited while ${status}`,
-        ),
+        sendEdit(status === "paused" ? 1_788_620_101 : 1_788_620_102, `Edited while ${status}`),
       ).resolves.toMatchObject({ ok: true });
     }
 
     const lifecycle = await db
       .select()
       .from(chatDeliveries)
-      .where(
-        and(
-          eq(chatDeliveries.endpointId, endpoint.id),
-          eq(chatDeliveries.eventKind, "message_updated"),
-        ),
-      );
+      .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "message_updated")));
     expect(lifecycle).toEqual([
       expect.objectContaining({
         providerEventId: "telegram:update:1788620100",
@@ -13070,14 +13197,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const fixture = await seedCompany();
     const deferred: Array<() => Promise<void>> = [];
     const runtime = new FakeChatSdkRuntime();
-    const { service, wakeup } = createService(
-      runtime,
-      fakeTelegramFetch() as typeof globalThis.fetch,
-      {
-        deferWebhookProcessing: true,
-        scheduleDeferredWork: (task) => deferred.push(task),
-      },
-    );
+    const { service, wakeup } = createService(runtime, fakeTelegramFetch() as typeof globalThis.fetch, {
+      deferWebhookProcessing: true,
+      scheduleDeferredWork: (task) => deferred.push(task),
+    });
     const endpoint = await service.create(
       fixture.companyId,
       { provider: "telegram", assignedAgentId: fixture.assignedAgentId },
@@ -13112,10 +13235,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "direct_message",
     });
-    const [originalDelivery] = await db
-      .select()
-      .from(chatDeliveries)
-      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    const [originalDelivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
     expect(originalDelivery).toMatchObject({ state: "received" });
 
     const sendEdit = (updateId: number, text: string) =>
@@ -13138,15 +13258,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }),
       );
 
-    await expect(
-      sendEdit(7_004, "Second edit whose callback arrived first"),
-    ).resolves.toMatchObject({ ok: true });
-    await expect(
-      sendEdit(7_003, "First edit whose callback arrived second"),
-    ).resolves.toMatchObject({ ok: true });
-    await expect(
-      sendEdit(7_003, "First edit whose callback arrived second"),
-    ).resolves.toMatchObject({ ok: true });
+    await expect(sendEdit(7_004, "Second edit whose callback arrived first")).resolves.toMatchObject({ ok: true });
+    await expect(sendEdit(7_003, "First edit whose callback arrived second")).resolves.toMatchObject({ ok: true });
+    await expect(sendEdit(7_003, "First edit whose callback arrived second")).resolves.toMatchObject({ ok: true });
     // The authenticated provider callback can be acknowledged as soon as both
     // events are durable. The shared per-conversation drain owns ordering and
     // no longer depends on Telegram redelivering the edit.
@@ -13192,12 +13306,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const lifecycle = await db
       .select()
       .from(chatDeliveries)
-      .where(
-        and(
-          eq(chatDeliveries.endpointId, endpoint.id),
-          eq(chatDeliveries.eventKind, "message_updated"),
-        ),
-      );
+      .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "message_updated")));
     expect(lifecycle).toHaveLength(2);
     expect(lifecycle).toEqual(
       expect.arrayContaining([
@@ -13243,8 +13352,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("filters a durable orphan Telegram edit after one bounded grace attempt", async () => {
     const fixture = await seedCompany();
-    const { endpoint, service, wakeup } =
-      await configuredTelegramEndpoint(fixture);
+    const { endpoint, service, wakeup } = await configuredTelegramEndpoint(fixture);
     const chatId = "77112239";
     await expect(
       service.handleWebhook(
@@ -13271,10 +13379,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(chatDeliveries)
       .where(
-        and(
-          eq(chatDeliveries.endpointId, endpoint.id),
-          eq(chatDeliveries.providerEventId, "telegram:update:7039"),
-        ),
+        and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.providerEventId, "telegram:update:7039")),
       );
     expect(admitted).toMatchObject({ state: "retry", attempts: 1 });
     expect(admitted.redactedError).toContain("Waiting briefly");
@@ -13302,18 +13407,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     ]);
     await expect(
-      db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id)),
+      db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id)),
     ).resolves.toHaveLength(0);
     expect(wakeup).not.toHaveBeenCalled();
   });
 
   it("records verified Telegram edited_message updates against the existing DM task", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredTelegramEndpoint(fixture);
     const chatId = "77112233";
     const dm = makeThread({
       channelId: `telegram:${chatId}`,
@@ -13393,15 +13494,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
-    const comments = await db
-      .select()
-      .from(issueComments)
-      .where(eq(issueComments.issueId, conversation.issueId));
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, conversation.issueId));
     expect(
       comments
-        .filter((comment) =>
-          comment.body.startsWith("An external message was edited:"),
-        )
+        .filter((comment) => comment.body.startsWith("An external message was edited:"))
         .map((comment) => comment.body),
     ).toEqual(
       expect.arrayContaining([
@@ -13412,12 +13508,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const updateDeliveries = await db
       .select()
       .from(chatDeliveries)
-      .where(
-        and(
-          eq(chatDeliveries.endpointId, endpoint.id),
-          eq(chatDeliveries.eventKind, "message_updated"),
-        ),
-      );
+      .where(and(eq(chatDeliveries.endpointId, endpoint.id), eq(chatDeliveries.eventKind, "message_updated")));
     expect(updateDeliveries).toHaveLength(2);
     expect(updateDeliveries).toEqual(
       expect.arrayContaining([
@@ -13452,8 +13543,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("coalesces one Telegram run into one provider message", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, runtime, service } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, runtime, service } = await configuredTelegramEndpoint(fixture);
     const chatId = "77112236";
     const dm = makeThread({
       channelId: `telegram:${chatId}`,
@@ -13501,8 +13591,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         issueId: conversation.issueId,
         idempotencyKey: `run:${runId}:${progressState}:${endpoint.id}`,
         payload: {
-          text:
-            progressState === "queued" ? "Maya is queued." : "Maya is working…",
+          text: progressState === "queued" ? "Maya is queued." : "Maya is working…",
           progressState,
         },
         state: "pending",
@@ -13518,9 +13607,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
 
     const providerRuntime = runtime.endpoints.get(endpoint.id);
-    expect(providerRuntime?.posts).toEqual([
-      { threadId: dm.thread.id, text: "Maya is queued." },
-    ]);
+    expect(providerRuntime?.posts).toEqual([{ threadId: dm.thread.id, text: "Maya is queued." }]);
     expect(providerRuntime?.edits).toEqual([
       {
         threadId: dm.thread.id,
@@ -13537,8 +13624,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("audits Telegram reactions idempotently without comments or runs", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredTelegramEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredTelegramEndpoint(fixture);
     const chatId = "77112237";
     const dm = makeThread({
       channelId: `telegram:${chatId}`,
@@ -13561,8 +13647,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await qualifySetupRoundTrip(service, endpoint.id, chatId);
     await service.test(endpoint.id, "owner-user");
-    if (!callbacks.onReaction)
-      throw new Error("Telegram reaction callback was not registered");
+    if (!callbacks.onReaction) throw new Error("Telegram reaction callback was not registered");
     const [conversation] = await db
       .select()
       .from(chatConversations)
@@ -13607,14 +13692,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(chatDeliveries)
       .where(eq(chatDeliveries.conversationId, conversation.id))
-      .then((rows) =>
-        rows.filter((row) => row.eventKind.startsWith("reaction_")),
-      );
+      .then((rows) => rows.filter((row) => row.eventKind.startsWith("reaction_")));
     expect(reactions).toHaveLength(2);
-    expect(reactions.map((row) => row.eventKind).sort()).toEqual([
-      "reaction_added",
-      "reaction_removed",
-    ]);
+    expect(reactions.map((row) => row.eventKind).sort()).toEqual(["reaction_added", "reaction_removed"]);
     expect(
       await db
         .select()
@@ -13634,8 +13714,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("audits reactions on linked messages without treating them as task instructions", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredSlackEndpoint(fixture);
+    const { callbacks, endpoint, service, wakeup } = await configuredSlackEndpoint(fixture);
     const channel = makeThread({
       channelId: "C-REACTIONS",
       id: "slack:C-REACTIONS:7100.1",
@@ -13655,8 +13734,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await qualifySetupRoundTrip(service, endpoint.id);
     await service.test(endpoint.id, "owner-user");
-    if (!callbacks.onReaction)
-      throw new Error("Slack reaction callback was not registered");
+    if (!callbacks.onReaction) throw new Error("Slack reaction callback was not registered");
 
     const [conversation] = await db
       .select()
@@ -13698,14 +13776,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(chatDeliveries)
       .where(eq(chatDeliveries.conversationId, conversation.id))
-      .then((rows) =>
-        rows.filter((row) => row.eventKind.startsWith("reaction_")),
-      );
+      .then((rows) => rows.filter((row) => row.eventKind.startsWith("reaction_")));
     expect(reactions).toHaveLength(2);
-    expect(reactions.map((row) => row.eventKind).sort()).toEqual([
-      "reaction_added",
-      "reaction_removed",
-    ]);
+    expect(reactions.map((row) => row.eventKind).sort()).toEqual(["reaction_added", "reaction_removed"]);
     expect(reactions[0]?.normalizedEvent).toMatchObject({
       reaction: { emoji: "thumbs_up", rawEmoji: "+1" },
     });
@@ -13718,20 +13791,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toBe(commentCountBefore);
     expect(wakeup.mock.calls).toHaveLength(wakeupCountBefore);
     expect(
-      (await service.listActivity(endpoint.id)).filter((item) =>
-        item.summary.startsWith("reaction "),
-      ),
+      (await service.listActivity(endpoint.id)).filter((item) => item.summary.startsWith("reaction ")),
     ).toHaveLength(2);
   });
 
   it("orders reversed GitHub edit and delete callbacks behind their durable root", async () => {
     const fixture = await seedCompany();
     const deferred: Array<() => void | Promise<void>> = [];
-    const { callbacks, endpoint, service, wakeup } =
-      await configuredGitHubEndpoint(fixture, {
-        deferWebhookProcessing: true,
-        scheduleDeferredWork: (task) => deferred.push(task),
-      });
+    const { callbacks, endpoint, service, wakeup } = await configuredGitHubEndpoint(fixture, {
+      deferWebhookProcessing: true,
+      scheduleDeferredWork: (task) => deferred.push(task),
+    });
     const thread = makeThread({
       channelId: "paperclipai/chat-lifecycle-order",
       id: "github:paperclipai/chat-lifecycle-order:issue:84",
@@ -13770,43 +13840,38 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       service.handleWebhook(
         endpoint.publicId,
         "github",
-        new Request(
-          `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/github`,
-          {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "x-github-delivery": `delivery-84-${action}`,
-              "x-github-event": "issue_comment",
-            },
-            body: JSON.stringify({
-              action,
-              comment: {
-                id: 99084,
-                body,
-                updated_at: "2026-09-05T12:00:00Z",
-              },
-              issue: { number: 84 },
-              repository: {
-                name: "chat-lifecycle-order",
-                owner: { login: "paperclipai" },
-              },
-            }),
+        new Request(`https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/github`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-github-delivery": `delivery-84-${action}`,
+            "x-github-event": "issue_comment",
           },
-        ),
+          body: JSON.stringify({
+            action,
+            comment: {
+              id: 99084,
+              body,
+              updated_at: "2026-09-05T12:00:00Z",
+            },
+            issue: { number: 84 },
+            repository: {
+              name: "chat-lifecycle-order",
+              owner: { login: "paperclipai" },
+            },
+          }),
+        }),
       );
 
     // GitHub may deliver these as independent requests in the opposite order.
-    await expect(
-      sendLifecycle("deleted", "deleted payload"),
-    ).resolves.toMatchObject({ ok: true });
-    await expect(
-      sendLifecycle("edited", "@maya corrected ordered GitHub request"),
-    ).resolves.toMatchObject({ ok: true });
+    await expect(sendLifecycle("deleted", "deleted payload")).resolves.toMatchObject({ ok: true });
+    await expect(sendLifecycle("edited", "@maya corrected ordered GitHub request")).resolves.toMatchObject({
+      ok: true,
+    });
     // An exact GitHub redelivery id must remain a single durable transition.
-    await expect(
-      sendLifecycle("edited", "@maya corrected ordered GitHub request"),
-    ).resolves.toMatchObject({ ok: true });
+    await expect(sendLifecycle("edited", "@maya corrected ordered GitHub request")).resolves.toMatchObject({
+      ok: true,
+    });
 
     expect(deferred).toHaveLength(1);
     await deferred.shift()?.();
@@ -13819,9 +13884,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(chatDeliveries)
         .where(eq(chatDeliveries.endpointId, endpoint.id));
       expect(deliveries).toHaveLength(3);
-      expect(
-        deliveries.every((delivery) => delivery.state === "processed"),
-      ).toBe(true);
+      expect(deliveries.every((delivery) => delivery.state === "processed")).toBe(true);
     });
 
     const [conversation] = await db
@@ -13848,9 +13911,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .privateKey.export({ type: "pkcs8", format: "pem" })
       .toString();
     const runtime = new FakeChatSdkRuntime();
-    const { service, wakeup } = createService(runtime, (async (
-      input: string | URL | Request,
-    ) => {
+    const { service, wakeup } = createService(runtime, (async (input: string | URL | Request) => {
       const url = String(input);
       if (url === "https://api.github.com/app") {
         return new Response(
@@ -13887,18 +13948,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
-      if (
-        url === "https://api.github.com/app/installations/8642/access_tokens"
-      ) {
+      if (url === "https://api.github.com/app/installations/8642/access_tokens") {
         return new Response(JSON.stringify({ token: "installation-token" }), {
           status: 201,
           headers: { "content-type": "application/json" },
         });
       }
-      if (
-        url ===
-        "https://api.github.com/installation/repositories?per_page=100&page=1"
-      ) {
+      if (url === "https://api.github.com/installation/repositories?per_page=100&page=1") {
         return new Response(JSON.stringify({ repositories: [] }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -13911,15 +13967,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       { provider: "github", assignedAgentId: fixture.assignedAgentId },
       "owner-user",
     );
-    const { webhookSecret } = await service.generateSetupSecret(
-      endpoint.id,
-      "owner-user",
-    );
-    await recordGitHubWebhookVerification(
-      service,
-      endpoint.publicId,
-      webhookSecret,
-    );
+    const { webhookSecret } = await service.generateSetupSecret(endpoint.id, "owner-user");
+    await recordGitHubWebhookVerification(service, endpoint.publicId, webhookSecret);
     await service.configure(
       endpoint.id,
       {
@@ -13994,34 +14043,31 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await service.handleWebhook(
         endpoint.publicId,
         "github",
-        new Request(
-          `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/github`,
-          {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "x-github-event": input.event,
-            },
-            body: JSON.stringify({
-              action: input.action,
-              comment: {
-                id: input.messageId,
-                in_reply_to_id: input.inReplyToId,
-                body: input.body ?? "@maya corrected GitHub request",
-                updated_at: input.updatedAt,
-              },
-              issue: {
-                number: input.number,
-                pull_request: input.issueIsPullRequest ? {} : undefined,
-              },
-              pull_request: { number: input.number },
-              repository: {
-                name: "chat-e2e",
-                owner: { login: "paperclipai" },
-              },
-            }),
+        new Request(`https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/github`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-github-event": input.event,
           },
-        ),
+          body: JSON.stringify({
+            action: input.action,
+            comment: {
+              id: input.messageId,
+              in_reply_to_id: input.inReplyToId,
+              body: input.body ?? "@maya corrected GitHub request",
+              updated_at: input.updatedAt,
+            },
+            issue: {
+              number: input.number,
+              pull_request: input.issueIsPullRequest ? {} : undefined,
+            },
+            pull_request: { number: input.number },
+            repository: {
+              name: "chat-e2e",
+              owner: { login: "paperclipai" },
+            },
+          }),
+        }),
       );
     };
 
@@ -14067,21 +14113,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await sendLifecycle(sameSecondEdit);
     await sendLifecycle(sameSecondEdit);
     await vi.waitFor(async () => {
-      const lifecycle = await db
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.endpointId, endpoint.id));
+      const lifecycle = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(lifecycle.filter((row) => ["message_updated", "message_deleted"].includes(row.eventKind))).toHaveLength(7);
       expect(
-        lifecycle.filter((row) =>
-          ["message_updated", "message_deleted"].includes(row.eventKind),
-        ),
-      ).toHaveLength(7);
-      expect(
-        lifecycle.filter(
-          (row) =>
-            row.eventKind === "message_updated" &&
-            row.providerEventId.includes(":77001:"),
-        ),
+        lifecycle.filter((row) => row.eventKind === "message_updated" && row.providerEventId.includes(":77001:")),
       ).toHaveLength(2);
     });
     expect(wakeup).toHaveBeenCalledTimes(4);
