@@ -28,6 +28,9 @@ const QUALIFIED_OPENCODE_VERSION: &str = "1.18.17";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const WARM_ATTACHMENT_TAIL_DRAIN_LIMIT: usize = 256;
+const WARM_ATTACHMENT_QUIET_WINDOW: Duration = Duration::from_millis(10);
+const WARM_ATTACHMENT_DRAIN_DEADLINE: Duration = Duration::from_millis(100);
 const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "OPENROUTER_API_KEY",
     "PAPERCLIP_NATIVE_MCP_NAME",
@@ -282,6 +285,8 @@ pub struct CodexProviderConfig {
     pub instructions: String,
     #[serde(default = "default_approval_policy")]
     pub approval_policy: String,
+    #[serde(default)]
+    pub externally_sandboxed: bool,
 }
 
 impl CodexProviderConfig {
@@ -303,6 +308,11 @@ impl CodexProviderConfig {
             return Err(LocalRunnerError::invalid(format!(
                 "OpenCode providerVersion must equal the qualified {QUALIFIED_OPENCODE_VERSION} release",
             )));
+        }
+        if self.externally_sandboxed && self.provider != "codex" {
+            return Err(LocalRunnerError::invalid(
+                "external sandbox delegation is only supported by the Codex provider",
+            ));
         }
         if self.command.as_os_str().is_empty() {
             return Err(LocalRunnerError::invalid("Codex command is required"));
@@ -522,6 +532,7 @@ pub struct CodexProvider {
     expected_shutdown: bool,
     process_generation: u64,
     completed_turn_authority: Option<CompletedTurnAuthority>,
+    active_turn_result_authoritative: bool,
     completion_reconciliation_pending: bool,
     ambiguous_turn_start_pending: bool,
     settled_provider_turn_ids: SettledProviderTurnIds,
@@ -677,7 +688,8 @@ impl CodexProvider {
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
         let permission_profile = codex_permission_profile(
             &config.provider,
-            std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
+            config.externally_sandboxed
+                || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
         );
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
@@ -764,6 +776,7 @@ impl CodexProvider {
             expected_shutdown: false,
             process_generation,
             completed_turn_authority: None,
+            active_turn_result_authoritative: false,
             completion_reconciliation_pending: false,
             ambiguous_turn_start_pending: false,
             settled_provider_turn_ids: SettledProviderTurnIds::default(),
@@ -800,7 +813,6 @@ impl CodexProvider {
             "cwd": config.cwd,
             "model": config.model,
             "approvalPolicy": config.approval_policy,
-            "permissions": provider.permission_profile,
             "runtimeWorkspaceRoots": [config.cwd],
             "baseInstructions": config.instructions,
             "dynamicTools": dynamic_tools,
@@ -808,6 +820,14 @@ impl CodexProvider {
         let params_object = params
             .as_object_mut()
             .expect("Codex thread parameters are an object");
+        if provider.permission_profile == "paperclip-runner-external-sandbox" {
+            // The execution target (for example Daytona) is the OS sandbox.
+            // Codex must not try to create nested user/network namespaces,
+            // which correctly fail inside an unprivileged container.
+            params_object.insert("sandbox".to_owned(), json!("danger-full-access"));
+        } else {
+            params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
+        }
         if config.provider == "opencode" {
             if let Some(contract) = provider.completion_contract.as_ref() {
                 params_object.insert(
@@ -926,17 +946,13 @@ impl CodexProvider {
         {
             return Ok(false);
         }
-        if self.process.try_wait()?.is_some()
-            || self.quarantined
-            || self.active_provider_turn_id.is_some()
-            || self.ambiguous_turn_start_pending
-            || !self.pending_messages.is_empty()
-            || !self.deferred_ambiguous_messages.is_empty()
-            || !self.pending_tool_requests.is_empty()
-            || !self.pending_runtime_requests.is_empty()
-        {
+        let blockers = self.warm_run_attachment_blockers(true)?;
+        if !blockers.is_empty() {
             return Err(LocalRunnerError::invalid(
-                "Codex warm run attachment requires an idle live provider with no pending work",
+                format!(
+                    "Codex warm run attachment requires an idle live provider with no pending work ({})",
+                    blockers.join(",")
+                ),
             ));
         }
         // The provider process and its thread remain authoritative. Exact
@@ -945,9 +961,148 @@ impl CodexProvider {
         // tool or completion contract returns false so the caller can preserve
         // the existing cold-resume behavior for that incompatible boundary.
         self.completed_turn_authority = None;
+        self.active_turn_result_authoritative = false;
         self.completion_reconciliation_pending = false;
         self.expected_shutdown = false;
         Ok(true)
+    }
+
+    fn drain_completed_turn_tail_for_warm_attachment(&mut self) -> Result<(), LocalRunnerError> {
+        let Some(completed_turn_id) = self
+            .completed_turn_authority
+            .as_ref()
+            .map(|authority| authority.provider_turn_id.clone())
+        else {
+            return Ok(());
+        };
+        if self.active_provider_turn_id.is_some() {
+            return Ok(());
+        }
+
+        // Readiness probes run over the PRP command channel while provider
+        // stdout is drained by runnerd's adjacent control-loop iteration. A
+        // final usage/warning/item frame can therefore land after the last
+        // successful probe but before run.attach executes. Close that race in
+        // the same critical section as authority rotation. Only bounded tail
+        // notifications for the already-settled turn may be discarded: a new
+        // turn, provider request, process exit, or mismatched turn remains a
+        // fail-closed attachment error.
+        let deadline = std::time::Instant::now() + WARM_ATTACHMENT_DRAIN_DEADLINE;
+        let mut quiet_since: Option<std::time::Instant> = None;
+        let mut drained = 0usize;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(LocalRunnerError::invalid(
+                    "Codex warm run attachment tail did not become quiescent",
+                ));
+            }
+            match self.poll()? {
+                Some(CodexProviderEvent::Notification { method, params }) => {
+                    quiet_since = None;
+                    drained = drained.saturating_add(1);
+                    if drained > WARM_ATTACHMENT_TAIL_DRAIN_LIMIT {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex warm run attachment tail exceeded its bounded frame limit",
+                        ));
+                    }
+                    let names_other_turn = notification_turn_id(&params)
+                        .is_some_and(|turn_id| turn_id != completed_turn_id);
+                    let safe_tail_method = matches!(
+                        method.as_str(),
+                        "warning"
+                            | "configWarning"
+                            | "remoteControl/status/changed"
+                            | "mcpServer/startupStatus/updated"
+                            | "account/rateLimits/updated"
+                            | "item/started"
+                            | "item/completed"
+                            | "item/agentMessage/delta"
+                            | "rawResponseItem/completed"
+                            | "rawResponse/completed"
+                            | "thread/goal/updated"
+                            | "thread/goal/cleared"
+                            | "thread/tokenUsage/updated"
+                            | "thread/status/changed"
+                            | "turn/diff/updated"
+                            | "turn/plan/updated"
+                    );
+                    if names_other_turn || !safe_tail_method {
+                        return Err(LocalRunnerError::invalid(format!(
+                            "Codex warm run attachment observed unsafe post-terminal provider method {}",
+                            bounded_method(&method)
+                        )));
+                    }
+                    if let Some(frame_id) = self.take_provider_trace_frame_id() {
+                        self.record_provider_trace_interpretation(
+                            frame_id,
+                            "codex.warm_attachment.completed_turn_tail",
+                            "ignored",
+                            Vec::new(),
+                            "Provider emitted a bounded tail notification after the prior turn terminal and before run attachment",
+                        );
+                    }
+                }
+                Some(CodexProviderEvent::ToolCall { .. })
+                | Some(CodexProviderEvent::RuntimeRequest { .. }) => {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex warm run attachment observed a post-terminal provider request",
+                    ));
+                }
+                Some(CodexProviderEvent::Exited { .. }) => {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex exited while quiescing for warm run attachment",
+                    ));
+                }
+                None => {
+                    let now = std::time::Instant::now();
+                    let quiet_start = quiet_since.get_or_insert(now);
+                    if now.duration_since(*quiet_start) >= WARM_ATTACHMENT_QUIET_WINDOW {
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn warm_run_attachment_blockers(
+        &mut self,
+        quiesce_completed_tail: bool,
+    ) -> Result<Vec<&'static str>, LocalRunnerError> {
+        // Only an explicit attachment-readiness probe may consume the bounded,
+        // already-settled provider suffix. Ordinary checkpoint snapshots run
+        // immediately after a terminal frame while the provider can still be
+        // unwinding; turning those observations into quiescence barriers can
+        // quarantine an otherwise reusable runner before its next turn.
+        if quiesce_completed_tail {
+            self.drain_completed_turn_tail_for_warm_attachment()?;
+        }
+        let mut blockers = Vec::new();
+        if self.process.try_wait()?.is_some() {
+            blockers.push("process_exited");
+        }
+        if self.quarantined {
+            blockers.push("quarantined");
+        }
+        if self.active_provider_turn_id.is_some() {
+            blockers.push("active_turn");
+        }
+        if self.ambiguous_turn_start_pending {
+            blockers.push("ambiguous_turn_start");
+        }
+        if !self.pending_messages.is_empty() {
+            blockers.push("pending_messages");
+        }
+        if !self.deferred_ambiguous_messages.is_empty() {
+            blockers.push("deferred_messages");
+        }
+        if !self.pending_tool_requests.is_empty() {
+            blockers.push("pending_tool_requests");
+        }
+        if !self.pending_runtime_requests.is_empty() {
+            blockers.push("pending_runtime_requests");
+        }
+        Ok(blockers)
     }
 
     pub(crate) fn restore_completed_turn_authority(
@@ -964,6 +1119,7 @@ impl CodexProvider {
                 .unwrap_or("durable-completed-turn")
                 .to_owned(),
         });
+        self.active_turn_result_authoritative = false;
         if let Some(authority) = self.completed_turn_authority.as_ref() {
             self.settled_provider_turn_ids
                 .restore(authority.provider_turn_id.clone())?;
@@ -996,6 +1152,16 @@ impl CodexProvider {
                 authority.provider_turn_id.as_str(),
             )
         })
+    }
+
+    pub(crate) fn mark_active_turn_result_authoritative(&mut self) -> Result<(), LocalRunnerError> {
+        if self.active_provider_turn_id.is_none() || self.ambiguous_turn_start_pending {
+            return Err(LocalRunnerError::invalid(
+                "Codex semantic result cannot authorize a turn without exact active provider identity",
+            ));
+        }
+        self.active_turn_result_authoritative = true;
+        Ok(())
     }
 
     pub(crate) fn take_rejected_accepted_turn(&mut self) -> Option<RejectedAcceptedTurn> {
@@ -1111,16 +1277,24 @@ impl CodexProvider {
         let prior_buffered_message_count = self.pending_messages.len();
         self.ambiguous_turn_start_pending = true;
         let runtime_request_scope = new_runtime_request_scope()?;
-        let result = match self.request_classified(
-            "turn/start",
-            json!({
-                "threadId": self.thread_id,
-                "cwd": cwd,
-                "permissions": self.permission_profile,
-                "runtimeWorkspaceRoots": [cwd],
-                "input": [{"type": "text", "text": message, "text_elements": []}],
-            }),
-        ) {
+        let mut turn_params = json!({
+            "threadId": self.thread_id,
+            "cwd": cwd,
+            "runtimeWorkspaceRoots": [cwd],
+            "input": [{"type": "text", "text": message, "text_elements": []}],
+        });
+        let turn_params_object = turn_params
+            .as_object_mut()
+            .expect("Codex turn parameters are an object");
+        if self.permission_profile == "paperclip-runner-external-sandbox" {
+            turn_params_object.insert(
+                "sandboxPolicy".to_owned(),
+                json!({"type": "externalSandbox", "networkAccess": "enabled"}),
+            );
+        } else {
+            turn_params_object.insert("permissions".to_owned(), json!(self.permission_profile));
+        }
+        let result = match self.request_classified("turn/start", turn_params) {
             Ok(result) => result,
             Err(ProviderRequestError::Rejected(error)) => {
                 // A definite rejection proves no replacement work began.
@@ -1216,6 +1390,7 @@ impl CodexProvider {
         self.ambiguous_turn_start_pending = false;
         self.expected_shutdown = false;
         self.completed_turn_authority = None;
+        self.active_turn_result_authoritative = false;
         self.completion_reconciliation_pending = false;
         self.completed_tool_call_ids.clear();
         // Retain the prior settled identity while the next turn runs. Besides
@@ -1814,14 +1989,16 @@ impl CodexProvider {
                     .active_provider_turn_id
                     .clone()
                     .expect("active provider turn checked above");
-                let completed_turn_authority = if terminal_event_type == "turn.completed" {
-                    Some(CompletedTurnAuthority {
-                        process_generation: self.process_generation,
-                        provider_turn_id: provider_turn_id.clone(),
-                    })
-                } else {
-                    None
-                };
+                let result_authoritative = self.active_turn_result_authoritative;
+                let completed_turn_authority =
+                    if terminal_event_type == "turn.completed" || result_authoritative {
+                        Some(CompletedTurnAuthority {
+                            process_generation: self.process_generation,
+                            provider_turn_id: provider_turn_id.clone(),
+                        })
+                    } else {
+                        None
+                    };
                 if !self
                     .settled_provider_turn_ids
                     .insert(provider_turn_id.clone())
@@ -1831,9 +2008,11 @@ impl CodexProvider {
                     ));
                 }
                 self.active_provider_turn_id = None;
+                self.active_turn_result_authoritative = false;
                 self.expected_shutdown = true;
                 self.completed_turn_authority = completed_turn_authority;
-                self.completion_reconciliation_pending = terminal_event_type == "turn.completed";
+                self.completion_reconciliation_pending =
+                    terminal_event_type == "turn.completed" || result_authoritative;
                 // The provider terminal is authoritative once received. Clear
                 // local request ownership and attempt courtesy responses, but
                 // a provider that already closed stdin must not turn the
@@ -2927,6 +3106,7 @@ mod tests {
             provider_session_id: None,
             instructions: String::new(),
             approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
         };
         config.validate().unwrap();
         config.provider_version = "1.18.18".to_owned();

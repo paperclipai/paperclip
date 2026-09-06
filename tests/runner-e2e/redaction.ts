@@ -9,6 +9,9 @@ const SECRET_SHAPES = [
   /\b(?:openrouter|daytona)[-_]?(?:api)?[-_]?key["'=:\s]+[A-Za-z0-9._-]{12,}\b/gi,
 ] as const;
 
+const SENSITIVE_JSON_KEY =
+  /^(?:api[-_]?key|access[-_]?token|refresh[-_]?token|auth(?:orization)?|bearer|client[-_]?secret|cookie|password|secret|token)$/i;
+
 export function normalizedSecrets(values: readonly (string | undefined)[]) {
   return [
     ...new Set(
@@ -130,7 +133,9 @@ export function sanitizeJson(
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [
         key,
-        sanitizeJson(entry, secrets),
+        SENSITIVE_JSON_KEY.test(key)
+          ? "[REDACTED]"
+          : sanitizeJson(entry, secrets),
       ]),
     );
   }

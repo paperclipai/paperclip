@@ -66,6 +66,7 @@ import {
   prepareIsolatedCodexHome,
   releaseMaterializedNativeRuntimeSkills,
 } from "../drivers/runtime-context-materializer.js";
+import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js";
 
 // URL directory conversion preserves a trailing separator while path-derived
 // build artifacts do not. Normalize once so a source build cannot be
@@ -402,7 +403,7 @@ async function rotateExternalAuthorityEpoch(
 }
 
 function rotatedRunAttachPayload(
-  state: { commands?: unknown },
+  state: { commands?: unknown; runAttachTemplate?: unknown },
   desired: DurableRecoveryIdentity,
   authorizedTools: Record<string, unknown> | null,
   completionContract:
@@ -411,17 +412,24 @@ function rotatedRunAttachPayload(
   const commands = Array.isArray(state.commands)
     ? state.commands.map(record)
     : [];
-  const seed = [...commands]
+  const persistedTemplate =
+    state.runAttachTemplate !== null &&
+    typeof state.runAttachTemplate === "object" &&
+    !Array.isArray(state.runAttachTemplate)
+      ? (state.runAttachTemplate as Record<string, unknown>)
+      : null;
+  const commandSeed = [...commands]
     .reverse()
     .find(
       (command) =>
         (command.type === "run.prepare" || command.type === "run.attach") &&
         record(command.payload).provider !== undefined,
     );
-  if (!seed)
+  const seed = persistedTemplate ?? record(commandSeed?.payload);
+  if (seed.provider === undefined)
     throw new Error("native_runner_authority_rotation_seed_unavailable");
   return retargetRunAttachPayload(
-    record(seed.payload),
+    seed,
     desired,
     authorizedTools,
     completionContract,
@@ -941,6 +949,12 @@ export interface CapabilityRunnerdCodexTransportOptions {
   runnerRuntimeContext?: NativeRuntimeContextSnapshot | null;
   /** Root path visible to runnerd when it is not on the Paperclip host. */
   runnerFilesystemRoot?: string;
+  /**
+   * The provider process is already confined by a sandbox execution target.
+   * Codex must use its explicit external-sandbox policy because container
+   * runtimes such as Daytona intentionally omit nested namespace privileges.
+   */
+  externallySandboxed?: boolean;
   /** Current run's authority catalog, used when a suspended session is rebound. */
   resumeDynamicTools?: readonly Readonly<Record<string, unknown>>[];
   /** Current run's completion authority, rebound without changing provider identity. */
@@ -1444,6 +1458,7 @@ export function rehydrateRunnerdItemNotification(
     turnId: activeTurnId,
     item: {
       ...rawItem,
+      [RUNNERD_CANONICAL_ITEM]: true,
       id: rawItem.id ?? rawParams.itemId,
       type: rawItem.type ?? rawParams.kind,
       status: rawItem.status ?? rawParams.status,
@@ -1902,6 +1917,25 @@ export function trustedRuntimeReadOnlyRoots(
   return [...roots];
 }
 
+export function createRunnerdCodexAppServerArgs(input: {
+  environment: NodeJS.ProcessEnv | undefined;
+  codexHome: string;
+  readOnlyRoots?: string[];
+}): string[] {
+  // The filesystem policy denies HOME and CODEX_HOME to keep credentials and
+  // runner state outside provider reach. Always bind those names to the actual
+  // isolated runner home; a stale controller environment must never cause the
+  // execution workspace itself to become an explicit deny root.
+  return createIsolatedCodexAppServerArgs(
+    {
+      ...input.environment,
+      HOME: input.codexHome,
+      CODEX_HOME: input.codexHome,
+    },
+    input.readOnlyRoots,
+  );
+}
+
 function unwrapToolResponse(response: Record<string, unknown>): {
   readonly __paperclipSemanticToolOutcome: true;
   readonly result: unknown;
@@ -2238,6 +2272,82 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#handler = handler;
   }
 
+  async #awaitWarmRunAttachmentReady(): Promise<void> {
+    // Remote runner ingress already has a bounded reconnect budget. Reuse the
+    // same budget here so a transient tunnel reconnect cannot trip the shorter
+    // generic command timeout and replace an otherwise healthy warm runner.
+    const reconnectGraceMs = this.options.runnerReconnectGraceMs ?? 5_000;
+    const deadline = Date.now() + reconnectGraceMs;
+    let consecutiveReadyProbes = 0;
+    let lastBlockers: unknown = null;
+    while (Date.now() < deadline) {
+      await this.#awaitWarmRunnerConnection(deadline);
+      const snapshot = await this.#commandResult(
+        "session.snapshot",
+        {
+          quiesceForWarmAttach: true,
+        },
+        deadline,
+      );
+      lastBlockers = snapshot.warmAttachBlockers;
+      if (snapshot.warmAttachReady === true) {
+        consecutiveReadyProbes += 1;
+        // A second barrier prevents a provider frame emitted immediately after
+        // its terminal notification from racing the authority rotation. Each
+        // snapshot wakes runnerd, polls the provider, and drains the preceding
+        // durable event prefix before the next probe.
+        if (consecutiveReadyProbes >= 2) return;
+      } else {
+        consecutiveReadyProbes = 0;
+      }
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 25));
+    }
+    throw new Error(
+      `native_runner_warm_attachment_not_quiescent: ${JSON.stringify(lastBlockers)}`,
+    );
+  }
+
+  async #awaitWarmRunnerConnection(deadline: number): Promise<void> {
+    const core = this.#core;
+    if (core === null) throw new Error("native_runner_authority_unavailable");
+    let reportedReconnectWait = false;
+    while (Date.now() < deadline) {
+      this.#throwIfFailed();
+      const connectionCount = core.activeRunnerConnectionCount();
+      if (connectionCount === 1) {
+        if (reportedReconnectWait) {
+          this.#diagnostic(
+            "warm runner re-authenticated before authority rotation",
+          );
+        }
+        return;
+      }
+      if (connectionCount > 1) {
+        throw new Error(
+          `native_runner_warm_attachment_ambiguous: expected one authenticated runner, found ${connectionCount}`,
+        );
+      }
+      if (!reportedReconnectWait) {
+        reportedReconnectWait = true;
+        this.#diagnostic(
+          "warm runner connection interrupted; waiting for re-authentication before authority rotation",
+        );
+      }
+      if (await this.#runnerHasExited()) {
+        throw new Error(
+          "native_runner_warm_attachment_runner_exited: runner exited before authority rotation",
+        );
+      }
+      await Promise.race([
+        new Promise<void>((resolveWait) => setTimeout(resolveWait, 25)),
+        this.#failureSignal,
+      ]);
+    }
+    throw new Error(
+      `provider_transport_failed: warm runner did not re-authenticate within ${this.options.runnerReconnectGraceMs ?? 5_000}ms`,
+    );
+  }
+
   async attachRun(input: {
     runId: string;
     turnId: string;
@@ -2247,6 +2357,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!core || !this.#startupComplete) {
       throw new Error("native_runner_prp_run_rotation_unavailable");
     }
+    await this.#awaitWarmRunAttachmentReady();
     const prior = core.store.state.identity;
     const desired: DurableRecoveryIdentity = {
       ...prior,
@@ -2295,7 +2406,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
 
     const previousRelease = this.#controlPlaneRelease;
-    core.rotateRunIdentity(desired);
+    core.rotateRunIdentity(desired, runAttachTemplate);
     this.#eventSourceSeq = 0;
     this.#deferredTurnStartEvents = [];
     this.#durableTurnId = desired.turnId;
@@ -2540,7 +2651,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
-  close(): Promise<void> {
+  close(reason?: string): Promise<void> {
+    if (reason) {
+      this.#diagnostic(
+        `runner transport close requested: ${reason.replaceAll(/[\r\n]/g, " ").slice(0, 1_000)}`,
+      );
+    }
     this.#closePromise ??= this.#closeOnce();
     return this.#closePromise;
   }
@@ -2937,7 +3053,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
     }
     const completionContract = record(params.completionContract);
-    core.queueCommand("run.prepare", {
+    const runAttachTemplate = {
       authorizedTools: this.#authorizedTools,
       ...(completionContract.revision &&
       Array.isArray(completionContract.criterionIds)
@@ -3033,9 +3149,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                     provider === "opencode"
                       ? [opencodeProxyPath]
                       : (this.options.codexArgs ??
-                        createIsolatedCodexAppServerArgs(
-                          this.options.environment,
-                          [
+                        createRunnerdCodexAppServerArgs({
+                          environment: this.options.environment,
+                          codexHome,
+                          readOnlyRoots: [
                             ...trustedRuntimeReadOnlyRoots(
                               this.options.environment,
                             ),
@@ -3049,7 +3166,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                                 ]
                               : []),
                           ],
-                        )),
+                        })),
                   cwd: String(params.cwd ?? tmpdir()),
                   model: typeof params.model === "string" ? params.model : null,
                   approvalPolicy:
@@ -3057,6 +3174,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                     params.approvalPolicy === "untrusted"
                       ? params.approvalPolicy
                       : "never",
+                  externallySandboxed:
+                    provider === "codex" &&
+                    this.options.externallySandboxed === true,
                   instructions:
                     provider === "codex"
                       ? withCodexCollaborationRuntimeInstructions(
@@ -3075,7 +3195,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                     provider === "codex" && runtimeContext !== null,
                   runtimeContext,
                 },
-    });
+    };
+    // Preserve the first generation's provider attachment seed independently
+    // of bounded command history. The in-memory copy serves a live warm
+    // continuation; the control-plane copy serves a controller/runner resume.
+    this.#runAttachTemplate = structuredClone(runAttachTemplate);
+    core.persistRunAttachTemplate(runAttachTemplate);
+    core.queueCommand("run.prepare", runAttachTemplate);
     core.queueCommand("session.open", { reuse: "same_session" });
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
@@ -3721,12 +3847,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #commandResult(
     type: string,
     payload: Record<string, unknown>,
+    deadline?: number,
   ): Promise<Record<string, unknown>> {
     const core = this.#core;
     if (core === null) throw new Error("PRP provider thread is not started");
     const commandId = `command_lab_${randomUUID().replaceAll("-", "")}`;
     core.queueCommand(type, payload, commandId, true);
-    await this.#waitCommand(type, commandId);
+    await this.#waitCommand(type, commandId, deadline);
     const command = core.store.state.commands.find(
       (candidate) => candidate.commandId === commandId,
     );
@@ -3759,8 +3886,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     throw new Error("runnerd did not report its provider identity");
   }
 
-  async #waitCommand(type: string, commandId?: string): Promise<void> {
-    const deadline = Date.now() + 30_000;
+  async #waitCommand(
+    type: string,
+    commandId?: string,
+    deadline = Date.now() + 30_000,
+  ): Promise<void> {
     while (Date.now() < deadline) {
       this.#throwIfFailed();
       const command = this.#core?.store.state.commands.find((candidate) =>
@@ -4589,6 +4719,7 @@ export const runnerdRecoveryInternals = Object.freeze({
   providerTurnIsActiveFromCommittedEvents,
   recoveredRunAttachment,
   releaseRunnerProcessOwnership,
+  rotatedRunAttachPayload,
   rotateExternalAuthorityEpoch,
   turnStartCommandResultValid,
   turnStartNotificationDisposition,

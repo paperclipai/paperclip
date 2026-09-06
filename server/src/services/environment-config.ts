@@ -408,22 +408,24 @@ export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): 
   return driverConfig;
 }
 
-// The host owns this sandbox run-behavior flag, not the provider plugin. The
-// host reads it to select the run-log stream. The host passes the whole config
-// to the plugin, so a plugin that allowlists its own driver fields drops the
-// flag from its normalized config. Re-apply it from the parsed envelope after
-// the plugin normalizes, or a saved environment loses the operator opt-in and
-// the stream never starts.
-const HOST_OWNED_SANDBOX_STREAM_FLAGS = [
+// The host owns these sandbox run-behavior flags, not the provider plugin. The
+// host passes the whole config to the plugin, so a plugin that allowlists only
+// its provider fields may drop them from its normalized config. Re-apply them
+// from the parsed envelope after plugin normalization. Otherwise a saved
+// environment can silently fall back to per-turn runner behavior even though
+// the caller explicitly selected a warm lifecycle.
+const HOST_OWNED_SANDBOX_FLAGS = [
   "streamRunLogs",
+  "runnerLifecycleMode",
+  "runnerIdleTimeoutMs",
 ] as const;
 
-function applyHostOwnedSandboxStreamFlags(
+function applyHostOwnedSandboxFlags(
   normalizedConfig: Record<string, unknown>,
   envelope: Record<string, unknown>,
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...normalizedConfig };
-  for (const key of HOST_OWNED_SANDBOX_STREAM_FLAGS) {
+  for (const key of HOST_OWNED_SANDBOX_FLAGS) {
     if (envelope[key] !== undefined) {
       merged[key] = envelope[key];
     }
@@ -518,7 +520,10 @@ export function normalizeEnvironmentConfigForProbe(input: {
       ...(await resolveConfigSecretRefsForProbe({
         db: input.db,
         companyId: input.companyId,
-        config: applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
+        config: applyHostOwnedSandboxFlags(
+          validated.normalizedConfig,
+          parsed.data,
+        ),
         accessContext: input.accessContext,
         schema:
           validated.driver.configSchema &&
@@ -610,7 +615,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
       secretProvider: input.secretProvider,
       config: {
         provider: parsed.data.provider,
-        ...applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
+        ...applyHostOwnedSandboxFlags(validated.normalizedConfig, parsed.data),
       },
       schema:
         validated.driver.configSchema && typeof validated.driver.configSchema === "object" && !Array.isArray(validated.driver.configSchema)

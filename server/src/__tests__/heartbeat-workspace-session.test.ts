@@ -2286,6 +2286,45 @@ describe("effective run session config freshness", () => {
     });
   });
 
+  it("does not reset when a reusable execution workspace becomes realized", async () => {
+    const base = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "shared_workspace",
+        effectiveMode: "shared_workspace",
+        reusableExecutionWorkspaceConfig: null,
+        existingExecutionWorkspace: null,
+      },
+    });
+    const realized = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "shared_workspace",
+        effectiveMode: "shared_workspace",
+        reusableExecutionWorkspaceConfig: {
+          strategyType: "project_primary",
+          workspaceGeneration: 1,
+        },
+        existingExecutionWorkspace: {
+          id: "workspace-realized-after-first-turn",
+          mode: "shared_workspace",
+          strategyType: "project_primary",
+        },
+      },
+    });
+
+    expect(
+      resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(base),
+        configMetadata: realized,
+      }),
+    ).toMatchObject({
+      reset: false,
+      changedCategories: [],
+      reasons: [],
+    });
+  });
+
   it("keeps model-only compatibility as an additional reset reason", async () => {
     const base = await buildSessionConfigMetadata();
 

@@ -101,6 +101,22 @@ describe("runner E2E catalog", () => {
     expect(
       daytonaWarmContinuityTask.buildFollowupMessages?.("nonce"),
     ).toHaveLength(2);
+    const initialPrompt = daytonaWarmContinuityTask.buildPrompt("nonce");
+    const followups =
+      daytonaWarmContinuityTask.buildFollowupMessages?.("nonce") ?? [];
+    expect(initialPrompt).toContain('"kind":"request_confirmation"');
+    expect(initialPrompt).toContain(
+      '"reviewInteractionId":"<returned interaction id>"',
+    );
+    expect(initialPrompt).toContain('"continuationPolicy":"wake_assignee"');
+    expect(followups[0]).toContain('"kind":"request_confirmation"');
+    expect(followups[0]).toContain(
+      '"reviewInteractionId":"<returned interaction id>"',
+    );
+    expect(followups[1]).toContain(
+      '{"status":"done","comment":"PAPERCLIP_E2E_WARM_T3_nonce"}',
+    );
+    expect(followups[1]).not.toContain('"kind":"request_confirmation"');
     const cells = runnerMatrix.filter(
       (entry) => entry.suite.id === "daytona-warm-continuity",
     );

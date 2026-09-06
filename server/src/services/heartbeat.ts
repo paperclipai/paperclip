@@ -130,6 +130,7 @@ import {
   buildNativeRuntimeContext,
   cancelNativeSession,
   claimNativeRestartRecoveries,
+  closeWarmNativeSessionsForEnvironment,
   currentNativeControllerIdentity,
   dispatchNativeSessionResumptions,
   detachNativeSessionsForRestart,
@@ -1295,7 +1296,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
     input.trustPreset?.kind === "low_trust_review"
       ? (input.trustPreset.boundary.allowedSecretBindingIds ?? [])
       : undefined;
-  const allowTrustedEnvProjection = input.trustPreset?.kind !== "low_trust_review";
+  const allowTrustedEnvProjection =
+    input.trustPreset?.kind !== "low_trust_review";
   if (input.trustPreset?.kind === "low_trust_review") {
     assertLowTrustEnvConfigAllowed(environmentEnv, "environment.env");
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
@@ -1306,7 +1308,8 @@ export async function resolveExecutionRunAdapterConfig(input: {
   const requiredScopedBindingsConfigured = requiredScopedEnvBinding
     ? requiredScopedEnvBinding.keys.some(
         (key) =>
-          (allowTrustedEnvProjection && typeof input.trustedEnvProjection?.[key] === "string") ||
+          (allowTrustedEnvProjection &&
+            typeof input.trustedEnvProjection?.[key] === "string") ||
           (requiredScopedEnvBinding.consumerScopes.includes("agent") &&
             isConfiguredEnvBindingValue(agentEnv[key])) ||
           (requiredScopedEnvBinding.consumerScopes.includes("project") &&
@@ -1567,9 +1570,9 @@ export async function resolveExecutionRunAdapterConfig(input: {
     }
   }
   if (
-    allowTrustedEnvProjection
-    && input.trustedEnvProjection
-    && Object.keys(input.trustedEnvProjection).length > 0
+    allowTrustedEnvProjection &&
+    input.trustedEnvProjection &&
+    Object.keys(input.trustedEnvProjection).length > 0
   ) {
     resolvedConfig.env = {
       ...parseObject(resolvedConfig.env),
@@ -1753,9 +1756,8 @@ export function providerResourceDispositionForTerminalRun(
   desired: ProviderResourceDisposition | undefined,
   status: string | null | undefined,
 ): ProviderResourceDisposition | undefined {
-  return desired === "keep_running" && status !== "succeeded"
-    ? "stop_and_retain"
-    : desired;
+  if (desired !== "keep_running") return desired;
+  return status === "succeeded" ? desired : "stop_and_retain";
 }
 
 export interface NativeSandboxLifecycle {
@@ -4089,19 +4091,22 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   const [runIdentity] = await input.db
     .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
     .from(heartbeatRuns)
-    .where(and(
-      eq(heartbeatRuns.id, input.runId),
-      eq(heartbeatRuns.companyId, input.agent.companyId),
-      eq(heartbeatRuns.agentId, input.agent.id),
-    ))
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.agent.companyId),
+        eq(heartbeatRuns.agentId, input.agent.id),
+      ),
+    )
     .limit(1);
-  const resolvedInstalledConnections = await filterResolvedGitHubConnectionsForRun({
-    db: input.db,
-    companyId: input.agent.companyId,
-    agentId: input.agent.id,
-    responsibleUserId: runIdentity?.responsibleUserId ?? null,
-    connections: effective.installedConnections,
-  });
+  const resolvedInstalledConnections =
+    await filterResolvedGitHubConnectionsForRun({
+      db: input.db,
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      responsibleUserId: runIdentity?.responsibleUserId ?? null,
+      connections: effective.installedConnections,
+    });
   const permittedConnectionIds = new Set([
     ...effective.entries
       .filter((entry) => entry.effect === "include" && entry.connectionId)
@@ -4572,30 +4577,36 @@ export async function createManagedMcpRunConfig(input: {
   const [runIdentity] = await input.db
     .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
     .from(heartbeatRuns)
-    .where(and(
-      eq(heartbeatRuns.id, input.runId),
-      eq(heartbeatRuns.companyId, input.agent.companyId),
-      eq(heartbeatRuns.agentId, input.agent.id),
-    ))
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.agent.companyId),
+        eq(heartbeatRuns.agentId, input.agent.id),
+      ),
+    )
     .limit(1);
-  const resolvedAvailableInstalls = await filterResolvedGitHubConnectionsForRun({
-    db: input.db,
-    companyId: input.agent.companyId,
-    agentId: input.agent.id,
-    responsibleUserId: runIdentity?.responsibleUserId ?? null,
-    connections: installRows.filter(
-      (install) =>
-        install.enabled &&
-        install.status === "active" &&
-        !["degraded", "failed", "error", "missing_secret"].includes(
-          install.healthStatus,
-        ),
-    ).map((install) => ({
-      id: install.connectionId,
-      config: install.config,
-      transportConfig: install.transportConfig,
-    })),
-  });
+  const resolvedAvailableInstalls = await filterResolvedGitHubConnectionsForRun(
+    {
+      db: input.db,
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      responsibleUserId: runIdentity?.responsibleUserId ?? null,
+      connections: installRows
+        .filter(
+          (install) =>
+            install.enabled &&
+            install.status === "active" &&
+            !["degraded", "failed", "error", "missing_secret"].includes(
+              install.healthStatus,
+            ),
+        )
+        .map((install) => ({
+          id: install.connectionId,
+          config: install.config,
+          transportConfig: install.transportConfig,
+        })),
+    },
+  );
   const availableInstalledConnectionIds = new Set(
     resolvedAvailableInstalls.map((install) => install.id),
   );
@@ -6055,6 +6066,14 @@ function buildSessionConfigCategoryValues(input: {
   // the timestamp here makes every comment invalidate an otherwise reusable
   // task session.
   delete workspaceConfig.issueConfigRevisionAt;
+  // This row is runtime state, not requested configuration. It is absent
+  // before the first reusable run is realized and present on the next turn;
+  // fingerprinting that transition would rotate the native session exactly
+  // when the warm runner first becomes reusable. The requested/effective mode,
+  // project policy, and issue settings remain the configuration compatibility
+  // boundary; the reusable row and its evolving generation are state.
+  delete workspaceConfig.existingExecutionWorkspace;
+  delete workspaceConfig.reusableExecutionWorkspaceConfig;
   return {
     adapter: {
       adapterType: input.adapterType,
@@ -8151,6 +8170,11 @@ export interface HeartbeatServiceOptions {
   nativeSessionBackendFactory?: (
     execution: NativeExecutionInput,
   ) => NativeSessionBackend;
+  /** Test seam for observing the native-session shutdown boundary before lease destruction. */
+  closeWarmNativeSessionsForRun?: (input: {
+    runId: string;
+    reason: string;
+  }) => Promise<{ closed: number; busy: number; failed: number }>;
   /** Test seam for changing a continuation issue at the final pre-dispatch boundary. */
   beforeResolvedInteractionContinuationDispatchCheck?: (input: {
     runId: string;
@@ -8731,6 +8755,57 @@ export function heartbeatService(
       sandboxResource: "keep_running" | "stop_and_reuse" | "destroy_after_turn";
     };
   }) {
+    if (input.providerResourceDisposition === "destroy") {
+      const closeResult = await (
+        options.closeWarmNativeSessionsForRun ??
+        (async ({ runId, reason }) => {
+          const environmentIds = await db
+            .selectDistinct({ environmentId: environmentLeases.environmentId })
+            .from(environmentLeases)
+            .where(
+              and(
+                eq(environmentLeases.heartbeatRunId, runId),
+                eq(environmentLeases.status, "active"),
+              ),
+            )
+            .then((rows) =>
+              rows.flatMap((row) =>
+                typeof row.environmentId === "string" &&
+                row.environmentId.length > 0
+                  ? [row.environmentId]
+                  : [],
+              ),
+            );
+          const aggregate = { closed: 0, busy: 0, failed: 0 };
+          for (const environmentId of environmentIds) {
+            const result = await closeWarmNativeSessionsForEnvironment({
+              environmentId,
+              reason,
+            });
+            aggregate.closed += result.closed;
+            aggregate.busy += result.busy;
+            aggregate.failed += result.failed;
+          }
+          return aggregate;
+        })
+      )({
+        runId: input.runId,
+        reason: "terminal heartbeat run destroyed its environment lease",
+      }).catch((err) => {
+        logger.warn(
+          { err, runId: input.runId },
+          "failed to close warm native sessions before environment lease destruction",
+        );
+        return { closed: 0, busy: 0, failed: 1 };
+      });
+      if (closeResult.busy > 0 || closeResult.failed > 0) {
+        logger.warn(
+          { runId: input.runId, warmNativeSessions: closeResult },
+          "deferred environment lease destruction until warm native sessions close",
+        );
+        return;
+      }
+    }
     const releaseResult = await envOrchestrator
       .releaseForRun({
         heartbeatRunId: input.runId,
@@ -10408,8 +10483,9 @@ export function heartbeatService(
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
       issueId,
-      responsibleUserId: readNonEmptyString(context.responsibleUserId)
-        ?? readNonEmptyString(context.responsible_user_id),
+      responsibleUserId:
+        readNonEmptyString(context.responsibleUserId) ??
+        readNonEmptyString(context.responsible_user_id),
       agentId: agent.id,
     });
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -10668,8 +10744,9 @@ export function heartbeatService(
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
       issueId,
-      responsibleUserId: readNonEmptyString(context.responsibleUserId)
-        ?? readNonEmptyString(context.responsible_user_id),
+      responsibleUserId:
+        readNonEmptyString(context.responsibleUserId) ??
+        readNonEmptyString(context.responsible_user_id),
       agentId: agent.id,
     });
     const { additionalWorkspaces, warnings, failures } =
@@ -18760,12 +18837,16 @@ export function heartbeatService(
         issueId,
         explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
       });
-      const githubRunAuth = await createGitRemoteAuthProvider(db, agent.companyId, {
-        issueId,
-        heartbeatRunId: run.id,
-        responsibleUserId,
-        agentId: agent.id,
-      })("https://github.com/paperclipai/credential-probe.git");
+      const githubRunAuth = await createGitRemoteAuthProvider(
+        db,
+        agent.companyId,
+        {
+          issueId,
+          heartbeatRunId: run.id,
+          responsibleUserId,
+          agentId: agent.id,
+        },
+      )("https://github.com/paperclipai/credential-probe.git");
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           companyId: agent.companyId,
@@ -18784,10 +18865,16 @@ export function heartbeatService(
           routineEnv: routineEnvContext.env,
           secretsSvc,
           trustPreset,
-          ...(githubRunAuth ? {
-            trustedEnvProjection: githubRunAuth.env,
-            trustedEnvSecretKeys: ["GH_TOKEN", "GITHUB_TOKEN", GIT_CREDENTIAL_TOKEN_ENV_KEY],
-          } : {}),
+          ...(githubRunAuth
+            ? {
+                trustedEnvProjection: githubRunAuth.env,
+                trustedEnvSecretKeys: [
+                  "GH_TOKEN",
+                  "GITHUB_TOKEN",
+                  GIT_CREDENTIAL_TOKEN_ENV_KEY,
+                ],
+              }
+            : {}),
           requiredScopedEnvBinding: pushCapabilityPreflightRequired
             ? {
                 keys: [...PUSH_CAPABILITY_ENV_KEYS],
@@ -19223,6 +19310,63 @@ export function heartbeatService(
       const resolvedProjectWorkspaceId =
         issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
       let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
+      let issueExecutionWorkspaceIdForRun =
+        issueRef?.executionWorkspaceId ?? null;
+      let issueProjectWorkspaceIdForRun = issueRef?.projectWorkspaceId ?? null;
+      let issueExecutionWorkspacePreferenceForRun =
+        issueRef?.executionWorkspacePreference ?? null;
+      let issueExecutionWorkspaceModeForRun =
+        issueExecutionWorkspaceSettings?.mode ?? null;
+      const warmReusableExecutionWorkspace =
+        selectedEnvironmentForConfig?.driver === "sandbox" &&
+        selectedEnvironmentConfigForFingerprint.reuseLease === true &&
+        selectedEnvironmentConfigForFingerprint.runnerLifecycleMode === "warm";
+      const bindIssueToPersistedExecutionWorkspace = async (
+        workspace: ExecutionWorkspace | null,
+      ) => {
+        if (!issueId || !workspace || nativeRecoveryExecutionWorkspaceId) {
+          return;
+        }
+        const nextIssueWorkspaceMode =
+          issueExecutionWorkspaceModeForPersistedWorkspace(workspace.mode) ??
+          "agent_default";
+        const shouldSwitchIssueToExistingWorkspace =
+          issueRef?.executionWorkspacePreference === "reuse_existing" ||
+          requestedExecutionWorkspaceMode === "isolated_workspace" ||
+          requestedExecutionWorkspaceMode === "operator_branch" ||
+          warmReusableExecutionWorkspace;
+        const nextIssuePatch: Record<string, unknown> = {};
+        if (issueExecutionWorkspaceIdForRun !== workspace.id) {
+          nextIssuePatch.executionWorkspaceId = workspace.id;
+        }
+        if (
+          resolvedProjectWorkspaceId &&
+          issueProjectWorkspaceIdForRun !== resolvedProjectWorkspaceId
+        ) {
+          nextIssuePatch.projectWorkspaceId = resolvedProjectWorkspaceId;
+        }
+        if (
+          shouldSwitchIssueToExistingWorkspace &&
+          (issueExecutionWorkspacePreferenceForRun !== "reuse_existing" ||
+            issueExecutionWorkspaceModeForRun !== nextIssueWorkspaceMode)
+        ) {
+          nextIssuePatch.executionWorkspacePreference = "reuse_existing";
+          nextIssuePatch.executionWorkspaceSettings = {
+            ...(issueExecutionWorkspaceSettings ?? {}),
+            mode: nextIssueWorkspaceMode,
+          };
+        }
+        if (Object.keys(nextIssuePatch).length > 0) {
+          await issuesSvc.update(issueId, nextIssuePatch);
+          issueExecutionWorkspaceIdForRun = workspace.id;
+          issueProjectWorkspaceIdForRun =
+            resolvedProjectWorkspaceId ?? issueProjectWorkspaceIdForRun;
+          if (shouldSwitchIssueToExistingWorkspace) {
+            issueExecutionWorkspacePreferenceForRun = "reuse_existing";
+            issueExecutionWorkspaceModeForRun = nextIssueWorkspaceMode;
+          }
+        }
+      };
       const baseExecutionWorkspaceMetadata =
         mergeExecutionWorkspaceMetadataForPersistence({
           existingMetadata:
@@ -19440,40 +19584,7 @@ export function heartbeatService(
           },
         );
       }
-      if (
-        issueId &&
-        persistedExecutionWorkspace &&
-        !nativeRecoveryExecutionWorkspaceId
-      ) {
-        const nextIssueWorkspaceMode =
-          issueExecutionWorkspaceModeForPersistedWorkspace(
-            persistedExecutionWorkspace.mode,
-          );
-        const shouldSwitchIssueToExistingWorkspace =
-          issueRef?.executionWorkspacePreference === "reuse_existing" ||
-          requestedExecutionWorkspaceMode === "isolated_workspace" ||
-          requestedExecutionWorkspaceMode === "operator_branch";
-        const nextIssuePatch: Record<string, unknown> = {};
-        if (issueRef?.executionWorkspaceId !== persistedExecutionWorkspace.id) {
-          nextIssuePatch.executionWorkspaceId = persistedExecutionWorkspace.id;
-        }
-        if (
-          resolvedProjectWorkspaceId &&
-          issueRef?.projectWorkspaceId !== resolvedProjectWorkspaceId
-        ) {
-          nextIssuePatch.projectWorkspaceId = resolvedProjectWorkspaceId;
-        }
-        if (shouldSwitchIssueToExistingWorkspace) {
-          nextIssuePatch.executionWorkspacePreference = "reuse_existing";
-          nextIssuePatch.executionWorkspaceSettings = {
-            ...(issueExecutionWorkspaceSettings ?? {}),
-            mode: nextIssueWorkspaceMode,
-          };
-        }
-        if (Object.keys(nextIssuePatch).length > 0) {
-          await issuesSvc.update(issueId, nextIssuePatch);
-        }
-      }
+      await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       if (persistedExecutionWorkspace) {
         context.executionWorkspaceId = persistedExecutionWorkspace.id;
         await db
@@ -19612,6 +19723,11 @@ export function heartbeatService(
       };
       persistedExecutionWorkspace =
         realizationResult.persistedExecutionWorkspace;
+      // A sandbox realization may materialize or replace the durable workspace
+      // after the host-side provisioning boundary above. Bind that final ID to
+      // the issue before dispatch so warm turns reuse the exact same workspace
+      // and lease scope instead of silently creating a per-run replacement.
+      await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
       const remoteExecution = realizationResult.remoteExecution;
@@ -20861,6 +20977,7 @@ export function heartbeatService(
             target: executionTarget,
             lease: activeEnvironmentLease.lease,
             restartRecovery: runOptions.nativeRestartRecovery,
+            sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
             resourceDisposition: providerResourceDispositionForRun,
           });
         } else {
@@ -22207,6 +22324,7 @@ export function heartbeatService(
             .select({
               nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
               attempt: nativeRunFinalizations.attempt,
+              failureDetail: nativeRunFinalizations.failureDetail,
             })
             .from(nativeRunFinalizations)
             .where(eq(nativeRunFinalizations.runId, run.id))
@@ -22225,6 +22343,12 @@ export function heartbeatService(
               nextAttemptAt: coordinator?.nextAttemptAt?.toISOString() ?? null,
               fallbackSuppressed: true,
               retryReasonCode,
+              // The executor has already redacted and bounded this diagnostic
+              // before persisting it. Retain it on the immutable transition
+              // event as well: a same-run retry reopens the log stream, so the
+              // first attempt's stderr must not be the only explanation for
+              // why a live warm runner was replaced.
+              failureDetail: coordinator?.failureDetail ?? null,
             },
           }).catch(() => undefined);
           if (coordinator?.nextAttemptAt) {
@@ -22415,7 +22539,13 @@ export function heartbeatService(
             livenessRun,
             agent,
           );
-          await releaseIssueExecutionAndPromote(livenessRun);
+          await releaseIssueExecutionAndPromote(livenessRun, {
+            // Native recovery owns the original heartbeat run through
+            // exhaustion. Once its durable coordinator has classified a
+            // terminal failure, generic issue recovery must not create a
+            // replacement retryOfRunId chain for the same provider work.
+            suppressImmediateRecovery: nativeTerminalFailureCode !== null,
+          });
           await handleIssueReviewPathDisposition(livenessRun);
 
           await updateRuntimeState(

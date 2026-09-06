@@ -213,7 +213,7 @@ fn apply_authority_rotation(
 ) -> Result<(), DurableRunnerError> {
     let reconnect_count = state.reconnect_count.saturating_add(1);
     let mut diagnostics = std::mem::take(&mut state.diagnostics);
-    *endpoint = RunnerTransportEndpoint::new(&next.connect_url, &next.run_id)?;
+    endpoint.rotate(&next.connect_url, &next.run_id)?;
     *config = next;
     let mut rotated = DurableState::new(config);
     rotated.reconnect_count = reconnect_count;
@@ -1205,6 +1205,40 @@ mod tests {
         assert_eq!(state.next_source_seq, 1);
         assert!(state.outbox.is_empty());
         assert_eq!(current.run_id, "run_2");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn warm_run_attachment_reuses_the_provider_ingress_listener() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-warm-listener-authority-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut current = config(directory.clone());
+        current.connect_url = "listen://0.0.0.0:43127/api/runner/v1/connect/run_1".to_owned();
+        current.runner_digest = format!("sha256:{}", "a".repeat(64));
+        let mut next = current.clone();
+        next.run_id = "run_2".to_owned();
+        next.turn_id = "turn_2".to_owned();
+        next.item_id = "item_2".to_owned();
+        next.connect_url = "listen://0.0.0.0:43127/api/runner/v1/connect/run_2".to_owned();
+
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&current).unwrap();
+        let mut endpoint =
+            RunnerTransportEndpoint::new(&current.connect_url, &current.run_id).unwrap();
+
+        apply_authority_rotation(&mut state, &store, &mut current, &mut endpoint, next).unwrap();
+
+        assert_eq!(current.run_id, "run_2");
+        assert_eq!(state.run_id, "run_2");
+        match endpoint {
+            RunnerTransportEndpoint::Listen { path, .. } => {
+                assert_eq!(path, "/api/runner/v1/connect/run_2");
+            }
+            RunnerTransportEndpoint::Dial(_) => panic!("listener mode must remain active"),
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 

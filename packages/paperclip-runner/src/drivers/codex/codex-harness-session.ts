@@ -78,10 +78,11 @@ export class CodexHarnessSession
   }
 
   async attachRun(input: { runId: string }): Promise<void> {
+    const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
-      this.activeTurnId !== null ||
       this.turnStartPending ||
-      this.pendingRuntimeRequestMap.size > 0
+      (!transportOwnsQuiescence &&
+        (this.activeTurnId !== null || this.pendingRuntimeRequestMap.size > 0))
     ) {
       throw new Error("codex_run_attach_busy");
     }
@@ -91,6 +92,16 @@ export class CodexHarnessSession
       turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
       itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
     });
+    if (transportOwnsQuiescence) {
+      // Runnerd's attachment contract performs two durable readiness probes,
+      // drains the settled provider tail, and rotates authority atomically.
+      // Its proof supersedes host reducer state that can remain stale when a
+      // semantic-result consumer stops before the interrupt terminal arrives.
+      // Drop only the prior run's already-proven-settled buffered suffix.
+      this.activeTurnId = null;
+      this.pendingRuntimeRequestMap.clear();
+      this.eventQueue.clear();
+    }
     this.runId = input.runId;
     this.result = null;
     this.resultFingerprint = null;
@@ -684,10 +695,10 @@ export class CodexHarnessSession
     };
   }
 
-  async close(): Promise<void> {
+  async close(input?: { reason: string }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
-    await this.transport.close();
+    await this.transport.close(input?.reason);
   }
 
   async detachControllerForRestart(): Promise<void> {

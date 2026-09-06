@@ -2022,6 +2022,7 @@ describe("executeNativeSession recovery", () => {
           completeRun,
         };
         const retainedSessions: Array<NativeSession | null> = [];
+        const enrichmentFailures: Array<"checkpoint" | "usage"> = [];
 
         const execution = executeNativeSession({
           input,
@@ -2032,6 +2033,8 @@ describe("executeNativeSession recovery", () => {
           timeoutMs: 10,
           keepSessionOpen: true,
           onSession: (current) => retainedSessions.push(current),
+          onPostCompletionEnrichmentFailure: ({ stage }) =>
+            enrichmentFailures.push(stage),
         });
         await enrichmentStalled;
         if (stalledSignal !== undefined)
@@ -2049,8 +2052,16 @@ describe("executeNativeSession recovery", () => {
         if (stalledSignal !== undefined)
           expect(stalledSignal.aborted).toBe(true);
         expect(completeRun).toHaveBeenCalledOnce();
-        expect(close).toHaveBeenCalledOnce();
-        expect(retainedSessions).toEqual([session, null]);
+        expect(enrichmentFailures).toEqual([
+          stalledBoundary === "provider usage" ? "usage" : "checkpoint",
+        ]);
+        if (stalledBoundary === "provider usage") {
+          expect(close).not.toHaveBeenCalled();
+          expect(retainedSessions).toEqual([session]);
+        } else {
+          expect(close).toHaveBeenCalledOnce();
+          expect(retainedSessions).toEqual([session, null]);
+        }
       } finally {
         vi.useRealTimers();
       }
@@ -3086,17 +3097,29 @@ describe("executeNativeSession recovery", () => {
     ]);
   });
 
-  it("finalizes a durable semantic result without waiting for a provider terminal", async () => {
+  it("retains a reusable session after its remote semantic-result cancellation settles", async () => {
     const lifecycle: string[] = [];
+    let releaseProvider = () => {};
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
     const cancel = vi.fn(() => {
       lifecycle.push("cancelled");
-      return { cleanup: Promise.resolve() };
+      return {
+        cleanup: new Promise<void>((resolve) =>
+          setTimeout(() => {
+            releaseProvider();
+            resolve();
+          }, 150),
+        ),
+      };
     });
     const providerResult = vi.fn(async () => null);
     const close = vi.fn(async () => {
       lifecycle.push("closed");
     });
     const events: PrpEvent[] = [];
+    const retainedSessions: Array<NativeSession | null> = [];
     const session: NativeSession = {
       identity: () => identity,
       async capabilities() {
@@ -3110,7 +3133,7 @@ describe("executeNativeSession recovery", () => {
       },
       async *events() {
         yield runnerEvent(1, "run.result.proposed", result);
-        await new Promise<never>(() => undefined);
+        await providerReleased;
       },
       async startTurn() {
         return { turnId: "turn-recovery" };
@@ -3182,6 +3205,8 @@ describe("executeNativeSession recovery", () => {
         runnerInstanceId: "runner-recovery",
         controlPlaneInstanceId: "control-recovery",
         semanticResultTerminalGraceMs: 0,
+        keepSessionOpen: true,
+        onSession: (current) => retainedSessions.push(current),
       }),
     ).resolves.toMatchObject({ result, terminal });
 
@@ -3195,7 +3220,101 @@ describe("executeNativeSession recovery", () => {
       "run.result.accepted",
       "run.terminal",
     ]);
-    expect(lifecycle).toEqual(["cancelled", "closed"]);
+    expect(lifecycle).toEqual(["cancelled"]);
+    expect(close).not.toHaveBeenCalled();
+    expect(retainedSessions).toEqual([session]);
+  });
+
+  it("retains a reusable session while a semantic terminal releases its remote subscription", async () => {
+    const close = vi.fn(async () => undefined);
+    const retainedSessions: Array<NativeSession | null> = [];
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() {
+        return {
+          resume: true,
+          typedEvents: true,
+          steering: false,
+          interruption: true,
+          structuredResult: true,
+        };
+      },
+      async *events() {
+        try {
+          yield runnerEvent(1, "run.result.proposed", result);
+          yield {
+            ...runnerEvent(2, "turn.completed"),
+            turnId: "turn-recovery",
+          };
+        } finally {
+          await new Promise<void>((resolve) => setTimeout(resolve, 150));
+        }
+      },
+      async startTurn() {
+        return { turnId: "turn-recovery" };
+      },
+      async result() {
+        return null;
+      },
+      async snapshot() {
+        return {
+          backendKind: "mock",
+          sessionId: identity.sessionId,
+          identity,
+          providerSessionId: "provider-recovery",
+          cursor: "2",
+          activeTurnId: null,
+          pendingRuntimeRequests: [],
+          lineage: [],
+        };
+      },
+      close,
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "semantic-terminal-subscription-backend",
+          version: "1",
+          capabilities: await session.capabilities(),
+        };
+      },
+      async openSession() {
+        return session;
+      },
+    };
+    const events: PrpEvent[] = [];
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event) {
+        events.push(structuredClone(event as PrpEvent));
+        return {
+          cursor: events.length,
+          highestContiguousSourceSeq: highestContiguous(events),
+          disposition: "committed",
+        };
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+
+    await expect(
+      executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        keepSessionOpen: true,
+        onSession: (current) => retainedSessions.push(current),
+      }),
+    ).resolves.toMatchObject({ result, terminal });
+
+    expect(close).not.toHaveBeenCalled();
+    expect(retainedSessions).toEqual([session]);
   });
 
   it("retains provider output emitted after a durable semantic result", async () => {

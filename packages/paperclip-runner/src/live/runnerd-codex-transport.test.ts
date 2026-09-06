@@ -34,11 +34,13 @@ import {
   codexSemanticToolSpecs,
 } from "../drivers/codex/codex-app-server-driver.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-context-materializer.js";
+import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js";
 
 import {
   authorizedToolSetForProvider,
   createCapabilityRunnerdCodexTransport,
   createCapabilityRunnerdProviderEnvironment,
+  createRunnerdCodexAppServerArgs,
   defaultCapabilityRunnerdBinary,
   expandRunnerdCanonicalNotifications,
   rehydrateRunnerdItemNotification,
@@ -62,6 +64,70 @@ import {
 it("launches runnerd with its production durable outbox limits", () => {
   expect(runnerdLaunchProfileInternals.maxOutboxBytes).toBe(16 * 1024 * 1024);
   expect(runnerdLaunchProfileInternals.p0ReserveBytes).toBe(1024 * 1024);
+});
+
+it("carries the provider attachment seed across consecutive authority rotations", () => {
+  const baseIdentity = {
+    runnerInstanceId: "runner-warm-seed",
+    environmentLeaseId: "lease-warm-seed",
+    runId: "run-warm-one",
+    normalizedSessionId: "session-warm-seed",
+    turnId: "turn-warm-one",
+    itemId: "item-warm-one",
+  };
+  const secondIdentity = {
+    ...baseIdentity,
+    runId: "run-warm-two",
+    turnId: "turn-warm-two",
+    itemId: "item-warm-two",
+  };
+  const thirdIdentity = {
+    ...baseIdentity,
+    runId: "run-warm-three",
+    turnId: "turn-warm-three",
+    itemId: "item-warm-three",
+  };
+  const secondTemplate = runnerdRecoveryInternals.rotatedRunAttachPayload(
+    {
+      commands: [
+        {
+          type: "run.prepare",
+          payload: {
+            provider: {
+              kind: "acpx",
+              runId: baseIdentity.runId,
+              normalizedSessionId: baseIdentity.normalizedSessionId,
+            },
+            workspace: { cwd: "/workspace" },
+          },
+        },
+      ],
+    },
+    secondIdentity,
+    null,
+    undefined,
+  );
+  const thirdTemplate = runnerdRecoveryInternals.rotatedRunAttachPayload(
+    { commands: [], runAttachTemplate: secondTemplate },
+    thirdIdentity,
+    null,
+    undefined,
+  );
+
+  expect(secondTemplate).toMatchObject({
+    provider: {
+      runId: secondIdentity.runId,
+      normalizedSessionId: secondIdentity.normalizedSessionId,
+    },
+    workspace: { cwd: "/workspace" },
+  });
+  expect(thirdTemplate).toMatchObject({
+    provider: {
+      runId: thirdIdentity.runId,
+      normalizedSessionId: thirdIdentity.normalizedSessionId,
+    },
+    workspace: { cwd: "/workspace" },
+  });
 });
 
 it("replays the durable run attachment outcome and latest provider identity", () => {
@@ -931,6 +997,27 @@ it("allows trusted package-manager runtime roots without exposing HOME paths", (
   ).toEqual(["/opt/homebrew", "/usr/local"]);
 });
 
+it("denies the isolated Codex home without denying a remote execution workspace", () => {
+  const args = createRunnerdCodexAppServerArgs({
+    environment: {
+      HOME: "/workspaces/task",
+      CODEX_HOME: "/workspaces/task/.codex",
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+    },
+    codexHome:
+      "/workspaces/task/.paperclip-runtime/paperclip-runner/sessions/session/filesystem/codex-home",
+    readOnlyRoots: ["/usr/local"],
+  });
+  const serialized = args.join("\n");
+
+  expect(serialized).toContain(
+    '"/workspaces/task/.paperclip-runtime/paperclip-runner/sessions/session/filesystem/codex-home"="none"',
+  );
+  expect(serialized).not.toContain('"/workspaces/task"="none"');
+  expect(serialized).not.toContain('"/workspaces/task/.codex"="none"');
+  expect(serialized).toContain('\":workspace_roots\"={\".\"=\"write\"}');
+});
+
 it("rejects remote OpenCode before spawn when provider-pack paths are absent", async () => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-runner-remote-pack-"));
   const { transport } = createCapabilityRunnerdCodexTransport({
@@ -1031,6 +1118,7 @@ it("rehydrates a canonical agent item for the strict Codex facade", () => {
     threadId: "opened-thread-1",
     turnId: "provider-turn-1",
     item: {
+      [RUNNERD_CANONICAL_ITEM]: true,
       id: "message-1",
       type: "agentMessage",
       status: "completed",
@@ -2150,6 +2238,139 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
     });
   } finally {
     await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("waits for a warm runner to re-authenticate before probing attachment readiness", async () => {
+  const stateDirectory = await mkdtemp(
+    join(tmpdir(), "runnerd-warm-reattach-before-probe-"),
+  );
+  const server = createServer();
+  const authorities = new Map<string, DurablePrpControlPlane>();
+  let blockFirstAuthorityReconnect = false;
+  let resolveRejectedReconnect!: () => void;
+  const rejectedReconnect = new Promise<void>((resolvePromise) => {
+    resolveRejectedReconnect = resolvePromise;
+  });
+  server.on("upgrade", (request, socket, head) => {
+    const route = request.url ?? "";
+    if (route === "/runner-1" && blockFirstAuthorityReconnect) {
+      resolveRejectedReconnect();
+      socket.destroy();
+      return;
+    }
+    const authority = authorities.get(route);
+    if (!authority) {
+      socket.destroy();
+      return;
+    }
+    authority.handleUpgrade(request, socket, route, head);
+  });
+  await new Promise<void>((resolveListen) =>
+    server.listen(0, "127.0.0.1", resolveListen),
+  );
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Expected warm reconnect test listener");
+  }
+  let registrationCount = 0;
+  const diagnostics: string[] = [];
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 5_000,
+    onDiagnostic: (message) => diagnostics.push(message),
+    controlPlaneRegistration: async (authority) => {
+      registrationCount += 1;
+      const route = `/runner-${registrationCount}`;
+      authorities.set(route, authority);
+      return {
+        connectUrl: `ws://127.0.0.1:${address.port}${route}`,
+        release: () => {
+          if (authorities.get(route) === authority) authorities.delete(route);
+        },
+      };
+    },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  let runnerPid: number | null = null;
+  try {
+    await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: codexSemanticToolSpecs(),
+    });
+    runnerPid = bundle.evidence().runnerPid;
+    const firstAuthority = authorities.get("/runner-1");
+    if (!firstAuthority) throw new Error("Missing first warm authority");
+    const priorSnapshotCount = firstAuthority.store.state.commands.filter(
+      (command) => command.type === "session.snapshot",
+    ).length;
+
+    blockFirstAuthorityReconnect = true;
+    firstAuthority.disconnectActiveRunner();
+    const attachment = bundle.transport.attachRun!({
+      runId: "run-warm-after-reconnect",
+      turnId: "turn-warm-after-reconnect",
+      itemId: "item-warm-after-reconnect",
+    });
+    await Promise.race([
+      rejectedReconnect,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("runner did not attempt to reconnect")),
+          5_000,
+        ),
+      ),
+    ]);
+
+    // No command may be queued while its sole authenticated consumer is
+    // absent. The generic 30-second command timeout used to turn this state
+    // into same-run recovery and replace the healthy warm runner process.
+    expect(
+      firstAuthority.store.state.commands.filter(
+        (command) => command.type === "session.snapshot",
+      ),
+    ).toHaveLength(priorSnapshotCount);
+
+    blockFirstAuthorityReconnect = false;
+    await Promise.race([
+      attachment,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("warm attachment timeout")), 10_000),
+      ),
+    ]);
+    expect(bundle.evidence()).toMatchObject({
+      runnerPid,
+      runnerExited: false,
+    });
+    expect(diagnostics).toContain(
+      "warm runner connection interrupted; waiting for re-authentication before authority rotation",
+    );
+    expect(diagnostics).toContain(
+      "warm runner re-authenticated before authority rotation",
+    );
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    if (runnerPid) {
+      try {
+        process.kill(-runnerPid, "SIGKILL");
+      } catch {
+        // A successful durable close already stopped the runner process group.
+      }
+    }
+    server.closeAllConnections();
+    if (server.listening) {
+      await new Promise<void>((resolveClose) =>
+        server.close(() => resolveClose()),
+      );
+    }
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);

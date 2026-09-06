@@ -107,14 +107,34 @@ describe("runner E2E local binary resolution", () => {
       resolvePaperclipRemoteRunnerBinaryForHarness(
         [remoteNativeExecution],
         runnerBinary,
+        undefined,
+        "linux",
       ),
     ).toBe(runnerBinary);
     expect(
       resolvePaperclipRemoteRunnerBinaryForHarness(
         [localNativeExecution],
         runnerBinary,
+        undefined,
+        "linux",
       ),
     ).toBeUndefined();
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [remoteNativeExecution],
+        runnerBinary,
+        undefined,
+        "darwin",
+      ),
+    ).toBeUndefined();
+    expect(
+      resolvePaperclipRemoteRunnerBinaryForHarness(
+        [remoteNativeExecution],
+        runnerBinary,
+        "/cross-compiled/paperclip-runnerd",
+        "darwin",
+      ),
+    ).toBe("/cross-compiled/paperclip-runnerd");
   });
 });
 
@@ -855,6 +875,24 @@ describe("runner E2E evidence redaction", () => {
     expect(redactText(`token=${secret}`, [secret])).toBe("token=[REDACTED]");
     expect(sanitizeJson({ nested: [secret] }, [secret])).toEqual({
       nested: ["[REDACTED]"],
+    });
+    expect(
+      sanitizeJson(
+        {
+          metadata: {
+            apiKey: "opaque-provider-issued-value",
+            access_token: "opaque-access-token",
+            apiKeyRef: "DAYTONA_API_KEY",
+          },
+        },
+        [],
+      ),
+    ).toEqual({
+      metadata: {
+        apiKey: "[REDACTED]",
+        access_token: "[REDACTED]",
+        apiKeyRef: "DAYTONA_API_KEY",
+      },
     });
     expect(sanitizeJson("paperclip.runner-e2e.evidence/v1", [secret])).toBe(
       "paperclip.runner-e2e.evidence/v1",

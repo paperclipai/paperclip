@@ -769,7 +769,11 @@ function warmTurnMarker(turn: 1 | 2 | 3, nonce: string) {
 }
 
 function warmWorkspaceLine(turn: 1 | 2 | 3, nonce: string) {
-  return `T${turn}_${nonce}`;
+  // Issue descriptions are rendered through the native prompt's Markdown
+  // boundary, which escapes underscores. Keep the byte-level workspace
+  // sentinel Markdown-inert so both legacy and native providers receive the
+  // same literal content.
+  return `T${turn}-${nonce}`;
 }
 
 function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
@@ -779,6 +783,9 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
   );
   const marker = warmTurnMarker(turn, nonce);
   const finalTurn = turn === 3;
+  const legacyCompletion = finalTurn
+    ? `In a legacy runner, make exactly one public-API completion write after verification: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"${marker}"}. Include Authorization and X-Paperclip-Run-Id. Do not POST a separate comment.`
+    : `In a legacy runner, after verification POST exactly one request_confirmation to /api/issues/$PAPERCLIP_TASK_ID/interactions with {"kind":"request_confirmation","idempotencyKey":"daytona-warm-review-T${turn}-${nonce}","resolverPolicy":"human_only","title":"Warm continuity turn ${turn}","summary":"Review completed warm continuity turn ${turn}.","continuationPolicy":"wake_assignee","payload":{"version":1,"prompt":"Continue to warm continuity turn ${turn + 1}?","acceptLabel":"Approve completion","rejectLabel":"Continue work","rejectRequiresReason":true,"allowDeclineReason":true,"supersedeOnUserComment":false,"target":{"type":"custom","key":"daytona_warm_turn_${turn}","revisionId":"${nonce}-T${turn}","label":"Warm continuity turn ${turn}"}}}. Capture the returned interaction id. Then make exactly one issue PATCH with {"status":"in_review","comment":"${marker}","reviewInteractionId":"<returned interaction id>"}. Include Authorization and X-Paperclip-Run-Id on both writes. If the issue PATCH fails, retry only that PATCH and never create another interaction. Do not POST a separate comment. After both writes succeed, end the response and heartbeat immediately; do not wait or poll because the reviewer action will start the next turn.`;
   return [
     `This is warm Daytona continuity turn ${turn} of 3. Work only in the current execution workspace.`,
     turn === 1
@@ -786,7 +793,8 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
       : `Before changing anything, read ${file} and verify its content is exactly ${lines.slice(0, -1).join("\\n")} followed by a newline. Then append exactly ${lines.at(-1)} followed by a newline.`,
     `After the write, verify ${file} contains exactly these lines, once each and in order: ${lines.join(" | ")}.`,
     `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
-    `In a legacy runner, make exactly one public-API completion write after verification: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"${finalTurn ? "done" : "in_review"}","comment":"${marker}"}. Include Authorization and X-Paperclip-Run-Id. Do not POST a separate comment.`,
+    legacyCompletion,
+    `In a legacy runner, the PATCH comment is the complete visible response. After its 2xx response, finish silently: do not print, echo, or emit ${marker} again as assistant text.`,
     `Do not include ${marker} in any other visible response or write. Do not recreate, truncate, reorder, or duplicate prior lines.`,
   ].join("\n");
 }

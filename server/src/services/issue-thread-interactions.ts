@@ -1989,14 +1989,31 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           "Interaction has already been resolved",
         );
       }
-      if (isNativeCompletionReview(lockedCurrent)) {
-        await issueService(db).update(args.issue.id, {
-          status: "todo",
-          assigneeAgentId: issueContext.assigneeAgentId,
-          assigneeUserId: null,
-          actorAgentId: args.actor.agentId ?? null,
-          actorUserId: args.actor.userId ?? null,
-        }, tx);
+      const rejectedPlanNeedsRevision =
+        lockedCurrent.kind === "request_confirmation" &&
+        readAcceptedPlanConfirmationTarget(
+          lockedCurrent.payload,
+          issueContext.id,
+        )?.key === "plan";
+      const shouldResumeReviewedIssue =
+        issueContext.status === "in_review" &&
+        (lockedCurrent.continuationPolicy === "wake_assignee" ||
+          rejectedPlanNeedsRevision);
+      if (
+        isNativeCompletionReview(lockedCurrent) ||
+        shouldResumeReviewedIssue
+      ) {
+        await issueService(db).update(
+          args.issue.id,
+          {
+            status: "todo",
+            assigneeAgentId: issueContext.assigneeAgentId,
+            assigneeUserId: null,
+            actorAgentId: args.actor.agentId ?? null,
+            actorUserId: args.actor.userId ?? null,
+          },
+          tx,
+        );
       } else {
         await touchIssue(tx, args.issue.id);
       }

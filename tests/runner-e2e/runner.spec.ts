@@ -87,6 +87,7 @@ interface RunRecord {
 interface EnvironmentLeaseRecord {
   id: string;
   status?: string;
+  cleanupStatus?: string | null;
   leasePolicy?: string;
   providerLeaseId?: string | null;
   executionWorkspaceId?: string | null;
@@ -103,6 +104,8 @@ interface InteractionRecord {
   id: string;
   status: string;
   kind?: string;
+  sourceRunId?: string | null;
+  continuationPolicy?: string;
   payload?: {
     version?: number;
     acceptLabel?: string;
@@ -375,6 +378,23 @@ async function submitTaskReply(page: Page, body: string): Promise<number> {
   return submittedAtMs;
 }
 
+async function submitTaskRevision(page: Page, body: string): Promise<number> {
+  const revise = page
+    .getByRole("button", { name: "Continue work", exact: true })
+    .last();
+  await expect(revise).toBeVisible({ timeout: 30_000 });
+  await revise.click();
+  const reason = page.getByPlaceholder("Add a short note").last();
+  await expect(reason).toBeVisible({ timeout: 30_000 });
+  await reason.fill(body);
+  const submittedAtMs = Date.now();
+  await page
+    .getByRole("button", { name: "Continue work", exact: true })
+    .last()
+    .click();
+  return submittedAtMs;
+}
+
 function matchingRuns(runs: RunRecord[], issue: IssueRecord) {
   const explicit = new Set(
     [issue.executionRunId, issue.checkoutRunId].filter(Boolean),
@@ -405,6 +425,15 @@ function isPendingQuestion(interaction: InteractionRecord) {
     interaction.kind === "ask_user_questions" &&
     interaction.status === "pending" &&
     Boolean(interaction.payload?.questions?.length)
+  );
+}
+
+function isPendingWarmConfirmation(interaction: InteractionRecord) {
+  return (
+    interaction.kind === "request_confirmation" &&
+    interaction.status === "pending" &&
+    interaction.continuationPolicy === "wake_assignee" &&
+    interaction.payload?.target?.type === "custom"
   );
 }
 
@@ -586,10 +615,7 @@ for (const execution of executions) {
     let failureClassOverride: FailureClass | undefined;
     let cleanup: RunnerE2EResult["cleanup"] = "not_started";
 
-    const capturePrivateScreenshot = async (
-      id: string,
-      file: string,
-    ) => {
+    const capturePrivateScreenshot = async (id: string, file: string) => {
       const screenshotPath = path.join(privateDir, file);
       await page.screenshot({ path: screenshotPath, fullPage: true });
       await testInfo.attach(id, {
@@ -639,6 +665,40 @@ for (const execution of executions) {
             (issue && lease.issueId === issue.id)),
       );
       runtimeLeases = relevant.length > 0 ? relevant : listed;
+    };
+
+    const cancelActiveRunsForCleanup = async () => {
+      if (!issue) return;
+      const cleanupIssueId = issue.id;
+      const runs = await api.get<RunRecord[]>(
+        `/api/issues/${cleanupIssueId}/runs`,
+      );
+      const activeRunIds = [
+        ...new Set(
+          runs
+            .filter((run) => !TERMINAL_RUN_STATUSES.has(run.status))
+            .map((run) => run.id)
+            .filter(
+              (runId): runId is string =>
+                typeof runId === "string" && runId.length > 0,
+            ),
+        ),
+      ];
+      for (const runId of activeRunIds) {
+        await api.post(`/api/heartbeat-runs/${runId}/cancel`);
+      }
+      if (activeRunIds.length === 0) return;
+      const activeIds = new Set(activeRunIds);
+      await pollUntil({
+        label: `cleanup cancellation for issue ${cleanupIssueId}`,
+        deadlineAt: Date.now() + 45_000,
+        load: () => api.get<RunRecord[]>(`/api/issues/${cleanupIssueId}/runs`),
+        accept: (currentRuns) =>
+          currentRuns
+            .filter((run) => activeIds.has(run.id))
+            .every((run) => TERMINAL_RUN_STATUSES.has(run.status)),
+        intervalMs: 500,
+      });
     };
 
     const captureFailureApiState = async () => {
@@ -742,6 +802,9 @@ for (const execution of executions) {
       expect(initialExperimental.enableNativeRunner).toBe(false);
       await api.patch("/api/instance/settings/experimental", {
         enableNativeRunner: true,
+        ...(execution.task.flow === "warm_three_turn"
+          ? { enableIsolatedWorkspaces: true }
+          : {}),
         ...(execution.profile.generation === "native" &&
         execution.environment.id === "daytona"
           ? { enableRunnerPreviewIngress: true }
@@ -1290,10 +1353,19 @@ for (const execution of executions) {
             label: `warm Daytona turn ${completedTurn} review state for issue ${issue.id}`,
             deadlineAt: turnDeadlineAt,
             load: loadTaskState,
-            accept: ({ currentIssue, taskRuns }) =>
-              currentIssue.status === "in_review" &&
-              taskRuns.length === completedTurn &&
-              taskRuns.every((run) => run.status === "succeeded"),
+            accept: ({ currentIssue, taskRuns, interactions }) => {
+              const latestRun = sortRunsChronologically(taskRuns).at(-1);
+              const pendingConfirmations = interactions.filter(
+                isPendingWarmConfirmation,
+              );
+              return (
+                currentIssue.status === "in_review" &&
+                taskRuns.length === completedTurn &&
+                taskRuns.every((run) => run.status === "succeeded") &&
+                pendingConfirmations.length === 1 &&
+                pendingConfirmations[0]?.sourceRunId === latestRun?.id
+              );
+            },
             reject: ({ taskRuns }) =>
               definitiveRunFailure(taskRuns) ??
               (taskRuns.length > completedTurn
@@ -1302,7 +1374,7 @@ for (const execution of executions) {
           });
           const expectedPrefix = `${Array.from(
             { length: completedTurn },
-            (_, index) => `T${index + 1}_${nonce}`,
+            (_, index) => `T${index + 1}-${nonce}`,
           ).join("\n")}\n`;
           const hostContent = await readFile(workspaceFile, "utf8");
           if (hostContent !== expectedPrefix) {
@@ -1320,8 +1392,11 @@ for (const execution of executions) {
               `Warm turn ${completedTurn} lost its project execution-workspace scope`,
             );
           }
+          const chronologicalRuns = sortRunsChronologically(
+            waitingState.taskRuns,
+          );
           const completedRunIds = new Set(
-            waitingState.taskRuns.map((candidate) => candidate.id),
+            chronologicalRuns.map((candidate) => candidate.id),
           );
           const retainedTurnLeases = await pollUntil({
             label: `retained Daytona leases after warm turn ${completedTurn}`,
@@ -1333,7 +1408,7 @@ for (const execution of executions) {
               ),
             accept: (leases) => {
               const runOrder = new Map(
-                waitingState.taskRuns.map((candidate, index) => [
+                chronologicalRuns.map((candidate, index) => [
                   candidate.id,
                   index,
                 ]),
@@ -1351,9 +1426,16 @@ for (const execution of executions) {
                 );
               return (
                 completed.length === completedTurn &&
+                completed
+                  .slice(0, -1)
+                  .every(
+                    (lease) =>
+                      lease.status === "expired" &&
+                      lease.cleanupStatus === "success",
+                  ) &&
+                completed.at(-1)?.status === "retained" &&
                 completed.every(
                   (lease) =>
-                    lease.status === "retained" &&
                     lease.leasePolicy === "reuse_by_environment" &&
                     typeof lease.providerLeaseId === "string" &&
                     record(lease.metadata).sandboxState === "started",
@@ -1368,10 +1450,7 @@ for (const execution of executions) {
             },
           });
           const turnRunOrder = new Map(
-            waitingState.taskRuns.map((candidate, index) => [
-              candidate.id,
-              index,
-            ]),
+            chronologicalRuns.map((candidate, index) => [candidate.id, index]),
           );
           const completedLeases = retainedTurnLeases
             .filter(
@@ -1395,7 +1474,7 @@ for (const execution of executions) {
           turnEvidence.push({
             turn: completedTurn,
             issue: waitingState.currentIssue,
-            run: waitingState.taskRuns.at(-1),
+            run: chronologicalRuns.at(-1),
             hostContent,
             leases: completedLeases,
           });
@@ -1409,7 +1488,7 @@ for (const execution of executions) {
             `warm-turn-${completedTurn}.png`,
           );
           turnSubmissionTimesMs.push(
-            await submitTaskReply(page, followups[completedTurn - 1]),
+            await submitTaskRevision(page, followups[completedTurn - 1]),
           );
         }
         warmLifecycleEvidence = { turns: turnEvidence };
@@ -1953,7 +2032,7 @@ for (const execution of executions) {
           );
         }
         const retainedLeases = await pollUntil({
-          label: `retained warm Daytona lease for issue ${issue.id}`,
+          label: `terminal warm Daytona lease history for issue ${issue.id}`,
           deadlineAt: Math.min(deadlineAt, Date.now() + 30_000),
           intervalMs: 500,
           load: () =>
@@ -1970,13 +2049,21 @@ for (const execution of executions) {
             );
             return (
               warmLeases.length === 3 &&
-              warmLeases.every(
-                (lease) =>
-                  lease.status === "retained" &&
+              warmLeases.every((lease) => {
+                const runIndex = selectedRuns.findIndex(
+                  (candidate) => candidate.id === lease.heartbeatRunId,
+                );
+                return (
+                  lease.status ===
+                    (runIndex === selectedRuns.length - 1
+                      ? "retained"
+                      : "expired") &&
+                  lease.cleanupStatus === "success" &&
                   lease.leasePolicy === "reuse_by_environment" &&
                   typeof lease.providerLeaseId === "string" &&
-                  record(lease.metadata).sandboxState === "started",
-              )
+                  record(lease.metadata).sandboxState === "started"
+                );
+              })
             );
           },
         });
@@ -2313,6 +2400,7 @@ for (const execution of executions) {
           });
         });
         try {
+          await cancelActiveRunsForCleanup();
           await fixtures.teardown();
           cleanup = "passed";
         } catch (error) {

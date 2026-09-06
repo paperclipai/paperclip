@@ -186,6 +186,12 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
 const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
 const NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
 const NATIVE_SESSION_CANCELLATION_CLEANUP_GRACE_MS = 2_000;
+// A reusable provider must publish its terminal suffix before the next run can
+// rotate PRP authority. Remote Codex can take more than the ordinary five-second
+// result grace to flush its final answer over Daytona, so retain the bounded
+// turn long enough to reach a naturally quiescent, reusable state. This adds no
+// delay when the provider terminates normally.
+const NATIVE_WARM_SEMANTIC_RESULT_TERMINAL_GRACE_MS = 30_000;
 const NATIVE_RUNTIME_REQUEST_RESOLUTION_CACHE_MAX = 256;
 type NativeRuntimeRequestResolution = {
   runId: string;
@@ -258,13 +264,52 @@ function clearNativeRuntimeRequestResolutions(runId: string): void {
 
 type WarmNativeSession = {
   session: NativeSession;
+  ownerToken: symbol;
   configDigest: string;
+  companyId: string;
+  environmentId: string | null;
   busy: boolean;
   idleTimer: ReturnType<typeof setTimeout> | null;
   lastActivityAt: string;
 };
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
+
+/**
+ * Close idle native sessions before an operator destroys their remote
+ * environment. A warm runner owns a long-lived sandbox command stream, so the
+ * provider cannot safely delete that sandbox until the session has closed the
+ * stream. Busy sessions are reported instead of interrupted; the environment
+ * delete guard can then fail closed while their heartbeat run is still live.
+ */
+export async function closeWarmNativeSessionsForEnvironment(input: {
+  environmentId: string;
+  reason: string;
+}): Promise<{ closed: number; busy: number; failed: number }> {
+  let closed = 0;
+  let busy = 0;
+  let failed = 0;
+  for (const [sessionId, entry] of [...warmNativeSessions]) {
+    if (entry.environmentId !== input.environmentId) {
+      continue;
+    }
+    if (entry.busy) {
+      busy += 1;
+      continue;
+    }
+    if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+    // Remove ownership before awaiting close so a racing continuation cannot
+    // adopt a session whose transport is already shutting down.
+    warmNativeSessions.delete(sessionId);
+    try {
+      await entry.session.close({ reason: input.reason });
+      closed += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  return { closed, busy, failed };
+}
 
 function readBoundedNativeFile(
   path: string,
@@ -1453,6 +1498,7 @@ function runnerdAuthorityLifecycleWithVerifiedBackup(input: {
 
 type PriorRunnerdStateVerification =
   | "verified"
+  | "retained_warm_runner"
   | "active"
   | "authority_indeterminate"
   | "scope_mismatch"
@@ -1465,6 +1511,7 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
   identity: RunnerdDurableIdentity;
   execution: NativeExecutionInput;
   allowVerifiedBackup: boolean;
+  allowRetainedWarmRunner: boolean;
 }): Promise<PriorRunnerdStateVerification> {
   let priorRun: {
     status: string;
@@ -1505,9 +1552,24 @@ async function verifyPriorRunnerdStateForSessionScope(input: {
         nativeSessionScopeKey(input.execution);
     if (!sameScope) return "scope_mismatch";
     const lifecycle = runnerdAuthorityLifecycleWithVerifiedBackup(input);
-    return lifecycle === "suspended"
-      ? "verified"
-      : "terminal_state_indeterminate";
+    if (lifecycle === "suspended") return "verified";
+    const directLifecycle = runnerdAuthorityLifecycle(
+      input.root,
+      input.identity,
+    );
+    if (
+      input.allowRetainedWarmRunner &&
+      (lifecycle === "not_suspended" ||
+        // A remote runner keeps runner-state.json in the sandbox rather than
+        // beside the controller's PRP journal. During a genuinely warm handoff
+        // there is intentionally no suspended failover backup yet. The exact
+        // idle in-memory session owner is the authority for this one case;
+        // after a restart that owner is absent and this remains fail-closed.
+        (input.allowVerifiedBackup && directLifecycle === "absent"))
+    ) {
+      return "retained_warm_runner";
+    }
+    return "terminal_state_indeterminate";
   } catch {
     return "authority_indeterminate";
   }
@@ -1517,6 +1579,7 @@ async function migrateRunnerdStateRootForExecution(input: {
   db: Db;
   execution: NativeExecutionInput;
   allowVerifiedBackup: boolean;
+  allowRetainedWarmRunner: boolean;
   restartRecovery?: NativeRestartRecoveryClaim;
 }): Promise<void> {
   const scoped = scopedRunnerdStateRoot(input.execution);
@@ -1568,8 +1631,12 @@ async function migrateRunnerdStateRootForExecution(input: {
         identity,
         execution: input.execution,
         allowVerifiedBackup: input.allowVerifiedBackup,
+        allowRetainedWarmRunner: input.allowRetainedWarmRunner,
       });
-      if (verification !== "verified") {
+      if (
+        verification !== "verified" &&
+        verification !== "retained_warm_runner"
+      ) {
         if (verification !== "active" && verification !== "unavailable") {
           quarantineRunnerdStateRoot(
             scoped,
@@ -1606,8 +1673,12 @@ async function migrateRunnerdStateRootForExecution(input: {
         identity,
         execution: input.execution,
         allowVerifiedBackup: input.allowVerifiedBackup,
+        allowRetainedWarmRunner: input.allowRetainedWarmRunner,
       });
-      if (verification !== "verified") {
+      if (
+        verification !== "verified" &&
+        verification !== "retained_warm_runner"
+      ) {
         if (verification === "terminal_state_indeterminate") {
           // The database proves this ambiguous legacy path belongs to the same
           // full session scope and its owner is terminal, so it is now safe to
@@ -1800,6 +1871,24 @@ function nativeSessionConfigDigest(execution: NativeExecutionInput): string {
       }),
     )
     .digest("hex")}`;
+}
+
+function hasIdleWarmNativeSessionOwner(input: {
+  execution: NativeExecutionInput;
+  runnerExecutionTarget?: AdapterExecutionTarget | null;
+}): boolean {
+  if (input.execution.session.lifecyclePolicy.mode !== "warm") return false;
+  const entry = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
+  if (!entry || entry.busy) return false;
+  const environmentId =
+    input.runnerExecutionTarget?.kind === "remote"
+      ? (input.runnerExecutionTarget.environmentId ?? null)
+      : null;
+  return (
+    entry.companyId === input.execution.binding.companyId &&
+    entry.environmentId === environmentId &&
+    entry.configDigest === nativeSessionConfigDigest(input.execution)
+  );
 }
 
 function nativeHarnessEnvironmentFingerprint(
@@ -2447,11 +2536,14 @@ function loadWarmNativeCheckpoint(
 
 async function releaseWarmNativeSession(
   sessionId: string,
+  ownerToken: symbol,
   idleTimeoutMs: number,
   failed: boolean,
 ): Promise<void> {
   const entry = warmNativeSessions.get(sessionId);
-  if (!entry) return;
+  // A late completion or cleanup callback from an older execution must never
+  // release a replacement that has since claimed the same logical session.
+  if (!entry || entry.ownerToken !== ownerToken) return;
   entry.busy = false;
   entry.lastActivityAt = new Date().toISOString();
   if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
@@ -2464,9 +2556,13 @@ async function releaseWarmNativeSession(
   }
   entry.idleTimer = setTimeout(() => {
     const current = warmNativeSessions.get(sessionId);
-    if (!current || current.busy) return;
+    // clearTimeout cannot revoke an already-queued callback. The entry object
+    // is the idle timer's ownership fence across a later warm acquisition.
+    if (current !== entry || current.busy) return;
     warmNativeSessions.delete(sessionId);
-    void current.session.close({ reason: "warm native session idle timeout" });
+    void current.session
+      .close({ reason: "warm native session idle timeout" })
+      .catch(() => undefined);
   }, idleTimeoutMs);
   entry.idleTimer.unref();
 }
@@ -2626,7 +2722,9 @@ export async function nativeProviderRecoveryEvidence(input: {
     .where(
       and(
         eq(heartbeatRunEvents.runId, input.runId),
-        inArray(heartbeatRunEvents.eventType, [...PROVIDER_DURABLE_EVENT_TYPES]),
+        inArray(heartbeatRunEvents.eventType, [
+          ...PROVIDER_DURABLE_EVENT_TYPES,
+        ]),
       ),
     )
     .limit(1);
@@ -3661,6 +3759,11 @@ async function executePaperclipNativeSessionWithinScope(
       allowVerifiedBackup:
         input.runnerExecutionTarget?.kind === "remote" &&
         input.runnerExecutionTarget.transport === "sandbox",
+      // A retained warm runner is deliberately still ready rather than
+      // suspended. Only the exact idle in-process owner may rotate that
+      // prior-run authority; after a hard restart the map is empty and the
+      // durable-state verifier continues to require a suspended runner.
+      allowRetainedWarmRunner: hasIdleWarmNativeSessionOwner(input),
       restartRecovery: input.restartRecovery,
     });
   }
@@ -4156,6 +4259,9 @@ async function executePaperclipNativeSessionWithinScope(
     lifecyclePolicy.mode === "warm"
       ? nativeSessionConfigDigest(input.execution)
       : null;
+  const warmSessionOwnerToken = Symbol(
+    `native-warm-session:${input.execution.binding.runId}`,
+  );
   let existingWarmSession: NativeSession | undefined;
   let persistedWarmSession: PersistedNativeSession | null | undefined;
   if (warmSessionId !== null && warmConfigDigest !== null) {
@@ -4175,6 +4281,9 @@ async function executePaperclipNativeSessionWithinScope(
       } else {
         if (entry.busy) throw new Error("native_session_supervisor_busy");
         entry.busy = true;
+        entry.ownerToken = warmSessionOwnerToken;
+        entry.environmentId =
+          input.runnerExecutionTarget?.environmentId ?? null;
         if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
         entry.idleTimer = null;
         existingWarmSession = entry.session;
@@ -4311,6 +4420,10 @@ async function executePaperclipNativeSessionWithinScope(
             existingSession: existingWarmSession,
             persistedSession: persistedWarmSession,
             keepSessionOpen: warmSessionId !== null,
+            semanticResultTerminalGraceMs:
+              warmSessionId === null
+                ? undefined
+                : NATIVE_WARM_SEMANTIC_RESULT_TERMINAL_GRACE_MS,
             requireSessionCloseBeforeReturn:
               runnerdBackend !== null &&
               input.runnerExecutionTarget?.kind === "remote",
@@ -4323,6 +4436,21 @@ async function executePaperclipNativeSessionWithinScope(
                       snapshot,
                     )
                 : undefined,
+            onPostCompletionEnrichmentFailure: async ({ stage, error }) => {
+              const detail = redactSensitiveText(
+                error instanceof Error ? error.message : String(error),
+              ).slice(-4_096);
+              await input.onLog?.(
+                "stderr",
+                `[paperclip-runner] post-completion ${stage} enrichment failed: ${detail}\n`,
+              );
+            },
+            onSessionQuarantined: async (reason) => {
+              await input.onLog?.(
+                "stderr",
+                `[paperclip-runner] warm native session quarantined: ${redactSensitiveText(reason).slice(-1_000)}\n`,
+              );
+            },
             onContinuityBreak: async (continuity) => {
               const atMs = Date.now();
               await trace.record({
@@ -4354,15 +4482,34 @@ async function executePaperclipNativeSessionWithinScope(
                 warmConfigDigest !== null
               ) {
                 const existing = warmNativeSessions.get(warmSessionId);
-                if (existing) existing.session = session;
-                else
+                if (existing) {
+                  if (existing.ownerToken !== warmSessionOwnerToken) {
+                    throw new Error("native_session_supervisor_busy");
+                  }
+                  existing.session = session;
+                } else
                   warmNativeSessions.set(warmSessionId, {
                     session,
+                    ownerToken: warmSessionOwnerToken,
                     configDigest: warmConfigDigest,
+                    companyId: input.execution.binding.companyId,
+                    environmentId:
+                      input.runnerExecutionTarget?.environmentId ?? null,
                     busy: true,
                     idleTimer: null,
                     lastActivityAt: new Date().toISOString(),
                   });
+              } else if (!session && warmSessionId !== null) {
+                const existing = warmNativeSessions.get(warmSessionId);
+                // onSession(null) quarantines a transport that can no longer
+                // be reused. Remove only this execution's generation so a
+                // late failure cannot evict a successor session.
+                if (existing?.ownerToken === warmSessionOwnerToken) {
+                  if (existing.idleTimer !== null) {
+                    clearTimeout(existing.idleTimer);
+                  }
+                  warmNativeSessions.delete(warmSessionId);
+                }
               }
               if (session)
                 activeNativeSessions.set(input.execution.binding.runId, {
@@ -4398,6 +4545,13 @@ async function executePaperclipNativeSessionWithinScope(
   } catch (error) {
     await leaseRenewal.stop().catch(() => undefined);
     const failedAtMs = Date.now();
+    const executionFailureMessage = redactSensitiveText(
+      error instanceof Error ? error.message : String(error),
+    ).slice(-4_096);
+    await input.onLog?.(
+      "stderr",
+      `[paperclip-runner] native session execution failed: ${executionFailureMessage}\n`,
+    );
     if (runnerSessionStartupScope) {
       await trace.end(runnerSessionStartupScope, {
         endedAtMs: failedAtMs,
@@ -4422,6 +4576,7 @@ async function executePaperclipNativeSessionWithinScope(
     if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
       await releaseWarmNativeSession(
         warmSessionId,
+        warmSessionOwnerToken,
         lifecyclePolicy.idleTimeoutMs,
         true,
       );
@@ -4711,6 +4866,7 @@ async function executePaperclipNativeSessionWithinScope(
   if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
     await releaseWarmNativeSession(
       warmSessionId,
+      warmSessionOwnerToken,
       lifecyclePolicy.idleTimeoutMs,
       false,
     );
@@ -5546,10 +5702,102 @@ async function readRemoteRunnerProviderState(input: {
   );
 }
 
-function createRemoteRunnerProcessLauncher(input: {
+const REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS = 20_000;
+const REMOTE_RUNNER_PROCESS_POLL_MS = 1_000;
+
+const REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT =
+  'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; expected_pid=$4; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test "$pid" = "$expected_pid" && test -n "$started_at" || exit 4; kill -0 "$pid" 2>/dev/null || exit 3; if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi';
+
+const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
+  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); identity_tmp="${identity_path}.tmp.$$"; printf "%s\\n%s\\n%s\\n%s\\n" "$identity_nonce" "$$" "$started_at" "$runner_instance_id" > "$identity_tmp"; chmod 0600 "$identity_tmp"; mv -f -- "$identity_tmp" "$identity_path"; exec "$@"';
+
+const REMOTE_RUNNER_FAILED_IDENTITY_CLEANUP_SCRIPT =
+  'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; marker_wait=0; while { test ! -f "$identity_path" || test -L "$identity_path"; } && test "$marker_wait" -lt 50; do marker_wait=$((marker_wait + 1)); sleep 0.1; done; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test -n "$started_at" || exit 4; case "$pid" in ""|*[!0-9]*) exit 4 ;; esac; test "$pid" -gt 0 || exit 4; if kill -0 "$pid" 2>/dev/null; then if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi; signal_target=$pid; if command -v ps >/dev/null 2>&1; then session_id=$(ps -o sid= -p "$pid" 2>/dev/null | tr -d " ") || true; if test "$session_id" = "$pid"; then signal_target="-$pid"; fi; fi; kill -TERM -- "$signal_target" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; term_wait=0; while kill -0 "$pid" 2>/dev/null && test "$term_wait" -lt 50; do term_wait=$((term_wait + 1)); sleep 0.1; done; if kill -0 "$pid" 2>/dev/null; then kill -KILL -- "$signal_target" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; kill_wait=0; while kill -0 "$pid" 2>/dev/null && test "$kill_wait" -lt 50; do kill_wait=$((kill_wait + 1)); sleep 0.1; done; fi; kill -0 "$pid" 2>/dev/null && exit 5; fi; test -f "$identity_path" && test ! -L "$identity_path" || exit 4; { IFS= read -r final_nonce; IFS= read -r final_pid; IFS= read -r final_started_at; IFS= read -r final_runner_id; } < "$identity_path"; test "$final_nonce" = "$nonce" && test "$final_pid" = "$pid" && test "$final_started_at" = "$started_at" && test "$final_runner_id" = "$runner_id" || exit 4; rm -f -- "$identity_path"';
+
+export function parseRemoteRunnerProcessIdentity(
+  value: string,
+  expected: { nonce: string; runnerInstanceId: string },
+): { pid: number; startedAt: string } | null {
+  const [nonce, rawPid, startedAt, runnerInstanceId, ...remainder] = value
+    .trim()
+    .split("\n");
+  const pid = Number(rawPid);
+  if (
+    remainder.length > 0 ||
+    nonce !== expected.nonce ||
+    runnerInstanceId !== expected.runnerInstanceId ||
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    !startedAt ||
+    Number.isNaN(new Date(startedAt).getTime())
+  ) {
+    return null;
+  }
+  return { pid, startedAt };
+}
+
+async function waitForRemoteRunnerProcessIdentity(input: {
+  runner: CommandManagedRuntimeRunner;
+  identityPath: string;
+  nonce: string;
+  runnerInstanceId: string;
+}): Promise<{ pid: number; startedAt: string }> {
+  const deadline = Date.now() + REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS;
+  while (Date.now() < deadline) {
+    const result = await input.runner
+      .execute({
+        command: "sh",
+        args: [
+          "-c",
+          'test -f "$1" && test ! -L "$1" && cat -- "$1"',
+          "paperclip-runner-process-identity",
+          input.identityPath,
+        ],
+        bypassSession: true,
+        timeoutMs: 2_000,
+      })
+      .catch(() => null);
+    const identity =
+      result && result.exitCode === 0 && !result.timedOut
+        ? parseRemoteRunnerProcessIdentity(result.stdout, input)
+        : null;
+    if (identity) return identity;
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("runner_remote_process_identity_unavailable");
+}
+
+async function cleanupRemoteRunnerAfterIdentityFailure(input: {
+  runner: CommandManagedRuntimeRunner;
+  identityPath: string;
+  nonce: string;
+  runnerInstanceId: string;
+}): Promise<boolean> {
+  const result = await input.runner
+    .execute({
+      command: "sh",
+      args: [
+        "-c",
+        REMOTE_RUNNER_FAILED_IDENTITY_CLEANUP_SCRIPT,
+        "paperclip-runner-identity-failure-cleanup",
+        input.identityPath,
+        input.nonce,
+        input.runnerInstanceId,
+      ],
+      bypassSession: true,
+      timeoutMs: 20_000,
+    })
+    .catch(() => null);
+  return result?.exitCode === 0 && result.timedOut === false;
+}
+
+export function createRemoteRunnerProcessLauncher(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
   remoteBinary: string;
+  processIdentityPath: string;
+  stateDirectory: string;
+  diagnosticsDirectory: string;
   runnerInstanceId: string;
   ensureArtifact?: () => Promise<void>;
   onSpawn?: (meta: {
@@ -5563,15 +5811,39 @@ function createRemoteRunnerProcessLauncher(input: {
 }): (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle {
   const runner = input.runner;
   return (spec) => {
+    let launchedIdentity: {
+      nonce: string;
+      pid: number;
+      startedAt: string;
+    } | null = null;
     const child: RunnerProcessHandle["child"] = {
       pid: undefined,
       exitCode: null,
       signalCode: null,
-      kill: () => {
-        const pattern = `--runner-id ${input.runnerInstanceId}`;
+      kill: (requestedSignal) => {
+        const identity = launchedIdentity;
+        if (!identity) return false;
+        const signal =
+          requestedSignal === "SIGKILL" || requestedSignal === 9
+            ? "KILL"
+            : requestedSignal === "SIGINT" || requestedSignal === 2
+              ? "INT"
+              : "TERM";
+        // The durable marker, nonce, exact pid, and runner-id command line are
+        // revalidated in the sandbox immediately before signalling. A recycled
+        // pid or replaced marker therefore fails closed instead of killing an
+        // unrelated process.
         void runner.execute({
-          command: "pkill",
-          args: ["-f", pattern],
+          command: "sh",
+          args: [
+            "-c",
+            `${REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT}; kill -${signal} "$expected_pid"`,
+            "paperclip-runner-signal",
+            input.processIdentityPath,
+            identity.nonce,
+            input.runnerInstanceId,
+            String(identity.pid),
+          ],
           bypassSession: true,
           timeoutMs: 10_000,
         });
@@ -5604,36 +5876,164 @@ function createRemoteRunnerProcessLauncher(input: {
         endedAtMs: Date.now(),
         attributes: { target: "remote" },
       });
-      const result = await runner.execute({
-        command: input.remoteBinary,
-        args: [...spec.args],
+      const identityNonce = randomUUID();
+      const remoteArgs = [...spec.args];
+      const diagnosticsArgumentIndex = remoteArgs.indexOf(
+        "--diagnostics-directory",
+      );
+      if (diagnosticsArgumentIndex >= 0) {
+        remoteArgs[diagnosticsArgumentIndex + 1] = input.diagnosticsDirectory;
+      } else {
+        remoteArgs.push("--diagnostics-directory", input.diagnosticsDirectory);
+      }
+      // Do not keep runnerd as the foreground command of a provider RPC. Some
+      // sandbox command/session transports impose a provider-side lifetime on
+      // that RPC even when Paperclip requests a longer timeout. Detach runnerd
+      // into its own session instead; its own bounded diagnostics directory and
+      // durable PRP state remain the authorities, and the controller monitors
+      // the exact persisted process identity below.
+      const launchResult = await runner.execute({
+        command: "sh",
+        args: [
+          "-c",
+          'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; child_script=$4; shift 4; umask 077; identity_dir=$(dirname -- "$identity_path"); mkdir -p -- "$identity_dir"; if command -v setsid >/dev/null 2>&1; then nohup setsid sh -c "$child_script" paperclip-runner-child "$identity_path" "$identity_nonce" "$runner_instance_id" "$@" </dev/null >/dev/null 2>&1 & else nohup sh -c "$child_script" paperclip-runner-child "$identity_path" "$identity_nonce" "$runner_instance_id" "$@" </dev/null >/dev/null 2>&1 & fi',
+          "paperclip-runner-launch",
+          input.processIdentityPath,
+          identityNonce,
+          input.runnerInstanceId,
+          REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
+          input.diagnosticsDirectory,
+          input.remoteBinary,
+          ...remoteArgs,
+        ],
         cwd: input.target.remoteCwd,
         env: processEnvironment(spec.environment),
-        timeoutMs: 62 * 60_000,
-        useSession: true,
+        timeoutMs: 20_000,
+        bypassSession: true,
         onLog: input.onLog,
-        onSpawn: async (meta) => {
-          child.pid = meta.pid;
-          await input.onSpawn?.({
-            pid: meta.pid,
-            processGroupId: null,
-            startedAt: new Date().toISOString(),
-          });
-          await input.trace?.record({
-            name: "runner.process.launch",
-            parentName: "runner.session.startup",
-            startedAtMs: launchStartedAtMs,
-            endedAtMs: Date.now(),
-          });
-        },
       });
-      child.exitCode = result.exitCode;
-      return {
-        code: result.exitCode,
-        signal: null,
-        stdout: result.stdout,
-        stderr: result.stderr,
-      };
+      if (launchResult.exitCode !== 0 || launchResult.timedOut) {
+        throw new Error(
+          launchResult.timedOut
+            ? "runner_remote_process_launch_timed_out"
+            : "runner_remote_process_launch_failed",
+        );
+      }
+      let identity: { pid: number; startedAt: string };
+      try {
+        identity = await waitForRemoteRunnerProcessIdentity({
+          runner,
+          identityPath: input.processIdentityPath,
+          nonce: identityNonce,
+          runnerInstanceId: input.runnerInstanceId,
+        });
+      } catch {
+        const cleanupStartedAtMs = Date.now();
+        const cleaned = await cleanupRemoteRunnerAfterIdentityFailure({
+          runner,
+          identityPath: input.processIdentityPath,
+          nonce: identityNonce,
+          runnerInstanceId: input.runnerInstanceId,
+        });
+        await input.trace?.record({
+          name: "runner.process.identity_failure_cleanup",
+          parentName: "runner.session.startup",
+          startedAtMs: cleanupStartedAtMs,
+          endedAtMs: Date.now(),
+          attributes: { cleaned },
+        });
+        if (!cleaned) {
+          throw new Error(
+            "runner_remote_process_identity_unavailable_cleanup_failed",
+          );
+        }
+        throw new Error("runner_remote_process_identity_unavailable");
+      }
+      launchedIdentity = { nonce: identityNonce, ...identity };
+      child.pid = identity.pid;
+      await input.onSpawn?.({
+        pid: identity.pid,
+        processGroupId: null,
+        startedAt: identity.startedAt,
+      });
+      await input.trace?.record({
+        name: "runner.process.launch",
+        parentName: "runner.session.startup",
+        startedAtMs: launchStartedAtMs,
+        endedAtMs: Date.now(),
+        attributes: { identitySource: "remote_marker", detached: true },
+      });
+
+      while (true) {
+        const observed = await runner.execute({
+          command: "sh",
+          args: [
+            "-c",
+            REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT,
+            "paperclip-runner-monitor",
+            input.processIdentityPath,
+            identityNonce,
+            input.runnerInstanceId,
+            String(identity.pid),
+          ],
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        if (observed.exitCode === 0 && !observed.timedOut) {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, REMOTE_RUNNER_PROCESS_POLL_MS),
+          );
+          continue;
+        }
+        child.exitCode = null;
+        const identityMismatch = observed.exitCode === 4;
+        const diagnostic = await runner
+          .execute({
+            command: "sh",
+            args: [
+              "-c",
+              'set -eu; directory=$1; file="$directory/runnerd.stderr.log"; test -d "$directory" && test ! -L "$directory" && test -f "$file" && test ! -L "$file"; tail -c 65536 -- "$file"',
+              "paperclip-runner-diagnostics",
+              input.diagnosticsDirectory,
+            ],
+            bypassSession: true,
+            timeoutMs: 10_000,
+          })
+          .catch(() => null);
+        const diagnosticTail =
+          diagnostic && diagnostic.exitCode === 0 && !diagnostic.timedOut
+            ? redactSensitiveText(diagnostic.stdout).slice(-16_384).trim()
+            : "";
+        const durableState = await readRemoteRunnerState({
+          runner,
+          stateDirectory: input.stateDirectory,
+        }).catch(() => null);
+        const lifecycle =
+          typeof durableState?.lifecycle === "string"
+            ? durableState.lifecycle
+            : "unavailable";
+        const recoverableFailure =
+          typeof durableState?.recoverableFailure === "string"
+            ? durableState.recoverableFailure
+            : typeof durableState?.recoverable_failure === "string"
+              ? durableState.recoverable_failure
+              : null;
+        const stateDiagnostics = Array.isArray(durableState?.diagnostics)
+          ? durableState.diagnostics
+              .filter((value): value is string => typeof value === "string")
+              .slice(-4)
+              .map((value) => redactSensitiveText(value).slice(-1_000))
+          : [];
+        const stateSummary = `runner_remote_process_exited lifecycle=${lifecycle}${recoverableFailure ? ` recoverableFailure=${redactSensitiveText(recoverableFailure).slice(-1_000)}` : ""}${stateDiagnostics.length > 0 ? ` diagnostics=${JSON.stringify(stateDiagnostics)}` : ""}`;
+        return {
+          code: null,
+          signal: null,
+          stdout: "",
+          stderr: identityMismatch
+            ? "runner_remote_process_identity_mismatch"
+            : diagnosticTail || stateSummary,
+        };
+      }
     })();
     return { child, completion };
   };
@@ -5721,14 +6121,25 @@ export async function createRunnerdBackend(input: {
   }
   initializingSessionToolAuthorities.add(sessionScopeId);
   try {
-    await migrateRunnerdStateRootForExecution({
-      db: input.db,
-      execution: input.execution,
-      allowVerifiedBackup:
-        input.runnerExecutionTarget?.kind === "remote" &&
-        input.runnerExecutionTarget.transport === "sandbox",
-      restartRecovery: input.restartRecovery,
-    });
+    // executePaperclipNativeSession holds the full session-scope claim and
+    // verifies/migrates the durable root before it acquires the coordinator
+    // lease. Avoid reclassifying the same root after that path has marked its
+    // retained warm owner busy for this run. Direct backend construction still
+    // performs the complete fail-closed verification here.
+    if (
+      executingRunnerdSessionScopes.get(sessionScopeId) !==
+      input.execution.binding.runId
+    ) {
+      await migrateRunnerdStateRootForExecution({
+        db: input.db,
+        execution: input.execution,
+        allowVerifiedBackup:
+          input.runnerExecutionTarget?.kind === "remote" &&
+          input.runnerExecutionTarget.transport === "sandbox",
+        allowRetainedWarmRunner: false,
+        restartRecovery: input.restartRecovery,
+      });
+    }
     return await createRunnerdBackendWithinSessionClaim(input, sessionScopeId);
   } finally {
     initializingSessionToolAuthorities.delete(sessionScopeId);
@@ -7154,11 +7565,17 @@ async function createRunnerdBackendWithinSessionClaim(
       : undefined;
 
   const remoteProcessLauncher =
-    remoteTarget && remoteCommandRunner && remoteBinary
+    remoteTarget && remoteCommandRunner && remoteBinary && remoteStateDirectory
       ? createRemoteRunnerProcessLauncher({
           target: remoteTarget,
           runner: remoteCommandRunner,
           remoteBinary,
+          processIdentityPath: posix.join(
+            remoteStateDirectory,
+            "runner-process.identity",
+          ),
+          stateDirectory: remoteStateDirectory,
+          diagnosticsDirectory: posix.join(remoteSessionRoot!, "diagnostics"),
           runnerInstanceId: input.runnerInstanceId,
           ensureArtifact: ensureRemoteRunner,
           onSpawn: input.onSpawn,
@@ -7186,8 +7603,12 @@ async function createRunnerdBackendWithinSessionClaim(
   const effectiveRunnerEnvironment: NodeJS.ProcessEnv = remoteRuntimeRoot
     ? {
         ...effectiveRunnerEnvironmentBase,
-        HOME: remoteTarget!.remoteCwd,
-        CODEX_HOME: posix.join(remoteTarget!.remoteCwd, ".codex"),
+        // The provider home is runner-owned state, not the execution workspace.
+        // Codex's permission profile explicitly denies HOME and CODEX_HOME. If
+        // either points at remoteCwd, that deny rule shadows the workspace write
+        // grant and the provider cannot initialize its shell sandbox or edit.
+        HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
+        CODEX_HOME: posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
         PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
         ...(remoteTarget!.transport === "sandbox"
           ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }
@@ -7389,6 +7810,12 @@ async function createRunnerdBackendWithinSessionClaim(
             }
           : undefined,
         environment: effectiveRunnerEnvironment,
+        onDiagnostic: (message) => {
+          void input.onLog?.(
+            "stderr",
+            `[paperclip-runner] runnerd diagnostic: ${redactSensitiveText(message).slice(-4_096)}\n`,
+          );
+        },
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
         runtimeContext:
           "runtimeContext" in input.execution
@@ -7396,6 +7823,7 @@ async function createRunnerdBackendWithinSessionClaim(
             : null,
         runnerRuntimeContext: remoteRuntimeContext,
         runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
+        externallySandboxed: remoteTarget?.transport === "sandbox",
         opencodeRuntimeDirectory: remoteRunnerFilesystemRoot
           ? posix.join(remoteRunnerFilesystemRoot, "opencode")
           : undefined,
@@ -7621,6 +8049,13 @@ async function createRunnerdBackendWithinSessionClaim(
                     },
                     { parentName: "runner.session.startup" },
                   );
+                  // Cancellation can release the sandbox while activation is
+                  // still waiting for the remote runner process. Attach a
+                  // rejection observer immediately; `ready()` still awaits the
+                  // original promise and reports the same startup failure, but
+                  // an early teardown can no longer crash the controller with
+                  // an unhandled plugin RPC rejection.
+                  void activation.catch(() => undefined);
                 },
                 ready: async () => {
                   await measureNativeRunnerSpan(

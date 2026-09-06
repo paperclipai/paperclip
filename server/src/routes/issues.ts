@@ -2231,55 +2231,85 @@ async function queueResolvedInteractionContinuationWakeup(input: {
           result: interactionResult,
         }
       : null;
-  void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: "issue_commented",
-    payload: {
-      issueId: input.issue.id,
-      interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      mutation: "interaction",
-    },
-    idempotencyKey: input.idempotencyKey ?? `interaction:${input.interaction.id}:${input.interaction.status}`,
-    requestedByActorType: input.actor.actorType,
-    requestedByActorId: input.actor.actorId,
-    contextSnapshot: {
-      issueId: input.issue.id,
-      taskId: input.issue.id,
-      interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      wakeReason: "issue_commented",
-      source: input.source,
-      ...(forceFreshSession ? { forceFreshSession: true } : {}),
-      ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
-    },
-  }).catch((err) => logger.warn({
-    err,
-    issueId: input.issue.id,
-    interactionId: input.interaction.id,
-    agentId: input.issue.assigneeAgentId,
-  }, "failed to wake assignee on issue interaction resolution"));
+  const genericRejectionReason =
+    !planReviewInteraction &&
+    !nativeCompletionReview &&
+    input.interaction.status === "rejected" &&
+    (input.interaction.kind === "request_confirmation" ||
+      input.interaction.kind === "request_checkbox_confirmation")
+      ? readNonEmptyString(readObject(input.interaction.result).reason)
+      : null;
+  const rejectionAgentMessage = genericRejectionReason
+    ? {
+        text: genericRejectionReason,
+        source: "interaction_rejection",
+        sessionId: input.interaction.id,
+      }
+    : null;
+  void input.heartbeat
+    .wakeup(input.issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(rejectionAgentMessage
+          ? { paperclipAgentMessage: rejectionAgentMessage }
+          : {}),
+        ...(reviewPathContext ?? {}),
+        mutation: "interaction",
+      },
+      idempotencyKey:
+        input.idempotencyKey ??
+        `interaction:${input.interaction.id}:${input.interaction.status}`,
+      requestedByActorType: input.actor.actorType,
+      requestedByActorId: input.actor.actorId,
+      contextSnapshot: {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(nativeCompletionReview ? { nativeCompletionReview } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(rejectionAgentMessage
+          ? { paperclipAgentMessage: rejectionAgentMessage }
+          : {}),
+        ...(reviewPathContext ?? {}),
+        wakeReason: "issue_commented",
+        source: input.source,
+        ...(forceFreshSession ? { forceFreshSession: true } : {}),
+        ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
+      },
+    })
+    .catch((err) =>
+      logger.warn(
+        {
+          err,
+          issueId: input.issue.id,
+          interactionId: input.interaction.id,
+          agentId: input.issue.assigneeAgentId,
+        },
+        "failed to wake assignee on issue interaction resolution",
+      ),
+    );
 }
 
 function readCheckboxSelectionForWake(input: {

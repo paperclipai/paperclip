@@ -10,13 +10,28 @@ import {
   validatePrpStructuredRunResult,
   type PrpStructuredRunResult,
 } from "../../protocol/replay-contract.js";
-import { boundedCodexValue, isRetainableCodexPayload } from "./codex-boundaries.js";
+import {
+  boundedCodexValue,
+  isRetainableCodexPayload,
+} from "./codex-boundaries.js";
 
 export function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
 }
+
+/**
+ * Marks an item reconstructed from runnerd's canonical PRP event stream.
+ *
+ * The symbol is intentionally process-local: a provider JSON payload cannot
+ * forge it. Runnerd has already selected the authoritative semantic result,
+ * so the compatibility Codex facade must preserve the item as activity
+ * without trying to infer a second result from its text.
+ */
+export const RUNNERD_CANONICAL_ITEM = Symbol(
+  "paperclip.runnerd.canonical-item",
+);
 
 export function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
@@ -166,13 +181,19 @@ export function differingJsonPaths(
   if (limit <= 0) return [];
   if (Array.isArray(left) && Array.isArray(right)) {
     const paths: string[] = [];
-    for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
-      paths.push(...differingJsonPaths(
-        left[index],
-        right[index],
-        `${prefix}[${index}]`,
-        limit - paths.length,
-      ));
+    for (
+      let index = 0;
+      index < Math.max(left.length, right.length);
+      index += 1
+    ) {
+      paths.push(
+        ...differingJsonPaths(
+          left[index],
+          right[index],
+          `${prefix}[${index}]`,
+          limit - paths.length,
+        ),
+      );
       if (paths.length >= limit) break;
     }
     return paths.length > 0 ? paths : [prefix || "result"];
@@ -180,23 +201,26 @@ export function differingJsonPaths(
   const leftRecord = record(left);
   const rightRecord = record(right);
   if (
-    (typeof left === "object" && left !== null) &&
-    (typeof right === "object" && right !== null) &&
+    typeof left === "object" &&
+    left !== null &&
+    typeof right === "object" &&
+    right !== null &&
     !Array.isArray(left) &&
     !Array.isArray(right)
   ) {
     const paths: string[] = [];
-    const keys = [...new Set([
-      ...Object.keys(leftRecord),
-      ...Object.keys(rightRecord),
-    ])].sort();
+    const keys = [
+      ...new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)]),
+    ].sort();
     for (const key of keys) {
-      paths.push(...differingJsonPaths(
-        leftRecord[key],
-        rightRecord[key],
-        prefix ? `${prefix}.${key}` : key,
-        limit - paths.length,
-      ));
+      paths.push(
+        ...differingJsonPaths(
+          leftRecord[key],
+          rightRecord[key],
+          prefix ? `${prefix}.${key}` : key,
+          limit - paths.length,
+        ),
+      );
       if (paths.length >= limit) break;
     }
     return paths.length > 0 ? paths : [prefix || "result"];

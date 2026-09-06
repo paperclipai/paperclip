@@ -2,33 +2,49 @@ import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
 import type { PrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import { boundedCodexPayload as boundedPayload, isRetainableCodexPayload } from "./codex-boundaries.js";
 import type { CodexSessionState } from "./codex-session-state.js";
-import type { SemanticResultAdmission, TerminalReplayConflict } from "./codex-driver-types.js";
-import { canonicalJson, record, terminalState, text, tryParseResult } from "./codex-driver-values.js";
+import type {
+  SemanticResultAdmission,
+  TerminalReplayConflict,
+} from "./codex-driver-types.js";
+import {
+  RUNNERD_CANONICAL_ITEM,
+  canonicalJson,
+  record,
+  terminalState,
+  text,
+  tryParseResult,
+} from "./codex-driver-values.js";
 
 export function captureResultFromItem(
   state: CodexSessionState,
-    item: Record<string, unknown>,
-    turnId: string,
-  ): boolean {
-    if (state.conversationMode === "direct") return true;
-    if (
-      text(item.type) !== "agentMessage" ||
-      !isRetainableCodexPayload(item.text)
-    )
-      return true;
-    const result = tryParseResult(item.text);
-    if (result !== null && isRetainableCodexPayload(result)) {
-      const admission = admitResult(state, result, text(item.id), turnId);
-      if (admission === "conflict") {
-        state.failProtocol(
-          "conflicting_semantic_result",
-          "Provider agentMessage supplied a different schema-valid semantic result after one was committed.",
-        );
-        return false;
-      }
-    }
+  item: Record<string, unknown>,
+  turnId: string,
+): boolean {
+  if (state.conversationMode === "direct") return true;
+  // Runnerd is the semantic authority for its canonical PRP stream. Its
+  // normalized activity items can still contain schema-shaped assistant
+  // text after paperclip_finish, but re-parsing that text here would create
+  // a second, potentially conflicting result from one provider turn.
+  if ((item as Record<PropertyKey, unknown>)[RUNNERD_CANONICAL_ITEM] === true)
     return true;
+  if (
+    text(item.type) !== "agentMessage" ||
+    !isRetainableCodexPayload(item.text)
+  )
+    return true;
+  const result = tryParseResult(item.text);
+  if (result !== null && isRetainableCodexPayload(result)) {
+    const admission = admitResult(state, result, text(item.id), turnId);
+    if (admission === "conflict") {
+      state.failProtocol(
+        "conflicting_semantic_result",
+        "Provider agentMessage supplied a different schema-valid semantic result after one was committed.",
+      );
+      return false;
+    }
   }
+  return true;
+}
 
 export function admitResult(
   state: CodexSessionState,

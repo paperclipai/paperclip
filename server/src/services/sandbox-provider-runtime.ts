@@ -328,7 +328,11 @@ function metadataMatchesPluginSandboxConfig(
   if (metadata.reuseLease !== true) return false;
   for (const [key, value] of Object.entries(config)) {
     if (key === "provider" || key === "reuseLease") continue;
-    if (value === undefined) continue;
+    // Null is the normalized form of an unspecified optional provider setting.
+    // The provider may report the concrete default it realized (for example,
+    // Daytona resolves a null target to "us"), which remains compatible with
+    // the caller's lack of a preference.
+    if (value === undefined || value === null) continue;
     if (JSON.stringify(metadata[key]) !== JSON.stringify(value)) {
       return false;
     }
