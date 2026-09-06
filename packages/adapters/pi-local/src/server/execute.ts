@@ -53,6 +53,8 @@ import { appendPiWindowsShellGuidance, resolvePiToolAllowlist } from "./tools.js
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 export const DEFAULT_PI_OUTPUT_SILENCE_TIMEOUT_SEC = 300;
+/** Absolute wall-clock ceiling for pi_local when timeoutSec is missing or 0. */
+export const DEFAULT_PI_WALL_TIMEOUT_SEC = 1800;
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -357,9 +359,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    // Existing agent configs often persist timeoutSec=0 as the UI schema default.
+    // For pi_local that must not mean unlimited: a noisy infinite loop would never
+    // trip the silence watchdog. Coerce missing/zero to the 30-minute wall ceiling.
+    // A negative timeoutSec remains the explicit opt-out (honored by the resolver).
+    const configuredTimeoutSec = asNumber(config.timeoutSec, DEFAULT_PI_WALL_TIMEOUT_SEC);
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
-      asNumber(config.timeoutSec, 0),
+      configuredTimeoutSec === 0 ? DEFAULT_PI_WALL_TIMEOUT_SEC : configuredTimeoutSec,
     );
     const graceSec = asNumber(config.graceSec, 20);
     const silenceTimeoutSec = asNumber(

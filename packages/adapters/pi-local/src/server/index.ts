@@ -49,6 +49,10 @@ export const sessionCodec: AdapterSessionCodec = {
 };
 
 export { execute } from "./execute.js";
+export {
+  DEFAULT_PI_OUTPUT_SILENCE_TIMEOUT_SEC,
+  DEFAULT_PI_WALL_TIMEOUT_SEC,
+} from "./execute.js";
 export { listPiSkills, syncPiSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {

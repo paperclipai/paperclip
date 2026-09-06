@@ -1,7 +1,7 @@
 diff --git a/src/manifest.ts b/src/manifest.ts
 --- a/src/manifest.ts
 +++ b/src/manifest.ts
-@@ -17,6 +17,8 @@ const manifest: PaperclipPluginManifestV1 = {
+@@ -18,6 +18,8 @@
      "issues.update",
      "issue.comments.read",
      "issue.comments.create",
@@ -13,11 +13,94 @@ diff --git a/src/manifest.ts b/src/manifest.ts
 diff --git a/src/worker.ts b/src/worker.ts
 --- a/src/worker.ts
 +++ b/src/worker.ts
-@@ -914,6 +914,60 @@ export const plugin = definePlugin({
+@@ -139,7 +139,10 @@
  
+ type TelegramBoardAccessState = {
+   paperclipBoardApiTokenRef: string | null;
++  /** Display label only (displayName/name/login/email). Never use as actorUserId. */
+   identity: string | null;
++  /** Canonical Paperclip user ID from /api/cli-auth/me. */
++  actorUserId: string | null;
+   companyId: string | null;
+   updatedAt: string | null;
+ };
+@@ -221,11 +224,57 @@
+   return {
+     paperclipBoardApiTokenRef: asNonEmptyString(record.paperclipBoardApiTokenRef),
+     identity: asNonEmptyString(record.identity),
++    actorUserId: asNonEmptyString(record.actorUserId),
+     companyId: asNonEmptyString(record.companyId),
+     updatedAt: asNonEmptyString(record.updatedAt),
+   };
+ }
+ 
++async function resolveOwnerDecisionActorUserId(
++  ctx: PluginContext,
++  boardAccess: TelegramBoardAccessState,
++  companyId: string,
++  baseUrl: string,
++  boardApiToken?: string,
++): Promise<{ ok: true; actorUserId: string } | { ok: false; message: string }> {
++  if (boardAccess.companyId && boardAccess.companyId !== companyId) {
++    return { ok: false, message: "Board access company mismatch" };
++  }
++
++  if (boardAccess.actorUserId) {
++    return { ok: true, actorUserId: boardAccess.actorUserId };
++  }
++
++  if (!boardApiToken) {
++    return { ok: false, message: "Connect board access in Paperclip Telegram settings" };
++  }
++
++  try {
++    const response = await fetchPaperclipApi(ctx, `${baseUrl}/api/cli-auth/me`, {
++      headers: {
++        ...buildPaperclipAuthHeaders(boardApiToken),
++      },
++    });
++    const me = await response.json() as { userId?: unknown; user?: { id?: unknown } | null };
++    const actorUserId =
++      asNonEmptyString(me.userId)
++      ?? asNonEmptyString(me.user?.id);
++    if (!actorUserId) {
++      return { ok: false, message: "Connect board access in Paperclip Telegram settings" };
++    }
++
++    // Persist the canonical ID so legacy board-access state recovers without reconnect.
++    await persistBoardAccessState(ctx, {
++      ...boardAccess,
++      actorUserId,
++      updatedAt: new Date().toISOString(),
++    });
++    return { ok: true, actorUserId };
++  } catch {
++    return { ok: false, message: "Connect board access in Paperclip Telegram settings" };
++  }
++}
++
+ async function loadBoardAccessState(ctx: PluginContext): Promise<TelegramBoardAccessState> {
+   return normalizeBoardAccessState(await ctx.state.get(BOARD_ACCESS_SCOPE));
+ }
+@@ -817,12 +866,14 @@
+       const record = isRecord(params) ? params : {};
+       const paperclipBoardApiTokenRef = asNonEmptyString(record.paperclipBoardApiTokenRef);
+       const identity = asNonEmptyString(record.identity);
++      const actorUserId = asNonEmptyString(record.actorUserId);
+       const companyId = asNonEmptyString(record.companyId);
+       const now = new Date().toISOString();
+ 
+       return persistBoardAccessState(ctx, {
+         paperclipBoardApiTokenRef,
+         identity,
++        actorUserId,
+         companyId,
+         updatedAt: now,
+       });
+@@ -911,6 +962,60 @@
        await notify(ctx, rt, event, formatIssueAssigned);
      });
-+
+ 
 +    ctx.events.on("issue.thread_interaction.created", async (event: PluginEvent) => {
 +      const rt = ensureRuntime();
 +      if (!rt) return;
@@ -71,10 +154,11 @@ diff --git a/src/worker.ts b/src/worker.ts
 +        });
 +      }
 +    });
- 
++
      ctx.events.on("approval.created", async (event: PluginEvent) => {
        const rt = ensureRuntime();
-@@ -1563,6 +1617,69 @@ async function handleCallbackQuery(
+       if (!rt || !rt.config.notifyOnApprovalCreated) return;
+@@ -1567,6 +1672,75 @@
    const chatId = query.message?.chat.id ? String(query.message.chat.id) : null;
    const messageId = query.message?.message_id;
  
@@ -111,13 +195,19 @@ diff --git a/src/worker.ts b/src/worker.ts
 +      }
 +
 +      const boardAccess = await loadBoardAccessState(ctx);
-+      const actorUserId = (!boardAccess.companyId || boardAccess.companyId === companyId)
-+        ? boardAccess.identity
-+        : null;
-+      if (!actorUserId) {
-+        await answerCallbackQuery(ctx, token, query.id, "Board identity is not configured");
++      const resolvedActor = await resolveOwnerDecisionActorUserId(
++        ctx,
++        boardAccess,
++        companyId,
++        baseUrl,
++        boardApiToken,
++      );
++      if (!resolvedActor.ok) {
++        await answerCallbackQuery(ctx, token, query.id, resolvedActor.message);
 +        return;
 +      }
++      const actorUserId = resolvedActor.actorUserId;
++      const displayActor = boardAccess.identity ?? actor;
 +
 +      const result = await ctx.issues.respondInteraction(
 +        issueId,
@@ -133,7 +223,7 @@ diff --git a/src/worker.ts b/src/worker.ts
 +      }
 +
 +      await answerCallbackQuery(ctx, token, query.id, accept ? "Approved" : "Revision requested");
-+      await editMessage(ctx, token, chatId, messageId, accept ? `Approved by ${actor}` : `Revision requested by ${actor}`, {});
++      await editMessage(ctx, token, chatId, messageId, accept ? `Approved by ${displayActor}` : `Revision requested by ${displayActor}`, {});
 +    } catch (err) {
 +      ctx.logger.error("Telegram Owner decision callback failed", { interactionId, error: String(err) });
 +      await answerCallbackQuery(ctx, token, query.id, "Decision action failed");

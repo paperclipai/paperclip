@@ -994,6 +994,26 @@ describe("runChildProcess silenceTimeoutSec watchdog", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toBe("");
   });
+
+  it.skipIf(process.platform === "win32")("wall-clock timeout terminates a noisy infinite loop", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "setInterval(() => { process.stdout.write('.'); }, 40);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 0.4,
+        graceSec: 1,
+        silenceTimeoutSec: 5,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.timedOut).toBe(true);
+    expect(result.errorCode).toBe("timeout");
+    expect(result.stdout.length).toBeGreaterThan(0);
+  });
 });
 
 describe("renderPaperclipWakePrompt", () => {

@@ -18,6 +18,7 @@ export default defineConfig({
       "packages/adapters/pi-local",
       "packages/plugins/sdk",
       "packages/plugins/create-paperclip-plugin",
+      "patches/telegram-owner-decision",
       "server",
       "ui",
       "cli",

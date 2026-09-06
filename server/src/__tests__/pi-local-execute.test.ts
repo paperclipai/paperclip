@@ -59,6 +59,19 @@ setInterval(() => {}, 1000);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeNoisyPiCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+if (process.argv.includes("--list-models")) {
+  console.log("provider  model");
+  console.log("google    gemini-3-flash-preview");
+  process.exit(0);
+}
+setInterval(() => { process.stdout.write("."); }, 40);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 describe("pi_local execute", () => {
   it.skipIf(process.platform === "win32")("terminates a silent Pi child and returns a typed failure", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-silent-"));
@@ -107,6 +120,63 @@ describe("pi_local execute", () => {
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it.skipIf(process.platform === "win32")("terminates a noisy infinite Pi child at the wall ceiling", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-noisy-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "pi");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeNoisyPiCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-pi-noisy-wall",
+        agent: {
+          id: "agent-noisy",
+          companyId: "company-1",
+          name: "Pi Agent",
+          adapterType: "pi_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "google/gemini-3-flash-preview",
+          promptTemplate: "Keep working.",
+          // Schema-default 0 must still resolve to a bounded wall for pi_local;
+          // accelerate with an explicit positive ceiling for the regression.
+          timeoutSec: 0.4,
+          silenceTimeoutSec: 5,
+          graceSec: 1,
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.timedOut).toBe(true);
+      expect(result.errorCode).toBe("timeout");
+      expect(result.errorMessage).toContain("Timed out after 0.4s");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("exports the 1800s Pi wall ceiling default", async () => {
+    const { DEFAULT_PI_WALL_TIMEOUT_SEC } = await import("@paperclipai/adapter-pi-local/server");
+    expect(DEFAULT_PI_WALL_TIMEOUT_SEC).toBe(1800);
   });
 
   it("fails the run when Pi exhausts automatic retries despite exiting 0", async () => {

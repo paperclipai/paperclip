@@ -7,8 +7,9 @@ export function buildPiLocalConfig(v: CreateConfigValues): Record<string, unknow
   if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.thinking = v.thinkingEffort;
   
-  // Pi sessions can run until the CLI exits naturally; keep timeout disabled (0)
-  ac.timeoutSec = 0;
+  // Bound Pi runs with a 30-minute wall ceiling. Silence watchdog (300s) is the
+  // primary hang detector; wall timeout stops noisy infinite loops.
+  ac.timeoutSec = 1800;
   ac.silenceTimeoutSec = 300;
   ac.graceSec = 20;
   

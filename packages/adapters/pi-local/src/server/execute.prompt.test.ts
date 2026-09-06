@@ -66,7 +66,7 @@ type SpawnCall = [
   string,
   string,
   string[],
-  { env: Record<string, string>; stdin?: string; silenceTimeoutSec?: number },
+  { env: Record<string, string>; stdin?: string; silenceTimeoutSec?: number; timeoutSec?: number },
 ];
 
 describe("pi local prompt delivery", () => {
@@ -152,6 +152,7 @@ describe("pi local prompt delivery", () => {
     expect(args).not.toContain(stdin);
     expect(stdin.length).toBeGreaterThan(0);
     expect(call?.[3].silenceTimeoutSec).toBe(300);
+    expect(call?.[3].timeoutSec).toBe(1800);
 
     const promptFlag = args.indexOf("--append-system-prompt");
     const promptArg = promptFlag >= 0 ? args[promptFlag + 1] : "";
@@ -159,6 +160,51 @@ describe("pi local prompt delivery", () => {
     expect(promptArg.length).toBeLessThan(400);
     expect(stagedPrompt).toContain(hugeInstructions);
     expect(stagedPrompt).toContain("The above agent instructions were loaded from");
+  });
+
+  it("coerces schema-default timeoutSec=0 to the 1800s Pi wall ceiling", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-timeout-default-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const result = await execute({
+      runId: "run-timeout-default",
+      agent: {
+        id: "agent-timeout-default",
+        companyId: "company-1",
+        name: "Pi Builder",
+        adapterType: "pi_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "pi",
+        model: "openai/gpt-5.4-mini",
+        promptTemplate: "Keep working.",
+        timeoutSec: 0,
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    if (typeof result.sessionId === "string" && result.sessionId.length > 0) {
+      cleanupFiles.push(result.sessionId);
+    }
+
+    const call = runChildProcess.mock.calls[0] as unknown as SpawnCall | undefined;
+    expect(call?.[3].timeoutSec).toBe(1800);
+    expect(call?.[3].silenceTimeoutSec).toBe(300);
   });
 
   it("enables the native PowerShell tool and shell guidance on Windows", async () => {
