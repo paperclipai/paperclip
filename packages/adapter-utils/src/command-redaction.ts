@@ -268,61 +268,70 @@ interface CommandBodyScan {
   closed: boolean;
 }
 
+// A quote opens a part, and a raw line break inside it is an ordinary byte the
+// shell keeps in the same word. So a body may cross a line break, but only when
+// its closer really arrives: an argument whose closing quote never comes is a
+// run log cut mid-line, and that body still ends where its line does. Both
+// scanners below therefore remember the first line break they crossed and fall
+// back to it when no closer is found. Outside quotes nothing changes: a raw
+// line break still ends the word.
+function advancePastNewline(text: string, index: number): number {
+  return text[index] === "\r" && text[index + 1] === "\n" ? index + 2 : index + 1;
+}
+
 /**
  * Scan the body of a double-quoted part, whether it is a bare `"..."` at depth
- * 0 or a `\"...\"` argument at any serialization depth. Escape pairs and
- * backslash-newline continuations stay inside; a line break or the end of the
- * input truncates the body.
+ * 0 or a `\"...\"` argument at any serialization depth, or of an ANSI-C
+ * `$'...'` part, which has escapes of its own. Escape pairs and
+ * backslash-newline continuations stay inside, and a raw line break stays
+ * inside when the closer arrives later.
  */
+function scanCommandEscapingQuotedBody(
+  text: string,
+  index: number,
+  run: number,
+  closer: string,
+): CommandBodyScan {
+  let cursor = index;
+  let firstNewline: number | null = null;
+  for (;;) {
+    const token = readCommandToken(text, cursor, run);
+    if (token.kind === "quote" && token.quote === closer) {
+      return { end: token.next, closed: true };
+    }
+    if (token.kind === "end" || token.kind === "serializerEnd") {
+      return { end: firstNewline ?? token.start, closed: false };
+    }
+    if (token.kind === "newline") {
+      if (firstNewline === null) firstNewline = token.start;
+      cursor = advancePastNewline(text, token.start);
+      continue;
+    }
+    cursor = token.next;
+  }
+}
+
 function scanCommandDoubleQuotedBody(
   text: string,
   index: number,
   run: number,
 ): CommandBodyScan {
-  let cursor = index;
-  for (;;) {
-    const token = readCommandToken(text, cursor, run);
-    if (token.kind === "quote" && token.quote === '"') {
-      return { end: token.next, closed: true };
-    }
-    if (
-      token.kind === "end" ||
-      token.kind === "newline" ||
-      token.kind === "serializerEnd"
-    ) {
-      return { end: token.start, closed: false };
-    }
-    cursor = token.next;
-  }
+  return scanCommandEscapingQuotedBody(text, index, run, '"');
 }
 
-/** Scan the body of an ANSI-C `$'...'` part, which has escapes of its own. */
 function scanCommandAnsiQuotedBody(
   text: string,
   index: number,
   run: number,
 ): CommandBodyScan {
-  let cursor = index;
-  for (;;) {
-    const token = readCommandToken(text, cursor, run);
-    if (token.kind === "quote" && token.quote === "'") {
-      return { end: token.next, closed: true };
-    }
-    if (
-      token.kind === "end" ||
-      token.kind === "newline" ||
-      token.kind === "serializerEnd"
-    ) {
-      return { end: token.start, closed: false };
-    }
-    cursor = token.next;
-  }
+  return scanCommandEscapingQuotedBody(text, index, run, "'");
 }
 
 /**
  * Scan the body of a single-quoted part. A shell single quote has no escapes,
- * so the backslash is an ordinary byte here and only the closing quote, a line
- * break, or the enclosing serializer's own delimiter ends the body.
+ * so a backslash is an ordinary byte here and the very next quote closes the
+ * part, wherever it falls. Only the enclosing serializer's own delimiter, the
+ * end of the input, or a missing closer ends the body another way.
  */
 function scanCommandSingleQuotedBody(
   text: string,
@@ -330,11 +339,14 @@ function scanCommandSingleQuotedBody(
   run: number,
 ): CommandBodyScan {
   let cursor = index;
+  let firstNewline: number | null = null;
   while (cursor < text.length) {
     const character = text[cursor]!;
     if (character === "'") return { end: cursor + 1, closed: true };
     if (character === "\n" || character === "\r") {
-      return { end: cursor, closed: false };
+      if (firstNewline === null) firstNewline = cursor;
+      cursor = advancePastNewline(text, cursor);
+      continue;
     }
     if (character === '"' && run > 0) {
       let back = cursor - 1;
@@ -345,12 +357,12 @@ function scanCommandSingleQuotedBody(
       }
       const offset = runLength - run;
       if (offset < 0 || offset % (run + 1) !== 0) {
-        return { end: cursor, closed: false };
+        return { end: firstNewline ?? cursor, closed: false };
       }
     }
     cursor += 1;
   }
-  return { end: cursor, closed: false };
+  return { end: firstNewline ?? cursor, closed: false };
 }
 
 function scanCommandQuotedBody(
@@ -381,9 +393,20 @@ function scanCommandWordTail(text: string, index: number, run: number): number {
   let cursor = index;
   for (;;) {
     const token = readCommandToken(text, cursor, run);
+    if (token.kind === "newline") {
+      // A line break carrying a backslash in front of it is a continuation at
+      // whatever layer wrote that run, so the word runs on. The reader already
+      // names the depth-0 spelling, one backslash, a continuation token; a
+      // deeper layer spells the same pair as a run whose length this reading
+      // may divide evenly, and a text that lost a layer of escaping on the
+      // break alone spells it as a run this reading cannot place at all. Both
+      // arrive here, and the shell joins the lines in every one of them.
+      if (text[token.start - 1] !== "\\") return token.start;
+      cursor = advancePastNewline(text, token.start);
+      continue;
+    }
     if (
       token.kind === "end" ||
-      token.kind === "newline" ||
       token.kind === "space" ||
       token.kind === "metacharacter" ||
       token.kind === "serializerEnd"
