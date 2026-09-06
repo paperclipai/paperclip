@@ -163,6 +163,59 @@ export function createPostgresRunDispatchAdapter(
   const treeControlSvc = issueTreeControlService(db);
   const issuesSvc = issueService(db);
 
+  async function withIssueThenRunLocks<T>(
+    input: { runId: string; companyId: string },
+    onMissing: () => T,
+    operation: (tx: Db, run: HeartbeatRun) => Promise<T>,
+  ): Promise<T> {
+    // Queue editing and claiming already use issue -> wake -> run. Read the
+    // immutable issue reference without a lock first, then acquire issue ->
+    // run here as well. Locking the run first can deadlock with a claimant
+    // that owns the issue lock and is waiting for the run.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const hint = await db
+        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!hint) return onMissing();
+      const hintedIssueId = readNonEmptyString(parseObject(hint.contextSnapshot).issueId);
+
+      const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } =
+        await db.transaction(async (tx) => {
+          const typedTx = tx as unknown as Db;
+          if (hintedIssueId) {
+            await typedTx
+              .select({ id: issues.id })
+              .from(issues)
+              .where(and(eq(issues.id, hintedIssueId), eq(issues.companyId, input.companyId)))
+              .for("update");
+          }
+
+          const run = await typedTx
+            .select()
+            .from(heartbeatRuns)
+            .where(
+              and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (!run) return { kind: "missing" as const };
+
+          const lockedIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+          if (lockedIssueId !== hintedIssueId) return { kind: "retry" as const };
+          return { kind: "value" as const, value: await operation(typedTx, run) };
+        });
+
+      if (result.kind === "missing") return onMissing();
+      if (result.kind === "value") return result.value;
+    }
+
+    throw new Error(
+      `run-dispatch: run ${input.runId} changed issue context repeatedly while acquiring locks`,
+    );
+  }
+
   async function loadGateFacts(
     input: LoadGateFactsInput,
     now: Date,
@@ -607,15 +660,8 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<PromoteScheduledRetryOutcome> {
     const now = input.now;
 
-    const transactionResult = await db.transaction(async (tx) => {
-      const run = await tx
-        .select()
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
+    const promoteLockedRun = async (tx: Db, run: HeartbeatRun) => {
       if (
-        !run ||
         run.status !== "scheduled_retry" ||
         !run.scheduledRetryAt ||
         new Date(run.scheduledRetryAt).getTime() > now.getTime()
@@ -705,7 +751,12 @@ export function createPostgresRunDispatchAdapter(
             telemetryRun: null,
           }
         : { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
-    });
+    };
+    const transactionResult = await withIssueThenRunLocks(
+      input,
+      () => ({ outcome: { outcome: "not_promoted" as const }, telemetryRun: null }),
+      promoteLockedRun,
+    );
 
     // Telemetry is best-effort background work; fire it only after the
     // transaction above has committed, so a suppressed retry is never
@@ -803,25 +854,6 @@ export function createPostgresRunDispatchAdapter(
       };
   }
 
-  async function loadCurrentRunForStaleness(
-    tx: Db,
-    input: CancelStaleQueuedRunInput,
-  ): Promise<HeartbeatRun | null> {
-    const run = await tx
-      .select()
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
-      .for("update")
-      .then((rows) => rows[0] ?? null);
-    if (!run) {
-      throw new RunDispatchApplicationError(
-        "run_not_found",
-        `run-dispatch: run ${input.runId} disappeared during stale-run validation`,
-      );
-    }
-    return run.status === input.expectedStatus ? run : null;
-  }
-
   async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
@@ -844,32 +876,34 @@ export function createPostgresRunDispatchAdapter(
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
-    return db.transaction(async (tx) => {
-      const run = await loadCurrentRunForStaleness(tx as unknown as Db, input);
-      if (!run) return { outcome: "lost_race" as const };
-      const { issueId, decision } = await decideCurrentRunStaleness(tx as unknown as Db, run, input.now);
+    const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
+      if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
+      const { issueId, decision } = await decideCurrentRunStaleness(tx, run, input.now);
       if (!decision.stale || !issueId) return { outcome: "not_stale" as const };
-      return cancelStaleRunInTx(
-        tx as unknown as Db,
-        run,
-        issueId,
-        decision,
-        input.expectedStatus,
-        input.now,
-      );
-    });
+      return cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
+    };
+
+    return withIssueThenRunLocks(
+      input,
+      () => {
+        throw new RunDispatchApplicationError(
+          "run_not_found",
+          `run-dispatch: run ${input.runId} disappeared during stale-run validation`,
+        );
+      },
+      cancelLockedRun,
+    );
   }
 
   async function dispatchResolvedInteractionIfCurrent<T>(
     input: DispatchResolvedInteractionInput<T>,
   ): Promise<DispatchResolvedInteractionOutcome<T>> {
-    return db.transaction(async (tx) => {
-      const run = await loadCurrentRunForStaleness(tx as unknown as Db, input);
-      if (!run) {
+    const dispatchLockedRun = async (tx: Db, run: HeartbeatRun) => {
+      if (run.status !== input.expectedStatus) {
         return { dispatched: false as const, cancellation: { outcome: "lost_race" as const } };
       }
       const { issueId, decision: initialDecision } = await decideCurrentRunStaleness(
-        tx as unknown as Db,
+        tx,
         run,
         input.now,
       );
@@ -899,7 +933,7 @@ export function createPostgresRunDispatchAdapter(
 
       if (decision.stale && issueId) {
         const cancellation = await cancelStaleRunInTx(
-          tx as unknown as Db,
+          tx,
           run,
           issueId,
           decision,
@@ -923,7 +957,18 @@ export function createPostgresRunDispatchAdapter(
       void resultPromise.then(markDispatchStarted, markDispatchStarted);
       await dispatchStartedPromise;
       return { dispatched: true as const, resultPromise };
-    });
+    };
+
+    return withIssueThenRunLocks(
+      input,
+      () => {
+        throw new RunDispatchApplicationError(
+          "run_not_found",
+          `run-dispatch: run ${input.runId} disappeared before resolved-interaction dispatch`,
+        );
+      },
+      dispatchLockedRun,
+    );
   }
 
   return {

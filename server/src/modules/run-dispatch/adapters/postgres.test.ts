@@ -204,8 +204,9 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     return false;
   }
 
-  async function reassignIssueOnceAConcurrentWaiterBlocks(
+  async function reassignIssueAndLockRunOnceAConcurrentWaiterBlocks(
     issueId: string,
+    runId: string,
     newAssigneeAgentId: string,
   ) {
     let signalLocked!: () => void;
@@ -218,6 +219,14 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       if (!(await waitForBlockedForUpdate("issues"))) {
         throw new Error("expected a concurrent `for update` waiter on issues");
       }
+      // The production claim path locks issue -> wake -> run. Taking the run
+      // lock here proves the semantic adapter follows the same ordering: if it
+      // held run while waiting for issue, these two transactions would deadlock.
+      await tx
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .for("update");
       await tx
         .update(issues)
         .set({ assigneeAgentId: newAssigneeAgentId })
@@ -414,7 +423,11 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
           contextSnapshot: { issueId, wakeReason: "issue_assigned" },
         });
 
-        const holderDone = reassignIssueOnceAConcurrentWaiterBlocks(issueId, replacementAgentId);
+        const holderDone = reassignIssueAndLockRunOnceAConcurrentWaiterBlocks(
+          issueId,
+          runId,
+          replacementAgentId,
+        );
         const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
           runId,
           companyId,
@@ -571,7 +584,11 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         // Acquire the issue row lock first and hold it until it observes a
         // concurrent `for update` waiter — the promote call below — proving
         // this is a real block, not a race the assertion got lucky on.
-        const holderDone = reassignIssueOnceAConcurrentWaiterBlocks(issueId, newAgentId);
+        const holderDone = reassignIssueAndLockRunOnceAConcurrentWaiterBlocks(
+          issueId,
+          runId,
+          newAgentId,
+        );
 
         const adapter = createPostgresRunDispatchAdapter(db);
         const outcome = await adapter.promoteOrCancelDueRetry({
