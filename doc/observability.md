@@ -753,23 +753,34 @@ To add a name or an enum value, extend the literal constant in
 
 ### Known behavior: aggregate retained body bytes
 
-Each HTTP/2 bridge route holds up to 167,772,160 bytes (160 MiB) at its own
+Each HTTP/2 bridge route holds up to 168,820,736 bytes (161 MiB) at its own
 peak (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in `http2-bridge-server.ts`).
 The host process admits up to 128 concurrent routes (see
 `DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` in `plugin-worker-manager.ts`). Those
-two figures alone would let the process retain up to 21,474,836,480 bytes
-(20 GiB) of body data across every route at the same time.
+two figures alone would let the process retain up to 21,609,054,208 bytes
+(about 20.1 GiB) of body data across every route at the same time.
 
-The process does not reach that figure. `HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES`
-(`http2-bridge-server.ts`) enforces a real, live ledger: 1,073,741,824 bytes
-(1 GiB) across every route, not merely an accepted paper ceiling. Every HTTP/2
-stream creates one `BridgeBodyReservation` owner over its lifetime, and every
-source-level full-body buffer that stream retains — its request-body chunk
-array, the concatenated request body, the response-body chunk array, and the
-concatenated response body — reserves against that one owner before it
-allocates. A reservation that would pass the process total is denied before
-it copies anything, and the host answers 503 instead of accepting the body.
-This accounting covers source-level full-body buffers only: internal Node.js
-and Undici copies (socket buffers, HTTP/2 frame buffers, decompression
-buffers) stay outside it.
+The process does not reach that figure, on two levels.
+`HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES` (`http2-bridge-server.ts`) enforces a
+real, live ledger: 1,073,741,824 bytes (1 GiB) across every route, not merely
+an accepted paper ceiling. Every HTTP/2 stream creates one `BridgeBodyReservation` owner over
+its lifetime, and every source-level full-body buffer that stream retains —
+its request-body chunk array, the concatenated request body, the
+response-body chunk array, and the concatenated response body — reserves
+against that one owner before it allocates. A reservation that would pass the
+process total is denied before it copies anything, and the host answers 503
+instead of accepting the body. The reservation stays live for the response
+body until the HTTP/2 write actually finishes flowing to the peer or the
+stream closes, not merely until the write call returns, so a slow or
+backpressured peer cannot hold response bytes in memory the ledger no longer
+counts.
+
+`HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES` adds a second, per-route ledger on top of
+that process-wide one: each route's own reservations also check a ceiling
+scoped to that one route (its own 168,820,736-byte peak from above), so one
+busy or malicious route can pass its own ceiling and get denied with a 503,
+but it can never spend the whole process-wide total and deny every sibling
+route admission. This accounting covers source-level full-body buffers only:
+internal Node.js and Undici copies (socket buffers, HTTP/2 frame buffers,
+decompression buffers) stay outside it.
 Keep every dimension low-cardinality and free of user content.

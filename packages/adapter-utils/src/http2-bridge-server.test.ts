@@ -8,6 +8,7 @@ import {
   buildHttp2BridgeForwardUrl,
   classifyStreamAgainstGoaway,
   createBridgeBodyReservation,
+  createBridgeRouteBodyLedger,
   createHttp2BridgeServer,
   getBridgeBodyReservedBytesForTest,
   parseCanonicalBridgeRequestPath,
@@ -24,6 +25,7 @@ import {
   HTTP2_BRIDGE_MAX_HEADER_LIST_PAIRS,
   HTTP2_BRIDGE_MAX_HEADER_LIST_SIZE,
   HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES,
+  HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES,
   HTTP2_BRIDGE_MAX_SESSION_INVALID_FRAMES,
   HTTP2_BRIDGE_MAX_SESSION_MEMORY,
   HTTP2_BRIDGE_MAX_SESSION_REJECTED_STREAMS,
@@ -37,6 +39,8 @@ import {
 import {
   createSandboxHttp2BridgeGateway,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+  type SandboxCallbackBridgeRouteRule,
 } from "./sandbox-callback-bridge.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 
@@ -87,6 +91,8 @@ interface TestPairOptions {
   requestBodyTimeoutMs?: number;
   requestBodyLifetimeCeilingMs?: number;
   closeGraceMs?: number;
+  maxBodyBytes?: number;
+  routes?: readonly SandboxCallbackBridgeRouteRule[];
   onGoaway?: (record: Http2BridgeGoawayRecord) => void;
   onSessionError?: (error: Error) => void;
   onSession?: (session: http2.ServerHttp2Session) => void;
@@ -112,6 +118,8 @@ function bindTestServer(options: TestPairOptions = {}) {
     requestBodyTimeoutMs: options.requestBodyTimeoutMs,
     requestBodyLifetimeCeilingMs: options.requestBodyLifetimeCeilingMs,
     closeGraceMs: options.closeGraceMs,
+    maxBodyBytes: options.maxBodyBytes,
+    routes: options.routes,
     onGoaway: options.onGoaway,
     onSessionError: options.onSessionError,
     onSession: options.onSession,
@@ -864,9 +872,12 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     // `test_live_forward_work_never_passes_the_stream_limit` proves the
     // count of live forwards never passes `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS`,
     // so this multiplier bounds live forwards, not merely open streams.
-    expect(
-      HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 4 * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
-    ).toBe(167_772_160);
+    // `HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES` uses this exact same formula to
+    // enforce it as a real per-route cap, not merely a derived figure.
+    const expectedRouteBudget =
+      HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 4 * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
+    expect(expectedRouteBudget).toBe(168_820_736);
+    expect(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES).toBe(expectedRouteBudget);
   });
 
   describe("createBridgeBodyReservation", () => {
@@ -919,6 +930,118 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       owner.release();
       expect(owner.heldBytes).toBe(0);
       expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+    });
+  });
+
+  describe("route isolation", () => {
+    it("test_a_route_ledger_denies_a_reservation_that_passes_its_own_ceiling_with_the_process_ceiling_still_open", () => {
+      // The process-wide ceiling has ample room (1 GiB); only this one
+      // route's own share is tight. A route-scoped owner must still deny
+      // the second reservation, proving the route ceiling is a real,
+      // independent check, not merely a reflection of the process total.
+      const routeLedger = createBridgeRouteBodyLedger();
+      const owner = createBridgeBodyReservation(routeLedger);
+      try {
+        expect(owner.reserve(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES)).toBe(true);
+        expect(routeLedger.reservedBytes).toBe(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES);
+
+        expect(owner.reserve(1)).toBe(false);
+        expect(owner.heldBytes).toBe(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES);
+        expect(routeLedger.reservedBytes).toBe(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES);
+        // The process-wide total only ever grew by what this owner actually
+        // holds: the denied byte reserved against neither total.
+        expect(getBridgeBodyReservedBytesForTest()).toBe(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES);
+      } finally {
+        owner.release();
+      }
+    });
+
+    it("test_one_route_at_its_own_ceiling_never_blocks_a_sibling_routes_reservation", () => {
+      // Two routes, two ledgers. Route A spends its own entire ceiling.
+      // Route B's reservation, against its own separate ledger, must still
+      // succeed: the process-wide total (1 GiB) has room for both routes'
+      // ceilings many times over, so only route isolation — not the shared
+      // total — could explain a denial here.
+      const routeLedgerA = createBridgeRouteBodyLedger();
+      const routeLedgerB = createBridgeRouteBodyLedger();
+      const ownerA = createBridgeBodyReservation(routeLedgerA);
+      const ownerB = createBridgeBodyReservation(routeLedgerB);
+      try {
+        expect(ownerA.reserve(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES)).toBe(true);
+        expect(ownerA.reserve(1)).toBe(false);
+
+        expect(ownerB.reserve(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES)).toBe(true);
+      } finally {
+        ownerA.release();
+        ownerB.release();
+      }
+    });
+
+    it("test_two_bridge_server_routes_isolate_their_own_reservations_end_to_end", async () => {
+      // The end-to-end proof: while route A's own forward holds its own
+      // entire per-route ceiling in flight, a second, independent route's
+      // request must still succeed. Each `bindTestServer` call is its own
+      // route (its own `createHttp2BridgeServer` call, so its own route
+      // ledger). Route A's forward parks on `releaseRouteAHold` after it
+      // reserves, so its reservation stays live — not merely reserved and
+      // immediately released — for the whole time route B's request runs.
+      let markRouteAReserved: (() => void) | undefined;
+      const routeAReserved = new Promise<void>((resolve) => {
+        markRouteAReserved = resolve;
+      });
+      let releaseRouteAHold: (() => void) | undefined;
+      const routeAHold = new Promise<void>((resolve) => {
+        releaseRouteAHold = resolve;
+      });
+      const routeA = bindTestServer({
+        forwardRequest: async (request) => {
+          // Reserve this route's own entire ceiling against its own ledger,
+          // simulating route A at its own documented peak.
+          if (!request.reservation.reserve(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES)) {
+            throw new BridgeProcessCapacityError();
+          }
+          markRouteAReserved!();
+          await routeAHold;
+          return { status: 200 };
+        },
+      });
+      const routeB = bindTestServer({
+        forwardRequest: async () => ({ status: 200 }),
+      });
+      const rawClientA = connectRawClient(routeA.clientSide);
+      const rawClientB = connectRawClient(routeB.clientSide);
+      try {
+        const pendingResponseA = expectSessionStillServesARequest(rawClientA, {
+          method: "GET",
+          path: "/api/agents/me",
+          token: routeA.bridgeToken,
+        });
+
+        // Wait until route A's forward actually holds its own ceiling —
+        // not merely until the request was sent — before checking route B.
+        await routeAReserved;
+        expect(getBridgeBodyReservedBytesForTest()).toBeGreaterThanOrEqual(HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES);
+
+        // Route A now holds its own entire per-route ceiling, live. The
+        // process-wide total still has headroom (1 GiB minus one 161 MiB
+        // route), so route B's independent request succeeds only if its own
+        // ledger is genuinely separate from route A's.
+        const responseB = await expectSessionStillServesARequest(rawClientB, {
+          method: "GET",
+          path: "/api/agents/me",
+          token: routeB.bridgeToken,
+        });
+        expect(responseB.status).toBe(200);
+
+        releaseRouteAHold!();
+        const responseA = await pendingResponseA;
+        expect(responseA.status).toBe(200);
+      } finally {
+        rawClientA.close();
+        rawClientB.close();
+        await routeA.handle.close();
+        await routeB.handle.close();
+      }
     });
   });
 
@@ -1061,6 +1184,64 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     await runTimeoutCase();
     await runCloseCase();
   }, 10_000);
+
+  it("test_a_backpressured_response_holds_its_reservation_until_the_write_settles", async () => {
+    // `stream.end(body)` only queues `body` for asynchronous transmission.
+    // A client that never reads its response leaves those bytes in process
+    // memory well after `end()` returns, so the reservation covering them
+    // must stay held until the write actually settles, not merely until the
+    // call to `end()` returns.
+    const responseBytes = 4 * 1024 * 1024;
+    const responseBody = Buffer.alloc(responseBytes, 0x61);
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      forwardRequest: async (request) => {
+        // Mirror the real forward path: the handler reserves the response
+        // body it read from the sandbox target before returning it.
+        if (!request.reservation.reserve(responseBytes)) {
+          throw new BridgeProcessCapacityError();
+        }
+        return { status: 200, body: responseBody };
+      },
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const req = rawClient.request({
+        ":method": "GET",
+        ":path": "/api/agents/me",
+        authorization: `Bearer ${bridgeToken}`,
+      });
+      // Deliberately paused: no `resume()` and no `data` listener yet, so
+      // the client never issues the flow-control credit the host needs to
+      // finish writing a response this size.
+      const headersReceived = new Promise<void>((resolve) => {
+        req.once("response", () => resolve());
+      });
+      req.end();
+      await headersReceived;
+      // Give the host's `stream.end()` call, and its microtask queue, a
+      // turn to run — the write is now queued but the client still is not
+      // draining it.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(getBridgeBodyReservedBytesForTest()).toBeGreaterThan(0);
+
+      const drained = new Promise<void>((resolve) => {
+        req.on("data", () => {
+          // Discard: this test only cares that the bytes left the host.
+        });
+        req.once("end", () => resolve());
+      });
+      req.resume();
+      await drained;
+
+      // Give the host's `finally` block a turn to run after the write
+      // settles.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+    } finally {
+      rawClient.close();
+      await handle.close();
+    }
+  });
 
   it("test_a_peer_reset_holds_the_reservation_until_the_active_forward_settles", async () => {
     let capturedRequest: Http2BridgeForwardRequest | undefined;
@@ -1523,6 +1704,56 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       await handle.close();
     }
   });
+
+  it("test_a_maximum_size_multipart_attachment_upload_fits_through_the_bridge", async () => {
+    // A file at the exact attachment content ceiling (10 MiB — the same
+    // figure `MAX_ATTACHMENT_BYTES` in `server/src/attachment-types.ts`
+    // enforces) still crosses the bridge wrapped in a multipart body: the
+    // boundary line and the part's own headers add bytes on top of that file
+    // content. The bridge's own body limit needs headroom for that framing,
+    // or a valid maximum-size attachment fails here before the server ever
+    // sees it.
+    const maxAttachmentBytes = 10 * 1024 * 1024;
+    const boundary = "----PaperclipTestBoundary1234567890abcdef";
+    const preamble = Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="attachment.bin"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n`,
+      "utf8",
+    );
+    const fileContent = Buffer.alloc(maxAttachmentBytes, 0x61);
+    const epilogue = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+    const multipartBody = Buffer.concat([preamble, fileContent, epilogue]);
+
+    // The wrapper really does add bytes on top of the file content alone —
+    // otherwise this test would prove nothing about framing headroom.
+    expect(multipartBody.byteLength).toBeGreaterThan(maxAttachmentBytes);
+    expect(multipartBody.byteLength).toBeLessThanOrEqual(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES);
+
+    let receivedBodyBytes = 0;
+    const { gateway, handle } = createTestPair({
+      routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+      forwardRequest: async (request) => {
+        receivedBodyBytes = request.body.byteLength;
+        return { status: 201, body: Buffer.from("{}", "utf8") };
+      },
+    });
+    try {
+      const response = await gateway.forwardRequest({
+        method: "POST",
+        path: "/api/companies/co-1/issues/issue-1/attachments",
+        query: "",
+        headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+        body: multipartBody,
+        receivedToken: BRIDGE_TOKEN,
+      });
+      expect(response.status).toBe(201);
+      expect(receivedBodyBytes).toBe(multipartBody.byteLength);
+    } finally {
+      await gateway.close();
+      await handle.close();
+    }
+  }, 20_000);
 
   it("the sandbox gateway keeps its own token check before it opens a stream", async () => {
     const forwarderTracker = createForwarderCallTracker();

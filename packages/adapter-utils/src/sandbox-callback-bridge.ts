@@ -26,7 +26,17 @@ const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 // rise to the same ceiling `MAX_ATTACHMENT_BYTES`
 // (`server/src/attachment-types.ts`) already accepts, with no unbounded
 // growth in process memory.
-const DEFAULT_BRIDGE_MAX_BODY_BYTES = 10 * 1024 * 1024;
+//
+// The attachment upload route carries its file inside a multipart body, so a
+// file at the exact `MAX_ATTACHMENT_BYTES` ceiling needs more than
+// `MAX_ATTACHMENT_BYTES` raw bytes to cross the bridge: the multipart
+// boundary line, each part's `Content-Disposition` and `Content-Type`
+// headers, and the small JSON metadata field this route also accepts all add
+// bytes on top of the file content the server measures. This headroom
+// covers that framing with a wide margin, so a valid maximum-size attachment
+// never fails at the bridge before the server ever sees it.
+const BRIDGE_MULTIPART_FRAMING_HEADROOM_BYTES = 64 * 1024;
+const DEFAULT_BRIDGE_MAX_BODY_BYTES = 10 * 1024 * 1024 + BRIDGE_MULTIPART_FRAMING_HEADROOM_BYTES;
 // Per-iteration timeout for one poll-loop client call. A healthy control-plane
 // round trip finishes in well under one second, so 10s is far above a normal
 // iteration and never false-fires on a slow-but-live call. It is also well
