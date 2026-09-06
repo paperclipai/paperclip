@@ -92,6 +92,7 @@ interface TestPairOptions {
   requestBodyLifetimeCeilingMs?: number;
   closeGraceMs?: number;
   capacityDenialSettleDeadlineMs?: number;
+  responseWriteSettleDeadlineMs?: number;
   maxBodyBytes?: number;
   routes?: readonly SandboxCallbackBridgeRouteRule[];
   onGoaway?: (record: Http2BridgeGoawayRecord) => void;
@@ -120,6 +121,7 @@ function bindTestServer(options: TestPairOptions = {}) {
     requestBodyLifetimeCeilingMs: options.requestBodyLifetimeCeilingMs,
     closeGraceMs: options.closeGraceMs,
     capacityDenialSettleDeadlineMs: options.capacityDenialSettleDeadlineMs,
+    responseWriteSettleDeadlineMs: options.responseWriteSettleDeadlineMs,
     maxBodyBytes: options.maxBodyBytes,
     routes: options.routes,
     onGoaway: options.onGoaway,
@@ -1534,6 +1536,90 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       rawClient.close();
       await handle.close();
       filler.release();
+    }
+  });
+
+  it("test_a_stalled_normal_response_still_frees_its_reservation_and_slot", async () => {
+    // The completed-response (200) write path must not wait forever for its
+    // queued write to settle either: a client that grants no flow-control
+    // credit for the response would otherwise hold this stream's
+    // reservation and concurrent-stream slot open indefinitely, the same
+    // failure mode the capacity-denial path already guards against. A zero
+    // initial window denies the server any credit to send the response body
+    // with, at the protocol layer, regardless of the fake transport's own
+    // buffering.
+    const forwarderTracker = createForwarderCallTracker();
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      responseWriteSettleDeadlineMs: 30,
+      forwardRequest: async () => {
+        forwarderTracker.markCalled();
+        return { status: 200, headers: {}, body: Buffer.alloc(1_000, "a") };
+      },
+    });
+    const rawClient = connectRawClient(clientSide, { initialWindowSize: 0 });
+    try {
+      const startMs = Date.now();
+      const closed = new Promise<void>((resolve) => {
+        const req = rawClient.request({
+          ":method": "GET",
+          ":path": "/api/agents/me",
+          authorization: `Bearer ${bridgeToken}`,
+        });
+        req.on("error", () => undefined);
+        req.on("close", () => resolve());
+        req.end();
+      });
+      await closed;
+      expect(forwarderTracker.called).toBe(true);
+      // The deadline bounded the wait: the stream closed near the deadline
+      // bound, not after some much longer natural settle that never comes.
+      expect(Date.now() - startMs).toBeLessThan(5_000);
+
+      // This stream's own reservation released even though the client never
+      // drained the response body.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+
+      // The stream's slot freed too. Restore a normal flow-control window
+      // first: only the stalled stream above needs to stall.
+      await new Promise<void>((resolve) => rawClient.settings({ initialWindowSize: 65_535 }, () => resolve()));
+      const survivingResponse = await expectSessionStillServesARequest(rawClient, {
+        method: "GET",
+        path: "/api/agents/me",
+        token: bridgeToken,
+      });
+      expect(survivingResponse.status).toBe(200);
+    } finally {
+      rawClient.close();
+      await handle.close();
+    }
+  });
+
+  it("test_a_normal_response_that_settles_in_time_is_left_alone", async () => {
+    // A response that genuinely settles inside the deadline must not be
+    // force-destroyed: the bounded wait exists only for a stream that never
+    // settles on its own.
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      responseWriteSettleDeadlineMs: 5_000,
+      forwardRequest: async () => ({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: Buffer.from(JSON.stringify({ ok: true }), "utf8"),
+      }),
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const response = await expectSessionStillServesARequest(rawClient, {
+        method: "GET",
+        path: "/api/agents/me",
+        token: bridgeToken,
+      });
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({ ok: true });
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+    } finally {
+      rawClient.close();
+      await handle.close();
     }
   });
 

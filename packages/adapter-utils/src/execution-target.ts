@@ -4120,6 +4120,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     try {
       responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes, options?.reservation);
     } catch (error) {
+      // A denied reservation is retryable capacity pressure, not a body-read
+      // fault: rethrow it before the method-safety classification below runs,
+      // so it reaches the HTTP/2 bridge's own capacity-denial catch (which
+      // answers the retryable 503 and settles the stream) instead of this
+      // function turning it into a 502 or a non-retryable 504.
+      if (error instanceof BridgeProcessCapacityError) throw error;
       if (isSafeBridgeMethod(method)) {
         // The method is safe, so a retry cannot double-apply a mutation. Return a
         // retryable 502 with no indeterminate marker, so the gateway passes it

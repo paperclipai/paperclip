@@ -5720,14 +5720,17 @@ describe("sandbox adapter execution targets", () => {
     try {
       expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
       await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
-      // GET is a safe method: a response-body read fault answers a
-      // retryable 502, the same classification any other read fault gets.
+      // A capacity denial reaches the client as the retryable 503 the
+      // HTTP/2 bridge server's own capacity-denial path answers
+      // (`forwardBridgeRequest` rethrows `BridgeProcessCapacityError` before
+      // the method-safety classification runs), not the generic 502 that
+      // classification would give any other response-body read fault.
       const response = await http2TestRequest(sessionRef.current!, {
         method: "GET",
         path: "/api/agents/me",
         headers: { authorization: `Bearer ${bridgeToken}` },
       });
-      expect(response.status).toBe(502);
+      expect(response.status).toBe(503);
       // The reader actually cancelled: the mock host observes its
       // connection close, instead of staying open with the chunk
       // unacknowledged.
@@ -5807,9 +5810,12 @@ describe("sandbox adapter execution targets", () => {
     try {
       expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
       await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
-      // GET is a safe method: a response-body read fault answers a
-      // retryable 502, the same classification any other read fault gets.
-      // This reads the response with a plain string accumulator, not
+      // A capacity denial must reach the client as the retryable 503 the
+      // HTTP/2 bridge server's own capacity-denial path answers, not the
+      // generic 502 the method-safety classification would otherwise apply
+      // to any other response-body read fault (`forwardBridgeRequest`
+      // rethrows `BridgeProcessCapacityError` before that classification
+      // runs). This reads the response with a plain string accumulator, not
       // `Buffer.concat`, so the spy below counts only the calls the bridge
       // code under test makes.
       const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
@@ -5829,7 +5835,10 @@ describe("sandbox adapter execution targets", () => {
         stream.once("error", reject);
         stream.end();
       });
-      expect(response.status).toBe(502);
+      expect(response.status).toBe(503);
+      expect(JSON.parse(response.body)).toEqual({
+        error: "The bridge host reached its reserved process body byte ceiling. Retry later.",
+      });
       // The GET request itself carries no body, so the host's own read of
       // that empty request body still calls `Buffer.concat` on an empty
       // array — that call is unrelated to this test. No call may carry any

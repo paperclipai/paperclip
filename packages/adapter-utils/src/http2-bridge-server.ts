@@ -649,6 +649,17 @@ export const DEFAULT_HTTP2_BRIDGE_CLOSE_GRACE_MS = 5_000;
  * the write needs would otherwise hold this stream's reservation and
  * {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} slot open forever. */
 export const DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS = 5_000;
+/** The default bound the completed-response (normal, non-denial) write path
+ * waits for its queued write to settle before it force-destroys the stream.
+ * A normal, draining peer settles well inside this bound. A stalled peer
+ * that grants no flow-control credit would otherwise hold this stream's
+ * reservation and {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} slot open
+ * forever — the same failure mode the capacity-denial path already guards
+ * against. Set above {@link DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS}
+ * because a completed response can carry a full-size body (up to the
+ * configured body-byte ceiling), not just a small JSON error payload, so a
+ * slow-but-genuine peer needs more room to drain it. */
+export const DEFAULT_HTTP2_BRIDGE_RESPONSE_WRITE_SETTLE_DEADLINE_MS = 30_000;
 
 function startHttp2BridgePingWatchdog(
   session: http2.ServerHttp2Session,
@@ -787,6 +798,10 @@ export interface CreateHttp2BridgeServerOptions {
    * write to settle before it force-destroys the stream. The default is
    * {@link DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS}. */
   capacityDenialSettleDeadlineMs?: number;
+  /** The bound the completed-response (normal) write path waits for its
+   * queued write to settle before it force-destroys the stalled stream. The
+   * default is {@link DEFAULT_HTTP2_BRIDGE_RESPONSE_WRITE_SETTLE_DEADLINE_MS}. */
+  responseWriteSettleDeadlineMs?: number;
   /** The cap, in bytes, on data this server holds once a bound `Duplex`
    * reports its readable side is full (`push()` returns `false`). Past this
    * cap the server treats the channel as stuck, not merely slow: see
@@ -1032,26 +1047,33 @@ function drainHttp2StreamBody(stream: http2.ServerHttp2Stream, bounds: Http2Brid
  * firing. The caller stays responsible for destroying the stream once this
  * resolves; a bounded resolve here does not by itself free the stream's
  * slot or its reservation.
+ *
+ * The returned `settled` flag tells the caller which way this resolved:
+ * `true` for a genuine `finish`/`close`/`error` event, `false` for the
+ * deadline. A caller that must free the stream's slot only when the peer
+ * truly stalled reads this flag instead of destroying an already-finished
+ * stream unconditionally.
  */
 function waitForHttp2StreamWriteToSettle(
   stream: http2.ServerHttp2Stream,
   deadlineMs?: number,
-): Promise<void> {
-  if (stream.writableFinished || stream.destroyed || stream.closed) return Promise.resolve();
+): Promise<{ settled: boolean }> {
+  if (stream.writableFinished || stream.destroyed || stream.closed) return Promise.resolve({ settled: true });
   return new Promise((resolve) => {
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-    const onSettle = (): void => {
-      stream.removeListener("finish", onSettle);
-      stream.removeListener("close", onSettle);
-      stream.removeListener("error", onSettle);
+    const onSettle = (settled: boolean): void => {
+      stream.removeListener("finish", onFinish);
+      stream.removeListener("close", onFinish);
+      stream.removeListener("error", onFinish);
       if (deadlineTimer) clearTimeout(deadlineTimer);
-      resolve();
+      resolve({ settled });
     };
-    stream.once("finish", onSettle);
-    stream.once("close", onSettle);
-    stream.once("error", onSettle);
+    const onFinish = (): void => onSettle(true);
+    stream.once("finish", onFinish);
+    stream.once("close", onFinish);
+    stream.once("error", onFinish);
     if (deadlineMs !== undefined) {
-      deadlineTimer = setTimeout(onSettle, deadlineMs);
+      deadlineTimer = setTimeout(() => onSettle(false), deadlineMs);
       deadlineTimer.unref?.();
     }
   });
@@ -1114,6 +1136,8 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
   const closeGraceMs = options.closeGraceMs ?? DEFAULT_HTTP2_BRIDGE_CLOSE_GRACE_MS;
   const capacityDenialSettleDeadlineMs =
     options.capacityDenialSettleDeadlineMs ?? DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS;
+  const responseWriteSettleDeadlineMs =
+    options.responseWriteSettleDeadlineMs ?? DEFAULT_HTTP2_BRIDGE_RESPONSE_WRITE_SETTLE_DEADLINE_MS;
   const maxBufferedReadBytes = options.maxBufferedReadBytes ?? DEFAULT_HTTP2_BRIDGE_MAX_BUFFERED_READ_BYTES;
   const readBackpressureStallMs =
     options.readBackpressureStallMs ?? DEFAULT_HTTP2_BRIDGE_READ_BACKPRESSURE_STALL_MS;
@@ -1260,7 +1284,17 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
         // can hold those bytes in process memory well after this call
         // returns. Wait for the write to actually settle before the
         // `finally` block below releases the reservation those bytes hold.
-        await waitForHttp2StreamWriteToSettle(stream);
+        // The wait carries its own deadline: a peer that grants no
+        // flow-control credit and never resets or errors the stream would
+        // otherwise hold this stream's reservation and
+        // HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS slot open forever, the same
+        // failure mode the capacity-denial path above already guards
+        // against. A genuinely stalled stream gets force-destroyed once the
+        // deadline passes; a stream that settled on its own (`finish`,
+        // `close`, or `error`) is left alone, since it is already ending or
+        // ended.
+        const { settled } = await waitForHttp2StreamWriteToSettle(stream, responseWriteSettleDeadlineMs);
+        if (!settled && !stream.destroyed) stream.destroy();
       } catch {
         // The peer reset the stream (RST_STREAM) between dispatch and response.
         // One stream's write fault stays local to that stream.
