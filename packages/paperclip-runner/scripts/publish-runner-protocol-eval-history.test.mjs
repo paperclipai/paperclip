@@ -189,6 +189,60 @@ test("retains immutable history and independent latest-green pointers", () => {
   );
 });
 
+test("report refreshes never replace qualification pointers, including after retention", () => {
+  const record = (value) =>
+    protocolEvalHistoryRecord(
+      value,
+      "https://reports.example/runner-protocol-evals",
+    );
+  let history = mergeProtocolEvalHistory(
+    emptyProtocolEvalHistory(),
+    record(campaign()),
+  );
+  history = mergeProtocolEvalHistory(
+    history,
+    record(
+      campaign({
+        campaignId: "gha-43-1",
+        generatedAt: "2026-09-06T00:00:00.000Z",
+        allPassed: false,
+      }),
+    ),
+  );
+  for (let index = 0; index < 205; index++) {
+    history = mergeProtocolEvalHistory(
+      history,
+      record(
+        campaign({
+          campaignId: `gha-42-1-report-refresh-${index}`,
+          // Defend even against an incorrectly timestamped refresh producer.
+          generatedAt: "2026-09-07T00:00:00.000Z",
+          reportRevision: {
+            sourceCampaignId: "gha-42-1",
+            renderedAt: "2026-09-07T00:00:00.000Z",
+            providerCalls: 0,
+          },
+        }),
+      ),
+    );
+  }
+  assert.equal(history.latestCampaignId, "gha-43-1");
+  assert.equal(history.latestGreenCampaignId, "gha-42-1");
+  assert.equal(
+    buildProtocolEvalPointers(history).latest.campaign.campaignId,
+    "gha-43-1",
+  );
+  assert.equal(
+    buildProtocolEvalPointers(history).latestGreen.campaign.campaignId,
+    "gha-42-1",
+  );
+  assert.equal(history.campaigns.length, 200);
+  assert.match(
+    renderProtocolEvalHistoryIndex(history),
+    /Report refresh · no new model calls/,
+  );
+});
+
 test("retains the latest green pointer outside the 200 newest campaigns", () => {
   const green = protocolEvalHistoryRecord(
     campaign(),

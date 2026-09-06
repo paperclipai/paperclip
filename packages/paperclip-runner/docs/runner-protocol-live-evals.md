@@ -59,6 +59,10 @@ adds a labeled refresh and retains the source campaign, original measurement
 timestamp, renderer digest, and `providerCalls: 0`. Scores and evaluated source
 revisions do not change. This is not a new model qualification run. Future live
 runs create chat reports automatically.
+Refreshes are ordered by their render time in the history list, but keep the
+original measurement timestamp and never replace the latest or latest-green
+qualification pointers. Those two real-run records remain retained even when
+many report revisions fill the history window.
 
 This is the provider-backed, one-turn protocol qualification layer in
 `paperclipai/paperclip-evals/evals/paperclip-runner`. It is intentionally

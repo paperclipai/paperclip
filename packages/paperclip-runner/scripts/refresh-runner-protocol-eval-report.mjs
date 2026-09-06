@@ -60,7 +60,8 @@ export async function refreshProtocolEvalReport({
   const refreshed = {
     ...campaign,
     campaignId: `${campaign.campaignId}-report-${revision}`,
-    generatedAt: renderedAt,
+    // A presentation refresh is not a new model measurement.
+    generatedAt: campaign.generatedAt,
     reportRevision: {
       sourceCampaignId: campaign.campaignId,
       sourceGeneratedAt: campaign.generatedAt,

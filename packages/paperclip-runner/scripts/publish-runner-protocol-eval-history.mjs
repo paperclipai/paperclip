@@ -321,22 +321,28 @@ export function mergeProtocolEvalHistory(history, record) {
     );
   }
   const campaigns = existing
-    ? history.campaigns
+    ? [...history.campaigns]
     : [...history.campaigns, record];
-  campaigns.sort((left, right) =>
-    right.generatedAt.localeCompare(left.generatedAt),
-  );
-  const latest = campaigns[0] ?? null;
+  const activityAt = (campaign) =>
+    campaign.reportRevision?.renderedAt ?? campaign.generatedAt;
+  const activityOrder = (left, right) =>
+    activityAt(right).localeCompare(activityAt(left));
+  campaigns.sort(activityOrder);
+  // Report revisions are discoverable history entries, never qualification runs.
+  const qualifications = campaigns
+    .filter((campaign) => !campaign.reportRevision)
+    .sort((left, right) => right.generatedAt.localeCompare(left.generatedAt));
+  const latest = qualifications[0] ?? null;
   const latestGreen =
-    campaigns.find((campaign) => campaign.complete && campaign.allPassed) ??
-    null;
-  const retained = campaigns.slice(0, MAX_HISTORY_CAMPAIGNS);
-  if (
-    latestGreen &&
-    !retained.some((campaign) => campaign.campaignId === latestGreen.campaignId)
-  ) {
-    retained[retained.length - 1] = latestGreen;
-  }
+    qualifications.find(
+      (campaign) => campaign.complete && campaign.allPassed,
+    ) ?? null;
+  const pointers = [...new Set([latest, latestGreen].filter(Boolean))];
+  const retained = campaigns
+    .filter((campaign) => !pointers.includes(campaign))
+    .slice(0, MAX_HISTORY_CAMPAIGNS - pointers.length)
+    .concat(pointers)
+    .sort(activityOrder);
   return {
     schema: history.schema,
     updatedAt: new Date().toISOString(),

@@ -22,13 +22,18 @@ export function publicViewerShell(index, encodedPayload) {
 }
 
 export async function trustedViewerFiles(viewerRoot) {
-  if (!viewerRoot || !(await lstat(viewerRoot)).isDirectory())
+  const rootStat = viewerRoot ? await lstat(viewerRoot) : null;
+  if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory())
     throw new Error(
       "A trusted viewer build is required for public chat reports",
     );
+  const indexStat = await lstat(join(viewerRoot, "index.html"));
+  const assetsStat = await lstat(join(viewerRoot, "assets"));
   if (
-    !(await lstat(join(viewerRoot, "index.html"))).isFile() ||
-    !(await lstat(join(viewerRoot, "assets"))).isDirectory()
+    indexStat.isSymbolicLink() ||
+    !indexStat.isFile() ||
+    assetsStat.isSymbolicLink() ||
+    !assetsStat.isDirectory()
   )
     throw new Error("Trusted viewer must not use symlinks");
   const index = await readFile(join(viewerRoot, "index.html"), "utf8");

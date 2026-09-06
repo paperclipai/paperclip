@@ -122,6 +122,45 @@ test("scrubs credentials and private references before truncating text", () => {
   assert.match(publicText("a".repeat(41_000)), /\[truncated\]$/);
 });
 
+test("turns containing only withheld items still show the missing-recording notice", () => {
+  const source = artifact();
+  source.issueThread.turns = [
+    { items: [{ kind: "thinking", body: "private-reasoning" }] },
+    { items: [] },
+  ];
+  const view = publicChatView(source, { id: "missing" });
+  assert.equal(view.turns.length, 1);
+  assert.equal(view.turns[0].items[0].kind, "system_notice");
+  assert.match(view.turns[0].items[0].text, /No publishable conversation/);
+});
+
+test("trusted viewer rejects index and assets symlinks outside its root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "eval-viewer-symlinks-"));
+  try {
+    const viewer = join(root, "viewer");
+    const outside = join(root, "outside");
+    await mkdir(viewer);
+    await mkdir(outside);
+    await writeFile(
+      join(outside, "index.html"),
+      '<script type="module"></script>',
+    );
+    await mkdir(join(outside, "assets"));
+    await writeFile(join(outside, "assets/app.js"), "// outside canary");
+    await symlink(join(outside, "index.html"), join(viewer, "index.html"));
+    await symlink(join(outside, "assets"), join(viewer, "assets"));
+    await assert.rejects(trustedViewerFiles(viewer), /symlinks/);
+    await rm(join(viewer, "index.html"));
+    await writeFile(
+      join(viewer, "index.html"),
+      '<script type="module"></script>',
+    );
+    await assert.rejects(trustedViewerFiles(viewer), /symlinks/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("fails closed on unknown fields, raw tools, private evidence and identities", () => {
   for (const mutate of [
     (p) => {

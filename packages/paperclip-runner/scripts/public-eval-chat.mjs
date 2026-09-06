@@ -149,7 +149,8 @@ export function publicChatView(artifact, evalCase) {
       items,
     };
   });
-  if (!turns.length) {
+  if (!turns.some((turn) => turn.items.length > 0)) {
+    turns.length = 0;
     turns.push({
       id: "public-turn-1",
       ordinal: 1,
