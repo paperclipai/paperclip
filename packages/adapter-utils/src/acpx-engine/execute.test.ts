@@ -2407,6 +2407,72 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(logs.every((entry) => !entry.text.includes("Deleted raw Codex run home"))).toBe(true);
   });
 
+  it("quarantines the raw run home when runtime close is not confirmed", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-close-fail";
+    const runSessionFile = path.join(
+      stateDir,
+      "codex-run-homes",
+      runId,
+      "home",
+      "sessions",
+      "session.jsonl",
+    );
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
+            await fs.writeFile(runSessionFile, `${JSON.stringify({ type: "message" })}\n`, "utf8");
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {
+          throw new Error("close failed");
+        },
+      }) as never,
+    });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        stateDir,
+        warmHandleIdleMs: 60_000,
+        env: { CODEX_HOME: sourceCodexHome },
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.stat(path.dirname(path.dirname(runSessionFile)))).resolves.toBeDefined();
+    const quarantineMarker = path.join(stateDir, "codex-run-homes", `${runId}.quarantine`);
+    await expect(fs.readFile(quarantineMarker, "utf8")).resolves.toContain("runtime_close_unconfirmed");
+    expect(logs.some((entry) => entry.text.includes("runtime close was not confirmed"))).toBe(true);
+    expect(logs.every((entry) => !entry.text.includes("Deleted raw Codex run home"))).toBe(true);
+  });
+
   it("restricted-run isolation still holds after Fix A — restricted run gets its own unmanaged CODEX_HOME (KEWL-3852 AC3)", async () => {
     // A restricted run (runtimeToolPolicy.restricted=true) must still get an isolated
     // CODEX_HOME under codex-run-homes/<runId>/home.  Fix A must not weaken that boundary.

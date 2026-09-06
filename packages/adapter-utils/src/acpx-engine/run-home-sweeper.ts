@@ -7,15 +7,14 @@
  * conservative grace window.
  *
  * Safety invariants (all must hold for a home to be eligible):
- *   1. The Paperclip run is terminal   (status: done|cancelled|failed|timed_out)
+ *   1. The Paperclip heartbeat run is terminal
  *   2. Zero open file handles on the directory tree   (lsof check)
  *   3. mtime of the run-home dir is >=24h ago
  *   4. A sanitized session counterpart exists under codex-session-retention/<runId>/
- *      OR codex-run-homes contains a sibling <runId>.quarantine marker
  *
  * Invariant 4 ensures we never silently discard a home whose session data was
- * never retained — only homes where retention already succeeded (or was explicitly
- * quarantined by the runtime) are swept.
+ * never retained. A sibling <runId>.quarantine marker records retention failure,
+ * but does not authorize deletion of the only raw copy.
  *
  * Dry-run mode (default) produces a JSON manifest without deleting anything.
  * Pass --delete to actually remove eligible homes.
@@ -153,8 +152,8 @@ async function sweepAgentDir(
     try {
       stat = await fs.stat(runHomeDir);
     } catch {
-      // home subdir missing — stale or already cleaned; remove the wrapper dir
-      await fs.rm(runDir, { recursive: true, force: true }).catch(() => {});
+      // The raw home is already gone. Remove the wrapper only when it is empty.
+      await fs.rmdir(runDir).catch(() => {});
       continue;
     }
 
@@ -202,14 +201,17 @@ async function sweepAgentDir(
       continue;
     }
 
-    // Retained session counterpart or explicit quarantine marker
+    // A retained session counterpart is mandatory. Quarantine is evidence that
+    // retention failed, so it must never substitute for a sanitized copy.
     const retainedDir = path.join(retentionParent, runId);
     const quarantineMarker = path.join(runHomesParent, `${runId}.quarantine`);
     const hasRetained = await pathExists(retainedDir);
     const hasQuarantine = await pathExists(quarantineMarker);
 
-    if (!hasRetained && !hasQuarantine) {
-      entry.ineligibleReason = "no retained session counterpart and no sibling quarantine marker";
+    if (!hasRetained) {
+      entry.ineligibleReason = hasQuarantine
+        ? "run home is quarantined and has no retained session counterpart"
+        : "no retained session counterpart";
       entries.push(entry);
       continue;
     }
@@ -220,7 +222,6 @@ async function sweepAgentDir(
     if (!opts.dryRun) {
       try {
         await fs.rm(runDir, { recursive: true, force: true });
-        if (hasQuarantine) await fs.rm(quarantineMarker, { force: true });
         entry.deleted = true;
       } catch (err) {
         entry.deleted = false;

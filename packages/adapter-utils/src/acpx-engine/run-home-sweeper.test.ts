@@ -174,13 +174,13 @@ describe("run-home sweeper", () => {
       expect(entry!.deleted).toBe(true);
     });
 
-    it("accepts a quarantine marker in lieu of a retained session (QUARANTINE path)", async () => {
+    it("does not treat quarantine as permission to delete the only raw copy", async () => {
       const { runHomeDir } = await buildRunHome({
         companyDir,
         agentId: "agent-1",
         runId: "run-quarantined",
         ageHours: 30,
-        withQuarantine: true, // no retained dir, but QUARANTINE marker present
+        withQuarantine: true,
       });
 
       const result = await sweep({
@@ -191,18 +191,18 @@ describe("run-home sweeper", () => {
 
       const entry = result.entries.find((e) => e.runId === "run-quarantined");
       expect(entry).toBeDefined();
-      expect(entry!.eligible).toBe(true);
-      expect(entry!.deleted).toBe(true);
+      expect(entry!.eligible).toBe(false);
+      expect(entry!.ineligibleReason).toMatch(/quarantined.*no retained session/i);
       const stat = await fs.stat(runHomeDir).catch(() => null);
-      expect(stat).toBeNull();
+      expect(stat).not.toBeNull();
       await expect(
         fs.stat(path.join(path.dirname(path.dirname(runHomeDir)), "run-quarantined.quarantine")),
-      ).rejects.toThrow();
+      ).resolves.toBeDefined();
     });
   });
 
   describe("active/ambiguous home exclusion (AC2c)", () => {
-    it("excludes a run home that has no retained session and no QUARANTINE marker", async () => {
+    it("excludes a run home that has no retained session and no quarantine marker", async () => {
       const { runHomeDir } = await buildRunHome({
         companyDir,
         agentId: "agent-1",
@@ -220,7 +220,7 @@ describe("run-home sweeper", () => {
       const entry = result.entries.find((e) => e.runId === "run-no-retention");
       expect(entry).toBeDefined();
       expect(entry!.eligible).toBe(false);
-      expect(entry!.ineligibleReason).toMatch(/retained|QUARANTINE/i);
+      expect(entry!.ineligibleReason).toMatch(/retained/i);
 
       // Must not be deleted
       const stat = await fs.stat(runHomeDir).catch(() => null);
