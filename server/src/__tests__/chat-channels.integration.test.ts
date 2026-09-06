@@ -6751,7 +6751,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const runCases = [
       { id: randomUUID(), status: "queued", milestone: "queued" },
       { id: randomUUID(), status: "running", milestone: "working" },
-      { id: randomUUID(), status: "failed", milestone: "failed" },
+      {
+        id: randomUUID(),
+        status: "failed",
+        milestone: "failed",
+        errorCode: "low_trust_isolation_unavailable",
+      },
     ] as const;
     const internalRunId = randomUUID();
     await db.insert(heartbeatRuns).values([
@@ -6768,11 +6773,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
         updatedAt: new Date("2026-09-05T14:59:59.000Z"),
       },
-      ...runCases.map(({ id, status }, index) => ({
+      ...runCases.map(({ id, status, ...runCase }, index) => ({
         id,
         companyId: fixture.companyId,
         agentId: fixture.assignedAgentId,
         status,
+        errorCode: "errorCode" in runCase ? runCase.errorCode : null,
         contextSnapshot: {
           issueId: conversation.issueId,
           source: "chat:slack",
@@ -6812,6 +6818,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         publication.idempotencyKey.startsWith(`run:${internalRunId}:`),
       ),
     ).toBeUndefined();
+    expect(
+      publications.find((publication) =>
+        publication.idempotencyKey.includes(":failed:"),
+      )?.payload,
+    ).toMatchObject({
+      progressState: "failed",
+      text: expect.stringContaining(
+        "Link your identity to Paperclip, or ask a Paperclip admin to enable isolated guest execution.",
+      ),
+    });
   });
 
   it("publishes equal-time Slack outbox rows once in stable order across concurrent drains", async () => {

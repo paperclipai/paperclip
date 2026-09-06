@@ -18,8 +18,9 @@ function milestoneForStatus(status: string): SafeRunMilestone | null {
   return null;
 }
 
-function safeMilestoneText(input: {
+export function safeMilestoneText(input: {
   agentName: string;
+  errorCode?: string | null;
   milestone: SafeRunMilestone;
   issueId: string;
   publicBaseUrl?: string | null;
@@ -35,7 +36,11 @@ function safeMilestoneText(input: {
       taskUrl = null;
     }
   }
-  return `${input.agentName} stopped before completing this turn.${
+  const recovery =
+    input.errorCode === "low_trust_isolation_unavailable"
+      ? `${input.agentName} couldn't safely start this turn because this external identity isn't linked to Paperclip and isolated guest execution isn't available. Link your identity to Paperclip, or ask a Paperclip admin to enable isolated guest execution.`
+      : `${input.agentName} stopped before completing this turn.`;
+  return `${recovery}${
     taskUrl
       ? ` Open the task in Paperclip: ${taskUrl}`
       : " Open the task in Paperclip for details."
@@ -67,6 +72,7 @@ export async function enqueueChatRunMilestones(
     .select({
       runId: heartbeatRuns.id,
       runStatus: heartbeatRuns.status,
+      runErrorCode: heartbeatRuns.errorCode,
       issueId: chatConversations.issueId,
       companyId: chatConversations.companyId,
       endpointId: chatConversations.endpointId,
@@ -137,6 +143,7 @@ export async function enqueueChatRunMilestones(
           source: "safe_milestone",
           text: safeMilestoneText({
             agentName: row.agentName,
+            errorCode: row.runErrorCode,
             milestone,
             issueId: row.issueId,
             publicBaseUrl: input.publicBaseUrl,
