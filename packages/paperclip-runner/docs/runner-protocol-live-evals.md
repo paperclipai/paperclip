@@ -83,6 +83,14 @@ reporting. This layer has no production server to apply a reported run result
 to a task. Its completion cases still require the actual semantic operation
 and durable mock-state change; reporting success alone does not pass them.
 
+ACPX accounting uses the qualified server's billable token semantics: Claude
+and Codex already include reasoning in output, and Codex has no cache-write
+billing category. Other missing categories remain unknown. ACPX stores Codex's
+terminal prompt-response usage without streaming it, so the sidecar forwards
+the single newly persisted receipt bound to that exact turn before its terminal
+event. It never substitutes a previous turn's receipt or context occupancy for
+billable usage. These receipt corrections also apply to non-eval ACPX sessions.
+
 `all` means the maintained enabled campaign, not every matching file in the
 roster directory. A missing campaign file fails closed. Within an enabled
 lane, a missing remote profile or unavailable provider is retained as an
