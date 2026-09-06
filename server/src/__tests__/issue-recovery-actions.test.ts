@@ -424,6 +424,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(updatedIssue).toMatchObject({
       status: "blocked",
     });
+    // LUN-7056: this escalation has no first-class blocker, so without a descriptor the issue would
+    // be unroutable — no dependency to resolve and nobody to wake. Name the owner who can lift it.
+    expect(updatedIssue?.blockedByIssueIds ?? []).toHaveLength(0);
+    expect(updatedIssue?.unblockDescriptor).toMatchObject({
+      owner: { agentId: coderId },
+      action: expect.stringContaining("blocked"),
+    });
     const recoveryIssues = await db
       .select()
       .from(issues)
@@ -608,7 +615,6 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   });
 
   it.each([
-    ["process_lost", undefined],
     ["adapter_failed", "successful_run_missing_state"],
     ["codex_output_inactivity_monitor", undefined],
     ["workspace_validation_failed", "workspace_validation_failed"],
@@ -661,6 +667,92 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(enqueueWakeup).not.toHaveBeenCalled();
     },
   );
+
+  // LUN-7056 AC1/AC2/AC4 for the non-quota infra causes the ticket names. `process_lost` used to run
+  // straight through the board-escalation playbook above and land on `blocked`. A crashed adapter
+  // process blocks nothing — it delays — so the escalation seam defers it instead. Everything
+  // upstream (dispatch re-enqueue, liveness continuation) has already been tried by this point.
+  it("defers a crashed adapter process instead of escalating it to blocked", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Run process was lost before it reported a terminal status",
+      errorCode: "process_lost",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssue.id },
+    });
+
+    const updated = await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: runId,
+        agentId: coderId,
+        status: "failed",
+        error: "Run process was lost before it reported a terminal status",
+        errorCode: "process_lost",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+        resultJson: null,
+      },
+    });
+
+    // Status preserved, wake armed, no `blocked` write and no board takeover.
+    expect(updated).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+    expect(updated?.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  // The deferral is bounded. An execution path that keeps dying on the same infrastructure cause is
+  // not transient any more, so it goes back through the normal playbook — and per AC3 it lands on a
+  // `blocked` that names who can lift it, never the dead descriptor-less state.
+  it("routes a crashed adapter process through the playbook once the deferral bound is spent", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Run process was lost before it reported a terminal status",
+        errorCode: "process_lost",
+        startedAt: new Date(Date.UTC(2026, 6, 15, 20, attempt)),
+        finishedAt: new Date(Date.UTC(2026, 6, 15, 20, attempt, 30)),
+        createdAt: new Date(Date.UTC(2026, 6, 15, 20, attempt)),
+        contextSnapshot: { issueId: sourceIssue.id },
+      });
+    }
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const updated = await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "Run process was lost before it reported a terminal status",
+        errorCode: "process_lost",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+        resultJson: null,
+      },
+    });
+
+    expect(updated?.status).toBe("blocked");
+    expect(updated?.blockedByIssueIds ?? []).toHaveLength(0);
+    expect(updated?.unblockDescriptor).toMatchObject({ owner: expect.anything() });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(1);
+  });
 
   it("stands down while the latest run was cancelled by a board operator", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
@@ -736,6 +828,332 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).toHaveBeenCalled();
   });
 
+  // LUN-7056 AC5: issues already parked in the unroutable `blocked` state by an earlier outage
+  // (2026-08-03, 09-02, 09-04) have no wake path at all, so a repair pass has to lift them.
+  describe("repairUnroutableBlockedIssues", () => {
+    // Every fixture below fails its run at 20:01 and is blocked 30s later — the shape the escalation
+    // itself writes. The repair only acts when the block sits just after the failure that caused it.
+    const BLOCKED_JUST_AFTER_FAILURE = new Date("2026-07-15T20:01:30.000Z");
+
+    it("restores an issue an infra failure left blocked with no blockers and no descriptor", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+        errorCode: "acpx_turn_failed",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      // The exact dead state measured in production: blocked, no blockers, no descriptor.
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 1, unevaluated: 0 });
+      const [repaired] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(repaired).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+      // Restored *and* re-armed — a restore without a wake would just be a quieter dead end.
+      expect(repaired?.monitorNextCheckAt).toBeInstanceOf(Date);
+    });
+
+    // Restoring without a wake would swap a dead `blocked` for an idle `in_progress` — strictly
+    // worse, because an idle in_progress ticket also drags the watchdog.
+    it("leaves the issue blocked when the failed run belongs to another agent", async () => {
+      const { companyId, coderId, managerId, sourceIssueId } = await seedCompany();
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        // Not the current assignee, so the quota monitor cannot be scheduled for it.
+        agentId: managerId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+        errorCode: "acpx_turn_failed",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({
+          status: "blocked",
+          unblockDescriptor: null,
+          assigneeAgentId: coderId,
+          blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE,
+        })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 0 });
+      const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(untouched?.status).toBe("blocked");
+    });
+
+    it("leaves a business-blocked issue untouched", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        // Not an infrastructure cause: the run finished fine and the agent itself decided the work
+        // was blocked on a real decision. That is exactly the state this pass must not touch.
+        status: "succeeded",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 0 });
+      const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(untouched?.status).toBe("blocked");
+    });
+
+    // Review feedback on this PR: the same historical bug also hit issues that were `in_review` when
+    // the bad escalation fired (`escalateStrandedAssignedIssue` is called with
+    // `previousStatus: "in_review"` when a review participant's own run fails). Restoring those to
+    // `in_progress` would silently drop the review disposition and point the retry at the assignee
+    // instead of the reviewer.
+    it("restores a falsely-blocked review to in_review, not in_progress", async () => {
+      const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+      const stageId = randomUUID();
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        // The reviewer's own run is the one that died on infrastructure.
+        agentId: managerId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+        errorCode: "acpx_turn_failed",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues).set({
+        status: "blocked",
+        unblockDescriptor: null,
+        assigneeAgentId: coderId,
+        blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE,
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [{
+            id: stageId,
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+          }],
+        },
+        // The review stage survived the bad escalation, so it is the signal for where to go back to.
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: managerId, userId: null },
+          returnAssignee: { type: "agent", agentId: coderId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      }).where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 1 });
+      const [repaired] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(repaired).toMatchObject({
+        status: "in_review",
+        executionState: { currentParticipant: { type: "agent", agentId: managerId } },
+      });
+      expect(repaired?.monitorNextCheckAt).toBeInstanceOf(Date);
+    });
+
+    // A process crash is infrastructure too (AC1), and the run that died belongs to the assignee, so
+    // the repair must lift it exactly like a quota outage.
+    it("restores an issue a crashed adapter process left blocked", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Run process was lost before it reported a terminal status",
+        errorCode: "process_lost",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 1 });
+      const [repaired] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(repaired).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+      expect(repaired?.monitorNextCheckAt).toBeInstanceOf(Date);
+    });
+
+    // Review feedback on this PR: "the latest run failed on infrastructure" is not on its own
+    // evidence that the failure is what blocked the issue. A crash, then a human blocking the ticket
+    // hours later for an unrelated reason — with no descriptor, which this system produces routinely
+    // — has the identical candidate signature. Resuming it would override a real decision in silence.
+    it("leaves an issue blocked long after the failed run alone", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Run process was lost before it reported a terminal status",
+        errorCode: "process_lost",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({
+          status: "blocked",
+          unblockDescriptor: null,
+          // Six hours later: whatever blocked this, it was not that run.
+          blockedTransitionAt: new Date("2026-07-16T02:00:00.000Z"),
+        })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-16T02:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 0 });
+      const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(untouched?.status).toBe("blocked");
+    });
+
+    // Same reasoning in the other direction: a block that predates the failure cannot have been
+    // caused by it. Also covers rows written before `blockedTransitionAt` existed (2026-08-11),
+    // where the stamp is null and causality is simply unprovable.
+    it("leaves an issue alone when the block predates the failed run or has no transition stamp", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Run process was lost before it reported a terminal status",
+        errorCode: "process_lost",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: null })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const result = await recovery.repairUnroutableBlockedIssues({ now: new Date("2026-07-15T20:05:00.000Z") });
+
+      expect(result).toMatchObject({ repaired: 0 });
+      const [untouched] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(untouched?.status).toBe("blocked");
+    });
+
+    // Review feedback: startup is not the only moment an issue can land here, so the pass also runs
+    // from the periodic sweep — throttled, because it must not re-scan on every scheduler tick.
+    it("throttles the periodic backstop but still runs once the interval has passed", async () => {
+      const { companyId, coderId, sourceIssueId } = await seedCompany();
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId: coderId,
+        invocationSource: "manual",
+        status: "failed",
+        error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+        errorCode: "acpx_turn_failed",
+        startedAt: new Date("2026-07-15T20:00:00.000Z"),
+        finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+        contextSnapshot: { issueId: sourceIssueId },
+      });
+      await db.update(issues)
+        .set({ status: "blocked", unblockDescriptor: null, blockedTransitionAt: BLOCKED_JUST_AFTER_FAILURE })
+        .where(eq(issues.id, sourceIssueId));
+
+      const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+      const first = await recovery.repairUnroutableBlockedIssues({
+        now: new Date("2026-07-15T20:05:00.000Z"),
+        throttle: true,
+      });
+      expect(first).toMatchObject({ repaired: 1, throttled: false });
+
+      // A tick two minutes later does not re-scan.
+      const second = await recovery.repairUnroutableBlockedIssues({
+        now: new Date("2026-07-15T20:07:00.000Z"),
+        throttle: true,
+      });
+      expect(second).toMatchObject({ inspected: 0, throttled: true });
+
+      // An hour later it does, without a restart.
+      const third = await recovery.repairUnroutableBlockedIssues({
+        now: new Date("2026-07-15T21:05:00.000Z"),
+        throttle: true,
+      });
+      expect(third.throttled).toBe(false);
+    });
+  });
+
+  // LUN-7056: the reconcile pass must not let a crashed run reach a `blocked` write either. The
+  // existing dispatch/continuation retries run first, so the observable end state after one pass is
+  // simply "still in_progress, still owned by the assignee, no board takeover".
+  it("never blocks the issue on a crashed adapter process", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Run process was lost before it reported a terminal status",
+      errorCode: "process_lost",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    await recovery.reconcileStrandedAssignedIssues();
+
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({ status: "in_progress", assigneeAgentId: coderId });
+    // The real error code is preserved on the run — recovery must not relabel a crash as quota.
+    const [untouchedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(untouchedRun?.errorCode).toBe("process_lost");
+  });
+
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();
@@ -781,6 +1199,47 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const secondResult = await recovery.reconcileStrandedAssignedIssues();
     expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  // LUN-7056: reproduces the 2026-09-04 outage byte-for-byte. The ACP engine reported the session
+  // limit as `acpx_turn_failed`, which missed quota classification, so the issue was moved to
+  // `blocked` with no blockers and no unblock descriptor — a state nothing can ever wake.
+  it("keeps the issue in place and arms a retry when a session limit arrives as an engine failure", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Internal error: You've hit your session limit · resets 8am (Asia/Bangkok)",
+      errorCode: "acpx_turn_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.providerQuotaMonitored).toBe(1);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    // The status is preserved — the infra failure delayed the work, it did not block it.
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      monitorScheduledBy: "assignee",
+    });
+    // ...and a wake is armed at the provider reset time, so the issue recovers unattended.
+    expect(updatedIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(updatedIssue?.executionPolicy).toMatchObject({
+      monitor: { serviceName: "AI provider quota", externalRef: runId, recoveryPolicy: "wake_owner" },
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun).toMatchObject({ errorCode: "provider_quota" });
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
   });
 
