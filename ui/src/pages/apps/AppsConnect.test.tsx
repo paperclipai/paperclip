@@ -157,6 +157,7 @@ async function passAccessStep() {
   }
   const submit = Array.from(document.body.querySelectorAll("button")).find(
     (b) => b.textContent?.trim() === "Save and continue"
+      || b.textContent?.trim() === "Continue"
       || b.textContent?.trim().startsWith("Continue to"),
   );
   await act(async () => {
@@ -774,6 +775,38 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     },
   );
 
+  it("labels GitHub's local setup transition without promising a provider handoff", async () => {
+    mockSearch.value = "source=github";
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+
+    await render();
+
+    const continueButton = buttonByText("Continue");
+    expect(continueButton).toBeDefined();
+    expect(continueButton?.disabled).toBe(false);
+    expect(continueButton?.querySelector(".lucide-arrow-up-right")).toBeNull();
+    expect(buttonByText("Continue to GitHub")).toBeUndefined();
+
+    await passAccessStep();
+
+    expect(container.textContent).toContain("Step 2 of 2");
+    expect(container.textContent).toContain("How do you want to connect?");
+    expect(buttonByText("Continue to GitHub")).toBeDefined();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps provider-specific wording and the handoff cue for direct OAuth", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValue({ apps: [NOTION] });
+
+    await render();
+
+    const continueButton = buttonByText("Continue to Notion");
+    expect(continueButton).toBeDefined();
+    expect(continueButton?.querySelector(".lucide-arrow-up-right")).not.toBeNull();
+  });
+
   it("keeps GitHub's personal identity defaults while its managed method awaits enrollment", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({
@@ -798,6 +831,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(radioContaining("My GitHub account")?.getAttribute("aria-checked")).toBe("true");
     expect(radioContaining("Any agent")?.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toContain("Which agents may use your GitHub when you’re responsible?");
+    expect(buttonByText("Continue")).toBeDefined();
+    expect(buttonByText("Continue to GitHub")).toBeUndefined();
 
     await passAccessStep();
 
@@ -916,7 +951,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    const accessContinue = buttonByText("Save and continue") ?? buttonByText("Continue to GitHub");
+    const accessContinue = buttonByText("Continue");
     expect(accessContinue?.disabled).toBe(false);
     await act(async () => {
       accessContinue?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1116,7 +1151,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     ).find((r) => r.textContent?.includes("Just agents I pick"));
     expect(pick?.disabled).toBe(false);
     // Continue refuses the forbidden choice even though it is the current one.
-    expect(buttonByText("Save and continue")?.disabled).toBe(true);
+    expect(buttonByText("Continue")?.disabled).toBe(true);
   });
 
   it("opens the selected app directly on its setup route", async () => {
@@ -1329,7 +1364,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     ));
     expect(container.textContent).toContain("This task grants access only to Ada");
     const continueButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Save and continue",
+      (button) => button.textContent?.trim() === "Continue",
     );
     expect(continueButton).toBeTruthy();
     expect(continueButton?.disabled).toBe(false);
