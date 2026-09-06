@@ -1695,6 +1695,13 @@
       "when": 1788585030341,
       "tag": "0243_typical_sauron",
       "breakpoints": true
+    },
+    {
+      "idx": 244,
+      "version": "7",
+      "when": 1788673647823,
+      "tag": "0244_tan_chat",
+      "breakpoints": true
     }
   ]
 }

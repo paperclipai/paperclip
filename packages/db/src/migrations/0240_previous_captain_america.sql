@@ -115,7 +115,7 @@ CREATE TABLE "chat_endpoints" (
 	"bot_display_name" text,
 	"bot_avatar_url" text,
 	"allow_direct_messages" boolean DEFAULT true NOT NULL,
-	"allow_group_chats" boolean DEFAULT false NOT NULL,
+	"allow_group_chats" boolean DEFAULT true NOT NULL,
 	"allow_unlinked_people" boolean DEFAULT true NOT NULL,
 	"concurrency_policy" text DEFAULT 'queue' NOT NULL,
 	"capabilities" jsonb DEFAULT '{"threads":false,"directMessages":false,"nativeStreaming":false,"messageEdits":false,"messageDeletes":false,"reactions":false,"files":false,"cards":false,"actions":false,"modals":false,"slashCommands":false,"ephemeralMessages":false,"proactiveDirectMessages":false}'::jsonb NOT NULL,
