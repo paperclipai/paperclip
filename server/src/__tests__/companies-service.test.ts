@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   activityLog,
@@ -7,6 +7,7 @@ import {
   agents,
   agentWakeupRequests,
   builtInManagedResources,
+  cases,
   companies,
   companySkillVersions,
   companySkills,
@@ -14,6 +15,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   principalPermissionGrants,
   routines,
   routineTriggers,
@@ -23,6 +25,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companyService } from "../services/companies.js";
+import { deriveIssuePrefixBase } from "../services/issue-prefix.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { builtInAgentService, reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
 
@@ -58,6 +61,8 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(cases);
+    await db.delete(issues);
     await db.delete(companies);
   });
 
@@ -875,6 +880,231 @@ describeEmbeddedPostgres("companyService", () => {
     await expect(svc.getById("tumbly-haus-creative")).resolves.toBeNull();
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
     await expect(svc.getById("")).resolves.toBeNull();
+  });
+
+  describe("issue prefix re-derivation on rename", () => {
+    const TEST_ACTOR = {
+      actorType: "user" as const,
+      actorId: "test-user",
+      agentId: null,
+      runId: null,
+    };
+
+    beforeEach(() => {
+      // The tenant server token is the managed-instance signal the prefix
+      // re-derivation gates on.
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    });
+
+    afterEach(() => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    });
+
+    async function seedCompanyWithWork(name: string, issuePrefix: string) {
+      const [company] = await db
+        .insert(companies)
+        .values({ name, issuePrefix })
+        .returning({ id: companies.id });
+      const companyId = company!.id;
+      await db.insert(issues).values([
+        { companyId, title: "First", issueNumber: 1, identifier: `${issuePrefix}-1` },
+        { companyId, title: "Second", issueNumber: 12, identifier: `${issuePrefix}-12` },
+        // A pre-identifier issue must survive the re-key untouched.
+        { companyId, title: "Unnumbered", issueNumber: null, identifier: null },
+      ]);
+      await db.insert(cases).values({
+        companyId,
+        caseNumber: 3,
+        identifier: `${issuePrefix}-C3`,
+        caseType: "decision",
+        title: "A case",
+      });
+      return companyId;
+    }
+
+    // Nulls last, so an issue that never got an identifier stays visible in
+    // the assertion instead of sorting unpredictably.
+    function sortIdentifiers(values: (string | null)[]) {
+      return [...values].sort((a, b) => {
+        if (a === null) return b === null ? 0 : 1;
+        if (b === null) return -1;
+        return a.localeCompare(b);
+      });
+    }
+
+    async function readIdentifiers(companyId: string) {
+      const issueRows = await db
+        .select({ identifier: issues.identifier })
+        .from(issues)
+        .where(eq(issues.companyId, companyId));
+      const caseRows = await db
+        .select({ identifier: cases.identifier })
+        .from(cases)
+        .where(eq(cases.companyId, companyId));
+      return {
+        issues: sortIdentifiers(issueRows.map((row) => row.identifier)),
+        cases: sortIdentifiers(caseRows.map((row) => row.identifier)),
+      };
+    }
+
+    it("re-derives the prefix and re-keys both identifier tables on a managed instance", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { name: "Northwind Traders" },
+        TEST_ACTOR,
+      );
+
+      expect(updated).toMatchObject({ name: "Northwind Traders", issuePrefix: "NOR" });
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["NOR-1", "NOR-12", null],
+        cases: ["NOR-C3"],
+      });
+
+      const logged = await db
+        .select({ details: activityLog.details })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "company.updated"),
+        ));
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toMatchObject({
+        details: {
+          source: "company_rename",
+          reason: "issue_prefix_rederived",
+          previousIssuePrefix: "ACM",
+          issuePrefix: "NOR",
+          issuesRekeyed: 2,
+          casesRekeyed: 1,
+        },
+      });
+    });
+
+    it("suffixes the candidate when another company already holds the derived base", async () => {
+      await db.insert(companies).values({ name: "Northwind Holdings", issuePrefix: "NOR" });
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { name: "Northwind Traders" },
+        TEST_ACTOR,
+      );
+
+      expect(updated?.issuePrefix).toBe("NORA");
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["NORA-1", "NORA-12", null],
+        cases: ["NORA-C3"],
+      });
+    });
+
+    it("keeps the prefix when the rename derives the same base", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACMA");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { name: "Acme Robotics International" },
+        TEST_ACTOR,
+      );
+
+      // The suffixed prefix is kept: the base did not move, so nothing needs
+      // to be re-keyed and no disambiguating suffix is lost.
+      expect(updated?.issuePrefix).toBe("ACMA");
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["ACMA-1", "ACMA-12", null],
+        cases: ["ACMA-C3"],
+      });
+      const logged = await db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(eq(activityLog.companyId, companyId));
+      expect(logged).toHaveLength(0);
+    });
+
+    it("keeps identifiers and the company prefix together under concurrent renames", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+      const svc = companyService(db);
+
+      // Both renames read the company before either commits. Without a row
+      // lock the loser re-keys from the prefix it read, finds nothing left to
+      // move, and strands the identifiers on the winner's prefix while the
+      // company row carries its own.
+      await Promise.all([
+        svc.update(companyId, { name: "Northwind Traders" }, TEST_ACTOR),
+        svc.update(companyId, { name: "Zenith Freight" }, TEST_ACTOR),
+      ]);
+
+      const [company] = await db
+        .select({ issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, companyId));
+      const prefix = company!.issuePrefix;
+      expect(["NOR", "ZEN"]).toContain(prefix);
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: [`${prefix}-1`, `${prefix}-12`, null],
+        cases: [`${prefix}-C3`],
+      });
+    });
+
+    it("keeps the prefix consistent when a stale form resubmits the old name during a rename", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+      const svc = companyService(db);
+
+      // The second caller submits the name it loaded before the rename. Judged
+      // against its own stale read that name looks unchanged, so a pre-lock
+      // comparison would skip re-derivation and restore "Acme Robotics" on top
+      // of the rename's prefix.
+      await Promise.all([
+        svc.update(companyId, { name: "Northwind Traders" }, TEST_ACTOR),
+        svc.update(companyId, { name: "Acme Robotics" }, TEST_ACTOR),
+      ]);
+
+      const [company] = await db
+        .select({ name: companies.name, issuePrefix: companies.issuePrefix })
+        .from(companies)
+        .where(eq(companies.id, companyId));
+      // Whichever update commits last, the prefix derives from the name that
+      // survived, and the identifiers sit on that prefix.
+      expect(company!.issuePrefix.startsWith(deriveIssuePrefixBase(company!.name))).toBe(true);
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: [`${company!.issuePrefix}-1`, `${company!.issuePrefix}-12`, null],
+        cases: [`${company!.issuePrefix}-C3`],
+      });
+    });
+
+    it("leaves the prefix alone when only non-name fields change", async () => {
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { description: "Now with rockets" },
+        TEST_ACTOR,
+      );
+
+      expect(updated?.issuePrefix).toBe("ACM");
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["ACM-1", "ACM-12", null],
+        cases: ["ACM-C3"],
+      });
+    });
+
+    it("never touches the prefix on a self-hosted instance", async () => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      const companyId = await seedCompanyWithWork("Acme Robotics", "ACM");
+
+      const updated = await companyService(db).update(
+        companyId,
+        { name: "Northwind Traders" },
+        TEST_ACTOR,
+      );
+
+      expect(updated).toMatchObject({ name: "Northwind Traders", issuePrefix: "ACM" });
+      await expect(readIdentifiers(companyId)).resolves.toEqual({
+        issues: ["ACM-1", "ACM-12", null],
+        cases: ["ACM-C3"],
+      });
+    });
   });
 
 });

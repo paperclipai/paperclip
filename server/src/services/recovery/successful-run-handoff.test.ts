@@ -109,8 +109,22 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("2. Move it to `in_review` with a real reviewer path");
     expect(decision.instruction).toContain("3. Mark it `blocked` with first-class blockers");
     expect(decision.instruction).toContain("4. Either delegate follow-up work");
-    expect(decision.instruction).toContain("Only mark `done` if you can point at concrete verification evidence");
-    expect(decision.instruction).toContain("you are on your normal model and allowed to work in this wake");
+    expect(decision.instruction).toContain("This is a disposition-only recovery for the persisted source run");
+    expect(decision.instruction).toContain("Do not redo implementation");
+  });
+
+  it("does not launch generic recovery when native semantic finalization owns disposition", () => {
+    expect(decide({
+      run: {
+        ...run,
+        runtimeMode: "native",
+        nativePhase: "arbitrating",
+        completionContractId: "contract-1",
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "native semantic finalization owns the issue disposition",
+    });
   });
 
   it.each([
@@ -531,7 +545,7 @@ describe("successful run handoff decision", () => {
     expect(notice.metadata.sourceRunId).toBe("22222222-2222-4222-8222-222222222222");
     expect(notice.metadata.sections).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        title: "Recovery owner",
+        title: "Recovery",
         rows: expect.arrayContaining([
           expect.objectContaining({ type: "key_value", label: "Recovery action", value: "77777777-7777-4777-8777-777777777777" }),
           expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "CTO" }),

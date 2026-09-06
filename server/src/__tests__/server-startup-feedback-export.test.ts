@@ -40,7 +40,7 @@ const {
       from: vi.fn(() => ({ where: vi.fn(async () => []) })),
     })),
   }) as never);
-  const detectPortMock = vi.fn(async (port: number) => port);
+  const detectPortMock = vi.fn(async ({ port }: { port: number; hostname: string }) => port);
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
     suppressed: false,
@@ -48,6 +48,13 @@ const {
   }));
   const heartbeatServiceMock = {
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
+    recoverNativeRunsAfterRestart: vi.fn(async () => ({
+      restartKind: "hard",
+      dispositions: [],
+      claims: [],
+      awaitingEvidenceRunIds: [],
+      blockedRunIds: [],
+    })),
     reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
@@ -61,10 +68,7 @@ const {
       skipped: 0,
       issueIds: [],
     })),
-    reconcileIssueGraphLiveness: vi.fn(async () => ({
-      escalationsCreated: 0,
-      dependencyWakesHealed: 0,
-    })),
+    reconcileResolvedDependencyWakes: vi.fn(async () => ({ healed: 0 })),
     reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0 })),
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
@@ -114,13 +118,14 @@ const {
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
   const fakeServer = {
+    on: vi.fn().mockReturnThis(),
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
     listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
       callback?.();
       return fakeServer;
     }),
-    close: vi.fn(),
+    close: vi.fn((callback?: (error?: Error) => void) => callback?.()),
   };
   const loadConfigMock = vi.fn();
 
@@ -268,6 +273,15 @@ vi.mock("../services/index.js", () => ({
   executionWorkspaceService: executionWorkspaceServiceFactoryMock,
   externalObjectService: externalObjectsServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
+  githubConnectionEventService: vi.fn(() => ({
+    pollOnce: vi.fn(async () => ({
+      leased: 0,
+      processed: 0,
+      duplicate: 0,
+      ignored: 0,
+      failed: 0,
+    })),
+  })),
   issueThreadInteractionService: issueThreadInteractionServiceFactoryMock,
   issueService: vi.fn(() => ({ update: vi.fn(async () => null) })),
   instanceSettingsService: vi.fn(() => ({
@@ -310,7 +324,32 @@ vi.mock("../services/index.js", () => ({
       needsAttention: 0,
       failed: 0,
     })),
+    sweepGitHubConnectionContinuity: vi.fn(async () => ({
+      checked: 0,
+      due: 0,
+      refreshed: 0,
+      failed: 0,
+    })),
   })),
+}));
+
+vi.mock("../services/question-response-delivery.js", () => ({
+  questionResponseDeliveryService: vi.fn(() => ({
+    sweepPending: vi.fn(async () => ({
+      scanned: 0,
+      steered: 0,
+      coalesced: 0,
+      wakeFallback: 0,
+      failed: 0,
+    })),
+  })),
+}));
+
+vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
+  deliverNativeQuestionResponse: vi.fn(async () => "not_native"),
+  nativeQuestionCancellationIdentity: vi.fn(() => null),
+  nativeQuestionRunToCancel: vi.fn(async () => null),
+  validateNativeQuestionResponseInput: vi.fn(),
 }));
 
 vi.mock("../services/secret-proposals.js", () => ({
@@ -557,6 +596,21 @@ describe("startServer feedback export wiring", () => {
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
   });
 
+  it("closes the bound listener when native startup recovery fails", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    heartbeatServiceMock.recoverNativeRunsAfterRestart.mockRejectedValueOnce(
+      new Error("native recovery unavailable"),
+    );
+
+    await expect(startServer()).rejects.toThrow("native recovery unavailable");
+
+    expect(fakeServer.listen).toHaveBeenCalledTimes(1);
+    expect(fakeServer.close).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses authenticated public startup without an external database URL", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       deploymentExposure: "public",
@@ -595,6 +649,20 @@ describe("startServer authenticated auth origin setup", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("checks port availability on the configured bind host", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      host: "127.0.0.1",
+      port: 3210,
+    }));
+
+    await startServer();
+
+    expect(detectPortMock).toHaveBeenCalledWith({
+      port: 3210,
+      hostname: "127.0.0.1",
+    });
   });
 
   it("derives trusted origins from the detected listen port before auth initializes", async () => {

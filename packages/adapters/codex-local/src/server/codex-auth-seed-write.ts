@@ -33,6 +33,8 @@ export interface WriteCredentialSeedOrNewerInput {
   tempPrefix: string;
   /** The caller name that prefixes a predicate error. */
   errorLabel: string;
+  /** Environment for the merge lock root. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -46,31 +48,35 @@ export async function writeCredentialSeedOrNewer(
   input: WriteCredentialSeedOrNewerInput,
 ): Promise<WriteCredentialSeedOrNewerOutcome> {
   const destinationDir = path.dirname(input.destinationPath);
-  return withDirectoryMergeLock(destinationDir, async () => {
-    const stagedTempPath = path.join(
-      destinationDir,
-      `.${input.tempPrefix}-${process.pid}-${randomUUID()}.tmp`,
-    );
-    // `wx` + explicit mode create the temp private (0600) and fail if it already
-    // exists, so the writer never writes through a pre-existing symlink.
-    const handle = await open(stagedTempPath, "wx", 0o600);
-    try {
-      await handle.writeFile(input.sourceBytes);
-      await handle.close();
-      const decision = await decideCodexAuthMerge(stagedTempPath, input.destinationPath, {
-        seedIfDestAbsent: input.seedIfDestAbsent,
-        errorLabel: input.errorLabel,
-      });
-      if (decision === USE_SOURCE_EXIT) {
-        await rename(stagedTempPath, input.destinationPath);
-        await input.log(input.writtenLine);
-        return "written";
+  return withDirectoryMergeLock(
+    destinationDir,
+    async () => {
+      const stagedTempPath = path.join(
+        destinationDir,
+        `.${input.tempPrefix}-${process.pid}-${randomUUID()}.tmp`,
+      );
+      // `wx` + explicit mode create the temp private (0600) and fail if it already
+      // exists, so the writer never writes through a pre-existing symlink.
+      const handle = await open(stagedTempPath, "wx", 0o600);
+      try {
+        await handle.writeFile(input.sourceBytes);
+        await handle.close();
+        const decision = await decideCodexAuthMerge(stagedTempPath, input.destinationPath, {
+          seedIfDestAbsent: input.seedIfDestAbsent,
+          errorLabel: input.errorLabel,
+        });
+        if (decision === USE_SOURCE_EXIT) {
+          await rename(stagedTempPath, input.destinationPath);
+          await input.log(input.writtenLine);
+          return "written";
+        }
+        await input.log(input.keptLine);
+        return "kept";
+      } finally {
+        await handle.close().catch(() => undefined);
+        await rm(stagedTempPath, { force: true }).catch(() => undefined);
       }
-      await input.log(input.keptLine);
-      return "kept";
-    } finally {
-      await handle.close().catch(() => undefined);
-      await rm(stagedTempPath, { force: true }).catch(() => undefined);
-    }
-  });
+    },
+    input.env,
+  );
 }

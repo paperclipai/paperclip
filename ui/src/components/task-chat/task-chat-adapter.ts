@@ -10,7 +10,7 @@
 import type { Agent } from "@paperclipai/shared";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { resolveCommentAttribution } from "@/lib/comment-attribution";
-import type { TaskChatAuthorKind, TaskChatItem } from "./task-chat-model";
+import type { TaskChatAuthorKind, TaskChatItem, TaskChatMessageItem } from "./task-chat-model";
 
 export interface TaskChatAdapterContext {
   agentMap?: Map<string, Agent>;
@@ -21,6 +21,7 @@ export interface TaskChatAdapterContext {
    * writes and get a "for {user}" attribution chip (the open cross-task write design (attribution)).
    */
   issueAssigneeAgentId?: string | null;
+  verificationCaveatsByRunId?: ReadonlyMap<string, TaskChatMessageItem["verificationCaveats"]>;
 }
 
 function effectiveAgentId(comment: IssueChatComment): string | null {
@@ -43,6 +44,30 @@ export function formatTaskChatTimestamp(value: unknown): string | undefined {
   const d = value instanceof Date ? value : new Date(value as string);
   if (Number.isNaN(d.getTime())) return undefined;
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/**
+ * Follow-up inputs render at the causal slot where a runner consumed them.
+ * Keep their original submission time visible as well so the reordered bubble
+ * cannot look like it travelled backwards in the conversation.
+ */
+export function formatTaskChatCommentTimestamp(
+  comment: IssueChatComment,
+  kind: TaskChatAuthorKind,
+): string | undefined {
+  const queuedAt = formatTaskChatTimestamp(comment.createdAt);
+  const deliveredAt = formatTaskChatTimestamp(comment.conversationAnchorAt);
+  const isDeliveredFollowUp = Boolean(
+    kind === "human" &&
+    comment.conversationAnchorAt &&
+    comment.consumedByRunId &&
+    (comment.followUpRequested || comment.steeredIntoRunId),
+  );
+  if (!isDeliveredFollowUp) return queuedAt;
+
+  if (!queuedAt || !deliveredAt) return queuedAt ?? deliveredAt;
+  const action = comment.steeredIntoRunId ? "Steered" : "Delivered";
+  return `Queued ${queuedAt} · ${action} ${deliveredAt}`;
 }
 
 export function commentsToTaskChatItems(
@@ -83,15 +108,27 @@ export function commentsToTaskChatItems(
         : comment.createdAt
           ? String(comment.createdAt)
           : undefined;
+    // Durable run-authored comments already carry their source run directly.
+    // Activity-derived `runId` is a useful fallback for older rows, but it may
+    // arrive later (or be omitted entirely for server-materialized final
+    // replies). Prefer the stored provenance so settled-response decorations
+    // such as verification caveats are never lost.
+    const sourceRunId = comment.createdByRunId
+      ?? comment.runId
+      ?? comment.derivedCreatedByRunId
+      ?? null;
     items.push({
       id: comment.id || comment.clientId || `${comment.createdAt}`,
       kind: "message",
       author: kind,
       authorName,
       text: comment.body,
-      timestamp: formatTaskChatTimestamp(comment.createdAt),
+      timestamp: formatTaskChatCommentTimestamp(comment, kind),
       optimistic,
       queueTargetRunId: queued ? comment.queueTargetRunId ?? null : null,
+      verificationCaveats: sourceRunId
+        ? ctx.verificationCaveatsByRunId?.get(sourceRunId)
+        : undefined,
       agentIcon,
       onBehalfOfUserName,
       // System notices carry their structured hints through to the render

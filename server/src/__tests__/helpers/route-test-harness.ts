@@ -49,6 +49,11 @@ export function useEmbeddedPostgres(
   }
 
   afterAll(async () => {
+    // End this suite's client before the cluster stops. `tempDb.cleanup()`
+    // also ends every client registered against this cluster, so this call
+    // is redundant defense in depth — it keeps the shutdown order visible
+    // here, not just inside the fixture.
+    await db?.$client.end({ timeout: 1 }).catch(() => {});
     await tempDb?.cleanup();
     tempDb = null;
     db = null;

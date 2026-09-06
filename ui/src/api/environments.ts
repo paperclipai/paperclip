@@ -2,6 +2,7 @@ import type {
   CancelEnvironmentCustomImageSetupSession,
   Environment,
   EnvironmentCapabilities,
+  EnvironmentDeleteBlastRadius,
   EnvironmentLease,
   EnvironmentProbeResult,
   EnvironmentCustomImageSetupSession,
@@ -112,6 +113,17 @@ export const environmentsApi = {
   lease: (leaseId: string) => api.get<EnvironmentLease>(`/environment-leases/${leaseId}`),
   secretRefs: (environmentId: string) =>
     api.get<{ refs: EnvironmentSecretRefDescriptor[] }>(`/environments/${environmentId}/secret-refs`),
+  deleteBlastRadius: (environmentId: string) =>
+    api.get<EnvironmentDeleteBlastRadius>(`/environments/${environmentId}/delete-blast-radius`),
+  // The flag consents to destroying the environment's reusable sandbox leases
+  // inline so the delete can proceed; without it the server rejects with 409
+  // while such leases exist.
+  remove: (environmentId: string, options: { destroyReusableSandboxLeases?: boolean } = {}) =>
+    api.delete<Environment & { destroyedReusableSandboxLeaseCount?: number }>(
+      options.destroyReusableSandboxLeases
+        ? `/environments/${environmentId}?destroyReusableSandboxLeases=true`
+        : `/environments/${environmentId}`,
+    ),
   create: (companyId: string, body: {
     name: string;
     description?: string | null;

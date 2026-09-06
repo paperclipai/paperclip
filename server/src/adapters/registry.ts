@@ -1,13 +1,10 @@
-import type {
-  AdapterModelProfileDefinition,
-  AdapterRuntimeCommandSpec,
-  ServerAdapterModule,
-} from "./types.js";
+import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
 } from "@paperclipai/adapter-utils";
 import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
 import {
@@ -27,7 +24,6 @@ import {
 import {
   agentConfigurationDoc as claudeAgentConfigurationDoc,
   models as claudeModels,
-  modelProfiles as claudeModelProfiles,
 } from "@paperclipai/adapter-claude-local";
 import {
   execute as codexExecute,
@@ -43,7 +39,6 @@ import {
 import {
   agentConfigurationDoc as codexAgentConfigurationDoc,
   models as codexModels,
-  modelProfiles as codexModelProfiles,
 } from "@paperclipai/adapter-codex-local";
 import {
   execute as cursorExecute,
@@ -55,7 +50,6 @@ import {
 import {
   agentConfigurationDoc as cursorAgentConfigurationDoc,
   models as cursorModels,
-  modelProfiles as cursorModelProfiles,
 } from "@paperclipai/adapter-cursor-local";
 import {
   execute as cursorCloudExecute,
@@ -75,7 +69,6 @@ import {
 import {
   agentConfigurationDoc as geminiAgentConfigurationDoc,
   models as geminiModels,
-  modelProfiles as geminiModelProfiles,
 } from "@paperclipai/adapter-gemini-local";
 import {
   execute as grokExecute,
@@ -83,6 +76,8 @@ import {
   syncGrokSkills,
   testEnvironment as grokTestEnvironment,
   sessionCodec as grokSessionCodec,
+  GROK_DEVICE_LOGIN_COMMAND,
+  parseGrokDeviceLoginPrompt,
 } from "@paperclipai/adapter-grok-local/server";
 import {
   agentConfigurationDoc as grokAgentConfigurationDoc,
@@ -114,7 +109,6 @@ import {
 import {
   agentConfigurationDoc as openCodeAgentConfigurationDoc,
   models as openCodeModels,
-  modelProfiles as openCodeModelProfiles,
 } from "@paperclipai/adapter-opencode-local";
 import {
   execute as openclawGatewayExecute,
@@ -134,15 +128,19 @@ import {
   sessionCodec as piSessionCodec,
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
-import {
-  agentConfigurationDoc as piAgentConfigurationDoc,
-  modelProfiles as piModelProfiles,
-} from "@paperclipai/adapter-pi-local";
+import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import {
+  DEFAULT_OPENCODE_RUNNER_MODEL,
+  PaperclipRunnerProviderProfileError,
+  QUALIFIED_ACPX_RUNNER_MODELS,
+  QUALIFIED_OPENCODE_RUNNER_VERSION,
+  resolvePaperclipRunnerProviderProfile,
+} from "../services/native-runtime/provider-profile.js";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -205,7 +203,6 @@ Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly 
 // values only.
 const claudeLoginCapability: AdapterLoginCapability = {
   panelMode: "submitted_browser_code",
-  sandboxTransport: "pseudo_terminal",
   timeoutPolicy: "fixed",
   getCommand: () => CLAUDE_SETUP_TOKEN_COMMAND,
   parsePrompt: (output) => {
@@ -220,13 +217,13 @@ const claudeLoginCapability: AdapterLoginCapability = {
 };
 
 // The Codex interactive login capability. Codex runs `codex login --device-auth`
-// over the streamed exec channel. The flow shows a one-time code that the user
-// enters in the browser. The caller sets the host-side timeout. The device-login
-// flow writes its credential inside the sandbox, so the capability declares no
-// terminal credential capture and no completion claim.
+// on a real pseudo-terminal, because a pipe emits no login prompt. The flow shows
+// a one-time code that the user enters in the browser. The caller sets the
+// host-side timeout. The device-login flow writes its credential inside the
+// sandbox, so the capability declares no terminal credential capture and no
+// completion claim.
 const codexLoginCapability: AdapterLoginCapability = {
   panelMode: "displayed_code",
-  sandboxTransport: "streamed_exec",
   timeoutPolicy: "caller_bounded",
   getCommand: () => CODEX_DEVICE_LOGIN_COMMAND,
   parsePrompt: (output) => {
@@ -235,8 +232,27 @@ const codexLoginCapability: AdapterLoginCapability = {
   },
 };
 
+// The Grok interactive login capability. Grok runs `grok login --device-auth`
+// on a real pseudo-terminal, the same way Codex does. The flow shows a
+// one-time code that the user enters in the browser. The caller sets the
+// host-side timeout. The device-login flow writes its credential inside the
+// sandbox, so the capability declares no terminal credential capture and no
+// completion claim. `getCommand` is descriptive only: the login path selects
+// the real command from the closed key map in `login-command.ts`, never from
+// this member.
+const grokLoginCapability: AdapterLoginCapability = {
+  panelMode: "displayed_code",
+  timeoutPolicy: "caller_bounded",
+  getCommand: () => GROK_DEVICE_LOGIN_COMMAND,
+  parsePrompt: (output) => {
+    const prompt = parseGrokDeviceLoginPrompt(output);
+    return prompt ? { url: prompt.url, code: prompt.code } : null;
+  },
+};
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
+  runtimeToolDelivery: "native_mcp",
   execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   acp: {
@@ -252,7 +268,6 @@ const claudeLocalAdapter: ServerAdapterModule = {
   sessionCodec: claudeSessionCodec,
   sessionManagement: getAdapterSessionManagement("claude_local") ?? undefined,
   models: claudeModels,
-  modelProfiles: claudeModelProfiles,
   listModels: listClaudeModels,
   refreshModels: refreshClaudeModels,
   supportsLocalAgentJwt: true,
@@ -269,6 +284,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
 
 const acpxLocalAdapter: ServerAdapterModule = {
   type: "acpx_local",
+  runtimeToolDelivery: "environment",
   async execute(ctx) {
     await ctx.onLog("stderr", `${retiredAcpxMessage}\n`);
     await ctx.onMeta?.({
@@ -311,6 +327,7 @@ const acpxLocalAdapter: ServerAdapterModule = {
 
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
+  runtimeToolDelivery: "native_mcp",
   execute: codexExecute,
   testEnvironment: codexTestEnvironment,
   acp: {
@@ -326,7 +343,6 @@ const codexLocalAdapter: ServerAdapterModule = {
   sessionCodec: codexSessionCodec,
   sessionManagement: getAdapterSessionManagement("codex_local") ?? undefined,
   models: codexModels,
-  modelProfiles: codexModelProfiles,
   listModels: listCodexModels,
   refreshModels: refreshCodexModels,
   supportsLocalAgentJwt: true,
@@ -340,8 +356,308 @@ const codexLocalAdapter: ServerAdapterModule = {
   loginCapability: codexLoginCapability,
 };
 
+const paperclipRunnerAdapter: ServerAdapterModule = {
+  type: "paperclip_runner",
+  runtimeToolDelivery: "environment",
+  async execute(ctx) {
+    const message = "paperclip_runner requires the native runner coordinator";
+    await ctx.onLog("stderr", `${message}\n`);
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: message,
+      errorCode: "paperclip_runner_coordinator_required",
+      provider: ctx.config.provider === "opencode"
+        ? "opencode"
+        : ctx.config.provider === "claude_managed"
+          ? "anthropic"
+          : ctx.config.provider === "aws_agentcore"
+            ? "amazon-bedrock"
+        : ctx.config.provider === "acpx"
+            ? "acpx"
+            : "codex",
+      summary: message,
+    };
+  },
+  async testEnvironment(context) {
+    let profile: ReturnType<typeof resolvePaperclipRunnerProviderProfile>;
+    try {
+      profile = resolvePaperclipRunnerProviderProfile(context.config);
+    } catch (error) {
+      const profileError = error instanceof PaperclipRunnerProviderProfileError
+        ? error
+        : new PaperclipRunnerProviderProfileError(
+            "paperclip_runner_provider_unsupported",
+            "Paperclip Runner provider configuration is invalid.",
+          );
+      return {
+        adapterType: "paperclip_runner",
+        status: "fail" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: profileError.code,
+          level: "error" as const,
+          message: profileError.message,
+        }],
+      };
+    }
+    if (profile.provider === "acpx") {
+      return {
+        adapterType: "paperclip_runner",
+        status: "pass" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "acpx_profile_qualified",
+          level: "info" as const,
+          message: `ACPX ${profile.acpxAgent} is pinned to the qualified ${profile.model} profile; process readiness is verified by runnerd before the first turn.`,
+        }],
+      };
+    }
+    if (profile.provider === "claude_managed") {
+      return {
+        adapterType: "paperclip_runner",
+        status: "warn" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "claude_managed_profile_selected",
+          level: "info" as const,
+          message: `Claude Managed profile ${profile.managedProfileId} is selected with retention acknowledged. Its stored qualification, API-key binding, and spend ceiling are verified before the first turn.`,
+        }, {
+          code: "claude_managed_retention_notice",
+          level: "warn" as const,
+          message: "Claude Managed is a stateful beta service and is not eligible for ZDR or HIPAA modes.",
+        }],
+      };
+    }
+    if (profile.provider === "aws_agentcore") {
+      return {
+        adapterType: "paperclip_runner",
+        status: "warn" as const,
+        testedAt: new Date().toISOString(),
+        checks: [{
+          code: "aws_agentcore_profile_selected",
+          level: "info" as const,
+          message: `AWS AgentCore profile ${profile.agentCoreProfileId} is selected with retention acknowledged. Its stored qualification, invocation limits, and estimated spend ceiling are verified before the first turn.`,
+        }, {
+          code: "aws_agentcore_retention_notice",
+          level: "warn" as const,
+          message: "AgentCore Memory retains short-term events for 90 days; the spend ceiling is an estimate, not an AWS currency hard stop.",
+        }],
+      };
+    }
+    const result = profile.provider === "opencode"
+      ? await openCodeTestEnvironment(context)
+      : await codexTestEnvironment(context);
+    return { ...result, adapterType: "paperclip_runner" };
+  },
+  listSkills: listCodexSkills,
+  syncSkills: syncCodexSkills,
+  sessionCodec: codexSessionCodec,
+  models: [
+    ...codexModels,
+    { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
+    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
+  ],
+  listModels: async () => [
+    ...await listCodexModels(),
+    { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
+    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
+  ],
+  refreshModels: async () => [
+    ...await refreshCodexModels(),
+    { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
+    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
+  ],
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => config.provider === "claude_managed"
+    || config.provider === "aws_agentcore"
+    || config.provider === "acpx"
+    ? { command: "paperclip-runnerd", detectCommand: null, installCommand: null }
+    : config.provider === "opencode"
+      ? buildNpmRuntimeCommandSpec(
+          config,
+          "opencode",
+          `opencode-ai@${QUALIFIED_OPENCODE_RUNNER_VERSION}`,
+        )
+      : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.148.0"),
+  agentConfigurationDoc:
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or a qualified Claude/Codex ACP agent through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+  getConfigSchema: () => ({
+    fields: [
+      {
+        key: "provider",
+        label: "Provider",
+        type: "select" as const,
+        default: "codex",
+        options: [
+          { value: "codex", label: "Codex" },
+          { value: "opencode", label: `OpenCode ${QUALIFIED_OPENCODE_RUNNER_VERSION}` },
+          { value: "claude_managed", label: "Claude Managed" },
+          { value: "aws_agentcore", label: "AWS AgentCore" },
+          { value: "acpx", label: "ACPX" },
+        ],
+        hint: "Select a local provider, company-qualified managed provider, or qualified Claude/Codex ACPX profile.",
+      },
+      {
+        key: "codexPermissionMode",
+        label: "Codex permission mode",
+        type: "select" as const,
+        default: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
+        options: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.options.map(
+          ({ value, label }) => ({ value, label }),
+        ),
+        hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.description,
+        meta: { visibleWhen: { key: "provider", value: "codex" } },
+      },
+      {
+        key: "opencodePermissionMode",
+        label: "OpenCode permission mode",
+        type: "select" as const,
+        default: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.defaultMode,
+        options: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.options.map(
+          ({ value, label }) => ({ value, label }),
+        ),
+        hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.description,
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      },
+      {
+        key: "acpxPermissionMode",
+        label: "ACPX permission mode",
+        type: "select" as const,
+        default: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.defaultMode,
+        options: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.options.map(
+          ({ value, label }) => ({ value, label }),
+        ),
+        hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.description,
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      },
+      {
+        key: "acpxAgent",
+        label: "ACP agent",
+        type: "select" as const,
+        default: "claude",
+        options: [
+          { value: "claude", label: "Claude via ACPX" },
+          { value: "codex", label: "Codex via ACPX" },
+        ],
+        hint: "Only the pinned Claude and Codex profiles are qualified; Pi is unavailable.",
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      },
+      {
+        key: "model",
+        label: "Provider model",
+        type: "text" as const,
+        default: "",
+        placeholder: DEFAULT_OPENCODE_RUNNER_MODEL,
+        hint: "OpenCode uses provider/model form. ACPX models are pinned by the selected qualified agent profile.",
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      },
+      {
+        key: "managedProfileId",
+        label: "Managed Agent profile",
+        type: "text" as const,
+        required: true,
+        hint: "Company-scoped qualified profile ID or key.",
+        meta: { visibleWhen: { key: "provider", value: "claude_managed" } },
+      },
+      {
+        key: "maxSessionListCostUsd",
+        label: "Session spend ceiling (USD)",
+        type: "number" as const,
+        default: 1,
+        hint: "Hard ceiling for one Claude Managed session.",
+        meta: { visibleWhen: { key: "provider", value: "claude_managed" } },
+      },
+      {
+        key: "managedAgentsRetentionAcknowledged",
+        label: "Acknowledge managed retention",
+        type: "toggle" as const,
+        default: false,
+        hint: "Claude Managed is stateful beta and is not eligible for ZDR or HIPAA modes.",
+        meta: { visibleWhen: { key: "provider", value: "claude_managed" } },
+      },
+      {
+        key: "agentCoreProfileId",
+        label: "AgentCore profile",
+        type: "text" as const,
+        required: true,
+        hint: "Company-scoped qualified AgentCore profile ID or key.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "maxEstimatedSessionCostUsd",
+        label: "Estimated session ceiling (USD)",
+        type: "number" as const,
+        default: 1,
+        hint: "Paperclip estimate; AWS does not provide a per-session currency hard stop.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "maxIterations",
+        label: "Maximum iterations",
+        type: "number" as const,
+        default: 8,
+        hint: "Must be between 1 and the qualified maximum of 8.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "maxOutputTokens",
+        label: "Maximum output tokens",
+        type: "number" as const,
+        default: 4_096,
+        hint: "Must be between 1 and the qualified maximum of 4096.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "timeoutSeconds",
+        label: "Invocation timeout (seconds)",
+        type: "number" as const,
+        default: 300,
+        hint: "Must be between 1 and the qualified maximum of 300 seconds.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "agentCoreRetentionAcknowledged",
+        label: "Acknowledge 90-day Memory retention",
+        type: "toggle" as const,
+        default: false,
+        hint: "The qualified AgentCore profile retains short-term Memory events for 90 days.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "lifecycleMode",
+        label: "Runner lifecycle",
+        type: "select" as const,
+        default: "per_turn",
+        options: [
+          { value: "per_turn", label: "Turn by turn" },
+          { value: "warm", label: "Warm session" },
+        ],
+        hint: "Warm sessions retain runnerd and Codex between governed runs.",
+      },
+      {
+        key: "idleTimeoutMs",
+        label: "Warm idle timeout (ms)",
+        type: "number" as const,
+        default: 300_000,
+        hint: "Warm sessions suspend after this much inactivity.",
+        meta: { visibleWhen: { key: "lifecycleMode", value: "warm" } },
+      },
+    ],
+  }),
+  loginCapability: codexLoginCapability,
+};
+
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
+  runtimeToolDelivery: "environment",
   execute: cursorExecute,
   testEnvironment: cursorTestEnvironment,
   listSkills: listCursorSkills,
@@ -349,7 +665,6 @@ const cursorLocalAdapter: ServerAdapterModule = {
   sessionCodec: cursorSessionCodec,
   sessionManagement: getAdapterSessionManagement("cursor") ?? undefined,
   models: cursorModels,
-  modelProfiles: cursorModelProfiles,
   listModels: listCursorModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -361,6 +676,7 @@ const cursorLocalAdapter: ServerAdapterModule = {
 
 const cursorCloudAdapter: ServerAdapterModule = {
   type: "cursor_cloud",
+  runtimeToolDelivery: "invocation_context",
   execute: cursorCloudExecute,
   testEnvironment: cursorCloudTestEnvironment,
   sessionCodec: cursorCloudSessionCodec,
@@ -376,6 +692,7 @@ const cursorCloudAdapter: ServerAdapterModule = {
 
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
+  runtimeToolDelivery: "environment",
   execute: geminiExecute,
   testEnvironment: geminiTestEnvironment,
   acp: {
@@ -391,7 +708,6 @@ const geminiLocalAdapter: ServerAdapterModule = {
   sessionCodec: geminiSessionCodec,
   sessionManagement: getAdapterSessionManagement("gemini_local") ?? undefined,
   models: geminiModels,
-  modelProfiles: geminiModelProfiles,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
@@ -404,6 +720,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
 
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
+  runtimeToolDelivery: "environment",
   execute: grokExecute,
   testEnvironment: grokTestEnvironment,
   listSkills: listGrokSkills,
@@ -421,10 +738,12 @@ const grokLocalAdapter: ServerAdapterModule = {
     installCommand: null,
   }),
   agentConfigurationDoc: grokAgentConfigurationDoc,
+  loginCapability: grokLoginCapability,
 };
 
 const kimiLocalAdapter: ServerAdapterModule = {
   type: "kimi_local",
+  runtimeToolDelivery: "environment",
   execute: kimiExecute,
   testEnvironment: kimiTestEnvironment,
   acp: {
@@ -449,12 +768,19 @@ const kimiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: kimiAgentConfigurationDoc,
 };
 
-const hermesGatewayAdapter = createHermesGatewayServerAdapter();
+const hermesGatewayAdapter: ServerAdapterModule = {
+  ...createHermesGatewayServerAdapter(),
+  runtimeToolDelivery: "invocation_context",
+};
 
-const hermesLocalAdapter = createHermesLocalServerAdapter();
+const hermesLocalAdapter: ServerAdapterModule = {
+  ...createHermesLocalServerAdapter(),
+  runtimeToolDelivery: "environment",
+};
 
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
+  runtimeToolDelivery: "invocation_context",
   execute: openclawGatewayExecute,
   testEnvironment: openclawGatewayTestEnvironment,
   models: openclawGatewayModels,
@@ -466,13 +792,13 @@ const openclawGatewayAdapter: ServerAdapterModule = {
 
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
+  runtimeToolDelivery: "environment",
   execute: openCodeExecute,
   testEnvironment: openCodeTestEnvironment,
   listSkills: listOpenCodeSkills,
   syncSkills: syncOpenCodeSkills,
   sessionCodec: openCodeSessionCodec,
   models: openCodeModels,
-  modelProfiles: openCodeModelProfiles,
   sessionManagement: getAdapterSessionManagement("opencode_local") ?? undefined,
   listModels: listOpenCodeModels,
   supportsLocalAgentJwt: true,
@@ -485,6 +811,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
 
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
+  runtimeToolDelivery: "environment",
   execute: piExecute,
   testEnvironment: piTestEnvironment,
   listSkills: listPiSkills,
@@ -492,7 +819,6 @@ const piLocalAdapter: ServerAdapterModule = {
   sessionCodec: piSessionCodec,
   sessionManagement: getAdapterSessionManagement("pi_local") ?? undefined,
   models: [],
-  modelProfiles: piModelProfiles,
   listModels: listPiModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -519,6 +845,7 @@ function registerBuiltInAdapters() {
     acpxLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
+    paperclipRunnerAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
@@ -717,16 +1044,6 @@ export async function refreshAdapterModels(type: string): Promise<{ id: string; 
     if (discovered.length > 0) return discovered;
   }
   return adapter.models ?? [];
-}
-
-export async function listAdapterModelProfiles(type: string): Promise<AdapterModelProfileDefinition[]> {
-  const adapter = findActiveServerAdapter(type);
-  if (!adapter) return [];
-  if (adapter.listModelProfiles) {
-    const discovered = await adapter.listModelProfiles();
-    if (discovered.length > 0) return discovered;
-  }
-  return adapter.modelProfiles ?? [];
 }
 
 export function listServerAdapters(): ServerAdapterModule[] {

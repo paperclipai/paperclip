@@ -18,6 +18,7 @@ const mockCompanyService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -94,10 +95,8 @@ function createCompany(id: string) {
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
     feedbackDataSharingEnabled: false,
-    brandColor: "#123456",
     logoAssetId: null,
     logoUrl: null,
-    attachmentMaxBytes: 25_000_000,
     createdAt: now,
     updatedAt: now,
   };
@@ -171,6 +170,7 @@ function resetMockDefaults() {
     if (id === ceoAgentId) return { id, companyId: companyAId, role: "ceo" };
     return null;
   });
+  mockAgentService.list.mockResolvedValue([]);
   mockCompanyPortabilityService.exportBundle.mockResolvedValue(exportResult());
   mockCompanyPortabilityService.previewExport.mockResolvedValue(exportPreviewResult());
   mockCompanyPortabilityService.previewImport.mockResolvedValue({ ok: true });
@@ -235,7 +235,7 @@ describe.sequential("company route cross-company authorization", () => {
     },
     {
       label: "PATCH /api/companies/:companyId/branding",
-      request: (app: express.Express) => request(app).patch(`/api/companies/${companyBId}/branding`).send({ brandColor: "#654321" }),
+      request: (app: express.Express) => request(app).patch(`/api/companies/${companyBId}/branding`).send({ description: "Nope" }),
     },
     {
       label: "POST /api/companies/:companyId/archive",
@@ -279,8 +279,8 @@ describe.sequential("company route cross-company authorization", () => {
     const app = await createApp(companyACeoActor());
 
     await request(app).get(`/api/companies/${companyAId}`).expect(200);
-    await request(app).patch(`/api/companies/${companyAId}`).send({ brandColor: "#abcdef" }).expect(200);
-    await request(app).patch(`/api/companies/${companyAId}/branding`).send({ brandColor: "#abcdef" }).expect(200);
+    await request(app).patch(`/api/companies/${companyAId}`).send({ description: "Branding" }).expect(200);
+    await request(app).patch(`/api/companies/${companyAId}/branding`).send({ description: "Branding" }).expect(200);
     await request(app).post(`/api/companies/${companyAId}/export`).send(exportRequest).expect(200);
     await request(app).post(`/api/companies/${companyAId}/exports/preview`).send(exportRequest).expect(200);
     await request(app).post(`/api/companies/${companyAId}/imports/preview`).send(importRequest(companyAId)).expect(200);
@@ -322,7 +322,7 @@ describe.sequential("company route cross-company authorization", () => {
       memberships: [{ companyId: companyBId, membershipRole: "member", status: "active" }],
     }));
     await request(memberApp).patch(`/api/companies/${companyBId}`).send({ description: "Updated" }).expect(200);
-    await request(memberApp).patch(`/api/companies/${companyBId}/branding`).send({ brandColor: "#abcdef" }).expect(200);
+    await request(memberApp).patch(`/api/companies/${companyBId}/branding`).send({ description: "Branding" }).expect(200);
     await request(memberApp).post(`/api/companies/${companyBId}/archive`).send({}).expect(200);
     await request(memberApp).delete(`/api/companies/${companyBId}`).expect(200);
     await request(memberApp).post(`/api/companies/${companyBId}/export`).send(exportRequest).expect(200);

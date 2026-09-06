@@ -181,7 +181,6 @@ describe("CompanyEnvironments", () => {
       id: "company-1",
       name: "Paperclip",
       description: null,
-      brandColor: null,
       logoUrl: null,
       issuePrefix: "PAP",
     });

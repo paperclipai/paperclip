@@ -20,6 +20,12 @@ Before making changes, read in this order:
 `doc/SPEC.md` is long-horizon product context.
 `doc/SPEC-implementation.md` is the concrete V1 build contract.
 
+When adding or changing an Apps catalog connection, also follow
+`doc/connections/CONNECTOR-PLAYBOOK.md`. It is the canonical connection
+authoring runbook for provider research, supported transport/auth patterns,
+credential handling, branding, implementation, testing, live proof, and PR
+submission.
+
 ## 3. Repo Map
 
 - `server/`: Express REST API and orchestration services
@@ -90,6 +96,32 @@ When you are creating a plan file in the repository itself, new plan documents b
 
 6. Attach inspectable generated artifacts.
 When your task produces a user-inspectable deliverable file, follow the Paperclip skill's "Generated Artifacts and Work Products" workflow before final disposition. In this repo, prefer the self-contained skill helper at `skills/paperclip/scripts/paperclip-upload-artifact.sh` so the file is available through the Paperclip API, create/update an artifact work product when the file is the deliverable, link the uploaded artifact in the final issue comment, and then set status. Do not rely on local filesystem paths as the only access path. If an important file intentionally remains workspace-only, create/update a work product with `metadata.resourceRef.kind: "workspace_file"` and a workspace-relative path, then name that work product and path in the final comment. Treat browse/search as a fallback for recovering workspace files, not the preferred deliverable path. See `doc/AGENT-ARTIFACTS.md` for details and `.mp4`/`.webm` examples.
+
+7. Name the three data paths correctly.
+This repo has three separate data paths. Do not confuse them. Match a change to a path by its file path, not by the word "observability" or "telemetry" alone.
+
+- **Telemetry** is the Paperclip first-party event system. It is opt-out and it sends data to a Paperclip endpoint by default. Its paths are:
+  - `packages/shared/src/telemetry/`
+  - the generated contract `packages/shared/src/telemetry/generated/paperclip-telemetry.ts`
+  - each caller of `packages/shared/src/telemetry/events.ts` or `packages/shared/src/telemetry/client.ts`
+- **Observability** is the OpenTelemetry trace path. An operator must set an OTLP endpoint. Until an operator sets the endpoint, the tracer is a no-operation. Its paths are:
+  - `server/src/instrumentation.ts`
+  - `doc/observability.md`
+  - `packages/adapter-utils/src/duplex-observability.ts`
+  - `server/src/services/duplex-observability-recorder.ts`
+  - the span attributes in `packages/adapter-utils/src/acpx-engine/startup-timing.ts`
+- **The run log** holds rows in the local `heartbeat_run_events` table. The data stays in the instance database. Its paths are:
+  - `doc/run-log-events.md`
+  - `packages/db/src/schema/heartbeat_run_events.ts`
+  - the append path `appendRunEvent` in `server/src/services/heartbeat.ts`
+
+Apply a review level that matches the path:
+
+- **Telemetry change (strict review).** The author updates the generated contract first. The author updates `packages/shared/src/telemetry/README.md` in the same pull request. The author requests a privacy review. Reason: a Telemetry event goes to a Paperclip endpoint by default, so a mistake sends data immediately.
+- **Observability change (lighter review).** The operator endpoint gate stays in place. The no-operation behaviour stays when no endpoint is set. A privacy review is not necessary while the change stays inside the closed span-attribute allowlist.
+- **Run-log change (no extra review).** A run-log change needs neither review level above, because the data stays in the instance database.
+
+**Exclusion.** The word "observability" in a file such as `server/src/services/recovery-observability.ts` names a different concept. Apply this rule by path, not by word match.
 
 ## 6. Database Change Workflow
 

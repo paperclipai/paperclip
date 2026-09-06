@@ -4,10 +4,7 @@ import { classifyContinuationFailure } from "../services/recovery/service.ts";
 import {
   DISPOSITION_REPAIR_BASE_DELAYS_MS,
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
-  RECOVERY_OWNER_BASE_DELAYS_MS,
-  RECOVERY_OWNER_MAX_ATTEMPTS,
   dispositionRepairDelayMs,
-  recoveryOwnerDelayMs,
 } from "../services/recovery/disposition-repair.ts";
 
 const deliberateWaitRun = {
@@ -52,23 +49,5 @@ describe("owner-sticky disposition repair", () => {
     expect(timings[4]?.jitterMs).toBeLessThanOrEqual(48_000);
     expect(dispositionRepairDelayMs(2, fingerprint)).toEqual(timings[1]);
     expect(() => dispositionRepairDelayMs(6, fingerprint)).toThrow(/Invalid disposition repair attempt/);
-  });
-
-  it("keeps recovery-owner retries separate and bounded", () => {
-    const fingerprint = "disposition_repair:v1:manager";
-    const timings = [1, 2, 3, 4, 5].map((attempt) => recoveryOwnerDelayMs(attempt, fingerprint));
-
-    expect(RECOVERY_OWNER_MAX_ATTEMPTS).toBe(5);
-    expect(RECOVERY_OWNER_BASE_DELAYS_MS).toEqual([0, 60_000, 120_000, 240_000, 480_000]);
-    expect(timings[0]).toEqual({ baseDelayMs: 0, jitterMs: 0, delayMs: 0 });
-    expect(timings[1]?.baseDelayMs).toBe(60_000);
-    expect(timings[1]?.jitterMs).toBeLessThanOrEqual(6_000);
-    expect(timings[2]?.baseDelayMs).toBe(120_000);
-    expect(timings[2]?.jitterMs).toBeLessThanOrEqual(12_000);
-    expect(timings[3]?.baseDelayMs).toBe(240_000);
-    expect(timings[3]?.jitterMs).toBeLessThanOrEqual(24_000);
-    expect(timings[4]?.baseDelayMs).toBe(480_000);
-    expect(timings[4]?.jitterMs).toBeLessThanOrEqual(48_000);
-    expect(() => recoveryOwnerDelayMs(6, fingerprint)).toThrow(/Invalid recovery owner attempt/);
   });
 });

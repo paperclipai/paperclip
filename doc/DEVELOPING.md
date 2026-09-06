@@ -43,6 +43,23 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
+To run against a separate local state root, pass `--data-dir`. The dev runner
+translates it to an isolated `PAPERCLIP_HOME` before migration checks or server
+startup, so embedded PostgreSQL and other default instance state live under that
+directory:
+
+```sh
+pnpm dev --data-dir ./tmp/paperclip-dev
+```
+
+Pass the same option to the service-management commands so they use the
+isolated runtime-service registry:
+
+```sh
+pnpm dev:list --data-dir ./tmp/paperclip-dev
+pnpm dev:stop --data-dir ./tmp/paperclip-dev
+```
+
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
 ### Mobile-friendly preview (`pnpm dev:mobile`)
@@ -287,6 +304,50 @@ pnpm paperclipai run
 1. auto-onboard if config is missing
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
+
+### One-command isolated manual test drive
+
+Use `test-drive` when you want to exercise the UI from a fresh checkout or SHA
+without completing onboarding by hand:
+
+```sh
+ANTHROPIC_API_KEY=... node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive
+OPENAI_API_KEY=... node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive --harness codex --model gpt-5.4
+OPENROUTER_API_KEY=... node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts test-drive \
+  --harness opencode \
+  --model openrouter/anthropic/claude-sonnet-4.5
+```
+
+The command creates a trusted-loopback instance in a unique OS temporary data
+directory, prints the absolute directory, runs onboarding and doctor
+non-interactively, creates `Test Company` with a `CEO` agent, then opens the
+browser. It runs in the foreground, does not install a background service, and
+does not create a goal, project, issue, task, or first heartbeat. Temporary
+directories are retained for inspection. Use `--data-dir <path>` to reuse one
+or `--no-browser` to suppress browser opening. Reused directories must use the
+embedded database: the command rejects database URL environment overrides and
+configs with `database.mode: postgres`, suppresses the invocation directory's
+`.env` when the server starts, and keeps the normal managed-service collision
+guard. The selected instance's own environment file still loads. The command
+selects the first available loopback port at or above `3100`.
+
+Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
+`OPENROUTER_API_KEY` and requires an `openrouter/...` model. `--api-key-env`
+can name a different source variable while the agent still receives the
+canonical variable. `--api-key <value>` is also supported and is mutually
+exclusive with `--api-key-env`; Paperclip redacts it from its own output, but
+also removes it from the JavaScript argument view before telemetry, diagnostics,
+or server startup. Wrappers, operating-system process listings, and shell
+history may still expose argument values. This is an explicit local test-drive
+tradeoff; use an environment-backed input when that exposure is not acceptable. In a
+linked Git worktree the command sets worktree runtime mode and safely arms
+**Run tasks in this worktree** for the current isolated instance. Primary
+checkouts and non-Git directories leave that experimental setting unchanged.
+
+If the selected data directory already contains any company, `test-drive`
+preserves all companies, agents, and secrets and ignores the bootstrap flags.
+The worktree execution setting is the only value it may reconcile in that
+case.
 
 ## Docker Quickstart (No local Node install)
 
@@ -716,7 +777,76 @@ Lease recovery is bounded and explicit. Another issue may reclaim the lane once 
 
 For Tailscale HTTPS exposure, readiness includes stable listener-ownership checks for every requested loopback port (the app and, when configured, its Vite HMR companion). Each listener must belong to the spawned managed process group; an unrelated listener that races onto either reserved port fails the start closed before the broker is asked to expose it.
 
-In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to the managed runtime's loopback host. The browser still derives the HMR hostname from the public HTTPS page, so listener containment does not break remote hot reload.
+Managed `paperclip-dev` worktree services enable `PAPERCLIP_UI_DEV_MIDDLEWARE=true` by default, so newly started worktrees hot-reload UI source changes. Managed HTTPS services use this default only when they publish the Paperclip Vite HMR companion listener, which is the default exposure configuration. A service or adapter can explicitly set the variable to `false` when it intentionally needs to exercise the built UI bundle.
+
+In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to the managed runtime's loopback host. The browser still derives the HMR hostname from the public HTTPS page, and exposed runtimes use secure WebSockets, so listener containment does not break remote hot reload.
+
+When a workspace service runs Paperclip for browser OAuth QA, configure its `expose.urlTemplate` with the canonical URL the browser can reach. Paperclip preserves explicit `PAPERCLIP_PUBLIC_URL` or `BETTER_AUTH_URL` settings; otherwise it uses a valid exposed HTTPS origin (or loopback HTTP) as the managed runtime fallback for Better Auth and `/api/tools/oauth/callback`. Internal service names such as `http://paperclip-dev:<port>` are rejected unless that hostname is genuinely the browser route. Use a unique origin per isolated worktree. See [Execution Workspaces And Runtime Services](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#browser-reachable-origins-for-oauth-qa) for configuration and verification.
+
+## Paperclip Runner Adapter Conversion
+
+The experimental Paperclip Runner currently qualifies four local profiles:
+Codex, OpenCode, ACPX Claude, and ACPX Codex. Changing an existing agent to
+`paperclip_runner` remains supported only from `codex_local`; create the other
+profiles explicitly after enabling the single **Paperclip Runner** experimental
+setting. Onboarding continues to create legacy adapters. Disabling the setting
+blocks fresh native starts without hiding or corrupting persisted native runs.
+
+Native Codex is qualified only with `codexPermissionMode: "never"`. The create
+and edit surfaces do not offer `on-request` or `untrusted`, and a persisted
+unsupported value fails with remediation instead of being silently coerced.
+OpenCode retains `allow`, `ask`, and `deny`; ACPX retains `approve-all`,
+`approve-reads`, and `deny-all`. Codex conversion keeps a non-empty model and
+otherwise stores the shared `gpt-5.6-sol` default. The native execution boundary
+applies the same default to older runner rows whose model is missing or blank.
+
+For native Codex runs, Paperclip passes the resolved execution workspace as
+`PAPERCLIP_WORKSPACE_CWD` and uses it as the provider containment boundary. A
+workspace below the host `HOME` is valid, including the default projectless
+agent workspace. The host `HOME` itself, a directory that contains it, a
+filesystem root, a `CODEX_HOME` overlap, or a canonical path outside the
+assigned workspace is rejected before provider startup.
+
+### Native runner restart recovery
+
+Paperclip Runner keeps its heartbeat run, native session, logical runner, and
+provider session identities across server restarts. A coordinated hot restart
+registers a correlated recovery request before it signals the dev supervisor.
+An uncoordinated server restart uses the same durable recovery classifier
+without trusting a handoff marker.
+
+Startup binds the HTTP and PRP listener before it classifies native runs. Public
+health reports a startup state until every candidate is reattached, dispatched
+for same-run resume, finalized from durable evidence, or held for explicit
+ownership evidence. Scheduling and generic orphan recovery start only after
+that classification finishes.
+
+- A verified live runner re-registers its existing PRP authority and reconnects
+  with the same operating-system PID. Paperclip does not spawn a competing
+  runner.
+- A verified dead runner starts a replacement from the same durable root and
+  resumes the same provider checkpoint. Only the operating-system PID changes.
+- A runner that died before its first authenticated connection can restart on
+  the same run only when its durable root proves that no provider authority or
+  checkpoint exists. Paperclip quarantines the incomplete root first.
+- A live but mismatched or unverifiable process fails closed. Paperclip does not
+  signal it or spawn a replacement.
+- A persisted proposed or terminal result is reconciled before any runner or
+  provider work starts, so restart recovery cannot submit a duplicate turn.
+
+Run the credential-free real-process restart suite with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
+pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport.test.ts -t 'adopts a live runner'
+```
+
+The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
+`runnerd` processes, and a deterministic fake Codex app server. It covers hot
+and hard restarts with live and dead runners, the result-finalization race,
+incomplete bootstrap, repeated crashes with steering, and fail-closed process
+identity mismatches.
 
 ## App-Shipped Skills Catalog
 
@@ -738,6 +868,15 @@ packages/skills-catalog/
 Server and CLI import the generated manifest; they do not crawl repository
 paths at request time. Root `skills/` remains reserved for Paperclip runtime
 skills and is not part of the catalog.
+
+Skill-capable legacy local adapters always select the bundled
+`paperclipai/paperclip/paperclip` operational skill when it is present in the
+runtime inventory. This applies to existing agents without a stored skill
+preference and to explicit empty optional-skill selections. The operational
+skill supplies the control-plane workflow that those adapters need for
+heartbeats. Other runtime skills remain controlled by
+`paperclipSkillSync.desiredSkills`. The native `paperclip_runner` does not use
+this legacy default because its protocol supplies the control-plane contract.
 
 Validate the catalog without writing the manifest:
 
@@ -926,6 +1065,40 @@ pnpm secrets:migrate-inline-env         # dry run
 pnpm secrets:migrate-inline-env --apply # apply migration
 ```
 
+## Internal Connection Token Brokers
+
+Connection token exchanges carry a resolved parent credential, so their URLs
+are public-only by default even in local/private deployments. To intentionally
+use an internal broker, configure an exact hostname allowlist:
+
+```sh
+PAPERCLIP_TOKEN_BROKER_ALLOWED_HOSTS=broker.internal.example,10.0.0.42
+```
+
+Entries are comma- or whitespace-separated exact hostnames (no wildcards). The
+host configured by `PAPERCLIP_PAGES_API_URL` is included automatically. Every
+broker hostname is resolved once and the request is pinned to the approved
+address; IPv4 and IPv6 link-local destinations remain denied even when their
+host is allowlisted.
+
+## HTTP Adapter Private Endpoints
+
+HTTP adapters can call public HTTP(S) endpoints by default. Requests use the
+same DNS-pinning guard as remote connections, do not follow redirects, and
+reject loopback, RFC1918/private, and link-local or cloud-metadata destinations.
+
+Server owners can opt a trusted private service in with a comma-separated list
+of exact origins:
+
+```sh
+PAPERCLIP_HTTP_ADAPTER_PRIVATE_ENDPOINT_ALLOWLIST=http://hooks.internal.example:8080,https://10.0.0.42
+```
+
+Each entry must contain only a scheme, hostname, and optional port. Paths,
+credentials, query strings, fragments, and wildcards are ignored. Matching is
+by exact normalized origin, so allowing one port does not allow another.
+Link-local destinations remain denied even when explicitly listed.
+
 ## Company Deletion Toggle
 
 Company deletion is intended as a dev/debug capability and can be disabled at runtime:
@@ -1009,6 +1182,38 @@ Optional auth flags (for authenticated mode):
 
 - `PAPERCLIP_AUTH_HEADER` (for example `Bearer ...`)
 - `PAPERCLIP_COOKIE` (session cookie header value)
+
+## PostHog MCP Live Smoke Test
+
+The PostHog smoke targets an already-running authenticated Paperclip instance.
+It is deliberately separate from `pnpm test` and `pnpm test:e2e` because it
+uses a live vendor OAuth flow and creates a short-lived connection plus one
+fresh-run proof issue.
+
+```sh
+INTEGRATIONS_POSTHOG_PAPERCLIP_E2E_EMAIL=operator@example.test \
+INTEGRATIONS_POSTHOG_PAPERCLIP_DEV_LOGIN_PASSWORD='<environment-delivered>' \
+INTEGRATIONS_POSTHOG_POSTHOG_PROJECT_ID=483530 \
+pnpm smoke:posthog-live https://paperclip.example.test
+```
+
+The command fails before browser launch unless all three integration bindings
+are present, and never prints their values. A Paperclip heartbeat derives the
+target origin from its injected `PAPERCLIP_API_URL`; the positional URL (or
+`--base-url <url>`) selects the running instance for a manual invocation. It
+creates no trace, video, or HAR, begins
+screenshots only after OAuth returns to Paperclip, enables read actions only,
+installs the connection on `CodexCoderPro` only, runs `project-get` with `{}`
+from the board Test panel and a fresh agent run, then removes the connection.
+Sanitized JSON and PNG evidence defaults to `PAPERCLIP_RUN_SCRATCH_DIR` when the
+command runs in a heartbeat; set `POSTHOG_EVIDENCE_DIR` for a different output
+directory.
+
+Run the focused harness checks without contacting Paperclip or PostHog:
+
+```sh
+node --test scripts/smoke/posthog-live.test.mjs
+```
 
 ## OpenClaw Docker UI One-Command Script
 

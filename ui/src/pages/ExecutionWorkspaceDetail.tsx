@@ -39,6 +39,7 @@ import { WorkspaceServiceControlBar } from "../components/WorkspaceServiceContro
 import { WorkspaceAccessCard } from "../components/WorkspaceAccessCard";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 import { useToastActions } from "../context/ToastContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { queryKeys } from "../lib/queryKeys";
@@ -805,6 +806,7 @@ export function ExecutionWorkspaceDetail() {
   const queryClient = useQueryClient();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { hideHostPaths } = useManagedSandboxOnly();
   const [form, setForm] = useState<WorkspaceFormState | null>(null);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -1281,72 +1283,94 @@ export function ExecutionWorkspaceDetail() {
 
                 <Separator />
 
-                <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Paths</div>
-                  <Field label="Working directory">
-                    <Input
-                      className="font-mono"
-                      value={form.cwd}
-                      onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
-                      placeholder="/absolute/path/to/workspace"
-                    />
-                  </Field>
+                {/*
+                  Both fields name a path on the execution host. Under the
+                  managed-sandbox-only policy every agent runs in the
+                  platform-managed environment, which owns the paths, so the
+                  whole group and its separator disappear, and stay hidden
+                  until that policy is known.
+                */}
+                {!hideHostPaths && (
+                  <>
+                    <div className="space-y-4">
+                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Paths</div>
+                      <Field label="Working directory">
+                        <Input
+                          className="font-mono"
+                          value={form.cwd}
+                          onChange={(event) => setForm((current) => current ? { ...current, cwd: event.target.value } : current)}
+                          placeholder="/absolute/path/to/workspace"
+                        />
+                      </Field>
 
-                  <Field label="Provider path / ref">
-                    <Input
-                      className="font-mono"
-                      value={form.providerRef}
-                      onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
-                      placeholder="/path/to/worktree or provider ref"
-                    />
-                  </Field>
-                </div>
+                      <Field label="Provider path / ref">
+                        <Input
+                          className="font-mono"
+                          value={form.providerRef}
+                          onChange={(event) => setForm((current) => current ? { ...current, providerRef: event.target.value } : current)}
+                          placeholder="/path/to/worktree or provider ref"
+                        />
+                      </Field>
+                    </div>
 
-                <Separator />
+                    <Separator />
+                  </>
+                )}
 
-                <div className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>
-                  <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
-                    <Textarea
-                      className="min-h-20 font-mono"
-                      value={form.provisionCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, provisionCommand: event.target.value } : current)}
-                      placeholder="bash ./scripts/provision-worktree.sh"
-                    />
-                  </Field>
+                {/*
+                  Every lifecycle command runs a shell on the execution host and
+                  its placeholder names a host script path. The platform-managed
+                  environment owns that lifecycle, so the managed-sandbox-only
+                  policy hides the group and its separator, and keeps them
+                  hidden until that policy is known.
+                */}
+                {!hideHostPaths && (
+                  <>
+                    <div className="space-y-4">
+                      <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Lifecycle commands</div>
+                      <Field label="Provision command" hint="Runs when Paperclip prepares this execution workspace">
+                        <Textarea
+                          className="min-h-20 font-mono"
+                          value={form.provisionCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, provisionCommand: event.target.value } : current)}
+                          placeholder="bash ./scripts/provision-worktree.sh"
+                        />
+                      </Field>
 
-                  <Field
-                    label="Runtime provision command"
-                    hint="Runs once before the first runtime-service start. Leave empty to keep eager provisioning."
-                  >
-                    <Textarea
-                      className="min-h-20 font-mono"
-                      value={form.runtimeProvisionCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, runtimeProvisionCommand: event.target.value } : current)}
-                      placeholder="bash ./scripts/provision-worktree-runtime.sh"
-                    />
-                  </Field>
+                      <Field
+                        label="Runtime provision command"
+                        hint="Runs once before the first runtime-service start. Leave empty to keep eager provisioning."
+                      >
+                        <Textarea
+                          className="min-h-20 font-mono"
+                          value={form.runtimeProvisionCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, runtimeProvisionCommand: event.target.value } : current)}
+                          placeholder="bash ./scripts/provision-worktree-runtime.sh"
+                        />
+                      </Field>
 
-                  <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
-                    <Textarea
-                      className="min-h-20 font-mono"
-                      value={form.teardownCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, teardownCommand: event.target.value } : current)}
-                      placeholder="bash ./scripts/teardown-worktree.sh"
-                    />
-                  </Field>
+                      <Field label="Teardown command" hint="Runs when the execution workspace is archived or cleaned up">
+                        <Textarea
+                          className="min-h-20 font-mono"
+                          value={form.teardownCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, teardownCommand: event.target.value } : current)}
+                          placeholder="bash ./scripts/teardown-worktree.sh"
+                        />
+                      </Field>
 
-                  <Field label="Cleanup command" hint="Workspace-specific cleanup before teardown">
-                    <Textarea
-                      className="min-h-16 font-mono"
-                      value={form.cleanupCommand}
-                      onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
-                      placeholder="pkill -f vite || true"
-                    />
-                  </Field>
-                </div>
+                      <Field label="Cleanup command" hint="Workspace-specific cleanup before teardown">
+                        <Textarea
+                          className="min-h-16 font-mono"
+                          value={form.cleanupCommand}
+                          onChange={(event) => setForm((current) => current ? { ...current, cleanupCommand: event.target.value } : current)}
+                          placeholder="pkill -f vite || true"
+                        />
+                      </Field>
+                    </div>
 
-                <Separator />
+                    <Separator />
+                  </>
+                )}
 
                 <div className="space-y-4">
                   <div className="text-xs font-medium uppercase tracking-widest text-muted-foreground">Runtime config</div>

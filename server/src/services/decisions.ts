@@ -8,7 +8,10 @@ import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from ".
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
-import { issueService } from "./issues.js";
+import {
+  issueService,
+  type IssuePostCommitAction,
+} from "./issues.js";
 import { decisionRetentionService, hashAttentionArchiveManifest } from "./decision-retention.js";
 
 type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string;
@@ -406,6 +409,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
 
     try {
       const postCommitActivityPublications: ActivityPublication[] = [];
+      const postCommitIssueActions: IssuePostCommitAction[] = [];
       const executionResult = await db.transaction(async (tx) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
         let execution = await tx.select().from(decisionEffectExecutions).where(and(eq(decisionEffectExecutions.decisionId, decision.id), eq(decisionEffectExecutions.effectIndex, effectIndex)))
@@ -472,6 +476,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             { status: effect.status, actorUserId: decidedByUserId },
             tx,
             postCommitActivityPublications,
+            postCommitIssueActions,
           );
           if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
           result = { issueId: updated?.id, status: updated?.status };
@@ -485,6 +490,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             },
             tx,
             postCommitActivityPublications,
+            postCommitIssueActions,
           );
           if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
           result = { issueId: updated?.id };
@@ -498,6 +504,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             },
             tx,
             postCommitActivityPublications,
+            postCommitIssueActions,
           );
           result = { removedBlockedByIssueIds: effect.removeBlockedByIssueIds };
         } else if (effect.type === "create_issue") {
@@ -515,6 +522,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
               { status: "cancelled", actorUserId: decidedByUserId },
               tx,
               postCommitActivityPublications,
+              postCommitIssueActions,
             );
           }
           await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId }, undefined, tx);
@@ -525,6 +533,10 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         return row;
       });
       for (const publication of postCommitActivityPublications) publishActivity(publication);
+      if (postCommitIssueActions.length > 0) {
+        const { executeIssuePostCommitActions } = await import("./issues.js");
+        await executeIssuePostCommitActions(db, postCommitIssueActions);
+      }
       return executionResult;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Decision effect execution failed";

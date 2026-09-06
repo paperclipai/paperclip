@@ -80,13 +80,15 @@ second run blocked on the lease until the first run fully returns, so the second
 run never re-stages into a workspace the first run still uses. The release runs in
 a `finally`, so an earlier teardown fault never strands the lease.
 
-## Per-phase telemetry
+## Per-phase run-log events
 
-The run emits one telemetry event per named lifecycle phase. Each event carries
-only the phase name, the wall-time duration, and the outcome (`ok` or `failed`).
-The phase name is one member of a closed allowlist. An event never carries a
+The run writes one [run-log event](run-log-events.md) per named lifecycle
+phase, to the `heartbeat_run_events` table. This event is not a Paperclip
+Telemetry event and not an OpenTelemetry export. Each event carries only the
+phase name, the wall-time duration, and the outcome (`ok` or `failed`). The
+phase name is one member of a closed allowlist. An event never carries a
 command, an argument, a path, an environment value, or a raw identifier. A
-telemetry failure never fails the run.
+run-log write failure never fails the run.
 
 ## Known limitations and deferred work
 
@@ -97,5 +99,5 @@ telemetry failure never fails the run.
   run-scoped credential rebind protocol exists.
 - **The sandbox staged-files reuse stays enabled.** Its reuse payload carries no
   credential, so a compatible resume reuses the already-staged runtime.
-- **The per-phase telemetry is observability-only.** It records the duration and
-  the outcome of each phase; it does not change run control flow.
+- **The per-phase run-log events record the duration and the outcome only.**
+  They never change run control flow.

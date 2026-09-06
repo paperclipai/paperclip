@@ -618,6 +618,23 @@ function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: R
   );
 }
 
+/**
+ * The bundled operating skills the default agent instructions assume every
+ * lead agent has (coordination, board usage, planning, hiring, memory). A
+ * seeded or hired CEO must arrive with these enabled: an agent's runtime only
+ * receives skills in its own desired set, so a CEO with an empty set
+ * truthfully reports these as not installed while its instructions tell it to
+ * use them. Mirrors the repo-root `skills/` bundle that
+ * `ensureSkillInventoryCurrent` imports into every company library.
+ */
+export const PAPERCLIP_CORE_SKILL_KEYS = [
+  "paperclipai/paperclip/paperclip",
+  "paperclipai/paperclip/paperclip-board",
+  "paperclipai/paperclip/paperclip-converting-plans-to-tasks",
+  "paperclipai/paperclip/paperclip-create-agent",
+  "paperclipai/paperclip/para-memory-files",
+] as const;
+
 function deriveCanonicalSkillKey(
   companyId: string,
   input: Pick<ImportedSkill, "slug" | "sourceType" | "sourceLocator" | "metadata">,
@@ -1101,6 +1118,12 @@ async function statPath(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
+async function hasExactSkillFile(directoryPath: string) {
+  const entries = await fs.readdir(directoryPath, { withFileTypes: true }).catch(() => []);
+  const skillEntry = entries.find((entry) => entry.name === "SKILL.md");
+  return Boolean(skillEntry && (skillEntry.isFile() || skillEntry.isSymbolicLink()));
+}
+
 function pathIsContained(rootPath: string, candidatePath: string) {
   const relativePath = path.relative(rootPath, candidatePath);
   return relativePath === ""
@@ -1128,13 +1151,26 @@ async function validateProjectSkillImportPath(
 ) {
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
   const resolvedSkillDir = path.resolve(skillDir);
-  if (!pathIsContained(resolvedWorkspaceRoot, resolvedSkillDir)) {
-    throw unprocessable(`Project skill candidate ${resolvedSkillDir} is outside workspace root ${resolvedWorkspaceRoot}.`);
+  const canonicalWorkspaceRoot = await fs.realpath(resolvedWorkspaceRoot);
+  const canonicalSkillDir = await fs.realpath(resolvedSkillDir);
+  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillDir)) {
+    throw unprocessable(`Project skill candidate ${resolvedSkillDir} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
   }
 
-  const canonicalWorkspaceRoot = await fs.realpath(resolvedWorkspaceRoot);
-  let currentPath = resolvedWorkspaceRoot;
-  const relativeSkillDir = path.relative(resolvedWorkspaceRoot, resolvedSkillDir);
+  // macOS exposes the same temporary directory through both `/var` and
+  // `/private/var`. Discovery returns a canonical path, while a persisted
+  // workspace may retain the user-facing alias. Traverse the lexical path when
+  // possible so symlinks remain detectable; otherwise compare and traverse the
+  // already-verified canonical pair.
+  const lexicalPathIsContained = pathIsContained(resolvedWorkspaceRoot, resolvedSkillDir);
+  const traversalWorkspaceRoot = lexicalPathIsContained
+    ? resolvedWorkspaceRoot
+    : canonicalWorkspaceRoot;
+  const traversalSkillDir = lexicalPathIsContained
+    ? resolvedSkillDir
+    : canonicalSkillDir;
+  let currentPath = traversalWorkspaceRoot;
+  const relativeSkillDir = path.relative(traversalWorkspaceRoot, traversalSkillDir);
   for (const segment of relativeSkillDir.split(path.sep).filter(Boolean)) {
     currentPath = path.join(currentPath, segment);
     const segmentStat = await fs.lstat(currentPath);
@@ -1143,12 +1179,7 @@ async function validateProjectSkillImportPath(
     }
   }
 
-  const canonicalSkillDir = await fs.realpath(resolvedSkillDir);
-  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillDir)) {
-    throw unprocessable(`Project skill candidate ${resolvedSkillDir} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
-  }
-
-  const skillFilePath = path.join(resolvedSkillDir, "SKILL.md");
+  const skillFilePath = path.join(traversalSkillDir, "SKILL.md");
   const skillFileStat = await fs.lstat(skillFilePath);
   if (skillFileStat.isSymbolicLink()) {
     throw unprocessable(`Project skill candidate contains a symbolic link at ${skillFilePath}.`);
@@ -4852,7 +4883,7 @@ export function companySkillService(db: Db) {
         path: entryPath,
         kind: entry.isDirectory() ? "directory" : "file",
         isSkill: entry.isDirectory()
-          ? Boolean((await statPath(path.join(targetPath, entry.name, "SKILL.md")))?.isFile())
+          ? await hasExactSkillFile(path.join(targetPath, entry.name))
           : entry.name === "SKILL.md",
       });
     }
@@ -5758,16 +5789,29 @@ export function companySkillService(db: Db) {
   ): Promise<RuntimeSkillSourceResolution | null> {
     const selectedVersionId = options.versionSelections?.get(skill.key) ?? null;
     if (selectedVersionId) {
+      const versionPath = path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id, selectedVersionId);
       const version = await getVersion(companyId, skill.id, selectedVersionId);
       if (!version) {
         return {
           status: "missing",
-          source: path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id, selectedVersionId),
+          source: versionPath,
           detail: "The selected skill version no longer exists.",
         };
       }
-      const versionSource = await materializeVersionSnapshot(companyId, skill, version).catch(() => null);
-      return versionSource ? { status: "available", source: versionSource } : null;
+      // A failed snapshot materialization must surface as a "missing" entry
+      // with the real cause — a silent drop makes the skill vanish from the
+      // runtime while the library still shows it installed.
+      try {
+        const versionSource = await materializeVersionSnapshot(companyId, skill, version);
+        if (versionSource) return { status: "available", source: versionSource };
+        return { status: "missing", source: versionPath, detail: "The selected skill version produced no files." };
+      } catch (error) {
+        return {
+          status: "missing",
+          source: versionPath,
+          detail: `Failed to materialize the selected skill version: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
     }
 
     const source = await resolveExistingSkillDirectory(normalizeSkillDirectory(skill));
@@ -5784,8 +5828,24 @@ export function companySkillService(db: Db) {
       };
     }
 
-    const materializedSource = await materializeRuntimeSkillFiles(companyId, skill).catch(() => null);
-    return materializedSource ? { status: "available", source: materializedSource } : null;
+    // Same contract as above: a materialization failure becomes a structured
+    // "missing" resolution carrying the underlying error, so snapshots and the
+    // UI can show the skill as broken instead of pretending it does not exist.
+    try {
+      const materializedSource = await materializeRuntimeSkillFiles(companyId, skill);
+      if (materializedSource) return { status: "available", source: materializedSource };
+      return {
+        status: "missing",
+        source: resolveRuntimeSkillMaterializedPath(companyId, skill),
+        detail: buildMissingRuntimeSourceDetail(skill),
+      };
+    } catch (error) {
+      return {
+        status: "missing",
+        source: resolveRuntimeSkillMaterializedPath(companyId, skill),
+        detail: `Failed to materialize skill files: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   async function listRuntimeSkillEntries(

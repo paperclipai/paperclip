@@ -35,6 +35,17 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE: Record<string, string> = {
   execution_review_participant_recovery: "Review recovery stalled",
 };
 
+// Titles keyed by the source run's classified error code. The raw failure text
+// never reaches the issue thread (summarizeRunFailureForIssueComment withholds
+// it), so the classified code is the only safe, specific cause the collapsed
+// notice row can lead with. A mapped code outranks the seed titles because the
+// seeds describe the recovery family ("No live execution path"), not the cause.
+const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> = {
+  provider_quota: "Error: usage limit reached",
+  claude_auth_required: "Error: not logged in to Claude",
+  acpx_auth_required: "Error: agent login required",
+};
+
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
 }): StrandedRecoveryNoticeSeed {
@@ -74,7 +85,7 @@ export function buildExecutionReviewParticipantRecoveryNoticeSeed(): StrandedRec
   return {
     body:
       "Paperclip retried the pending execution-review participant once, but the review stage still has no " +
-      "completed decision or live reviewer run. Moving it to `blocked` so the recovery owner can repair the " +
+      "completed decision or live reviewer run. Moving it to `blocked` so the board can inspect the evidence, repair the " +
       "reviewer runtime, restore the review stage, or record an intentional manual resolution.",
     title: "Review recovery stalled",
     tone: "danger",
@@ -86,7 +97,7 @@ export function buildExecutionReviewParticipantUnavailableNoticeSeed(): Stranded
     body:
       "Paperclip cannot continue the pending execution-review participant because the participant is not " +
       "invokable and the review stage has no completed decision or live reviewer run. Moving it to `blocked` " +
-      "so the recovery owner can repair the reviewer runtime, restore the review stage, or record an " +
+      "so the board can inspect the evidence, repair the reviewer runtime, restore the review stage, or record an " +
       "intentional manual resolution.",
     title: "Review recovery stalled",
     tone: "danger",
@@ -112,7 +123,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
 }): StrandedRecoveryEscalationNotice {
   const fallbackBody = input.fallbackBody?.trim();
   const body = input.seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
-  const title = input.seed?.title ??
+  const title =
+    STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE[input.sourceRun?.errorCode?.trim() ?? ""] ??
+    input.seed?.title ??
     STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE[input.recoveryCause ?? ""] ??
     DEFAULT_STRANDED_RECOVERY_NOTICE_TITLE;
 
@@ -122,13 +135,13 @@ export function buildStrandedRecoveryEscalationNotice(input: {
       ? agentLinkRow("Recovery owner", input.recoveryOwner)
       : keyValueRow(
           "Recovery owner",
-          "Board escalation - Paperclip could not find an invokable manager, creator, or executive owner with budget available",
+          "Board decision required",
         ),
     keyValueRow(
       "Next action",
       input.recoveryOwner
         ? "The recovery owner should either restore a live execution path or record the manual resolution on the source issue"
-        : "A board operator should assign an invokable recovery owner, fix the agent/runtime state, or record an intentional manual resolution",
+        : "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution",
     ),
   ];
 

@@ -1,28 +1,28 @@
-import { useEffect, useRef, useState } from "react";
-import { Loader2, PackageCheck, RefreshCw } from "lucide-react";
-import type { Agent, ToolCatalogEntry } from "@paperclipai/shared";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Ban, Check, FlaskConical, Loader2, RefreshCw, Search, ShieldQuestion } from "lucide-react";
+import type { Agent, ToolCatalogEntry, ToolConnectionCapabilities } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { AgentIcon } from "@/components/AgentIconPicker";
 import { AgentMultiSelect } from "@/components/AgentMultiSelect";
 import { InlineBanner } from "@/components/InlineBanner";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { RadioCardGroup } from "@/components/ui/radio-card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { brandChipBadge } from "@/lib/status-colors";
-import {
-  autoExtendNotice,
-  INSTALL_ALL_WARNING,
-  installInfoNotice,
-  type InstallState,
-} from "@/lib/tool-installs";
+import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
+import { ActionTestDialog } from "./TestPanel";
 import type { AccessDraft, AppDetailSectionProps } from "./types";
 
-type ActionPermission = "off" | "allowed" | "ask";
+type ActionPermission = "off" | "ask" | "allowed";
+type ActionKindFilter = "all" | "read" | "write";
 
 export function PermissionsPanel({
+  connectionId,
   appName,
-  access,
   agents,
+  access,
   install,
   readOnly,
   canChange,
@@ -30,43 +30,50 @@ export function PermissionsPanel({
   enabledIds,
   askFirstIds,
   pending,
-  installPending,
   onSaveAccess,
-  onSaveInstall,
   onSetActionPermission,
   onReviewQuarantined,
   onRefreshActions,
   refreshPending,
+  capabilities,
+  permissionChangeWarning,
 }: Pick<
   AppDetailSectionProps,
-  "access" | "agents" | "readOnly" | "canChange" | "quarantined" | "enabledIds" | "askFirstIds" | "pending"
+  | "appName"
+  | "agents"
+  | "access"
+  | "readOnly"
+  | "canChange"
+  | "quarantined"
+  | "enabledIds"
+  | "askFirstIds"
+  | "pending"
 > & {
-  appName: string;
+  connectionId: string;
   install: InstallState;
-  installPending: boolean;
   onSaveAccess: (next: AccessDraft) => void;
-  onSaveInstall: (next: InstallState) => void;
   onSetActionPermission: (id: string, next: ActionPermission) => void;
   onReviewQuarantined: (enabledIds: string[]) => void;
   onRefreshActions: () => void;
   refreshPending: boolean;
+  capabilities: ToolConnectionCapabilities | undefined;
+  permissionChangeWarning?: string;
 }) {
-  // Deep-link from the Test tab's "off" panel: ?focus={catalogEntryId} scrolls
-  // to and highlights that action row.
   const [searchParams] = useSearchParams();
-  const focusId = searchParams.get("focus");
   return (
-    <div className="space-y-6">
-      <AccessSection access={access} agents={agents} disabled={pending} onSave={onSaveAccess} />
-      <InstalledSection
-        appName={appName}
+    <div className="space-y-10">
+      <AgentAccessSection
         agents={agents}
         access={access}
         install={install}
-        disabled={installPending}
-        onSave={onSaveInstall}
+        capabilities={capabilities}
+        disabled={pending}
+        onSave={onSaveAccess}
       />
       <ActionsSection
+        key={connectionId}
+        connectionId={connectionId}
+        appName={appName}
         readOnly={readOnly}
         canChange={canChange}
         quarantined={quarantined}
@@ -74,7 +81,9 @@ export function PermissionsPanel({
         askFirstIds={askFirstIds}
         disabled={pending}
         refreshPending={refreshPending}
-        focusId={focusId}
+        focusId={searchParams.get("focus")}
+        canConfigure={capabilities?.canConfigure ?? false}
+        permissionChangeWarning={permissionChangeWarning}
         onSetPermission={onSetActionPermission}
         onReviewQuarantined={onReviewQuarantined}
         onRefreshActions={onRefreshActions}
@@ -83,230 +92,107 @@ export function PermissionsPanel({
   );
 }
 
-function AccessSection({
-  access,
+function AgentAccessSection({
   agents,
+  access,
+  install,
+  capabilities,
   disabled,
   onSave,
 }: {
-  access: AccessDraft;
   agents: Agent[];
+  access: AccessDraft;
+  install: InstallState;
+  capabilities: ToolConnectionCapabilities | undefined;
   disabled: boolean;
   onSave: (next: AccessDraft) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<AccessDraft>(access);
-  const liveAgents = agents.filter((a) => a.status !== "terminated");
-
-  useEffect(() => {
-    if (!editing) setDraft(access);
-  }, [access, editing]);
-
-  const summary =
-    access.mode === "all"
-      ? "Every agent can use it"
-      : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"} can use it`;
-
-  const canSave = draft.mode === "all" || draft.agentIds.size > 0;
+  const liveAgents = agents.filter((agent) => agent.status !== "terminated");
+  const canManage = capabilities?.canConfigure ?? false;
+  const editableAgentIds = capabilities?.editableAgentIds;
+  const selectableAgents = editableAgentIds
+    ? liveAgents.filter((agent) => editableAgentIds.includes(agent.id))
+    : liveAgents;
+  const selectedAgents = liveAgents.filter((agent) => access.agentIds.has(agent.id));
+  const requiredAgentIds = install.agentIds;
 
   return (
-    <section className="rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between px-5 py-4">
-        <div>
-          <h2 className="text-sm font-bold text-foreground">Who can use it</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">{summary}</p>
-        </div>
-        {!editing && (
-          <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-            Change
-          </Button>
-        )}
+    <section className="space-y-4 border-t border-border pt-8">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-foreground">Which agents can use this connection?</h2>
+        {disabled ? <span className="text-xs text-muted-foreground">Saving…</span> : null}
       </div>
 
-      {editing && (
-        <div className="space-y-3 border-t border-border px-5 py-4">
-          <label className="flex items-start gap-3">
-            <input
-              type="radio"
-              className="mt-1"
-              checked={draft.mode === "all"}
-              onChange={() => setDraft({ mode: "all", agentIds: new Set() })}
-            />
-            <span>
-              <span className="text-sm font-semibold text-foreground">All agents</span>
-              <span className="block text-xs text-muted-foreground">Anyone you've added to Paperclip.</span>
-            </span>
-          </label>
-          <label className="flex items-start gap-3">
-            <input
-              type="radio"
-              className="mt-1"
-              checked={draft.mode === "specific"}
-              onChange={() => setDraft({ mode: "specific", agentIds: new Set(draft.agentIds) })}
-            />
-            <span>
-              <span className="text-sm font-semibold text-foreground">Only specific agents</span>
-              <span className="block text-xs text-muted-foreground">Pick who can use it.</span>
-            </span>
-          </label>
+      {canManage ? (
+        <div className="space-y-3">
+          <RadioCardGroup
+            ariaLabel="Which agents can use this connection"
+            value={access.mode}
+            disabled={disabled}
+            className="sm:grid-cols-2"
+            onValueChange={(next) => {
+              if (next === "all") onSave({ mode: "all", agentIds: new Set() });
+              else onSave({
+                mode: "specific",
+                agentIds: new Set([...access.agentIds, ...requiredAgentIds]),
+              });
+            }}
+            options={[
+              {
+                value: "specific",
+                title: "Just agents I pick",
+                description: install.onAll
+                  ? "Unavailable while this connection is installed for every agent."
+                  : "Available only to selected agents.",
+                disabled: install.onAll,
+              },
+              {
+                value: "all",
+                title: "Any agent",
+                description: "Available across your company.",
+              },
+            ]}
+          />
 
-          {draft.mode === "specific" && (
+          {access.mode === "specific" ? (
             <AgentMultiSelect
-              agents={liveAgents}
-              selectedAgentIds={draft.agentIds}
-              onChange={(agentIds) => setDraft({ mode: "specific", agentIds })}
+              agents={selectableAgents}
+              selectedAgentIds={access.agentIds}
               disabled={disabled}
+              triggerLabel={access.agentIds.size === 0
+                ? "Choose agents"
+                : `${access.agentIds.size} ${access.agentIds.size === 1 ? "agent" : "agents"} selected`}
+              emptyMessage="You cannot edit any agents yet."
+              isAgentDisabled={(agent) => requiredAgentIds.has(agent.id)}
+              getDescription={(agent) => requiredAgentIds.has(agent.id) ? "Required by this connection's install setting" : agent.title}
+              onChange={(agentIds) => onSave({
+                mode: "specific",
+                agentIds: new Set([...agentIds, ...requiredAgentIds]),
+              })}
             />
-          )}
-
-          <div className="flex items-center gap-2 pt-1">
-            <Button
-              size="sm"
-              disabled={disabled || !canSave}
-              onClick={() => {
-                onSave(draft);
-                setEditing(false);
-              }}
-            >
-              Save
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(false)} disabled={disabled}>
-              Cancel
-            </Button>
-          </div>
+          ) : null}
+        </div>
+      ) : access.mode === "all" ? (
+        <p className="text-sm text-muted-foreground">Any agent can use this connection.</p>
+      ) : selectedAgents.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No agents can use this connection.</p>
+      ) : (
+        <div className="space-y-0.5">
+          {selectedAgents.map((agent) => (
+            <div key={agent.id} className="flex items-center gap-2 px-1.5 py-1 text-sm">
+              <AgentIcon icon={agent.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
+            </div>
+          ))}
         </div>
       )}
     </section>
   );
 }
 
-function InstalledSection({
-  appName,
-  agents,
-  access,
-  install,
-  disabled,
-  onSave,
-}: {
-  appName: string;
-  agents: Agent[];
-  access: AccessDraft;
-  install: InstallState;
-  disabled: boolean;
-  onSave: (next: InstallState) => void;
-}) {
-  const liveAgents = agents.filter((a) => a.status !== "terminated");
-  const hasAccess = (agentId: string) => access.mode === "all" || access.agentIds.has(agentId);
-  // Agents that are installed but not (yet) in the access set — installing on
-  // them auto-extends access server-side. Surfaced amber so it's never silent.
-  const extendingAgents =
-    access.mode === "all"
-      ? []
-      : [...install.agentIds].filter((id) => !access.agentIds.has(id));
-  const installedCount = install.onAll ? liveAgents.length : install.agentIds.size;
-
-  return (
-    <section className="rounded-xl border border-border bg-card">
-      <div className="flex items-center justify-between gap-3 px-5 py-4">
-        <div>
-          <h2 className="text-sm font-bold text-foreground">Installed on agents</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            Whose harness carries {appName}'s tools on every run.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {disabled && <span className="text-xs text-muted-foreground">Saving…</span>}
-          {install.onAll ? (
-            <InstalledBadge label="Installed on all agents" />
-          ) : install.agentIds.size > 0 ? (
-            <InstalledBadge label={`${installedCount} installed`} />
-          ) : (
-            <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-              Permitted only — not installed on any agent
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="space-y-3 border-t border-border px-5 py-4">
-        <InlineBanner tone="info" compact>
-          {installInfoNotice(appName)}
-        </InlineBanner>
-
-        {!install.onAll && (
-          <AgentMultiSelect
-            agents={liveAgents}
-            selectedAgentIds={install.agentIds}
-            disabled={disabled}
-            triggerLabel={
-              install.agentIds.size === 0
-                ? "Choose agents to install on"
-                : `${install.agentIds.size} ${install.agentIds.size === 1 ? "agent" : "agents"} installed`
-            }
-            getDescription={(agent) => (hasAccess(agent.id) ? "has access" : "no access yet")}
-            renderNameSuffix={(agent) =>
-              !hasAccess(agent.id) && install.agentIds.has(agent.id) ? (
-                <span className={cn("rounded border px-1 py-0 text-xs font-medium", brandChipBadge.amber)}>
-                  will grant access
-                </span>
-              ) : null
-            }
-            onChange={(agentIds) => onSave({ onAll: false, agentIds })}
-          />
-        )}
-
-        <label
-          className={cn(
-            "flex items-start gap-3 rounded-lg border px-3 py-2.5",
-            install.onAll ? "border-foreground bg-muted/40" : "border-border bg-muted/20",
-          )}
-        >
-          <Checkbox
-            checked={install.onAll}
-            disabled={disabled}
-            aria-label="Install on all agents"
-            onCheckedChange={(checked) =>
-              onSave(checked ? { onAll: true, agentIds: new Set() } : { onAll: false, agentIds: new Set() })
-            }
-          />
-          <span className="text-xs text-foreground">
-            <span className="font-semibold">Install on all agents</span>
-            <span className="mt-0.5 block text-muted-foreground">
-              {INSTALL_ALL_WARNING}
-            </span>
-          </span>
-        </label>
-
-        {extendingAgents.length > 0 ? (
-          <InlineBanner tone="warning" compact>
-            <span>
-              {autoExtendNotice(
-                extendingAgents.length === 1
-                  ? liveAgents.find((a) => a.id === extendingAgents[0])?.name ?? "1 agent"
-                  : `${extendingAgents.length} agents`,
-              )}{" "}
-              <span className="font-medium">
-                Review the {extendingAgents.length} access change
-                {extendingAgents.length === 1 ? "" : "s"}
-              </span>
-            </span>
-          </InlineBanner>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function InstalledBadge({ label }: { label: string }) {
-  return (
-    <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium", brandChipBadge.green)}>
-      <PackageCheck className="h-3 w-3" />
-      {label}
-    </span>
-  );
-}
-
 function ActionsSection({
+  connectionId,
+  appName,
   readOnly,
   canChange,
   quarantined,
@@ -315,10 +201,14 @@ function ActionsSection({
   disabled,
   refreshPending,
   focusId,
+  canConfigure,
+  permissionChangeWarning,
   onSetPermission,
   onReviewQuarantined,
   onRefreshActions,
 }: {
+  connectionId: string;
+  appName: string;
   readOnly: ToolCatalogEntry[];
   canChange: ToolCatalogEntry[];
   quarantined: ToolCatalogEntry[];
@@ -327,141 +217,304 @@ function ActionsSection({
   disabled: boolean;
   refreshPending: boolean;
   focusId?: string | null;
+  canConfigure: boolean;
+  permissionChangeWarning?: string;
   onSetPermission: (id: string, next: ActionPermission) => void;
   onReviewQuarantined: (enabledIds: string[]) => void;
   onRefreshActions: () => void;
 }) {
+  const [query, setQuery] = useState("");
+  const [kindFilter, setKindFilter] = useState<ActionKindFilter>("all");
+  const [showPermissionChangeWarning, setShowPermissionChangeWarning] = useState(false);
+  const byName = (a: ToolCatalogEntry, b: ToolCatalogEntry) =>
+    (a.title ?? a.toolName).localeCompare(b.title ?? b.toolName);
+  const sortedRead = useMemo(() => [...readOnly].sort(byName), [readOnly]);
+  const sortedWrite = useMemo(() => [...canChange].sort(byName), [canChange]);
+  const matches = (entry: ToolCatalogEntry) => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return true;
+    return (entry.title ?? entry.toolName).toLowerCase().includes(needle)
+      || (entry.description ?? "").toLowerCase().includes(needle);
+  };
+  const visibleRead = kindFilter === "write" ? [] : sortedRead.filter(matches);
+  const visibleWrite = kindFilter === "read" ? [] : sortedWrite.filter(matches);
+  const visibleCount = visibleRead.length + visibleWrite.length;
+
   return (
-    <section className="space-y-3">
+    <section className="space-y-6 border-t border-border pt-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 className="text-sm font-bold text-foreground">Action permissions</h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            Choose what agents can do and what needs a human first.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {disabled && <span className="text-xs text-muted-foreground">Saving...</span>}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onRefreshActions}
-            disabled={refreshPending || disabled}
-          >
-            {refreshPending ? (
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-            )}
-            Refresh actions
-          </Button>
-        </div>
+        <h2 className="text-lg font-semibold text-foreground">Actions</h2>
+        {canConfigure ? (
+          <div className="flex items-center gap-2">
+            {disabled ? <span className="text-xs text-muted-foreground">Saving…</span> : null}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRefreshActions}
+              disabled={refreshPending || disabled}
+            >
+              {refreshPending ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Refresh actions
+            </Button>
+          </div>
+        ) : null}
       </div>
 
-      {quarantined.length > 0 && (
+      {canConfigure && quarantined.length > 0 ? (
         <QuarantinedActionsReview
           entries={quarantined}
           disabled={disabled}
           onSubmit={onReviewQuarantined}
         />
-      )}
+      ) : null}
 
-      <ActionGroup
-        title="Read only"
-        hint="Can look up context without changing anything."
-        actions={readOnly}
-        enabledIds={enabledIds}
-        askFirstIds={askFirstIds}
-        disabled={disabled}
-        focusId={focusId}
-        onSetPermission={onSetPermission}
-      />
-      <ActionGroup
-        title="Can make changes"
-        hint="Can change something in another app."
-        actions={canChange}
-        enabledIds={enabledIds}
-        askFirstIds={askFirstIds}
-        disabled={disabled}
-        focusId={focusId}
-        onSetPermission={onSetPermission}
-      />
+      {permissionChangeWarning && showPermissionChangeWarning ? (
+        <InlineBanner tone="warning" compact>
+          {permissionChangeWarning}
+        </InlineBanner>
+      ) : null}
+
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-(--sz-12rem) flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              aria-label="Find an action"
+              placeholder="Find an action…"
+              className="pl-9"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <FilterChip label={`All ${readOnly.length + canChange.length}`} active={kindFilter === "all"} onClick={() => setKindFilter("all")} />
+          <FilterChip label={`Read ${readOnly.length}`} active={kindFilter === "read"} onClick={() => setKindFilter("read")} />
+          <FilterChip label={`Write ${canChange.length}`} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
+        </div>
+        <p className="text-xs text-muted-foreground">{visibleCount} matches · sorted A–Z</p>
+      </div>
+
+      {visibleCount === 0 ? (
+        <div className="py-6 text-center text-sm text-muted-foreground">
+          No actions match “{query}”. Clear the search to see them all.
+        </div>
+      ) : (
+        <div className="space-y-6">
+          <ActionGroup
+            title={`Read (${visibleRead.length})`}
+            actions={visibleRead}
+            connectionId={connectionId}
+            appName={appName}
+            enabledIds={enabledIds}
+            askFirstIds={askFirstIds}
+            disabled={disabled}
+            focusId={focusId}
+            canConfigure={canConfigure}
+            onSetPermission={(id, next) => {
+              setShowPermissionChangeWarning(true);
+              onSetPermission(id, next);
+            }}
+          />
+          <ActionGroup
+            title={`Write (${visibleWrite.length})`}
+            actions={visibleWrite}
+            connectionId={connectionId}
+            appName={appName}
+            enabledIds={enabledIds}
+            askFirstIds={askFirstIds}
+            disabled={disabled}
+            focusId={focusId}
+            canConfigure={canConfigure}
+            onSetPermission={(id, next) => {
+              setShowPermissionChangeWarning(true);
+              onSetPermission(id, next);
+            }}
+          />
+        </div>
+      )}
     </section>
+  );
+}
+
+function FilterChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+        active
+          ? "border-primary bg-primary/10 text-primary"
+          : "border-border text-muted-foreground hover:bg-accent",
+      )}
+    >
+      {label}
+    </button>
   );
 }
 
 function ActionGroup({
   title,
-  hint,
   actions,
+  connectionId,
+  appName,
   enabledIds,
   askFirstIds,
   disabled,
   focusId,
+  canConfigure,
   onSetPermission,
 }: {
   title: string;
-  hint: string;
   actions: ToolCatalogEntry[];
+  connectionId: string;
+  appName: string;
   enabledIds: Set<string>;
   askFirstIds: Set<string>;
   disabled: boolean;
   focusId?: string | null;
+  canConfigure: boolean;
   onSetPermission: (id: string, next: ActionPermission) => void;
 }) {
-  const focusRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (focusId && focusRef.current) {
-      focusRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [focusId]);
   if (actions.length === 0) return null;
   return (
-    <div className="rounded-xl border border-border bg-card">
-      <div className="border-b border-border px-5 py-3 text-sm">
-        <span className="font-bold text-foreground">{title}</span>
-        <span className="ml-2 text-muted-foreground">- {hint}</span>
-      </div>
+    <div>
+      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
       <div className="divide-y divide-border">
-        {actions.map((action) => {
-          const value = actionPermission(action.id, enabledIds, askFirstIds);
-          const focused = focusId === action.id;
-          return (
-            <div
-              key={action.id}
-              ref={focused ? focusRef : undefined}
-              className={cn(
-                "flex items-center gap-4 px-5 py-3",
-                focused && "rounded-md bg-primary/5 ring-2 ring-primary/40",
-              )}
-              data-action-id={action.id}
-            >
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-foreground">{action.title ?? action.toolName}</div>
-                {action.description && (
-                  <div className="truncate text-xs text-muted-foreground">{action.description}</div>
-                )}
-              </div>
-              <select
-                aria-label={`${action.title ?? action.toolName} permission`}
-                className={cn(
-                  "h-9 w-44 rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-xs outline-none",
-                  "focus-visible:border-ring focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50",
-                  "disabled:cursor-not-allowed disabled:opacity-50",
-                )}
-                value={value}
-                disabled={disabled}
-                onChange={(event) => onSetPermission(action.id, event.currentTarget.value as ActionPermission)}
-              >
-                <option value="off">Off</option>
-                <option value="allowed">Allowed</option>
-                <option value="ask">Ask a human first</option>
-              </select>
-            </div>
-          );
-        })}
+        {actions.map((action) => (
+          <ActionRow
+            key={action.id}
+            action={action}
+            connectionId={connectionId}
+            appName={appName}
+            value={actionPermission(action.id, enabledIds, askFirstIds)}
+            disabled={disabled}
+            focused={focusId === action.id}
+            canConfigure={canConfigure}
+            onSetPermission={onSetPermission}
+          />
+        ))}
       </div>
     </div>
+  );
+}
+
+const PERMISSION_OPTIONS: Array<{
+  value: ActionPermission;
+  label: string;
+  description: string;
+  icon: typeof Ban;
+}> = [
+  { value: "off", label: "Off", description: "Agents cannot run this action.", icon: Ban },
+  { value: "ask", label: "Ask first", description: "A human must approve each call.", icon: ShieldQuestion },
+  { value: "allowed", label: "Allowed", description: "Runs without approval.", icon: Check },
+];
+
+function ActionRow({
+  action,
+  connectionId,
+  appName,
+  value,
+  disabled,
+  focused,
+  canConfigure,
+  onSetPermission,
+}: {
+  action: ToolCatalogEntry;
+  connectionId: string;
+  appName: string;
+  value: ActionPermission;
+  disabled: boolean;
+  focused: boolean;
+  canConfigure: boolean;
+  onSetPermission: (id: string, next: ActionPermission) => void;
+}) {
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [testOpen, setTestOpen] = useState(false);
+  const title = action.title ?? action.toolName;
+
+  useEffect(() => {
+    if (focused) rowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focused]);
+
+  return (
+    <>
+      <div
+        ref={rowRef}
+        className={cn(
+          "flex flex-col gap-3 py-3 sm:flex-row sm:items-center",
+          focused && "rounded-md bg-primary/5 ring-2 ring-primary/40",
+        )}
+        data-action-id={action.id}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-foreground">{title}</div>
+          {action.description ? (
+            <div className="truncate text-xs text-muted-foreground">{action.description}</div>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {canConfigure ? (
+            <TooltipProvider>
+              <div
+                role="radiogroup"
+                aria-label={`${title} permission`}
+                className="inline-flex rounded-md border border-border bg-muted/40 p-0.5"
+              >
+              {PERMISSION_OPTIONS.map((option) => {
+                const Icon = option.icon;
+                const selected = option.value === value;
+                return (
+                  <Tooltip key={option.value}>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        aria-label={`${title}: ${option.label}`}
+                        disabled={disabled}
+                        onClick={() => onSetPermission(action.id, option.value)}
+                        className={cn(
+                          "flex h-8 w-8 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors",
+                          "hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
+                          "disabled:cursor-not-allowed disabled:opacity-50",
+                          selected && "bg-background text-foreground shadow-xs",
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      <span className="font-medium">{option.label}</span> — {option.description}
+                    </TooltipContent>
+                  </Tooltip>
+                );
+              })}
+              </div>
+            </TooltipProvider>
+          ) : (
+            <span className="text-sm text-muted-foreground">
+              {PERMISSION_OPTIONS.find((option) => option.value === value)?.label}
+            </span>
+          )}
+          <Button type="button" size="sm" variant="outline" onClick={() => setTestOpen(true)}>
+            <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+            Test
+          </Button>
+        </div>
+      </div>
+      <ActionTestDialog
+        connectionId={connectionId}
+        appName={appName}
+        entry={action}
+        open={testOpen}
+        onOpenChange={setTestOpen}
+      />
+    </>
   );
 }
 

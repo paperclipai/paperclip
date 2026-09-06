@@ -76,7 +76,7 @@ export function SecretPopoverForm({
         <PopoverTitle className="text-sm font-medium">{heading}</PopoverTitle>
         {mode === "store" ? (
           <PopoverDescription className="text-(length:--text-micro) text-muted-foreground">
-            Moves the typed value into an encrypted company secret and binds{" "}
+            Moves the typed value into an encrypted organization secret and binds{" "}
             <span className="font-mono">{initialName || "this variable"}</span> to it.
           </PopoverDescription>
         ) : null}

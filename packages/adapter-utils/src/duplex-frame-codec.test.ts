@@ -4,10 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_DUPLEX_FRAME_BYTES,
   DUPLEX_FRAME_VERSION,
-  DuplexFrameDecoder,
   decodeDuplexLine,
   encodeDuplexFrame,
-  type DuplexDecodeResult,
+  encodeDuplexFrameChecked,
   type DuplexFrame,
 } from "./duplex-frame-codec.js";
 
@@ -17,58 +16,32 @@ type ExpectedResult = { frame: DuplexFrame } | { error: string };
 
 interface Vector {
   name: string;
-  category: "valid" | "invalid" | "partial" | "oversized" | "versionMismatch";
+  category: "valid" | "invalid" | "versionMismatch";
   bytes: string;
-  splitByteOffsets?: number[];
-  maxFrameBytes?: number;
   roundTrip?: boolean;
   expected: ExpectedResult[];
+}
+
+// One encode-bound vector: a frame, the size limit, and the expected checked
+// encode result. An ok result must also decode back to the same frame.
+interface EncodeVector {
+  name: string;
+  maxFrameBytes: number;
+  frame: DuplexFrame;
+  expected: { ok: true } | { ok: false; error: string };
 }
 
 interface Fixture {
   frameVersion: number;
   defaultMaxFrameBytes: number;
   vectors: Vector[];
+  encodeVectors: EncodeVector[];
 }
 
 const fixturePath = fileURLToPath(
   new URL("./duplex-frame-vectors.json", import.meta.url),
 );
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as Fixture;
-
-// Cut one UTF-8 byte stream into chunks at the byte offsets. The decoder must
-// keep partial bytes between chunks, so the split can fall inside a multi-byte
-// character.
-function toChunks(bytes: string, offsets: number[] | undefined): Buffer[] {
-  const buffer = Buffer.from(bytes, "utf8");
-  if (!offsets || offsets.length === 0) return [buffer];
-  const bounds = [0, ...offsets, buffer.length];
-  const chunks: Buffer[] = [];
-  for (let i = 0; i < bounds.length - 1; i += 1) {
-    chunks.push(buffer.subarray(bounds[i], bounds[i + 1]));
-  }
-  return chunks;
-}
-
-function pushAll(decoder: DuplexFrameDecoder, chunks: Buffer[]): DuplexDecodeResult[] {
-  const results: DuplexDecodeResult[] = [];
-  for (const chunk of chunks) results.push(...decoder.push(chunk));
-  return results;
-}
-
-function assertMatches(results: DuplexDecodeResult[], expected: ExpectedResult[]): void {
-  expect(results).toHaveLength(expected.length);
-  results.forEach((result, index) => {
-    const want = expected[index];
-    if ("frame" in want) {
-      expect(result.ok).toBe(true);
-      if (result.ok) expect(result.frame).toEqual(want.frame);
-    } else {
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.error.code).toBe(want.error);
-    }
-  });
-}
 
 describe("duplex frame codec fixture", () => {
   it("the fixture version matches the codec version", () => {
@@ -78,19 +51,26 @@ describe("duplex frame codec fixture", () => {
 
   it("every category has at least one vector", () => {
     const categories = new Set(fixture.vectors.map((vector) => vector.category));
-    for (const category of ["valid", "invalid", "partial", "oversized", "versionMismatch"]) {
+    for (const category of ["valid", "invalid", "versionMismatch"]) {
       expect(categories).toContain(category);
     }
   });
 
   for (const vector of fixture.vectors) {
     it(`decodes the ${vector.name} vector`, () => {
-      const decoder = new DuplexFrameDecoder(
-        vector.maxFrameBytes ? { maxFrameBytes: vector.maxFrameBytes } : undefined,
-      );
-      const chunks = toChunks(vector.bytes, vector.splitByteOffsets);
-      const results = pushAll(decoder, chunks);
-      assertMatches(results, vector.expected);
+      // Every remaining vector is one complete line, so `decodeDuplexLine`
+      // reads it directly. The trailing newline in the fixture bytes is not
+      // part of the line the decoder reads.
+      const line = vector.bytes.endsWith("\n") ? vector.bytes.slice(0, -1) : vector.bytes;
+      const result = decodeDuplexLine(line);
+      const want = vector.expected[0];
+      if ("frame" in want) {
+        expect(result.ok).toBe(true);
+        if (result.ok) expect(result.frame).toEqual(want.frame);
+      } else {
+        expect(result.ok).toBe(false);
+        if (!result.ok) expect(result.error.code).toBe(want.error);
+      }
     });
   }
 });
@@ -106,7 +86,7 @@ describe("round-trip", () => {
         ),
       ),
     );
-    for (const type of ["request", "response", "ready", "heartbeat", "close", "error"]) {
+    for (const type of ["ready", "heartbeat", "close", "error"]) {
       expect(types).toContain(type);
     }
   });
@@ -128,74 +108,111 @@ describe("round-trip", () => {
   }
 });
 
-describe("streaming decoder behavior", () => {
-  it("emits nothing until a full line arrives, then the complete frame", () => {
-    const decoder = new DuplexFrameDecoder();
-    const line = encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
-    const bytes = Buffer.from(line, "utf8");
-    const first = decoder.push(bytes.subarray(0, 3));
-    expect(first).toHaveLength(0);
-    const second = decoder.push(bytes.subarray(3));
-    expect(second).toHaveLength(1);
-    expect(second[0].ok).toBe(true);
+describe("ready frame schema", () => {
+  // READY is a liveness signal, not an address source. The strict schema holds
+  // exactly the frame version and the nonce.
+  it("accepts a READY frame that carries exactly the version and the nonce", () => {
+    const result = decodeDuplexLine(
+      JSON.stringify({ version: DUPLEX_FRAME_VERSION, type: "ready", nonce: "a1b2c3d4e5f6a7b8" }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.frame).toEqual({
+        version: DUPLEX_FRAME_VERSION,
+        type: "ready",
+        nonce: "a1b2c3d4e5f6a7b8",
+      });
+    }
   });
 
-  it("keeps a multi-byte UTF-8 sequence valid across a chunk boundary", () => {
-    const decoder = new DuplexFrameDecoder();
-    const frame: DuplexFrame = {
-      version: DUPLEX_FRAME_VERSION,
-      type: "request",
-      id: "req-emoji",
-      method: "POST",
-      path: "/x",
-      query: "",
-      headers: {},
-      body: "😀",
-    };
-    const bytes = Buffer.from(encodeDuplexFrame(frame), "utf8");
-    // Split inside the four-byte emoji, right before a continuation byte.
-    let cut = -1;
-    for (let i = 1; i < bytes.length; i += 1) {
-      if ((bytes[i] & 0xc0) === 0x80) {
-        cut = i;
-        break;
+  it.each([
+    { name: "an absent nonce", frame: { version: DUPLEX_FRAME_VERSION, type: "ready" } },
+    {
+      name: "a wrong-typed nonce",
+      frame: { version: DUPLEX_FRAME_VERSION, type: "ready", nonce: 42 },
+    },
+    {
+      name: "an extra address field",
+      frame: {
+        version: DUPLEX_FRAME_VERSION,
+        type: "ready",
+        nonce: "a1b2c3d4e5f6a7b8",
+        address: "http://127.0.0.1:47215",
+      },
+    },
+    {
+      name: "an extra port field",
+      frame: { version: DUPLEX_FRAME_VERSION, type: "ready", nonce: "a1b2c3d4e5f6a7b8", port: 47215 },
+    },
+  ])("rejects a READY frame with $name", ({ frame }) => {
+    const result = decodeDuplexLine(JSON.stringify(frame));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("malformed_frame");
+  });
+});
+
+describe("size-checked encode", () => {
+  it("runs every shared encode vector and matches the expected result", () => {
+    // Every codec copy runs the same encode vectors. This copy proves it enforces
+    // the same bound the embedded gateway copy enforces.
+    for (const vector of fixture.encodeVectors) {
+      const result = encodeDuplexFrameChecked(vector.frame, vector.maxFrameBytes);
+      expect(result.ok).toBe(vector.expected.ok);
+      if (result.ok) {
+        // An ok line ends with one newline and decodes back to the same frame, so
+        // the encode guard never truncates or passes a bad frame through.
+        expect(result.line.endsWith("\n")).toBe(true);
+        expect(result.line.slice(0, -1)).not.toContain("\n");
+        const decoded = decodeDuplexLine(result.line.slice(0, -1));
+        expect(decoded.ok).toBe(true);
+        if (decoded.ok) expect(decoded.frame).toEqual(vector.frame);
+      } else if (!vector.expected.ok) {
+        expect(result.error.code).toBe(vector.expected.error);
       }
     }
-    expect(cut).toBeGreaterThan(0);
-    const results = [
-      ...decoder.push(bytes.subarray(0, cut)),
-      ...decoder.push(bytes.subarray(cut)),
-    ];
-    expect(results).toHaveLength(1);
-    expect(results[0].ok).toBe(true);
-    if (results[0].ok) expect(results[0].frame).toEqual(frame);
   });
 
-  it("rejects an oversized frame with a protocol error, then resynchronizes", () => {
-    const decoder = new DuplexFrameDecoder({ maxFrameBytes: 32 });
-    const flood = `${"z".repeat(100)}\n`;
-    const good = encodeDuplexFrame({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
-    const results = decoder.push(Buffer.from(flood + good, "utf8"));
-    expect(results).toHaveLength(2);
-    expect(results[0].ok).toBe(false);
-    if (!results[0].ok) expect(results[0].error.code).toBe("frame_too_large");
-    expect(results[1].ok).toBe(true);
+  it("rejects an over-bound frame with a typed outcome and never throws", () => {
+    const frame: DuplexFrame = {
+      version: DUPLEX_FRAME_VERSION,
+      type: "error",
+      code: "read_timeout",
+      message: "x".repeat(2_000),
+    };
+    expect(() => encodeDuplexFrameChecked(frame, 1_000)).not.toThrow();
+    const result = encodeDuplexFrameChecked(frame, 1_000);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("frame_too_large");
   });
 
-  it("rejects a version-mismatch frame with a protocol error", () => {
-    const decoder = new DuplexFrameDecoder();
-    const results = decoder.push(
-      Buffer.from(`${JSON.stringify({ version: 999, type: "heartbeat" })}\n`, "utf8"),
-    );
-    expect(results).toHaveLength(1);
-    expect(results[0].ok).toBe(false);
-    if (!results[0].ok) expect(results[0].error.code).toBe("version_mismatch");
+  it("measures the bound in bytes without the trailing newline, so the boundary is inclusive", () => {
+    // Build a frame whose encoded JSON is exactly N bytes. The guard measures the
+    // JSON without the newline, so N bytes encodes and N+1 bytes fails. This is the
+    // same boundary the decoder applies, so encode and decode agree exactly.
+    // Pad the message to grow the encoded JSON by an exact byte count. Each
+    // padding character adds one byte, so the frame lands on an exact size the
+    // guard measures without the trailing newline.
+    const pad = (n: number): DuplexFrame => ({
+      version: DUPLEX_FRAME_VERSION,
+      type: "error",
+      code: "boundary",
+      message: "x".repeat(n),
+    });
+    const baseBytes = Buffer.byteLength(JSON.stringify(pad(0)), "utf8");
+    const limit = baseBytes + 10;
+    const atLimit = pad(10);
+    expect(Buffer.byteLength(JSON.stringify(atLimit), "utf8")).toBe(limit);
+    const okResult = encodeDuplexFrameChecked(atLimit, limit);
+    expect(okResult.ok).toBe(true);
+    const overResult = encodeDuplexFrameChecked(pad(11), limit);
+    expect(overResult.ok).toBe(false);
+    if (!overResult.ok) expect(overResult.error.code).toBe("frame_too_large");
   });
 
-  it("never throws on a malformed read; it returns a protocol error", () => {
-    const decoder = new DuplexFrameDecoder();
-    expect(() => decoder.push(Buffer.from("this is not json\n", "utf8"))).not.toThrow();
-    const results = decoder.push(Buffer.from("still not json\n", "utf8"));
-    expect(results[0].ok).toBe(false);
+  it("defaults the bound to the default max frame bytes", () => {
+    const frame: DuplexFrame = { version: DUPLEX_FRAME_VERSION, type: "heartbeat" };
+    const result = encodeDuplexFrameChecked(frame);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.line).toBe(encodeDuplexFrame(frame));
   });
 });

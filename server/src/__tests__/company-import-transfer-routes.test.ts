@@ -727,11 +727,28 @@ describeEmbeddedPostgres("company import transfer routes", () => {
       (await request(app).post(`/api/companies/import/transfers/${transferId}/apply`).send(importMeta)).status,
     ).toBe(200);
 
+    // The rejection names the company the completed apply created so the
+    // caller can find the earlier import instead of reading it as data loss.
+    mockCompanyService.getById.mockResolvedValue({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAPA",
+    });
     const redeclared = await request(app).post("/api/companies/import/transfers").send(body);
     expect(redeclared.status).toBe(200);
     expect(redeclared.body.transferId).toBe(transferId);
     expect(redeclared.body.alreadyCompleted).toBe(true);
     expect(redeclared.body.missingParts).toEqual([]);
+    expect(mockCompanyService.getById).toHaveBeenCalledWith(companyId);
+    expect(redeclared.body.company).toEqual({ id: companyId, name: "Paperclip", issuePrefix: "PAPA" });
+
+    // A company deleted since the apply (or an attach that never happened)
+    // degrades to company: null, never a 500.
+    mockCompanyService.getById.mockResolvedValue(null);
+    const redeclaredAfterDelete = await request(app).post("/api/companies/import/transfers").send(body);
+    expect(redeclaredAfterDelete.status).toBe(200);
+    expect(redeclaredAfterDelete.body.alreadyCompleted).toBe(true);
+    expect(redeclaredAfterDelete.body.company).toBeNull();
 
     const reApplied = await request(app)
       .post(`/api/companies/import/transfers/${transferId}/apply`)

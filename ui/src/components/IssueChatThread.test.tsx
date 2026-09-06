@@ -8,6 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import {
+  IssueAssigneePausedNotice,
   IssueChatThread,
   VIRTUALIZED_THREAD_ROW_THRESHOLD,
   canStopIssueChatRun,
@@ -3913,5 +3914,82 @@ describe("IssueChatThread", () => {
       authorName: "Alice",
       avatarUrl: "/avatars/alice.png",
     });
+  });
+});
+
+describe("IssueAssigneePausedNotice", () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+  });
+
+  function pausedAgent(pauseReason: string): Agent {
+    return {
+      id: "agent-1",
+      name: "CEO",
+      status: "paused",
+      pauseReason,
+    } as unknown as Agent;
+  }
+
+  it("explains an import pause and resumes the agent on click", () => {
+    const onResume = vi.fn();
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice agent={pausedAgent("import")} onResume={onResume} resuming={false} />,
+      );
+    });
+
+    expect(container.textContent).toContain("arrived paused from an organization import");
+    const resumeButton = container.querySelector(
+      '[data-testid="issue-assignee-paused-resume"]',
+    ) as HTMLButtonElement | null;
+    expect(resumeButton).not.toBeNull();
+
+    act(() => {
+      resumeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onResume).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+  });
+
+  it("offers no resume action for budget pauses", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice agent={pausedAgent("budget")} onResume={vi.fn()} resuming={false} />,
+      );
+    });
+
+    expect(container.textContent).toContain("budget hard stop");
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("renders nothing for an active agent", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice
+          agent={{ id: "agent-1", name: "CEO", status: "idle" } as unknown as Agent}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).toBeNull();
+
+    act(() => root.unmount());
   });
 });

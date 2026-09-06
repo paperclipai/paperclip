@@ -999,32 +999,35 @@ describe("IssueRecoveryActionCard owner-sticky retry lineage", () => {
     expect(node.textContent).not.toContain("Times out");
   });
 
-  it("shows the board escalation without implying the board owns the task", () => {
+  it("shows a current-policy board recovery action without implying the board owns the task", () => {
     const node = render(
       <IssueRecoveryActionCard
         action={buildSourceLaneAction({
-          status: "escalated",
+          status: "active",
           ownerType: "board",
           ownerAgentId: null,
-          evidence: { sourceAttemptCount: 5, sourceMaxAttempts: 5 },
+          evidence: {
+            sourceAttemptCount: 5,
+            sourceMaxAttempts: 5,
+            routingPolicy: "board_escalation_no_takeover_v1",
+          },
           wakePolicy: {
             type: "board_escalation",
-            reason: "recovery_owner_retry_exhausted",
-            attempt: 3,
-            maxAttempts: 3,
+            reason: "unchanged_source_state_exhausted",
             preservesSourceAssignee: true,
           },
-          attemptCount: 3,
-          maxAttempts: 3,
+          attemptCount: 5,
+          maxAttempts: null,
           timeoutAt: null,
         })}
         agentMap={bothAgents}
       />,
     );
     const section = node.querySelector("section[aria-label]");
-    expect(section?.getAttribute("data-recovery-state")).toBe("escalated");
+    expect(section?.getAttribute("data-recovery-state")).toBe("needed");
     expect(section?.getAttribute("data-recovery-lane")).toBe("board");
     expect(node.textContent).toContain("Automatic recovery is exhausted");
+    expect(node.textContent).toContain("Board decision required");
     const recoveryOwner = node.querySelector("[data-testid='recovery-recovery-owner']");
     expect(recoveryOwner?.textContent).toContain("Board");
     expect(recoveryOwner?.textContent).toContain("decides the next step only");

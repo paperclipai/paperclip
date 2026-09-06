@@ -38,9 +38,75 @@ on:
         type: string
 
 jobs:
+  # The Docker smoke below can never exercise the background-service leg of
+  # onboarding: containers have no service manager, so v2026.824.0 shipped a
+  # service install that crash-looped on a missing shim while every
+  # golden-path check stayed green. Run the same published artifact directly
+  # on the runner VM's systemd and require the installed service to end up
+  # serving.
+  smoke_service:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Start a user systemd session
+        # The hosted runner has no login session for the runner user, so
+        # `systemctl --user` cannot reach a user manager until lingering
+        # starts one. Export the session address for the steps below.
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          uid="$(id -u)"
+          for _ in $(seq 1 30); do
+            [[ -S "/run/user/$uid/bus" ]] && break
+            sleep 1
+          done
+          [[ -S "/run/user/$uid/bus" ]]
+          {
+            echo "XDG_RUNTIME_DIR=/run/user/$uid"
+            echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus"
+          } >> "$GITHUB_ENV"
+
+      - name: Onboard with the background service
+        env:
+          PAPERCLIPAI_VERSION: ${{ inputs.paperclip_version }}
+          DATA_DIR: ${{ runner.temp }}/service-smoke-data
+          SMOKE_CLEANUP: "false"
+        run: ./scripts/service-onboard-smoke.sh
+
+      - name: Capture service diagnostics
+        if: always()
+        run: |
+          {
+            systemctl --user --no-pager status paperclipai.service || true
+            journalctl --user -u paperclipai.service --no-pager || true
+          } > "$RUNNER_TEMP/paperclipai-service.log" 2>&1
+
+      - name: Upload service diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}-service
+          path: ${{ runner.temp }}/paperclipai-service.log
+          retention-days: 14
+
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
+    # Fixed here rather than read back out of the harness, so the `always()`
+    # diagnostics steps below still know the container's name when the launch
+    # step is the thing that failed. Reading it back was why a failing smoke
+    # uploaded no Docker logs at all.
+    env:
+      SMOKE_CONTAINER_NAME: release-smoke-onboard
 
     steps:
       - name: Checkout repository
@@ -67,26 +133,24 @@ jobs:
 
       - name: Launch Docker smoke harness
         run: |
-          metadata_file="$RUNNER_TEMP/release-smoke.env"
           HOST_PORT="${{ inputs.host_port }}" \
           DATA_DIR="$RUNNER_TEMP/release-smoke-data" \
           PAPERCLIPAI_VERSION="${{ inputs.paperclip_version }}" \
           SMOKE_READY_TIMEOUT_SECONDS=420 \
           SMOKE_DETACH=true \
-          SMOKE_METADATA_FILE="$metadata_file" \
+          SMOKE_METADATA_FILE="${{ runner.temp }}/release-smoke.env" \
+          SMOKE_LOG_FILE="${{ runner.temp }}/docker-onboard-smoke.log" \
           ./scripts/docker-onboard-smoke.sh
           set -a
-          source "$metadata_file"
+          source "${{ runner.temp }}/release-smoke.env"
           set +a
           {
             echo "SMOKE_BASE_URL=$SMOKE_BASE_URL"
             echo "SMOKE_ADMIN_EMAIL=$SMOKE_ADMIN_EMAIL"
             echo "SMOKE_ADMIN_PASSWORD=$SMOKE_ADMIN_PASSWORD"
-            echo "SMOKE_CONTAINER_NAME=$SMOKE_CONTAINER_NAME"
             echo "SMOKE_DATA_DIR=$SMOKE_DATA_DIR"
             echo "SMOKE_IMAGE_NAME=$SMOKE_IMAGE_NAME"
             echo "SMOKE_PAPERCLIPAI_VERSION=$SMOKE_PAPERCLIPAI_VERSION"
-            echo "SMOKE_METADATA_FILE=$metadata_file"
           } >> "$GITHUB_ENV"
 
       - name: Run release smoke Playwright suite
@@ -100,9 +164,20 @@ jobs:
       - name: Capture Docker logs
         if: always()
         run: |
-          if [[ -n "${SMOKE_CONTAINER_NAME:-}" ]]; then
-            docker logs "$SMOKE_CONTAINER_NAME" >"$RUNNER_TEMP/docker-onboard-smoke.log" 2>&1 || true
+          log_file="${{ runner.temp }}/docker-onboard-smoke.log"
+          # A live container has the fuller story, so prefer it. When the
+          # harness already tore the container down it wrote this file on its
+          # way out, and that copy is kept rather than clobbered.
+          if docker inspect "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1; then
+            docker logs "$SMOKE_CONTAINER_NAME" >"$log_file" 2>&1 || true
           fi
+          # Never leave the upload with nothing to say. An absent log reads as
+          # a missing artifact; a file saying the container was gone reads as
+          # the diagnosis it is.
+          if [[ ! -s "$log_file" ]]; then
+            echo "No Docker logs captured: container '$SMOKE_CONTAINER_NAME' left no log dump and is no longer present." >"$log_file"
+          fi
+          echo "Captured $(wc -l <"$log_file") log lines to $log_file"
 
       - name: Upload diagnostics
         if: always()
@@ -111,14 +186,15 @@ jobs:
           name: ${{ inputs.artifact_name }}
           path: |
             ${{ runner.temp }}/docker-onboard-smoke.log
-            ${{ env.SMOKE_METADATA_FILE }}
+            ${{ runner.temp }}/release-smoke.env
             tests/release-smoke/playwright-report/
             tests/release-smoke/test-results/
+          # The capture step above guarantees the log file, so an empty upload
+          # means the diagnostics wiring itself broke — which is worth failing
+          # over rather than burying in a warning nobody reads.
+          if-no-files-found: error
           retention-days: 14
 
       - name: Stop Docker smoke container
         if: always()
-        run: |
-          if [[ -n "${SMOKE_CONTAINER_NAME:-}" ]]; then
-            docker rm -f "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1 || true
-          fi
+        run: docker rm -f "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1 || true

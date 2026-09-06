@@ -55,6 +55,8 @@ import type {
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentRunnerIngressEndpoint,
   PluginEnvironmentSyncInParams,
   PluginEnvironmentSyncOutParams,
   PluginEnvironmentSyncResult,
@@ -82,12 +84,12 @@ import type {
   PluginExternalObjectResolveResult,
   RefreshExternalObjectsParams,
   RefreshExternalObjectsResult,
-  PluginSetupTokenPtyOpenParams,
-  PluginSetupTokenPtyOpenResult,
-  PluginSetupTokenPtyInputParams,
-  PluginSetupTokenPtyStopParams,
-  PluginSetupTokenPtyCloseParams,
-  PluginSetupTokenPtyCloseResult,
+  PluginLoginPtyOpenParams,
+  PluginLoginPtyOpenResult,
+  PluginLoginPtyInputParams,
+  PluginLoginPtyStopParams,
+  PluginLoginPtyCloseParams,
+  PluginLoginPtyCloseResult,
   PluginDuplexChannelOpenParams,
   PluginDuplexChannelOpenResult,
   PluginDuplexChannelWriteParams,
@@ -399,6 +401,11 @@ export interface PluginDefinition {
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult>;
 
+  /** Return an authenticated private WebSocket ingress for runnerd. */
+  onEnvironmentRunnerIngressEndpoint?(
+    params: PluginEnvironmentRunnerIngressEndpointParams,
+  ): Promise<PluginEnvironmentRunnerIngressEndpoint>;
+
   /**
    * Optional, opt-in: called before execution to place host files/directories at
    * target sandbox paths using a provider-native transport instead of the default
@@ -449,27 +456,27 @@ export interface PluginDefinition {
    * Called to open one live Claude `setup-token` login pseudo-terminal.
    * The worker registers the terminal under the host route identifier and returns a
    * worker session identifier for the output notification binding only. The worker
-   * streams output and the exit through `ctx.setupTokenPty`, never as a reply.
-   * Defining the four `onSetupTokenPty*` hooks advertises the four methods.
+   * streams output and the exit through `ctx.loginPty`, never as a reply.
+   * Defining the four `onLoginPty*` hooks advertises the four methods.
    */
-  onSetupTokenPtyOpen?(
-    params: PluginSetupTokenPtyOpenParams,
-  ): Promise<PluginSetupTokenPtyOpenResult>;
+  onLoginPtyOpen?(
+    params: PluginLoginPtyOpenParams,
+  ): Promise<PluginLoginPtyOpenResult>;
 
   /** Called to write delayed input to an open login pseudo-terminal, keyed by the worker session identifier. */
-  onSetupTokenPtyInput?(params: PluginSetupTokenPtyInputParams): Promise<void>;
+  onLoginPtyInput?(params: PluginLoginPtyInputParams): Promise<void>;
 
   /** Called to stop an open login pseudo-terminal child, keyed by the worker session identifier. */
-  onSetupTokenPtyStop?(params: PluginSetupTokenPtyStopParams): Promise<void>;
+  onLoginPtyStop?(params: PluginLoginPtyStopParams): Promise<void>;
 
   /**
    * Called to close an open login pseudo-terminal by the host route identifier. The
    * worker closes the exact terminal registered under that identifier and returns a
    * close acknowledgement that carries the same identifier.
    */
-  onSetupTokenPtyClose?(
-    params: PluginSetupTokenPtyCloseParams,
-  ): Promise<PluginSetupTokenPtyCloseResult>;
+  onLoginPtyClose?(
+    params: PluginLoginPtyCloseParams,
+  ): Promise<PluginLoginPtyCloseResult>;
 
   /**
    * Called to open one persistent duplex channel. The worker registers the
@@ -478,6 +485,8 @@ export interface PluginDefinition {
    * and the exit through worker→host notifications, never as a reply. Defining
    * the four `onDuplexChannel*` hooks advertises the four methods. The host reads
    * the open verb to gate the `duplexCommandStream` capability.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
    */
   onDuplexChannelOpen?(
     params: PluginDuplexChannelOpenParams,

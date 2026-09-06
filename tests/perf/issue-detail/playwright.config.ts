@@ -34,6 +34,7 @@ export default defineConfig({
       ...process.env,
       NODE_ENV: "development",
       PORT: String(PORT),
+      PAPERCLIP_OPEN_ON_LISTEN: "false",
       PAPERCLIP_HOME,
       PAPERCLIP_INSTANCE_ID,
       PAPERCLIP_CONFIG,

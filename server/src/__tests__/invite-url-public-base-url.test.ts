@@ -68,7 +68,6 @@ function createDbStub() {
             where() {
               return Promise.resolve([{
                 name: "Acme Robotics",
-                brandColor: "#114488",
                 logoAssetId: null,
               }]);
             },

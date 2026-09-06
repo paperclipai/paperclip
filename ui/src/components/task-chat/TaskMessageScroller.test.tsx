@@ -24,6 +24,34 @@ function fakeGeometry(el: HTMLElement, { scrollHeight = 1000, clientHeight = 400
   });
 }
 
+function fakeResizableGeometry(
+  el: HTMLElement,
+  { scrollHeight = 1000, clientHeight = 400 } = {},
+) {
+  let currentClientHeight = clientHeight;
+  let scrollTop = 0;
+  Object.defineProperty(el, "scrollHeight", {
+    value: scrollHeight,
+    configurable: true,
+  });
+  Object.defineProperty(el, "clientHeight", {
+    get: () => currentClientHeight,
+    configurable: true,
+  });
+  Object.defineProperty(el, "scrollTop", {
+    get: () => scrollTop,
+    set: (value: number) => {
+      scrollTop = value;
+    },
+    configurable: true,
+  });
+  return {
+    setClientHeight(value: number) {
+      currentClientHeight = value;
+    },
+  };
+}
+
 /**
  * Scroll/wheel are continuous-priority events, so React flushes the resulting
  * state updates asynchronously — wait a macrotask after dispatching.
@@ -91,6 +119,8 @@ describe("TaskMessageScroller", () => {
   afterEach(() => {
     flushSync(() => root.unmount());
     container.remove();
+    document.documentElement.style.removeProperty("--motion-scrollbar-idle-delay");
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -103,11 +133,44 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(el.scrollHeight);
   });
 
-  it("keeps the scrollbar at the full-width thread viewport edge", () => {
+  it("extends only the streamlined scroll box through the page gutter", () => {
     render();
-    const frame = scroller().parentElement;
+    const el = scroller();
+    const frame = el.parentElement;
 
     expect(frame?.className).toBe("relative min-h-0 flex-1");
+    expect(el.classList).toContain("-right-4");
+    expect(el.classList).toContain("pr-4");
+    expect(el.classList).toContain("md:-right-6");
+    expect(el.classList).toContain("md:pr-6");
+    expect(el.classList).not.toContain("right-0");
+  });
+
+  it("shows the scrollbar only while scroll activity is recent", () => {
+    vi.useFakeTimers();
+    document.documentElement.style.setProperty("--motion-scrollbar-idle-delay", "600ms");
+    render();
+    const el = scroller();
+    fakeGeometry(el);
+
+    expect(el.className).toContain("scrollbar-while-scrolling");
+    expect(el.getAttribute("data-scroll-active")).toBeNull();
+
+    el.scrollTop = 100;
+    el.dispatchEvent(new Event("scroll", { bubbles: true }));
+    expect(el.getAttribute("data-scroll-active")).toBe("true");
+
+    vi.advanceTimersByTime(599);
+    expect(el.getAttribute("data-scroll-active")).toBe("true");
+    vi.advanceTimersByTime(1);
+    expect(el.getAttribute("data-scroll-active")).toBeNull();
+  });
+
+  it("contains horizontal overflow so no scrollbar appears above the composer", () => {
+    render();
+
+    expect(scroller().classList).toContain("overflow-x-hidden");
+    expect(scroller().classList).toContain("overflow-y-auto");
   });
 
   it("auto-follows content instantly while pinned", async () => {
@@ -131,12 +194,67 @@ describe("TaskMessageScroller", () => {
     expect(btn).not.toBeNull();
     expect(btn!.className).toContain("tc-scroll-pill-in");
     expect(btn!.className).toContain("size-8");
+    expect(btn!.className).toContain("bottom-7");
+    expect(btn!.className).not.toContain("bottom-3");
     expect(btn!.className).not.toContain("-translate-x-1/2");
     // Icon-only: no visible text.
     expect(btn!.textContent).toBe("");
     // New content must not yank the held position.
     render(2);
     expect(el.scrollTop).toBe(100);
+  });
+
+  it("follows a shrinking viewport while pinned so a growing composer cannot cover the latest text", async () => {
+    let triggerResize = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          triggerResize = () =>
+            callback([], this as unknown as ResizeObserver);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    render();
+    const el = scroller();
+    const geometry = fakeResizableGeometry(el);
+    triggerResize();
+    await scrollTo(el, 600);
+
+    geometry.setClientHeight(200);
+    triggerResize();
+
+    expect(el.scrollTop).toBe(el.scrollHeight);
+    expect(pill()).toBeNull();
+  });
+
+  it("holds a reader's position when the composer grows while they are scrolled up", async () => {
+    let triggerResize = () => {};
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          triggerResize = () =>
+            callback([], this as unknown as ResizeObserver);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    render();
+    const el = scroller();
+    const geometry = fakeResizableGeometry(el);
+    triggerResize();
+    await scrollTo(el, 100);
+    await waitForPill(true);
+
+    geometry.setClientHeight(200);
+    triggerResize();
+
+    expect(el.scrollTop).toBe(100);
+    expect(pill()).not.toBeNull();
   });
 
   it("small drifts within the pin threshold do not show the pill", async () => {

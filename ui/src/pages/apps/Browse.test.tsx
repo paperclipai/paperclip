@@ -9,18 +9,32 @@ import { Browse } from "./Browse";
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
+const listUserDirectoryMock = vi.hoisted(() => vi.fn());
+const archiveConnectionMock = vi.hoisted(() => vi.fn());
+const pushToastMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
+const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
+    archiveConnection: (connectionId: string, options?: { confirmComposioChildren?: boolean }) =>
+      archiveConnectionMock(connectionId, options),
+  },
+}));
+
+vi.mock("@/api/access", () => ({
+  accessApi: {
+    listUserDirectory: (companyId: string) => listUserDirectoryMock(companyId),
   },
 }));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
+    <a href={to}>{children}</a>
+  ),
   useNavigate: () => navigateMock,
 }));
 
@@ -32,7 +46,11 @@ vi.mock("@/context/CompanyContext", () => ({
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
-  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+  useBreadcrumbs: () => ({ setBreadcrumbs: setBreadcrumbsMock }),
+}));
+
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: pushToastMock }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -47,7 +65,7 @@ async function act(callback: () => void | Promise<void>) {
 }
 
 async function flushReact() {
-  for (let i = 0; i < 5; i += 1) {
+  for (let index = 0; index < 5; index += 1) {
     await act(async () => {
       await Promise.resolve();
       await new Promise((resolve) => window.setTimeout(resolve, 0));
@@ -60,9 +78,12 @@ function galleryEntry(overrides: Record<string, unknown>) {
     key: "github",
     name: "GitHub",
     logoUrl: "https://example.com/github.png",
-    tagline: "Let agents open PRs and issues.",
+    tagline: "Let agents open pull requests and issues.",
     authKind: "oauth",
-    transportTemplate: { transport: "mcp_remote", url: "https://api.github.com/mcp" },
+    transportTemplate: {
+      transport: "mcp_remote",
+      url: "https://api.github.com/mcp",
+    },
     credentialFields: [],
     recommendedDefaults: {},
     urlPatterns: [],
@@ -70,22 +91,60 @@ function galleryEntry(overrides: Record<string, unknown>) {
   };
 }
 
-describe("Browse store door (PAP-13254 door 1)", () => {
+function application(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "app-notion",
+    name: "Notion",
+    description: "Read and update workspace content.",
+    status: "active",
+    applicationKey: "app-gallery:notion:one",
+    metadata: { sourceTemplateKey: "notion" },
+    ...overrides,
+  };
+}
+
+function connection(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "conn-notion",
+    applicationId: "app-notion",
+    name: "devinfoley@gmail.com",
+    status: "active",
+    enabled: true,
+    authKind: "oauth",
+    healthStatus: "ok",
+    healthMessage: null,
+    lastError: null,
+    createdByUserId: "user-1",
+    config: { sourceTemplateKey: "notion" },
+    transportConfig: {},
+    ...overrides,
+  };
+}
+
+describe("Connectors landing page", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
     listGalleryMock.mockResolvedValue({
       apps: [
-        galleryEntry({ key: "zapier", name: "Zapier", tagline: "Connect automations." }),
-        galleryEntry({ key: "github", name: "GitHub", tagline: "Open PRs and issues." }),
-        galleryEntry({ key: "slack", name: "Slack", tagline: "Post messages to channels." }),
         galleryEntry({ key: "notion", name: "Notion", tagline: "Read and update workspace content." }),
-        galleryEntry({ key: "acme", name: "Acme CRM", tagline: "Sync deals and contacts." }),
+        galleryEntry({ key: "jira", name: "Jira", tagline: "Track projects and issues." }),
+        galleryEntry({
+          key: "gmail",
+          name: "Gmail",
+          tagline: "Search and draft email.",
+          availability: {
+            available: false,
+            reason: "Gmail is not available on this Paperclip instance yet.",
+          },
+        }),
       ],
     });
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
+    listUserDirectoryMock.mockResolvedValue({ users: [] });
+    archiveConnectionMock.mockResolvedValue(connection({ status: "archived" }));
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -93,11 +152,14 @@ describe("Browse store door (PAP-13254 door 1)", () => {
   afterEach(() => {
     act(() => root?.unmount());
     container.remove();
+    document.body.innerHTML = "";
     vi.clearAllMocks();
   });
 
   async function renderBrowse() {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -109,134 +171,275 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     await flushReact();
   }
 
-  it("renders the store header, popular grid, gallery, and BYO card", async () => {
+  it("renders one connector list with the requested header and no gallery sections", async () => {
     await renderBrowse();
 
-    const text = container.textContent ?? "";
-    expect(text).toContain("Browse");
-    expect(text).toContain("Choose an app or connect your own MCP server.");
-    expect(text).not.toContain("More integrations are coming soon.");
-    expect(text).not.toContain("Other integrations are previews.");
-    expect(text).toContain("Popular");
-    expect(text).toContain("All apps");
-    expect(text).toContain("GitHub");
-    expect(text).toContain("Slack");
-    expect(text).toContain("Acme CRM");
-    // Bring-your-own is a first-class row in the store.
-    expect(text).toContain("Connect your own tool");
+    expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Connectors" }]);
+    expect(setBreadcrumbsMock).not.toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ href: "/dashboard" }),
+    ]));
+    expect(container.querySelector("header")?.textContent).not.toContain("Connectors");
+    expect(
+      container.querySelector('header input[aria-label="Search connectors"]'),
+    ).toBeTruthy();
+    expect(container.querySelector("header")?.classList).toContain("justify-start");
+    expect(container.querySelector("header")?.classList).not.toContain("justify-end");
+    expect(container.querySelector('[aria-label="Popular apps"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Connected apps"]')).toBeNull();
+    expect(container.querySelector('[aria-label="All apps"]')).toBeNull();
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLElement>(
+          '[aria-label="Connector list"] > [data-app-slug]',
+        ),
+      ).map((row) => row.dataset.appSlug),
+    ).toEqual(["gmail", "jira", "notion", "custom-mcp"]);
+    expect(container.querySelector('button[aria-label="Connect Jira"]')).toBeTruthy();
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Unavailable Gmail"]')?.disabled,
+    ).toBe(true);
+    expect(container.textContent).toContain("Connect your own tool");
+
+    const customConnect = container.querySelector<HTMLButtonElement>(
+      '[data-app-slug="custom-mcp"] button',
+    );
+    await act(async () => {
+      customConnect?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Connect your own MCP server");
+    expect(container.textContent).toContain("Paste a config");
+    expect(container.textContent).not.toContain("Run your own");
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Connect your own MCP server"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/byo");
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Paste a config"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/advanced/paste-config");
   });
 
-  it("enables Notion, Zapier, and custom URLs while fading unfinished integrations", async () => {
+  it("sorts connected providers first and shows account, owner, status actions, and edit menus inline", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection(),
+        connection({
+          id: "conn-expired",
+          name: "ops@example.com",
+          healthStatus: "error",
+          healthMessage: "The saved sign-in expired.",
+        }),
+      ],
+    });
+    listUserDirectoryMock.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: {
+            id: "user-1",
+            name: "Dotta",
+            email: "dotta@example.com",
+            image: null,
+          },
+        },
+      ],
+    });
+
     await renderBrowse();
 
-    const zapierTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Zapier"),
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '[aria-label="Connector list"] > [data-app-slug]',
+      ),
     );
-    const githubTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("GitHub"),
-    );
-    const notionTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Notion"),
-    );
-    const tile = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Acme CRM"),
-    );
-    const byoCard = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Connect your own tool"),
-    );
-
-    expect(zapierTiles).toHaveLength(2);
-    expect(zapierTiles.every((button) => !button.disabled)).toBe(true);
-    expect(notionTiles).toHaveLength(2);
-    expect(notionTiles.every((button) => !button.disabled)).toBe(true);
-    expect(githubTiles.every((button) => button.disabled)).toBe(true);
-    expect(tile?.disabled).toBe(true);
-    expect(byoCard?.disabled).toBe(false);
-    expect(tile?.textContent).toContain("Coming soon");
-    expect(zapierTiles[0]?.textContent).toContain("Connect");
+    expect(rows[0]?.dataset.appSlug).toBe("notion");
+    const notion = rows[0]!;
+    expect(notion.textContent).toContain("devinfoley@gmail.com");
+    expect(notion.textContent).toContain("ops@example.com");
+    expect(notion.textContent).toContain("Connected by");
+    expect(notion.textContent).toContain("Dotta");
+    expect(notion.textContent).toContain("The saved sign-in expired.");
+    expect(notion.querySelector('button[aria-label="Add account Notion"]')).toBeTruthy();
+    expect(
+      notion.querySelector('button[aria-label="Manage devinfoley@gmail.com connection"]'),
+    ).toBeTruthy();
+    expect(
+      notion.querySelector('button[aria-label="Manage ops@example.com connection"]'),
+    ).toBeTruthy();
 
     await act(async () => {
-      zapierTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      notion
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Open devinfoley@gmail.com permissions"]',
+        )
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1&source=zapier");
+    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-notion/permissions");
 
     await act(async () => {
-      notionTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      notion
+        .querySelector<HTMLButtonElement>('button[aria-label="Add account Notion"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=notion");
+    expect(navigateMock).toHaveBeenCalledWith(
+      "/apps/connect?source=notion&applicationId=app-notion&name=Notion&new=1",
+    );
 
+    const reconnect = Array.from(notion.querySelectorAll("button")).find(
+      (button) => button.textContent === "Reconnect",
+    );
     await act(async () => {
-      byoCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      reconnect?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1");
+    expect(navigateMock).toHaveBeenCalledWith("/apps/conn-expired/permissions");
   });
 
-  it("filters the gallery by the search query", async () => {
+  it("removes a connection from the overflow menu only after destructive confirmation", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection()] });
+
     await renderBrowse();
 
-    const input = container.querySelector<HTMLInputElement>('input[type="search"]');
-    expect(input).toBeTruthy();
+    const menuTrigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Manage devinfoley@gmail.com connection"]',
+    );
+    expect(menuTrigger).toBeTruthy();
+
+    await act(async () => {
+      menuTrigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    await flushReact();
+
+    const removeItem = Array.from(document.body.querySelectorAll<HTMLElement>("[role=\"menuitem\"]"))
+      .find((item) => item.textContent?.trim() === "Remove connection");
+    expect(removeItem).toBeTruthy();
+    expect(removeItem?.getAttribute("data-variant")).toBe("destructive");
+
+    await act(async () => {
+      removeItem?.dispatchEvent(new Event("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveConnectionMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Remove devinfoley@gmail.com connection?",
+    );
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Remove connection",
+    );
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveConnectionMock).toHaveBeenCalledWith("conn-notion", {
+      confirmComposioChildren: false,
+    });
+    expect(pushToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Connection removed",
+        tone: "success",
+      }),
+    );
+  });
+
+  it("keeps an interrupted account visible and resumes setup from its account row", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection({
+          id: "conn-draft",
+          name: "Notion",
+          status: "draft",
+          healthStatus: "unchecked",
+        }),
+      ],
+    });
+
+    await renderBrowse();
+
+    expect(container.textContent).toContain("Setup incomplete");
+    const finish = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Finish setup",
+    );
+    await act(async () => {
+      finish?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith(
+      "/apps/connect?source=notion&resume=conn-draft",
+    );
+  });
+
+  it("filters the single list without restoring section chrome", async () => {
+    await renderBrowse();
+
+    const input = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Search connectors"]',
+    );
     const setter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype,
       "value",
     )?.set;
     await act(async () => {
-      setter?.call(input, "slack");
+      setter?.call(input, "jira");
       input?.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushReact();
 
-    const text = container.textContent ?? "";
-    expect(text).toContain("Results (1)");
-    expect(text).toContain("Slack");
-    expect(text).not.toContain("Acme CRM");
-    // Popular grid is hidden while searching.
-    expect(text).not.toContain("Popular");
+    const rows = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        '[aria-label="Connector list"] > [data-app-slug]',
+      ),
+    );
+    expect(rows.map((row) => row.dataset.appSlug)).toEqual(["jira"]);
+    expect(container.textContent).not.toContain("Popular");
+    expect(container.textContent).not.toContain("All apps");
   });
 
-  it("shows existing connection counts and opens the provider landing page", async () => {
+  it("shows existing accounts and an actionable warning when the gallery request fails", async () => {
+    listGalleryMock.mockRejectedValue(new Error("Gallery unavailable"));
     listApplicationsMock.mockResolvedValue({
       applications: [
-        { id: "app-notion", status: "active", applicationKey: "app-gallery:notion:one", metadata: {} },
+        application({
+          id: "custom-app",
+          name: "Internal search",
+          applicationKey: "custom:search",
+          metadata: { source: "link" },
+        }),
       ],
     });
     listConnectionsMock.mockResolvedValue({
       connections: [
-        { id: "conn-one", applicationId: "app-notion", status: "active" },
-        { id: "conn-two", applicationId: "app-notion", status: "disabled" },
-        { id: "conn-draft", applicationId: "app-notion", status: "draft" },
+        connection({
+          id: "custom-connection",
+          applicationId: "custom-app",
+          name: "search.internal.example",
+          config: {},
+        }),
       ],
     });
 
     await renderBrowse();
 
-    const notionTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Notion"),
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Couldn’t load every connector",
     );
-    expect(notionTiles).toHaveLength(2);
-    expect(notionTiles.every((button) => button.textContent?.includes("2 connected already"))).toBe(true);
-
-    await act(async () => {
-      notionTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(navigateMock).toHaveBeenCalledWith("/apps/app/app-notion/setup");
-  });
-
-  it("keeps the custom URL option available when gallery search has no matches", async () => {
-    await renderBrowse();
-
-    const input = container.querySelector<HTMLInputElement>('input[type="search"]');
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype,
-      "value",
-    )?.set;
-    await act(async () => {
-      setter?.call(input, "missing app");
-      input?.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(container.textContent).toContain("No planned apps match");
-    expect(container.textContent).toContain("Connect your own tool");
+    expect(container.textContent).toContain("Internal search");
+    expect(container.textContent).toContain("search.internal.example");
+    expect(Array.from(container.querySelectorAll("button")).some(
+      (button) => button.textContent === "Try again",
+    )).toBe(true);
   });
 });

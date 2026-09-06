@@ -207,6 +207,18 @@ describe("cursor_cloud execute", () => {
     );
   });
 
+  it("reports dispatch before starting the first remote SDK operation", async () => {
+    const run = createMockRun({ agentId: "agent-dispatch" });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-dispatch", sendRun: run });
+    createMock.mockResolvedValue(sdkAgent);
+    const onDispatch = vi.fn();
+
+    await execute(createContext({ onDispatch }));
+
+    expect(onDispatch).toHaveBeenCalledTimes(1);
+    expect(onDispatch.mock.invocationCallOrder[0]).toBeLessThan(createMock.mock.invocationCallOrder[0]!);
+  });
+
   it("omits the Paperclip API callback when no run JWT is issued (remote worker cannot call home)", async () => {
     const run = createMockRun({ agentId: "agent-no-jwt" });
     const sdkAgent = createMockSdkAgent({ agentId: "agent-no-jwt", sendRun: run });

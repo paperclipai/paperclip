@@ -16,6 +16,7 @@ const mockToolsApi = vi.hoisted(() => ({
   listConnections: vi.fn(),
   listPolicies: vi.fn(),
   listCatalog: vi.fn(),
+  listConnectionGrants: vi.fn(),
   listAudit: vi.fn(),
   putConnectionInstalls: vi.fn(),
 }));
@@ -111,7 +112,15 @@ describe("AgentToolsTab", () => {
     mockToolsApi.listConnections.mockReset();
     mockToolsApi.listPolicies.mockReset();
     mockToolsApi.listCatalog.mockReset();
+    mockToolsApi.listConnectionGrants.mockReset();
     mockToolsApi.putConnectionInstalls.mockReset();
+    mockToolsApi.listConnectionGrants.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [],
+      currentUserId: "user-1",
+      members: [],
+      capabilities: {},
+    });
     mockToolsApi.putConnectionInstalls.mockResolvedValue({ connectionId: "conn-1", installs: [] });
   });
 
@@ -240,7 +249,7 @@ describe("AgentToolsTab", () => {
     expect(text).toContain("Production GitHub");
     expect(text).toContain("GitHub safe");
     expect(text).toContain("Access profiles");
-    expect(text).toContain("Company default");
+    expect(text).toContain("Organization default");
     expect(container.querySelector('a[href="/apps/advanced/profiles/prof-1"]')?.textContent).toBe("GitHub safe");
     expect(container.querySelector('a[href="/apps/advanced/profiles?check=1"]')?.textContent).toBe("Check access");
     // Governing policy #1 is the company-wide require_approval rule.
@@ -269,6 +278,134 @@ describe("AgentToolsTab", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("No tools are allowed for this agent");
     expect(text).toContain("No active profile applies");
+    expect(text).toContain("Use responsible person's GitHub");
+    expect(container.querySelector('a[href="/apps/connect?source=github"]')?.textContent).toBe("Connect my GitHub");
+  });
+
+  it("shows an active dedicated GitHub identity as the agent override", async () => {
+    mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [],
+      bindings: [],
+      allowedTools: [],
+      allowedToolNames: [],
+      installedConnections: [],
+    } satisfies ToolProfileEffectiveSummary);
+    mockToolsApi.listConnections.mockResolvedValue({
+      connections: [{
+        id: "conn-github",
+        companyId: "company-1",
+        name: "Agent GitHub",
+        enabled: true,
+        status: "active",
+        config: { sourceTemplateKey: "github" },
+        transportConfig: {},
+        installs: [{ targetType: "company", targetId: "company-1" }],
+      }],
+    });
+    mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
+    mockToolsApi.listCatalog.mockResolvedValue({ catalog: [] });
+    mockToolsApi.listConnectionGrants.mockResolvedValue({
+      connection: { id: "conn-github", uid: "conn-github" },
+      grants: [{
+        id: "grant-agent",
+        kind: "agent",
+        subjectAgentId: "agent-1",
+        subjectUserId: null,
+        status: "active",
+        providerTenant: {
+          github: {
+            userId: "123",
+            login: "dottabot",
+            installationCount: 1,
+            repositoryCount: 1,
+            repositorySelection: "selected",
+            installationIds: ["456"],
+            installationOwnerLogins: ["paperclipai"],
+          },
+        },
+      }],
+      currentUserId: "user-1",
+      members: [],
+      capabilities: {},
+    });
+
+    await renderTab();
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("@dottabot");
+    expect(text).toContain("takes precedence over the responsible person's GitHub");
+    expect(container.querySelector('a[href="/apps/conn-github/permissions"]')?.textContent).toBe("Manage GitHub identity");
+    expect(text).not.toContain("Connect my GitHub");
+  });
+
+  it("does not display a grant from a disabled or uninstalled GitHub connection", async () => {
+    mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [],
+      bindings: [],
+      allowedTools: [],
+      allowedToolNames: [],
+      installedConnections: [],
+    } satisfies ToolProfileEffectiveSummary);
+    mockToolsApi.listConnections.mockResolvedValue({
+      connections: [{
+        id: "conn-github",
+        companyId: "company-1",
+        name: "Disabled GitHub",
+        enabled: false,
+        status: "active",
+        config: { sourceTemplateKey: "github" },
+        transportConfig: {},
+        installs: [{ targetType: "company", targetId: "company-1" }],
+      }],
+    });
+    mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
+    mockToolsApi.listCatalog.mockResolvedValue({ catalog: [] });
+
+    await renderTab();
+
+    const text = container.textContent ?? "";
+    expect(mockToolsApi.listConnectionGrants).not.toHaveBeenCalled();
+    expect(text).toContain("Use responsible person's GitHub");
+    expect(text).not.toContain("@dottabot");
+  });
+
+  it("shows a retryable error instead of connection setup when grants cannot be loaded", async () => {
+    mockToolsApi.getEffectiveProfilesForAgent.mockResolvedValue({
+      agentId: "agent-1",
+      profiles: [],
+      entries: [],
+      bindings: [],
+      allowedTools: [],
+      allowedToolNames: [],
+      installedConnections: [],
+    } satisfies ToolProfileEffectiveSummary);
+    mockToolsApi.listConnections.mockResolvedValue({
+      connections: [{
+        id: "conn-github",
+        companyId: "company-1",
+        name: "Agent GitHub",
+        enabled: true,
+        status: "active",
+        config: { sourceTemplateKey: "github" },
+        transportConfig: {},
+        installs: [{ targetType: "company", targetId: "company-1" }],
+      }],
+    });
+    mockToolsApi.listPolicies.mockResolvedValue({ policies: [] });
+    mockToolsApi.listCatalog.mockResolvedValue({ catalog: [] });
+    mockToolsApi.listConnectionGrants.mockRejectedValue(new Error("temporary failure"));
+
+    await renderTab();
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Could not load GitHub identity");
+    expect(text).toContain("Your existing setup was not changed");
+    expect(text).not.toContain("Connect my GitHub");
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Retry")).toBe(true);
   });
 
   it("autosaves installed apps for the current agent", async () => {

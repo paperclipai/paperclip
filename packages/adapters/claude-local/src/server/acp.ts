@@ -48,6 +48,7 @@ import {
   classifyThrownErrorClass,
   logSandboxProbeDiagnostic,
 } from "./probe-diagnostics.js";
+import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
@@ -215,19 +216,13 @@ async function prepareClaudeRemoteManagedHome(
   // the host. A restore miss is logged and never fails the run.
   const registerWorkspaceSyncBack = (
     stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"],
-  ): AcpxRemoteManagedHomeResult["teardown"] => async () => {
-    try {
-      await onLog("stdout", "[paperclip] Restoring workspace changes from the sandbox.\n");
-      await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
-    } catch (err) {
-      await onLog(
-        "stderr",
-        `[paperclip] Claude ACP teardown workspace restore failed: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
-      );
-    }
-  };
+  ): AcpxRemoteManagedHomeResult["teardown"] =>
+    createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
+      failurePrefix: "[paperclip] Claude ACP teardown workspace restore failed",
+    });
   const envConfig = parseObject(input.config.env);
   const explicitClaudeConfigDir =
     typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0

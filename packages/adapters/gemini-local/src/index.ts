@@ -1,6 +1,5 @@
 import {
   buildSandboxNpmInstallCommand,
-  type AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
 
 export const type = "gemini_local";
@@ -19,18 +18,6 @@ export const models = [
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
   { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
   { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
-];
-
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use Gemini Flash Lite as the budget Gemini CLI lane while preserving the primary model.",
-    adapterConfig: {
-      model: "gemini-2.5-flash-lite",
-    },
-    source: "adapter_default",
-  },
 ];
 
 export const agentConfigurationDoc = `# gemini_local agent configuration

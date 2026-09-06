@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "slug": "kernel",
+  "name": "Kernel",
+  "description": "Connect Kernel's provider-hosted MCP server.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/kernel.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.onkernel.com/*"
+  ],
+  "docsUrl": "https://www.kernel.sh/docs/reference/mcp-server/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.onkernel.com/mcp"
+      },
+      "guidanceMd": "Connect Kernel in the browser. A Kernel account with either browser authorization or an API key.",
+      "riskTier": "S3",
+      "label": "Sign in with Kernel",
+      "consoleLinks": {
+        "docs": "https://www.kernel.sh/docs/reference/mcp-server/"
+      },
+      "warnings": [
+        "A Kernel account with either browser authorization or an API key."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.onkernel.com/mcp"
+      },
+      "guidanceMd": "Use a customer-created Kernel key. A Kernel account with either browser authorization or an API key.",
+      "riskTier": "S3",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Kernel API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Kernel API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "X-API-Key",
+        "prefix": null
+      },
+      "consoleLinks": {
+        "keys": "https://www.kernel.sh/docs/reference/mcp-server/",
+        "docs": "https://www.kernel.sh/docs/reference/mcp-server/"
+      },
+      "warnings": [
+        "A Kernel account with either browser authorization or an API key."
+      ]
+    }
+  ]
+}

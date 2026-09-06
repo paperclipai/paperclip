@@ -1660,7 +1660,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await expect(svc.createConnection(company.id, {
       name: "Wrong secret",
       transport: "mcp_remote",
-      transportConfig: { url: "https://example.invalid/mcp" },
+      transportConfig: { url: "https://8.8.8.8/mcp" },
       credentialSecretRefs: [{
         secretId: otherSecret.id,
         configPath: "headers.Authorization",

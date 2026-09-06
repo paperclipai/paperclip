@@ -1,0 +1,13 @@
+/runner/target/
+/dist-browser/
+/dist-sdk/
+/playwright-report/
+/test-results/
+/dist-standalone/
+/dist-scenarios/
+/dist-issue-thread/
+
+# The repository root ignores scratch `check-*.mjs` files and only re-includes
+# them under the root `scripts/` directory. This package's checks are real
+# source, so re-include them here instead of relying on `git add -f`.
+!scripts/check-*.mjs

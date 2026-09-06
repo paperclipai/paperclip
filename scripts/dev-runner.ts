@@ -1,14 +1,23 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.ts";
+import {
+  paperclipRunnerBinaryNeedsBuild,
+  resolveNativeRunnerRequirement,
+} from "./dev-runner-native-binary.mjs";
+import { applyDevRunnerOptions } from "./dev-runner-options.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
+import {
+  readDevServerRestartRequest,
+  removeDevServerRestartRequest,
+} from "../server/src/dev-server-status.ts";
 import {
   findAdoptableLocalService,
   removeLocalServiceRegistryRecord,
@@ -20,6 +29,18 @@ import {
 // tsx context without requiring workspace package resolution first.
 const BIND_MODES = ["loopback", "lan", "tailnet", "custom"] as const;
 type BindMode = (typeof BIND_MODES)[number];
+
+const mode = process.argv[2] === "watch" ? "watch" : "dev";
+let cliArgs: string[];
+let dataDir: string | null;
+try {
+  const appliedOptions = applyDevRunnerOptions(process.argv.slice(3), process.env, repoRoot);
+  cliArgs = appliedOptions.forwardedArgs;
+  dataDir = appliedOptions.dataDir;
+} catch (error) {
+  console.error(`[paperclip] ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 
 const worktreeEnvBootstrap = bootstrapDevRunnerWorktreeEnv(repoRoot, process.env);
 if (worktreeEnvBootstrap.missingEnv) {
@@ -35,8 +56,6 @@ if (isWorktreeSeedPending(repoRoot)) {
   process.exit(1);
 }
 
-const mode = process.argv[2] === "watch" ? "watch" : "dev";
-const cliArgs = process.argv.slice(3);
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
 const gracefulShutdownTimeoutMs = 10_000;
@@ -143,9 +162,14 @@ if (bindMode === "custom" && !bindHost) {
   process.exit(1);
 }
 
+// Managed HTTPS runtimes serve the built UI bundle: the Vite dev middleware's
+// unbundled module waterfall stalls behind the Tailscale HTTPS proxy and the
+// first page load in a fresh browser profile stays blank forever (PAP-18043).
+const explicitUiDevMiddleware = process.env.PAPERCLIP_UI_DEV_MIDDLEWARE;
+const serveBuiltUiForManagedRuntime = managedRuntimeExposure && explicitUiDevMiddleware === undefined;
 const env: NodeJS.ProcessEnv = {
   ...process.env,
-  PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
+  PAPERCLIP_UI_DEV_MIDDLEWARE: explicitUiDevMiddleware ?? (serveBuiltUiForManagedRuntime ? "false" : "true"),
 };
 
 if (mode === "dev") {
@@ -196,7 +220,7 @@ if (tailscaleAuth || bindMode) {
 const serverPort = Number.parseInt(env.PORT ?? process.env.PORT ?? "3100", 10) || 3100;
 const devService = createDevServiceIdentity({
   mode,
-  forwardedArgs,
+  forwardedArgs: dataDir ? [...forwardedArgs, `--data-dir=${dataDir}`] : forwardedArgs,
   networkProfile: tailscaleAuth ? `legacy:${bindMode ?? "lan"}` : (bindMode ?? "default"),
   port: serverPort,
 });
@@ -311,10 +335,9 @@ function clearDevServerStatus() {
   rmSync(devServerRestartRequestFilePath, { force: true });
 }
 
-function consumeDevServerRestartRequest() {
-  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return false;
-  rmSync(devServerRestartRequestFilePath, { force: true });
-  return true;
+function getDevServerRestartRequest() {
+  if (mode !== "dev" || !existsSync(devServerRestartRequestFilePath)) return null;
+  return readDevServerRestartRequest(env);
 }
 
 async function updateDevServiceRecord(extra?: Record<string, unknown>) {
@@ -388,7 +411,7 @@ async function runPnpm(args: string[], options: {
 
 async function getMigrationStatusPayload() {
   const status = await runPnpm(
-    ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
+    ["--silent", "--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
     { env },
   );
   if (status.code !== 0) {
@@ -400,16 +423,26 @@ async function getMigrationStatusPayload() {
     process.exit(status.code);
   }
 
-  try {
-    return JSON.parse(status.stdout.trim()) as { status?: string; pendingMigrations?: string[] };
-  } catch (error) {
-    process.stderr.write(
-      status.stderr ||
-        status.stdout ||
-        "[paperclip] migration-status returned invalid JSON payload\n",
-    );
-    throw toError(error, "Unable to parse migration-status JSON output");
+  // pnpm can interleave its own reporter lines (e.g. "Unsupported engine"
+  // warnings) into stdout, so parse the last line that is a JSON object
+  // instead of trusting the whole stream.
+  const jsonLines = status.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("{"));
+  for (let index = jsonLines.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(jsonLines[index]) as { status?: string; pendingMigrations?: string[] };
+    } catch {
+      // keep scanning earlier JSON-looking lines
+    }
   }
+  process.stderr.write(
+    status.stderr ||
+      status.stdout ||
+      "[paperclip] migration-status returned invalid JSON payload\n",
+  );
+  throw new Error("Unable to parse migration-status JSON output");
 }
 
 async function refreshPendingMigrations() {
@@ -496,6 +529,122 @@ async function buildPluginSdk() {
   }
 }
 
+async function getNativeRunnerRequired(): Promise<boolean> {
+  const status = await runPnpm(
+    [
+      "--silent",
+      "--filter",
+      "@paperclipai/server",
+      "exec",
+      "tsx",
+      "src/dev-native-runner-status.ts",
+    ],
+    { env },
+  );
+  if (status.signal) {
+    exitForSignal(status.signal);
+    return true;
+  }
+  const requirement = resolveNativeRunnerRequirement({
+    exitCode: status.code,
+    stdout: status.stdout,
+  });
+  if (!requirement.valid) {
+    const detail = status.stderr || status.stdout;
+    process.stderr.write(
+      `[paperclip] unable to determine the native runner requirement; conservatively preparing the native runner${detail ? `\n${detail}` : "\n"}`,
+    );
+  }
+  return requirement.nativeRunnerRequired;
+}
+
+async function buildPaperclipRunner() {
+  console.log("[paperclip] building paperclip runner...");
+  const typescriptResult = await runPnpm(
+    ["--filter", "@paperclipai/paperclip-runner", "build:typescript"],
+    { stdio: "inherit" },
+  );
+  if (typescriptResult.signal) {
+    exitForSignal(typescriptResult.signal);
+    return;
+  }
+  if (typescriptResult.code !== 0) {
+    console.error("[paperclip] paperclip runner build failed");
+    process.exit(typescriptResult.code);
+  }
+
+  if (
+    !paperclipRunnerBinaryNeedsBuild({
+      repoRoot,
+      nativeRunnerRequired: await getNativeRunnerRequired(),
+      configuredBinary: env.PAPERCLIP_RUNNER_BINARY,
+    })
+  ) {
+    return;
+  }
+
+  console.log("[paperclip] building paperclip runner native binary...");
+  const binaryResult = await runPnpm(
+    ["--filter", "@paperclipai/paperclip-runner", "build:binary"],
+    { stdio: "inherit" },
+  );
+  if (binaryResult.signal) {
+    exitForSignal(binaryResult.signal);
+    return;
+  }
+  if (binaryResult.code !== 0) {
+    console.error("[paperclip] paperclip runner native binary build failed");
+    process.exit(binaryResult.code);
+  }
+}
+
+function newestMtimeMs(target: string): number {
+  const stat = statSync(target, { throwIfNoEntry: false });
+  if (!stat) return 0;
+  if (!stat.isDirectory()) return stat.mtimeMs;
+  let newest = stat.mtimeMs;
+  for (const entry of readdirSync(target)) {
+    if (entry === "node_modules" || entry === ".git" || entry === "dist") continue;
+    const childNewest = newestMtimeMs(path.join(target, entry));
+    if (childNewest > newest) newest = childNewest;
+  }
+  return newest;
+}
+
+function uiBundleIsFresh(): boolean {
+  const distIndex = path.join(repoRoot, "ui", "dist", "index.html");
+  const distStat = statSync(distIndex, { throwIfNoEntry: false });
+  if (!distStat) return false;
+  const sources = [
+    path.join(repoRoot, "ui", "src"),
+    path.join(repoRoot, "ui", "public"),
+    path.join(repoRoot, "ui", "index.html"),
+    path.join(repoRoot, "ui", "package.json"),
+    path.join(repoRoot, "ui", "vite.config.ts"),
+    path.join(repoRoot, "packages", "shared", "src"),
+  ];
+  return sources.every((source) => newestMtimeMs(source) <= distStat.mtimeMs);
+}
+
+async function buildUiBundleForManagedRuntime(): Promise<boolean> {
+  console.log("[paperclip] managed runtime: building the UI bundle for static serving...");
+  const result = await runPnpm(
+    ["--filter", "@paperclipai/ui", "build"],
+    { stdio: "inherit" },
+  );
+  if (result.signal) {
+    exitForSignal(result.signal);
+    return false;
+  }
+  if (result.code !== 0) {
+    console.error(
+      "[paperclip] UI bundle build failed; falling back to the Vite dev middleware (the page may load slowly or stay blank over HTTPS)",
+    );
+    return false;
+  }
+  return true;
+}
+
 async function markChildAsCurrent() {
   previousSnapshot = collectWatchedSnapshot();
   dirtyPaths = new Set();
@@ -558,6 +707,7 @@ async function stopChildForRestart() {
 }
 
 async function startServerChild() {
+  await buildPaperclipRunner();
   await buildPluginSdk();
 
   const serverScript = mode === "watch" ? "dev:watch" : "dev";
@@ -600,8 +750,8 @@ async function startServerChild() {
 
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) return;
-  const manualRestartRequested = consumeDevServerRestartRequest();
-  if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
+  const manualRestartRequest = getDevServerRestartRequest();
+  if (!manualRestartRequest && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
@@ -617,11 +767,30 @@ async function maybeAutoRestartChild() {
     restartInFlight = false;
     return;
   }
-  if (!manualRestartRequested && devServer.autoRestartEnabled !== true) {
+  const observedServerIdentity =
+    typeof (health as { serverInfo?: { processStartedAt?: unknown } })
+      .serverInfo?.processStartedAt === "string"
+      ? (health as { serverInfo: { processStartedAt: string } }).serverInfo
+          .processStartedAt
+      : null;
+  if (
+    manualRestartRequest?.previousServerIdentity &&
+    observedServerIdentity !== manualRestartRequest.previousServerIdentity
+  ) {
+    removeDevServerRestartRequest(
+      manualRestartRequest.requestId
+        ? { requestId: manualRestartRequest.requestId }
+        : undefined,
+      env,
+    );
     restartInFlight = false;
     return;
   }
-  if (!manualRestartRequested && (devServer.activeRunCount ?? 0) > 0) {
+  if (!manualRestartRequest && devServer.autoRestartEnabled !== true) {
+    restartInFlight = false;
+    return;
+  }
+  if (!manualRestartRequest && (devServer.activeRunCount ?? 0) > 0) {
     restartInFlight = false;
     return;
   }
@@ -633,7 +802,26 @@ async function maybeAutoRestartChild() {
       exitOnDecline: false,
     });
     await stopChildForRestart();
+    const restartRequestConsumed = manualRestartRequest
+      ? removeDevServerRestartRequest(
+        manualRestartRequest.requestId
+          ? { requestId: manualRestartRequest.requestId }
+          : undefined,
+        env,
+      )
+      : true;
     await startServerChild();
+    if (manualRestartRequest && !restartRequestConsumed) {
+      // A live writer may briefly hold the request lock. Starting the child is
+      // still correct because the requested restart already happened; retry
+      // correlated cleanup afterward without terminating the supervisor.
+      removeDevServerRestartRequest(
+        manualRestartRequest.requestId
+          ? { requestId: manualRestartRequest.requestId }
+          : undefined,
+        env,
+      );
+    }
   } catch (error) {
     const err = toError(error, "Auto-restart failed");
     process.stderr.write(`${err.stack ?? err.message}\n`);
@@ -694,7 +882,20 @@ process.on("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
+// The managed runtime readiness window is tight, so reuse a fresh bundle
+// when possible and overlap a needed rebuild with the migration preflight.
+let uiBundleBuild: Promise<boolean> | null = null;
+if (serveBuiltUiForManagedRuntime) {
+  if (uiBundleIsFresh()) {
+    console.log("[paperclip] managed runtime: reusing the up-to-date UI bundle in ui/dist");
+  } else {
+    uiBundleBuild = buildUiBundleForManagedRuntime();
+  }
+}
 await maybePreflightMigrations();
+if (uiBundleBuild) {
+  env.PAPERCLIP_UI_DEV_MIDDLEWARE = (await uiBundleBuild) ? "false" : "true";
+}
 await startServerChild();
 installDevIntervals();
 

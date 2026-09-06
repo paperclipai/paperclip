@@ -101,7 +101,7 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
 
     const ownerRow = allRows(notice.metadata).find((row) => row.label === "Recovery owner");
     expect(ownerRow?.type).toBe("key_value");
-    expect(String(ownerRow?.value)).toContain("Board escalation");
+    expect(ownerRow?.value).toBe("Board decision required");
   });
 
   it("derives title from the recovery cause and body from the plain-comment fallback", () => {
@@ -154,6 +154,37 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     });
     expect(rows.some((row) => row.label === "Failure code")).toBe(false);
     expect(rows.some((row) => row.label === "Failure summary")).toBe(false);
+  });
+
+  it("leads with the classified run failure code over the generic seed title", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: actionId,
+      recoveryOwner: owner,
+      sourceRun: {
+        ...sourceRun,
+        errorCode: "provider_quota",
+        errorSummary: "You've hit your limit · resets 2:30am (UTC)",
+      },
+    });
+
+    expect(notice.presentation.title).toBe("Error: usage limit reached");
+    expect(allRows(notice.metadata)).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "provider_quota",
+    });
+  });
+
+  it("titles auth-required run failures as a login error", () => {
+    expect(
+      buildStrandedRecoveryEscalationNotice({
+        seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }),
+        recoveryActionId: actionId,
+        recoveryOwner: null,
+        sourceRun: { ...sourceRun, errorCode: "claude_auth_required" },
+      }).presentation.title,
+    ).toBe("Error: not logged in to Claude");
   });
 
   it("is matched by the metadata-based escalation dedupe matcher", () => {

@@ -8,7 +8,7 @@
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=linear.app&sz=128"
+    "logoUrl": "/brands/apps/linear.svg"
   },
   "urlPatterns": [
     "https://mcp.linear.app/*"
@@ -19,8 +19,7 @@
       "transport": "mcp_remote",
       "auth": "oauth",
       "ownershipModes": [
-        "customer",
-        "dcr"
+        "customer"
       ],
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {
@@ -38,7 +37,25 @@
         "workspace",
         "team",
         "project"
-      ]
+      ],
+      "credentialSources": {
+        "vercelConnect": {
+          "services": [
+            "linear"
+          ],
+          "principalModes": [
+            "user"
+          ],
+          "scopes": [
+            "read",
+            "write"
+          ],
+          "header": {
+            "name": "Authorization",
+            "prefix": "Bearer "
+          }
+        }
+      }
     }
   ]
 }

@@ -28,6 +28,7 @@ import {
   issueRelations,
   issueComments,
   issueDocuments,
+  issueWorkProducts,
   issueReadStates,
   issueThreadInteractions,
   issues,
@@ -95,6 +96,10 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import {
+  LEGACY_WITHHELD_RUN_COMMENT,
+  projectHistoricalHeartbeatRunComment,
+} from "./heartbeat-run-summary.js";
 import { DEFAULT_INSERT_CHUNK_ROWS, insertRowsInChunks } from "./batch-insert.js";
 import type {
   ImportIssueRow,
@@ -163,6 +168,44 @@ const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_R
 const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
+
+export type IssuePostCommitAction = {
+  type: "cancel_native_question_run";
+  runId: string;
+  issueId: string;
+  issueStatus: string;
+};
+
+/** Execute side effects that must never run before the issue transaction commits. */
+export async function executeIssuePostCommitActions(
+  db: Db,
+  actions: readonly IssuePostCommitAction[],
+): Promise<void> {
+  if (actions.length === 0) return;
+  const { heartbeatService } = await import("./heartbeat.js");
+  const heartbeat = heartbeatService(db);
+  const cancelledRunIds = new Set<string>();
+  for (const action of actions) {
+    if (cancelledRunIds.has(action.runId)) continue;
+    cancelledRunIds.add(action.runId);
+    try {
+      await heartbeat.cancelRun(action.runId, "Task closed while waiting for operator input", {
+        resultJson: {
+          cancelledByIssueStatus: action.issueStatus,
+          cancelledIssueId: action.issueId,
+        },
+      });
+    } catch (err) {
+      // The durable marker written by the issue transaction remains available
+      // to startup and periodic recovery. Do not report a post-commit failure
+      // as though the already-committed issue transition had rolled back.
+      logger.warn(
+        { err, runId: action.runId, issueId: action.issueId },
+        "native question cancellation deferred to recovery sweep",
+      );
+    }
+  }
+}
 
 function wakeRequestTargetsIssue(issueId: string) {
   return sql`(
@@ -891,7 +934,7 @@ function normalizeIssuePlanDecompositionChildIds(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
-export function readAcceptedPlanConfirmationTarget(payload: unknown): {
+export function readAcceptedPlanConfirmationTarget(payload: unknown, fallbackIssueId?: string): {
   revisionId: string;
   key: string;
   issueId: string;
@@ -903,7 +946,7 @@ export function readAcceptedPlanConfirmationTarget(payload: unknown): {
   if (record.type !== "issue_document") return null;
   const revisionId = readStringFromRecord(record, "revisionId");
   const key = readStringFromRecord(record, "key");
-  const issueId = readStringFromRecord(record, "issueId");
+  const issueId = readStringFromRecord(record, "issueId") ?? fallbackIssueId;
   if (!revisionId || !key || !issueId) return null;
   return { revisionId, key, issueId };
 }
@@ -971,7 +1014,7 @@ async function findAcceptedPlanDocumentInteraction(
     .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt));
 
   for (const row of rows) {
-    const target = readAcceptedPlanConfirmationTarget(row.payload);
+    const target = readAcceptedPlanConfirmationTarget(row.payload, input.sourceIssueId);
     if (
       target?.issueId === input.sourceIssueId &&
       target.key === "plan" &&
@@ -3203,6 +3246,8 @@ const issueListSelect = {
     END
   `,
   status: issues.status,
+  statusVersion: issues.statusVersion,
+  lastStatusDecisionId: issues.lastStatusDecisionId,
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,
   priority: issues.priority,
@@ -4474,6 +4519,37 @@ export function issueService(db: Db) {
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
     return enriched;
+  }
+
+  async function projectHistoricalRunComments<
+    T extends { body: string; createdByRunId: string | null },
+  >(comments: T[]): Promise<T[]> {
+    const runIds = [
+      ...new Set(
+        comments.flatMap((comment) =>
+          comment.createdByRunId &&
+          comment.body === LEGACY_WITHHELD_RUN_COMMENT
+            ? [comment.createdByRunId]
+            : [],
+        ),
+      ),
+    ];
+    if (runIds.length === 0) return comments;
+    const runResults = await db
+      .select({ id: heartbeatRuns.id, resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, runIds));
+    const resultByRunId = new Map(
+      runResults.map((run) => [run.id, parseObject(run.resultJson)]),
+    );
+    return comments.map((comment) => {
+      if (!comment.createdByRunId) return comment;
+      const body = projectHistoricalHeartbeatRunComment(
+        comment.body,
+        resultByRunId.get(comment.createdByRunId),
+      );
+      return body === comment.body ? comment : { ...comment, body };
+    });
   }
 
   async function getCurrentScheduledRetriesForIssues(
@@ -6571,6 +6647,7 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
+          blockedTransitionAt: issues.blockedTransitionAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -6610,10 +6687,14 @@ export function issueService(db: Db) {
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
           blockerIssueIds: readiness.blockerIssueIds,
+          blockedTransitionAt: candidate.blockedTransitionAt,
         }));
     },
 
-    getWakeableParentAfterChildCompletion: async (parentIssueId: string) => {
+    getWakeableParentAfterChildCompletion: async (
+      parentIssueId: string,
+      completedChildResult?: { issueId: string; summary: string | null } | null,
+    ) => {
       const parent = await db
         .select({
           id: issues.id,
@@ -6673,7 +6754,11 @@ export function issueService(db: Db) {
         .slice(0, MAX_CHILD_COMPLETION_SUMMARIES)
         .map((child) => ({
           ...child,
-          summary: truncateInlineSummary(latestCommentByIssueId.get(child.id)),
+          summary: truncateInlineSummary(
+            child.id === completedChildResult?.issueId
+              ? (completedChildResult.summary ?? latestCommentByIssueId.get(child.id))
+              : latestCommentByIssueId.get(child.id),
+          ),
         }));
 
       return {
@@ -6696,6 +6781,36 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
 
+      const idempotencyKey = data.idempotencyKey?.trim();
+      if (idempotencyKey) {
+        const existingChild = await db
+          .select({ issue: issues })
+          .from(issueCreateIdempotencyKeys)
+          .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
+          .where(and(
+            eq(issueCreateIdempotencyKeys.companyId, parent.companyId),
+            eq(issueCreateIdempotencyKeys.idempotencyKey, idempotencyKey),
+          ))
+          .limit(1)
+          .then((rows) => rows[0]?.issue ?? null);
+        if (existingChild) {
+          if (existingChild.parentId !== parent.id) {
+            throw conflict("Child creation idempotency key belongs to another parent issue");
+          }
+          data.onDeduplicated?.("idempotency_key");
+          const [enriched] = await withIssueLabels(db, [existingChild]);
+          const [withRelations] = await withIssueRelationSummaries(
+            parent.companyId,
+            [enriched],
+            db,
+          );
+          return {
+            issue: withRelations,
+            parentBlockerAdded: false,
+          };
+        }
+      }
+
       const [{ childCount }] = await db
         .select({ childCount: sql<number>`count(*)::int` })
         .from(issues)
@@ -6713,6 +6828,11 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
+      // A child may target another project. Parent workspace identity is only
+      // valid inside the parent's project, so do not forward it across that
+      // boundary; create() then resolves the target project's own workspaces.
+      const childProjectId = issueData.projectId ?? parent.projectId;
+      const childInheritsParentProject = childProjectId === parent.projectId;
       const hasExplicitExecutionWorkspaceOverride =
         issueData.executionWorkspaceId !== undefined ||
         issueData.executionWorkspacePreference !== undefined ||
@@ -6724,8 +6844,10 @@ export function issueService(db: Db) {
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
-        projectId: issueData.projectId ?? parent.projectId,
-        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly ? parent.projectWorkspaceId : undefined),
+        projectId: childProjectId,
+        projectWorkspaceId:
+          issueData.projectWorkspaceId ??
+          (inheritStrategyOnly && childInheritsParentProject ? parent.projectWorkspaceId : undefined),
         goalId: issueData.goalId ?? parent.goalId,
         actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
         trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
@@ -7158,10 +7280,19 @@ export function issueService(db: Db) {
           if (issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+          // Workspace linkage is only inheritable inside the source project. A
+          // cross-project child (for example, a Paperclip ID issue created from
+          // a Paperclip App parent) must fall through to its own project's
+          // default workspaces, otherwise the inherited ids fail the
+          // project-match assertions below and the create is impossible without
+          // the caller naming the target workspaces explicitly.
+          const inheritsSourceProject =
+            issueData.projectId == null || issueData.projectId === workspaceSource.projectId;
+          if (inheritsSourceProject && projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
           if (
+            inheritsSourceProject &&
             isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
             workspaceSource.executionWorkspaceId
@@ -7641,9 +7772,12 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
+      postCommitActions?: IssuePostCommitAction[],
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications = postCommitActivityPublications ?? ownedActivityPublications;
+      const ownedPostCommitActions: IssuePostCommitAction[] = [];
+      const queuedPostCommitActions = postCommitActions ?? ownedPostCommitActions;
       const existing = await dbOrTx
         .select()
         .from(issues)
@@ -7890,7 +8024,36 @@ export function issueService(db: Db) {
               updated,
               { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
             );
+            const {
+              nativeQuestionCancellationIdentity,
+              requestNativeQuestionRunCancellation,
+            } = await import(
+              "./native-runtime/native-question-bridge.js"
+            );
             for (const interaction of expiredInteractions) {
+              if (interaction.kind === "ask_user_questions") {
+                const nativeQuestion = nativeQuestionCancellationIdentity(interaction);
+                if (nativeQuestion) {
+                  if (dbOrTx !== db && !postCommitActions) {
+                    throw new Error(
+                      "Terminal native question updates in an external transaction require a post-commit action queue",
+                    );
+                  }
+                  const runId = await requestNativeQuestionRunCancellation(
+                    tx,
+                    nativeQuestion,
+                    { kind: "issue_terminal", issueStatus: updated.status },
+                  );
+                  if (runId) {
+                    queuedPostCommitActions.push({
+                      type: "cancel_native_question_run",
+                      runId,
+                      issueId: updated.id,
+                      issueStatus: updated.status,
+                    });
+                  }
+                }
+              }
               await logActivity(tx as unknown as Db, {
                 companyId: updated.companyId,
                 actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
@@ -8051,6 +8214,9 @@ export function issueService(db: Db) {
       const result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
       if (dbOrTx === db && !postCommitActivityPublications) {
         for (const publication of ownedActivityPublications) publishActivity(publication);
+      }
+      if (dbOrTx === db && !postCommitActions) {
+        await executeIssuePostCommitActions(db, ownedPostCommitActions);
       }
       return result;
     },
@@ -8630,6 +8796,8 @@ export function issueService(db: Db) {
 
       const conditions = [eq(issueComments.issueId, issueId)];
       if (afterCommentId) {
+        // Guard: reject non-UUID cursors before hitting the DB to avoid Postgres type errors.
+        if (!isUuidLike(afterCommentId)) return [];
         const anchor = await db
           .select({
             id: issueComments.id,
@@ -8674,7 +8842,8 @@ export function issueService(db: Db) {
 
       const comments = limit ? await query.limit(limit) : await query;
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();
-      const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(comments);
+      const projectedComments = await projectHistoricalRunComments(comments);
+      const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(projectedComments);
       return enrichedComments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
@@ -8714,8 +8883,14 @@ export function issueService(db: Db) {
         .where(eq(issueComments.id, commentId))
         .then((rows) => rows[0] ?? null);
       if (!comment) return null;
-      const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
-      return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
+      const [projectedComment] = await projectHistoricalRunComments([comment]);
+      const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([
+        projectedComment ?? comment,
+      ]);
+      return redactIssueComment(
+        enrichedComment ?? projectedComment ?? comment,
+        censorUsernameInLogs,
+      );
     },
 
     removeComment: async (commentId: string) => {
@@ -8918,6 +9093,7 @@ export function issueService(db: Db) {
       originalFilename?: string | null;
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
+      createdByRunId?: string | null;
     }) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
@@ -8964,6 +9140,46 @@ export function issueService(db: Db) {
           })
           .returning();
 
+        const registeredRunId = input.createdByRunId && isUuidLike(input.createdByRunId)
+          ? await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.createdByRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              ...(input.createdByAgentId ? [eq(heartbeatRuns.agentId, input.createdByAgentId)] : []),
+            ))
+            .then((rows) => rows[0]?.id ?? null)
+          : null;
+        const contentPath = `/api/attachments/${attachment.id}/content`;
+        const [artifactWorkProduct] = registeredRunId
+          ? await tx
+            .insert(issueWorkProducts)
+            .values({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              type: "artifact",
+              provider: "paperclip",
+              externalId: attachment.id,
+              title: asset.originalFilename ?? "Attachment",
+              status: "active",
+              reviewState: "none",
+              isPrimary: false,
+              healthStatus: "unknown",
+              metadata: {
+                attachmentId: attachment.id,
+                contentType: asset.contentType,
+                byteSize: asset.byteSize,
+                contentPath,
+                openPath: contentPath,
+                downloadPath: `${contentPath}?download=1`,
+                originalFilename: asset.originalFilename,
+              },
+              createdByRunId: registeredRunId,
+            })
+            .returning({ id: issueWorkProducts.id })
+          : [];
+
         return {
           id: attachment.id,
           companyId: attachment.companyId,
@@ -8980,6 +9196,7 @@ export function issueService(db: Db) {
           createdByUserId: asset.createdByUserId,
           createdAt: attachment.createdAt,
           updatedAt: attachment.updatedAt,
+          artifactWorkProductId: artifactWorkProduct?.id ?? null,
         };
       });
     },

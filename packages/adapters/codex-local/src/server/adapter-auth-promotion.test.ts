@@ -23,8 +23,8 @@ const TOKEN_SENTINEL = "SENTINEL_TOKEN_XYZ";
 
 // This suite proves the device-login credential promotion helper. The helper
 // runs an independent readiness check on the exact staged credential first, then
-// validates it with the export rules, then writes only the company-scoped
-// credential home and the company-scoped cache. It writes only while the session
+// validates it with the export rules, then writes this account's own home and,
+// as a fallback, the company default home. It writes only while the session
 // holds the sole active claim on the slot (the conditional check). It never
 // writes the instance-global host, and it never logs secret bytes.
 describe("device-login credential promotion", () => {
@@ -83,11 +83,7 @@ describe("device-login credential promotion", () => {
     return path.join(resolveManagedCodexHomeDir(env, companyId), "auth.json");
   }
 
-  async function readIfPresent(target: string): Promise<string | null> {
-    return readFile(target, "utf8").catch(() => null);
-  }
-
-  it("a failed readiness check rejects and writes neither the company home nor the cache", async () => {
+  it("a failed readiness check rejects and writes neither the company home nor the account home", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
     const logs: string[] = [];
@@ -119,10 +115,10 @@ describe("device-login credential promotion", () => {
     expect(logs.join("\n")).not.toContain(ACCOUNT);
   });
 
-  it("a user login seeds an empty company home and cache slot for the new identity", async () => {
+  it("a user login seeds this account's own home and the company default home", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
-    const outcome = await promoteDeviceLoginCredential({
+    const result = await promoteDeviceLoginCredential({
       authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
       companyId: COMPANY_A,
       userInitiated: true,
@@ -131,22 +127,22 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    expect(outcome).toBe("promoted");
+    expect(result.outcome).toBe("promoted");
 
     const homeAuth = await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8");
     expect(JSON.parse(homeAuth).tokens.account_id).toBe(ACCOUNT);
-    const cacheAuth = await readFile(
+    const accountAuth = await readFile(
       resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A),
       "utf8",
     );
-    expect(JSON.parse(cacheAuth).tokens.account_id).toBe(ACCOUNT);
+    expect(JSON.parse(accountAuth).tokens.account_id).toBe(ACCOUNT);
     // The instance-global host was never seeded.
     await expect(
       lstat(path.join(resolveSharedCodexHomeDir(env), "auth.json")),
     ).rejects.toThrow();
   });
 
-  it("a strictly-newer same-identity login updates the company home", async () => {
+  it("a strictly-newer login updates this account's own home", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
     await promoteDeviceLoginCredential({
@@ -158,7 +154,7 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    const outcome = await promoteDeviceLoginCredential({
+    const result = await promoteDeviceLoginCredential({
       authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER, marker: "new" }),
       companyId: COMPANY_A,
       userInitiated: true,
@@ -167,13 +163,15 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    expect(outcome).toBe("promoted");
-    const homeAuth = JSON.parse(await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8"));
-    expect(homeAuth.last_refresh).toBe(NEWER);
-    expect(homeAuth.tokens.refresh_token).toContain("new");
+    expect(result.outcome).toBe("promoted");
+    const accountAuth = JSON.parse(
+      await readFile(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A), "utf8"),
+    );
+    expect(accountAuth.last_refresh).toBe(NEWER);
+    expect(accountAuth.tokens.refresh_token).toContain("new");
   });
 
-  it("an older same-identity login keeps the company home", async () => {
+  it("an older login keeps this account's own home", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
     await promoteDeviceLoginCredential({
@@ -185,7 +183,7 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    const outcome = await promoteDeviceLoginCredential({
+    const result = await promoteDeviceLoginCredential({
       authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: OLDER, marker: "older" }),
       companyId: COMPANY_A,
       userInitiated: true,
@@ -194,12 +192,14 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    expect(outcome).toBe("kept");
-    const homeAuth = JSON.parse(await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8"));
-    expect(homeAuth.tokens.refresh_token).toContain("keep");
+    expect(result.outcome).toBe("kept");
+    const accountAuth = JSON.parse(
+      await readFile(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A), "utf8"),
+    );
+    expect(accountAuth.tokens.refresh_token).toContain("keep");
   });
 
-  it("a different-identity login keeps the home and reports a foreign-identity outcome", async () => {
+  it("promotion writes the account home for a second, different account", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
     await promoteDeviceLoginCredential({
@@ -211,7 +211,7 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    const outcome = await promoteDeviceLoginCredential({
+    const result = await promoteDeviceLoginCredential({
       authBytes: subscriptionAuth({ accountId: OTHER_ACCOUNT, lastRefresh: NEWER, marker: "other" }),
       companyId: COMPANY_A,
       userInitiated: true,
@@ -220,23 +220,19 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    // The home keeps the first identity. The login did not install the other
-    // account, so the outcome is `kept_foreign_identity`, not a plain `kept`: the
-    // caller must fail the session instead of a report of `authenticated`. The
-    // other identity still lands in its own per-identity cache slot.
-    expect(outcome).toBe("kept_foreign_identity");
-    const homeAuth = JSON.parse(await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8"));
-    expect(homeAuth.tokens.account_id).toBe(ACCOUNT);
-    const otherCache = JSON.parse(
+    // A second, different account gets its own home, so the second login
+    // succeeds instead of failing behind the first account's home.
+    expect(result.outcome).toBe("promoted");
+    const otherAccountAuth = JSON.parse(
       await readFile(resolveCodexAuthCacheEntryPath(env, OTHER_ACCOUNT, COMPANY_A), "utf8"),
     );
-    expect(otherCache.tokens.account_id).toBe(OTHER_ACCOUNT);
+    expect(otherAccountAuth.tokens.account_id).toBe(OTHER_ACCOUNT);
   });
 
-  it("the cache off-switch skips the cache slot but still seeds the company home", async () => {
+  it("promotion returns the account id and the account home path", async () => {
     const home = await makeInstanceRoot();
-    const env = envFor(home, { PAPERCLIP_CODEX_AUTH_CACHE: "off" });
-    const outcome = await promoteDeviceLoginCredential({
+    const env = envFor(home);
+    const result = await promoteDeviceLoginCredential({
       authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
       companyId: COMPANY_A,
       userInitiated: true,
@@ -245,29 +241,231 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    expect(outcome).toBe("promoted");
-    // The company home was seeded.
-    expect(await readIfPresent(companyHomeAuthPath(env, COMPANY_A))).toContain(ACCOUNT);
-    // The cache slot was not written.
-    await expect(
-      lstat(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A)),
-    ).rejects.toThrow();
+    expect(result.accountId).toBe(ACCOUNT);
+    expect(result.accountHomeDir).toBe(
+      path.dirname(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A)),
+    );
   });
 
-  it("a cache write failure keeps the promotion successful and the company home durable", async () => {
+  it("promotion reports accountHomeCreated true for a first login of an account", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
-    // Force the per-identity cache write to fail. Plant a regular file where the
-    // cache expects the identity directory, so the private-directory guard throws
-    // before the cache slot is written. The company home write runs first, so the
-    // credential is already durable when the cache write fails.
+    const result = await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(result.outcome).toBe("promoted");
+    expect(result.accountHomeCreated).toBe(true);
+  });
+
+  it("promotion reports accountHomeCreated false for a repeat login of the same account", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: OLDER, marker: "first" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    const result = await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER, marker: "second" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(result.outcome).toBe("promoted");
+    expect(result.accountHomeCreated).toBe(false);
+  });
+
+  it("two concurrent promotions for the same account report only one accountHomeCreated true", async () => {
+    // Two different logins for the SAME Codex account run their own
+    // promotion slot, so they can promote at the same time. Without a lock
+    // around the absence check and the directory creation, both calls could
+    // see the directory as absent and both report `created: true`; a caller
+    // that later deletes the directory on `created: true` would then delete
+    // a home the other call's login still uses.
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    const [first, second] = await Promise.all([
+      promoteDeviceLoginCredential({
+        authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER, marker: "racer-a" }),
+        companyId: COMPANY_A,
+        userInitiated: true,
+        checkReadiness: ready,
+        isSoleActiveOwner: soleOwner,
+        env,
+        log: noopLog,
+      }),
+      promoteDeviceLoginCredential({
+        authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER, marker: "racer-b" }),
+        companyId: COMPANY_A,
+        userInitiated: true,
+        checkReadiness: ready,
+        isSoleActiveOwner: soleOwner,
+        env,
+        log: noopLog,
+      }),
+    ]);
+    // Both racers still authenticate; only the timestamp-comparison outcome
+    // (`promoted` vs. `kept`) can differ, because they carry the same
+    // `lastRefresh` timestamp.
+    expect(["promoted", "kept"]).toContain(first.outcome);
+    expect(["promoted", "kept"]).toContain(second.outcome);
+    const createdFlags = [first.accountHomeCreated, second.accountHomeCreated];
+    expect(createdFlags.filter(Boolean)).toHaveLength(1);
+    await expect(
+      lstat(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A)),
+    ).resolves.toBeDefined();
+  });
+
+  it("promotion keeps the company default home when it holds another account", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER, marker: "first" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    const before = await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8");
+    await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: OTHER_ACCOUNT, lastRefresh: NEWER, marker: "other" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    // The company default home fallback still names the first account: a
+    // second account never clobbers it once some account has claimed it.
+    expect(await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8")).toBe(before);
+  });
+
+  it("promotion seeds the company default home when it holds no usable credential", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    const result = await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    expect(result.outcome).toBe("promoted");
+    const homeAuth = await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8");
+    expect(JSON.parse(homeAuth).tokens.account_id).toBe(ACCOUNT);
+  });
+
+  it("promotion fails the login when the account identifier cannot become a handle", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    await expect(
+      promoteDeviceLoginCredential({
+        authBytes: subscriptionAuth({ accountId: "acct 42", lastRefresh: NEWER }),
+        companyId: COMPANY_A,
+        userInitiated: true,
+        checkReadiness: ready,
+        isSoleActiveOwner: soleOwner,
+        env,
+        log: noopLog,
+      }),
+    ).rejects.toThrow();
+    await expect(lstat(companyHomeAuthPath(env, COMPANY_A))).rejects.toThrow();
+  });
+
+  it("a whitespace-padded account identifier never shares a home with, or reports as authenticated against, the unpadded account", async () => {
+    // A distinct identifier with surrounding whitespace must reject, not
+    // alias onto the unpadded account's home. Promote the unpadded account
+    // first, then attempt a second login whose identifier differs only by a
+    // leading space. The second login must fail, and it must never read or
+    // report a "kept" outcome against the first account's home.
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    await promoteDeviceLoginCredential({
+      authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER, marker: "original" }),
+      companyId: COMPANY_A,
+      userInitiated: true,
+      checkReadiness: ready,
+      isSoleActiveOwner: soleOwner,
+      env,
+      log: noopLog,
+    });
+    await expect(
+      promoteDeviceLoginCredential({
+        authBytes: subscriptionAuth({ accountId: ` ${ACCOUNT}`, lastRefresh: NEWER, marker: "padded" }),
+        companyId: COMPANY_A,
+        userInitiated: true,
+        checkReadiness: ready,
+        isSoleActiveOwner: soleOwner,
+        env,
+        log: noopLog,
+      }),
+    ).rejects.toThrow();
+    // The unpadded account's home still holds only the credential the first
+    // login wrote. The padded login never read it, never wrote it, and never
+    // received a "kept" outcome that would report it as authenticated.
+    const accountAuth = JSON.parse(
+      await readFile(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A), "utf8"),
+    );
+    expect(accountAuth.tokens.refresh_token).toContain("original");
+  });
+
+  it("a broken account-home directory fails the whole login", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    // Force this account's own home write to fail. Plant a regular file where
+    // the account expects its own directory, so the private-directory guard
+    // throws before any write. That write is now fail-loud (it is the durable
+    // result), so the whole login fails, and the best-effort company default
+    // home fallback is never reached.
     const cacheDir = resolveCodexAuthCacheDir(env, COMPANY_A);
     await mkdir(cacheDir, { recursive: true, mode: 0o700 });
     const entryPath = resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A);
     await writeFile(path.dirname(entryPath), "not-a-directory");
 
+    await expect(
+      promoteDeviceLoginCredential({
+        authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
+        companyId: COMPANY_A,
+        userInitiated: true,
+        checkReadiness: ready,
+        isSoleActiveOwner: soleOwner,
+        env,
+        log: noopLog,
+      }),
+    ).rejects.toThrow();
+    await expect(lstat(companyHomeAuthPath(env, COMPANY_A))).rejects.toThrow();
+  });
+
+  it("a company default home write failure keeps the promotion successful and this account's own home durable", async () => {
+    const home = await makeInstanceRoot();
+    const env = envFor(home);
+    // Force the company default home write to fail. Plant a regular file where
+    // the company home directory belongs, so mkdir fails. This account's own
+    // home write already ran and is durable, so the login still succeeds.
+    const companyHome = resolveManagedCodexHomeDir(env, COMPANY_A);
+    await mkdir(path.dirname(companyHome), { recursive: true });
+    await writeFile(companyHome, "not-a-directory");
+
     const logs: string[] = [];
-    const outcome = await promoteDeviceLoginCredential({
+    const result = await promoteDeviceLoginCredential({
       authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
       companyId: COMPANY_A,
       userInitiated: true,
@@ -279,14 +477,13 @@ describe("device-login credential promotion", () => {
       },
     });
 
-    // The company home holds a usable credential, so the promotion still reports
-    // success rather than a failed login.
-    expect(outcome).toBe("promoted");
-    const homeAuth = JSON.parse(await readFile(companyHomeAuthPath(env, COMPANY_A), "utf8"));
-    expect(homeAuth.tokens.account_id).toBe(ACCOUNT);
-    // The cache failure is observable and carries no secret bytes.
+    expect(result.outcome).toBe("promoted");
+    const accountAuth = JSON.parse(
+      await readFile(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A), "utf8"),
+    );
+    expect(accountAuth.tokens.account_id).toBe(ACCOUNT);
     const haystack = logs.join("\n");
-    expect(haystack).toContain("the per-identity cache write failed");
+    expect(haystack).toContain("seeding the company default home failed");
     expect(haystack).not.toContain(TOKEN_SENTINEL);
     expect(haystack).not.toContain(ACCOUNT);
   });
@@ -324,7 +521,7 @@ describe("device-login credential promotion", () => {
   it("a promotion whose session is no longer the sole active owner writes nothing", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
-    const outcome = await promoteDeviceLoginCredential({
+    const result = await promoteDeviceLoginCredential({
       authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
       companyId: COMPANY_A,
       userInitiated: true,
@@ -334,17 +531,17 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    expect(outcome).toBe("not_sole_owner");
+    expect(result.outcome).toBe("not_sole_owner");
     await expect(lstat(companyHomeAuthPath(env, COMPANY_A))).rejects.toThrow();
     await expect(
       lstat(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A)),
     ).rejects.toThrow();
   });
 
-  it("an automatic background login never seeds an empty company slot", async () => {
+  it("an automatic background login never seeds an empty home", async () => {
     const home = await makeInstanceRoot();
     const env = envFor(home);
-    const outcome = await promoteDeviceLoginCredential({
+    const result = await promoteDeviceLoginCredential({
       authBytes: subscriptionAuth({ accountId: ACCOUNT, lastRefresh: NEWER }),
       companyId: COMPANY_A,
       // Not a user-initiated login.
@@ -354,7 +551,7 @@ describe("device-login credential promotion", () => {
       env,
       log: noopLog,
     });
-    expect(outcome).toBe("background_skipped");
+    expect(result.outcome).toBe("background_skipped");
     await expect(lstat(companyHomeAuthPath(env, COMPANY_A))).rejects.toThrow();
     await expect(
       lstat(resolveCodexAuthCacheEntryPath(env, ACCOUNT, COMPANY_A)),

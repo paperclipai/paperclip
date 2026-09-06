@@ -33,6 +33,9 @@ import {
 } from "./environment-config.js";
 import { secretService } from "./secrets.js";
 import {
+  INTERACTIVE_SETUP_WORKER_METHODS,
+  TEMPLATE_CAPTURE_WORKER_METHODS,
+  TEMPLATE_DELETE_WORKER_METHODS,
   resolvePluginExecuteRpcTimeoutMs,
   resolvePluginSandboxProviderDriverByKey,
 } from "./plugin-environment-driver.js";
@@ -395,14 +398,33 @@ export function environmentCustomImageService(
     if (!resolved) {
       throw unprocessable(`Sandbox provider "${provider}" is not ready for customImage setup.`);
     }
+    // A manifest declaration is a claim. Read the live worker's verified
+    // methods once, so each gate below requires the declaration AND the
+    // matching method the worker really implements.
+    const workerMethods = new Set(options.pluginWorkerManager.getWorker(resolved.plugin.id)?.supportedMethods ?? []);
+    const requireWorkerMethods = (methods: readonly string[], capabilityLabel: string) => {
+      const missingMethod = methods.find((method) => !workerMethods.has(method));
+      if (missingMethod) {
+        throw unprocessable(
+          `Sandbox provider "${provider}" declares ${capabilityLabel} but its worker does not report the "${missingMethod}" method.`,
+        );
+      }
+    };
     if (!resolved.driver.supportsInteractiveSetup) {
       throw unprocessable(`Sandbox provider "${provider}" does not support interactive setup.`);
     }
-    if (input.requireCapture && !resolved.driver.supportsTemplateCapture) {
-      throw unprocessable(`Sandbox provider "${provider}" does not support template capture.`);
+    requireWorkerMethods(INTERACTIVE_SETUP_WORKER_METHODS, "interactive setup");
+    if (input.requireCapture) {
+      if (!resolved.driver.supportsTemplateCapture) {
+        throw unprocessable(`Sandbox provider "${provider}" does not support template capture.`);
+      }
+      requireWorkerMethods(TEMPLATE_CAPTURE_WORKER_METHODS, "template capture");
     }
-    if (input.requireDelete && !resolved.driver.supportsTemplateDelete) {
-      throw unprocessable(`Sandbox provider "${provider}" does not support template deletion.`);
+    if (input.requireDelete) {
+      if (!resolved.driver.supportsTemplateDelete) {
+        throw unprocessable(`Sandbox provider "${provider}" does not support template deletion.`);
+      }
+      requireWorkerMethods(TEMPLATE_DELETE_WORKER_METHODS, "template deletion");
     }
     return {
       provider,

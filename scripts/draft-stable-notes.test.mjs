@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -135,6 +135,76 @@ test("writes to releases/beta/v<version>.md inside the repo by default", () => {
     "utf8"
   );
   assert.match(body, /- feat: default path \(#1\)/);
+});
+
+test("nests PR summaries under subjects when gh can serve them", () => {
+  const dir = makeFixtureRepo();
+  commit(dir, "feat: enriched work (#42)");
+  git(dir, "tag", "beta/v2026.100.0-beta.0");
+
+  const binDir = join(dir, "fake-bin");
+  execFileSync("mkdir", ["-p", binDir]);
+  writeFileSync(
+    join(binDir, "gh"),
+    `#!/usr/bin/env bash
+echo "## Thinking Path"
+echo ""
+echo "## What Changed"
+echo ""
+echo "- Adds the enriched thing"
+echo "- Covers it with tests"
+echo ""
+echo "## Risks"
+`,
+    { mode: 0o755 }
+  );
+
+  const out = join(dir, "draft.md");
+  execFileSync(
+    "bash",
+    [script, "2026.100.0-beta.0", "--repo-dir", dir, "--out", out],
+    { encoding: "utf8", env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` } }
+  );
+  const body = readFileSync(out, "utf8");
+  assert.match(body, /- feat: enriched work \(#42\)\n  > - Adds the enriched thing\n  > - Covers it with tests/);
+});
+
+test("survives a PR body whose What Changed section has no bullets", () => {
+  const dir = makeFixtureRepo();
+  commit(dir, "feat: sparse body (#9)");
+  git(dir, "tag", "beta/v2026.100.0-beta.0");
+
+  const binDir = join(dir, "fake-bin");
+  execFileSync("mkdir", ["-p", binDir]);
+  writeFileSync(
+    join(binDir, "gh"),
+    `#!/usr/bin/env bash
+echo "## What Changed"
+echo ""
+echo "## Risks"
+`,
+    { mode: 0o755 }
+  );
+
+  const out = join(dir, "draft.md");
+  execFileSync(
+    "bash",
+    [script, "2026.100.0-beta.0", "--repo-dir", dir, "--out", out],
+    { encoding: "utf8", env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` } }
+  );
+  const body = readFileSync(out, "utf8");
+  assert.match(body, /- feat: sparse body \(#9\)\n/);
+});
+
+test("skeleton stays clean when enrichment is unavailable", () => {
+  const dir = makeFixtureRepo();
+  commit(dir, "feat: plain work (#7)");
+  git(dir, "tag", "beta/v2026.100.0-beta.0");
+
+  const { body } = runDraft(dir, "2026.100.0-beta.0");
+
+  assert.match(body, /- feat: plain work \(#7\)\n/);
+  assert.doesNotMatch(body, /  > /);
 });
 
 test("rejects a malformed beta version", () => {

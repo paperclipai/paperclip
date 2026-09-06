@@ -27,7 +27,7 @@ describe("cursor local skill sync", () => {
     cleanupDirs.clear();
   });
 
-  it("reports configured Paperclip skills and installs them into the Cursor skills home", async () => {
+  it("defaults and installs the operational Paperclip skill in the Cursor skills home", async () => {
     const home = await makeTempDir("paperclip-cursor-skill-sync-");
     cleanupDirs.add(home);
 
@@ -39,9 +39,6 @@ describe("cursor local skill sync", () => {
         env: {
           HOME: home,
         },
-        paperclipSkillSync: {
-          desiredSkills: [paperclipKey],
-        },
       },
     } as const;
 
@@ -52,6 +49,25 @@ describe("cursor local skill sync", () => {
 
     const after = await syncCursorSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
+    expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+  });
+
+  it("keeps the operational skill installed after an explicit empty replacement", async () => {
+    const home = await makeTempDir("paperclip-cursor-required-skill-");
+    cleanupDirs.add(home);
+
+    const snapshot = await syncCursorSkills({
+      agentId: "agent-required",
+      companyId: "company-1",
+      adapterType: "cursor",
+      config: {
+        env: { HOME: home },
+        paperclipSkillSync: { desiredSkills: [] },
+      },
+    }, []);
+
+    expect(snapshot.desiredSkills).toEqual([paperclipKey]);
+    expect(snapshot.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
     expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
   });
 

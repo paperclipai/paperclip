@@ -1,5 +1,6 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
@@ -32,9 +33,13 @@ import {
   startAdapterAuthSessionRequestSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,
+  toAccountHandle,
+  type AgentAdapterType,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
+  normalizePaperclipRunnerAdapterConfig,
+  PAPERCLIP_OPERATIONAL_SKILL_KEY,
   parseObject,
   resolvePaperclipInstanceRootForAdapter,
   readPaperclipSkillSyncPreference,
@@ -42,6 +47,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
+import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import {
   agentService,
   agentInstructionsService,
@@ -60,9 +66,11 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
+import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -76,24 +84,54 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
-  AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
+import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
+import { providerTraceStore } from "../services/provider-trace-store.js";
+import {
+  persistReprojectedWorkspaceDiffs,
+  projectCodexWorkspaceDiffsFromTrace,
+  type WorkspaceDiffReprojectionSkipReason,
+} from "../services/provider-trace-workspace-diff-reprojection.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
   listServerAdapters,
   listAdapterModels,
-  listAdapterModelProfiles,
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactAgentAdapterConfig,
+  redactEventPayload,
+} from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
+import {
+  HarnessRuntimeRequestResolutionError,
+  parseHarnessRuntimeRequestResolution,
+  type HarnessRuntimeRequestKind,
+  type HarnessRuntimeRequestResolution,
+} from "../vendor/paperclip-runner/index.js";
+import {
+  queueRunnerPrpRuntimeRequestResolution,
+  RunnerPrpRuntimeRequestResolutionError,
+} from "../realtime/runner-prp-ws.js";
+import {
+  assertNativeRuntimeRequestResolverAuthorized,
+  NativeRuntimeRequestResolutionAuthorizationError,
+  readPendingNativeRuntimeRequest,
+  type NativeRuntimeRequestResolver,
+} from "../services/native-runtime/runtime-request-resolution-authority.js";
+import {
+  NativeRuntimeRequestResolutionError,
+  resolveNativeRuntimeRequest,
+} from "../services/native-runtime/native-session-executor.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import {
   instanceSettingsService,
@@ -107,6 +145,7 @@ import {
   SetupTokenSessionError,
   assessConfidentialStartup,
   evaluateConfidentialTransport,
+  isTerminalSessionState,
   SETUP_TOKEN_START_FAILED,
   SETUP_TOKEN_SESSION_NOT_FOUND,
   SETUP_TOKEN_PROVIDER_UNSUPPORTED,
@@ -121,6 +160,7 @@ import {
   type SetupTokenSessionScope,
   type SetupTokenSessionState,
   type SetupTokenSessionDescriptor,
+  SETUP_TOKEN_ADAPTER_TYPE,
 } from "../services/setup-token-session.js";
 import type {
   DeploymentMode,
@@ -135,17 +175,30 @@ import type {
   SetupTokenTransportAdvisory,
 } from "@paperclipai/shared";
 import { SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "@paperclipai/shared";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
 import {
   checkStagedCredentialReadiness,
   promoteDeviceLoginCredential,
+  withAccountHomeSecretMutationLock,
+  withCodexAccountHomePromotionLock,
 } from "@paperclipai/adapter-codex-local/server";
 import {
+  checkStagedGrokCredentialReadiness,
+  promoteGrokDeviceLoginCredential,
+} from "@paperclipai/adapter-grok-local/server";
+import {
   AdapterAuthSessionConflictError,
-  createCodexDeviceLoginService,
+  createDeviceLoginService,
+  createWorkerBoundLoginPtyOpener,
   createDbAdapterAuthSessionStore,
   createProductionLoginSessionRuntime,
-} from "../services/codex-device-login-service.js";
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED,
+  DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
+  type CredentialPromotion,
+} from "../services/device-login-service.js";
 import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -170,6 +223,12 @@ import {
   changeConsentGateService,
   touchesAgentProfileChangeConsentFields,
 } from "../services/change-consent-gate.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+} from "../services/native-runtime/provider-profile.js";
+import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
+import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
 
 const AGENT_SKILL_ASSIGNMENT_MODES = ["add", "remove", "replace"] as const;
 
@@ -222,6 +281,119 @@ function readRunIssueId(context: Record<string, unknown> | null) {
   const paperclipIssue = readObject(context?.paperclipIssue);
   const nestedIssueId = paperclipIssue?.id;
   return typeof nestedIssueId === "string" && isUuidLike(nestedIssueId) ? nestedIssueId : null;
+}
+
+// Confirms a pre-existing `CODEX_HOME_<handle>` secret still names this
+// account's own home before a device login treats the secret's presence as a
+// successful, idempotent login. The secret name alone is not proof of a
+// match: a stale value from before the cache root moved, or a value a user
+// entered by hand, would otherwise let the login report success while a
+// bound agent reads the wrong (or a missing) credential home. Fails loud on
+// a mismatch, so the login fails instead of silently pointing agents at the
+// wrong home.
+//
+// Each caller must run this function inside `withAccountHomeSecretMutationLock`,
+// the same lock a `local_encrypted` secret rotate holds for its whole write.
+// A caller that only checks once, early in the promotion, and then reports
+// success later is not enough on its own: the lock this call held is fully
+// released by the time it returns, so a rotate queued behind it can commit a
+// new value before the login service records its terminal `authenticated`
+// state, which happens well after this call returns (see `runTerminalCommit`
+// below, which runs this same check again, under a fresh lock acquisition,
+// immediately before that terminal state commits).
+async function assertAccountHomeSecretMatches(
+  secretsSvc: { resolveSecretValueForDeviceLoginCheck: (companyId: string, secretId: string, context: { configPath: string }) => Promise<string> },
+  companyId: string,
+  secret: { id: string },
+  secretName: string,
+  expectedAccountHomeDir: string,
+): Promise<void> {
+  const storedValue = await secretsSvc.resolveSecretValueForDeviceLoginCheck(companyId, secret.id, {
+    configPath: `secrets.${secretName}`,
+  });
+  if (storedValue !== expectedAccountHomeDir) {
+    throw new Error(
+      `device-login credential promotion rejected: the existing ${secretName} secret does not name this account's own home`,
+    );
+  }
+}
+
+// Confirms no company secret, under any name or provider, still names this
+// account home before a failed promotion deletes the directory. The
+// generated `CODEX_HOME_<handle>` name is not the only secret that can
+// reference this directory: a user can bind a hand-named secret to the same
+// account home, so a check that reads only the generated name misses that
+// secret and deletes a directory it still needs. A bound agent then reads a
+// `CODEX_HOME` value that points at nothing. A secret's value is a plain
+// string regardless of its provider, so an AWS Secrets Manager-backed secret
+// (or any other provider) can equal this directory's path just as a
+// `local_encrypted` secret can; the scan resolves every secret's value, not
+// only `local_encrypted` ones.
+//
+// A secret whose value fails to resolve is NOT proof that secret names a
+// different directory: the resolve call can fail for a secret that would
+// have matched. Treating that failure as a non-match would let the cleanup
+// delete a directory a secret still needs. So the scan fails closed: any
+// resolution failure makes the whole scan report a claim, even when every
+// secret that DID resolve named a different directory.
+//
+// The scan lists every secret once, then resolves each secret's value in
+// turn, and each resolve call is its own round trip. A new secret can enter
+// the company between the initial list and the last resolve call, so a
+// single pass can finish, find no claimant among the secrets it read, and
+// still miss a secret that named this directory moments later. So the scan
+// re-lists after every pass and resolves only the secrets it has not yet
+// checked, and it only reports "no claimant" once a pass finds nothing new
+// to check. A scan that keeps finding new secrets on every pass fails
+// closed after a bounded number of passes, so a fast stream of concurrent
+// secret creation cannot force an unsafe delete.
+//
+// The scan alone still cannot rule out a secret write that commits after the
+// scan's own last pass finishes but before the caller's delete runs: the
+// scan and that write are two separate operations with no shared state, so
+// neither can see the other. The caller closes that window by running the
+// scan and the delete inside `withAccountHomeSecretMutationLock`, the same
+// lock every `local_encrypted` secret create or rotate holds for its whole
+// write. That lock is the atomic protection; the multi-pass scan above stays
+// as a defense-in-depth check for a write path that has not taken the lock.
+const ACCOUNT_HOME_CLAIM_SCAN_MAX_PASSES = 5;
+
+async function anySecretNamesAccountHome(
+  secretsSvc: {
+    list: (companyId: string) => Promise<Array<{ id: string; name: string; provider: string }>>;
+    resolveSecretValueForDeviceLoginCheck: (
+      companyId: string,
+      secretId: string,
+      context: { configPath: string },
+    ) => Promise<string>;
+  },
+  companyId: string,
+  accountHomeDir: string,
+): Promise<boolean> {
+  const checkedSecretIds = new Set<string>();
+  for (let pass = 0; pass < ACCOUNT_HOME_CLAIM_SCAN_MAX_PASSES; pass += 1) {
+    const secrets = await secretsSvc.list(companyId);
+    const uncheckedSecrets = secrets.filter((secret) => !checkedSecretIds.has(secret.id));
+    if (uncheckedSecrets.length === 0) return false;
+    let resolutionFailed = false;
+    for (const secret of uncheckedSecrets) {
+      checkedSecretIds.add(secret.id);
+      const storedValue = await secretsSvc
+        .resolveSecretValueForDeviceLoginCheck(companyId, secret.id, {
+          configPath: `secrets.${secret.name}`,
+        })
+        .catch(() => {
+          resolutionFailed = true;
+          return null;
+        });
+      if (storedValue === accountHomeDir) return true;
+    }
+    if (resolutionFailed) return true;
+  }
+  // Every pass found a secret it had not yet checked. Fail closed: an
+  // endless stream of new secrets is not proof that none of them claims
+  // this directory.
+  return true;
 }
 
 export function agentRoutes(
@@ -400,6 +572,28 @@ export function agentRoutes(
       row.boundAt = Date.now();
       return { ...row };
     },
+    async cancelDurable(identity, cancellableStates): Promise<SetupTokenCleanupRecord | null> {
+      const row = setupTokenCleanupRows.get(identity.sessionId);
+      if (!row || !scopeMatchesRow(row, identity) || !cancellableStates.includes(row.state)) {
+        return null;
+      }
+      row.state = "cancelled";
+      return { ...row };
+    },
+    async findActiveDurable(key, now): Promise<SetupTokenCleanupRecord | null> {
+      for (const row of setupTokenCleanupRows.values()) {
+        if (
+          row.companyId === key.companyId &&
+          row.ownerUserId === key.ownerUserId &&
+          row.adapterType === key.adapterType &&
+          !isTerminalSessionState(row.state) &&
+          row.deadline > now
+        ) {
+          return { ...row };
+        }
+      }
+      return null;
+    },
   };
 
   const deferredSetupTokenLoginFactory: SetupTokenLoginProcessFactory = () => {
@@ -474,6 +668,11 @@ export function agentRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+  const providerTraces = providerTraceStore(db);
+  const traceExpiryCleanup = providerTraces.cleanupExpired?.();
+  void traceExpiryCleanup?.catch((error) => {
+    logger.warn({ error }, "provider trace expiry cleanup failed");
+  });
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
@@ -488,70 +687,320 @@ export function agentRoutes(
   // process owns one instance, so the in-memory prompt and the cancellation
   // controllers persist across requests.
   const adapterLoginStore = createDbAdapterAuthSessionStore(db);
-  const adapterLoginService = createCodexDeviceLoginService({
+
+  // The account-home secret a Codex login validated and bound, keyed by
+  // session id, queued for `runTerminalCommit` to reconfirm right before the
+  // login service commits its terminal `authenticated` write. `promote`'s own
+  // check runs under a lock that is fully released by the time `promote`
+  // returns, so a rotation can still land after that check and before the
+  // terminal write; `runTerminalCommit` closes that gap by re-running the
+  // same check under a fresh lock acquisition that it holds across the
+  // terminal write itself. `runTerminalCommit` deletes the entry it reads, so
+  // nothing outlives one login attempt.
+  const pendingAccountHomeSecretCommits = new Map<
+    string,
+    { secretId: string; secretName: string; accountHomeDir: string }
+  >();
+
+  const adapterLoginService = createDeviceLoginService({
     store: adapterLoginStore,
-    runtime: createProductionLoginSessionRuntime({ db, environmentRuntime }),
-    // The mandatory credential promotion. A successful login authenticates only
-    // after this promotion validates the exact staged credential, runs an
-    // independent readiness check, confirms the session still holds the sole
-    // active claim, and writes the credential into the company scope. A rejected
-    // or unready credential fails the session and writes nothing.
-    promotion: {
-      async promote(authBytes, context) {
-        // Hold the promotion critical-section lock across the ownership check and
-        // the credential write. The reaper takes the same lock before it reclaims
-        // a stale `promoting` row. So a reclaim never interleaves with a live
-        // write: the reaper either wins the lock first and the ownership check
-        // then reads a reclaimed row and writes nothing, or the write finishes
-        // first under the lock and the reaper reclaims only after it completes. A
-        // read-only fence is not enough, because the filesystem write can start
-        // after the fence; the lock spans the whole section.
-        const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
-          context.companyId,
-          context.startedByUserId,
-          context.adapterType,
-          () =>
-            promoteDeviceLoginCredential({
-              authBytes,
-              companyId: context.companyId,
-              userInitiated: true,
-              checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
-              isSoleActiveOwner: async () => {
-                // The partial unique index allows one active row per company and
-                // adapter. So a `promoting` row for this session is the sole
-                // active owner of the company credential slot. The read runs
-                // inside the lock, so it observes a reaper reclaim that committed
-                // before this section acquired the lock.
-                const row = await adapterLoginStore.get(context.sessionId);
-                return row?.status === "promoting" && row.companyId === context.companyId;
-              },
-              log: (line) => {
-                // The promotion lines carry no token bytes and no raw account id,
-                // so it is safe to log them with the session identifier.
-                logger.info({ sessionId: context.sessionId }, line);
-              },
-            }),
-        );
-        // A resolved promotion is not necessarily an accepted promotion. In
-        // particular, a reaper/expiry race can revoke this session's sole
-        // ownership between the service transition and Decision H. Fail closed:
-        // only a credential write or a deliberate safe keep can authenticate.
-        if (outcome === "kept_foreign_identity") {
-          // The login produced a different account than the one the company
-          // credential home already holds. The promotion never clobbers an
-          // occupied home, so this login installed nothing durable, and the
-          // identity-anchored vend can never select it: a later run keeps the
-          // existing account. Fail the session, so the operator never sees a
-          // false `authenticated` for an account the system will not use.
-          throw new Error(
-            "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
-          );
-        }
-        if (outcome !== "promoted" && outcome !== "kept") {
-          throw new Error(`device-login credential promotion rejected: ${outcome}`);
-        }
+    runtime: createProductionLoginSessionRuntime({
+      db,
+      environmentRuntime,
+      // Re-check the provider login pseudo-terminal capability from current
+      // runtime state immediately before the provider lease. The route gate ran
+      // earlier, so a managed reconciliation can rebind the environment to an
+      // unsupported provider between the gate and the acquire; this fails closed
+      // before the lease and the pseudo-terminal.
+      assertProviderSupportsLoginPty: (environmentId) =>
+        assertCodexLoginProviderCapability(environmentId),
+      // Wire the live Codex pseudo-terminal opener through the plugin worker
+      // manager route. The opener sets the sandbox `CODEX_HOME` to the same
+      // server-controlled session home the descriptor-bound credential read
+      // opens. When no worker manager is bound, the runtime keeps its fail-closed
+      // opener and the login fails closed.
+      openLivePtySession: options.pluginWorkerManager
+        ? createWorkerBoundLoginPtyOpener({
+            workerManager: options.pluginWorkerManager,
+            log: (line) => logger.info(line),
+          })
+        : undefined,
+    }),
+    // The mandatory credential promotion, keyed by adapter type. A successful
+    // login authenticates only after the promotion for its own adapter type
+    // validates the exact staged credential, runs an independent readiness
+    // check, confirms the session still holds the sole active claim, and
+    // writes the credential into the company scope. A rejected or unready
+    // credential fails the session and writes nothing. Keying by adapter type
+    // keeps a `grok_local` login from ever running the Codex promotion (and
+    // vice versa): each entry closes over its own readiness check and its own
+    // promotion function.
+    promotionByAdapterType: {
+      codex_local: {
+        // Hold one lock across the whole promotion sequence below: the
+        // credential write, the existing-secret check, the secret create, and
+        // the cleanup a create failure can trigger. Two different logins for
+        // the SAME Codex account run this whole sequence one at a time, so a
+        // login can never decide to delete the shared account-home directory
+        // while another login's own sequence is still mid-way through writing
+        // its credential or binding its own secret to that same directory. A
+        // lock around only the directory-creation step is not enough: that
+        // lock is already released by the time a login reaches the secret
+        // bind, so a second login can write its credential and be about to
+        // bind its own secret while the first login's later, unrelated
+        // secret-write failure removes the directory both logins now share.
+        async promote(authBytes, context) {
+          return withCodexAccountHomePromotionLock(undefined, context.companyId, async () => {
+            // Hold the promotion critical-section lock across the ownership check
+            // and the credential write. The reaper takes the same lock before it
+            // reclaims a stale `promoting` row. So a reclaim never interleaves with
+            // a live write: the reaper either wins the lock first and the
+            // ownership check then reads a reclaimed row and writes nothing, or
+            // the write finishes first under the lock and the reaper reclaims only
+            // after it completes. A read-only fence is not enough, because the
+            // filesystem write can start after the fence; the lock spans the whole
+            // section.
+            const result = await adapterLoginStore.withCompanyAdapterPromotionLock(
+              context.companyId,
+              context.startedByUserId,
+              context.adapterType,
+              () =>
+                promoteDeviceLoginCredential({
+                  authBytes,
+                  companyId: context.companyId,
+                  userInitiated: true,
+                  checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
+                  isSoleActiveOwner: async () => {
+                    // The partial unique index allows one active row per company and
+                    // adapter. So a `promoting` row for this session is the sole
+                    // active owner of the company credential slot. The read runs
+                    // inside the lock, so it observes a reaper reclaim that committed
+                    // before this section acquired the lock.
+                    const row = await adapterLoginStore.get(context.sessionId);
+                    return row?.status === "promoting" && row.companyId === context.companyId;
+                  },
+                  log: (line) => {
+                    // The promotion lines carry no token bytes and no raw account id,
+                    // so it is safe to log them with the session identifier.
+                    logger.info({ sessionId: context.sessionId }, line);
+                  },
+                }),
+            );
+            // A resolved promotion is not necessarily an accepted promotion. In
+            // particular, a reaper/expiry race can revoke this session's sole
+            // ownership between the service transition and Decision H. Fail closed:
+            // only a credential write or a deliberate safe keep can authenticate.
+            if (result.outcome !== "promoted" && result.outcome !== "kept") {
+              throw new Error(`device-login credential promotion rejected: ${result.outcome}`);
+            }
+            // The account's own home is durable at this point (the promotion above
+            // wrote it fail-loud). Name it with a company secret, so any agent can
+            // bind to it. Reading the secret by name first keeps a repeat login for
+            // the same account idempotent: `create` throws a conflict when the name
+            // already exists.
+            const handle = result.accountId ? toAccountHandle(result.accountId) : null;
+            if (!handle || !result.accountHomeDir) {
+              throw new Error(
+                "device-login credential promotion rejected: the promotion carried no account home",
+              );
+            }
+            const secretName = `CODEX_HOME_${handle}`;
+            const accountHomeDir = result.accountHomeDir;
+            const existingSecret = await secretsSvc.getByName(context.companyId, secretName);
+            if (existingSecret) {
+              // A same-name secret already exists. Confirm it still names this
+              // account's own home before treating a repeat login as a success:
+              // the name alone is not proof of a match.
+              //
+              // Run the check inside the same lock a `local_encrypted` secret
+              // rotate holds for its whole write, the same lock a rotate
+              // takes. This is an early fail-fast only: the lock is fully
+              // released once this call returns, well before the login
+              // service commits its terminal state, so queue the same check
+              // for `runTerminalCommit` to run again right before that
+              // commit, under a fresh lock acquisition it holds across the
+              // commit itself.
+              await withAccountHomeSecretMutationLock(undefined, context.companyId, () =>
+                assertAccountHomeSecretMatches(secretsSvc, context.companyId, existingSecret, secretName, accountHomeDir),
+              );
+              pendingAccountHomeSecretCommits.set(context.sessionId, {
+                secretId: existingSecret.id,
+                secretName,
+                accountHomeDir,
+              });
+              return;
+            }
+            try {
+              const createdSecret = await secretsSvc.create(
+                context.companyId,
+                {
+                  name: secretName,
+                  provider: "local_encrypted",
+                  value: accountHomeDir,
+                  description: `CODEX_HOME generated by logging into account ${handle}`,
+                },
+                { userId: context.startedByUserId, agentId: null },
+              );
+              // The value just committed is correct at this instant, but a
+              // rotate queued behind the create's own lock can still commit a
+              // different value before the login service records its
+              // terminal state. Queue the same reconfirm `runTerminalCommit`
+              // runs for the two branches above.
+              pendingAccountHomeSecretCommits.set(context.sessionId, {
+                secretId: createdSecret.id,
+                secretName,
+                accountHomeDir,
+              });
+            } catch (err) {
+              if (err instanceof HttpError && err.status === 409) {
+                // A conflict means a concurrent login for the same account won the
+                // create race. Confirm the winning secret still names this
+                // account's own home before treating the race as a successful,
+                // idempotent login.
+                const winningSecret = await secretsSvc.getByName(context.companyId, secretName);
+                if (!winningSecret) {
+                  throw new Error(
+                    `device-login credential promotion rejected: the ${secretName} secret conflict could not be resolved`,
+                  );
+                }
+                // Same lock and the same reasoning as the pre-existing-secret
+                // check above: an early fail-fast only, so also queue the
+                // same check for `runTerminalCommit` to run again, under a
+                // fresh lock acquisition it holds across the terminal commit.
+                await withAccountHomeSecretMutationLock(undefined, context.companyId, () =>
+                  assertAccountHomeSecretMatches(secretsSvc, context.companyId, winningSecret, secretName, accountHomeDir),
+                );
+                pendingAccountHomeSecretCommits.set(context.sessionId, {
+                  secretId: winningSecret.id,
+                  secretName,
+                  accountHomeDir,
+                });
+                return;
+              }
+              // The account home write failed for a reason other than a naming
+              // conflict. Remove the directory only when this exact login created
+              // it AND no secret, under any name, still names it. The lock
+              // around this whole method already rules out another
+              // SAME-ACCOUNT LOGIN from being mid-sequence here, but it does
+              // not rule out a secret a different path created at this exact
+              // directory in between the read above and this failure — for
+              // example, a concurrent login for the same account that won a
+              // race on this exact name, or a user who names a secret by hand
+              // under a different name entirely. The re-check is this call's
+              // only signal for that case, so it stays even under the lock:
+              // `accountHomeCreated` alone is not proof no such secret now
+              // claims the directory, and a same-name check alone is not proof
+              // either, because the claiming secret can carry any name.
+              //
+              // The check and the delete run inside `withAccountHomeSecretMutationLock`,
+              // the same lock the secrets service holds for the whole of a
+              // `local_encrypted` secret's create or rotate call. That closes the
+              // window `anySecretNamesAccountHome`'s own multi-pass scan cannot: a
+              // secret write that commits after this check's last pass but before
+              // the delete runs. Under the shared lock, a write either finishes
+              // (and becomes visible to the check) before this section acquires the
+              // lock, or it waits for this section to finish before it can commit.
+              if (result.accountHomeCreated) {
+                await withAccountHomeSecretMutationLock(undefined, context.companyId, async () => {
+                  const claimed = await anySecretNamesAccountHome(secretsSvc, context.companyId, accountHomeDir);
+                  if (!claimed) {
+                    await rm(accountHomeDir, { recursive: true, force: true }).catch(() => undefined);
+                  }
+                });
+              }
+              throw new Error(
+                "device-login credential promotion rejected: failed to record the account home secret",
+              );
+            }
+          });
+        },
+        // The login service calls this immediately before it commits its
+        // terminal `authenticated` write, wrapping that write in the
+        // callback it hands in as `commit`. `promote` above already
+        // validated the bound account-home secret once, early, but its own
+        // lock is fully released by the time `promote` returns — well before
+        // this runs. Re-run the same check here, and hold the SAME lock
+        // across both the check and `commit`, so a rotate cannot land in the
+        // gap between the validated value and the terminal write that
+        // reports it as authenticated: a rotate either finishes (and this
+        // check reads its new value, and rejects) before this section
+        // acquires the lock, or it waits for this section — including the
+        // terminal commit — to finish first.
+        async runTerminalCommit(commit, context) {
+          const pending = pendingAccountHomeSecretCommits.get(context.sessionId);
+          pendingAccountHomeSecretCommits.delete(context.sessionId);
+          if (!pending) {
+            // `promote` never reached a secret bind for this session (for
+            // example, a rejected promotion already failed the login before
+            // the service ever reaches this call). Nothing to reconfirm.
+            return commit();
+          }
+          return withAccountHomeSecretMutationLock(undefined, context.companyId, async () => {
+            // Resolve by the secret's id, not its name: a rotate changes the
+            // value under the same id, so re-resolving this id picks up a
+            // rotation the same way the very first check would have, with no
+            // need to re-look the secret up by name. A deleted secret makes
+            // this resolve call itself fail (unlike a value mismatch, which
+            // `assertAccountHomeSecretMatches` turns into its own error), and
+            // that failure propagates the same way: the login never
+            // authenticates.
+            await assertAccountHomeSecretMatches(
+              secretsSvc,
+              context.companyId,
+              { id: pending.secretId },
+              pending.secretName,
+              pending.accountHomeDir,
+            );
+            return commit();
+          });
+        },
       },
-    },
+      grok_local: {
+        async promote(authBytes, context) {
+          // The same promotion critical-section lock as the Codex entry above,
+          // keyed by the same `(companyId, startedByUserId, adapterType)` tuple,
+          // so a Grok reclaim and a Grok write never interleave.
+          const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
+            context.companyId,
+            context.startedByUserId,
+            context.adapterType,
+            () =>
+              promoteGrokDeviceLoginCredential({
+                authBytes,
+                companyId: context.companyId,
+                userInitiated: true,
+                checkReadiness: (bytes) => checkStagedGrokCredentialReadiness(bytes),
+                isSoleActiveOwner: async () => {
+                  const row = await adapterLoginStore.get(context.sessionId);
+                  return row?.status === "promoting" && row.companyId === context.companyId;
+                },
+                log: (line) => {
+                  // The promotion lines carry no token bytes and no personal
+                  // field, so it is safe to log them with the session identifier.
+                  logger.info({ sessionId: context.sessionId }, line);
+                },
+              }),
+          );
+          if (outcome === "kept_foreign_identity") {
+            // The login produced a different account than the one the company
+            // credential home already holds. Fail the session, so the operator
+            // never sees a false `authenticated` for an account the system will
+            // not use.
+            throw new Error(
+              "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+            );
+          }
+          // A `kept` outcome is a successful login too: the company home
+          // already holds a same-account credential that is not older than
+          // this one (for example, a teardown copy-back installed a fresher
+          // copy while this login was in progress), so a later run still
+          // authenticates as the same account.
+          if (outcome !== "promoted" && outcome !== "kept") {
+            throw new Error(`device-login credential promotion rejected: ${outcome}`);
+          }
+        },
+      },
+    } satisfies Partial<Record<AgentAdapterType, CredentialPromotion>>,
     recordActivity: (event) => {
       // The event carries no URL, no code, no credential, no account identifier,
       // and no lease identifier, so it is safe to log.
@@ -584,6 +1033,17 @@ export function agentRoutes(
     const decision = await decideAgentRead(req, agent);
     if (decision.allowed) return true;
     res.status(403).json({ error: "Agent is outside this actor's authorization boundary" });
+    return false;
+  }
+
+  async function assertRunTelemetryReadAllowed(req: Request, res: Response, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Run telemetry is outside this actor's authorization boundary" });
     return false;
   }
 
@@ -1062,8 +1522,12 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
+    const baseAgent = redactAgentRowForResponse(
+      options?.restricted ? redactForRestrictedAgentView(agent) : agent,
+    );
+
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...baseAgent,
       chainOfCommand,
       access: accessState,
     };
@@ -1215,13 +1679,25 @@ export function agentRoutes(
     return findActiveServerAdapter(type)?.loginCapability ?? null;
   }
 
-  // The device-login route drives a login over the streamed exec channel. It
-  // serves any adapter whose registry login capability declares that transport.
-  // The guard reads the capability, not the adapter name, so a new adapter with
-  // the same transport passes with no code change. It rejects an adapter with no
-  // matching capability with a fixed 400.
-  function assertStreamedExecLoginAdapter(type: string): void {
-    if (getRegistryLoginCapability(type)?.sandboxTransport !== "streamed_exec") {
+  // The device-login route drives a login that shows a one-time code on a real
+  // pseudo-terminal. It serves an adapter whose registry login capability
+  // declares the displayed-code panel mode and whose trusted adapter type maps
+  // to a login command key. The guard reads the panel mode and the command map,
+  // not the adapter name, so a new adapter that satisfies both passes with no
+  // guard code change. It rejects an adapter with no matching capability, and an
+  // adapter with no mapped command key, with the same fixed 400.
+  //
+  // The command-map check keeps admission consistent with the closed command
+  // map. The login opener resolves the command key from the same map. An adapter
+  // that declares the displayed-code capability but has no mapped key would pass
+  // the panel-mode check, then fail at command resolution after the route
+  // creates session state. The guard rejects it before any session or lease side
+  // effect.
+  function assertDeviceLoginAdapter(type: string): void {
+    if (getRegistryLoginCapability(type)?.panelMode !== "displayed_code") {
+      throw badRequest(`Adapter "${type}" does not support a device login.`);
+    }
+    if (!isLoginCommandSupportedAdapterType(type)) {
       throw badRequest(`Adapter "${type}" does not support a device login.`);
     }
   }
@@ -1271,14 +1747,15 @@ export function agentRoutes(
   }
 
   /**
-   * Fails closed when the environment provider does not advertise the Claude
-   * setup-token login capability. It resolves the effective provider from the
-   * environment config, then reads the static capability from the provider
-   * plugin manifest. It never checks the provider by name. A missing plugin, a
-   * non-plugin provider, and a provider without the flag all fail closed with
-   * the fixed, typed error, so no session row, lease, or pseudo-terminal starts.
+   * Reports whether the environment provider advertises the login pseudo-terminal
+   * capability. It resolves the effective provider from the current environment
+   * config, then reads the static capability from the provider plugin manifest. It
+   * never checks the provider by name. A missing provider, a missing plugin, a
+   * non-plugin provider, and a provider without the flag all return false. Both
+   * login flows share this resolver, so both gates read the same current
+   * capability.
    */
-  async function assertSetupTokenLoginProviderCapability(environmentId: string): Promise<void> {
+  async function resolveProviderSupportsLoginPty(environmentId: string): Promise<boolean> {
     const environment = await environmentsSvc.getById(environmentId);
     const config =
       environment?.config && typeof environment.config === "object"
@@ -1288,9 +1765,35 @@ export function agentRoutes(
     const resolved = provider
       ? await resolvePluginSandboxProviderDriverByKey({ db, driverKey: provider })
       : null;
-    if (!resolved?.driver.supportsLoginPty) {
+    return resolved?.driver.supportsLoginPty === true;
+  }
+
+  /**
+   * Fails closed when the environment provider does not advertise the login
+   * pseudo-terminal capability that the Claude setup-token login needs. It reads
+   * the current provider capability. It fails closed with the fixed, typed error,
+   * so no session row, lease, or pseudo-terminal starts.
+   */
+  async function assertSetupTokenLoginProviderCapability(environmentId: string): Promise<void> {
+    if (!(await resolveProviderSupportsLoginPty(environmentId))) {
       throw unprocessable(SETUP_TOKEN_PROVIDER_UNSUPPORTED, {
         code: SETUP_TOKEN_PROVIDER_UNSUPPORTED_CODE,
+      });
+    }
+  }
+
+  /**
+   * Fails closed when the environment provider does not advertise the login
+   * pseudo-terminal capability that the Codex device login needs. It reads the
+   * current provider capability. The Codex route runs it before any session or
+   * lease state, and the lease-acquisition path runs it again from current runtime
+   * state before the provider lease. It fails closed with the fixed, typed error,
+   * so no session row, lease, or pseudo-terminal starts.
+   */
+  async function assertCodexLoginProviderCapability(environmentId: string): Promise<void> {
+    if (!(await resolveProviderSupportsLoginPty(environmentId))) {
+      throw unprocessable(DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
+        code: DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
       });
     }
   }
@@ -1503,8 +2006,17 @@ export function agentRoutes(
    * (listEnabledServerAdapters documents the same rule: hidden from selection,
    * still functional for agents that already use them).
    */
-  function assertSelectableAdapterType(type: string | null | undefined): string {
+  async function assertSelectableAdapterType(type: string | null | undefined): Promise<string> {
     const adapterType = assertKnownAdapterType(type);
+    if (adapterType === "paperclip_runner") {
+      const experimental = await instanceSettings.getExperimental();
+      if (experimental.enableNativeRunner !== true) {
+        throw unprocessable(
+          "Paperclip Runner is experimental and disabled on this instance.",
+          { code: "paperclip_runner_rollout_disabled" },
+        );
+      }
+    }
     const disabled = new Set(getDisabledAdapterTypes());
     if (!disabled.has(adapterType)) return adapterType;
     const available = listServerAdapters()
@@ -1515,6 +2027,74 @@ export function agentRoutes(
       `Adapter "${adapterType}" is not available on this instance. `
       + `Available adapters: ${available.length > 0 ? available.join(", ") : "(none configured)"}`,
     );
+  }
+
+  async function assertFreshPaperclipRunnerProvider(
+    companyId: string,
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ): Promise<void> {
+    if (adapterType !== "paperclip_runner") return;
+    let profile;
+    try {
+      profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
+    } catch (error) {
+      if (error instanceof PaperclipRunnerProviderProfileError) {
+        throw unprocessable(error.message, { code: error.code });
+      }
+      throw error;
+    }
+    if (profile.provider === "claude_managed") {
+      await managedAgentProfileService(db).requireQualified(
+        companyId,
+        profile.managedProfileId,
+      );
+    } else if (profile.provider === "aws_agentcore") {
+      await remoteAgentProfileService(db).requireQualified(
+        companyId,
+        profile.agentCoreProfileId,
+        "aws_bedrock_agentcore_harness",
+      );
+    }
+  }
+
+  function resolvePaperclipRunnerAdapterTransition(input: {
+    previousAdapterType: string;
+    nextAdapterType: string;
+    previousAdapterConfig: Record<string, unknown>;
+    nextAdapterConfig: Record<string, unknown>;
+  }): Record<string, unknown> {
+    if (
+      input.nextAdapterType !== "paperclip_runner"
+      || input.previousAdapterType === input.nextAdapterType
+    ) {
+      return input.nextAdapterConfig;
+    }
+    if (input.previousAdapterType !== "codex_local") {
+      throw unprocessable(
+        `Cannot convert ${input.previousAdapterType} to Paperclip Runner while only the Codex provider is available.`,
+        { code: "paperclip_runner_adapter_conversion_unsupported" },
+      );
+    }
+    return {
+      ...input.nextAdapterConfig,
+      model:
+        asNonEmptyString(input.nextAdapterConfig.model)
+        ?? asNonEmptyString(input.previousAdapterConfig.model)
+        ?? DEFAULT_CODEX_LOCAL_MODEL,
+    };
+  }
+
+  function assertProviderTraceSettingTransition(
+    req: Request,
+    nextRuntimeConfig: unknown,
+    previousRuntimeConfig?: unknown,
+  ): void {
+    const previousRaw =
+      asRecord(asRecord(previousRuntimeConfig)?.debug)?.providerTrace === "raw";
+    const nextRaw =
+      asRecord(asRecord(nextRuntimeConfig)?.debug)?.providerTrace === "raw";
+    if (previousRaw !== nextRaw) assertInstanceAdmin(req);
   }
 
   async function assertAgentDefaultEnvironmentSelection(
@@ -1677,24 +2257,7 @@ export function agentRoutes(
     };
   }
 
-  async function listNewAgentAdapterModelProfiles(
-    adapterType: string,
-  ): Promise<AdapterModelProfileDefinition[]> {
-    try {
-      return await listAdapterModelProfiles(adapterType);
-    } catch (error) {
-      logger.warn(
-        { err: error, adapterType },
-        "Failed to discover adapter model profiles while normalizing a new agent; continuing without profile defaults",
-      );
-      return [];
-    }
-  }
-
-  async function normalizeNewAgentRuntimeConfig(
-    adapterType: string,
-    runtimeConfig: unknown,
-  ): Promise<Record<string, unknown>> {
+  function normalizeNewAgentRuntimeConfig(runtimeConfig: unknown): Record<string, unknown> {
     const parsedRuntimeConfig = asRecord(runtimeConfig);
     const normalizedRuntimeConfig = parsedRuntimeConfig ? { ...parsedRuntimeConfig } : {};
     const parsedHeartbeat = asRecord(normalizedRuntimeConfig.heartbeat);
@@ -1709,55 +2272,7 @@ export function agentRoutes(
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
 
-    const parsedModelProfiles = asRecord(normalizedRuntimeConfig.modelProfiles);
-    const modelProfiles = parsedModelProfiles ? { ...parsedModelProfiles } : {};
-    if (!Object.prototype.hasOwnProperty.call(modelProfiles, "cheap")) {
-      const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
-      if (adapterModelProfiles.some((profile) => profile.key === "cheap")) {
-        modelProfiles.cheap = { enabled: false };
-      }
-    }
-    if (Object.keys(modelProfiles).length > 0) {
-      normalizedRuntimeConfig.modelProfiles = modelProfiles;
-    }
-
     return normalizedRuntimeConfig;
-  }
-
-  function listRuntimeModelProfileAdapterConfigs(runtimeConfig: unknown): Array<{
-    profileKey: string;
-    profile: Record<string, unknown>;
-    adapterConfig: Record<string, unknown>;
-    path: string;
-  }> {
-    const runtimeRecord = asRecord(runtimeConfig);
-    const modelProfiles = asRecord(runtimeRecord?.modelProfiles);
-    if (!modelProfiles) return [];
-
-    const entries: Array<{
-      profileKey: string;
-      profile: Record<string, unknown>;
-      adapterConfig: Record<string, unknown>;
-      path: string;
-    }> = [];
-    for (const [profileKey, rawProfile] of Object.entries(modelProfiles)) {
-      const profile = asRecord(rawProfile);
-      const adapterConfig = asRecord(profile?.adapterConfig);
-      if (!profile || !adapterConfig) continue;
-      entries.push({
-        profileKey,
-        profile,
-        adapterConfig,
-        path: `runtimeConfig.modelProfiles.${profileKey}.adapterConfig`,
-      });
-    }
-    return entries;
-  }
-
-  function assertNoAgentRuntimeConfigAdapterConfigMutation(req: Request, runtimeConfig: unknown) {
-    for (const entry of listRuntimeModelProfileAdapterConfigs(runtimeConfig)) {
-      assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
-    }
   }
 
   async function normalizeMediatedAdapterConfigForPersistence(input: {
@@ -1775,48 +2290,16 @@ export function agentRoutes(
       },
     );
     await assertAdapterConfigConstraints(
+      input.companyId,
       input.adapterType,
       input.constraintAdapterConfig
         ? { ...input.constraintAdapterConfig, ...normalizedAdapterConfig }
         : normalizedAdapterConfig,
     );
-    return normalizedAdapterConfig;
-  }
-
-  async function normalizeRuntimeConfigAdapterConfigsForPersistence(
-    companyId: string,
-    adapterType: string,
-    runtimeConfig: Record<string, unknown>,
-    baseAdapterConfig: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const entries = listRuntimeModelProfileAdapterConfigs(runtimeConfig);
-    if (entries.length === 0) return runtimeConfig;
-    const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
-
-    const normalizedRuntimeConfig = { ...runtimeConfig };
-    const modelProfiles = asRecord(runtimeConfig.modelProfiles) ?? {};
-    const normalizedModelProfiles = { ...modelProfiles };
-    normalizedRuntimeConfig.modelProfiles = normalizedModelProfiles;
-
-    for (const entry of entries) {
-      const adapterProfile = adapterModelProfiles.find((profile) => profile.key === entry.profileKey);
-      const adapterDefaultConfig = asRecord(adapterProfile?.adapterConfig) ?? {};
-      const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
-        companyId,
-        adapterType,
-        adapterConfig: entry.adapterConfig,
-        constraintAdapterConfig: {
-          ...baseAdapterConfig,
-          ...adapterDefaultConfig,
-        },
-      });
-      normalizedModelProfiles[entry.profileKey] = {
-        ...entry.profile,
-        adapterConfig: normalizedAdapterConfig,
-      };
-    }
-
-    return normalizedRuntimeConfig;
+    return normalizePaperclipRunnerAdapterConfig(
+      input.adapterType ?? "",
+      normalizedAdapterConfig,
+    );
   }
 
   function generateEd25519PrivateKeyPem(): string {
@@ -1878,6 +2361,9 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
+    if (adapterType === "paperclip_runner") {
+      return normalizePaperclipRunnerAdapterConfig(adapterType, next);
+    }
     if (adapterType === "codex_local") {
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
@@ -1906,9 +2392,14 @@ export function agentRoutes(
   }
 
   async function assertAdapterConfigConstraints(
+    companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ) {
+    if (adapterType === "paperclip_runner") {
+      await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
+      return;
+    }
     if (adapterType !== "opencode_local") return;
     try {
       requireOpenCodeModelId(adapterConfig.model);
@@ -2069,6 +2560,22 @@ export function agentRoutes(
     );
   }
 
+  async function assertCanResumeAgent(
+    req: Request,
+    targetAgent: { id: string; companyId: string },
+  ) {
+    if (req.actor.type !== "agent") return;
+
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
+      scope: { requiresChangeGrant: true },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
   function assertNoAgentInstructionsConfigMutation(
     req: Request,
     adapterConfig: Record<string, unknown> | null | undefined,
@@ -2082,6 +2589,15 @@ export function agentRoutes(
     throw forbidden(
       `Agent-authenticated callers cannot modify instructions path or bundle configuration (${changedSensitiveKeys.join(", ")})`,
     );
+  }
+
+  function assertExternalInstructionsAdmin(
+    req: Request,
+    agent: Parameters<typeof agentInstructionsBundleMode>[0],
+  ) {
+    if (agentInstructionsBundleMode(agent) === "external") {
+      assertInstanceAdmin(req);
+    }
   }
 
   function adapterConfigTouchesInstructionsConfig(adapterConfig: Record<string, unknown>) {
@@ -2131,6 +2647,36 @@ export function agentRoutes(
       entries: [],
       warnings: ["This adapter does not implement skill sync yet."],
     };
+  }
+
+  // The default CEO instructions assume the core paperclip skills (board
+  // coordination, planning, hiring, memory). Union them into every
+  // skills-capable CEO hire/create so a fresh CEO never starts with an empty
+  // desired-skill set that contradicts its own instructions. Optional role
+  // skills remain removable afterwards. Legacy adapters separately guarantee
+  // the Paperclip operational skill as a runtime invariant.
+  function defaultRoleSkillSelections(
+    role: string | null | undefined,
+    adapterType: string,
+  ): AgentDesiredSkillEntry[] | undefined {
+    if (role !== "ceo") return undefined;
+    const adapter = findActiveServerAdapter(adapterType);
+    if (!adapter?.listSkills && !adapter?.syncSkills) return undefined;
+    return PAPERCLIP_CORE_SKILL_KEYS
+      .filter((key) => adapterType !== "paperclip_runner" || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY)
+      .map((key) => ({ key, versionId: null }));
+  }
+
+  function withDefaultRoleSkillSelections(
+    requested: AgentDesiredSkillEntry[] | undefined,
+    defaults: AgentDesiredSkillEntry[] | undefined,
+  ): AgentDesiredSkillEntry[] | undefined {
+    if (!defaults) return requested;
+    if (!requested) return defaults;
+    const merged = new Map(defaults.map((entry) => [entry.key, entry]));
+    // An explicit request wins over a default for the same key (version pins).
+    for (const entry of requested) merged.set(entry.key, entry);
+    return Array.from(merged.values());
   }
 
   function normalizeDesiredSkillSelections(
@@ -2239,7 +2785,14 @@ export function agentRoutes(
       (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
     );
 
-    const desiredSkillEntries = mergeDesiredSkillEntries(currentSkillEntries, requestedSkillEntries, mode);
+    const desiredSkillEntries = mergeDesiredSkillEntries(
+      currentSkillEntries,
+      requestedSkillEntries,
+      mode,
+    ).filter(
+      (entry) => adapterType !== "paperclip_runner"
+        || entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
+    );
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
     const resolvedKeys = new Set([
       ...resolvedCurrentSkillEntries.map((entry) => entry.key),
@@ -2272,6 +2825,21 @@ export function agentRoutes(
     };
   }
 
+  // Single presenter for every response that emits a raw agent row. Restricted
+  // views blank the config wholesale for authorization reasons; this runs for
+  // config-reading (board) callers too, so plaintext `adapterConfig.env` values
+  // never leave the API regardless of actor scope.
+  function redactAgentRowForResponse<T extends { adapterConfig?: unknown } | null | undefined>(
+    agent: T,
+  ): T {
+    if (!agent || typeof agent !== "object") return agent;
+    if (!agent.adapterConfig || typeof agent.adapterConfig !== "object") return agent;
+    return {
+      ...agent,
+      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig as Record<string, unknown>),
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -2283,11 +2851,33 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
+      adapterConfig: redactAgentAdapterConfig(agent.adapterConfig),
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
     };
+  }
+
+  function restoreRedactedAgentEnv(
+    requestedConfig: Record<string, unknown>,
+    existingConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const requestedEnv = asRecord(requestedConfig.env);
+    const existingEnv = asRecord(existingConfig.env);
+    if (!requestedEnv || !existingEnv) return requestedConfig;
+
+    const restoredEnv = { ...requestedEnv };
+    for (const [key, value] of Object.entries(requestedEnv)) {
+      const binding = asRecord(value);
+      if (
+        binding?.type === "plain"
+        && binding.value === REDACTED_EVENT_VALUE
+        && Object.prototype.hasOwnProperty.call(existingEnv, key)
+      ) {
+        restoredEnv[key] = existingEnv[key];
+      }
+    }
+    return { ...requestedConfig, env: restoredEnv };
   }
 
   function redactRevisionSnapshot(snapshot: unknown): Record<string, unknown> {
@@ -2295,7 +2885,7 @@ export function agentRoutes(
     const record = snapshot as Record<string, unknown>;
     return {
       ...record,
-      adapterConfig: redactEventPayload(
+      adapterConfig: redactAgentAdapterConfig(
         typeof record.adapterConfig === "object" && record.adapterConfig !== null
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
@@ -2366,14 +2956,6 @@ export function agentRoutes(
       ? await refreshAdapterModels(type)
       : await listAdapterModels(type);
     res.json(models);
-  });
-
-  router.get("/companies/:companyId/adapters/:type/model-profiles", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const type = assertKnownAdapterType(req.params.type as string);
-    const profiles = await listAdapterModelProfiles(type);
-    res.json(profiles);
   });
 
   router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
@@ -2577,6 +3159,126 @@ export function agentRoutes(
     },
   );
 
+  // The claude_local branch of the auth-signal read. It checks two host-local
+  // sources for a usable Claude Code OAuth token: the resolved envVars of the
+  // caller's selected environment, and the caller's own stored Claude login. It
+  // returns "present" the moment either source holds a non-empty token, so it
+  // never resolves more than the one env key it needs.
+  async function evaluateClaudeAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      const environmentEnv = Object.fromEntries(
+        Object.entries(parseObject(environment?.envVars)).filter(
+          ([key]) => !isForbiddenConfigEnvKey(key),
+        ),
+      );
+      const tokenBinding = environmentEnv.CLAUDE_CODE_OAUTH_TOKEN;
+      if (tokenBinding !== undefined) {
+        const resolution = await secretsSvc.resolveEnvBindings(
+          companyId,
+          { CLAUDE_CODE_OAUTH_TOKEN: tokenBinding },
+          buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+        );
+        if (asNonEmptyString(resolution.env.CLAUDE_CODE_OAUTH_TOKEN)) {
+          return "present";
+        }
+      }
+    }
+    const ownerUserId = req.actor.userId;
+    if (ownerUserId) {
+      const stored = await secretsSvc.readClaudeOAuthUserSecretStatus(companyId, ownerUserId);
+      if (stored) return "present";
+    }
+    return "absent";
+  }
+
+  // The codex_local branch of the auth-signal read. The host filesystem check
+  // (`evaluateCodexCredentialReadiness` against `process.env`) describes only
+  // the Paperclip host, so it is authoritative for the null-environment and
+  // "local" driver cases, where the host is the execution target. For a
+  // non-local environment (a sandbox), the host's own credential state says
+  // nothing about that sandbox, so the route checks the environment's own
+  // OPENAI_API_KEY binding instead and otherwise reports "unknown" -- never
+  // "present" from a host login the sandbox does not share.
+  async function evaluateCodexAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      if (environment && environment.driver !== "local") {
+        const environmentEnv = Object.fromEntries(
+          Object.entries(parseObject(environment.envVars)).filter(
+            ([key]) => !isForbiddenConfigEnvKey(key),
+          ),
+        );
+        const apiKeyBinding = environmentEnv.OPENAI_API_KEY;
+        if (apiKeyBinding !== undefined) {
+          const resolution = await secretsSvc.resolveEnvBindings(
+            companyId,
+            { OPENAI_API_KEY: apiKeyBinding },
+            buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+          );
+          if (asNonEmptyString(resolution.env.OPENAI_API_KEY)) {
+            return "present";
+          }
+        }
+        return "unknown";
+      }
+    }
+
+    const readiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId,
+      configuredCodexHome: null,
+      configuredApiKey: null,
+    });
+    return readiness.ready ? "present" : "absent";
+  }
+
+  // The cheap host-local authentication signal for one adapter type. The route
+  // reads host-local state only: a stored Claude login, a resolved environment
+  // env var, or the local Codex credential readiness check. It leases no
+  // sandbox, starts no shell command, and starts no model request. The two
+  // access gates below run before any read, so a caller who cannot create
+  // agents for the company and a foreign environment both fail closed before
+  // the route touches a credential source.
+  router.get(
+    "/companies/:companyId/adapters/:type/auth-signal",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const type = req.params.type as string;
+      await assertCanCreateAgentsForCompany(req, companyId);
+      const environmentId = asNonEmptyString(req.query.environmentId);
+      if (environmentId) {
+        await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
+      }
+      res.setHeader("Cache-Control", "no-store");
+
+      let status: AdapterAuthSignal = "unknown";
+      try {
+        if (type === "claude_local") {
+          status = await evaluateClaudeAuthSignal(req, companyId, environmentId);
+        } else if (type === "codex_local") {
+          status = await evaluateCodexAuthSignal(req, companyId, environmentId);
+        }
+      } catch {
+        // A failed read is never a claim that the credential is absent. Report
+        // the neutral "unknown" signal instead, so the wizard falls back to
+        // showing the login panel.
+        status = "unknown";
+      }
+
+      const body: AdapterAuthSignalResponse = { status };
+      res.json(body);
+    },
+  );
+
   // Start a company-scoped adapter device login. The create form has no agent
   // identifier, so the route keys on the company and the adapter. The owner
   // helper requires a board actor with the configuration permission, and it
@@ -2597,11 +3299,19 @@ export function agentRoutes(
         req,
         res,
         deriveOwner: () => assertCanManageAdapterLogin(req, companyId),
-        guardBeforeValidate: () => assertStreamedExecLoginAdapter(type),
+        guardBeforeValidate: () => assertDeviceLoginAdapter(type),
         requestSchema: startAdapterAuthSessionRequestSchema,
         invalidRequestError: "The device login start request is invalid.",
         requestOverrides: { adapterType: type },
-        assertSandbox: (data) => assertSandboxLoginEnvironment(companyId, data.environmentId),
+        assertSandbox: async (data) => {
+          // The device login runs on a real pseudo-terminal, so it needs a
+          // provider that advertises the login pseudo-terminal capability. Gate
+          // the route on the current provider capability before any session or
+          // lease state. The lease-acquisition path re-checks it from current
+          // runtime state before the provider lease.
+          await assertSandboxLoginEnvironment(companyId, data.environmentId);
+          await assertCodexLoginProviderCapability(data.environmentId);
+        },
       });
       if (!resolved) return;
       const { ownerUserId: startedByUserId, data } = resolved;
@@ -2641,8 +3351,37 @@ export function agentRoutes(
     },
   );
 
+  // Read the caller's active login session for one company and adapter, with no
+  // session id. The browser rediscovers its own session after a reload with no
+  // local state. A non-owner, a foreign company, an unknown adapter, and no
+  // active session all receive the same 404.
+  //
+  // This route registers before the `:sessionId` route below, so Express
+  // never matches the literal `active` segment as a session id.
+  router.get(
+    "/companies/:companyId/adapters/:type/login-sessions/active",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const type = req.params.type as string;
+      const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
+      assertDeviceLoginAdapter(type);
+      res.setHeader("Cache-Control", "no-store, private");
+
+      const owner = await adapterLoginService.readActiveOwnerSession(companyId, type, ownerUserId);
+      if (!owner) {
+        res.status(404).json({ error: "Adapter login session not found" });
+        return;
+      }
+      res.json(owner);
+    },
+  );
+
   // Read a login session. The owner receives the status and the one-time prompt.
-  // A non-owner or a cross-company caller receives a 404.
+  // A non-owner or a cross-company caller receives a 404. The owner response
+  // repeats the live prompt on every read while the session holds an active
+  // public status, so this sets the same private no-store policy as the
+  // active-session route above: a shared or a browser cache never stores the
+  // authenticated response between one poll and the next.
   router.get(
     "/companies/:companyId/adapters/:type/login-sessions/:sessionId",
     async (req, res) => {
@@ -2650,7 +3389,8 @@ export function agentRoutes(
       const type = req.params.type as string;
       const sessionId = req.params.sessionId as string;
       const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertStreamedExecLoginAdapter(type);
+      assertDeviceLoginAdapter(type);
+      res.setHeader("Cache-Control", "no-store, private");
 
       const owner = await readOwnerLoginSession(companyId, type, sessionId, ownerUserId);
       if (!owner) {
@@ -2670,7 +3410,7 @@ export function agentRoutes(
       const type = req.params.type as string;
       const sessionId = req.params.sessionId as string;
       const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertStreamedExecLoginAdapter(type);
+      assertDeviceLoginAdapter(type);
 
       // Scope the cancel to this company, adapter, and owner. A non-owner and a
       // cross-company caller both receive a 404 and cannot cancel a session.
@@ -2845,7 +3585,7 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentRowForResponse(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -2963,16 +3703,10 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
-    if (trustPreset.kind === "denied") {
-      res.status(403).json({ error: trustPreset.detail });
-      return;
-    }
-    if (trustPreset.kind === "low_trust_review") {
-      res.json(buildLowTrustSelfView(agent));
-      return;
-    }
-    if (req.actor.keyScope?.kind === "task_bridge") {
+    if (
+      req.actor.keyScope?.kind === "task_bridge"
+      || req.actor.keyScope?.kind === "skill_test"
+    ) {
       res.json({
         id: agent.id,
         companyId: agent.companyId,
@@ -2982,6 +3716,15 @@ export function agentRoutes(
         status: agent.status,
         keyScope: req.actor.keyScope,
       });
+      return;
+    }
+    const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
+    if (trustPreset.kind === "denied") {
+      res.status(403).json({ error: trustPreset.detail });
+      return;
+    }
+    if (trustPreset.kind === "low_trust_review") {
+      res.json(buildLowTrustSelfView(agent));
       return;
     }
     res.json(await buildAgentDetail(agent));
@@ -3128,6 +3871,45 @@ export function agentRoutes(
     if (!existing) return;
     await assertCanUpdateAgent(req, existing);
 
+    const revision = await svc.getConfigRevision(id, revisionId);
+    if (!revision) {
+      res.status(404).json({ error: "Revision not found" });
+      return;
+    }
+    const rollbackConfig = asRecord(revision.afterConfig);
+    if (!rollbackConfig) {
+      throw unprocessable("Invalid revision snapshot");
+    }
+    assertProviderTraceSettingTransition(
+      req,
+      rollbackConfig.runtimeConfig,
+      existing.runtimeConfig,
+    );
+    const rollbackAdapterType = assertKnownAdapterType(
+      typeof rollbackConfig.adapterType === "string"
+        ? rollbackConfig.adapterType
+        : null,
+    );
+    if (rollbackAdapterType !== existing.adapterType) {
+      await assertSelectableAdapterType(rollbackAdapterType);
+    }
+    const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
+    assertExternalInstructionsAdmin(req, existing);
+    assertExternalInstructionsAdmin(req, {
+      ...existing,
+      adapterConfig: rollbackAdapterConfig,
+    });
+    if (
+      rollbackAdapterType !== existing.adapterType ||
+      rollbackAdapterType === "paperclip_runner"
+    ) {
+      await assertFreshPaperclipRunnerProvider(
+        existing.companyId,
+        rollbackAdapterType,
+        rollbackAdapterConfig,
+      );
+    }
+
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
@@ -3151,7 +3933,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
-    res.json(updated);
+    res.json(redactAgentRowForResponse(updated));
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {
@@ -3225,14 +4007,19 @@ export function agentRoutes(
       applyStoredClaudeLogin: hireApplyStoredClaudeLogin,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = assertSelectableAdapterType(hireInput.adapterType);
+    hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
+    await assertFreshPaperclipRunnerProvider(
+      companyId,
+      hireInput.adapterType,
+      rawHireAdapterConfig,
+    );
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
       rawHireAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
-    assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
     const hiredAgentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3243,11 +4030,20 @@ export function agentRoutes(
         rawHireAdapterConfig,
       ),
     );
+    assertExternalInstructionsAdmin(req, {
+      id: hiredAgentId,
+      companyId,
+      name: hireInput.name,
+      adapterConfig: requestedAdapterConfig,
+    });
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
-      normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+      withDefaultRoleSkillSelections(
+        normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+        defaultRoleSkillSelections(hireInput.role, hireInput.adapterType),
+      ),
       "add",
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
@@ -3255,12 +4051,7 @@ export function agentRoutes(
       adapterType: hireInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
     });
-    const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
-      companyId,
-      hireInput.adapterType,
-      await normalizeNewAgentRuntimeConfig(hireInput.adapterType, hireInput.runtimeConfig),
-      normalizedAdapterConfig,
-    );
+    const normalizedRuntimeConfig = normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig);
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
@@ -3441,14 +4232,19 @@ export function agentRoutes(
       applyStoredClaudeLogin: createApplyStoredClaudeLogin,
       ...createInput
     } = req.body;
-    createInput.adapterType = assertSelectableAdapterType(createInput.adapterType);
+    createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
+    await assertFreshPaperclipRunnerProvider(
+      companyId,
+      createInput.adapterType,
+      rawCreateAdapterConfig,
+    );
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
       rawCreateAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
-    assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3459,11 +4255,20 @@ export function agentRoutes(
         rawCreateAdapterConfig,
       ),
     );
+    assertExternalInstructionsAdmin(req, {
+      id: agentId,
+      companyId,
+      name: createInput.name,
+      adapterConfig: requestedAdapterConfig,
+    });
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       createInput.adapterType,
       requestedAdapterConfig,
-      normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+      withDefaultRoleSkillSelections(
+        normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+        defaultRoleSkillSelections(createInput.role, createInput.adapterType),
+      ),
       "add",
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
@@ -3471,12 +4276,7 @@ export function agentRoutes(
       adapterType: createInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
     });
-    const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
-      companyId,
-      createInput.adapterType,
-      await normalizeNewAgentRuntimeConfig(createInput.adapterType, createInput.runtimeConfig),
-      normalizedAdapterConfig,
-    );
+    const normalizedRuntimeConfig = normalizeNewAgentRuntimeConfig(createInput.runtimeConfig);
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
     await assertAgentDefaultEnvironmentSelection(companyId, createInput.defaultEnvironmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
@@ -3549,7 +4349,7 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    res.status(201).json(redactAgentRowForResponse(agent));
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -3621,6 +4421,7 @@ export function agentRoutes(
     if (!existing) return;
 
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
     const explicitKey = asNonEmptyString(req.body.adapterConfigKey);
@@ -3641,6 +4442,7 @@ export function agentRoutes(
     }
 
     const syncedAdapterConfig = syncInstructionsBundleConfigFromFilePath(existing, nextAdapterConfig);
+    assertExternalInstructionsAdmin(req, { ...existing, adapterConfig: syncedAdapterConfig });
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       syncedAdapterConfig,
@@ -3696,6 +4498,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanReadAgent(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
     res.json(await instructions.getBundle(existing));
   });
 
@@ -3704,6 +4507,8 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
+    if (req.body.mode === "external") assertInstanceAdmin(req);
 
     const actor = getActorInfo(req);
     const { bundle, adapterConfig } = await instructions.updateBundle(existing, req.body);
@@ -3750,6 +4555,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanReadAgent(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -3765,6 +4571,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const actor = getActorInfo(req);
     const result = await instructions.writeFile(existing, req.body.path, req.body.content, {
@@ -3812,6 +4619,7 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanManageInstructionsPath(req, existing);
+    assertExternalInstructionsAdmin(req, existing);
 
     const relativePath = typeof req.query.path === "string" ? req.query.path : "";
     if (!relativePath.trim()) {
@@ -3875,12 +4683,12 @@ export function agentRoutes(
     // it gets the selectable check; keeping the agent's current adapter (even
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
-    const requestedAdapterType = hasOwn(patchData, "adapterType")
-      ? (() => {
-        const next = assertKnownAdapterType(patchData.adapterType as string | null | undefined);
-        return next === existing.adapterType ? next : assertSelectableAdapterType(next);
-      })()
+    const nextAdapterType = hasOwn(patchData, "adapterType")
+      ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
       : existing.adapterType;
+    const requestedAdapterType = nextAdapterType === existing.adapterType
+      ? nextAdapterType
+      : await assertSelectableAdapterType(nextAdapterType);
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);
@@ -3888,13 +4696,18 @@ export function agentRoutes(
         res.status(422).json({ error: "runtimeConfig must be an object" });
         return;
       }
-      assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
+      assertProviderTraceSettingTransition(
+        req,
+        runtimeConfig,
+        existing.runtimeConfig,
+      );
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
     if (touchesAdapterConfiguration) {
+      assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
       const changingAdapterType =
         typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
@@ -3910,9 +4723,11 @@ export function agentRoutes(
       ) {
         await assertCanManageInstructionsPath(req, existing);
       }
-      let rawEffectiveAdapterConfig = requestedAdapterConfig ?? existingAdapterConfig;
+      let rawEffectiveAdapterConfig = requestedAdapterConfig
+        ? restoreRedactedAgentEnv(requestedAdapterConfig, existingAdapterConfig)
+        : existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
-        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
+        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...rawEffectiveAdapterConfig };
       }
       if (changingAdapterType) {
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
@@ -3926,6 +4741,28 @@ export function agentRoutes(
         }
         rawEffectiveAdapterConfig = preserveInstructionsBundleConfig(
           existingAdapterConfig,
+          rawEffectiveAdapterConfig,
+        );
+        rawEffectiveAdapterConfig = resolvePaperclipRunnerAdapterTransition({
+          previousAdapterType: existing.adapterType,
+          nextAdapterType: requestedAdapterType,
+          previousAdapterConfig: existingAdapterConfig,
+          nextAdapterConfig: rawEffectiveAdapterConfig,
+        });
+      }
+      const existingRunnerProvider =
+        existing.adapterType === "paperclip_runner"
+          ? existingAdapterConfig.provider
+          : undefined;
+      if (
+        changingAdapterType ||
+        (requestedAdapterType === "paperclip_runner" &&
+          (requestedAdapterConfig !== null ||
+            rawEffectiveAdapterConfig.provider !== existingRunnerProvider))
+      ) {
+        await assertFreshPaperclipRunnerProvider(
+          existing.companyId,
+          requestedAdapterType,
           rawEffectiveAdapterConfig,
         );
       }
@@ -3944,16 +4781,12 @@ export function agentRoutes(
         adapterConfig: effectiveAdapterConfig,
       });
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      assertExternalInstructionsAdmin(req, {
+        ...existing,
+        adapterConfig: patchData.adapterConfig,
+      });
     }
-    if (requestedRuntimeConfig) {
-      const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
-      patchData.runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
-        existing.companyId,
-        requestedAdapterType,
-        requestedRuntimeConfig,
-        baseAdapterConfig,
-      );
-    }
+    if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,
@@ -4009,7 +4842,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -4035,16 +4868,16 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
-    assertBoard(req);
     const id = req.params.id as string;
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
       return;
     }
+    await assertCanResumeAgent(req, existing);
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before resuming it",
@@ -4057,16 +4890,20 @@ export function agentRoutes(
       return;
     }
 
+    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "agent.resumed",
       entityType: "agent",
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/clear-error", async (req, res) => {
@@ -4098,7 +4935,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -4152,7 +4989,7 @@ export function agentRoutes(
       details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -4222,7 +5059,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(agent);
+    res.json(redactAgentRowForResponse(agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {
@@ -4354,6 +5191,9 @@ export function agentRoutes(
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
+    if (req.body.debug?.providerTrace === "raw") {
+      assertInstanceAdmin(req);
+    }
     if (agent.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
@@ -4373,6 +5213,16 @@ export function agentRoutes(
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
+        ...(req.body.reason === "rerun_with_provider_trace" &&
+        req.body.debug?.providerTrace === "raw"
+          ? { resumeIntent: true }
+          : {}),
+        ...(req.body.debug?.providerTrace === "raw"
+          ? {
+              debug: { providerTrace: "raw" },
+              providerTraceRequestedBy: req.actor.userId ?? "local-admin",
+            }
+          : {}),
       },
     });
 
@@ -4393,6 +5243,23 @@ export function agentRoutes(
       entityId: run.id,
       details: { agentId: id },
     });
+    if (req.body.debug?.providerTrace === "raw") {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: run.id,
+        action: "provider_trace.capture_requested",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          mode: "raw",
+          retentionHours: 24,
+          maxBytes: 64 * 1024 * 1024,
+        },
+      });
+    }
 
     res.status(202).json(run);
   };
@@ -4424,6 +5291,10 @@ export function agentRoutes(
     } else {
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
+    const providerTraceRequested = req.body?.debug?.providerTrace === "raw";
+    if (providerTraceRequested) {
+      assertInstanceAdmin(req);
+    }
     if (agent.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: agent.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before starting runs",
@@ -4437,6 +5308,7 @@ export function agentRoutes(
       idempotencyKey: unknown;
       forceFreshSession: unknown;
       triggerDetail: unknown;
+      debug: unknown;
     }>;
     const contextSnapshot: Record<string, unknown> = {
       triggeredBy: req.actor.type,
@@ -4444,6 +5316,14 @@ export function agentRoutes(
     };
     if (body.forceFreshSession === true) {
       contextSnapshot.forceFreshSession = true;
+    }
+    if (providerTraceRequested) {
+      contextSnapshot.debug = { providerTrace: "raw" };
+      contextSnapshot.providerTraceRequestedBy =
+        req.actor.userId ?? "local-admin";
+      if (body.reason === "rerun_with_provider_trace") {
+        contextSnapshot.resumeIntent = true;
+      }
     }
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
       source: "on_demand",
@@ -4480,6 +5360,23 @@ export function agentRoutes(
       entityId: run.id,
       details: { agentId: id },
     });
+    if (providerTraceRequested) {
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: run.id,
+        action: "provider_trace.capture_requested",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          mode: "raw",
+          retentionHours: 24,
+          maxBytes: 64 * 1024 * 1024,
+        },
+      });
+    }
 
     res.status(202).json(run);
   });
@@ -4635,9 +5532,6 @@ export function agentRoutes(
   // Each route writes its full path as a plain string literal, so the static
   // OpenAPI coverage test can read the path from the source text.
 
-  // The company-and-environment login serves only the Claude adapter.
-  const CLAUDE_SETUP_TOKEN_ADAPTER_TYPE = "claude_local";
-
   // Maps the internal session state to the public login status. The public union
   // carries no server-only state, so the route never returns the internal
   // `submitting` or `stored` state to a client.
@@ -4693,7 +5587,7 @@ export function agentRoutes(
   const companySetupTokenKey = (companyId: string, ownerUserId: string) => ({
     companyId,
     ownerUserId,
-    adapterType: CLAUDE_SETUP_TOKEN_ADAPTER_TYPE,
+    adapterType: SETUP_TOKEN_ADAPTER_TYPE,
   });
 
   // The stored Claude OAuth token status read. It returns
@@ -4754,15 +5648,24 @@ export function agentRoutes(
       guardAfterValidate: (data) => {
         // The setup-token route drives a login on a pseudo-terminal and records a
         // stored session identifier on success. It serves any adapter whose
-        // registry login capability declares that transport and that claim. The
-        // guard reads the capability, not the adapter name, so a new adapter with
-        // the same capability passes with no code change. It rejects an adapter
-        // with no matching capability with a fixed 400.
+        // registry login capability records that completion claim. The guard reads
+        // the capability, not the adapter name, so a new adapter with the same
+        // claim passes with no code change. It rejects an adapter with no matching
+        // capability with a fixed 400.
         const capability = getRegistryLoginCapability(data.adapterType);
-        if (
-          capability?.sandboxTransport !== "pseudo_terminal" ||
-          capability.completionClaim !== "storedSessionId"
-        ) {
+        if (capability?.completionClaim !== "storedSessionId") {
+          res.status(400).json({ error: "This adapter does not support a setup-token login." });
+          return true;
+        }
+        // The five follow-up routes and the restart reaper both read only the
+        // one pinned adapter type. A capability match alone is not enough: an
+        // adapter that declares `storedSessionId` but is not the served type
+        // would pass the check above, then create a session that no follow-up
+        // route and no reaper scan can reach. Reject that case here, before any
+        // sandbox assertion, lease, durable row, or pseudo-terminal, with the
+        // same fixed 400 as the capability check above, so the response
+        // discloses no difference between the two rejection reasons.
+        if (data.adapterType !== SETUP_TOKEN_ADAPTER_TYPE) {
           res.status(400).json({ error: "This adapter does not support a setup-token login." });
           return true;
         }
@@ -4810,6 +5713,41 @@ export function agentRoutes(
     } catch (err) {
       sendSetupTokenError(res, err);
     }
+  });
+
+  // Read the caller's active Claude setup-token login session, with no session
+  // id. The browser rediscovers its own session after a reload with no local
+  // state. The response carries the panel mode and the one-time prompt, the
+  // same owner response shape the start route returns. A caller with no active
+  // session receives the same fixed not-found error as a foreign session.
+  //
+  // This route registers before the `:sessionId` route below, so Express never
+  // matches the literal `active` segment as a session id.
+  router.get("/companies/:companyId/setup-token-login-sessions/active", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
+    if (ownerUserId === null) return;
+    res.setHeader("Cache-Control", "no-store, private");
+    const descriptor = await setupTokenLoginService.findActiveByScope(
+      companySetupTokenKey(companyId, ownerUserId),
+    );
+    if (!descriptor) {
+      res.status(404).json({ error: SETUP_TOKEN_SESSION_NOT_FOUND });
+      return;
+    }
+    // Read the panel mode from the adapter capability, the same way the start
+    // route does. The full login URL rides in this response, guarded by the
+    // same transport advisory the prompt route attaches.
+    const panelMode =
+      getRegistryLoginCapability(SETUP_TOKEN_ADAPTER_TYPE)?.panelMode ?? "submitted_browser_code";
+    const body: ClaudeSetupTokenSessionOwnerResponse = {
+      ...toClaudePublicResponse(descriptor),
+      panelMode,
+      prompt: descriptor.loginUrl
+        ? { authorizationUrl: descriptor.loginUrl, transportAdvisory: assessSetupTokenTransport(req) }
+        : null,
+    };
+    res.json(body);
   });
 
   router.get("/companies/:companyId/setup-token-login-sessions/:sessionId", async (req, res) => {
@@ -4929,11 +5867,14 @@ export function agentRoutes(
     res.setHeader("Cache-Control", "no-store");
     const sessionId = req.params.sessionId as string;
     try {
-      const scope = setupTokenLoginService.resolveCompanyScope(
+      // `cancelByScope` tries the live in-memory session first, then falls back
+      // to a durable-only cancel when no live session matches — for example,
+      // after a restart drops the in-memory session but the durable row still
+      // holds the company slot.
+      await setupTokenLoginService.cancelByScope(
         sessionId,
         companySetupTokenKey(companyId, ownerUserId),
       );
-      await setupTokenLoginService.cancel(sessionId, scope);
       res.status(200).json({});
     } catch (err) {
       // Cancel is idempotent. The service removes a session when it reaches a
@@ -4959,6 +5900,7 @@ export function agentRoutes(
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
@@ -4967,9 +5909,39 @@ export function agentRoutes(
     res.json(await Promise.all(runs.map((run) => runRedactions.redactForRun(companyId, run.id, run))));
   });
 
+  router.get("/companies/:companyId/provider-traces", async (req, res) => {
+    assertInstanceAdmin(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const runIds = String(req.query.runIds ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .slice(0, 100);
+    const traces = await providerTraces.listMetadataForRuns(companyId, runIds);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "provider_trace.metadata_listed",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        requestedRunCount: runIds.length,
+        traceCount: traces.length,
+        payloadLogged: false,
+      },
+    });
+    res.set("Cache-Control", "no-cache, no-store");
+    res.json(traces);
+  });
+
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
 
     // `minCount` is a padding floor for callers that want a minimum number of
     // recent runs to render (e.g. dashboard cards). It must default to 0 so
@@ -4981,6 +5953,7 @@ export function agentRoutes(
 
     const columns = {
       id: heartbeatRuns.id,
+      runtimeMode: heartbeatRuns.runtimeMode,
       companyId: heartbeatRuns.companyId,
       status: heartbeatRuns.status,
       invocationSource: heartbeatRuns.invocationSource,
@@ -5056,6 +6029,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(await runRedactions.redactForRun(
@@ -5098,6 +6072,214 @@ export function agentRoutes(
     res.json(run);
   });
 
+  router.post(
+    "/heartbeat-runs/:runId/runtime-requests/:requestId/resolve",
+    async (req, res) => {
+      assertBoard(req);
+      const runId = req.params.runId as string;
+      const requestId = req.params.requestId as string;
+      const existing = await getAccessibleResource(
+        req,
+        res,
+        heartbeat.getRun(runId),
+        "Heartbeat run not found",
+      );
+      if (!existing) return;
+      if (existing.runtimeMode !== "native" || existing.status !== "running") {
+        throw conflict(
+          "This runner session is no longer accepting runtime responses.",
+        );
+      }
+      if (!requestId || requestId.length > 160) {
+        throw badRequest("A runtime request identifier is required.");
+      }
+      const resolutionActor: NativeRuntimeRequestResolver = {
+        type: "user",
+        userId:
+          req.actor.userId
+          ?? (req.actor.source === "local_implicit" ? "local-admin" : ""),
+        isInstanceAdmin:
+          req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true,
+      };
+      const pendingRequest = await readPendingNativeRuntimeRequest(db, {
+        companyId: existing.companyId,
+        runId,
+        requestId,
+      });
+      if (!pendingRequest) {
+        throw conflict("This runtime request is stale or is no longer pending.");
+      }
+      try {
+        assertNativeRuntimeRequestResolverAuthorized(
+          pendingRequest,
+          resolutionActor,
+        );
+      } catch (error) {
+        if (error instanceof NativeRuntimeRequestResolutionAuthorizationError) {
+          throw forbidden(
+            pendingRequest.resolverPolicy === "instance_admin"
+              ? "Instance admin access is required to resolve privileged runtime approvals."
+              : "This actor is not authorized to resolve the runtime request.",
+          );
+        }
+        throw error;
+      }
+      // Kind and turn are read only from the server-persisted PRP event. Body
+      // values are deliberately ignored so a caller cannot downgrade an
+      // approval into a human-only question or move a response across turns.
+      const rawRequestKind = pendingRequest.requestKind;
+      let resolution: HarnessRuntimeRequestResolution;
+      try {
+        if (rawRequestKind === "runtime") {
+          const candidate = req.body?.resolution;
+          const action = candidate?.action;
+          if (action === "decline" || action === "cancel") {
+            resolution = { action };
+          } else if (
+            action === "submit" &&
+            candidate?.response?.schema === "paperclip.question_response.v1" &&
+            candidate.response.answers &&
+            typeof candidate.response.answers === "object" &&
+            !Array.isArray(candidate.response.answers)
+          ) {
+            // The active session/durable runner validates this untrusted
+            // response against its persisted question set immediately before
+            // translating it back to the provider.
+            resolution = { action: "submit", response: candidate.response };
+          } else {
+            throw new HarnessRuntimeRequestResolutionError(
+              "user_input",
+              "runtime input requires a canonical submit, decline, or cancel",
+            );
+          }
+        } else {
+          resolution = parseHarnessRuntimeRequestResolution(
+            rawRequestKind as HarnessRuntimeRequestKind,
+            req.body?.resolution,
+          );
+        }
+      } catch (error) {
+        if (error instanceof HarnessRuntimeRequestResolutionError) {
+          throw badRequest("Invalid runtime request response.");
+        }
+        throw error;
+      }
+
+      try {
+        // Re-read the canonical lifecycle immediately before the durable
+        // command mutation. A resolution/cancellation committed while the
+        // response body was parsed revokes this route's authority.
+        const currentPendingRequest = await readPendingNativeRuntimeRequest(db, {
+          companyId: existing.companyId,
+          runId,
+          requestId,
+        });
+        if (
+          !currentPendingRequest
+          || currentPendingRequest.requestKind !== pendingRequest.requestKind
+          || currentPendingRequest.turnId !== pendingRequest.turnId
+        ) {
+          throw conflict("This runtime request is stale or is no longer pending.");
+        }
+        let queued: { commandId: string };
+        try {
+          queued = await resolveNativeRuntimeRequest({
+            runId,
+            requestId,
+            turnId: currentPendingRequest.turnId,
+            resolution,
+            authorizeBeforeDispatch: async () => {
+              const dispatchPendingRequest =
+                await readPendingNativeRuntimeRequest(db, {
+                  companyId: existing.companyId,
+                  runId,
+                  requestId,
+                });
+              if (
+                !dispatchPendingRequest
+                || dispatchPendingRequest.requestKind !==
+                  currentPendingRequest.requestKind
+                || dispatchPendingRequest.turnId !==
+                  currentPendingRequest.turnId
+              ) {
+                throw conflict(
+                  "This runtime request is stale or is no longer pending.",
+                );
+              }
+              assertNativeRuntimeRequestResolverAuthorized(
+                dispatchPendingRequest,
+                resolutionActor,
+              );
+            },
+          });
+        } catch (error) {
+          if (
+            error instanceof NativeRuntimeRequestResolutionError &&
+            error.code === "runtime_request_resolution_conflict"
+          ) {
+            throw conflict(
+              "A different response was already submitted for this runtime request.",
+            );
+          }
+          if (
+            !(error instanceof NativeRuntimeRequestResolutionError) ||
+            ![
+              "native_session_not_active",
+              "runtime_request_resolution_unsupported",
+            ].includes(error.code)
+          ) {
+            if (
+              error instanceof NativeRuntimeRequestResolutionError &&
+              error.code === "runtime_request_stale_turn"
+            ) {
+              throw conflict(
+                "The runner session is no longer accepting runtime responses.",
+              );
+            }
+            throw error;
+          }
+          queued = queueRunnerPrpRuntimeRequestResolution({
+            companyId: existing.companyId,
+            runId,
+            pendingRequest: currentPendingRequest,
+            actor: resolutionActor,
+            resolution,
+          });
+        }
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "heartbeat.runtime_request_resolution_queued",
+          entityType: "heartbeat_run",
+          entityId: existing.id,
+          details: {
+            requestId,
+            requestKind: currentPendingRequest.requestKind,
+            resolverPolicy: currentPendingRequest.resolverPolicy,
+            resolvedByUserId: resolutionActor.userId,
+            action: resolution.action,
+          },
+        });
+        res.status(202).json({ accepted: true, commandId: queued.commandId });
+      } catch (error) {
+        if (error instanceof NativeRuntimeRequestResolutionAuthorizationError) {
+          throw forbidden(
+            "This actor is not authorized to resolve the runtime request.",
+          );
+        }
+        if (error instanceof RunnerPrpRuntimeRequestResolutionError) {
+          throw conflict(
+            error.code === "runtime_request_resolution_conflict"
+              ? "A different response was already submitted for this runtime request."
+              : "The runner session is no longer accepting runtime responses.",
+          );
+        }
+        throw error;
+      }
+    },
+  );
+
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {
     const runId = req.params.runId as string;
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
@@ -5130,10 +6312,198 @@ export function agentRoutes(
     res.json(row);
   });
 
+  router.get("/heartbeat-runs/:runId/provider-trace", async (req, res) => {
+    assertInstanceAdmin(req);
+    const runId = req.params.runId as string;
+    const run = await getAccessibleResource(
+      req,
+      res,
+      heartbeat.getRun(runId),
+      "Heartbeat run not found",
+    );
+    if (!run) return;
+    const inspection = await providerTraces.inspect(run.id, run.companyId);
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "local-admin",
+      action: "provider_trace.redacted_viewed",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: {
+        traceId: inspection.trace?.id ?? null,
+        rawPayloadRevealed: false,
+      },
+    });
+    res.set("Cache-Control", "no-cache, no-store");
+    res.json(inspection);
+  });
+
+  router.post(
+    "/heartbeat-runs/:runId/provider-trace/reproject-workspace-diffs",
+    async (req, res) => {
+      assertBoard(req);
+      const runId = req.params.runId as string;
+      const run = await getAccessibleResource(
+        req,
+        res,
+        heartbeat.getRun(runId),
+        "Heartbeat run not found",
+      );
+      if (!run) return;
+
+      const trace = await providerTraces.getByRun(run.id, run.companyId);
+      let unavailable: WorkspaceDiffReprojectionSkipReason | null = null;
+      if (!trace || trace.deletedAt) unavailable = { reason: "trace_unavailable" };
+      else if (trace.expiresAt <= new Date()) unavailable = { reason: "trace_expired" };
+      else if (trace.status !== "complete") unavailable = { reason: "trace_incomplete" };
+      if (unavailable !== null) {
+        res.json({ created: 0, skipped: 1, skipReasons: [unavailable] });
+        return;
+      }
+
+      const entries = await providerTraces
+        .readExactEntries(run.id, run.companyId)
+        .catch(() => null);
+      if (entries === null) {
+        res.json({
+          created: 0,
+          skipped: 1,
+          skipReasons: [{ reason: "trace_unavailable" }],
+        });
+        return;
+      }
+      const result = await persistReprojectedWorkspaceDiffs(db, {
+        traceId: trace.id,
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        projection: projectCodexWorkspaceDiffsFromTrace(entries),
+      });
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "local-board",
+        action: "provider_trace.workspace_diffs_reprojected",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          traceId: trace.id,
+          created: result.created,
+          skipped: result.skipped,
+          providerActionsReplayed: 0,
+        },
+      });
+      res.json(result);
+    },
+  );
+
+  router.post(
+    "/heartbeat-runs/:runId/provider-trace/frames/:frameId/reveal",
+    async (req, res) => {
+      assertInstanceAdmin(req);
+      const runId = req.params.runId as string;
+      const frameId = Number(req.params.frameId);
+      if (!Number.isSafeInteger(frameId) || frameId < 1) {
+        throw badRequest("Invalid provider trace frame id");
+      }
+      const run = await getAccessibleResource(
+        req,
+        res,
+        heartbeat.getRun(runId),
+        "Heartbeat run not found",
+      );
+      if (!run) return;
+      const frame = await providerTraces.revealFrame(
+        run.id,
+        run.companyId,
+        frameId,
+      );
+      if (!frame) throw notFound("Provider trace frame not found");
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "local-admin",
+        action: "provider_trace.frame_revealed",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          frameId,
+          digest: frame.digest,
+          byteLength: frame.byteLength,
+        },
+      });
+      res.set("Cache-Control", "no-cache, no-store");
+      res.json(frame);
+    },
+  );
+
+  router.get(
+    "/heartbeat-runs/:runId/provider-trace/download",
+    async (req, res) => {
+      assertInstanceAdmin(req);
+      const runId = req.params.runId as string;
+      const run = await getAccessibleResource(
+        req,
+        res,
+        heartbeat.getRun(runId),
+        "Heartbeat run not found",
+      );
+      if (!run) return;
+      const download = await providerTraces.download(run.id, run.companyId);
+      if (!download) throw notFound("Provider trace not found");
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "local-admin",
+        action: "provider_trace.downloaded",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          traceId: download.row.id,
+          byteCount: download.bytes.byteLength,
+          digest: download.row.digest,
+        },
+      });
+      res.set("Cache-Control", "no-cache, no-store");
+      res.set("Content-Type", "application/x-ndjson");
+      res.set(
+        "Content-Disposition",
+        `attachment; filename=provider-trace-${run.id}.ndjson`,
+      );
+      res.send(download.bytes);
+    },
+  );
+
+  router.delete("/heartbeat-runs/:runId/provider-trace", async (req, res) => {
+    assertInstanceAdmin(req);
+    const runId = req.params.runId as string;
+    const run = await getAccessibleResource(
+      req,
+      res,
+      heartbeat.getRun(runId),
+      "Heartbeat run not found",
+    );
+    if (!run) return;
+    const removed = await providerTraces.remove(run.id, run.companyId);
+    if (!removed) throw notFound("Provider trace not found");
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "local-admin",
+      action: "provider_trace.deleted",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      details: { traceId: removed.id, recoverable: false },
+    });
+    res.json({ ok: true });
+  });
+
   router.get("/heartbeat-runs/:runId/events", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
@@ -5152,6 +6522,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -5168,6 +6539,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
 
     const context = asRecord(run.contextSnapshot);
     const executionWorkspaceId = asNonEmptyString(context?.executionWorkspaceId);
@@ -5179,6 +6551,7 @@ export function agentRoutes(
     const operationId = req.params.operationId as string;
     const operation = await getAccessibleResource(req, res, workspaceOperations.getById(operationId), "Workspace operation not found");
     if (!operation) return;
+    if (!(await assertRunTelemetryReadAllowed(req, res, operation.companyId))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -5206,6 +6579,7 @@ export function agentRoutes(
     const liveRuns = await db
       .select({
         id: heartbeatRuns.id,
+        runtimeMode: heartbeatRuns.runtimeMode,
         status: heartbeatRuns.status,
         invocationSource: heartbeatRuns.invocationSource,
         triggerDetail: heartbeatRuns.triggerDetail,

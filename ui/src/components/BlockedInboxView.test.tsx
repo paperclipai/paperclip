@@ -164,6 +164,7 @@ describe("BlockedInboxView", () => {
     const { root } = renderWithClient(
       <BlockedInboxView
         {...blockedViewProps}
+        presentation="task"
       />,
       container,
     );
@@ -258,6 +259,7 @@ describe("BlockedInboxView", () => {
     const { root } = renderWithClient(
       <BlockedInboxView
         {...blockedViewProps}
+        presentation="task"
       />,
       container,
     );
@@ -269,6 +271,40 @@ describe("BlockedInboxView", () => {
     expect(rowText.indexOf("Board")).toBeGreaterThan(rowText.indexOf("Needs decision"));
     expect(rowText).not.toContain("Accept or reject");
     expect(container.querySelector('[data-testid="blocked-row-reason-column"]')?.textContent).toContain("Needs decision");
+    const taskRow = container.querySelector('[data-slot="task-row"]');
+    const identifier = container.querySelector('[data-slot="task-row-identifier"]');
+    const timestamp = container.querySelector('[data-slot="task-row-timestamp"]');
+    expect(taskRow).not.toBeNull();
+    expect(taskRow?.className).not.toContain("border-b");
+    expect(identifier).not.toBeNull();
+    expect(timestamp).not.toBeNull();
+    if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
+    expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    act(() => root.unmount());
+  });
+
+  it("restores the legacy status/id prefix, timestamp column, and row divider", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-legacy",
+        "PAP-41",
+        "Legacy blocked row",
+        attention({ owner: { type: "board", agentId: null, userId: null, label: "Board" } }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} presentation="legacy" />,
+      container,
+    );
+    await waitFor(() => container.textContent?.includes("Legacy blocked row") === true);
+
+    expect(container.querySelector('[data-slot="task-row"]')).toBeNull();
+    expect(container.querySelector('[data-testid="blocked-row-age"]')).not.toBeNull();
+    const row = container.querySelector("a")?.parentElement;
+    expect(row?.className).toContain("border-b");
+    expect(row?.textContent).toContain("PAP-41");
 
     act(() => root.unmount());
   });

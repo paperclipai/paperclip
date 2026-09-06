@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
   coordinateHeartbeatSchedulerShutdown,
+  drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
@@ -37,6 +38,9 @@ describe("finalizeServerShutdown", () => {
     const shutdownInstrumentation = vi.fn(async () => {
       order.push("instrumentation:flush");
     });
+    const shutdownSentry = vi.fn(async () => {
+      order.push("sentry:flush");
+    });
 
     let exited = false;
     const finalize = finalizeServerShutdown({
@@ -44,6 +48,7 @@ describe("finalizeServerShutdown", () => {
       shutdownAppServices,
       stopEmbeddedPostgres,
       shutdownInstrumentation,
+      shutdownSentry,
       log: stubLogger(),
     }).then(() => {
       // This models the caller's `process.exit(0)` continuation.
@@ -67,6 +72,7 @@ describe("finalizeServerShutdown", () => {
       "appServices:settled",
       "postgres:stop",
       "instrumentation:flush",
+      "sentry:flush",
       "exit",
     ]);
   });
@@ -87,6 +93,7 @@ describe("finalizeServerShutdown", () => {
     const shutdownInstrumentation = vi.fn(async () => {
       order.push("instrumentation:flush");
     });
+    const shutdownSentry = vi.fn(async () => undefined);
     const log = stubLogger();
 
     let exited = false;
@@ -95,6 +102,7 @@ describe("finalizeServerShutdown", () => {
       shutdownAppServices,
       stopEmbeddedPostgres,
       shutdownInstrumentation,
+      shutdownSentry,
       log,
     }).then(() => {
       exited = true;
@@ -120,6 +128,7 @@ describe("finalizeServerShutdown", () => {
   it("skips the database stop when no embedded PostgreSQL runs in this process", async () => {
     const shutdownAppServices = vi.fn(async () => undefined);
     const shutdownInstrumentation = vi.fn(async () => undefined);
+    const shutdownSentry = vi.fn(async () => undefined);
     const log = stubLogger();
 
     await finalizeServerShutdown({
@@ -127,12 +136,50 @@ describe("finalizeServerShutdown", () => {
       shutdownAppServices,
       stopEmbeddedPostgres: null,
       shutdownInstrumentation,
+      shutdownSentry,
       log,
     });
 
     expect(shutdownAppServices).toHaveBeenCalledOnce();
     expect(shutdownInstrumentation).toHaveBeenCalledOnce();
     expect(log.info).not.toHaveBeenCalled();
+  });
+});
+
+describe("drainRunExecutionFinalizersForShutdown", () => {
+  it("awaits bounded execution finalizers", async () => {
+    const release = deferred();
+    const drain = vi.fn(() => release.promise);
+    const pending = drainRunExecutionFinalizersForShutdown({
+      signal: "SIGTERM",
+      drain,
+      timeoutMs: 1_000,
+      log: stubLogger(),
+    });
+    await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
+    release.resolve();
+    await expect(pending).resolves.toBe("drained");
+  });
+
+  it("returns after the bounded timeout when an adopted run remains active", async () => {
+    vi.useFakeTimers();
+    try {
+      const log = stubLogger();
+      const pending = drainRunExecutionFinalizersForShutdown({
+        signal: "SIGINT",
+        drain: () => new Promise<void>(() => undefined),
+        timeoutMs: 250,
+        log,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(pending).resolves.toBe("timed_out");
+      expect(log.info).toHaveBeenCalledWith(
+        expect.objectContaining({ timeoutMs: 250 }),
+        expect.stringContaining("timed out"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

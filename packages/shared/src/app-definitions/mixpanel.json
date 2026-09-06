@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "slug": "mixpanel",
+  "name": "Mixpanel",
+  "description": "Connect Mixpanel's provider-hosted MCP server.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/mixpanel.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.mixpanel.com/*"
+  ],
+  "docsUrl": "https://mixpanel.com/blog/mixpanel-mcp-server/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.mixpanel.com/mcp"
+      },
+      "guidanceMd": "Connect Mixpanel in the browser. A Mixpanel account; the hosted MCP server is currently beta.",
+      "riskTier": "S3",
+      "label": "Sign in with Mixpanel",
+      "consoleLinks": {
+        "docs": "https://mixpanel.com/blog/mixpanel-mcp-server/"
+      },
+      "warnings": [
+        "A Mixpanel account; the hosted MCP server is currently beta.",
+        "This provider's hosted MCP server is currently beta or preview."
+      ]
+    }
+  ]
+}

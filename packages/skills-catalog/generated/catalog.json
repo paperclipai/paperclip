@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-07T20:30:29.973Z",
+  "generatedAt": "2026-08-11T15:05:34.526Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -1149,8 +1149,8 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 11183,
-          "sha256": "452386be3aa5e2988dc9d72f288f469975da766626a25c48017877963c533781"
+          "sizeBytes": 12409,
+          "sha256": "5278d288a0cbfe10fdda4ef3d99cf61e6ed068f4b6c1282406b0e001c9f45253"
         },
         {
           "path": "examples/notion-mcp-research-gate.md",
@@ -1159,7 +1159,7 @@
           "sha256": "944b13ac67c06c65643eb236e856f1479106749861535648d29334f84cf1b50b"
         }
       ],
-      "contentHash": "sha256:4dbb76624e0fd5502fa10a9168f77214c5020899838af887e77a1617a0a00c31"
+      "contentHash": "sha256:84f2a28d7d004393719684f2b435e5ee01ddc58591e0dfeb73d72c7605db7f49"
     }
   ]
 }

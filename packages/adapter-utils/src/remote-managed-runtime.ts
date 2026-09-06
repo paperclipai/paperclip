@@ -7,13 +7,19 @@ import {
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
 } from "./ssh.js";
-import type {
-  SandboxAdditionalSource,
-  SandboxManagedRuntimeAssetRestoreContext,
+import {
+  mergeExcludes,
+  referencedSourceIgnoreExcludeEntries,
+  type SandboxAdditionalSource,
+  type SandboxManagedRuntimeAssetRestoreContext,
 } from "./sandbox-managed-runtime.js";
 import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
 
+// The fixed heavy-directory excludes every referenced project drops,
+// regardless of its ignore resolution. A `git`-resolved project additionally
+// drops its own resolved ignored paths (see `referencedSourceIgnoreExcludeEntries`
+// and the per-project merge below); an `other` project keeps only this set.
 const REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES = [
   "node_modules",
   "vendor",
@@ -179,7 +185,7 @@ export async function prepareRemoteManagedRuntime(input: {
   // the other projects continue (no workspace restore, unlike an asset failure).
   const additionalSourceDirs: Record<string, string> = {};
   for (const source of input.additionalSources ?? []) {
-    const { localPath, projectId } = source;
+    const { localPath, projectId, ignoreResolution } = source;
     try {
       if (!path.posix.isAbsolute(localPath)) {
         throw new Error(`additional source localPath is not an absolute path: ${localPath}`);
@@ -192,12 +198,21 @@ export async function prepareRemoteManagedRuntime(input: {
       ) {
         throw new Error(`additional source projectId is not a simple path segment: ${projectId}`);
       }
+      // Fail closed: a project whose ignore resolution failed is not staged at
+      // all — the existing per-project skip-and-warn path below handles it.
+      if (ignoreResolution.kind === "failed") {
+        throw new Error(`referenced project ignore resolution failed: ${ignoreResolution.reason}`);
+      }
       const remoteDir = path.posix.join(runtimeRootDir, `project-${projectId}`);
+      const exclude = mergeExcludes(
+        REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES,
+        referencedSourceIgnoreExcludeEntries(ignoreResolution),
+      );
       await syncDirectoryToSsh({
         spec: input.spec,
         localDir: localPath,
         remoteDir,
-        exclude: REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES,
+        exclude,
         onProgress: input.onProgress,
         progressLabel: `project-${projectId}`,
       });

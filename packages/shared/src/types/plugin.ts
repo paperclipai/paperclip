@@ -182,8 +182,12 @@ export interface SandboxProviderCapabilities {
    * key denies the capability, so the provider keeps the file bridge. Only a
    * provider that declares this key `true` and whose worker verifies the duplex
    * open method selects the duplex channel path.
+   *
+   * HTTP/2 is the preferred transport. `queue_v1` is the soft-deprecated fallback.
    */
   duplexCommandStream?: boolean;
+  /** Provider can expose runnerd through a private authenticated WebSocket ingress. */
+  runnerWebSocketIngress?: boolean;
 }
 
 export interface PluginEnvironmentDriverDeclaration {

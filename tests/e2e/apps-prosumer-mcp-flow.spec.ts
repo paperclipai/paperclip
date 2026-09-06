@@ -4,7 +4,7 @@ import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
 
 // prosumer MCP flow — QA harness for the prosumer Connect-an-app flow on top of the
 // tool-access foundation. Covers the M-series happy path (gallery + key paste
-// → choose actions → who-can-use → success), the expired-key reconnect path,
+// → choose access → install → success), the expired-key reconnect path,
 // the Needs-attention surface, and a regression check that /apps/advanced
 // still mounts.
 //
@@ -21,8 +21,6 @@ async function newCompany(request: APIRequestContext, label: string): Promise<Se
   const res = await request.post("/api/companies", { data: { name: `prosumer MCP flow ${label} ${Date.now()}` } });
   expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
   const company = await res.json();
-  const flags = await request.patch("/api/instance/settings/experimental", { data: { enableApps: true } });
-  expect(flags.ok(), `enable apps failed ${flags.status()}: ${await flags.text()}`).toBe(true);
   return {
     companyId: company.id,
     prefix: company.issuePrefix ?? company.prefix ?? company.urlKey ?? "E2E",
@@ -32,8 +30,7 @@ async function newCompany(request: APIRequestContext, label: string): Promise<Se
 // ---- Mock MCP HTTP fixture --------------------------------------------------
 // Minimal MCP JSON-RPC server. /catalog refresh hits this with method
 // `tools/list`; the gateway calls it with `tools/call`. We expose one
-// read-only and one write tool so the wizard can show the Ask-first toggle
-// for write actions.
+// read-only and one write tool so setup can apply risk-based ask-first defaults.
 
 type MockMcpServer = { url: string; close: () => Promise<void>; captures: Array<{ method: string; params: unknown }> };
 
@@ -118,8 +115,13 @@ async function gotoApps(page: Page, prefix: string) {
 
 async function gotoConnect(page: Page, prefix: string) {
   await page.goto(`/${prefix}/apps`);
-  await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: /Connect your own tool/i }).click();
+  await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+  const customConnector = page
+    .getByRole("list", { name: "Connector list" })
+    .getByRole("listitem")
+    .filter({ hasText: "Connect your own tool" });
+  await customConnector.getByRole("button", { name: "Connect", exact: true }).click();
+  await customConnector.getByRole("button", { name: "Connect your own MCP server" }).click();
 }
 
 async function gotoAdvanced(page: Page, prefix: string) {
@@ -145,13 +147,13 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await mock?.close();
   });
 
-  test("Connect wizard happy path: link mode → actions → who → success", async ({ page, request }) => {
+  test("Connect wizard happy path: link mode → success", async ({ page, request }) => {
     const seed = await newCompany(request, "connect");
 
     await gotoConnect(page, seed.prefix);
 
     // Browse launches the BYO link-mode connect wizard.
-    await expect(page.getByRole("heading", { name: "Connect an app" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Connect your own MCP server", { exact: true })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-01-gallery.png`, fullPage: true });
 
     // Use the "Connect with a link" path against the mock MCP server.
@@ -159,54 +161,23 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await linkInput.fill(mock.url);
     await page.getByRole("button", { name: "Continue" }).click();
 
-    // LinkKey step shows the "Connect with a link" heading. Mock doesn't
+    // Access is chosen before credentials so the user knows who and which
+    // agents will receive the connection before Paperclip contacts it.
+    await expect(page.getByText("Which humans can use this credential?")).toBeVisible();
+    await page.getByRole("button", { name: "Save and continue" }).click();
+
+    // LinkKey step keeps the BYO connection heading. Mock doesn't
     // require a key — leave the default "No" answer.
-    await expect(page.getByRole("heading", { name: "Connect with a link" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "Connect your own MCP server" })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-02-key-step.png`, fullPage: true });
 
     // Submit (button label is "Check link").
     await page.getByRole("button", { name: /Check link/i }).click();
 
-    // Actions step — read-only enabled, write disabled by default.
-    await expect(page.getByText(/Read only/i)).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText(/Can make changes/i)).toBeVisible();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-03-actions-step.png`, fullPage: true });
-
-    // Verify our seeded tool labels appear (display name is the descriptor title).
-    await expect(page.getByText("List widgets")).toBeVisible();
-    await expect(page.getByText("Create widget")).toBeVisible();
-
-    // namespaced tool names: the namespaced write action ("qa10864:create_widget") must be
-    // classified write and land under "Can make changes" — NOT pre-enabled under
-    // "Read only". Scope the assertions to each action group.
-    const readOnlyGroup = page.locator("div.rounded-xl").filter({ hasText: "Read only" });
-    const canChangeGroup = page.locator("div.rounded-xl").filter({ hasText: "Can make changes" });
-    await expect(canChangeGroup.getByText("Create widget")).toBeVisible();
-    await expect(readOnlyGroup.getByText("Create widget")).toHaveCount(0);
-    await expect(readOnlyGroup.getByText("List widgets")).toBeVisible();
-
-    // Toggle the write action on so an Ask-first badge appears + the Continue button enables it.
-    const createToggle = page.getByRole("switch").last();
-    await createToggle.click();
-    await expect(page.getByText(/Ask first/i)).toBeVisible({ timeout: 5_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-03b-ask-first-on.png`, fullPage: true });
-
-    // Continue to who-can-use.
-    await page.getByRole("button", { name: /Continue with .* on/ }).click();
-
-    // Who-can-use step — defaults to All agents.
-    await expect(page.getByRole("heading", { name: /Who can use/i })).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-04-who-step.png`, fullPage: true });
-
-    await page.getByRole("button", { name: /Continue to install/i }).click();
-    await expect(page.getByRole("heading", { name: /Install .* tools\?/i })).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-04b-install-step.png`, fullPage: true });
-
-    // Finish.
-    await page.getByRole("button", { name: /Finish setup/i }).click();
-
-    // Success step.
-    await expect(page.getByText(/ready|all set|done/i).first()).toBeVisible({ timeout: 20_000 });
+    // The Access choice was captured before credentials. A successful generic
+    // probe now commits discovered actions and risk defaults transactionally,
+    // so the key check lands directly on success.
+    await expect(page.getByRole("heading", { name: /is ready\.$/i })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-05-success.png`, fullPage: true });
 
     // Verify the mock saw a tools/list call from the catalog refresh.
@@ -214,7 +185,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
     // The new connection should show up on /apps/connections.
     await gotoApps(page, seed.prefix);
-    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-apps-list.png`, fullPage: true });
   });
 
@@ -252,8 +223,8 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
       // Needs-attention page should surface this connection.
       await gotoNeedsAttention(page, seed.prefix);
-      await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByText(/app needs attention/i).first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText("Needs attention", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-needs-attention.png`, fullPage: true });
 
       // App detail should expose the reconnect call-to-action.
@@ -288,27 +259,15 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     }
   });
 
-  test("/apps/advanced still mounts both tabs", async ({ page, request }) => {
+  test("/apps/advanced mounts the paste-config path", async ({ page, request }) => {
     const seed = await newCompany(request, "advanced");
 
     await gotoAdvanced(page, seed.prefix);
     await expect(page.getByRole("heading", { name: "Advanced setup" })).toBeVisible({ timeout: 20_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-09-advanced-default.png`, fullPage: true });
 
-    // M8a paste tab.
-    const pasteTab = page.getByRole("tab", { name: /Paste/i }).first();
-    if (await pasteTab.isVisible().catch(() => false)) {
-      await pasteTab.click();
-      await page.waitForTimeout(250);
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-10-advanced-paste-tab.png`, fullPage: true });
-    }
-
-    // M8b run-your-own tab.
-    const ownTab = page.getByRole("tab", { name: /Run your own|Self host|Stdio|Local/i }).first();
-    if (await ownTab.isVisible().catch(() => false)) {
-      await ownTab.click();
-      await page.waitForTimeout(250);
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-11-advanced-own-tab.png`, fullPage: true });
-    }
+    await expect(page.getByRole("link", { name: "Paste a config" })).toBeVisible();
+    await expect(page.getByRole("link", { name: /Run your own|Self host|Stdio|Local/i })).toHaveCount(0);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-10-advanced-paste-tab.png`, fullPage: true });
   });
 });

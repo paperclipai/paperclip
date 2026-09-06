@@ -1,5 +1,6 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import { asString, asNumber, parseObject } from "../utils.js";
+import { guardedHttpAdapterFetch } from "./remote-fetch.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { config, runId, agent, context } = ctx;
@@ -10,13 +11,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutMs = asNumber(config.timeoutMs, 0);
   const headers = parseObject(config.headers) as Record<string, string>;
   const payloadTemplate = parseObject(config.payloadTemplate);
-  const body = { ...payloadTemplate, agentId: agent.id, runId, context };
+  const body = {
+    ...payloadTemplate,
+    agentId: agent.id,
+    runId,
+    context,
+    ...(ctx.runtimeTools ? { paperclipRuntimeTools: ctx.runtimeTools } : {}),
+  };
 
   const controller = new AbortController();
   const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
   try {
-    const res = await fetch(url, {
+    // HTTP adapters have no child-process spawn event. Signal immediately
+    // before starting the remote request so dispatch gates can release without
+    // waiting for the endpoint to respond.
+    ctx.onDispatch?.();
+    const res = await guardedHttpAdapterFetch(url, {
       method,
       headers: {
         "content-type": "application/json",

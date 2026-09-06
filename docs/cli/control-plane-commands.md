@@ -57,6 +57,10 @@ npx paperclipai company import \
   --include company,agents
 ```
 
+`company import` is unavailable against cloud-managed instances — the
+server answers `403` with `code: "cloud_managed"`. Export remains available
+there.
+
 With agent authentication, use `company list` or `company current` to resolve
 the scoped company. `company list` first tries the board-wide list; if that is
 forbidden, it falls back to `--company-id`, `PAPERCLIP_COMPANY_ID`, context, or

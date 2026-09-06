@@ -78,7 +78,11 @@ function makeSite(overrides: Partial<SandboxRunSiteOptions> = {}) {
       const stagedRuntime = await stage([]);
       // Repoint a managed-home env var, so the site captures the delta.
       env.CODEX_HOME = "/remote/home";
-      return { stagedRuntime, teardown: async () => {}, dispose: async () => {} } satisfies ManagedHomeSeamResult;
+      return {
+        stagedRuntime,
+        teardown: async () => ({ ok: true }),
+        dispose: async () => {},
+      } satisfies ManagedHomeSeamResult;
     },
     disposeFreshStagedRuntime: async () => {},
     measureStageStep: (run) => run(),
@@ -246,7 +250,7 @@ describe("sandbox run site", () => {
         {
           stagedRuntime: cachedRuntime,
           envDelta: { CODEX_HOME: "/remote/home" },
-          teardown: async () => {},
+          teardown: async () => ({ ok: true }),
           dispose: async () => {},
           lastUsedAt: 500,
         },
