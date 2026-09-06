@@ -1580,6 +1580,71 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
+  it("tags an agent with the canCommentAnyIssue permission with a distinct decision reason on peer-assigned comments", async () => {
+    // After #10804 (default-open visible issue writes) standard-trust agents can
+    // already comment on any visible issue. This permission no longer expands
+    // authority; it selects a distinct decision reason ("allow_agent_comment_grant")
+    // so audit logs can distinguish designated liaison/bus agents from opportunistic
+    // writers, and it enforces a strict boolean opt-in (Greptile P1, addressed in
+    // 56d71e4).
+    const company = await createCompany(db, "AgentCommentGrant");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const busAgent = await createAgent(db, company.id, {
+      role: "general",
+      permissions: { canCommentAnyIssue: true },
+    });
+    const plainAgent = await createAgent(db, company.id, { role: "general" });
+    const malformedAgent = await createAgent(db, company.id, {
+      role: "general",
+      permissions: { canCommentAnyIssue: "true" },
+    });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
+
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+    const busActor = { type: "agent", agentId: busAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const plainActor = { type: "agent", agentId: plainAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const malformedActor = { type: "agent", agentId: malformedAgent.id, companyId: company.id, source: "agent_key" } as const;
+
+    // Bus agent gets the distinct grant reason.
+    await expect(authorization.decide({
+      actor: busActor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_agent_comment_grant",
+    });
+
+    // Non-boolean truthy values do NOT activate the grant reason; the actor falls
+    // through to the default-open visible write rule instead.
+    await expect(authorization.decide({
+      actor: malformedActor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_visible_issue_write",
+    });
+
+    // Plain agents without the permission also fall through to the default-open rule.
+    await expect(authorization.decide({
+      actor: plainActor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_visible_issue_write",
+    });
+  });
+
   it("allows a mentioned non-assignee to comment when the mention author is the issue assignee", async () => {
     const company = await createCompany(db, "MentionCommentAssigneeGrant");
     const allowedProject = await createProject(db, company.id, "MentionAssigneeAllowed");

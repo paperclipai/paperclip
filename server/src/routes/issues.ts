@@ -4125,6 +4125,10 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_issue_mention_grant";
   }
 
+  function isAgentCommentGrantDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true && decision.reason === "allow_agent_comment_grant";
+  }
+
   function isDirectParentReportDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision !== true && decision.reason === "allow_direct_parent_report";
   }
@@ -13303,6 +13307,7 @@ export function issueRoutes(
           !reopenRequested &&
           !resumeRequested &&
           (isIssueMentionGrantDecision(commentAccessDecision) ||
+            isAgentCommentGrantDecision(commentAccessDecision) ||
             isDefaultOpenIssueWriteDecision(commentAccessDecision))));
     const effectiveReopenRequested = crossIssueCommentOnlyGrant ? false : reopenRequested;
     const effectiveResumeRequested = crossIssueCommentOnlyGrant ? false : resumeRequested;
