@@ -3455,6 +3455,60 @@ describe("sandbox callback bridge", () => {
     expect(recoveredResponse.status).toBe(200);
   }, 15_000);
 
+  it("maps an indeterminate host outcome to a non-retryable 409 on the HTTP/2 gateway for an unsafe method", async () => {
+    // The host answers a mutating request's response-body capacity denial with a
+    // 504 and the indeterminate outcome header, exactly like an aborted in-flight
+    // forward: the host may have already committed the mutation, so the status
+    // must not be retryable. The HTTP/2 gateway must map that 504 to a 409, the
+    // same map the file gateway already applies, so a standard retry policy does
+    // not repeat the mutation. The outcome header and body must survive the map.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const indeterminateBody = JSON.stringify({ error: "response body over limit", outcome: "indeterminate" });
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      forwardRequest: async () => ({
+        status: 504,
+        headers: { "content-type": "application/json", "x-paperclip-bridge-outcome": "indeterminate" },
+        body: Buffer.from(indeterminateBody, "utf8"),
+      }),
+    });
+
+    const response = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ note: "test" }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.status).toBeLessThan(500);
+    expect(response.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
+    const responseBytes = Buffer.from(await response.arrayBuffer());
+    expect(responseBytes.toString("utf8")).toBe(indeterminateBody);
+  }, 15_000);
+
+  it("passes through a safe method's retryable 503 on the HTTP/2 gateway unchanged", async () => {
+    // A safe method's response-body capacity denial carries no indeterminate
+    // outcome header, so the gateway must keep it retryable: the map above must
+    // not fire on a plain 503.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      forwardRequest: async () => ({
+        status: 503,
+        headers: { "content-type": "application/json" },
+        body: Buffer.from(JSON.stringify({ error: "response body over limit" }), "utf8"),
+      }),
+    });
+
+    const response = await fetch(`${gateway.baseUrl}/api/issues/issue-1/comments`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${bridgeToken}` },
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("x-paperclip-bridge-outcome")).toBeNull();
+  }, 15_000);
+
   it("rejects a request body over maxBodyBytes on the queue path before it writes the queue file", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-queue-maxbody-"));
     cleanupDirs.push(rootDir);

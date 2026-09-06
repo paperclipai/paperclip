@@ -2629,7 +2629,19 @@ function runHttp2Gateway() {
         writeJsonResponse(res, 502, { error: error instanceof Error ? error.message : String(error) });
         return;
       }
-      res.statusCode = typeof response.status === "number" ? response.status : 200;
+      // The host marks a possibly-committed mutation with an indeterminate outcome.
+      // The host cannot cancel a host operation that is in flight, so the mutation
+      // may have committed before the worker aborted the handler. A 5xx status is
+      // retryable by convention, so a caller that retries 5xx would apply the
+      // mutation twice. Map the indeterminate outcome to a non-retryable 409, so a
+      // standard retry policy does not repeat the request. The outcome header and
+      // body stay, so a caller that reads them still sees the indeterminate result.
+      const bridgeOutcome = (response.headers || {})["x-paperclip-bridge-outcome"];
+      if (bridgeOutcome === "indeterminate") {
+        res.statusCode = 409;
+      } else {
+        res.statusCode = typeof response.status === "number" ? response.status : 200;
+      }
       for (const [key, value] of Object.entries(response.headers || {})) {
         if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
         res.setHeader(key, value);
