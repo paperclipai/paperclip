@@ -735,11 +735,13 @@ fn network_loop(
                     };
                     let _ = reply.send(Ok(()));
                     let mut tool_blocks: BTreeMap<i32, (String, String, String)> = BTreeMap::new();
+                    let mut message_stopped = false;
                     loop {
                         match response.stream.recv().await {
                             Ok(Some(event)) => normalize_stream_event(
                                 event,
                                 &mut tool_blocks,
+                                &mut message_stopped,
                                 &events,
                                 &invocation_id,
                             ),
@@ -811,6 +813,7 @@ fn network_loop(
 fn normalize_stream_event(
     event: InvokeHarnessStreamOutput,
     tool_blocks: &mut BTreeMap<i32, (String, String, String)>,
+    message_stopped: &mut bool,
     events: &SyncSender<NetworkEvent>,
     invocation_id: &str,
 ) {
@@ -897,6 +900,7 @@ fn normalize_stream_event(
             ));
         }
         InvokeHarnessStreamOutput::MessageStop(value) => {
+            *message_stopped = true;
             let _ = events.send(NetworkEvent::new(
                 invocation_id,
                 NetworkEventKind::Stop(value.stop_reason().as_str().to_owned()),
@@ -904,13 +908,30 @@ fn normalize_stream_event(
         }
         InvokeHarnessStreamOutput::MessageStart(_) => {}
         _ => {
-            let _ = events.send(NetworkEvent::new(
-                invocation_id,
-                NetworkEventKind::Failure(
-                    "AgentCore SDK did not recognize an EventStream record".to_owned(),
-                ),
-            ));
+            // AgentCore may append forward-compatible bookkeeping records
+            // after the authoritative MessageStop. The pinned SDK exposes
+            // those records only as `Unknown`, without their union name or
+            // payload. Once MessageStop has sealed the model outcome, ignore
+            // such a trailing record; InvocationComplete still requires the
+            // known stop reason and usage metadata. Unknown records before
+            // MessageStop remain fatal because they could affect the turn.
+            normalize_unknown_stream_event(*message_stopped, events, invocation_id);
         }
+    }
+}
+
+fn normalize_unknown_stream_event(
+    message_stopped: bool,
+    events: &SyncSender<NetworkEvent>,
+    invocation_id: &str,
+) {
+    if !message_stopped {
+        let _ = events.send(NetworkEvent::new(
+            invocation_id,
+            NetworkEventKind::Failure(
+                "AgentCore SDK did not recognize an EventStream record".to_owned(),
+            ),
+        ));
     }
 }
 
@@ -2188,7 +2209,8 @@ mod tests {
     use super::*;
     use aws_sdk_bedrockagentcore::types::{
         HarnessContentBlockDeltaEvent, HarnessContentBlockStartEvent, HarnessContentBlockStopEvent,
-        HarnessToolUseBlockDelta, HarnessToolUseBlockStart,
+        HarnessMessageStopEvent, HarnessStopReason, HarnessToolUseBlockDelta,
+        HarnessToolUseBlockStart,
     };
     use std::sync::{Arc, Mutex};
 
@@ -3178,6 +3200,7 @@ mod tests {
     fn eventstream_text_delta_is_normalized_without_provider_objects() {
         let (sender, receiver) = mpsc::sync_channel(4);
         let mut blocks = BTreeMap::new();
+        let mut message_stopped = false;
         let event = HarnessContentBlockDeltaEvent::builder()
             .content_block_index(0)
             .delta(HarnessContentBlockDelta::Text("hello".to_owned()))
@@ -3186,6 +3209,7 @@ mod tests {
         normalize_stream_event(
             InvokeHarnessStreamOutput::ContentBlockDelta(event),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3205,6 +3229,7 @@ mod tests {
     fn eventstream_tool_json_is_buffered_until_the_block_is_complete() {
         let (sender, receiver) = mpsc::sync_channel(8);
         let mut blocks = BTreeMap::new();
+        let mut message_stopped = false;
         let start = HarnessToolUseBlockStart::builder()
             .tool_use_id("tool-use-1")
             .name("pc_get_task_abc123")
@@ -3220,6 +3245,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3238,6 +3264,7 @@ mod tests {
                         .unwrap(),
                 ),
                 &mut blocks,
+                &mut message_stopped,
                 &sender,
                 "invocation-1",
             );
@@ -3251,6 +3278,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3277,6 +3305,7 @@ mod tests {
     fn eventstream_empty_tool_input_is_normalized_to_an_empty_object() {
         let (sender, receiver) = mpsc::sync_channel(4);
         let mut blocks = BTreeMap::new();
+        let mut message_stopped = false;
         let start = HarnessToolUseBlockStart::builder()
             .tool_use_id("tool-use-empty")
             .name("pc_get_task_context_abc123")
@@ -3292,6 +3321,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3309,6 +3339,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3320,6 +3351,7 @@ mod tests {
                     .unwrap(),
             ),
             &mut blocks,
+            &mut message_stopped,
             &sender,
             "invocation-1",
         );
@@ -3340,6 +3372,47 @@ mod tests {
             }
             other => panic!("unexpected normalized event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn unknown_eventstream_record_before_message_stop_fails_closed() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        normalize_unknown_stream_event(false, &sender, "invocation-1");
+        match receiver.try_recv().unwrap() {
+            NetworkEvent {
+                kind: NetworkEventKind::Failure(detail),
+                ..
+            } => assert_eq!(
+                detail,
+                "AgentCore SDK did not recognize an EventStream record"
+            ),
+            other => panic!("unexpected normalized event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_unknown_eventstream_record_cannot_overturn_message_stop() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let mut blocks = BTreeMap::new();
+        let mut message_stopped = false;
+        normalize_stream_event(
+            InvokeHarnessStreamOutput::MessageStop(
+                HarnessMessageStopEvent::builder()
+                    .stop_reason(HarnessStopReason::EndTurn)
+                    .build()
+                    .unwrap(),
+            ),
+            &mut blocks,
+            &mut message_stopped,
+            &sender,
+            "invocation-1",
+        );
+        assert!(matches!(
+            receiver.try_recv().unwrap().kind,
+            NetworkEventKind::Stop(reason) if reason == "end_turn"
+        ));
+        normalize_unknown_stream_event(message_stopped, &sender, "invocation-1");
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
