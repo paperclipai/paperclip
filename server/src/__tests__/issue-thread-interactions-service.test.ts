@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -1294,6 +1294,167 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       disposition: "quarantined",
     });
   });
+
+  it("re-reads a pre-existing parent's project under lock so a concurrent move cannot dodge quarantine", async () => {
+    // The parent snapshot feeding the tasks:assign and source-trust
+    // decisions must be the same row createChild inherits the project from
+    // inside the transaction. An unlocked pre-transaction snapshot let a
+    // parent that gained a low-trust project mid-acceptance produce a child
+    // in that project with no quarantine stamp: the snapshot said
+    // project-less, so the re-evaluation never ran, while createChild read
+    // the moved row live. Hold the interaction row from a second
+    // transaction, move the parent while the acceptance is queued behind
+    // it, and require the stamp anyway.
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const parentIssueId = randomUUID();
+    const resolverAgentId = randomUUID();
+    const projectId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Resolver",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      companyId,
+      projectId,
+      name: "shove",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Project-less host issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Existing tracked parent, project-less for now",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: resolverAgentId,
+      status: "running",
+      contextSnapshot: {
+        executionPolicy: {
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            trustBoundary: { mode: "low_trust_review", companyId, projectIds: [projectId] },
+          },
+        },
+      },
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      payload: {
+        version: 1,
+        tasks: [
+          {
+            clientKey: "child",
+            parentId: parentIssueId,
+            title: "Land the fix",
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    let holdingLock!: () => void;
+    const lockHeld = new Promise<void>((resolve) => { holdingLock = resolve; });
+    let releaseHold!: () => void;
+    const holdReleased = new Promise<void>((resolve) => { releaseHold = resolve; });
+
+    const parentMove = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id))
+        .for("update");
+      holdingLock();
+      await holdReleased;
+      await tx
+        .update(issues)
+        .set({ projectId })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, parentIssueId)));
+    });
+    await lockHeld;
+
+    const accepted = interactionsSvc.acceptSuggestedTasks({
+      id: issueId,
+      companyId,
+      goalId: null,
+      projectId: null,
+    }, created.id, {}, {
+      agentId: resolverAgentId,
+      runId,
+      suggestedTaskEffectsAuthorized: true,
+    });
+
+    // The acceptance is provably past every read it performs before its
+    // transaction once it queues behind the held interaction row.
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const lockResult = await db.execute(sql`select count(*)::int as waiting from pg_locks where granted = false`);
+      const lockRows = (lockResult as { rows?: Array<{ waiting: number }> }).rows
+        ?? (lockResult as unknown as Array<{ waiting: number }>);
+      if (Number(lockRows[0]?.waiting ?? 0) > 0) break;
+      if (Date.now() > deadline) {
+        releaseHold();
+        await parentMove;
+        await accepted;
+        throw new Error("acceptance never queued behind the held interaction row");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    releaseHold();
+    await parentMove;
+    await accepted;
+
+    const [child] = await db
+      .select({ projectId: issues.projectId, sourceTrust: issues.sourceTrust })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "Land the fix")));
+    expect(child?.projectId).toBe(projectId);
+    expect(child?.sourceTrust).toMatchObject({
+      preset: "low_trust_review",
+      disposition: "quarantined",
+    });
+  }, 30_000);
 
   it("accepts a selected subset of suggested tasks and records the skipped drafts", async () => {
     const companyId = randomUUID();

@@ -2950,22 +2950,6 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           .filter((value): value is string => Boolean(value)),
       ])];
 
-      const parentRows = explicitParentIds.length === 0
-        ? []
-        : await db
-          .select({
-            id: issues.id,
-            identifier: issues.identifier,
-            companyId: issues.companyId,
-            projectId: issues.projectId,
-          })
-          .from(issues)
-          .where(and(eq(issues.companyId, issue.companyId), inArray(issues.id, explicitParentIds)));
-      if (parentRows.length !== explicitParentIds.length) {
-        throw unprocessable("Suggested tasks reference parent issues outside this company or issue tree");
-      }
-
-      const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
       const createdByClientKey = new Map<string, SuggestTasksResultCreatedTask>();
       const createdProjectByClientKey = new Map<string, string | null>();
       const createdWakeTargets: IssueWakeTarget[] = [];
@@ -2991,6 +2975,30 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         if (!claimed) {
           throw interactionAlreadyResolvedError();
         }
+
+        // Lock the pre-existing parents for the transaction: the project
+        // read here feeds the tasks:assign and source-trust decisions
+        // below, and createChild resolves the landing project from this
+        // same row in this same transaction. An unlocked pre-transaction
+        // snapshot let a concurrent parent move divorce the decided
+        // project from the persisted one.
+        const parentRows = explicitParentIds.length === 0
+          ? []
+          : await tx
+            .select({
+              id: issues.id,
+              identifier: issues.identifier,
+              companyId: issues.companyId,
+              projectId: issues.projectId,
+            })
+            .from(issues)
+            .where(and(eq(issues.companyId, issue.companyId), inArray(issues.id, explicitParentIds)))
+            .orderBy(asc(issues.id))
+            .for("update");
+        if (parentRows.length !== explicitParentIds.length) {
+          throw unprocessable("Suggested tasks reference parent issues outside this company or issue tree");
+        }
+        const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
 
         for (const task of orderedTasks) {
           const parentIssueId = task.parentClientKey
