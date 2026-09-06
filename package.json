@@ -27,6 +27,7 @@
     "test:runner-acceptance:typecheck": "tsc -p tests/runner-acceptance/tsconfig.json",
     "test:run:general": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode general",
     "test:run:serialized": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode serialized",
+    "test:runtime-probes": "bun run --filter @paperclipai/server test:runtime-probes",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
@@ -97,6 +98,30 @@
     "node": ">=24.11.0"
   },
   "packageManager": "pnpm@9.15.4",
+  "overrides": {
+    "rollup": ">=4.59.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "patchedDependencies": {
+    "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",
+    "acpx@0.12.0": "patches/acpx@0.12.0.patch",
+    "acpx@0.13.1": "patches/acpx@0.13.1.patch",
+    "@agentclientprotocol/claude-agent-acp@0.70.0": "patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch",
+    "@agentclientprotocol/claude-agent-acp@0.73.0": "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
+    "@agentclientprotocol/codex-acp@1.6.2": "patches/@agentclientprotocol__codex-acp@1.6.2.patch"
+  },
+  "workspaces": [
+    "packages/*",
+    "packages/adapters/*",
+    "packages/plugins/*",
+    "!packages/plugins/sandbox-providers/**",
+    "packages/plugins/examples/*",
+    "!packages/plugins/examples/plugin-orchestration-smoke-example",
+    "server",
+    "ui",
+    "cli"
+  ],
   "pnpm": {
     "patchedDependencies": {
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",

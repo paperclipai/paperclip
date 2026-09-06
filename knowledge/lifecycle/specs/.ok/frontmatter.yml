@@ -1,0 +1,5 @@
+title: Specs
+description: Implementation specs derived from accepted proposals. Prefer the `github/spec-kit` triple — one folder per spec with `spec.md` + `plan.md` + `tasks.md` (the folder ships all three templates). References the parent proposal.
+tags:
+  - spec
+  - implementation
