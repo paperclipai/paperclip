@@ -262,6 +262,7 @@ async function renderForm(
   options: {
     showAdapterTestEnvironmentButton?: boolean;
     content?: "configuration" | "secrets";
+    hidePromptTemplate?: boolean;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -286,7 +287,7 @@ async function renderForm(
               mode="edit"
               agent={makeAgent(agentOverrides)}
               onSave={onSave}
-              hidePromptTemplate
+              hidePromptTemplate={options.hidePromptTemplate ?? true}
               content={options.content}
               showAdapterTypeField={false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
@@ -1017,6 +1018,21 @@ describe("AgentConfigForm environment selector", () => {
     }).adapterConfig;
     expect(adapterConfig).not.toHaveProperty("model");
     expect(result.container.textContent).not.toContain("Cannot read properties of undefined");
+  });
+
+  it("can expose the prompt template field for non-local adapters", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "cursor_cloud",
+        adapterConfig: {},
+      },
+      { hidePromptTemplate: false },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("Prompt Template");
+    expect(result.container.textContent).toContain("The prompt template controls the run framing sent to the adapter");
   });
 
   it("omits undefined adapter config entries when testing a create form with the default model", async () => {
