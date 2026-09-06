@@ -32,6 +32,7 @@ import {
   type EvalSessionRequest,
   type EvalSessionUsage,
 } from "./eval-session-contract.js";
+import { evalProviderTransportOptions } from "./eval-provider-runtime.js";
 
 interface EvalSessionCliOptions {
   requestPath: string;
@@ -68,6 +69,7 @@ const EVAL_RUNTIME_INSTRUCTIONS = [
   "",
   "Use the provided Paperclip semantic tools to inspect and act on the assigned task.",
   "Treat the seeded control-plane state as authoritative and keep every action within the requested scope.",
+  "Task-state changes in this mock control plane use finish_task and block_task. Native paperclip_finish and paperclip_block report the provider run result but do not update the mock task. When asked to finish or block the assigned task, use its task-state semantic operation before reporting the run result.",
   "",
 ].join("\n");
 
@@ -293,6 +295,7 @@ export async function runEvalSessionCli(
   const service = options.serviceFactory?.(runnerdPath) ??
     new CapabilityLiveSessionService({
       transportOptions: {
+        ...evalProviderTransportOptions(requestedProvider, request.limits.turnTimeoutMs),
         runnerBinary: runnerdPath,
         runtimeContext,
         baseInstructions: evalRuntimeSystemInstructions(runtimeContext),

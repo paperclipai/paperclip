@@ -940,6 +940,8 @@ export interface CapabilityRunnerdCodexTransportOptions {
   /** Provider system instructions supplied by a native execution caller. */
   baseInstructions?: string;
   closeGraceMs?: number;
+  /** Bounded provider turn-admission wait; defaults to 30 seconds. */
+  turnStartTimeoutMs?: number;
   onDiagnostic?: (message: string) => void;
   onEvidence?: (evidence: Readonly<CapabilityRunnerdProcessEvidence>) => void;
   stateDirectory?: string;
@@ -3737,6 +3739,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #startTurn(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    const turnStartTimeoutMs = this.options.turnStartTimeoutMs ?? 30_000;
+    if (!Number.isSafeInteger(turnStartTimeoutMs) || turnStartTimeoutMs <= 0) {
+      throw new Error("turnStartTimeoutMs must be a positive safe integer");
+    }
+    const commandDeadline = Date.now() + turnStartTimeoutMs;
     const input = Array.isArray(params.input) ? params.input.map(record) : [];
     const message = input
       .map((item) => (typeof item.text === "string" ? item.text : ""))
@@ -3755,7 +3762,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const startResult = await this.#commandResult("turn.start", {
         text: message,
         turnId: pendingTurnId,
-      });
+      }, commandDeadline);
       const expectedProviderTurnId =
         typeof startResult.providerTurnId === "string" &&
         startResult.providerTurnId.length > 0
@@ -3788,7 +3795,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // command's durable result so a delayed prior-turn event cannot satisfy
       // the new response fence. ACPX echoes the requested identity, while
       // Codex and OpenCode return their provider-assigned identity.
-      const deadline = Date.now() + 30_000;
+      const deadline = this.options.turnStartTimeoutMs === undefined
+        ? Date.now() + 30_000
+        : commandDeadline;
       const providerTurnStarted = () =>
         turnStartResponseReady({
           responseEpoch,

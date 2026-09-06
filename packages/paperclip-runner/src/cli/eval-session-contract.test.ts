@@ -78,6 +78,7 @@ describe("eval-session request contract", () => {
       )).toContain("Paperclip direct live evaluation");
       const systemInstructions = evalRuntimeSystemInstructions(context);
       expect(systemInstructions).toContain("Paperclip direct live evaluation");
+      expect(systemInstructions).toContain("Task-state changes in this mock control plane use finish_task and block_task");
       expect(systemInstructions).toContain(
         `Read-only instruction sibling root: ${context.instructions.bundle.rootPath}`,
       );
