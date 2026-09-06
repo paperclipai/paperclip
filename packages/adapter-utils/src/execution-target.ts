@@ -1619,19 +1619,61 @@ async function syncProcessSessionRemoteScript(input: {
   return { uploaded };
 }
 
+const MAX_CONSECUTIVE_POLL_FAILURES = 5;
+
+// Event files are named with a monotonic zero-padded sequence
+// ("000000000001.json", "000000000002.json", ...) written by a serial,
+// atomic (tmp+rename) writer, so string comparison of names is equivalent
+// to sequence order. This lets the reader stop the batch at the first bad
+// file it finds, rather than skipping past it, so events are never
+// delivered out of order.
+//
+// Removing a file is the caller's responsibility (see poll()): this
+// function only reads and reports, so a file can never be removed before
+// the caller has actually delivered its event.
 async function readRemoteJsonFiles(input: {
   client: ReturnType<typeof createCommandManagedSandboxCallbackBridgeQueueClient>;
   dir: string;
-}): Promise<Array<{ name: string; body: string }>> {
-  const names = await input.client.listJsonFiles(input.dir);
+  afterName: string | null;
+}): Promise<{
+  events: Array<{ name: string; body: string }>;
+  // Set when the batch stopped before exhausting every listed name (a read
+  // failure or an empty body). The caller must treat this as a failed
+  // cycle for escalation purposes, even though the events read before the
+  // stop point are still delivered normally.
+  stoppedEarly: { name: string; error: unknown } | null;
+}> {
+  const listedNames = await input.client.listJsonFiles(input.dir);
+  const names = input.afterName
+    ? listedNames.filter((name) => name > input.afterName!)
+    : listedNames;
   const out: Array<{ name: string; body: string }> = [];
+  let stoppedEarly: { name: string; error: unknown } | null = null;
   for (const name of names) {
     const filePath = path.posix.join(input.dir, name);
-    const body = await input.client.readTextFile(filePath);
-    await input.client.remove(filePath).catch(() => undefined);
+    let body: string;
+    try {
+      body = await input.client.readTextFile(filePath);
+    } catch (error) {
+      // Stop the batch at the first file that fails to read (missing,
+      // non-zero exit, or otherwise) rather than skipping past it. Events
+      // must be delivered in filename (sequence) order: if file N fails but
+      // N+1 happens to succeed, delivering N+1 before N would reorder
+      // events. The file is left in place (nothing here removes it), so
+      // the next poll cycle re-lists it (names are monotonic, nothing was
+      // skipped over) and retries from exactly this point.
+      stoppedEarly = { name, error };
+      break;
+    }
+    // Treat an empty read the same as a failed one: a momentarily-empty or
+    // partially observed file must not be delivered as a real event.
+    if (!body.trim()) {
+      stoppedEarly = { name, error: new Error("event file was empty") };
+      break;
+    }
     out.push({ name, body });
   }
-  return out;
+  return { events: out, stoppedEarly };
 }
 
 async function waitForLocalServerListen(server: net.Server): Promise<number> {
@@ -1961,16 +2003,47 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     });
   });
 
+  // In-memory per session/poll-loop instance: a fresh bridge (and thus a
+  // fresh watermark and failure streak) starts on every run, which is fine.
+  // There is nothing to recover across restarts, since the whole point of
+  // the watermark is to dedupe within a single still-running poll loop.
+  let lastDeliveredEventName: string | null = null;
+  let consecutivePollFailures = 0;
+
+  const logPollFailure = async (message: string) => {
+    consecutivePollFailures += 1;
+    await onLog(
+      "stderr",
+      `[paperclip] ACP process session bridge poll failed: ${message} ` +
+        `(attempt ${consecutivePollFailures}/${MAX_CONSECUTIVE_POLL_FAILURES})\n`,
+    );
+    // A single failed poll cycle (e.g. the directory listing itself
+    // failing, a single event file that will not read, or a malformed
+    // event body) is treated as transient: only tear the session down once
+    // MAX_CONSECUTIVE_POLL_FAILURES full cycles have failed back to back.
+    // Any cycle that completes without a failure resets the streak to 0.
+    if (consecutivePollFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+      deliverRemoteEvent({ type: "error", message });
+      return true;
+    }
+    return false;
+  };
+
   const poll = async () => {
     if (stopping) return;
     try {
       // Read every file this tick fetched before this loop decides whether to
       // keep polling. A `shutdownAck` can land in the same batch right after
       // an `exit` event; deliver it too, so this tick never drops an
-      // already-fetched (and already-removed-from-disk) event.
-      const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+      // already-fetched event.
+      const { events, stoppedEarly } = await readRemoteJsonFiles({
+        client,
+        dir: eventsDir,
+        afterName: lastDeliveredEventName,
+      });
+      let midBatchFailure: string | null = null;
       for (const event of events) {
-        const parsed = JSON.parse(event.body) as {
+        let parsed: {
           type?: string;
           stream?: "stdout" | "stderr";
           data?: string;
@@ -1978,13 +2051,50 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           signal?: string | null;
           message?: string;
         };
-        deliverRemoteEvent(parsed);
+        try {
+          parsed = JSON.parse(event.body) as typeof parsed;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          midBatchFailure = `failed to parse ACP process session event file ${event.name}: ${message}`;
+          break;
+        }
+        try {
+          deliverRemoteEvent(parsed);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          midBatchFailure = `failed to deliver ACP process session event file ${event.name}: ${message}`;
+          break;
+        }
+        // Only now that the event has actually been handed to the caller do
+        // we advance the watermark and attempt to remove the remote file. A
+        // throw above (parse or deliver) leaves both untouched, so the file
+        // is re-read from exactly this point on the next cycle and nothing
+        // already delivered is ever repeated.
+        lastDeliveredEventName = event.name;
+        const filePath = path.posix.join(eventsDir, event.name);
+        try {
+          await client.remove(filePath);
+        } catch (removeError) {
+          const removeMessage = removeError instanceof Error ? removeError.message : String(removeError);
+          await onLog(
+            "stderr",
+            `[paperclip] ACP process session bridge failed to remove processed event file ${event.name}; ` +
+              `relying on the delivery watermark to avoid re-sending it: ${removeMessage}\n`,
+          );
+        }
+      }
+      if (midBatchFailure) {
+        if (await logPollFailure(midBatchFailure)) return;
+      } else if (stoppedEarly) {
+        const error = stoppedEarly.error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (await logPollFailure(`failed to read ACP process session event file ${stoppedEarly.name}: ${message}`)) return;
+      } else {
+        consecutivePollFailures = 0;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await onLog("stderr", `[paperclip] ACP process session bridge poll failed: ${message}\n`);
-      deliverRemoteEvent({ type: "error", message });
-      return;
+      if (await logPollFailure(message)) return;
     } finally {
       if (!stopping) {
         schedulePoll();
@@ -2147,7 +2257,10 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     if (stopReadingForShutdownAck) return;
     void (async () => {
       try {
-        const events = await readRemoteJsonFiles({ client, dir: eventsDir });
+        // Read from the start of the directory: this bounded reader is
+        // independent of the poll loop's delivery watermark and only looks for
+        // a `shutdownAck`, which the poll loop never removes on its behalf.
+        const { events } = await readRemoteJsonFiles({ client, dir: eventsDir, afterName: null });
         if (stopReadingForShutdownAck) return;
         for (const event of events) {
           try {
