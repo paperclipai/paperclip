@@ -160,7 +160,7 @@ export function parseAntigravityJsonl(stdout: string): ParsedAntigravityRun {
 
       if (isError) {
         const err = asErrorText(resultObj.error ?? resultObj.message ?? response);
-        if (err) errorMessage = err;
+        errorMessage = err || `Antigravity run reported status: ${runStatus || "ERROR"}`;
       }
 
       costUsd = asNumber(resultObj.cost_usd, asNumber(resultObj.total_cost_usd, 0)) || null;

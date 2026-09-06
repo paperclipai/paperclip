@@ -19,7 +19,7 @@ The `antigravity_local` adapter runs the Antigravity CLI (`agy`) locally. It pro
 | `model` | string | No | Model for the CLI session. Defaults to `gemini-3.8-flash-high`. |
 | `effort` | string | No | Reasoning effort level (`low`, `medium`, `high`) passed via `--effort`. |
 | `agent` | string | No | Optional subagent or personality name passed via `--agent`. |
-| `dangerouslySkipPermissions` | boolean | No | Auto-approve all tool permission requests with `--dangerously-skip-permissions` for unattended autonomous execution. Defaults to `true`. |
+| `dangerouslySkipPermissions` | boolean | No | Auto-approve tool permission requests with `--dangerously-skip-permissions` for unattended autonomous execution. Defaults to `false`. |
 | `sandbox` | boolean | No | Pass `--sandbox` to run in a restricted terminal sandbox. Defaults to `false`. |
 | `printTimeout` | string | No | Timeout duration for headless print mode passed via `--print-timeout` (e.g. `30m`). |
 | `instructionsFilePath` | string | No | Absolute path to markdown instructions file (e.g. `AGENTS.md`) prepended to the prompt at runtime. |
@@ -33,13 +33,13 @@ The `antigravity_local` adapter runs the Antigravity CLI (`agy`) locally. It pro
 The adapter invokes `agy` in headless streaming mode:
 
 ```sh
-agy --print "<prompt>" --output-format stream-json --dangerously-skip-permissions
+agy --print "<prompt>" --output-format stream-json
 ```
 
 Key differences from other adapters:
 - **No Gemini flags**: Antigravity is an independent native agent CLI. The adapter does not inject `--approval-mode yolo`, `--sandbox=none`, or Gemini-specific options.
 - **Headless streaming**: Outputs real-time NDJSON events (`init`, `step_update`, `result`, `error`) parsed directly into Paperclip's transcript format.
-- **Permission bypass**: Uses `--dangerously-skip-permissions` to allow unattended execution in automated control planes.
+- **Permission bypass**: Pass `--dangerously-skip-permissions` when auto-approving tool actions is desired for autonomous runs.
 
 ## Session Persistence
 
@@ -59,5 +59,5 @@ Use the "Test Environment" button in the UI to validate the adapter setup. It ch
 2. Target working directory is valid
 3. A live test prompt execution succeeds:
    ```sh
-   agy --print "Respond with hello." --output-format stream-json --dangerously-skip-permissions
+   agy --print "Respond with OK." --output-format stream-json
    ```

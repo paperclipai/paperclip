@@ -26,14 +26,14 @@ export function AntigravityLocalConfigFields({
     <>
       <ToggleField
         label="Skip permissions"
-        hint="Passes --dangerously-skip-permissions to agy to allow autonomous execution without prompt gates."
+        hint="Passes --dangerously-skip-permissions to agy to auto-approve tool execution. Recommended only for trusted, sandboxed environments."
         checked={
           isCreate
-            ? values!.dangerouslySkipPermissions !== false
+            ? Boolean(values!.dangerouslySkipPermissions)
             : eff(
                 "adapterConfig",
                 "dangerouslySkipPermissions",
-                config.dangerouslySkipPermissions !== false,
+                Boolean(config.dangerouslySkipPermissions),
               )
         }
         onChange={(v) =>
@@ -104,13 +104,27 @@ export function AntigravityLocalConfigFields({
           value={
             isCreate
               ? values!.extraArgs ?? ""
-              : eff("adapterConfig", "extraArgs", Array.isArray(config.extraArgs) ? config.extraArgs.join(", ") : String(config.extraArgs ?? ""))
+              : eff(
+                  "adapterConfig",
+                  "extraArgs",
+                  Array.isArray(config.extraArgs)
+                    ? (config.extraArgs as string[]).join(", ")
+                    : String(config.extraArgs ?? ""),
+                )
           }
-          onCommit={(v) =>
-            isCreate
-              ? set!({ extraArgs: v })
-              : mark("adapterConfig", "extraArgs", v || undefined)
-          }
+          onCommit={(v) => {
+            if (isCreate) {
+              set!({ extraArgs: v });
+            } else {
+              const trimmed = v?.trim();
+              const parsed = trimmed
+                ? (trimmed.includes(",") ? trimmed.split(",") : trimmed.split(/\s+/))
+                    .map((s) => s.trim())
+                    .filter(Boolean)
+                : undefined;
+              mark("adapterConfig", "extraArgs", parsed && parsed.length > 0 ? parsed : undefined);
+            }
+          }}
           immediate
           className={inputClass}
           placeholder="--verbose"

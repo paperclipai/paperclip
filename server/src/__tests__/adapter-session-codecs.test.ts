@@ -343,6 +343,40 @@ describe("gemini resume recovery detection", () => {
   });
 });
 
+describe("antigravity session codec", () => {
+  it("normalizes antigravity session params with cwd, repo details, and remote execution", () => {
+    const parsed = antigravitySessionCodec.deserialize({
+      conversation_id: "agy-conv-777",
+      folder: "/tmp/workspace",
+      workspace_id: "ws-1",
+      repo_url: "https://github.com/example/repo",
+      repo_ref: "feat/test",
+      remoteExecution: {
+        environmentId: "env-1",
+        leaseId: "lease-1",
+        host: "remote-host",
+      },
+    });
+
+    expect(parsed).toEqual({
+      sessionId: "agy-conv-777",
+      cwd: "/tmp/workspace",
+      workspaceId: "ws-1",
+      repoUrl: "https://github.com/example/repo",
+      repoRef: "feat/test",
+      remoteExecution: {
+        environmentId: "env-1",
+        leaseId: "lease-1",
+        host: "remote-host",
+      },
+    });
+
+    const serialized = antigravitySessionCodec.serialize(parsed);
+    expect(serialized).toEqual(parsed);
+    expect(antigravitySessionCodec.getDisplayId?.(serialized ?? null)).toBe("agy-conv-777");
+  });
+});
+
 describe("antigravity resume recovery detection", () => {
   it("detects unknown conversation errors from antigravity output", () => {
     expect(

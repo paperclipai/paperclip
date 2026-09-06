@@ -7,6 +7,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import {
+  asBoolean,
   asString,
   ensurePathInEnv,
   parseObject,
@@ -18,8 +19,9 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import { detectAntigravityAuthRequired } from "./parse.js";
+import { detectAntigravityAuthRequired, parseAntigravityJsonl } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
+import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL } from "../index.js";
 
 // Computes overall pass/warn/fail status from a list of diagnostic checks
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -29,8 +31,8 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
 }
 
 // Cleans and truncates probe output for concise diagnostic display
-function summarizeProbeDetail(stdout: string, stderr: string): string | null {
-  const raw = firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
+function summarizeProbeDetail(stdout: string, stderr: string, extra?: string | null): string | null {
+  const raw = extra || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
   if (!raw) return null;
   const clean = raw.replace(/\s+/g, " ").trim();
   const max = 240;
@@ -44,6 +46,8 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "agy");
+  const model = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
+  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
@@ -115,53 +119,76 @@ export async function testEnvironment(
     });
   }
 
-  // Check 3: Minimal headless probe invocation if command is resolvable
+  // Check 3: Headless probe invocation if command is resolvable
   if (commandResolvable) {
     try {
+      const probeArgs = ["--print", "Respond with OK.", "--output-format", "stream-json"];
+      if (model && model !== DEFAULT_ANTIGRAVITY_LOCAL_MODEL) {
+        probeArgs.push("--model", model);
+      }
+      if (dangerouslySkipPermissions) {
+        probeArgs.push("--dangerously-skip-permissions");
+      }
+
       const probeProc = await runAdapterExecutionTargetProcess(
         runId,
         target,
         command,
-        ["--help"],
+        probeArgs,
         {
           cwd,
           env: runtimeEnv,
-          timeoutSec: 15,
+          timeoutSec: 30,
           graceSec: 5,
           onLog: async () => {},
         },
       );
 
-      if (probeProc.exitCode === 0) {
+      const parsed = parseAntigravityJsonl(probeProc.stdout);
+      const detail = summarizeProbeDetail(probeProc.stdout, probeProc.stderr, parsed.errorMessage);
+      const auth = detectAntigravityAuthRequired({
+        parsed: parsed.resultEvent,
+        stdout: probeProc.stdout,
+        stderr: probeProc.stderr,
+      });
+
+      const structuredFailed = Boolean(
+        parsed.errorMessage ||
+        (parsed.status && ["ERROR", "FAILURE"].includes(parsed.status.toUpperCase()))
+      );
+      const processFailed = (probeProc.exitCode ?? 0) !== 0;
+
+      if (probeProc.timedOut) {
+        checks.push({
+          code: "antigravity_probe_failed",
+          level: "warn",
+          message: "Antigravity readiness probe timed out.",
+          detail: detail ?? undefined,
+          hint: "Verify Antigravity CLI can run interactively from this directory.",
+        });
+      } else if (auth.requiresAuth) {
+        checks.push({
+          code: "antigravity_auth_required",
+          level: "warn",
+          message: "Antigravity CLI requires authentication.",
+          detail: detail ?? undefined,
+          hint: "Run 'agy' in an interactive terminal to log in.",
+        });
+      } else if (!processFailed && !structuredFailed) {
         checks.push({
           code: "antigravity_cli_ready",
           level: "info",
           message: "Antigravity CLI is ready and responding to commands.",
+          detail: parsed.summary ? parsed.summary.slice(0, 200) : undefined,
         });
       } else {
-        const detail = summarizeProbeDetail(probeProc.stdout, probeProc.stderr);
-        const auth = detectAntigravityAuthRequired({
-          parsed: null,
-          stdout: probeProc.stdout,
-          stderr: probeProc.stderr,
+        checks.push({
+          code: "antigravity_probe_failed",
+          level: "warn",
+          message: `Antigravity probe failed (exit code: ${probeProc.exitCode ?? -1}).`,
+          detail: detail ?? undefined,
+          hint: "Check Antigravity CLI installation and credentials.",
         });
-
-        if (auth.requiresAuth) {
-          checks.push({
-            code: "antigravity_auth_required",
-            level: "warn",
-            message: "Antigravity CLI requires authentication.",
-            detail: detail ?? undefined,
-            hint: "Run 'agy' in an interactive terminal to log in.",
-          });
-        } else {
-          checks.push({
-            code: "antigravity_probe_failed",
-            level: "warn",
-            message: `Antigravity probe exited with status ${probeProc.exitCode}.`,
-            detail: detail ?? undefined,
-          });
-        }
       }
     } catch (err) {
       checks.push({

@@ -177,7 +177,13 @@ describe("antigravity execute", () => {
       expect(capture.argv).not.toContain("--approval-mode");
       expect(capture.argv).not.toContain("yolo");
       expect(capture.argv).not.toContain("--sandbox=none");
-      expect(capture.argv).not.toContain("--resume");
+      // Verify prompt security: model prompt must NOT leak secret keys, tokens, or curl instructions
+      const printIndex = capture.argv.indexOf("--print");
+      const passedPrompt = capture.argv[printIndex + 1];
+      expect(passedPrompt).not.toContain("PAPERCLIP_API_KEY");
+      expect(passedPrompt).not.toContain("run-jwt-token");
+      expect(passedPrompt).not.toContain("Bearer");
+      expect(passedPrompt).not.toContain("curl");
 
       // Verify Paperclip environment injection
       expect(capture.paperclipEnvKeys).toEqual(

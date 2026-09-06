@@ -52,8 +52,8 @@ export function getConfigSchema(): AdapterConfigSchema {
         key: "dangerouslySkipPermissions",
         label: "Dangerously skip permissions",
         type: "toggle",
-        default: true,
-        hint: "Auto-approve all tool permission requests without prompting for unattended operation.",
+        default: false,
+        hint: "Auto-approve tool permission requests without prompting. Recommended only for trusted, sandboxed environments.",
       },
       {
         key: "printTimeout",

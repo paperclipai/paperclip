@@ -115,6 +115,22 @@ describe("antigravity_local parser", () => {
     expect(parsed.errorMessage).toBe("model invalid-model is not recognized");
   });
 
+  it("generates fallback error message when status is FAILURE without error field", () => {
+    const stdout = JSON.stringify({
+      event: "result",
+      result: {
+        conversation_id: "conv-fail",
+        status: "FAILURE",
+        response: "",
+      },
+    });
+
+    const parsed = parseAntigravityJsonl(stdout);
+    expect(parsed.sessionId).toBe("conv-fail");
+    expect(parsed.status).toBe("FAILURE");
+    expect(parsed.errorMessage).toBe("Antigravity run reported status: FAILURE");
+  });
+
   it("concatenates streaming deltas if final result response is empty", () => {
     const stdout = [
       JSON.stringify({
@@ -177,5 +193,14 @@ describe("describeAntigravityFailure", () => {
       },
     });
     expect(desc).toBe("Antigravity run failed: status=ERROR: Quota exceeded");
+  });
+
+  it("formats status when error message is empty", () => {
+    const desc = describeAntigravityFailure({
+      result: {
+        status: "FAILURE",
+      },
+    });
+    expect(desc).toBe("Antigravity run failed: status=FAILURE");
   });
 });

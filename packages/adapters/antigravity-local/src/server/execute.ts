@@ -51,12 +51,6 @@ import {
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 
-// Checks if an environment dictionary contains a non-empty value for a key
-function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
-  const raw = env[key];
-  return typeof raw === "string" && raw.trim().length > 0;
-}
-
 // Builds the child process environment for Antigravity headless execution
 function buildAntigravityHeadlessEnv(env: Record<string, string>): Record<string, string> {
   const next = { ...env };
@@ -80,32 +74,16 @@ function buildAntigravityRuntimeEnv(env: Record<string, string>): Record<string,
   );
 }
 
-// Renders diagnostic note describing PAPERCLIP_* variables present in the run
+// Renders diagnostic note describing non-secret PAPERCLIP_* variables present in the run
 function renderPaperclipEnvNote(env: Record<string, string>): string {
   const paperclipKeys = Object.keys(env)
-    .filter((key) => key.startsWith("PAPERCLIP_"))
+    .filter((key) => key.startsWith("PAPERCLIP_") && key !== "PAPERCLIP_API_KEY")
     .sort();
   if (paperclipKeys.length === 0) return "";
   return [
     "Paperclip runtime note:",
     `The following PAPERCLIP_* environment variables are available in this run: ${paperclipKeys.join(", ")}`,
     "Do not assume these variables are missing without checking your shell environment.",
-    "",
-    "",
-  ].join("\n");
-}
-
-// Renders usage instructions for making Paperclip API calls from the agent
-function renderApiAccessNote(env: Record<string, string>): string {
-  if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
-  return [
-    "Paperclip API access note:",
-    "Use run_shell_command with curl to make Paperclip API requests.",
-    "GET example:",
-    `  run_shell_command({ command: "curl -s -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" \\"$PAPERCLIP_API_URL/api/agents/me\\"" })`,
-    "POST/PATCH example:",
-    `  run_shell_command({ command: "curl -s -X POST -H \\"Authorization: Bearer $PAPERCLIP_API_KEY\\" -H 'Content-Type: application/json' -H \\"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\\" -d '{...}' \\"$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/checkout\\"" })`,
-    "When PAPERCLIP_TASK_ID is not set, substitute a real issue id from the current context; never send a placeholder like {id} in the URL.",
     "",
     "",
   ].join("\n");
@@ -129,7 +107,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const agentName = asString(config.agent, "").trim();
   const effort = asString(config.effort, "").trim().toLowerCase();
   const sandbox = asBoolean(config.sandbox, false);
-  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
+  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
   const printTimeout = asString(config.printTimeout, "").trim();
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -237,6 +215,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const extraArgs = (() => {
     const fromExtraArgs = asStringArray(config.extraArgs);
     if (fromExtraArgs.length > 0) return fromExtraArgs;
+    if (typeof config.extraArgs === "string" && config.extraArgs.trim().length > 0) {
+      const trimmed = config.extraArgs.trim();
+      const delimiter = trimmed.includes(",") ? "," : /\s+/;
+      return trimmed.split(delimiter).map((s) => s.trim()).filter(Boolean);
+    }
     return asStringArray(config.args);
   })();
 
@@ -377,14 +360,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
-  const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
     instructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
     sessionHandoffNote,
     paperclipEnvNote,
-    apiAccessNote,
     renderedPrompt,
   ]);
   const promptMetrics = {
@@ -393,7 +374,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
     sessionHandoffChars: sessionHandoffNote.length,
-    runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+    runtimeNoteChars: paperclipEnvNote.length,
     heartbeatPromptChars: renderedPrompt.length,
   };
 
@@ -508,14 +489,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const structuredFailure = attempt.parsed.resultEvent
       ? describeAntigravityFailure(attempt.parsed.resultEvent)
       : null;
+    const processFailed = (attempt.proc.exitCode ?? 0) !== 0;
+    const structuredFailed = Boolean(
+      parsedError ||
+      structuredFailure ||
+      (attempt.parsed.status && ["ERROR", "FAILURE"].includes(attempt.parsed.status.toUpperCase()))
+    );
+    const failed = processFailed || structuredFailed;
     const fallbackErrorMessage =
       parsedError ||
       structuredFailure ||
       stderrLine ||
-      `Antigravity exited with code ${attempt.proc.exitCode ?? -1}`;
-    const failed = (attempt.proc.exitCode ?? 0) !== 0;
+      (attempt.parsed.status ? `Antigravity run reported status: ${attempt.parsed.status}` : `Antigravity exited with code ${attempt.proc.exitCode ?? -1}`);
 
-    const canFallbackToRuntimeSession = !isRetry;
+    const canFallbackToRuntimeSession = canResumeSession && !isRetry;
     const resolvedSessionId = attempt.parsed.sessionId
       ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
     const resolvedSessionParams = resolvedSessionId

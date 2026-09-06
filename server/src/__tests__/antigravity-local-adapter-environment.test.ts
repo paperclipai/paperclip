@@ -91,10 +91,54 @@ describe("antigravity_local environment diagnostics", () => {
     expect(result.status).not.toBe("fail");
     expect(result.checks.some((check) => check.code === "antigravity_cli_ready")).toBe(true);
     const args = JSON.parse(await fs.readFile(argsCapturePath, "utf8")) as string[];
-    expect(args).toContain("--help");
+    expect(args).toContain("--print");
+    expect(args).toContain("--output-format");
+    expect(args).toContain("stream-json");
+    expect(args).not.toContain("--help");
     expect(args).not.toContain("--approval-mode");
     expect(args).not.toContain("yolo");
 
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("detects authentication requirements when probe encounters login requirement", async () => {
+    const root = path.join(
+      os.tmpdir(),
+      `paperclip-antigravity-local-auth-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    const binDir = path.join(root, "bin");
+    const cwd = path.join(root, "workspace");
+    await fs.mkdir(binDir, { recursive: true });
+
+    const isWindows = process.platform === "win32";
+    const commandPath = path.join(binDir, "agy");
+    const jsPath = isWindows ? commandPath + ".js" : commandPath;
+    const script = `#!/usr/bin/env node
+console.error("Error: Not authenticated. Please run 'agy login' to authenticate.");
+process.exit(1);
+`;
+    await fs.writeFile(jsPath, script, "utf8");
+    if (isWindows) {
+      const cmdPath = commandPath + ".cmd";
+      const cmdScript = `@echo off\r\n"${process.execPath}" "${jsPath}" %*\r\n`;
+      await fs.writeFile(cmdPath, cmdScript, "utf8");
+    } else {
+      await fs.chmod(commandPath, 0o755);
+    }
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "antigravity_local",
+      config: {
+        command: "agy",
+        cwd,
+        env: {
+          PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+        },
+      },
+    });
+
+    expect(result.checks.some((check) => check.code === "antigravity_auth_required")).toBe(true);
     await fs.rm(root, { recursive: true, force: true });
   });
 });
