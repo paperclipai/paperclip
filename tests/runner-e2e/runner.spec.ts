@@ -2324,6 +2324,15 @@ for (const execution of executions) {
           exact: true,
         }),
       ).toBeVisible({ timeout: 30_000 });
+      if (execution.task.flow === "warm_three_turn") {
+        const continuedReceipts = page
+          .getByTestId("task-chat-interaction-receipt")
+          .filter({ hasText: "Selected “Continue work”" });
+        await expect(continuedReceipts).toHaveCount(2, { timeout: 30_000 });
+        await expect(
+          page.getByText("Declined request", { exact: true }),
+        ).toHaveCount(0);
+      }
       await captureScreenshot(
         "final-state",
         "Final visible task state",

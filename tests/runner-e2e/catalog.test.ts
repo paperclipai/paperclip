@@ -109,7 +109,14 @@ describe("runner E2E catalog", () => {
       '"reviewInteractionId":"<returned interaction id>"',
     );
     expect(initialPrompt).toContain('"continuationPolicy":"wake_assignee"');
+    expect(initialPrompt).toContain(
+      '"prompt":"Is this warm continuity task ready to complete after turn 1?"',
+    );
+    expect(initialPrompt).not.toContain("Continue to warm continuity turn 2?");
     expect(followups[0]).toContain('"kind":"request_confirmation"');
+    expect(followups[0]).toContain(
+      '"prompt":"Is this warm continuity task ready to complete after turn 2?"',
+    );
     expect(followups[0]).toContain(
       '"reviewInteractionId":"<returned interaction id>"',
     );

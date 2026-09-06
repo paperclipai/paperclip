@@ -271,7 +271,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
-import { buildAnsweredQuestionsDeliveryText } from "../lib/issue-thread-interactions";
+import {
+  buildAnsweredQuestionsDeliveryText,
+  buildIssueThreadInteractionSummary,
+} from "../lib/issue-thread-interactions";
 import { resolveIssueDocumentDeepLink } from "../lib/issue-document-deep-link";
 import {
   buildIssueSiblingNavigation,
@@ -4488,7 +4491,7 @@ export function IssueDetail() {
       pushToast({
         title:
           interaction.kind === "request_confirmation"
-            ? "Request declined"
+            ? buildIssueThreadInteractionSummary(interaction)
             : "Suggestion rejected",
         tone: "success",
       });
