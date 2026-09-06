@@ -91,6 +91,7 @@ import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from ".
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
+import { resolveAgentIssueProjectId } from "./issue-project-inference.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -7321,6 +7322,23 @@ export function issueService(db: Db) {
         if (issueData.projectId == null && executionWorkspaceId) {
           const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
           issueData.projectId = workspace.projectId;
+        }
+        // Inference backstop for agent creates that never pass through the
+        // HTTP routes (accepted-plan decomposition, the runner's create_task
+        // tool, accepted suggested tasks): once every explicit signal above
+        // has resolved to nothing, infer before the goal and workspace
+        // defaults below read the project. The routes resolve the same answer
+        // earlier so their assignment-scope and source-trust decisions can see
+        // it — when they did, `projectId` arrives explicit and this stays
+        // inert. Reading inside the insert transaction also means a parent
+        // that just gained a project is seen, not a stale snapshot.
+        if (issueData.projectId == null && issueData.createdByAgentId) {
+          issueData.projectId = await resolveAgentIssueProjectId(tx, companyId, {
+            createdByAgentId: issueData.createdByAgentId,
+            actorRunId: actorRunId ?? null,
+            title: issueData.title,
+            description: issueData.description,
+          }) ?? issueData.projectId;
         }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         // Cache the project policy lookup for this insert so the default

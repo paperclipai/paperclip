@@ -68,10 +68,15 @@ git repo the issue affects, in this order:
 4. otherwise `null`
 
 Text naming two different projects' repos resolves to `null` rather than to a
-guess. A signal that resolves to a project — an explicit `projectId`, a parent
-or inheritance source that has one, a workspace — always wins and inference is
-never consulted. Issues created by a user are left untouched. The same rule
-applies to children created via `POST /api/issues/{issueId}/children`.
+guess — including two projects whose workspaces share the same `cwd`. A signal
+that resolves to a project — an explicit `projectId`, a parent or inheritance
+source that has one, a workspace — always wins and inference is never
+consulted. With isolated workspaces disabled, `executionWorkspaceId` is
+discarded on create and therefore never counts as such a signal. Issues created
+by a user are left untouched. The same rule applies to children created via
+`POST /api/issues/{issueId}/children`, and to agent-created issues that do not
+arrive through these routes (plan decomposition, runner task tools, accepted
+suggested tasks).
 
 ## Update Issue
 
