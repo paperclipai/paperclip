@@ -1106,6 +1106,59 @@ describe("redactCommandText header scanner matrices", () => {
     },
   );
 
+  // A quoted part keeps a raw line break in the same shell word when its
+  // closer arrives on a later line. Bash reads each of these as one argument.
+  const multilineBodies = [
+    ["a single-quoted body with a continuation", (nl: string) => `curl -H 'X-API-Key: SECRET\\${nl}TAILMARK' --next safe`, `curl -H 'X-API-Key: ${R}' --next safe`],
+    ["a single-quoted body with a raw line break", (nl: string) => `curl -H 'X-API-Key: SECRET${nl}TAILMARK' --next safe`, `curl -H 'X-API-Key: ${R}' --next safe`],
+    ["an ANSI-C body with a continuation", (nl: string) => `curl -H $'X-API-Key: SECRET\\${nl}TAILMARK' --next safe`, `curl -H $'X-API-Key: ${R}' --next safe`],
+    ["an ANSI-C body with a raw line break", (nl: string) => `curl -H $'X-API-Key: SECRET${nl}TAILMARK' --next safe`, `curl -H $'X-API-Key: ${R}' --next safe`],
+    ["a value-only single-quoted body", (nl: string) => `curl -H X-API-Key:'SECRET${nl}TAILMARK' --next safe`, `curl -H X-API-Key:'${R}' --next safe`],
+    ["a double-quoted body closed two lines later", (nl: string) => `curl -H "X-API-Key: SECRET${nl}MID${nl}TAILMARK" --next safe`, `curl -H "X-API-Key: ${R}" --next safe`],
+  ] as const;
+
+  it.each(multilineBodies)("crosses a line break inside %s", (_name, build, expected) => {
+    for (const newline of ["\n", "\r\n"]) {
+      for (let depth = 0; depth <= 3; depth += 1) {
+        const output = redactCommandText(serialize(build(newline), depth));
+        expect(output).not.toContain("SECRET");
+        expect(output).not.toContain("TAILMARK");
+        expect(output).not.toContain("MID");
+        expect(output).toBe(serialize(expected, depth));
+        if (depth > 0) expect(parseDepth(output, depth)).toBe(expected);
+        expect(redactCommandText(output)).toBe(output);
+      }
+    }
+  });
+
+  it("still ends an unterminated quoted body at its own line", () => {
+    // A closing quote that never arrives is a run log cut mid-line, so the
+    // value stops where the line does and the next line survives. This is the
+    // bound on the crossing above: without a closer, nothing changes.
+    expect(redactCommandText(`curl -H 'X-API-Key: SECRET\nsecond line`)).toBe(
+      `curl -H 'X-API-Key: ${R}\nsecond line`,
+    );
+    expect(redactCommandText(`curl -H "X-API-Key: SECRET\nsecond line`)).toBe(
+      `curl -H "X-API-Key: ${R}\nsecond line`,
+    );
+    expect(redactCommandText(`curl -H $'X-API-Key: SECRET\nsecond line`)).toBe(
+      `curl -H $'X-API-Key: ${R}\nsecond line`,
+    );
+  });
+
+  it("follows a line break carrying a backslash run from a deeper layer", () => {
+    // A text that lost one layer of escaping on the break alone spells the
+    // continuation as a run this reading cannot place. The shell still joins
+    // the lines, so the word runs on.
+    const slash = (count: number) => "\\".repeat(count);
+    const input =
+      `curl -H X-API-Key:${slash(7)}"SECRET${slash(7)}"${slash(6)}\nTAILMARK --next safe`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("SECRET");
+    expect(output).not.toContain("TAILMARK");
+    expect(redactCommandText(output)).toBe(output);
+  });
+
   it("keeps an empty truncated segment out of the redaction", () => {
     // A cut that leaves a segment with no bytes hides nothing, so the word ends
     // before the quote and the quote survives.
