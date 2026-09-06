@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -336,6 +337,134 @@ describeEmbeddedPostgres("issue create project inference", () => {
 
     expect(created.body.projectId).toBe(project!.id);
     expect(created.body.sourceTrust).toMatchObject({ preset: "low_trust_review" });
+  });
+
+  it("infers for the child of a project-less parent instead of chaining its emptiness", async () => {
+    const companyId = await seedCompany();
+    const actual = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const { token, runId } = await agentContext(companyId, null);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+
+    const created = await agentPost(createApp(), companyId, token, runId)
+      .send({
+        title: "Harden the retry loop",
+        parentId: parent.id,
+        description: "The flake lives in https://github.com/zannis/actual and blocks the release.",
+      })
+      .expect(201);
+
+    expect(created.body.projectId).toBe(actual.id);
+  });
+
+  it("treats the run-inherited source issue as the one source signal, without falling through to the parent's project", async () => {
+    const companyId = await seedCompany();
+    const parentProject = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const actual = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const agent = await seedAgent(companyId);
+    // The run works a project-less issue from an execution workspace, so the
+    // route injects that issue as the inheritance source. The service consults
+    // only that source — the parent's project must not leak in through the gate.
+    const sourceIssue = await seedIssue(companyId, null, "Project-less source");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: agent.id,
+      status: "running",
+      contextSnapshot: { issueId: sourceIssue.id, executionWorkspaceId: randomUUID() },
+    });
+    const token = createLocalAgentJwt(agent.id, companyId, agent.adapterType, runId);
+    if (!token) throw new Error("expected a local agent JWT");
+    const parent = await seedIssue(companyId, parentProject.id, "Parent with a project");
+
+    const created = await agentPost(createApp(), companyId, token, runId)
+      .send({
+        title: "Chase the regression",
+        parentId: parent.id,
+        description: "Bisect it inside https://github.com/zannis/actual.",
+      })
+      .expect(201);
+
+    expect(created.body.projectId).toBe(actual.id);
+  });
+
+  it("never consults inference when a selected workspace resolves to a project", async () => {
+    const companyId = await seedCompany();
+    const chosen = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    await seedProject(companyId, "shove", { repoUrl: "https://github.com/zannis/shove", cwd: "/repos/shove" });
+    const workspace = await db
+      .select({ id: projectWorkspaces.id })
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.projectId, chosen.id))
+      .then((rows) => rows[0]!);
+    const { token, runId } = await agentContext(companyId, null);
+
+    const created = await agentPost(createApp(), companyId, token, runId)
+      .send({
+        title: "Scoped by workspace",
+        description: "The text talks about https://github.com/zannis/shove but the workspace decides.",
+        projectWorkspaceId: workspace.id,
+      })
+      .expect(201);
+
+    expect(created.body.projectId).toBe(chosen.id);
+  });
+
+  it("infers for a child created via the children route when the parent is project-less", async () => {
+    const companyId = await seedCompany();
+    const actual = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const { token, runId } = await agentContext(companyId, null);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+
+    const created = await request(createApp())
+      .post(`/api/issues/${parent.id}/children`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({
+        title: "Split out the repro",
+        description: "Reproduce it under /repos/actual first.",
+      })
+      .expect(201);
+
+    expect(created.body.projectId).toBe(actual.id);
+  });
+
+  it("keeps the parent's project on the children route without consulting inference", async () => {
+    const companyId = await seedCompany();
+    const parentProject = await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    await seedProject(companyId, "actual", { repoUrl: "https://github.com/zannis/actual", cwd: "/repos/actual" });
+    const { token, runId } = await agentContext(companyId, null);
+    const parent = await seedIssue(companyId, parentProject.id, "Parent with a project");
+
+    const created = await request(createApp())
+      .post(`/api/issues/${parent.id}/children`)
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({
+        title: "Child under a scoped parent",
+        description: "Even though the text names https://github.com/zannis/actual.",
+      })
+      .expect(201);
+
+    expect(created.body.projectId).toBe(parentProject.id);
   });
 
   it("does not infer a project for a task a human created", async () => {
