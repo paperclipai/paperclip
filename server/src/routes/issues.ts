@@ -4249,6 +4249,25 @@ export function issueRoutes(
     return true;
   }
 
+  async function isActorOwnedBlockerRemoval(
+    req: Request,
+    issue: { id: string },
+    dbOrTx: Db = db,
+  ) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    if (!Array.isArray(req.body.blockedByIssueIds)) return false;
+    if (Object.keys(req.body).some((key) => key !== "blockedByIssueIds")) return false;
+
+    const relations = await svc.getRelationSummaries(issue.id, dbOrTx);
+    const currentBlockerIds = new Set(relations.blockedBy.map((blocker) => blocker.id));
+    const requestedBlockerIds = new Set(req.body.blockedByIssueIds as string[]);
+    const removedBlockers = relations.blockedBy.filter((blocker) => !requestedBlockerIds.has(blocker.id));
+
+    if (removedBlockers.length === 0) return false;
+    if ([...requestedBlockerIds].some((blockerId) => !currentBlockerIds.has(blockerId))) return false;
+    return removedBlockers.every((blocker) => blocker.assigneeAgentId === req.actor.agentId);
+  }
+
   async function assertFreshTaskWatchdogSourceMutation(
     res: Response,
     scope: Awaited<ReturnType<typeof resolveTaskWatchdogMutationScope>>,
@@ -9936,16 +9955,19 @@ export function issueRoutes(
       await denyIssueWrite(req, res, existing, "issue_write_attribution_spoof_rejected");
       return;
     }
-    const issueMutationAccess = await assertAgentIssueMutationAllowed(
+    const actorOwnedBlockerRemoval = await isActorOwnedBlockerRemoval(req, existing);
+    const issueMutationAccess = actorOwnedBlockerRemoval || await assertAgentIssueMutationAllowed(
       req,
       res,
       existing,
       { allowVisibleIssueWrite: true },
     );
     if (!issueMutationAccess) return;
-    const issueMutationAuthorizationReason = req.actor.type === "agent"
-      ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
-      : issueWriteAuthorizationReason(req, true);
+    const issueMutationAuthorizationReason = actorOwnedBlockerRemoval
+      ? "allow_actor_owned_blocker_removal"
+      : req.actor.type === "agent"
+        ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
+        : issueWriteAuthorizationReason(req, true);
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -10443,6 +10465,13 @@ export function issueRoutes(
       }
       return true;
     };
+    const assertLockedActorOwnedBlockerRemoval = async (
+      tx: Parameters<typeof svc.update>[2],
+    ) => {
+      const lockedExisting = await svc.getByIdForUpdate(id, tx);
+      if (!lockedExisting) return false;
+      return isActorOwnedBlockerRemoval(req, lockedExisting, tx as unknown as Db);
+    };
     const persistReviewTransitionActivity = async (
       tx: Parameters<typeof svc.update>[2],
       updated: NonNullable<Awaited<ReturnType<typeof svc.update>>>,
@@ -10515,13 +10544,26 @@ export function issueRoutes(
     });
     const decision = transition.decision && decisionId ? transition.decision : null;
     const shouldUseTransactionalIssueUpdate =
-      Boolean(decision)
+      actorOwnedBlockerRemoval
+      || Boolean(decision)
       || shouldRelayStop
       || persistReviewActivityTransactionally
       || reviewPolicySensitiveMutationRequested;
     try {
       if (shouldUseTransactionalIssueUpdate) {
         issue = await db.transaction(async (tx) => {
+          if (
+            actorOwnedBlockerRemoval
+            && !(await assertLockedActorOwnedBlockerRemoval(tx))
+          ) {
+            throw conflict("Issue blocker ownership changed before the dependency update", {
+              code: "issue_write_assignee_run_lock",
+              issueId: existing.id,
+              assigneeAgentId: existing.assigneeAgentId,
+              actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+              securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+            });
+          }
           if (
             reviewPolicySensitiveMutationRequested
             && !(await assertLockedReviewPolicyAllowsMutation(tx))
