@@ -27,7 +27,39 @@ vi.mock("@chat-adapter/github", () => ({
 vi.mock("@chat-adapter/teams", () => ({
   createTeamsAdapter: (config: Record<string, unknown>) => {
     captures.teamsConfigs.push(config);
-    return { name: "teams" };
+    class MockTeamsApi {
+      readonly _apiClientSettings: unknown;
+      readonly http: unknown;
+
+      constructor(
+        readonly serviceUrl: string,
+        http: unknown = {},
+        settings?: unknown,
+      ) {
+        this.http = http;
+        this._apiClientSettings = settings;
+      }
+    }
+    const noop = async () => undefined;
+    return {
+      name: "teams",
+      app: {
+        api: new MockTeamsApi("https://smba.trafficmanager.net/teams"),
+      },
+      decodeThreadId: () => ({
+        serviceUrl: "https://smba.trafficmanager.net/teams",
+      }),
+      openDM: async () => "teams:mock:thread",
+      postMessage: noop,
+      postEphemeral: noop,
+      editMessage: noop,
+      deleteMessage: noop,
+      addReaction: noop,
+      removeReaction: noop,
+      startTyping: noop,
+      stream: noop,
+      postChannelMessage: noop,
+    };
   },
 }));
 
@@ -736,7 +768,10 @@ describe("Chat SDK endpoint runtime", () => {
       new Request("https://paperclip.test/telegram", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ update_id: 987654, message: { message_id: 42 } }),
+        body: JSON.stringify({
+          update_id: 987654,
+          message: { message_id: 42 },
+        }),
       }),
     );
 

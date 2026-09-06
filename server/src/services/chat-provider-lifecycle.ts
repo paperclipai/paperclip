@@ -14,6 +14,10 @@ export type ChatProviderLifecycleEffect =
       label: string;
       providerUrl?: string;
       availability: ChatResourceAvailability;
+      providerOrder?: {
+        sequence?: string;
+        occurredAt?: string;
+      };
       metadata?: Record<string, unknown>;
     }
   | {
@@ -22,6 +26,10 @@ export type ChatProviderLifecycleEffect =
       providerEventId: string;
       availability: "available" | "attention" | "revoked";
       reason: string;
+      providerOrder?: {
+        sequence?: string;
+        occurredAt?: string;
+      };
       metadata?: Record<string, unknown>;
     };
 
@@ -61,35 +69,19 @@ function header(
   return entry ? string(entry[1]) : null;
 }
 
-function githubRepositoryEffect(input: {
-  eventId: string;
-  repository: unknown;
-  availability: ChatResourceAvailability;
-}): ChatProviderLifecycleEffect | null {
-  const repository = record(input.repository);
-  if (!repository) return null;
-  const repositoryId = identifier(repository.id);
-  if (!repositoryId) return null;
-  const fullName = string(repository.full_name);
-  const name =
-    fullName ?? string(repository.name) ?? `Repository ${repositoryId}`;
-  const owner = record(repository.owner);
-  return {
-    kind: "resource",
-    provider: "github",
-    providerEventId: input.eventId,
-    providerResourceId: repositoryId,
-    resourceType: "repository",
-    label: name,
-    providerUrl:
-      string(repository.html_url) ??
-      (fullName ? `https://github.com/${fullName}` : undefined),
-    availability: input.availability,
-    metadata: {
-      ...(fullName ? { fullName } : {}),
-      ...(identifier(owner?.id) ? { ownerId: identifier(owner?.id) } : {}),
-    },
-  };
+function numericSequence(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  const candidate = string(value);
+  return candidate && /^\d+(?:\.\d+)?$/.test(candidate) ? candidate : undefined;
+}
+
+function occurredAt(value: unknown): string | undefined {
+  const candidate = string(value);
+  if (!candidate) return undefined;
+  const timestamp = Date.parse(candidate);
+  return Number.isFinite(timestamp)
+    ? new Date(timestamp).toISOString()
+    : undefined;
 }
 
 function parseSlackLifecycle(
@@ -102,6 +94,8 @@ function parseSlackLifecycle(
   const event = record(payload.event) ?? payload;
   const type = string(event.type);
   if (!type) return [];
+  const sequence = numericSequence(event.event_ts ?? payload.event_time);
+  const providerOrder = sequence ? { sequence } : undefined;
 
   if (type === "app_uninstalled" || type === "tokens_revoked") {
     return [
@@ -110,6 +104,7 @@ function parseSlackLifecycle(
         provider: "slack",
         providerEventId: envelopeId,
         availability: "revoked",
+        providerOrder,
         reason:
           type === "app_uninstalled"
             ? "Slack app was uninstalled"
@@ -133,6 +128,7 @@ function parseSlackLifecycle(
         label: channel,
         availability:
           type === "member_joined_channel" ? "available" : "unavailable",
+        providerOrder,
         metadata: {
           source: "membership_event",
           ...(string(event.channel_type)
@@ -168,6 +164,7 @@ function parseSlackLifecycle(
         resourceType: "channel",
         label: string(channelValue?.name) ?? channelId,
         availability,
+        providerOrder,
         metadata: { source: type },
       },
     ];
@@ -226,29 +223,27 @@ function parseGitHubLifecycle(
   }
 
   if (event !== "installation_repositories") return [];
-  const effects: ChatProviderLifecycleEffect[] = [];
-  for (const repository of Array.isArray(payload.repositories_added)
-    ? payload.repositories_added
-    : []) {
-    const effect = githubRepositoryEffect({
-      eventId: `${delivery}:added:${effects.length}`,
-      repository,
+  // A repository-selection callback is one canonical reconciliation trigger,
+  // regardless of how many repositories GitHub includes in its delta. The
+  // service deliberately re-reads the complete installation inventory rather
+  // than trusting these callback-local additions/removals.
+  return [
+    {
+      kind: "endpoint",
+      provider: "github",
+      providerEventId: delivery,
       availability: "available",
-    });
-    if (effect) effects.push(effect);
-  }
-  const removed = Array.isArray(payload.repositories_removed)
-    ? payload.repositories_removed
-    : [];
-  for (const repository of removed) {
-    const effect = githubRepositoryEffect({
-      eventId: `${delivery}:removed:${effects.length}`,
-      repository,
-      availability: "removed",
-    });
-    if (effect) effects.push(effect);
-  }
-  return effects;
+      reason: "GitHub App repository access changed",
+      metadata: {
+        repositoriesAdded: Array.isArray(payload.repositories_added)
+          ? payload.repositories_added.length
+          : 0,
+        repositoriesRemoved: Array.isArray(payload.repositories_removed)
+          ? payload.repositories_removed.length
+          : 0,
+      },
+    },
+  ];
 }
 
 function teamsResourceType(payload: Record<string, unknown>): string {
@@ -315,6 +310,10 @@ function parseTeamsLifecycle(
   if (!payload) return [];
   const type = string(payload.type);
   const eventId = identifier(payload.id) ?? "teams:lifecycle";
+  const eventOccurredAt = occurredAt(payload.timestamp);
+  const providerOrder = eventOccurredAt
+    ? { occurredAt: eventOccurredAt }
+    : undefined;
   const resourceId = teamsResourceId(payload);
   if (!resourceId) return [];
 
@@ -336,6 +335,7 @@ function parseTeamsLifecycle(
         resourceType: teamsResourceType(payload),
         label: teamsResourceLabel(payload, resourceId),
         availability: action?.startsWith("remove") ? "removed" : "available",
+        providerOrder,
         metadata: { source: "installation_update", action },
       },
     ];
@@ -364,6 +364,7 @@ function parseTeamsLifecycle(
         resourceType: teamsResourceType(payload),
         label: teamsResourceLabel(payload, resourceId),
         availability: left ? "unavailable" : "available",
+        providerOrder,
         metadata: { source: "conversation_membership" },
       },
     ];
@@ -380,6 +381,7 @@ function parseTelegramLifecycle(
   const member = record(membership?.new_chat_member);
   const chatId = identifier(chat?.id);
   const status = string(member?.status);
+  const updateId = numericSequence(payload?.update_id);
   if (!payload || !membership || !chat || !member || !chatId || !status)
     return [];
   const available =
@@ -405,6 +407,7 @@ function parseTelegramLifecycle(
       resourceType: string(chat.type) === "private" ? "direct_message" : "chat",
       label: title || chatId,
       availability: available ? "available" : "unavailable",
+      providerOrder: updateId ? { sequence: updateId } : undefined,
       metadata: { source: "my_chat_member", memberStatus: status },
     },
   ];

@@ -182,6 +182,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -11284,9 +11285,16 @@ export function issueRoutes(
         // Re-derive closed-ness from the post-update issue so a status change
         // like in_progress -> done with a closure comment does not enqueue a
         // stale issue_commented wake for an already-completed issue.
-        const shouldWakeAssigneeForComment =
-          !(selfComment && resumeRequested !== true) &&
-          (reopened || !isClosedIssueStatus(issue.status));
+        // A completed prior run may explicitly resume, but the run that still
+        // owns this issue is already executing the comment's work.
+        const shouldWakeAssigneeForComment = shouldWakeAssigneeForIssueComment({
+          selfComment,
+          resumeRequested: resumeRequested === true,
+          commentCreatedByRunId: comment.createdByRunId,
+          issueAtCommentStart: existing,
+          reopened,
+          currentStatus: issue.status,
+        });
 
         if (assigneeId && !assigneeChanged && shouldWakeAssigneeForComment) {
           addWakeup(assigneeId, {
@@ -13832,9 +13840,16 @@ export function issueRoutes(
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
-      const shouldWakeAssigneeForComment =
-        !(selfComment && resumeRequested !== true) &&
-        (reopened || !isClosedIssueStatus(wakeIssueSnapshot.status));
+      // An explicit resume from the run that still owns this issue is redundant;
+      // explicit resume from a completed prior run remains a valid new turn.
+      const shouldWakeAssigneeForComment = shouldWakeAssigneeForIssueComment({
+        selfComment,
+        resumeRequested: resumeRequested === true,
+        commentCreatedByRunId: comment.createdByRunId,
+        issueAtCommentStart: issue,
+        reopened,
+        currentStatus: wakeIssueSnapshot.status,
+      });
       if (assigneeId && shouldWakeAssigneeForComment) {
         if (reopened) {
           addWakeup(assigneeId, {

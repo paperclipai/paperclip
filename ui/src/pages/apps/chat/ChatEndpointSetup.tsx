@@ -120,6 +120,21 @@ export function ChatEndpointSetup() {
     setAgentId(resumeQuery.data.assignedAgentId);
     setPurpose("chat");
   }, [resumeQuery.data]);
+  const githubVerificationQuery = useQuery({
+    queryKey: ["chat-endpoint-github-webhook-verification", endpoint?.id],
+    queryFn: () => chatEndpointsApi.get(endpoint!.id),
+    enabled: Boolean(
+      provider === "github" &&
+      endpoint?.id &&
+      endpoint.setup?.webhookSecretConfigured &&
+      !endpoint.setup.webhookVerifiedAt,
+    ),
+    refetchInterval: 1_500,
+  });
+  useEffect(() => {
+    if (!githubVerificationQuery.data) return;
+    setEndpoint(githubVerificationQuery.data);
+  }, [githubVerificationQuery.data]);
   const activeAgents = useMemo(
     () =>
       (agentsQuery.data ?? []).filter((agent) =>
@@ -172,6 +187,7 @@ export function ChatEndpointSetup() {
                 ...current.setup,
                 step: current.setup?.step ?? "provider_setup",
                 webhookSecretConfigured: true,
+                webhookVerifiedAt: null,
               },
             }
           : current,
@@ -808,6 +824,15 @@ settings:
               until you replace the secret in the GitHub App settings.
             </p>
           )}
+          {endpoint.setup?.webhookSecretConfigured && (
+            <p
+              className={`text-sm ${endpoint.setup.webhookVerifiedAt ? "text-foreground" : "text-muted-foreground"}`}
+            >
+              {endpoint.setup.webhookVerifiedAt
+                ? "GitHub has verified this webhook."
+                : "Waiting for GitHub to deliver its signed webhook ping…"}
+            </p>
+          )}
         </div>
         {!endpoint.setup?.webhookUrl && (
           <p className="text-sm text-destructive">
@@ -819,6 +844,7 @@ settings:
           disabled={
             (!repairing && (!credentials.appId || !credentials.privateKey)) ||
             !endpoint.setup?.webhookSecretConfigured ||
+            !endpoint.setup?.webhookVerifiedAt ||
             !endpoint.setup?.webhookUrl ||
             generatingSetupSecret ||
             pending

@@ -357,6 +357,7 @@ async function installChatControlPlaneMock(
       method === "POST"
     ) {
       endpoint.setup.webhookSecretConfigured = true;
+      endpoint.setup.webhookVerifiedAt = new Date().toISOString();
       await fulfill(route, { webhookSecret: "github-webhook-secret" }, 201);
       return;
     }

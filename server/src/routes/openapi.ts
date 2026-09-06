@@ -732,6 +732,7 @@ const chatEndpointSetupResponseSchema = z
     command: z.string().nullable().optional(),
     webhookUrl: z.string().nullable().optional(),
     messagingEndpoint: z.string().nullable().optional(),
+    webhookVerifiedAt: z.string().datetime().nullable().optional(),
     webhookSecretConfigured: z.boolean().optional(),
   })
   .strict();
@@ -3245,7 +3246,12 @@ registry.registerPath({
   request: {
     params: z.object({ companyId: z.string(), type: z.string() }),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 registry.registerPath({

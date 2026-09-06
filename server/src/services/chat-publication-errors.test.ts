@@ -162,6 +162,8 @@ describe("chat publication error classification", () => {
   it.each([
     ["ValidationError", "VALIDATION_ERROR"],
     ["NotImplementedError", "NOT_IMPLEMENTED"],
+    ["TeamsServiceUrlValidationError", "CHAT_PROVIDER_PRETRANSPORT_REJECTED"],
+    ["TeamsAdapterCompatibilityError", "CHAT_ADAPTER_COMPATIBILITY_ERROR"],
   ])("fails definite non-retryable %s rejections", (name, code) => {
     expect(
       classifyChatPublicationError(providerError(name, code), 1),

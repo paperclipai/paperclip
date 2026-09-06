@@ -21,7 +21,10 @@ export interface GitHubAppInstallationIdentity {
   accountType?: string;
 }
 
-async function jsonResponse<T>(response: Response, provider: string): Promise<T> {
+async function jsonResponse<T>(
+  response: Response,
+  provider: string,
+): Promise<T> {
   let body: unknown;
   try {
     body = await response.json();
@@ -67,7 +70,10 @@ export async function listSlackBotChannels(input: {
       }>;
       response_metadata?: { next_cursor?: string };
     }>(response, "Slack");
-    if (!body.ok) throw new Error(`Slack inventory failed: ${body.error ?? "unknown error"}`);
+    if (!body.ok)
+      throw new Error(
+        `Slack inventory failed: ${body.error ?? "unknown error"}`,
+      );
     for (const channel of body.channels ?? []) {
       if (!channel.id || !channel.is_member || channel.is_archived) continue;
       resources.push({
@@ -184,23 +190,34 @@ export async function discoverDedicatedGitHubAppInstallation(input: {
   appJwt: string;
   fetch: typeof globalThis.fetch;
 }): Promise<GitHubAppInstallationIdentity> {
-  const response = await input.fetch(
-    "https://api.github.com/app/installations?per_page=100",
-    {
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${input.appJwt}`,
-        "x-github-api-version": "2022-11-28",
+  const installations: Array<{
+    id?: number;
+    account?: { id?: number; login?: string; name?: string; type?: string };
+    suspended_at?: string | null;
+  }> = [];
+  for (let page = 1; ; page += 1) {
+    const response = await input.fetch(
+      page === 1
+        ? "https://api.github.com/app/installations?per_page=100"
+        : `https://api.github.com/app/installations?per_page=100&page=${page}`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${input.appJwt}`,
+          "x-github-api-version": "2022-11-28",
+        },
       },
-    },
-  );
-  const installations = await jsonResponse<
-    Array<{
-      id?: number;
-      account?: { id?: number; login?: string; name?: string; type?: string };
-      suspended_at?: string | null;
-    }>
-  >(response, "GitHub");
+    );
+    const pageInstallations = await jsonResponse<
+      Array<{
+        id?: number;
+        account?: { id?: number; login?: string; name?: string; type?: string };
+        suspended_at?: string | null;
+      }>
+    >(response, "GitHub");
+    installations.push(...pageInstallations);
+    if (pageInstallations.length < 100) break;
+  }
   const active = installations.filter(
     (installation) =>
       Number.isFinite(installation.id) && !installation.suspended_at,

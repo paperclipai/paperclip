@@ -177,7 +177,13 @@ export function classifyChatPublicationError(
     name === "ValidationError" ||
     name === "NotImplementedError" ||
     code === "VALIDATION_ERROR" ||
-    code === "NOT_IMPLEMENTED"
+    code === "NOT_IMPLEMENTED" ||
+    // Paperclip rejected the destination locally before opening a provider
+    // request, so delivery is definitively impossible rather than ambiguous.
+    code === "CHAT_PROVIDER_PRETRANSPORT_REJECTED" ||
+    // Adapter-contract drift is detected during runtime construction, before
+    // any provider request can have been attempted.
+    code === "CHAT_ADAPTER_COMPATIBILITY_ERROR"
   ) {
     return { kind: "failed", reason };
   }

@@ -31,7 +31,12 @@ describe("chat provider inventory", () => {
         response({
           ok: true,
           channels: [
-            { id: "G1", name: "private-agents", is_member: true, is_private: true },
+            {
+              id: "G1",
+              name: "private-agents",
+              is_member: true,
+              is_private: true,
+            },
           ],
           response_metadata: { next_cursor: "" },
         }),
@@ -49,7 +54,9 @@ describe("chat provider inventory", () => {
       }),
     ]);
     expect(fetch).toHaveBeenCalledTimes(2);
-    const secondUrl = String((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[1]?.[0]);
+    const secondUrl = String(
+      (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[1]?.[0],
+    );
     expect(secondUrl).toContain("cursor=next");
   });
 
@@ -126,17 +133,55 @@ describe("chat provider inventory", () => {
     });
   });
 
+  it("searches every GitHub App installation page before enforcing uniqueness", async () => {
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).endsWith("&page=2")) {
+        return response([
+          {
+            id: 144,
+            account: { id: 12, login: "paperclip", type: "Organization" },
+            suspended_at: null,
+          },
+        ]);
+      }
+      return response(
+        Array.from({ length: 100 }, (_, index) => ({
+          id: index + 1,
+          account: { id: index + 1, login: `suspended-${index + 1}` },
+          suspended_at: "2026-09-05T00:00:00Z",
+        })),
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      discoverDedicatedGitHubAppInstallation({ appJwt: "jwt", fetch }),
+    ).resolves.toMatchObject({
+      installationId: "144",
+      accountId: "12",
+      accountLabel: "paperclip",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenLastCalledWith(
+      "https://api.github.com/app/installations?per_page=100&page=2",
+      expect.any(Object),
+    );
+  });
+
   it("rejects zero or multiple active installations", async () => {
     await expect(
       discoverDedicatedGitHubAppInstallation({
         appJwt: "jwt",
-        fetch: vi.fn(async () => response([])) as unknown as typeof globalThis.fetch,
+        fetch: vi.fn(async () =>
+          response([]),
+        ) as unknown as typeof globalThis.fetch,
       }),
     ).rejects.toThrow("install this GitHub App");
     await expect(
       discoverDedicatedGitHubAppInstallation({
         appJwt: "jwt",
-        fetch: vi.fn(async () => response([{ id: 1 }, { id: 2 }])) as unknown as typeof globalThis.fetch,
+        fetch: vi.fn(async () =>
+          response([{ id: 1 }, { id: 2 }]),
+        ) as unknown as typeof globalThis.fetch,
       }),
     ).rejects.toThrow("exactly one active installation");
   });
@@ -145,14 +190,18 @@ describe("chat provider inventory", () => {
     await expect(
       listSlackBotChannels({
         botToken: "bad",
-        fetch: vi.fn(async () => response({ ok: false, error: "invalid_auth" })) as unknown as typeof globalThis.fetch,
+        fetch: vi.fn(async () =>
+          response({ ok: false, error: "invalid_auth" }),
+        ) as unknown as typeof globalThis.fetch,
       }),
     ).rejects.toThrow("Slack inventory failed: invalid_auth");
     await expect(
       listGitHubInstallationRepositories({
         appJwt: "bad",
         installationId: "1",
-        fetch: vi.fn(async () => response({ message: "Not Found" }, 404)) as unknown as typeof globalThis.fetch,
+        fetch: vi.fn(async () =>
+          response({ message: "Not Found" }, 404),
+        ) as unknown as typeof globalThis.fetch,
       }),
     ).rejects.toThrow("GitHub inventory failed: Not Found");
   });

@@ -348,6 +348,211 @@ function adapterLogger(
   return logger && typeof logger !== "string" ? logger : undefined;
 }
 
+const TEAMS_THREAD_SCOPED_METHODS = [
+  "postMessage",
+  "postEphemeral",
+  "editMessage",
+  "deleteMessage",
+  "addReaction",
+  "removeReaction",
+  "startTyping",
+  "stream",
+  "postChannelMessage",
+] as const;
+
+const OFFICIAL_TEAMS_CONNECTOR_HOSTS = new Set([
+  // Microsoft documents these public and sovereign Bot Framework service URL
+  // families for Teams replies and proactive conversations.
+  "smba.trafficmanager.net",
+  "smba.infra.gcc.teams.microsoft.com",
+  "smba.infra.gov.teams.microsoft.us",
+  "smba.infra.dod.teams.microsoft.us",
+]);
+
+export class TeamsServiceUrlValidationError extends Error {
+  readonly code = "CHAT_PROVIDER_PRETRANSPORT_REJECTED";
+  readonly provider = "microsoft-teams";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "TeamsServiceUrlValidationError";
+  }
+}
+
+export class TeamsAdapterCompatibilityError extends Error {
+  readonly code = "CHAT_ADAPTER_COMPATIBILITY_ERROR";
+
+  constructor(detail: string) {
+    super(`The pinned Microsoft Teams adapter is incompatible: ${detail}`);
+    this.name = "TeamsAdapterCompatibilityError";
+  }
+}
+
+interface TeamsApiClientInternals {
+  _apiClientSettings?: unknown;
+  constructor: Function;
+  http: unknown;
+  serviceUrl: string;
+}
+
+interface TeamsAdapterInternals {
+  app?: { api: TeamsApiClientInternals };
+  chat?: {
+    getState(): {
+      get(key: string): Promise<unknown>;
+    };
+  };
+  decodeThreadId?: (threadId: string) => { serviceUrl?: unknown };
+  openDM?: (userId: string) => Promise<unknown>;
+  [key: string]: unknown;
+}
+
+function normalizedTeamsServiceUrl(value: unknown): string {
+  if (typeof value !== "string" || value.length > 2048) {
+    throw new TeamsServiceUrlValidationError(
+      "Teams destination is missing its verified service URL",
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new TeamsServiceUrlValidationError(
+      "Teams destination contains an invalid service URL",
+    );
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new TeamsServiceUrlValidationError(
+      "Teams destination contains an invalid service URL",
+    );
+  }
+  return parsed.toString().replace(/\/+$/, "");
+}
+
+function trustedTeamsServiceUrl(
+  value: unknown,
+  configuredApiUrl: string | null,
+): string {
+  const normalized = normalizedTeamsServiceUrl(value);
+  const parsed = new URL(normalized);
+  const officialHost =
+    parsed.port === "" && OFFICIAL_TEAMS_CONNECTOR_HOSTS.has(parsed.hostname);
+  if (officialHost || normalized === configuredApiUrl) return normalized;
+  throw new TeamsServiceUrlValidationError(
+    "Teams destination contains an untrusted service URL",
+  );
+}
+
+/**
+ * The pinned Teams adapter preserves the verified activity serviceUrl in its
+ * thread id but its outbound methods use the adapter-wide default API client.
+ * Microsoft binds serviceUrl into the authenticated Bot Connector JWT and
+ * requires replies to target that matching URL. Scope each outbound call to a
+ * fresh API client rooted at that trusted thread URL. A context-local getter
+ * keeps simultaneous conversations isolated without forcing unrelated Teams
+ * threads through a single network queue.
+ */
+export function scopeMicrosoftTeamsEgress(
+  adapter: Adapter,
+  configuredApiUrl?: string,
+): Adapter {
+  const teams = adapter as unknown as TeamsAdapterInternals;
+  if (!teams.app?.api) {
+    throw new TeamsAdapterCompatibilityError("app.api is unavailable");
+  }
+  if (typeof teams.decodeThreadId !== "function") {
+    throw new TeamsAdapterCompatibilityError("decodeThreadId is unavailable");
+  }
+  if (typeof teams.openDM !== "function") {
+    throw new TeamsAdapterCompatibilityError("openDM is unavailable");
+  }
+  for (const methodName of TEAMS_THREAD_SCOPED_METHODS) {
+    if (typeof teams[methodName] !== "function") {
+      throw new TeamsAdapterCompatibilityError(`${methodName} is unavailable`);
+    }
+  }
+  if (
+    typeof teams.app.api.constructor !== "function" ||
+    !("http" in teams.app.api)
+  ) {
+    throw new TeamsAdapterCompatibilityError(
+      "the API client constructor or HTTP transport is unavailable",
+    );
+  }
+  const apiDescriptor = Object.getOwnPropertyDescriptor(teams.app, "api");
+  if (apiDescriptor && apiDescriptor.configurable === false) {
+    throw new TeamsAdapterCompatibilityError(
+      "app.api cannot be scoped per asynchronous conversation",
+    );
+  }
+  const trustedConfiguredApiUrl = configuredApiUrl
+    ? normalizedTeamsServiceUrl(configuredApiUrl)
+    : null;
+  let defaultApi = teams.app.api;
+  const apiScope = new AsyncLocalStorage<TeamsApiClientInternals>();
+  Object.defineProperty(teams.app, "api", {
+    configurable: true,
+    enumerable: true,
+    get: () => apiScope.getStore() ?? defaultApi,
+    set: (value: TeamsApiClientInternals) => {
+      defaultApi = value;
+    },
+  });
+  const withServiceUrl = async <T>(
+    serviceUrlValue: unknown,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const serviceUrl = trustedTeamsServiceUrl(
+      serviceUrlValue,
+      trustedConfiguredApiUrl,
+    );
+    const ApiClient = defaultApi.constructor as new (
+      serviceUrl: string,
+      http: unknown,
+      settings?: unknown,
+    ) => TeamsApiClientInternals;
+    const scopedApi = new ApiClient(
+      serviceUrl,
+      defaultApi.http,
+      defaultApi._apiClientSettings,
+    );
+    return await apiScope.run(scopedApi, operation);
+  };
+  const withThreadServiceUrl = async <T>(
+    threadId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const decoded = teams.decodeThreadId!(threadId);
+    return await withServiceUrl(decoded.serviceUrl, operation);
+  };
+
+  for (const methodName of TEAMS_THREAD_SCOPED_METHODS) {
+    const original = teams[methodName];
+    if (typeof original !== "function") continue;
+    teams[methodName] = (threadId: string, ...args: unknown[]) =>
+      withThreadServiceUrl(threadId, async () =>
+        Reflect.apply(original, teams, [threadId, ...args]),
+      );
+  }
+  const originalOpenDM = teams.openDM;
+  teams.openDM = async (userId: string) => {
+    const cachedServiceUrl = await teams.chat
+      ?.getState()
+      .get(`teams:serviceUrl:${userId}`);
+    return await withServiceUrl(
+      cachedServiceUrl ?? defaultApi.serviceUrl,
+      async () => await Reflect.apply(originalOpenDM, teams, [userId]),
+    );
+  };
+  return adapter;
+}
+
 function createProviderAdapter(
   config: ResolvedChatSdkProviderConfig,
   logger: CreateChatSdkEndpointRuntimeOptions["logger"],
@@ -387,7 +592,10 @@ function createProviderAdapter(
         logger: resolvedLogger,
         userName: config.userName,
       };
-      return createTeamsAdapter(adapterConfig);
+      return scopeMicrosoftTeamsEgress(
+        createTeamsAdapter(adapterConfig),
+        config.credentials.apiUrl,
+      );
     }
     case "telegram": {
       const adapterConfig: TelegramAdapterConfig = {

@@ -11,6 +11,7 @@ describe("chat provider lifecycle normalization", () => {
           event_id: "Ev1",
           event: {
             type: "member_joined_channel",
+            event_ts: "1725551000.125000",
             user: "U-BOT",
             channel: "C123",
             channel_type: "C",
@@ -23,6 +24,7 @@ describe("chat provider lifecycle normalization", () => {
         providerEventId: "Ev1",
         providerResourceId: "C123",
         availability: "available",
+        providerOrder: { sequence: "1725551000.125000" },
       }),
     ]);
     expect(
@@ -58,7 +60,7 @@ describe("chat provider lifecycle normalization", () => {
     }
   });
 
-  it("tracks GitHub installation repository additions and removals", () => {
+  it("turns each GitHub repository-selection callback into one canonical refresh", () => {
     const effects = parseChatProviderLifecycle({
       provider: "github",
       headers: {
@@ -86,14 +88,10 @@ describe("chat provider lifecycle normalization", () => {
     });
     expect(effects).toEqual([
       expect.objectContaining({
-        providerResourceId: "101",
-        label: "paperclip/enabled",
+        kind: "endpoint",
+        providerEventId: "gh-delivery-1",
         availability: "available",
-      }),
-      expect.objectContaining({
-        providerResourceId: "202",
-        label: "paperclip/removed",
-        availability: "removed",
+        metadata: { repositoriesAdded: 1, repositoriesRemoved: 1 },
       }),
     ]);
   });
@@ -136,6 +134,7 @@ describe("chat provider lifecycle normalization", () => {
     const base = {
       type: "installationUpdate",
       id: "teams-event-1",
+      timestamp: "2026-09-05T14:00:00.000Z",
       conversation: {
         id: "19:conversation@thread.tacv2;messageid=1729",
         isGroup: true,
@@ -157,6 +156,7 @@ describe("chat provider lifecycle normalization", () => {
         resourceType: "channel",
         label: "Bots",
         availability: "available",
+        providerOrder: { occurredAt: "2026-09-05T14:00:00.000Z" },
       }),
     ]);
     expect(
@@ -246,6 +246,7 @@ describe("chat provider lifecycle normalization", () => {
         resourceType: "chat",
         label: "Agent Lab",
         availability: "available",
+        providerOrder: { sequence: "44" },
       }),
     ]);
 

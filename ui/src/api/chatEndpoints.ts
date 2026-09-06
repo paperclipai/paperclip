@@ -120,6 +120,7 @@ export interface ChatEndpoint {
     webhookUrl?: string | null;
     messagingEndpoint?: string | null;
     command?: string | null;
+    webhookVerifiedAt?: string | null;
     webhookSecretConfigured?: boolean;
   };
 }
