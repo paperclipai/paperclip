@@ -11,7 +11,7 @@
  *   2. Zero open file handles on the directory tree   (lsof check)
  *   3. mtime of the run-home dir is >=24h ago
  *   4. A sanitized session counterpart exists under codex-session-retention/<runId>/
- *      OR the run-home contains a file named QUARANTINE (explicit quarantine marker)
+ *      OR codex-run-homes contains a sibling <runId>.quarantine marker
  *
  * Invariant 4 ensures we never silently discard a home whose session data was
  * never retained — only homes where retention already succeeded (or was explicitly
@@ -53,17 +53,39 @@ interface RunHomeEntry {
   error?: string;
 }
 
+type OpenHandleCheck =
+  | { ok: true; hasOpenHandles: boolean }
+  | { ok: false; error: string };
+
+type RunStatusCheck =
+  | { ok: true; status: string }
+  | { ok: false; error: string };
+
+interface SweeperDependencies {
+  checkOpenHandles?: (dir: string) => Promise<OpenHandleCheck>;
+  getRunStatus?: (runId: string, apiBase: string, apiKey: string) => Promise<RunStatusCheck>;
+}
+
 async function pathExists(p: string): Promise<boolean> {
   return fs.access(p).then(() => true, () => false);
 }
 
-async function hasOpenHandles(dir: string): Promise<boolean> {
+async function checkOpenHandles(dir: string): Promise<OpenHandleCheck> {
   try {
     const { stdout } = await execFileAsync("/usr/sbin/lsof", ["-n", "+D", dir], { timeout: 10_000 });
-    return stdout.trim().length > 0;
-  } catch {
-    // lsof exits non-zero when no files are found — that means no open handles
-    return false;
+    return { ok: true, hasOpenHandles: stdout.trim().length > 0 };
+  } catch (err) {
+    const result = err as { code?: string | number; stdout?: string; stderr?: string };
+    // lsof uses exit code 1 with no output when it found no matching handles.
+    // Missing binaries, permission errors, timeouts, and diagnostic output are
+    // not proof of safety and must block deletion.
+    if (result.code === 1 && !(result.stdout ?? "").trim() && !(result.stderr ?? "").trim()) {
+      return { ok: true, hasOpenHandles: false };
+    }
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -71,23 +93,26 @@ async function getRunStatus(
   runId: string,
   apiBase: string,
   apiKey: string,
-): Promise<string | null> {
+): Promise<RunStatusCheck> {
   try {
-    const { default: fetch } = await import("node-fetch");
-    const url = `${apiBase}/api/runs/${runId}`;
-    const res = await (fetch as Function)(url, {
+    const normalizedBase = apiBase.replace(/\/+$/, "").replace(/\/api$/, "");
+    const url = `${normalizedBase}/api/heartbeat-runs/${encodeURIComponent(runId)}`;
+    const res = await fetch(url, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(8_000),
     });
-    if (!res.ok) return null;
-    const body = await (res as Response).json() as { status?: string };
-    return body?.status ?? null;
-  } catch {
-    return null;
+    if (!res.ok) return { ok: false, error: `run-status lookup returned HTTP ${res.status}` };
+    const body = await res.json() as { status?: string };
+    if (typeof body?.status !== "string" || body.status.length === 0) {
+      return { ok: false, error: "run-status lookup returned no status" };
+    }
+    return { ok: true, status: body.status };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
-const TERMINAL_STATUSES = new Set(["done", "cancelled", "failed", "timed_out", "error"]);
+const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "cancelled", "failed", "timed_out"]);
 
 async function dirSizeBytes(dir: string): Promise<number> {
   try {
@@ -103,6 +128,7 @@ async function sweepAgentDir(
   agentDir: string,
   agentId: string,
   opts: SweeperOptions,
+  deps: SweeperDependencies,
 ): Promise<RunHomeEntry[]> {
   const runHomesParent = path.join(agentDir, "codex-run-homes");
   if (!(await pathExists(runHomesParent))) return [];
@@ -142,8 +168,35 @@ async function sweepAgentDir(
       continue;
     }
 
-    // Open handles
-    if (await hasOpenHandles(runHomeDir)) {
+    if (!opts.paperclipApiBase || !opts.paperclipApiKey) {
+      entry.ineligibleReason = "Paperclip API URL and key are required to verify terminal run status";
+      entries.push(entry);
+      continue;
+    }
+
+    const statusCheck = await (deps.getRunStatus ?? getRunStatus)(
+      runId,
+      opts.paperclipApiBase,
+      opts.paperclipApiKey,
+    );
+    if (!statusCheck.ok) {
+      entry.ineligibleReason = `terminal run status could not be verified: ${statusCheck.error}`;
+      entries.push(entry);
+      continue;
+    }
+    if (!TERMINAL_STATUSES.has(statusCheck.status)) {
+      entry.ineligibleReason = `run status is "${statusCheck.status}" (non-terminal)`;
+      entries.push(entry);
+      continue;
+    }
+
+    const handleCheck = await (deps.checkOpenHandles ?? checkOpenHandles)(runHomeDir);
+    if (!handleCheck.ok) {
+      entry.ineligibleReason = `open-handle check failed: ${handleCheck.error}`;
+      entries.push(entry);
+      continue;
+    }
+    if (handleCheck.hasOpenHandles) {
       entry.ineligibleReason = "open file handles detected";
       entries.push(entry);
       continue;
@@ -151,24 +204,14 @@ async function sweepAgentDir(
 
     // Retained session counterpart or explicit quarantine marker
     const retainedDir = path.join(retentionParent, runId);
-    const quarantineMarker = path.join(runDir, "QUARANTINE");
+    const quarantineMarker = path.join(runHomesParent, `${runId}.quarantine`);
     const hasRetained = await pathExists(retainedDir);
     const hasQuarantine = await pathExists(quarantineMarker);
 
     if (!hasRetained && !hasQuarantine) {
-      entry.ineligibleReason = "no retained session counterpart and no QUARANTINE marker";
+      entry.ineligibleReason = "no retained session counterpart and no sibling quarantine marker";
       entries.push(entry);
       continue;
-    }
-
-    // Paperclip run status (if API available)
-    if (opts.paperclipApiBase && opts.paperclipApiKey) {
-      const status = await getRunStatus(runId, opts.paperclipApiBase, opts.paperclipApiKey);
-      if (status !== null && !TERMINAL_STATUSES.has(status)) {
-        entry.ineligibleReason = `run status is "${status}" (non-terminal)`;
-        entries.push(entry);
-        continue;
-      }
     }
 
     entry.eligible = true;
@@ -177,6 +220,7 @@ async function sweepAgentDir(
     if (!opts.dryRun) {
       try {
         await fs.rm(runDir, { recursive: true, force: true });
+        if (hasQuarantine) await fs.rm(quarantineMarker, { force: true });
         entry.deleted = true;
       } catch (err) {
         entry.deleted = false;
@@ -190,7 +234,7 @@ async function sweepAgentDir(
   return entries;
 }
 
-export async function sweepRunHomes(opts: SweeperOptions): Promise<{
+export async function sweepRunHomes(opts: SweeperOptions, deps: SweeperDependencies = {}): Promise<{
   scanned: number;
   eligible: number;
   deleted: number;
@@ -208,7 +252,7 @@ export async function sweepRunHomes(opts: SweeperOptions): Promise<{
 
   for (const agentId of agentIds) {
     const agentDir = path.join(agentsDir, agentId);
-    const agentEntries = await sweepAgentDir(agentDir, agentId, opts);
+    const agentEntries = await sweepAgentDir(agentDir, agentId, opts, deps);
     allEntries.push(...agentEntries);
   }
 
@@ -244,7 +288,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     companyDir,
     dryRun,
     graceHours,
-    paperclipApiBase: process.env["PAPERCLIP_API_BASE"],
+    paperclipApiBase: process.env["PAPERCLIP_API_URL"] ?? process.env["PAPERCLIP_API_BASE"],
     paperclipApiKey: process.env["PAPERCLIP_API_KEY"],
   })
     .then((result) => {

@@ -2349,8 +2349,8 @@ describe("shared ACPX engine runtime behavior", () => {
     await fs.mkdir(sourceCodexHome, { recursive: true });
     await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
 
-    // Pre-create the sessions dir as mode 000 so the runtime writes a session file
-    // but the retention JSONL read fails (unreadable) — simulating a retention failure.
+    // Replace the sessions directory with a file so retention enumeration fails
+    // deterministically, including when the test process runs with elevated access.
     const sessionsDir = path.join(stateDir, "codex-run-homes", runId, "home", "sessions");
     const runSessionFile = path.join(sessionsDir, "2026", "08", "session.jsonl");
 
@@ -2366,8 +2366,8 @@ describe("shared ACPX engine runtime behavior", () => {
           events: (async function* () {
             await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
             await fs.writeFile(runSessionFile, `${JSON.stringify({ type: "message", text: `token=${fakeToken}` })}\n`, "utf8");
-            // Make sessions dir unreadable to force retention failure
-            await fs.chmod(sessionsDir, 0o000);
+            await fs.rm(sessionsDir, { recursive: true, force: true });
+            await fs.writeFile(sessionsDir, "not-a-directory", "utf8");
             yield { type: "done", stopReason: "end_turn" };
           })(),
           result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
@@ -2395,15 +2395,14 @@ describe("shared ACPX engine runtime behavior", () => {
       onMeta: async () => {},
     } as never);
 
-    // Restore permissions so cleanup can proceed
-    await fs.chmod(sessionsDir, 0o700).catch(() => {});
-
     expect(result.exitCode).toBe(0);
 
     // On retention failure: run home must remain (quarantined) and emit INCIDENT.
     const runHomeDir = path.join(stateDir, "codex-run-homes", runId, "home");
     const stat = await fs.stat(runHomeDir).catch(() => null);
     expect(stat).not.toBeNull();
+    const quarantineMarker = path.join(stateDir, "codex-run-homes", `${runId}.quarantine`);
+    await expect(fs.readFile(quarantineMarker, "utf8")).resolves.toContain("sanitized_session_retention_failed");
     expect(logs.some((entry) => entry.stream === "stderr" && entry.text.includes("INCIDENT"))).toBe(true);
     expect(logs.every((entry) => !entry.text.includes("Deleted raw Codex run home"))).toBe(true);
   });

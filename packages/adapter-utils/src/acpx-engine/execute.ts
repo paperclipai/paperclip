@@ -1015,7 +1015,9 @@ async function listCodexSessionJsonlFiles(input: {
   dir: string;
   relativeDir?: string;
 }): Promise<string[]> {
-  const entries = await fs.readdir(input.dir, { withFileTypes: true }).catch(() => []);
+  // Fail closed. A read failure must reach the retention caller so the raw home
+  // is quarantined instead of being mistaken for a successful zero-file copy.
+  const entries = await fs.readdir(input.dir, { withFileTypes: true });
   const files: string[] = [];
   for (const entry of entries) {
     const relativePath = input.relativeDir ? path.join(input.relativeDir, entry.name) : entry.name;
@@ -1093,9 +1095,25 @@ async function retainSanitizedCodexSessionsAfterClose(input: {
     // monitoring greps for unswept quarantines.
     await chmodPrivateTree(runHome).catch(() => {});
     await fs.rm(retainedSessionsDir, { recursive: true, force: true }).catch(() => {});
+    const runHomeParent = path.dirname(runHome);
+    const quarantineMarker = path.join(
+      path.dirname(runHomeParent),
+      `${path.basename(runHomeParent)}.quarantine`,
+    );
+    let quarantineMarkerError: unknown;
+    await writeFileAtomically({
+      target: quarantineMarker,
+      contents: `${JSON.stringify({
+        createdAt: new Date().toISOString(),
+        reason: "sanitized_session_retention_failed",
+      })}\n`,
+      mode: 0o600,
+    }).catch((markerErr) => {
+      quarantineMarkerError = markerErr;
+    });
     await input.onLog(
       "stderr",
-      `[paperclip] INCIDENT: failed to retain sanitized ACPX Codex session JSONL; raw run home quarantined at "${runHome}": ${err instanceof Error ? err.message : String(err)}\n`,
+      `[paperclip] INCIDENT: failed to retain sanitized ACPX Codex session JSONL; raw run home quarantined at "${runHome}"${quarantineMarkerError ? `, but marker creation at "${quarantineMarker}" also failed: ${quarantineMarkerError instanceof Error ? quarantineMarkerError.message : String(quarantineMarkerError)}` : ` with marker "${quarantineMarker}"`}: ${err instanceof Error ? err.message : String(err)}\n`,
     );
   }
 }
