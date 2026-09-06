@@ -31,13 +31,27 @@ describe("chatEndpointsApi", () => {
   });
 
   it("publishes a board message with a stable idempotency key", async () => {
-    mockApi.post.mockResolvedValue(undefined);
-    await chatEndpointsApi.publishBoardMessage(
-      "endpoint-1",
-      "conversation-1",
-      "Visible update",
-      "client-request-1234",
-    );
+    mockApi.post.mockResolvedValue({
+      id: "publication-1",
+      state: "retry",
+      attempts: 1,
+      redactedError: "The provider timed out",
+      nextAttemptAt: "2026-09-06T12:01:00.000Z",
+    });
+    await expect(
+      chatEndpointsApi.publishBoardMessage(
+        "endpoint-1",
+        "conversation-1",
+        "Visible update",
+        "client-request-1234",
+      ),
+    ).resolves.toEqual({
+      id: "publication-1",
+      state: "retry",
+      attempts: 1,
+      redactedError: "The provider timed out",
+      nextAttemptAt: "2026-09-06T12:01:00.000Z",
+    });
     expect(mockApi.post).toHaveBeenCalledWith(
       "/chat-endpoints/endpoint-1/conversations/conversation-1/publications",
       {

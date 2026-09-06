@@ -50,6 +50,35 @@ function publicOrigin(value: string | null | undefined): string | null {
   }
 }
 
+export function isChatEndpointRepairing(
+  endpoint: Pick<
+    ChatEndpoint,
+    "provider" | "status" | "providerAccountId" | "botExternalId"
+  > | null,
+  resumeEndpointId: string | null,
+  reconnectRequested: boolean,
+): boolean {
+  if (!resumeEndpointId || !endpoint) return false;
+  const recoveringStatus =
+    endpoint.status === "attention" || endpoint.status === "revoked";
+  // A secret-only GitHub draft affected by setup trouble has no App identity
+  // or reusable App credentials. It must remain first-time setup, where App ID
+  // and private key are required, rather than offering a misleading reconnect.
+  if (
+    endpoint.provider === "github" &&
+    recoveringStatus &&
+    !endpoint.providerAccountId &&
+    !endpoint.botExternalId
+  ) {
+    return false;
+  }
+  return (
+    recoveringStatus ||
+    (reconnectRequested &&
+      (endpoint.status === "active" || endpoint.status === "paused"))
+  );
+}
+
 function SetupRail({ step }: { step: number }) {
   return (
     <ol className="space-y-2 text-sm" aria-label="Connection setup progress">
@@ -271,13 +300,10 @@ export function ChatEndpointSetup() {
     );
   }
 
-  const repairing = Boolean(
-    resumeEndpointId &&
-    endpoint &&
-    (endpoint.status === "attention" ||
-      endpoint.status === "revoked" ||
-      (reconnectRequested &&
-        (endpoint.status === "active" || endpoint.status === "paused"))),
+  const repairing = isChatEndpointRepairing(
+    endpoint,
+    resumeEndpointId,
+    reconnectRequested,
   );
   const step = endpoint
     ? !repairing &&
@@ -441,7 +467,7 @@ features:
   slash_commands:
     - command: ${JSON.stringify(slackCommand)}
       description: Start or manage work with ${JSON.stringify(agentName)}
-      usage_hint: ${JSON.stringify("status | new | <task>")}
+      usage_hint: ${JSON.stringify("status | new | close | <task>")}
       should_escape: false
       url: ${JSON.stringify(slackWebhookUrl)}
 oauth_config:
@@ -730,13 +756,17 @@ settings:
           variant="outline"
           onClick={() =>
             window.open(
-              "https://github.com/settings/apps",
+              repairing
+                ? "https://github.com/settings/apps"
+                : (endpoint.setup?.authorizationUrl ??
+                    "https://github.com/settings/apps/new"),
               "_blank",
               "noopener,noreferrer",
             )
           }
         >
-          Open GitHub App settings <ExternalLink />
+          {repairing ? "Open GitHub App settings" : "Open new GitHub App form"}{" "}
+          <ExternalLink />
         </Button>
         {field("appId", "GitHub App ID", "text")}
         <label className="grid gap-2 text-sm font-medium">
@@ -820,8 +850,9 @@ settings:
           </div>
           {endpoint.setup?.webhookSecretConfigured && (
             <p className="text-sm text-muted-foreground">
-              Regenerating immediately invalidates GitHub webhook signatures
-              until you replace the secret in the GitHub App settings.
+              {endpoint.providerAccountId || endpoint.botExternalId
+                ? "Regenerating immediately invalidates GitHub webhook signatures until you replace the secret in the GitHub App settings."
+                : "Generating another secret replaces the previous value. Paste the newest value into GitHub before continuing."}
             </p>
           )}
           {endpoint.setup?.webhookSecretConfigured && (
@@ -869,6 +900,17 @@ settings:
           </p>
         </div>
         {endpointValue("Paperclip webhook URL", endpoint.setup?.webhookUrl)}
+        {endpointValue("Slack command", slackCommand)}
+        <div className="rounded-lg border border-border p-3 text-sm">
+          <p className="font-medium">Use the registered command</p>
+          <p className="mt-1 text-muted-foreground">
+            Start work with <code>{slackCommand} investigate this</code>. In a
+            direct message, use <code>{slackCommand} status</code>,{" "}
+            <code>{slackCommand} new</code>, or{" "}
+            <code>{slackCommand} close</code>. Slack&apos;s bare{" "}
+            <code>/status</code> command is not a Paperclip control.
+          </p>
+        </div>
         <ol className="list-decimal space-y-2 pl-5 text-sm">
           <li>
             Return to <strong>App Manifest</strong> in Slack and click{" "}

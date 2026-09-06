@@ -53,7 +53,7 @@ export const chatEndpoints = pgTable(
     botDisplayName: text("bot_display_name"),
     botAvatarUrl: text("bot_avatar_url"),
     allowDirectMessages: boolean("allow_direct_messages").notNull().default(true),
-    allowGroupChats: boolean("allow_group_chats").notNull().default(true),
+    allowGroupChats: boolean("allow_group_chats").notNull().default(false),
     allowUnlinkedPeople: boolean("allow_unlinked_people").notNull().default(true),
     concurrencyPolicy: text("concurrency_policy").$type<ChatConcurrencyPolicy>().notNull().default("queue"),
     capabilities: jsonb("capabilities").$type<ChatAdapterCapabilities>().notNull().default({
@@ -118,7 +118,6 @@ export const chatEndpoints = pgTable(
     }).onDelete("cascade"),
   ],
 );
-
 export const chatEndpointResources = pgTable(
   "chat_endpoint_resources",
   {

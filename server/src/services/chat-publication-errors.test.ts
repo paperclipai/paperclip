@@ -88,6 +88,22 @@ describe("chat publication error classification", () => {
     });
   });
 
+  it("retries endpoint lease contention as a definite pre-transport outcome", () => {
+    expect(
+      classifyChatPublicationError(
+        Object.assign(new Error("credential mutation is busy"), {
+          status: 409,
+          details: { code: "chat_endpoint_credentials_busy" },
+        }),
+        1,
+      ),
+    ).toEqual({
+      kind: "retry",
+      retryAfterMs: 1_000,
+      reason: "credential mutation is busy",
+    });
+  });
+
   it("does not mistake an ordinary GitHub permission denial for rate limiting", () => {
     expect(
       classifyChatPublicationError(

@@ -642,7 +642,7 @@ features:
   slash_commands:
     - command: "/maya-public"
       description: Start or manage work with "Maya"
-      usage_hint: "status | new | <task>"
+      usage_hint: "status | new | close | <task>"
       should_escape: false
       url: "${webhookUrl}"
 oauth_config:
@@ -733,7 +733,7 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
       page.getByRole("button", { name: "Generate webhook secret" }),
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Open GitHub App settings" }),
+      page.getByRole("button", { name: "Open new GitHub App form" }),
     ).toBeVisible();
     return;
   }
@@ -927,6 +927,14 @@ test.describe.serial("native chat adapter UI", () => {
             { exact: true },
           ),
         ).toBeVisible();
+        await expect(
+          page.getByText("/maya-public", { exact: true }),
+        ).toBeVisible();
+        await expect(
+          page.getByText(
+            /Slack's bare \/status command is not a Paperclip control/,
+          ),
+        ).toBeVisible();
         const saveChangesStep = page
           .getByRole("listitem")
           .filter({ hasText: "Save Changes" });
@@ -987,6 +995,19 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(
         page.getByRole("heading", { name: "Where this agent can work" }),
       ).toBeVisible();
+      if (provider.provider === "slack") {
+        await expect(
+          page.getByRole("heading", { name: "Slack command" }),
+        ).toBeVisible();
+        await expect(
+          page.getByText("/maya-public", { exact: true }),
+        ).toBeVisible();
+        await expect(
+          page.getByText(
+            /Slack's bare \/status command is not a Paperclip control/,
+          ),
+        ).toBeVisible();
+      }
       await expect(
         page.getByRole("switch", {
           name: `Enable ${provider.resourceLabel}`,

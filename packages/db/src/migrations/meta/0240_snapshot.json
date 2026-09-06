@@ -5857,7 +5857,7 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": true
+          "default": false
         },
         "allow_unlinked_people": {
           "name": "allow_unlinked_people",

@@ -68,6 +68,16 @@ export function isReplayEligible(item: ChatActivityItem): boolean {
   return item.kind === "publication";
 }
 
+export function isIndividuallyToggleableResource(
+  provider: ChatProvider,
+  resourceType: string,
+): boolean {
+  return !(
+    provider === "microsoft-teams" &&
+    (resourceType === "direct_message" || resourceType === "group_chat")
+  );
+}
+
 function activityDetailLabel(item: ChatActivityItem): string {
   return replayableFailureStates.has(item.status) ? "Reason" : "Details";
 }
@@ -216,6 +226,9 @@ function Settings({
       }),
   });
   const resources = resourcesQuery.data ?? [];
+  const destinationResources = resources.filter((resource) =>
+    isIndividuallyToggleableResource(endpoint.provider, resource.type),
+  );
   const toggleResource = (resource: ChatEndpointResource, enabled: boolean) =>
     saveResources.mutate(
       resources.map((item) =>
@@ -224,6 +237,22 @@ function Settings({
     );
   return (
     <section className="max-w-3xl space-y-7">
+      {endpoint.provider === "slack" && endpoint.setup?.command && (
+        <div className="space-y-2">
+          <h2 className="text-lg font-semibold">Slack command</h2>
+          <div className="rounded-lg border border-border p-3 text-sm">
+            <code>{endpoint.setup.command}</code>
+            <p className="mt-2 text-muted-foreground">
+              Start work with{" "}
+              <code>{endpoint.setup.command} investigate this</code>. In a
+              direct message, use <code>{endpoint.setup.command} status</code>,{" "}
+              <code>{endpoint.setup.command} new</code>, or{" "}
+              <code>{endpoint.setup.command} close</code>. Slack&apos;s bare{" "}
+              <code>/status</code> command is not a Paperclip control.
+            </p>
+          </div>
+        </div>
+      )}
       <div>
         <h2 className="text-lg font-semibold">Where this agent can work</h2>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -235,13 +264,13 @@ function Settings({
         <h3 className="text-sm font-semibold">Destinations</h3>
         {resourcesQuery.isLoading ? (
           <p className="text-sm text-muted-foreground">Loading destinations…</p>
-        ) : resources.length === 0 ? (
+        ) : destinationResources.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
             No provider destinations have been discovered yet.
           </p>
         ) : (
           <div className="divide-y divide-border border-y border-border">
-            {resources.map((resource) => (
+            {destinationResources.map((resource) => (
               <div key={resource.id} className="flex items-center gap-3 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">

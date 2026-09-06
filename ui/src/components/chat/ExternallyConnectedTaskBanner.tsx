@@ -1,7 +1,12 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ExternalLink, Radio } from "lucide-react";
-import { chatEndpointsApi, type ChatProvider } from "@/api/chatEndpoints";
+import type { ChatPublicationState } from "@paperclipai/shared";
+import {
+  chatEndpointsApi,
+  type ChatProvider,
+  type ChatPublicationSummary,
+} from "@/api/chatEndpoints";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/context/ToastContext";
@@ -12,6 +17,50 @@ const providerNames: Record<ChatProvider, string> = {
   github: "GitHub",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
+};
+
+type PublicationFeedback = {
+  title: string;
+  body: string;
+  tone: "info" | "success" | "warn" | "error";
+};
+
+const publicationFeedback: Record<ChatPublicationState, PublicationFeedback> = {
+  published: {
+    title: "Sent to channel",
+    body: "The board update was published to the connected conversation.",
+    tone: "success",
+  },
+  pending: {
+    title: "Queued for channel",
+    body: "Delivery is still pending. Your draft is kept until Paperclip confirms publication.",
+    tone: "info",
+  },
+  streaming: {
+    title: "Publishing to channel",
+    body: "Delivery is still in progress. Your draft is kept until Paperclip confirms publication.",
+    tone: "info",
+  },
+  retry: {
+    title: "Delivery retry scheduled",
+    body: "Paperclip will retry this publication. Your draft and retry identity are kept.",
+    tone: "warn",
+  },
+  delivery_unknown: {
+    title: "Delivery not confirmed",
+    body: "The provider may have accepted this update. Resolve it in Activity before trying again to avoid a duplicate.",
+    tone: "warn",
+  },
+  failed: {
+    title: "Channel delivery failed",
+    body: "Your draft is kept. Open Activity to retry this same publication safely.",
+    tone: "error",
+  },
+  cancelled: {
+    title: "Channel delivery cancelled",
+    body: "Nothing was confirmed as published. Your draft is kept if you want to start a new send.",
+    tone: "info",
+  },
 };
 
 export function useIssueChatBinding(companyId: string, issueId: string) {
@@ -34,34 +83,53 @@ export function ExternallyConnectedTaskBanner({
   const { pushToast } = useToast();
   const [composing, setComposing] = useState(false);
   const [body, setBody] = useState("");
+  const [publication, setPublication] = useState<ChatPublicationSummary | null>(
+    null,
+  );
   const idempotencyKey = useRef<string | null>(null);
   const publish = useMutation({
-    mutationFn: async (input: { body: string; idempotencyKey: string }) => {
-      await chatEndpointsApi.publishBoardMessage(
+    mutationFn: (input: { body: string; idempotencyKey: string }) =>
+      chatEndpointsApi.publishBoardMessage(
         binding!.endpointId,
         binding!.conversationId,
         input.body,
         input.idempotencyKey,
-      );
-    },
-    onSuccess: () => {
-      idempotencyKey.current = null;
-      setBody("");
-      setComposing(false);
+      ),
+    onSuccess: (result) => {
+      const feedback = publicationFeedback[result.state];
+      setPublication(result.state === "published" ? null : result);
+      if (result.state === "published") {
+        idempotencyKey.current = null;
+        setBody("");
+        setComposing(false);
+      }
       pushToast({
-        title: "Sent to channel",
-        body: "The board update was published to the connected conversation.",
-        tone: "success",
+        ...feedback,
+        ...(result.state === "published"
+          ? {}
+          : {
+              action: {
+                label: "View activity",
+                href: `/apps/chat/${binding!.endpointId}/activity`,
+              },
+            }),
       });
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't send to channel",
-        body: error instanceof Error ? error.message : "Try again.",
+        title: "Couldn't confirm channel delivery",
+        body:
+          error instanceof Error
+            ? `${error.message} Your draft is kept; retrying here reuses the same request identity.`
+            : "Your draft is kept; retrying here reuses the same request identity.",
         tone: "error",
       }),
   });
   if (!binding) return null;
+  const currentFeedback = publication
+    ? publicationFeedback[publication.state]
+    : null;
+  const activityPath = `/apps/chat/${binding.endpointId}/activity`;
   return (
     <div className="space-y-3 rounded-lg border border-border bg-muted/40 p-3 text-sm">
       <div className="flex flex-wrap items-center gap-3">
@@ -106,19 +174,81 @@ export function ExternallyConnectedTaskBanner({
           <Textarea
             id="external-board-update"
             value={body}
+            disabled={Boolean(publication) || publish.isError}
             onChange={(event) => {
               setBody(event.target.value);
               idempotencyKey.current = null;
+              publish.reset();
             }}
             placeholder="Write only what should be visible in the provider conversation."
           />
+          {publish.isError && !publication && (
+            <div
+              role="alert"
+              className="space-y-1 rounded-md border border-border bg-background p-3 text-xs"
+            >
+              <p className="font-medium">Delivery result not confirmed</p>
+              <p className="text-muted-foreground">
+                Your exact draft and request identity are kept. Retry safely to
+                learn the authoritative publication state without creating a
+                duplicate.
+              </p>
+              <Link
+                className="inline-block font-medium underline underline-offset-4"
+                to={activityPath}
+              >
+                Open Activity
+              </Link>
+            </div>
+          )}
+          {publication && currentFeedback && (
+            <div
+              role={
+                publication.state === "failed" ||
+                publication.state === "delivery_unknown"
+                  ? "alert"
+                  : "status"
+              }
+              className="space-y-1 rounded-md border border-border bg-background p-3 text-xs"
+            >
+              <p className="font-medium">{currentFeedback.title}</p>
+              <p className="text-muted-foreground">{currentFeedback.body}</p>
+              {publication.redactedError && (
+                <p className="text-muted-foreground">
+                  Provider detail: {publication.redactedError}
+                </p>
+              )}
+              <Link
+                className="inline-block font-medium underline underline-offset-4"
+                to={activityPath}
+              >
+                Open Activity
+              </Link>
+              {publication.state === "cancelled" && (
+                <Button
+                  className="ml-3"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setPublication(null);
+                    idempotencyKey.current = null;
+                    publish.reset();
+                  }}
+                >
+                  Start a new send
+                </Button>
+              )}
+            </div>
+          )}
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
               Ordinary board comments remain Paperclip-only.
             </p>
             <Button
               size="sm"
-              disabled={!body.trim() || publish.isPending}
+              disabled={
+                !body.trim() || publish.isPending || Boolean(publication)
+              }
               onClick={() => {
                 idempotencyKey.current ??= crypto.randomUUID();
                 publish.mutate({
@@ -127,7 +257,11 @@ export function ExternallyConnectedTaskBanner({
                 });
               }}
             >
-              {publish.isPending ? "Sending…" : "Send to channel"}
+              {publish.isPending
+                ? "Sending…"
+                : publish.isError
+                  ? "Retry safely"
+                  : "Send to channel"}
             </Button>
           </div>
         </div>

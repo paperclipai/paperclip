@@ -1,4 +1,5 @@
 import { api } from "./client";
+import type { ChatPublicationState } from "@paperclipai/shared";
 
 export type ChatProvider = "slack" | "github" | "microsoft-teams" | "telegram";
 export type ChatEndpointStatus =
@@ -43,15 +44,17 @@ export interface ChatConversation {
   state:
     "active" | "waiting" | "completed" | "unavailable" | "endpoint_removed";
   updatedAt: string;
-  lastPublicationStatus?:
-    | "pending"
-    | "streaming"
-    | "published"
-    | "retry"
-    | "delivery_unknown"
-    | "failed"
-    | "cancelled"
-    | null;
+  lastPublicationStatus?: ChatPublicationState | null;
+}
+
+export interface ChatPublicationSummary {
+  id: string;
+  state: ChatPublicationState;
+  providerUrl?: string | null;
+  attempts: number;
+  redactedError?: string | null;
+  nextAttemptAt?: string | null;
+  publishedAt?: string | null;
 }
 
 export interface ChatActivityItem {
@@ -267,7 +270,7 @@ export const chatEndpointsApi = {
     conversationId: string,
     commentId: string,
   ) =>
-    api.post<void>(
+    api.post<ChatPublicationSummary>(
       `/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`,
       { commentId },
     ),
@@ -277,7 +280,7 @@ export const chatEndpointsApi = {
     body: string,
     idempotencyKey: string,
   ) =>
-    api.post<void>(
+    api.post<ChatPublicationSummary>(
       `/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`,
       { body, idempotencyKey },
     ),

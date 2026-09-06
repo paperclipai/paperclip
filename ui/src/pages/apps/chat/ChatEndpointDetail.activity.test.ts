@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ChatActivityItem } from "@/api/chatEndpoints";
-import { isReplayEligible } from "./ChatEndpointDetail";
+import {
+  isIndividuallyToggleableResource,
+  isReplayEligible,
+} from "./ChatEndpointDetail";
 
 function activity(overrides: Partial<ChatActivityItem> = {}): ChatActivityItem {
   return {
@@ -32,5 +35,29 @@ describe("chat endpoint activity replay eligibility", () => {
     activity({ kind: "repair" }),
   ])("hides replay for ineligible activity %#", (item) => {
     expect(isReplayEligible(item)).toBe(false);
+  });
+});
+
+describe("chat endpoint destination controls", () => {
+  it("uses the reach toggles instead of meaningless Teams DM/group rows", () => {
+    expect(
+      isIndividuallyToggleableResource("microsoft-teams", "direct_message"),
+    ).toBe(false);
+    expect(
+      isIndividuallyToggleableResource("microsoft-teams", "group_chat"),
+    ).toBe(false);
+    expect(isIndividuallyToggleableResource("microsoft-teams", "channel")).toBe(
+      true,
+    );
+  });
+
+  it("retains individually discovered destinations for other providers", () => {
+    expect(isIndividuallyToggleableResource("slack", "direct_message")).toBe(
+      true,
+    );
+    expect(isIndividuallyToggleableResource("telegram", "direct_message")).toBe(
+      true,
+    );
+    expect(isIndividuallyToggleableResource("github", "repository")).toBe(true);
   });
 });

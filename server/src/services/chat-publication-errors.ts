@@ -78,6 +78,7 @@ export function classifyChatPublicationError(
             status?: unknown;
             headers?: Headers | Record<string, unknown>;
           };
+          details?: { code?: unknown };
           innerHttpError?: { statusCode?: unknown };
         })
       : null;
@@ -85,6 +86,8 @@ export function classifyChatPublicationError(
   const code = typeof value?.code === "string" ? value.code : "";
   const platformCode =
     typeof value?.data?.error === "string" ? value.data.error : "";
+  const detailsCode =
+    typeof value?.details?.code === "string" ? value.details.code : "";
   const status = [
     value?.status,
     value?.statusCode,
@@ -108,6 +111,14 @@ export function classifyChatPublicationError(
       rateLimitRemaining === "0" ||
       reason.toLowerCase().includes("secondary rate limit") ||
       reason.toLowerCase().includes("rate limit exceeded"));
+
+  // Endpoint management owns the same lease as provider transport. Losing a
+  // short contention race is a definite local pre-transport outcome, so it is
+  // safe to retry automatically and must never be presented as an ambiguous
+  // provider delivery.
+  if (detailsCode === "chat_endpoint_credentials_busy") {
+    return { kind: "retry", retryAfterMs: 1_000, reason };
+  }
 
   if (
     name === "AdapterRateLimitError" ||
