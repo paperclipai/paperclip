@@ -36,6 +36,7 @@ import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type {
   PaperclipPluginManifestV1,
   PluginLauncherDeclaration,
+  PluginManifestDrift,
   PluginRecord,
   PluginUiSlotDeclaration,
 } from "@paperclipai/shared";
@@ -341,21 +342,12 @@ export interface PluginInstallOptions {
  * a re-activation therefore runs new code against the previously captured
  * capability set, which the host used to report nowhere. Drift is recomputed
  * on demand so no schema column has to track it.
+ *
+ * Declared in `@paperclipai/shared` so the route contract, the lifecycle gate
+ * and the UI client all read the same shape; re-exported here for the existing
+ * server-side importers.
  */
-export interface PluginManifestDrift {
-  /** False when the package on disk could not be read (see `error`). */
-  packageReadable: boolean;
-  /** True when the stored manifest differs from the package manifest. */
-  drifted: boolean;
-  storedVersion: string;
-  packageVersion: string | null;
-  /** Capabilities the package declares that were never granted to the plugin. */
-  addedCapabilities: string[];
-  /** Capabilities still granted that the package no longer declares. */
-  removedCapabilities: string[];
-  /** Why the package manifest could not be read, when `packageReadable` is false. */
-  error?: string;
-}
+export type { PluginManifestDrift } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
 // Runtime options — services needed for initializing loaded plugins

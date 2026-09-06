@@ -42,6 +42,7 @@ vi.mock("../services/plugin-registry.js", () => ({
 }));
 
 import { pluginLoader } from "../services/plugin-loader.js";
+import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 
 const BASE_CAPABILITIES: PluginCapability[] = ["issues.read", "issue.comments.read"];
 const ADDED_CAPABILITY: PluginCapability = "access.members.read";
@@ -251,6 +252,78 @@ describe("plugin capability drift", () => {
       expect(drift.packageReadable).toBe(false);
       expect(drift.error).toBeTruthy();
       expect(drift.addedCapabilities).toEqual([]);
+    });
+  });
+
+  /**
+   * Holding the upgrade is only a gate if it cannot be walked around. The
+   * held package stays on disk and activation adopts the on-disk manifest, so
+   * `enable` on an `upgrade_pending` plugin would otherwise grant exactly the
+   * capabilities the operator declined to approve.
+   */
+  describe("enable on a held upgrade", () => {
+    function createLifecycle(localPluginDir: string) {
+      return pluginLifecycleManager({} as unknown as Db, createLoader(localPluginDir));
+    }
+
+    it("refuses to enable a pending upgrade that would grant unapproved capabilities", async () => {
+      await writePackage(packageRoot, "1.1.0", [...BASE_CAPABILITIES, ADDED_CAPABILITY]);
+      const plugin = createPluginRecord({
+        packagePath: packageRoot,
+        status: "upgrade_pending",
+      });
+      mockRegistry.getById.mockResolvedValue(plugin);
+
+      await expect(createLifecycle(tmpRoot).enable(plugin.id)).rejects.toThrow(
+        new RegExp(`never approved: ${ADDED_CAPABILITY}`),
+      );
+      // Neither the status nor the grant of record moved.
+      expect(mockRegistry.updateStatus).not.toHaveBeenCalled();
+      expect(mockRegistry.update).not.toHaveBeenCalled();
+    });
+
+    it("enables a pending upgrade once the package adds nothing over the stored grant", async () => {
+      // What an approved upgrade leaves behind: the package on disk and the
+      // stored manifest declare the same capabilities.
+      await writePackage(packageRoot, "1.1.0", BASE_CAPABILITIES);
+      const plugin = createPluginRecord({
+        packagePath: packageRoot,
+        status: "upgrade_pending",
+      });
+      mockRegistry.getById.mockResolvedValue(plugin);
+      mockRegistry.updateStatus.mockResolvedValue({ ...plugin, status: "ready" });
+
+      const result = await createLifecycle(tmpRoot).enable(plugin.id);
+
+      expect(result.status).toBe("ready");
+      expect(mockRegistry.updateStatus).toHaveBeenCalledWith(
+        plugin.id,
+        expect.objectContaining({ status: "ready" }),
+      );
+    });
+
+    it("refuses to enable a pending upgrade whose package cannot be read", async () => {
+      const plugin = createPluginRecord({
+        packagePath: path.join(tmpRoot, "missing"),
+        status: "upgrade_pending",
+      });
+      mockRegistry.getById.mockResolvedValue(plugin);
+
+      await expect(createLifecycle(tmpRoot).enable(plugin.id)).rejects.toThrow(
+        /could not be read/,
+      );
+      expect(mockRegistry.updateStatus).not.toHaveBeenCalled();
+    });
+
+    it("still enables a disabled plugin without inspecting a pending upgrade", async () => {
+      await writePackage(packageRoot, "1.0.0", BASE_CAPABILITIES);
+      const plugin = createPluginRecord({ packagePath: packageRoot, status: "disabled" });
+      mockRegistry.getById.mockResolvedValue(plugin);
+      mockRegistry.updateStatus.mockResolvedValue({ ...plugin, status: "ready" });
+
+      const result = await createLifecycle(tmpRoot).enable(plugin.id);
+
+      expect(result.status).toBe("ready");
     });
   });
 });

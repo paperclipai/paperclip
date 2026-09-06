@@ -15,11 +15,46 @@ import type {
   PluginLauncherRenderContextSnapshot,
   PluginUiSlotDeclaration,
   PluginLocalFolderDeclaration,
+  PluginManifestDrift,
   PluginRecord,
   PluginConfig,
   PluginStatus,
 } from "@paperclipai/shared";
 import { api } from "./client";
+
+export type { PluginManifestDrift };
+
+/**
+ * `GET /api/plugins/:pluginId` — the stored record plus per-request diagnostics.
+ *
+ * `manifestDrift` compares the stored manifest (the capability grant the host
+ * enforces) against the package currently on disk, so a package swapped in
+ * place is visible here instead of only in the database.
+ */
+export type PluginDetail = PluginRecord & {
+  /** True when the running worker advertises `validateConfig`. */
+  supportsConfigTest: boolean;
+  manifestDrift: PluginManifestDrift;
+};
+
+/**
+ * `POST /api/plugins/:pluginId/upgrade` — the plugin record with the outcome of
+ * the capability-approval check nested under `upgrade`.
+ *
+ * When `applied` is false the upgrade was held: the stored grant still holds
+ * the previously approved capability set and the plugin sits in
+ * `upgrade_pending` until the same call repeats with `approveCapabilities`.
+ */
+export type PluginUpgradeResponse = PluginRecord & {
+  upgrade: {
+    /** True when the new manifest became the stored grant. */
+    applied: boolean;
+    /** Capabilities the new version adds over the stored grant. */
+    addedCapabilities: string[];
+    /** True when the upgrade is waiting on operator approval of the above. */
+    requiresApproval: boolean;
+  };
+};
 
 /**
  * Normalized UI contribution record returned by `GET /api/plugins/ui-contributions`.
@@ -228,7 +263,7 @@ export const pluginsApi = {
    * @param pluginId - The plugin's UUID (from `PluginRecord.id`) or plugin key.
    */
   get: (pluginId: string) =>
-    api.get<PluginRecord>(`/plugins/${pluginId}`),
+    api.get<PluginDetail>(`/plugins/${pluginId}`),
 
   /**
    * Install a plugin from npm or a local path.
@@ -317,14 +352,33 @@ export const pluginsApi = {
   /**
    * Upgrade a plugin to a newer version.
    *
-   * If the new version declares additional capabilities, the plugin is
-   * transitioned to `upgrade_pending` state awaiting operator approval.
+   * Capability escalation is a two-step loop. A first call without
+   * `approveCapabilities` reports what the new version adds: when anything was
+   * added the upgrade is *not* applied — the plugin is parked in
+   * `upgrade_pending`, the stored grant is untouched, and the response carries
+   * `upgrade.requiresApproval: true` with `upgrade.addedCapabilities`. Present
+   * those to the operator and repeat the call with the approved subset in
+   * `approveCapabilities` to apply it. Approving fewer capabilities than were
+   * added holds the upgrade again.
+   *
+   * Enabling the plugin is not an alternative approval path; the server refuses
+   * to enable a pending upgrade that would grant unapproved capabilities.
    *
    * @param pluginId - UUID of the plugin to upgrade.
-   * @param version - Target version (optional; defaults to latest published).
+   * @param options - Target version and/or the capabilities the operator approved.
+   *   A bare string is accepted as the target version for call-site convenience.
    */
-  upgrade: (pluginId: string, version?: string) =>
-    api.post<{ ok: boolean }>(`/plugins/${pluginId}/upgrade`, version ? { version } : {}),
+  upgrade: (
+    pluginId: string,
+    options?: string | { version?: string; approveCapabilities?: string[] },
+  ) => {
+    const { version, approveCapabilities } =
+      typeof options === "string" ? { version: options, approveCapabilities: undefined } : (options ?? {});
+    const body: { version?: string; approveCapabilities?: string[] } = {};
+    if (version) body.version = version;
+    if (approveCapabilities) body.approveCapabilities = approveCapabilities;
+    return api.post<PluginUpgradeResponse>(`/plugins/${pluginId}/upgrade`, body);
+  },
 
   /**
    * Returns normalized UI contribution declarations for ready plugins.

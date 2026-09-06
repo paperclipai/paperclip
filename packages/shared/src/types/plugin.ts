@@ -759,6 +759,29 @@ export interface PluginRecord {
   updatedAt: Date;
 }
 
+/**
+ * Difference between the manifest stored for a plugin — the capability grant
+ * the host enforces — and the manifest in the package currently on disk.
+ *
+ * A package swapped in place leaves the stored grant untouched until the next
+ * activation, so the running code and the granted capability set can diverge.
+ * See PLUGIN_SPEC.md §15.4.
+ */
+export interface PluginManifestDrift {
+  /** False when the package on disk could not be read (see `error`). */
+  packageReadable: boolean;
+  /** True when the stored manifest differs from the package manifest. */
+  drifted: boolean;
+  storedVersion: string;
+  packageVersion: string | null;
+  /** Capabilities the package declares that were never granted to the plugin. */
+  addedCapabilities: string[];
+  /** Capabilities still granted that the package no longer declares. */
+  removedCapabilities: string[];
+  /** Why the package manifest could not be read, when `packageReadable` is false. */
+  error?: string;
+}
+
 export interface PluginDatabaseNamespaceRecord {
   id: string;
   pluginId: string;

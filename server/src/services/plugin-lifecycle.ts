@@ -40,6 +40,7 @@ import type { Db } from "@paperclipai/db";
 import type {
   PluginStatus,
   PluginRecord,
+  PluginManifestDrift,
   PaperclipPluginManifestV1,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "./plugin-registry.js";
@@ -451,6 +452,61 @@ export function pluginLifecycleManager(
     }
   }
 
+  /**
+   * Refuse to activate a plugin whose on-disk package still declares
+   * capabilities the stored grant does not carry.
+   *
+   * Only called for `upgrade_pending`, where a capability escalation is known
+   * to be awaiting an operator decision. It fails closed: a package that cannot
+   * be read cannot be shown to grant nothing, and activation would fail on it
+   * anyway.
+   */
+  async function assertPendingUpgradeGrantsNothing(plugin: PluginRecord): Promise<void> {
+    if (typeof pluginLoaderInstance.inspectManifestDrift !== "function") {
+      throw badRequest(
+        `Cannot enable plugin '${plugin.pluginKey}': its pending upgrade cannot be checked for `
+          + `capability escalation on this host. Re-run the upgrade with an explicit approval.`,
+      );
+    }
+
+    let drift: PluginManifestDrift;
+    try {
+      drift = await pluginLoaderInstance.inspectManifestDrift(plugin);
+    } catch (err) {
+      throw badRequest(
+        `Cannot enable plugin '${plugin.pluginKey}': the pending upgrade package on disk could not `
+          + `be read (${err instanceof Error ? err.message : String(err)}).`,
+      );
+    }
+
+    if (!drift.packageReadable) {
+      throw badRequest(
+        `Cannot enable plugin '${plugin.pluginKey}': the pending upgrade package on disk could not `
+          + `be read (${drift.error ?? "unknown error"}).`,
+      );
+    }
+
+    if (drift.addedCapabilities.length === 0) return;
+
+    log.warn(
+      {
+        pluginId: plugin.id,
+        pluginKey: plugin.pluginKey,
+        addedCapabilities: drift.addedCapabilities,
+        storedVersion: drift.storedVersion,
+        packageVersion: drift.packageVersion,
+      },
+      "plugin lifecycle: refused to enable a pending upgrade that would grant unapproved capabilities",
+    );
+
+    throw badRequest(
+      `Cannot enable plugin '${plugin.pluginKey}': the package on disk (v${drift.packageVersion}) `
+        + `declares capabilities that were never approved: ${drift.addedCapabilities.join(", ")}. `
+        + `Approve them by re-running the upgrade with 'approveCapabilities', or uninstall the `
+        + `plugin to reject it.`,
+    );
+  }
+
   async function deactivatePluginRuntime(
     pluginId: string,
     pluginKey: string,
@@ -505,6 +561,10 @@ export function pluginLifecycleManager(
      * Similar to load(), this method transitions the plugin to 'ready' and starts
      * its worker, but it specifically targets plugins that are currently disabled.
      *
+     * Enabling never grants capabilities: a plugin parked in `upgrade_pending`
+     * by an unapproved escalation is refused here, because activation would
+     * adopt the on-disk manifest and hand over the withheld grant (§15.3).
+     *
      * @param pluginId - The UUID of the plugin to enable.
      * @returns The updated plugin record.
      */
@@ -517,6 +577,16 @@ export function pluginLifecycleManager(
           `Cannot enable plugin in status '${plugin.status}'. ` +
             `Plugin must be in 'disabled', 'error', or 'upgrade_pending' status to be enabled.`,
         );
+      }
+
+      // A held upgrade leaves the *new* package on disk while the stored
+      // manifest keeps the previously approved grant. Activation adopts the
+      // on-disk manifest, so enabling here would hand over exactly the
+      // capabilities the operator has not approved — putting the approval gate
+      // in `upgrade()` one call away from being bypassed. Approval has a single
+      // entry point: `upgrade({ approveCapabilities })`.
+      if (plugin.status === "upgrade_pending") {
+        await assertPendingUpgradeGrantsNothing(plugin);
       }
 
       const result = await transition(pluginId, "ready", null, plugin);

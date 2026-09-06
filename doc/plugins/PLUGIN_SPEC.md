@@ -905,6 +905,19 @@ capabilities must not persist its manifest before approval.
    `approveCapabilities`. The manifest is then adopted and the plugin returns
    to `ready`.
 
+Approving fewer capabilities than the upgrade adds holds it again — the grant
+of record never carries a capability nobody approved.
+
+That call is the only approval path. A held upgrade leaves the new package on
+disk while the stored manifest keeps the previously approved grant, and
+activation adopts whatever manifest it finds on disk, so
+`POST /api/plugins/:pluginId/enable` must refuse a plugin in `upgrade_pending`
+whose package declares capabilities the stored grant lacks — otherwise enabling
+would grant exactly what the operator declined. The refusal fails closed: a
+package that cannot be read cannot be shown to grant nothing. An operator who
+does not want the new capabilities rejects the upgrade by uninstalling
+(`upgrade_pending → uninstalled`).
+
 ### 15.4 Manifest Drift
 
 A plugin package replaced on disk without a re-activation keeps running against
