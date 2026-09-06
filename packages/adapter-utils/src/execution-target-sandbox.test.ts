@@ -5745,6 +5745,108 @@ describe("sandbox adapter execution targets", () => {
     }
   }, 20000);
 
+  it("test_a_denied_concatenated_response_body_never_allocates_the_copy", async () => {
+    // Leave room for the one response chunk but not for the second,
+    // concatenated copy `readBridgeForwardResponseBody` (`execution-target.ts`)
+    // builds from it: a correct reader checks the reservation before
+    // `Buffer.concat` allocates the copy, so the denied concatenated copy
+    // must never call `Buffer.concat` at all.
+    resetBridgeBodyReservationsForTest();
+    const chunkBytes = 200_000;
+    const filler = createBridgeBodyReservation();
+    expect(filler.reserve(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES - Math.floor(chunkBytes * 1.5))).toBe(true);
+
+    const api = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.end(Buffer.alloc(chunkBytes, "a"));
+    });
+    await new Promise<void>((resolve, reject) => {
+      api.once("error", reject);
+      api.listen(0, "127.0.0.1", () => resolve());
+    });
+    const apiAddress = api.address();
+    if (!apiAddress || typeof apiAddress === "string") {
+      throw new Error("Expected the mock host server to listen on a TCP port.");
+    }
+    const apiOrigin = `http://127.0.0.1:${apiAddress.port}`;
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-denied-response-concat-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const sessionRef: { current: http2.ClientHttp2Session | null } = { current: null };
+    let bridgeToken = "";
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      bridgeToken = ctx.bridgeToken;
+      ctx.emitReady();
+      sessionRef.current = ctx.connectHttp2();
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-denied-response-concat",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: apiOrigin,
+      enableSandboxDuplexBridge: true,
+    });
+    const concatSpy = vi.spyOn(Buffer, "concat");
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      await waitForCondition(() => sessionRef.current !== null, "the http2 client session to open", 4000);
+      // GET is a safe method: a response-body read fault answers a
+      // retryable 502, the same classification any other read fault gets.
+      // This reads the response with a plain string accumulator, not
+      // `Buffer.concat`, so the spy below counts only the calls the bridge
+      // code under test makes.
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const stream = sessionRef.current!.request({
+          ":method": "GET",
+          ":path": "/api/agents/me",
+          authorization: `Bearer ${bridgeToken}`,
+        });
+        let status = 0;
+        let body = "";
+        stream.setEncoding("utf8");
+        stream.on("response", (headers) => {
+          status = Number(headers[":status"]) || 0;
+        });
+        stream.on("data", (chunk) => (body += chunk));
+        stream.once("end", () => resolve({ status, body }));
+        stream.once("error", reject);
+        stream.end();
+      });
+      expect(response.status).toBe(502);
+      // The GET request itself carries no body, so the host's own read of
+      // that empty request body still calls `Buffer.concat` on an empty
+      // array — that call is unrelated to this test. No call may carry any
+      // response byte, since the denied concatenated response copy must
+      // never allocate.
+      for (const [chunks] of concatSpy.mock.calls) {
+        expect((chunks as Buffer[]).reduce((sum, chunk) => sum + chunk.length, 0)).toBe(0);
+      }
+    } finally {
+      concatSpy.mockRestore();
+      sessionRef.current?.close();
+      await bridge?.stop();
+      await new Promise<void>((resolve) => api.close(() => resolve()));
+      // The denied concatenated copy reserved nothing: releasing the filler
+      // is the only release this test needs to reach zero.
+      filler.release();
+      expect(getBridgeBodyReservedBytesForTest()).toBe(0);
+    }
+  }, 20000);
+
   it("test_concurrent_request_and_response_bodies_never_pass_the_process_ceiling", async () => {
     resetBridgeBodyReservationsForTest();
     const bodyBytes = 2 * 1024 * 1024;

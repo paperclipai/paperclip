@@ -886,21 +886,22 @@ function readHttp2StreamBody(
   reservation?: BridgeBodyReservation,
 ): Promise<Buffer> {
   const chunks: Buffer[] = [];
+  let retainedBytes = 0;
   return readOrDrainHttp2StreamBody(
     stream,
     bounds,
-    (chunk) => {
+    (chunk, totalBytes) => {
       if (reservation && !reservation.reserve(chunk.byteLength)) {
         throw new BridgeProcessCapacityError();
       }
       chunks.push(chunk);
+      retainedBytes = totalBytes;
     },
     () => {
-      const body = Buffer.concat(chunks);
-      if (reservation && !reservation.reserve(body.byteLength)) {
+      if (reservation && !reservation.reserve(retainedBytes)) {
         throw new BridgeProcessCapacityError();
       }
-      return body;
+      return Buffer.concat(chunks);
     },
   );
 }

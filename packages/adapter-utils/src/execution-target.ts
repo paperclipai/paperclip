@@ -1591,11 +1591,10 @@ async function readBridgeForwardResponseBody(
     }
     chunks.push(Buffer.from(value));
   }
-  const body = Buffer.concat(chunks, totalBytes);
-  if (reservation && !reservation.reserve(body.byteLength)) {
+  if (reservation && !reservation.reserve(totalBytes)) {
     throw new BridgeProcessCapacityError();
   }
-  return body;
+  return Buffer.concat(chunks, totalBytes);
 }
 
 const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";

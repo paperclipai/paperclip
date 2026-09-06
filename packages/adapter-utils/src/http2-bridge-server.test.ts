@@ -2,7 +2,7 @@ import { duplexPair } from "node:stream";
 import type { Duplex } from "node:stream";
 import http2 from "node:http2";
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildHttp2BridgeForwardUrl,
@@ -1272,6 +1272,65 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       });
       expect(survivingResponse.status).toBe(200);
     } finally {
+      rawClient.close();
+      await handle.close();
+      filler.release();
+    }
+  });
+
+  it("test_a_denied_concatenated_request_body_never_allocates_the_copy", async () => {
+    // The chunk-array copy and the concatenated copy are two separate live
+    // buffers, so each must reserve on its own. Leave room for the first but
+    // not the second: a correct reader checks the reservation before
+    // `Buffer.concat` allocates the copy, so the denied concatenated copy
+    // must never call `Buffer.concat` at all.
+    const chunkBytes = 200_000;
+    const filler = createBridgeBodyReservation();
+    expect(filler.reserve(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES - Math.floor(chunkBytes * 1.5))).toBe(true);
+    const concatSpy = vi.spyOn(Buffer, "concat");
+    const forwarderTracker = createForwarderCallTracker();
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      forwardRequest: async () => {
+        forwarderTracker.markCalled();
+        return { status: 200 };
+      },
+    });
+    const rawClient = connectRawClient(clientSide);
+    try {
+      const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = rawClient.request({
+          ":method": "POST",
+          ":path": "/api/issues/abc/comments",
+          authorization: `Bearer ${bridgeToken}`,
+        });
+        let status = 0;
+        let body = "";
+        req.setEncoding("utf8");
+        req.on("response", (headers) => {
+          status = Number(headers[":status"]) || 0;
+        });
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => resolve({ status, body }));
+        req.on("error", reject);
+        req.write(Buffer.alloc(chunkBytes, "a"), () => {
+          // Give the host a turn to receive the one chunk and reserve its
+          // bytes before this test ends the stream and triggers the
+          // concatenated-copy reservation attempt.
+          setTimeout(() => {
+            // The chunk-array reservation alone must already hold, on top of
+            // the filler above, exactly the one chunk's bytes: the
+            // concatenated-copy reservation has not run yet, because the
+            // stream has not ended.
+            expect(getBridgeBodyReservedBytesForTest()).toBe(filler.heldBytes + chunkBytes);
+            req.end();
+          }, 50);
+        });
+      });
+      expect(response.status).toBe(503);
+      expect(forwarderTracker.called).toBe(false);
+      expect(concatSpy).not.toHaveBeenCalled();
+    } finally {
+      concatSpy.mockRestore();
       rawClient.close();
       await handle.close();
       filler.release();
