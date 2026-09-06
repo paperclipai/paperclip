@@ -79,7 +79,7 @@ describe("agy-local testEnvironment", () => {
     };
   });
 
-  it("probes in read-only plan mode without --dangerously-skip-permissions by default", async () => {
+  it("omits --mode when mode is unset (matching execute default mode) and probes without --dangerously-skip-permissions by default", async () => {
     const ctx: AdapterEnvironmentTestContext = {
       companyId: "company-1",
       adapterType: "agy_local",
@@ -94,9 +94,26 @@ describe("agy-local testEnvironment", () => {
     const args = capturedRuns[0].args;
     expect(args).toContain("--print");
     expect(args).toContain("Respond with hello.");
+    expect(args).not.toContain("--mode");
+    expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("passes configured plan mode when explicitly set", async () => {
+    const ctx: AdapterEnvironmentTestContext = {
+      companyId: "company-1",
+      adapterType: "agy_local",
+      config: {
+        mode: "plan",
+      },
+    };
+
+    const result = await testEnvironment(ctx);
+    expect(result.status).toBe("pass");
+
+    expect(capturedRuns).toHaveLength(1);
+    const args = capturedRuns[0].args;
     expect(args).toContain("--mode");
     expect(args[args.indexOf("--mode") + 1]).toBe("plan");
-    expect(args).not.toContain("--dangerously-skip-permissions");
   });
 
   it("does not include --dangerously-skip-permissions when explicitly set to false", async () => {

@@ -116,7 +116,8 @@ export async function testEnvironment(
   if (canRunProbe) {
     const model = asString(config.model, DEFAULT_AGY_LOCAL_MODEL).trim();
     const effort = asString(config.effort, "").trim();
-    const mode = asString(config.mode, "plan").trim();
+    // When unset, omit --mode to match real execution under Antigravity default edit mode
+    const mode = asString(config.mode, "").trim();
     const agentPersona = asString(config.agent ?? config.agentPersona, "").trim();
     const sandbox = Boolean(config.sandbox);
     const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);

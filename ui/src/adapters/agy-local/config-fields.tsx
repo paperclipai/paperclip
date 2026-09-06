@@ -65,8 +65,8 @@ export function AgyLocalConfigFields({
           onChange={(e) => {
             const val = e.target.value;
             isCreate
-              ? set!({ mode: val === "plan" ? "plan" : undefined } as any)
-              : mark("adapterConfig", "mode", val === "plan" ? "plan" : undefined);
+              ? set!({ mode: val } as any)
+              : mark("adapterConfig", "mode", val);
           }}
         >
           <option value="accept-edits">Edit Mode (accept-edits) — Full autonomous execution</option>

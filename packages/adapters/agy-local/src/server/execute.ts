@@ -102,6 +102,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "agy");
   const model = asString(config.model, DEFAULT_AGY_LOCAL_MODEL).trim();
   const effort = asString(config.effort, "").trim();
+  // When unset, omit --mode so Antigravity runs in default edit mode (matching test.ts probe)
   const mode = asString(config.mode, "").trim();
   const agentPersona = asString(config.agent ?? config.agentPersona, "").trim();
   const jsonSchema = asString(config.jsonSchema ?? config.json_schema, "").trim();
