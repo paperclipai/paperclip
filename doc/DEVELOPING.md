@@ -1244,3 +1244,39 @@ Networking behavior for this smoke script:
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
 - if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `npx paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+
+## Codex Run-Home Recovery
+
+Local Codex runs use a private home under
+`<company-dir>/acp-engine/agents/<agent-id>/codex-run-homes/<run-id>/home`.
+This preserves the restricted-run isolation boundary.
+Paperclip keeps sanitized session JSONL after the runtime closes. It then removes
+the raw run home. Successful retention writes an atomic
+`retention-complete.json` manifest, including for valid zero-session runs. If
+retention or runtime close fails, Paperclip removes partial retained output,
+preserves the home, and writes a sibling `<run-id>.quarantine` marker. If raw-home
+deletion fails after retention succeeds, Paperclip preserves both the durable
+retained counterpart and whatever remains of the raw home, writes the quarantine
+marker with reason `raw_run_home_cleanup_failed`, and emits the same visible
+`INCIDENT` log signal used by the retention and close failure paths.
+
+The orphan sweeper is dry-run only unless `--delete` is present:
+
+```sh
+npx tsx packages/adapter-utils/src/acpx-engine/run-home-sweeper.ts \
+  --company-dir /path/to/companies/<company-id>
+```
+
+Set `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` for both modes. The sweeper fails
+closed unless it can prove that the heartbeat run is terminal, the home has no
+open file handles, the home is older than the grace window, the API run ownership
+matches the company and agent directories, and a sanitized retention counterpart
+has proof of completion. New counterparts require a valid
+completion manifest. Legacy counterparts must contain a non-empty retained
+artifact for every JSONL file still present in the raw home. Partial, empty,
+unreadable, or symlinked company/ACPX/agent/run-home/retention/session paths
+fail closed. A quarantine
+marker records an incident. It does not permit deletion of the only raw copy.
+
+Review the JSON manifest before you add `--delete`. Keep the default 24-hour
+grace period unless the operator has approved a different recovery window.

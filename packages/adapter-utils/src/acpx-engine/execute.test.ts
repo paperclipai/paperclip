@@ -2241,6 +2241,569 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(cwd, ".claude", "settings.local.json"))).toBe(false);
   });
 
+  it("rejects a traversal run ID before any run-home cleanup can escape its root", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const adjacentHome = path.join(stateDir, "home");
+    const sentinel = path.join(adjacentHome, "sentinel.txt");
+    let runtimeCreated = false;
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+    await fs.mkdir(adjacentHome, { recursive: true });
+    await fs.writeFile(sentinel, "keep", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => {
+        runtimeCreated = true;
+        throw new Error("runtime must not start");
+      },
+    });
+
+    await expect(
+      execute({
+        runId: "..",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: {
+          agent: "codex",
+          stateDir,
+          env: { CODEX_HOME: sourceCodexHome },
+        },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never),
+    ).rejects.toThrow("Run identifier is not a safe path segment");
+
+    expect(runtimeCreated).toBe(false);
+    await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("keep");
+  });
+
+  it("rejects symlinked Codex cleanup roots without touching external sentinels", async () => {
+    for (const rootName of ["codex-run-homes", "codex-session-retention"] as const) {
+      const root = await makeTempRoot();
+      const stateDir = path.join(root, "state");
+      const sourceCodexHome = path.join(root, "source-codex-home");
+      const externalDir = path.join(root, `external-${rootName}`);
+      const sentinel = path.join(externalDir, "sentinel.txt");
+      let runtimeCreated = false;
+
+      await fs.mkdir(stateDir, { recursive: true });
+      await fs.mkdir(sourceCodexHome, { recursive: true });
+      await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+      await fs.mkdir(externalDir, { recursive: true });
+      await fs.writeFile(sentinel, "keep", "utf8");
+      await fs.symlink(externalDir, path.join(stateDir, rootName), "dir");
+
+      const execute = createAcpxEngineExecutor({
+        adapterType: "codex_local",
+        createRuntime: () => {
+          runtimeCreated = true;
+          throw new Error("runtime must not start");
+        },
+      });
+
+      await expect(execute({
+        runId: `run-${rootName}`,
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "codex", stateDir, env: { CODEX_HOME: sourceCodexHome } },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never)).rejects.toThrow(/must be a real directory/);
+
+      expect(runtimeCreated).toBe(false);
+      await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("keep");
+    }
+  });
+
+  it("retains only sanitized run-local Codex session JSONL after the runtime closes", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-sentinel";
+    const fakeToken = `pcp_board_${"01234567".repeat(6)}`;
+    const opaqueJsonSecret = "opaque-json-credential";
+    const runSessionFile = path.join(
+      stateDir,
+      "codex-run-homes",
+      runId,
+      "home",
+      "sessions",
+      "2026",
+      "08",
+      "session.jsonl",
+    );
+    const closeOrder: string[] = [];
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
+            await fs.writeFile(
+              runSessionFile,
+              `${JSON.stringify({ type: "message", text: `token=${fakeToken}`, credential: opaqueJsonSecret })}\n`,
+              "utf8",
+            );
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {
+          closeOrder.push("close");
+          await fs.appendFile(
+            runSessionFile,
+            `${JSON.stringify({ type: "close", text: `Authorization: Bearer ${fakeToken}` })}\n`,
+            "utf8",
+          );
+        },
+      }) as never,
+    });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        stateDir,
+        warmHandleIdleMs: 60_000,
+        env: { CODEX_HOME: sourceCodexHome },
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(closeOrder).toEqual(["close"]);
+
+    const retainedFile = path.join(
+      stateDir,
+      "codex-session-retention",
+      runId,
+      "sessions",
+      "2026",
+      "08",
+      "session.jsonl",
+    );
+    const retained = await fs.readFile(retainedFile, "utf8");
+    expect(retained).not.toContain(fakeToken);
+    expect(retained).not.toContain(opaqueJsonSecret);
+    expect(retained).toContain("***REDACTED***");
+    expect(retained).toContain("\"type\":\"close\"");
+    expect((await fs.stat(retainedFile)).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(path.dirname(retainedFile))).mode & 0o777).toBe(0o700);
+
+    // Fix A (KEWL-3852): raw run home must be deleted after successful retention.
+    const runHomeDir = path.join(stateDir, "codex-run-homes", runId, "home");
+    await expect(fs.stat(runHomeDir)).rejects.toThrow();
+    expect(logs.some((entry) => entry.text.includes("Deleted raw Codex run home"))).toBe(true);
+    expect(logs.every((entry) => !entry.text.includes("INCIDENT"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Retained 1 sanitized ACPX Codex session JSONL"))).toBe(true);
+  });
+
+  it("removes a closed raw run home when Codex created no sessions directory", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-without-sessions";
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        stateDir,
+        env: { CODEX_HOME: sourceCodexHome },
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.stat(path.join(stateDir, "codex-run-homes", runId, "home"))).rejects.toThrow();
+    await expect(fs.stat(path.join(stateDir, "codex-session-retention", runId, "sessions"))).resolves.toBeDefined();
+    const manifest = JSON.parse(await fs.readFile(
+      path.join(stateDir, "codex-session-retention", runId, "retention-complete.json"),
+      "utf8",
+    )) as { status: string; runId: string; sessionFileCount: number };
+    expect(manifest).toMatchObject({ status: "complete", runId, sessionFileCount: 0 });
+    expect(logs.some((entry) => entry.text.includes("Retained 0 sanitized ACPX Codex session JSONL"))).toBe(true);
+    expect(logs.every((entry) => !entry.text.includes("INCIDENT"))).toBe(true);
+  });
+
+  it("preserves sanitized retention and quarantines the raw home when raw cleanup fails", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-cleanup-fail";
+    const runSessionFile = path.join(
+      stateDir,
+      "codex-run-homes",
+      runId,
+      "home",
+      "sessions",
+      "session.jsonl",
+    );
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      removeCodexRunHome: async () => {
+        throw new Error("simulated cleanup failure");
+      },
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
+            await fs.writeFile(runSessionFile, '{"type":"message"}\n', "utf8");
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "codex", stateDir, env: { CODEX_HOME: sourceCodexHome } },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.stat(path.dirname(path.dirname(runSessionFile)))).resolves.toBeDefined();
+    await expect(
+      fs.stat(path.join(stateDir, "codex-session-retention", runId, "sessions", "session.jsonl")),
+    ).resolves.toBeDefined();
+    await expect(
+      fs.readFile(path.join(stateDir, "codex-run-homes", `${runId}.quarantine`), "utf8"),
+    ).resolves.toContain("raw_run_home_cleanup_failed");
+    expect(logs.some((entry) => entry.text.includes("INCIDENT") && entry.text.includes("cleanup failed"))).toBe(true);
+  });
+
+  it("does not discard retained sessions when the post-delete log sink fails", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-delete-log-fail";
+    const runSessionFile = path.join(
+      stateDir,
+      "codex-run-homes",
+      runId,
+      "home",
+      "sessions",
+      "session.jsonl",
+    );
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
+            await fs.writeFile(runSessionFile, '{"type":"message"}\n', "utf8");
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "codex", stateDir, env: { CODEX_HOME: sourceCodexHome } },
+      context: {},
+      onLog: async (_stream: "stdout" | "stderr", text: string) => {
+        if (text.includes("Deleted raw Codex run home")) throw new Error("log sink unavailable");
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.stat(path.dirname(path.dirname(runSessionFile)))).rejects.toThrow();
+    await expect(
+      fs.stat(path.join(stateDir, "codex-session-retention", runId, "sessions", "session.jsonl")),
+    ).resolves.toBeDefined();
+    await expect(
+      fs.stat(path.join(stateDir, "codex-run-homes", `${runId}.quarantine`)),
+    ).rejects.toThrow();
+  });
+
+  it("quarantines the raw run home and emits INCIDENT log when session retention fails (KEWL-3852)", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-retention-fail";
+    const fakeToken = `pcp_board_${"01234567".repeat(6)}`;
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    // Replace the sessions directory with a file so retention enumeration fails
+    // deterministically, including when the test process runs with elevated access.
+    const sessionsDir = path.join(stateDir, "codex-run-homes", runId, "home", "sessions");
+    const runSessionFile = path.join(sessionsDir, "2026", "08", "session.jsonl");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
+            await fs.writeFile(runSessionFile, `${JSON.stringify({ type: "message", text: `token=${fakeToken}` })}\n`, "utf8");
+            await fs.rm(sessionsDir, { recursive: true, force: true });
+            await fs.writeFile(sessionsDir, "not-a-directory", "utf8");
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        stateDir,
+        warmHandleIdleMs: 60_000,
+        env: { CODEX_HOME: sourceCodexHome },
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+
+    // On retention failure: run home must remain (quarantined) and emit INCIDENT.
+    const runHomeDir = path.join(stateDir, "codex-run-homes", runId, "home");
+    const stat = await fs.stat(runHomeDir).catch(() => null);
+    expect(stat).not.toBeNull();
+    const quarantineMarker = path.join(stateDir, "codex-run-homes", `${runId}.quarantine`);
+    await expect(fs.readFile(quarantineMarker, "utf8")).resolves.toContain("sanitized_session_retention_failed");
+    await expect(fs.stat(path.join(stateDir, "codex-session-retention", runId))).rejects.toThrow();
+    expect(logs.some((entry) => entry.stream === "stderr" && entry.text.includes("INCIDENT"))).toBe(true);
+    expect(logs.every((entry) => !entry.text.includes("Deleted raw Codex run home"))).toBe(true);
+  });
+
+  it("quarantines the raw run home when runtime close is not confirmed", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-close-fail";
+    const runSessionFile = path.join(
+      stateDir,
+      "codex-run-homes",
+      runId,
+      "home",
+      "sessions",
+      "session.jsonl",
+    );
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            await fs.mkdir(path.dirname(runSessionFile), { recursive: true });
+            await fs.writeFile(runSessionFile, `${JSON.stringify({ type: "message" })}\n`, "utf8");
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {
+          throw new Error("close failed");
+        },
+      }) as never,
+    });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    const result = await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "codex",
+        stateDir,
+        warmHandleIdleMs: 60_000,
+        env: { CODEX_HOME: sourceCodexHome },
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    await expect(fs.stat(path.dirname(path.dirname(runSessionFile)))).resolves.toBeDefined();
+    const quarantineMarker = path.join(stateDir, "codex-run-homes", `${runId}.quarantine`);
+    await expect(fs.readFile(quarantineMarker, "utf8")).resolves.toContain("runtime_close_unconfirmed");
+    await expect(fs.stat(path.join(stateDir, "codex-session-retention", runId))).rejects.toThrow();
+    expect(logs.some((entry) => entry.text.includes("runtime close was not confirmed"))).toBe(true);
+    expect(logs.every((entry) => !entry.text.includes("Deleted raw Codex run home"))).toBe(true);
+  });
+
+  it("restricted-run isolation still holds after Fix A — restricted run gets its own unmanaged CODEX_HOME (KEWL-3852 AC3)", async () => {
+    // A restricted run (runtimeToolPolicy.restricted=true) must still get an isolated
+    // CODEX_HOME under codex-run-homes/<runId>/home.  Fix A must not weaken that boundary.
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const sourceCodexHome = path.join(root, "source-codex-home");
+    const runId = "run-restricted-isolation";
+
+    await fs.mkdir(sourceCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), "model_provider = \"openai\"\n", "utf8");
+
+    const capturedCodexHome: string[] = [];
+
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: () => ({
+        ensureSession: async (input: { sessionOptions?: { env?: Record<string, string> } }) => {
+          // Capture the CODEX_HOME the runtime was given via sessionOptions.env
+          const home = input.sessionOptions?.env?.CODEX_HOME;
+          if (home) capturedCodexHome.push(home);
+          return {
+            backendSessionId: "backend-session",
+            agentSessionId: "agent-session",
+            runtimeSessionName: "runtime-session",
+          };
+        },
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const logs: Array<{ stream: string; text: string }> = [];
+    await execute({
+      runId,
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: { runtimeToolPolicy: { restricted: true, enforcement: "required" } },
+      config: {
+        agent: "codex",
+        stateDir,
+        warmHandleIdleMs: 60_000,
+        env: { CODEX_HOME: sourceCodexHome },
+      },
+      context: {},
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    // The CODEX_HOME must be an isolated run-specific directory, not the source home.
+    const expectedRunHome = path.join(stateDir, "codex-run-homes", runId, "home");
+    expect(capturedCodexHome.length).toBeGreaterThan(0);
+    expect(capturedCodexHome[0]).toBe(expectedRunHome);
+    // And it must not be the original source home
+    expect(capturedCodexHome[0]).not.toBe(sourceCodexHome);
+    // The isolation log line must appear
+    expect(logs.some((entry) => entry.text.includes("run-isolated") && entry.text.includes(runId))).toBe(true);
+  });
+
   it("changes the ACPX session fingerprint when the resolved secret manifest rotates", async () => {
     const root = await makeTempRoot();
     const baseConfig = {

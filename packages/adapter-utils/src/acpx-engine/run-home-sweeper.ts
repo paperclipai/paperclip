@@ -1,0 +1,573 @@
+/**
+ * Orphan run-home sweeper (KEWL-3852).
+ *
+ * Codex run-homes under codex-run-homes/<runId>/home accumulate when Fix A has
+ * not yet deployed or when retention failure leaves a quarantine.  This sweeper
+ * identifies "orphan" homes that are safe to remove and deletes them after a
+ * conservative grace window.
+ *
+ * Safety invariants (all must hold for a home to be eligible):
+ *   1. The Paperclip heartbeat run is terminal
+ *   2. Zero open file handles on the directory tree   (lsof check)
+ *   3. mtime of the run-home dir is >=24h ago
+ *   4. A sanitized session counterpart has a valid completion manifest, or a
+ *      legacy counterpart contains a non-empty JSONL artifact
+ *
+ * Invariant 4 ensures we never silently discard a home whose session data was
+ * never retained. A sibling <runId>.quarantine marker records retention failure,
+ * but does not authorize deletion of the only raw copy.
+ *
+ * Dry-run mode (default) produces a JSON manifest without deleting anything.
+ * Pass --delete to actually remove eligible homes.
+ *
+ * Usage:
+ *   npx tsx packages/adapter-utils/src/acpx-engine/run-home-sweeper.ts \
+ *     --company-dir /path/to/companies/<companyId> \
+ *     [--delete] [--grace-hours 24]
+ */
+
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+interface SweeperOptions {
+  companyDir: string;
+  dryRun: boolean;
+  graceHours: number;
+  paperclipApiBase?: string;
+  paperclipApiKey?: string;
+}
+
+interface RunHomeEntry {
+  agentId: string;
+  runId: string;
+  runHomeDir: string;
+  ageSecs: number;
+  sizeBytes?: number;
+  eligible: boolean;
+  retentionProof?: "completion_manifest" | "legacy_nonempty_jsonl";
+  quarantined?: boolean;
+  ineligibleReason?: string;
+  deleted?: boolean;
+  error?: string;
+}
+
+const RETENTION_MANIFEST_NAME = "retention-complete.json";
+const MINIMUM_GRACE_HOURS = 24;
+
+type RetentionProofCheck =
+  | { ok: true; proof: "completion_manifest" | "legacy_nonempty_jsonl" }
+  | { ok: false; error: string };
+
+type OpenHandleCheck =
+  | { ok: true; hasOpenHandles: boolean }
+  | { ok: false; error: string };
+
+type RunStatusCheck =
+  | { ok: true; status: string; companyId: string; agentId: string }
+  | { ok: false; error: string };
+
+interface SweeperDependencies {
+  checkOpenHandles?: (dir: string) => Promise<OpenHandleCheck>;
+  getRunStatus?: (
+    runId: string,
+    apiBase: string,
+    apiKey: string,
+    expectedCompanyId: string,
+    expectedAgentId: string,
+  ) => Promise<RunStatusCheck>;
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  return fs.access(p).then(() => true, () => false);
+}
+
+function isPathBelow(root: string, candidate: string): boolean {
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  return resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
+async function listJsonlArtifacts(
+  root: string,
+  dir = root,
+  relativeDir = "",
+): Promise<Map<string, number>> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const artifacts = new Map<string, number>();
+  for (const entry of entries) {
+    const candidate = path.join(dir, entry.name);
+    const relativePath = relativeDir ? path.join(relativeDir, entry.name) : entry.name;
+    if (!isPathBelow(root, candidate)) throw new Error("JSONL artifact escaped its configured root");
+    if (entry.isSymbolicLink()) throw new Error("JSONL artifact tree contains a symlink");
+    if (entry.isDirectory()) {
+      const nested = await listJsonlArtifacts(root, candidate, relativePath);
+      for (const [nestedPath, size] of nested) artifacts.set(nestedPath, size);
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+    const stat = await fs.lstat(candidate);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("JSONL artifact is not a real file");
+    }
+    artifacts.set(relativePath, stat.size);
+  }
+  return artifacts;
+}
+
+async function validateRetentionProof(
+  retentionParent: string,
+  runId: string,
+  runHomeDir: string,
+): Promise<RetentionProofCheck> {
+  let retentionParentStat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    retentionParentStat = await fs.lstat(retentionParent);
+  } catch (err) {
+    return {
+      ok: false,
+      error: isErrnoException(err, "ENOENT")
+        ? "no retained session counterpart"
+        : `retention root could not be inspected: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!retentionParentStat.isDirectory() || retentionParentStat.isSymbolicLink()) {
+    return { ok: false, error: "retention root is not a real directory" };
+  }
+  const retainedDir = path.resolve(retentionParent, runId);
+  if (!isPathBelow(retentionParent, retainedDir)) {
+    return { ok: false, error: "retained-session path escaped the retention root" };
+  }
+
+  let retainedStat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    retainedStat = await fs.lstat(retainedDir);
+  } catch (err) {
+    return {
+      ok: false,
+      error: isErrnoException(err, "ENOENT")
+        ? "no retained session counterpart"
+        : `retained-session counterpart could not be inspected: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!retainedStat.isDirectory() || retainedStat.isSymbolicLink()) {
+    return { ok: false, error: "retained-session counterpart is not a real directory" };
+  }
+
+  const manifestPath = path.join(retainedDir, RETENTION_MANIFEST_NAME);
+  let manifestFound = false;
+  try {
+    const manifestStat = await fs.lstat(manifestPath);
+    manifestFound = true;
+    if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
+      return { ok: false, error: "retention completion manifest is not a real file" };
+    }
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
+      schemaVersion?: unknown;
+      status?: unknown;
+      runId?: unknown;
+      sessionFileCount?: unknown;
+      sessionFiles?: unknown;
+    };
+    if (
+      manifest.schemaVersion !== 1 ||
+      manifest.status !== "complete" ||
+      manifest.runId !== runId ||
+      !Number.isInteger(manifest.sessionFileCount) ||
+      (manifest.sessionFileCount as number) < 0 ||
+      !Array.isArray(manifest.sessionFiles) ||
+      manifest.sessionFiles.length !== manifest.sessionFileCount
+    ) {
+      return { ok: false, error: "retention completion manifest is invalid" };
+    }
+    const manifestPaths = new Set<string>();
+    for (const relativePath of manifest.sessionFiles) {
+      if (
+        typeof relativePath !== "string" ||
+        relativePath.length === 0 ||
+        path.isAbsolute(relativePath) ||
+        manifestPaths.has(relativePath)
+      ) {
+        return { ok: false, error: "retention completion manifest contains an unsafe or duplicate session path" };
+      }
+      manifestPaths.add(relativePath);
+    }
+
+    const rawSessionsDir = path.join(runHomeDir, "sessions");
+    let rawArtifacts = new Map<string, number>();
+    try {
+      const rawSessionsStat = await fs.lstat(rawSessionsDir);
+      if (!rawSessionsStat.isDirectory() || rawSessionsStat.isSymbolicLink()) {
+        return { ok: false, error: "raw sessions path is not a real directory" };
+      }
+      rawArtifacts = await listJsonlArtifacts(rawSessionsDir);
+    } catch (err) {
+      if (!isErrnoException(err, "ENOENT")) {
+        return {
+          ok: false,
+          error: `raw session artifacts could not be inspected: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
+    if (
+      rawArtifacts.size !== manifestPaths.size ||
+      [...rawArtifacts.keys()].some((relativePath) => !manifestPaths.has(relativePath))
+    ) {
+      return { ok: false, error: "retention completion manifest does not cover the exact raw JSONL set" };
+    }
+
+    const sessionsDir = path.join(retainedDir, "sessions");
+    const sessionsDirStat = await fs.lstat(sessionsDir);
+    if (!sessionsDirStat.isDirectory() || sessionsDirStat.isSymbolicLink()) {
+      return { ok: false, error: "retained sessions path is not a real directory" };
+    }
+    for (const relativePath of manifestPaths) {
+      const artifact = path.resolve(sessionsDir, relativePath);
+      if (!isPathBelow(sessionsDir, artifact)) {
+        return { ok: false, error: "retention completion manifest contains an unsafe session path" };
+      }
+      const artifactStat = await fs.lstat(artifact);
+      if (!artifactStat.isFile() || artifactStat.isSymbolicLink() || artifactStat.size === 0) {
+        return { ok: false, error: "retention completion manifest references an invalid session artifact" };
+      }
+    }
+    return { ok: true, proof: "completion_manifest" };
+  } catch (err) {
+    if (manifestFound || !isErrnoException(err, "ENOENT")) {
+      return {
+        ok: false,
+        error: `retention completion manifest could not be validated: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  try {
+    const rawSessionsDir = path.join(runHomeDir, "sessions");
+    const rawSessionsStat = await fs.lstat(rawSessionsDir);
+    if (!rawSessionsStat.isDirectory() || rawSessionsStat.isSymbolicLink()) {
+      return { ok: false, error: "legacy raw sessions path is not a real directory" };
+    }
+    const rawArtifacts = await listJsonlArtifacts(rawSessionsDir);
+    if (rawArtifacts.size === 0) {
+      return { ok: false, error: "legacy raw home has no JSONL set that can prove complete retention" };
+    }
+    const retainedArtifacts = await listJsonlArtifacts(retainedDir);
+    const normalizedRetained = new Map<string, number>();
+    for (const [relativePath, size] of retainedArtifacts) {
+      const normalized = relativePath.startsWith(`sessions${path.sep}`)
+        ? relativePath.slice(`sessions${path.sep}`.length)
+        : relativePath;
+      normalizedRetained.set(normalized, size);
+    }
+    const complete = [...rawArtifacts].every(([relativePath]) =>
+      (normalizedRetained.get(relativePath) ?? 0) > 0
+    );
+    if (complete) {
+      return { ok: true, proof: "legacy_nonempty_jsonl" };
+    }
+    return {
+      ok: false,
+      error: "legacy retained-session counterpart does not cover every raw JSONL artifact",
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `legacy retained-session artifacts could not be inspected: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+function isErrnoException(err: unknown, code: string): err is NodeJS.ErrnoException {
+  return err instanceof Error && "code" in err && err.code === code;
+}
+
+async function checkOpenHandles(dir: string): Promise<OpenHandleCheck> {
+  try {
+    const { stdout } = await execFileAsync("/usr/sbin/lsof", ["-n", "+D", dir], { timeout: 10_000 });
+    return { ok: true, hasOpenHandles: stdout.trim().length > 0 };
+  } catch (err) {
+    const result = err as { code?: string | number; stdout?: string; stderr?: string };
+    // lsof uses exit code 1 with no output when it found no matching handles.
+    // Missing binaries, permission errors, timeouts, and diagnostic output are
+    // not proof of safety and must block deletion.
+    if (result.code === 1 && !(result.stdout ?? "").trim() && !(result.stderr ?? "").trim()) {
+      return { ok: true, hasOpenHandles: false };
+    }
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function getRunStatus(
+  runId: string,
+  apiBase: string,
+  apiKey: string,
+): Promise<RunStatusCheck> {
+  try {
+    const normalizedBase = apiBase.replace(/\/+$/, "").replace(/\/api$/, "");
+    const url = `${normalizedBase}/api/heartbeat-runs/${encodeURIComponent(runId)}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return { ok: false, error: `run-status lookup returned HTTP ${res.status}` };
+    const body = await res.json() as { status?: string; companyId?: string; agentId?: string };
+    if (
+      typeof body?.status !== "string" || body.status.length === 0 ||
+      typeof body.companyId !== "string" || body.companyId.length === 0 ||
+      typeof body.agentId !== "string" || body.agentId.length === 0
+    ) {
+      return { ok: false, error: "run-status lookup returned incomplete ownership or status data" };
+    }
+    return { ok: true, status: body.status, companyId: body.companyId, agentId: body.agentId };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "cancelled", "failed", "timed_out"]);
+
+async function dirSizeBytes(dir: string): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync("du", ["-sk", dir], { timeout: 30_000 });
+    const kb = parseInt(stdout.split("\t")[0] ?? "0", 10);
+    return kb * 1024;
+  } catch {
+    return 0;
+  }
+}
+
+async function sweepAgentDir(
+  agentDir: string,
+  agentId: string,
+  agentsDir: string,
+  opts: SweeperOptions,
+  deps: SweeperDependencies,
+): Promise<RunHomeEntry[]> {
+  if (!isPathBelow(agentsDir, agentDir)) return [];
+  const agentStat = await fs.lstat(agentDir).catch(() => null);
+  if (!agentStat?.isDirectory() || agentStat.isSymbolicLink()) return [];
+
+  const runHomesParent = path.join(agentDir, "codex-run-homes");
+  const runHomesParentStat = await fs.lstat(runHomesParent).catch(() => null);
+  if (!runHomesParentStat?.isDirectory() || runHomesParentStat.isSymbolicLink()) return [];
+
+  const retentionParent = path.join(agentDir, "codex-session-retention");
+  const companyId = path.basename(path.resolve(opts.companyDir));
+  const entries: RunHomeEntry[] = [];
+  const now = Date.now();
+  const graceMs = opts.graceHours * 60 * 60 * 1000;
+
+  let runIds: string[];
+  try {
+    runIds = await fs.readdir(runHomesParent);
+  } catch {
+    return [];
+  }
+
+  for (const runId of runIds) {
+    const runDir = path.join(runHomesParent, runId);
+    const runHomeDir = path.join(runDir, "home");
+
+    if (!isPathBelow(runHomesParent, runDir) || !isPathBelow(runDir, runHomeDir)) continue;
+    const runDirStat = await fs.lstat(runDir).catch(() => null);
+    if (!runDirStat?.isDirectory() || runDirStat.isSymbolicLink()) continue;
+
+    let stat: Awaited<ReturnType<typeof fs.lstat>>;
+    try {
+      stat = await fs.lstat(runHomeDir);
+    } catch {
+      // The raw home is already gone. Remove the wrapper only when it is empty.
+      await fs.rmdir(runDir).catch(() => {});
+      continue;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      entries.push({
+        agentId,
+        runId,
+        runHomeDir,
+        ageSecs: (now - stat.mtimeMs) / 1000,
+        eligible: false,
+        ineligibleReason: "run home is not a real directory",
+      });
+      continue;
+    }
+
+    const ageSecs = (now - stat.mtimeMs) / 1000;
+    const entry: RunHomeEntry = { agentId, runId, runHomeDir, ageSecs, eligible: false };
+
+    // Grace window
+    if (stat.mtimeMs > now - graceMs) {
+      entry.ineligibleReason = `mtime within ${opts.graceHours}h grace window`;
+      entries.push(entry);
+      continue;
+    }
+
+    if (!opts.paperclipApiBase || !opts.paperclipApiKey) {
+      entry.ineligibleReason = "Paperclip API URL and key are required to verify terminal run status";
+      entries.push(entry);
+      continue;
+    }
+
+    const statusCheck = await (deps.getRunStatus ?? getRunStatus)(
+      runId,
+      opts.paperclipApiBase,
+      opts.paperclipApiKey,
+      companyId,
+      agentId,
+    );
+    if (!statusCheck.ok) {
+      entry.ineligibleReason = `terminal run status could not be verified: ${statusCheck.error}`;
+      entries.push(entry);
+      continue;
+    }
+    if (!TERMINAL_STATUSES.has(statusCheck.status)) {
+      entry.ineligibleReason = `run status is "${statusCheck.status}" (non-terminal)`;
+      entries.push(entry);
+      continue;
+    }
+    if (statusCheck.companyId !== companyId || statusCheck.agentId !== agentId) {
+      entry.ineligibleReason = "run ownership does not match the company and agent directory";
+      entries.push(entry);
+      continue;
+    }
+
+    const handleCheck = await (deps.checkOpenHandles ?? checkOpenHandles)(runHomeDir);
+    if (!handleCheck.ok) {
+      entry.ineligibleReason = `open-handle check failed: ${handleCheck.error}`;
+      entries.push(entry);
+      continue;
+    }
+    if (handleCheck.hasOpenHandles) {
+      entry.ineligibleReason = "open file handles detected";
+      entries.push(entry);
+      continue;
+    }
+
+    // A retained session counterpart is mandatory. Quarantine is evidence that
+    // retention failed, so it must never substitute for a sanitized copy.
+    const quarantineMarker = path.join(runHomesParent, `${runId}.quarantine`);
+    const hasQuarantine = await pathExists(quarantineMarker);
+    entry.quarantined = hasQuarantine;
+    const retentionProof = await validateRetentionProof(retentionParent, runId, runHomeDir);
+
+    if (!retentionProof.ok) {
+      entry.ineligibleReason = hasQuarantine
+        ? `run home is quarantined; ${retentionProof.error}`
+        : retentionProof.error;
+      entries.push(entry);
+      continue;
+    }
+
+    entry.eligible = true;
+    entry.retentionProof = retentionProof.proof;
+    entry.sizeBytes = await dirSizeBytes(runDir);
+
+    if (!opts.dryRun) {
+      try {
+        await fs.rm(runDir, { recursive: true, force: true });
+        entry.deleted = true;
+      } catch (err) {
+        entry.deleted = false;
+        entry.error = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    entries.push(entry);
+  }
+
+  return entries;
+}
+
+export async function sweepRunHomes(opts: SweeperOptions, deps: SweeperDependencies = {}): Promise<{
+  scanned: number;
+  eligible: number;
+  deleted: number;
+  errors: number;
+  totalBytesReclaimed: number;
+  entries: RunHomeEntry[];
+}> {
+  if (!Number.isFinite(opts.graceHours) || opts.graceHours < MINIMUM_GRACE_HOURS) {
+    throw new Error(`graceHours must be at least ${MINIMUM_GRACE_HOURS}`);
+  }
+  const companyDirStat = await fs.lstat(opts.companyDir).catch(() => null);
+  if (!companyDirStat?.isDirectory() || companyDirStat.isSymbolicLink()) {
+    return { scanned: 0, eligible: 0, deleted: 0, errors: 0, totalBytesReclaimed: 0, entries: [] };
+  }
+
+  // Validate every configured ancestor before inspecting descendants. lstat on
+  // `acp-engine/agents` alone follows a symlinked `acp-engine` component and can
+  // make an external tree look lexically contained beneath companyDir.
+  const acpEngineDir = path.join(opts.companyDir, "acp-engine");
+  const acpEngineDirStat = await fs.lstat(acpEngineDir).catch(() => null);
+  if (!acpEngineDirStat?.isDirectory() || acpEngineDirStat.isSymbolicLink()) {
+    return { scanned: 0, eligible: 0, deleted: 0, errors: 0, totalBytesReclaimed: 0, entries: [] };
+  }
+
+  const agentsDir = path.join(acpEngineDir, "agents");
+  const agentsDirStat = await fs.lstat(agentsDir).catch(() => null);
+  if (!agentsDirStat?.isDirectory() || agentsDirStat.isSymbolicLink()) {
+    return { scanned: 0, eligible: 0, deleted: 0, errors: 0, totalBytesReclaimed: 0, entries: [] };
+  }
+
+  const agentIds = await fs.readdir(agentsDir).catch(() => [] as string[]);
+  const allEntries: RunHomeEntry[] = [];
+
+  for (const agentId of agentIds) {
+    const agentDir = path.join(agentsDir, agentId);
+    const agentEntries = await sweepAgentDir(agentDir, agentId, agentsDir, opts, deps);
+    allEntries.push(...agentEntries);
+  }
+
+  const eligible = allEntries.filter((e) => e.eligible);
+  const deleted = eligible.filter((e) => e.deleted === true);
+  const errors = eligible.filter((e) => e.deleted === false);
+  const totalBytesReclaimed = deleted.reduce((sum, e) => sum + (e.sizeBytes ?? 0), 0);
+
+  return {
+    scanned: allEntries.length,
+    eligible: eligible.length,
+    deleted: deleted.length,
+    errors: errors.length,
+    totalBytesReclaimed,
+    entries: allEntries,
+  };
+}
+
+// CLI entrypoint
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const args = process.argv.slice(2);
+  const companyDir = args[args.indexOf("--company-dir") + 1];
+  const dryRun = !args.includes("--delete");
+  const graceIdx = args.indexOf("--grace-hours");
+  const graceHours = graceIdx >= 0 ? parseInt(args[graceIdx + 1] ?? "24", 10) : 24;
+
+  if (!companyDir) {
+    process.stderr.write("Usage: run-home-sweeper.ts --company-dir <path> [--delete] [--grace-hours N]\n");
+    process.exit(1);
+  }
+
+  sweepRunHomes({
+    companyDir,
+    dryRun,
+    graceHours,
+    paperclipApiBase: process.env["PAPERCLIP_API_URL"] ?? process.env["PAPERCLIP_API_BASE"],
+    paperclipApiKey: process.env["PAPERCLIP_API_KEY"],
+  })
+    .then((result) => {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      const verb = dryRun ? "DRY-RUN" : "DELETED";
+      process.stderr.write(
+        `[sweeper] ${verb}: scanned=${result.scanned} eligible=${result.eligible} deleted=${result.deleted} errors=${result.errors} reclaimed=${(result.totalBytesReclaimed / 1024 / 1024).toFixed(1)}MB\n`,
+      );
+    })
+    .catch((err) => {
+      process.stderr.write(`[sweeper] fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    });
+}

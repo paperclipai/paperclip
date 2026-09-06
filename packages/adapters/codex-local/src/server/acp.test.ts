@@ -148,6 +148,7 @@ class FakeRuntime {
     mode: "persistent" | "oneshot";
     cwd?: string;
     resumeSessionId?: string;
+    sessionOptions?: { env?: Record<string, string> };
   }> = [];
   startInputs: Array<{ handle: FakeRuntimeHandle; text: string; requestId: string; timeoutMs?: number }> = [];
   closeInputs: Array<{ handle: FakeRuntimeHandle; reason: string; discardPersistentState?: boolean }> = [];
@@ -168,6 +169,7 @@ class FakeRuntime {
     mode: "persistent" | "oneshot";
     cwd?: string;
     resumeSessionId?: string;
+    sessionOptions?: { env?: Record<string, string> };
   }): Promise<FakeRuntimeHandle> {
     this.ensureInputs.push(input);
     this.ensureCount += 1;
@@ -711,9 +713,21 @@ describe("codex_local ACP lane", () => {
     const skill = await createRuntimeSkill(root);
     const runtimes: FakeRuntime[] = [];
     const meta: AdapterInvocationMeta[] = [];
+    let stagedSkillContents = "";
     const execute = createCodexAcpExecutor({
       createRuntime: (options: FakeRuntimeOptions) => {
         const runtime = new FakeRuntime(options);
+        const ensureSession = runtime.ensureSession.bind(runtime);
+        runtime.ensureSession = async (input) => {
+          const codexHome = input.sessionOptions?.env?.CODEX_HOME;
+          if (codexHome) {
+            stagedSkillContents = await fs.readFile(
+              path.join(codexHome, "skills", "review", "SKILL.md"),
+              "utf8",
+            );
+          }
+          return ensureSession(input);
+        };
         runtimes.push(runtime);
         return runtime as never;
       },
@@ -752,7 +766,10 @@ describe("codex_local ACP lane", () => {
     });
     const skillsHome = (result.sessionParams?.skills as { skillsHome?: string }).skillsHome;
     expect(skillsHome).toBeTruthy();
-    await expect(fs.readFile(path.join(skillsHome!, "review", "SKILL.md"), "utf8")).resolves.toContain("review skill");
+    expect(stagedSkillContents).toContain("review skill");
+    await expect(fs.readFile(path.join(skillsHome!, "review", "SKILL.md"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     expect(runtimes[0]?.ensureInputs[0]).toMatchObject({
       agent: "codex",
       mode: "persistent",
@@ -760,7 +777,9 @@ describe("codex_local ACP lane", () => {
     });
     expect(runtimes[0]?.setConfigInputs).toEqual([]);
     expect(meta[0]?.commandNotes?.join("\n")).toContain("Prepared ACPX Codex skill home");
-    expect(meta[0]?.env?.CODEX_HOME).toBe(path.join(root, "codex-home"));
+    expect(meta[0]?.env?.CODEX_HOME).toBe(
+      path.join(root, "state", "codex-run-homes", "run-1", "home"),
+    );
     expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toEqual({
       model: "gpt-5.5",
       model_reasoning_effort: "high",
