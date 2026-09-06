@@ -5068,22 +5068,40 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svc.remove(id);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
+
+    const permanent = req.query.permanent === "true";
+
+    if (permanent) {
+      const agent = await svc.remove(id);
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "agent.permanently_deleted",
+        entityType: "agent",
+        entityId: agent.id,
+      });
+      res.json({ ok: true });
+    } else {
+      const agent = await svc.softDelete(id);
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "agent.trashed",
+        entityType: "agent",
+        entityId: agent.id,
+      });
+      res.json(agent);
     }
-
-    await logActivity(db, {
-      companyId: agent.companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
-      action: "agent.deleted",
-      entityType: "agent",
-      entityId: agent.id,
-    });
-
-    res.json({ ok: true });
   });
 
   router.get("/agents/:id/keys", async (req, res) => {

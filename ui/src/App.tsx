@@ -93,6 +93,8 @@ import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
+import { TrashPage } from "./pages/TrashPage";
+import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
@@ -413,6 +415,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="inbox/all" element={<Inbox />} />
       <Route path="inbox/requests" element={<JoinRequestQueue />} />
       <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
+      <Route path="trash" element={<TrashPage />} />
       <Route path="u/:userSlug" element={<UserProfile />} />
       <Route path="design-guide" element={<DesignGuide />} />
       <Route path="instance/settings/adapters" element={<AdapterManager />} />

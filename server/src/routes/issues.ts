@@ -11546,37 +11546,56 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
-    const attachments = await svc.listAttachments(id);
 
-    const issue = await svc.remove(id);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
+    const permanent = req.query.permanent === "true";
 
-    for (const attachment of attachments) {
-      try {
-        await storage.deleteObject(attachment.companyId, attachment.objectKey);
-      } catch (err) {
-        logger.warn({ err, issueId: id, attachmentId: attachment.id }, "failed to delete attachment object during issue delete");
+    if (permanent) {
+      const attachments = await svc.listAttachments(id);
+      const issue = await svc.remove(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
       }
+      for (const attachment of attachments) {
+        try {
+          await storage.deleteObject(attachment.companyId, attachment.objectKey);
+        } catch (err) {
+          logger.warn({ err, issueId: id, attachmentId: attachment.id }, "failed to delete attachment object during issue delete");
+        }
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.permanently_deleted",
+        entityType: "issue",
+        entityId: issue.id,
+      });
+      await queueTaskWatchdogEvaluation(existing, actor.runId);
+      res.json(issue);
+    } else {
+      const issue = await svc.softDelete(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.trashed",
+        entityType: "issue",
+        entityId: issue.id,
+      });
+      res.json(issue);
     }
-
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "issue.deleted",
-      entityType: "issue",
-      entityId: issue.id,
-    });
-
-    await queueTaskWatchdogEvaluation(existing, actor.runId);
-    res.json(issue);
   });
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {
