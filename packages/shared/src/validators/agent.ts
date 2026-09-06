@@ -133,6 +133,12 @@ export const updateAgentSchema = objectWithoutDefaults(
   .partial()
   .extend({
     permissions: z.never().optional(),
+    literalRedactedConfigPaths: z.array(z.array(z.string().min(1)).min(2)).max(100).optional().describe(
+      "Configuration paths where a redaction marker is intentional literal data, not an unchanged placeholder.",
+    ),
+    preserveRedactedConfigValues: z.boolean().optional().describe(
+      "Treat response redaction markers in adapterConfig/runtimeConfig as unchanged values during this update.",
+    ),
     replaceAdapterConfig: z.boolean().optional(),
     status: z.enum(AGENT_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
