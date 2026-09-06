@@ -6,11 +6,14 @@ separate from both the browser full-stack model E2E and the stress-derived
 workflow schedule in `runner-workflow-evals.md`.
 
 The canonical unit of work is one live roster plus one authored case. A full
-campaign selects every `rosters/live-*.json` file at one immutable
-`paperclip-evals` commit. That includes the complete 35-case provider rosters
-and the smaller ACPX Codex control roster. The native resume reliability gate
-is not a normal one-turn roster: it requires its separately governed external
-resource campaign and remains opt-in.
+campaign selects every enabled lane declared by
+`campaigns/live-direct-full.json` at one immutable `paperclip-evals` commit.
+That includes the complete 35-case provider rosters and the smaller ACPX Codex
+control roster. A disabled roster remains available for an explicit diagnostic
+selection, but is never inferred into a paid `all` run from the files present
+on disk. The native resume reliability gate is not a normal one-turn roster:
+it requires its separately governed external-resource campaign and remains
+opt-in.
 
 Managed-provider evidence identifies the immutable deployed provider artifact:
 Claude Managed uses its Agent version, while AgentCore uses its qualification
@@ -59,11 +62,13 @@ same `paperclip.native-execution-input.v3` contract as production, including
 the AgentCore HarnessSkill upload path, without borrowing any browser E2E
 setup.
 
-`all` is intentionally literal. A disabled driver, missing remote profile, or
-unavailable provider is retained as an infrastructure result; it is not
-silently omitted. In particular, the ACPX Pi roster remains visible while Pi
-is disabled in the current Runner. Use a roster subset only for diagnosis, not
-to claim the full campaign is green.
+`all` means the maintained enabled campaign, not every matching file in the
+roster directory. A missing campaign file fails closed. Within an enabled
+lane, a missing remote profile or unavailable provider is retained as an
+infrastructure result; it is not silently omitted. The current ACPX Pi roster
+is declared disabled because its Runner security profile is not qualified, so
+it runs only when selected explicitly for diagnosis. Use a roster subset only
+for diagnosis, not to claim the full maintained campaign is green.
 
 A provider turn that reaches a durable failed, interrupted, or otherwise
 non-completed terminal still produces an attempt artifact and is scored as a
