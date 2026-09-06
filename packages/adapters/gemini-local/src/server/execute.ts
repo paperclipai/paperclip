@@ -3,6 +3,7 @@ import type { Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { firstMeaningfulStderrLine } from "@paperclipai/adapter-utils";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -61,7 +62,6 @@ import {
   isGeminiSessionUnrecoverableError,
   parseGeminiJsonl,
 } from "./parse.js";
-import { firstNonEmptyLine } from "./utils.js";
 import {
   createGeminiAcpExecutor,
   formatGeminiAcpFallbackMessage,
@@ -678,7 +678,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-    const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+    const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
     const structuredFailure = attempt.parsed.resultEvent
       ? describeGeminiFailure(attempt.parsed.resultEvent)
       : null;

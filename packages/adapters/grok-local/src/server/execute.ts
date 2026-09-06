@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { firstMeaningfulStderrLine } from "@paperclipai/adapter-utils";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
@@ -46,15 +47,6 @@ import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js"
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -576,7 +568,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const failed = (attempt.proc.exitCode ?? 0) !== 0;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+      const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
       const fallbackErrorMessage =
         parsedError ||
         stderrLine ||

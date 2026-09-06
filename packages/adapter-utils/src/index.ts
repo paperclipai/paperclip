@@ -69,6 +69,10 @@ export {
   redactCommandText,
   redactDiagnosticText,
 } from "./command-redaction.js";
+export {
+  firstMeaningfulStderrLine,
+  isBenignAdapterStderrLine,
+} from "./benign-stderr.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export {
   buildAdapterEnvConfig,
