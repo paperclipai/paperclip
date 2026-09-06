@@ -25,8 +25,11 @@ from the default branch and provide:
 - `target_branch`: the Paperclip branch to build and test;
 - `evals_sha`: an exact 40-character commit from
   `paperclipai/paperclip-evals`;
-- `rosters`: `all` for the entire direct suite, or a comma-separated diagnostic
-  subset;
+- `rosters`: `all` for every enabled lane in the canonical
+  `live-direct-full.json` campaign, or a comma-separated diagnostic subset.
+  Disabled lanes remain available only through an explicit diagnostic
+  selection; `all` never spends against a lane that the eval program has
+  marked disabled;
 - `max_infrastructure_retries`: zero through three, applied only when an
   attempt explicitly reports a retryable infrastructure failure.
 
