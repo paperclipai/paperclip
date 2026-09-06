@@ -18,6 +18,7 @@ import {
   runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
+import { resolveGrokCliModelId } from "../effort.js";
 import { parseGrokJsonl } from "./parse.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 
@@ -166,7 +167,7 @@ export async function testEnvironment(
   const canRunProbe =
     checks.every((check) => check.code !== "grok_cwd_invalid" && check.code !== "grok_command_unresolvable");
 
-  const configuredModel = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
+  const configuredModel = resolveGrokCliModelId(asString(config.model, DEFAULT_GROK_LOCAL_MODEL));
 
   if (canRunProbe) {
     const modelsProbe = await runAdapterExecutionTargetProcess(
@@ -240,11 +241,9 @@ export async function testEnvironment(
         });
       }
       if (configuredModel) {
-        // The default model id is a sentinel meaning "let the Grok CLI pick its
-        // own default" — execute.ts only passes `--model` when the value differs
-        // from it, so the sentinel is never sent to grok and must not be checked
-        // against the discovered list (real grok never lists "grok-build", which
-        // otherwise produced a spurious "not found" warning on every probe).
+        // Empty / grok-build remap to grok-4.6 (DEFAULT_GROK_LOCAL_MODEL).
+        // Treat that default as configured-valid even if a host's `grok models`
+        // list is older; still warn for any other explicit id.
         const usesCliDefault = configuredModel === DEFAULT_GROK_LOCAL_MODEL;
         const available = usesCliDefault || parsedModels.models.includes(configuredModel);
         checks.push({
@@ -270,7 +269,7 @@ export async function testEnvironment(
       "dontAsk",
       "--disable-web-search",
     ];
-    if (configuredModel && configuredModel !== DEFAULT_GROK_LOCAL_MODEL) {
+    if (configuredModel) {
       probeArgs.push("--model", configuredModel);
     }
     probeArgs.push("--single", "Respond with exactly hello.");
