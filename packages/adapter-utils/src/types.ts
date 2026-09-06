@@ -681,6 +681,10 @@ export interface CreateConfigValues {
   geminiAcpNonInteractivePermissions?: "deny" | "fail";
   geminiAcpStateDir?: string;
   geminiAcpWarmHandleIdleMs?: number;
+  antigravityAgent?: string;
+  antigravityEffort?: string;
+  antigravityPrintTimeout?: string;
+  antigravitySandbox?: boolean;
   search: boolean;
   fastMode: boolean;
   dangerouslyBypassSandbox: boolean;

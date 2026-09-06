@@ -98,6 +98,7 @@ import {
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
+import { DEFAULT_ANTIGRAVITY_LOCAL_MODEL } from "@paperclipai/adapter-antigravity-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
@@ -1166,6 +1167,7 @@ function OnboardingWizardInner({
     isLocalAdapterCaps ||
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
+    adapterType === "antigravity_local" ||
     adapterType === "gemini_local" ||
     adapterType === "kimi_local" ||
     adapterType === "opencode_local" ||
@@ -1487,6 +1489,10 @@ function OnboardingWizardInner({
       setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
       return;
     }
+    if (next === "antigravity_local") {
+      setModel(DEFAULT_ANTIGRAVITY_LOCAL_MODEL);
+      return;
+    }
     if (next === "gemini_local") {
       setModel(DEFAULT_GEMINI_LOCAL_MODEL);
       return;
@@ -1501,6 +1507,7 @@ function OnboardingWizardInner({
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
     codex_local: "codex",
+    antigravity_local: "agy",
     gemini_local: "gemini",
     kimi_local: "kimi",
     pi_local: "pi",
@@ -1832,8 +1839,10 @@ function OnboardingWizardInner({
       ...defaultCreateValues,
       adapterType,
       model:
-        adapterType === "gemini_local"
-          ? model || DEFAULT_GEMINI_LOCAL_MODEL
+        adapterType === "antigravity_local"
+          ? model || DEFAULT_ANTIGRAVITY_LOCAL_MODEL
+          : adapterType === "gemini_local"
+            ? model || DEFAULT_GEMINI_LOCAL_MODEL
           : adapterType === "kimi_local"
             ? model || DEFAULT_KIMI_LOCAL_MODEL
           : adapterType === "cursor"
@@ -3307,6 +3316,8 @@ function OnboardingWizardInner({
                               ? `${effectiveAdapterCommand} -p --mode ask --output-format json \"Respond with hello.\"`
                               : adapterType === "codex_local"
                               ? `${effectiveAdapterCommand} exec --json -`
+                              : adapterType === "antigravity_local"
+                                ? `${effectiveAdapterCommand} --print "Respond with hello." --output-format stream-json --dangerously-skip-permissions`
                               : adapterType === "gemini_local"
                                 ? `${effectiveAdapterCommand} --output-format json "Respond with hello."`
                               : adapterType === "kimi_local"
@@ -3321,26 +3332,33 @@ function OnboardingWizardInner({
                           </p>
                           {adapterType === "cursor" ||
                           adapterType === "codex_local" ||
+                          adapterType === "antigravity_local" ||
                           adapterType === "gemini_local" ||
                           adapterType === "kimi_local" ||
                           adapterType === "opencode_local" ? (
                             <p className="text-muted-foreground">
-                              If auth fails, set{" "}
-                              <span className="font-mono">
-                                {adapterType === "cursor"
-                                  ? "CURSOR_API_KEY"
-                                  : adapterType === "gemini_local"
-                                    ? "GEMINI_API_KEY"
-                                    : adapterType === "kimi_local"
-                                      ? "KIMI_MODEL_NAME + KIMI_MODEL_API_KEY"
-                                    : "OPENAI_API_KEY"}
-                              </span>{" "}
-                              in env or run{" "}
+                              If auth fails, {adapterType === "antigravity_local" ? "run" : "set"}{" "}
+                              {adapterType !== "antigravity_local" && (
+                                <>
+                                  <span className="font-mono">
+                                    {adapterType === "cursor"
+                                      ? "CURSOR_API_KEY"
+                                      : adapterType === "gemini_local"
+                                        ? "GEMINI_API_KEY"
+                                        : adapterType === "kimi_local"
+                                          ? "KIMI_MODEL_NAME + KIMI_MODEL_API_KEY"
+                                        : "OPENAI_API_KEY"}
+                                  </span>{" "}
+                                  in env or run{" "}
+                                </>
+                              )}
                               <span className="font-mono">
                                 {adapterType === "cursor"
                                   ? "agent login"
                                   : adapterType === "codex_local"
                                     ? "codex login"
+                                    : adapterType === "antigravity_local"
+                                      ? "agy login"
                                     : adapterType === "gemini_local"
                                       ? "gemini auth"
                                       : adapterType === "kimi_local"
