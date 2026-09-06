@@ -91,6 +91,7 @@ interface TestPairOptions {
   requestBodyTimeoutMs?: number;
   requestBodyLifetimeCeilingMs?: number;
   closeGraceMs?: number;
+  capacityDenialSettleDeadlineMs?: number;
   maxBodyBytes?: number;
   routes?: readonly SandboxCallbackBridgeRouteRule[];
   onGoaway?: (record: Http2BridgeGoawayRecord) => void;
@@ -118,6 +119,7 @@ function bindTestServer(options: TestPairOptions = {}) {
     requestBodyTimeoutMs: options.requestBodyTimeoutMs,
     requestBodyLifetimeCeilingMs: options.requestBodyLifetimeCeilingMs,
     closeGraceMs: options.closeGraceMs,
+    capacityDenialSettleDeadlineMs: options.capacityDenialSettleDeadlineMs,
     maxBodyBytes: options.maxBodyBytes,
     routes: options.routes,
     onGoaway: options.onGoaway,
@@ -143,9 +145,15 @@ function createTestPair(options: TestPairOptions = {}) {
 /** Open a raw HTTP/2 client session directly against one side of the pair,
  * bypassing the sandbox gateway. Some tests need direct stream control (an
  * explicit RST_STREAM, an explicit GOAWAY) the gateway's `forwardRequest`
- * abstraction does not expose. */
-function connectRawClient(clientSide: Duplex): http2.ClientHttp2Session {
-  return http2.connect("http://bridge.internal", { createConnection: () => clientSide });
+ * abstraction does not expose. `settings`, when given, rides the client's
+ * own initial SETTINGS frame — for example `{ initialWindowSize: 0 }` to
+ * deny the server any flow-control credit to send response bytes with, a
+ * deterministic stall independent of the fake transport's own buffering. */
+function connectRawClient(
+  clientSide: Duplex,
+  settings?: http2.Settings,
+): http2.ClientHttp2Session {
+  return http2.connect("http://bridge.internal", { createConnection: () => clientSide, settings });
 }
 
 /** Track whether `forwardRequest` ran, so a test can prove a denied or
@@ -1455,6 +1463,67 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
 
       // The stream ended with a real response, not a raw reset: the session
       // stays healthy, so a second, complete request still succeeds.
+      const survivingResponse = await expectSessionStillServesARequest(rawClient, {
+        method: "GET",
+        path: "/api/agents/me",
+        token: bridgeToken,
+      });
+      expect(survivingResponse.status).toBe(200);
+    } finally {
+      rawClient.close();
+      await handle.close();
+      filler.release();
+    }
+  });
+
+  it("test_a_stalled_client_still_frees_the_capacity_denial_reservation_and_slot", async () => {
+    // The capacity-denial (503) path must not wait forever for its queued
+    // write to settle: a client that grants no flow-control credit for the
+    // response would otherwise hold this stream's reservation and
+    // concurrent-stream slot open indefinitely. A zero initial window
+    // denies the server any credit to send the 503 body with, at the
+    // protocol layer, regardless of the fake transport's own buffering —
+    // the same deterministic stall a real stalled peer produces.
+    const filler = createBridgeBodyReservation();
+    expect(filler.reserve(HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES - 100)).toBe(true);
+    const forwarderTracker = createForwarderCallTracker();
+    const { handle, bridgeToken, clientSide } = bindTestServer({
+      capacityDenialSettleDeadlineMs: 30,
+      forwardRequest: async () => {
+        forwarderTracker.markCalled();
+        return { status: 200 };
+      },
+    });
+    const rawClient = connectRawClient(clientSide, { initialWindowSize: 0 });
+    try {
+      const startMs = Date.now();
+      const closed = new Promise<void>((resolve) => {
+        const req = rawClient.request({
+          ":method": "POST",
+          ":path": "/api/issues/abc/comments",
+          authorization: `Bearer ${bridgeToken}`,
+        });
+        req.on("error", () => undefined);
+        req.on("close", () => resolve());
+        // Ten times the 100 bytes of headroom the filler above left: the
+        // request body itself denies the reservation and enters the 503
+        // path.
+        req.end(Buffer.alloc(1_000, "a"));
+      });
+      await closed;
+      // The deadline bounded the wait: the stream closed near the deadline
+      // bound, not after some much longer natural settle that never comes.
+      expect(Date.now() - startMs).toBeLessThan(5_000);
+      expect(forwarderTracker.called).toBe(false);
+
+      // The stream's own reservation released even though the client never
+      // drained the 503 body — only the filler's own bytes remain held.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(getBridgeBodyReservedBytesForTest()).toBe(filler.heldBytes);
+
+      // The stream's slot freed too. Restore a normal flow-control window
+      // first: only the denied stream above needs to stall.
+      await new Promise<void>((resolve) => rawClient.settings({ initialWindowSize: 65_535 }, () => resolve()));
       const survivingResponse = await expectSessionStillServesARequest(rawClient, {
         method: "GET",
         path: "/api/agents/me",

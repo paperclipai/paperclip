@@ -642,6 +642,13 @@ export const DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS = 480_000;
  * session that carries a stalled stream would otherwise hold `close()` open
  * forever, because `session.close()` waits for every open stream to end. */
 export const DEFAULT_HTTP2_BRIDGE_CLOSE_GRACE_MS = 5_000;
+/** The default bound the capacity-denial (503) response path waits for its
+ * queued write to settle before it force-destroys the stream. A normal,
+ * draining peer settles well inside this bound, so it still receives the
+ * full 503 body. A stalled peer that never grants the flow-control credit
+ * the write needs would otherwise hold this stream's reservation and
+ * {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} slot open forever. */
+export const DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS = 5_000;
 
 function startHttp2BridgePingWatchdog(
   session: http2.ServerHttp2Session,
@@ -776,6 +783,10 @@ export interface CreateHttp2BridgeServerOptions {
    * session to close on its own before it force-destroys the session. The
    * default is {@link DEFAULT_HTTP2_BRIDGE_CLOSE_GRACE_MS}. */
   closeGraceMs?: number;
+  /** The bound the capacity-denial (503) response path waits for its queued
+   * write to settle before it force-destroys the stream. The default is
+   * {@link DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS}. */
+  capacityDenialSettleDeadlineMs?: number;
   /** The cap, in bytes, on data this server holds once a bound `Duplex`
    * reports its readable side is full (`push()` returns `false`). Past this
    * cap the server treats the channel as stuck, not merely slow: see
@@ -1012,19 +1023,37 @@ function drainHttp2StreamBody(stream: http2.ServerHttp2Stream, bounds: Http2Brid
  * `close` or an `error` settle the wait the same way, so a peer reset or a
  * destroyed stream cannot leave a caller waiting forever for a `finish`
  * that will never come.
+ *
+ * `deadlineMs`, when given, bounds the wait itself: past that many
+ * milliseconds with none of the three events above, this resolves anyway.
+ * A peer that neither drains the write nor resets nor errors the stream —
+ * one that simply stalls, granting no flow-control credit — would otherwise
+ * hold the wait open forever with none of the three settle events ever
+ * firing. The caller stays responsible for destroying the stream once this
+ * resolves; a bounded resolve here does not by itself free the stream's
+ * slot or its reservation.
  */
-function waitForHttp2StreamWriteToSettle(stream: http2.ServerHttp2Stream): Promise<void> {
+function waitForHttp2StreamWriteToSettle(
+  stream: http2.ServerHttp2Stream,
+  deadlineMs?: number,
+): Promise<void> {
   if (stream.writableFinished || stream.destroyed || stream.closed) return Promise.resolve();
   return new Promise((resolve) => {
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     const onSettle = (): void => {
       stream.removeListener("finish", onSettle);
       stream.removeListener("close", onSettle);
       stream.removeListener("error", onSettle);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
       resolve();
     };
     stream.once("finish", onSettle);
     stream.once("close", onSettle);
     stream.once("error", onSettle);
+    if (deadlineMs !== undefined) {
+      deadlineTimer = setTimeout(onSettle, deadlineMs);
+      deadlineTimer.unref?.();
+    }
   });
 }
 
@@ -1083,6 +1112,8 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
   const requestBodyLifetimeCeilingMs =
     options.requestBodyLifetimeCeilingMs ?? DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS;
   const closeGraceMs = options.closeGraceMs ?? DEFAULT_HTTP2_BRIDGE_CLOSE_GRACE_MS;
+  const capacityDenialSettleDeadlineMs =
+    options.capacityDenialSettleDeadlineMs ?? DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS;
   const maxBufferedReadBytes = options.maxBufferedReadBytes ?? DEFAULT_HTTP2_BRIDGE_MAX_BUFFERED_READ_BYTES;
   const readBackpressureStallMs =
     options.readBackpressureStallMs ?? DEFAULT_HTTP2_BRIDGE_READ_BACKPRESSURE_STALL_MS;
@@ -1173,9 +1204,12 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
           // RST_STREAM before a backpressured peer drains it, so the client
           // can see a reset instead of the 503. Wait for the write to
           // settle first, then destroy to free this stream's
-          // concurrent-stream slot.
+          // concurrent-stream slot. The wait carries its own deadline: a
+          // stalled peer that grants no flow-control credit would otherwise
+          // never settle the write, holding this stream's reservation and
+          // slot open forever.
           respondJson(stream, 503, { error: error.message });
-          await waitForHttp2StreamWriteToSettle(stream);
+          await waitForHttp2StreamWriteToSettle(stream, capacityDenialSettleDeadlineMs);
           if (!stream.destroyed) stream.destroy();
           return;
         }
