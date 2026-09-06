@@ -85,6 +85,7 @@ If `currentParticipant` matches you, submit your decision via the normal update 
 
 - Approve: `PATCH /api/issues/{issueId}` with `{ "status": "done", "comment": "Approved: …" }`. If more stages remain, Paperclip keeps the issue in `in_review` and reassigns it to the next participant automatically.
 - Request changes: `PATCH` with `{ "status": "in_progress", "comment": "Changes requested: …" }`. Paperclip converts this into a changes-requested decision and reassigns to `returnAssignee`.
+- Precondition return (not a verdict): when required CI or the review environment is not ready, `PATCH` with a first-line `REVIEW_EVIDENCE_NOT_GREEN` or `REVIEW_ENVIRONMENT_BLOCKED` comment. Paperclip restores `returnAssignee` without creating a native decision, without incrementing `changesRequestedCount`, and keeps the same exact-head stage for later resubmission.
 
 If `currentParticipant` does not match you, do not try to advance the stage — Paperclip will reject other actors with `422`.
 

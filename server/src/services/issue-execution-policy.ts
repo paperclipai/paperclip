@@ -71,6 +71,8 @@ export const DEFAULT_MAX_REVIEW_ROUNDS = 3;
 const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
 const PENDING_STATUS: IssueExecutionState["status"] = "pending";
 const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_requested";
+const PRECONDITION_RETURNED_STATUS: IssueExecutionState["status"] = "precondition_returned";
+const REVIEW_PRECONDITION_RETURN_KINDS = ["REVIEW_EVIDENCE_NOT_GREEN", "REVIEW_ENVIRONMENT_BLOCKED"] as const;
 const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress or in_review";
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
 const STAGE_DECISION_COMMENT_HINT = "Include the decision comment in the same PATCH request; prior comments are not considered.";
@@ -90,6 +92,19 @@ function normalizeMonitorText(value: string | null | undefined) {
 
 export function redactIssueMonitorExternalRef(value: string | null | undefined) {
   return normalizeMonitorText(value) ? REDACTED_ISSUE_MONITOR_EXTERNAL_REF : null;
+}
+
+export function isReviewPreconditionReturnComment(body: string | null | undefined): boolean {
+  if (typeof body !== "string") return false;
+  const firstLine = body.trim().split(/\r?\n/, 2)[0] ?? "";
+  const stripped = firstLine.replace(/^#+\s*/, "").replace(/^[*`]+/, "").replace(/[*`]+$/, "").trim();
+  return REVIEW_PRECONDITION_RETURN_KINDS.some(
+    (kind) => stripped === kind || stripped.startsWith(`${kind} `) || stripped.startsWith(`${kind}:`),
+  );
+}
+
+function executionStateReusesCurrentStage(state: IssueExecutionState | null): boolean {
+  return state?.status === CHANGES_REQUESTED_STATUS || state?.status === PRECONDITION_RETURNED_STATUS;
 }
 
 function monitorMetadataFromPolicy(monitor: IssueExecutionMonitorPolicy) {
@@ -611,6 +626,18 @@ function buildChangesRequestedState(
   };
 }
 
+function buildPreconditionReturnedState(
+  previous: IssueExecutionState,
+  currentStage: IssueExecutionStage,
+): IssueExecutionState {
+  return {
+    ...previous,
+    status: PRECONDITION_RETURNED_STATUS,
+    currentStageId: currentStage.id,
+    currentStageType: currentStage.type,
+  };
+}
+
 function buildPendingStagePatch(input: {
   patch: Record<string, unknown>;
   previous: IssueExecutionState | null;
@@ -849,6 +876,18 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       }
 
       if (requestedStatus && requestedStatus !== "in_review") {
+        if (isReviewPreconditionReturnComment(input.commentBody)) {
+          if (!existingState?.returnAssignee) {
+            throw unprocessable("This execution stage has no return assignee");
+          }
+          patch.status = "in_progress";
+          Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+          patch.executionState = buildPreconditionReturnedState(existingState, activeStage);
+          return {
+            patch,
+            workflowControlledAssignment: true,
+          };
+        }
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
         }
@@ -977,18 +1016,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
-  let pendingStage =
-    existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
-      ? currentStage
-      : nextPendingStage(input.policy, existingState);
+  const reuseCurrentStage = executionStateReusesCurrentStage(existingState) && Boolean(currentStage);
+  let pendingStage = reuseCurrentStage ? currentStage : nextPendingStage(input.policy, existingState);
   if (!pendingStage) return { patch };
 
   const returnAssignee = existingState?.returnAssignee ?? currentAssignee;
   const skippedStageIds = [...(existingState?.completedStageIds ?? [])];
   let participant = selectStageParticipant(pendingStage, {
     preferred:
-      existingState?.status === CHANGES_REQUESTED_STATUS
-        ? explicitAssignee ?? existingState.currentParticipant ?? null
+      reuseCurrentStage
+        ? explicitAssignee ?? existingState?.currentParticipant ?? null
         : explicitAssignee,
     exclude: returnAssignee,
   });
@@ -1012,8 +1049,8 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     }
     participant = selectStageParticipant(pendingStage, {
       preferred:
-        existingState?.status === CHANGES_REQUESTED_STATUS
-          ? explicitAssignee ?? existingState.currentParticipant ?? null
+        reuseCurrentStage
+          ? explicitAssignee ?? existingState?.currentParticipant ?? null
           : explicitAssignee,
       exclude: returnAssignee,
     });
