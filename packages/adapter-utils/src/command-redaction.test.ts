@@ -825,3 +825,163 @@ describe("redactCommandText header secrets", () => {
     expect(output).toContain("command failed:");
   });
 });
+
+describe("redactCommandText header scanner matrices", () => {
+  const R = REDACTED_COMMAND_TEXT_VALUE;
+  const serialize = (value: string, depth: number) => {
+    let encoded = value;
+    for (let index = 0; index < depth; index += 1) encoded = JSON.stringify(encoded);
+    return encoded;
+  };
+  const parseDepth = (value: string, depth: number) => {
+    let parsed: unknown = value;
+    for (let index = 0; index < depth; index += 1) parsed = JSON.parse(parsed as string);
+    return parsed as string;
+  };
+
+  // Opener kind x value kind x suffix kind x serialization depth. Each row is
+  // one shell word, so every suffix is credential material and the whole word
+  // collapses to one placeholder. `double-leading-space` is the F1 reproduction
+  // that leaked at depths 2 and 3 before the scanner.
+  const roots = [
+    ["full-header", (value: string) => `curl -H "X-API-Key: ${value}"`, `curl -H "X-API-Key: ${R}"`],
+    ["value-only", (value: string) => `curl -H X-API-Key:"${value}"`, `curl -H X-API-Key:"${R}"`],
+  ] as const;
+  const suffixes = [
+    ["plain", "TAILMARK"],
+    ["single-quoted", "'TAILMARK'"],
+    ["double-quoted", '"TAILMARK"'],
+    ["ansi-c", "$'TAILMARK'"],
+    ["escape-pair", "\\TAILMARK"],
+    ["escaped-space", "\\ TAILMARK"],
+    ["double-leading-space", '" TAILMARK"'],
+  ] as const;
+
+  it.each(roots)("redacts every %s suffix kind at depths 0-3", (_name, build, redacted) => {
+    for (const [, suffix] of suffixes) {
+      const base = `${build("SECRET")}${suffix};echo safe`;
+      const expectedBase = `${redacted};echo safe`;
+      for (let depth = 0; depth <= 3; depth += 1) {
+        const input = serialize(base, depth);
+        const output = redactCommandText(input);
+        expect(output).not.toContain("SECRET");
+        expect(output).not.toContain("TAILMARK");
+        // The serializer's own layers survive the redaction, so the output is
+        // still the same JSON string it arrived as.
+        expect(output).toBe(serialize(expectedBase, depth));
+        if (depth > 0) expect(parseDepth(output, depth)).toBe(expectedBase);
+        expect(redactCommandText(output)).toBe(output);
+      }
+    }
+  });
+
+  // A tail cut by a run log after a closed value. The N6 reproduction is the
+  // double-quoted tail that carries an escaped quote: the bytes after it belong
+  // to the same shell word, so the whole tail goes. These rows lose the
+  // enclosing serializer's delimiter under N4, so they assert removal and
+  // stability rather than a round trip.
+  const truncatedRoots = [
+    ["closed-escaped", String.raw`curl -H X-API-Key:\"SECRET\"`],
+    ["closed-double", `curl -H "X-API-Key: SECRET"`],
+    ["closed-single", `curl -H 'X-API-Key: SECRET'`],
+    ["closed-ansi", `curl -H $'X-API-Key: SECRET'`],
+    ["unquoted", `curl -H X-API-Key:SECRET`],
+  ] as const;
+  const truncatedTails = [
+    ["double", '"TAILMARK'],
+    ["single", "'TAILMARK",],
+    ["ansi-c", "$'TAILMARK"],
+    ["double-escaped-quote", String.raw`"TAIL\"LEAK`],
+  ] as const;
+
+  it.each(truncatedRoots)("redacts a truncated tail after a %s root at depths 0-2", (_name, root) => {
+    for (const [, tail] of truncatedTails) {
+      for (let depth = 0; depth <= 2; depth += 1) {
+        const output = redactCommandText(serialize(root + tail, depth));
+        expect(output).not.toContain("SECRET");
+        expect(output).not.toContain("TAILMARK");
+        expect(output).not.toContain("LEAK");
+        expect(redactCommandText(output)).toBe(output);
+      }
+    }
+  });
+
+  it("loses a truncated escaped-quote tail after a closed escaped value", () => {
+    // The N6 reproduction, spelled out. Bash reads the completed line as the
+    // single word `X-API-Key:"SECRET"TAIL"LEAK`, so `LEAK` is credential text.
+    const input = String.raw`curl -H X-API-Key:\"SECRET\""TAIL\"LEAK`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("SECRET");
+    expect(output).not.toContain("LEAK");
+    expect(output).toBe(String.raw`curl -H X-API-Key:\"` + R);
+    expect(redactCommandText(output)).toBe(output);
+  });
+
+  // Even backslash runs are escaped backslashes, so the byte after them is bare.
+  const evenRunFollowers = [
+    ["quote", (run: string) => `curl -H X-API-Key:SECRET${run}"TAILMARK"MORE ;echo safe`, `curl -H X-API-Key:${R} ;echo safe`],
+    ["plain", (run: string) => `curl -H X-API-Key:SECRET${run}TAILMARK next`, `curl -H X-API-Key:${R} next`],
+  ] as const;
+
+  it.each(evenRunFollowers)("consumes an even backslash run before a %s at depths 0-2", (_name, build, expectedBase) => {
+    for (const runLength of [2, 4, 6, 8]) {
+      const base = build("\\".repeat(runLength));
+      for (let depth = 0; depth <= 2; depth += 1) {
+        const output = redactCommandText(serialize(base, depth));
+        expect(output).not.toContain("SECRET");
+        expect(output).not.toContain("TAILMARK");
+        expect(output).toBe(serialize(expectedBase, depth));
+        expect(redactCommandText(output)).toBe(output);
+      }
+    }
+  });
+
+  it("redacts an even backslash run before a space or a line end at depths 0-2", () => {
+    // These two followers over-redact: the readings disagree about whether the
+    // run escapes what comes next, so the union takes the longer span.
+    for (const runLength of [2, 4, 6, 8]) {
+      const run = "\\".repeat(runLength);
+      for (const base of [`curl -H X-API-Key:SECRET${run} next safe`, `curl -H X-API-Key:SECRET${run}`]) {
+        for (let depth = 0; depth <= 2; depth += 1) {
+          const output = redactCommandText(serialize(base, depth));
+          expect(output).not.toContain("SECRET");
+          expect(redactCommandText(output)).toBe(output);
+        }
+      }
+    }
+  });
+
+  it("keeps one pass a fixpoint over a serialized argument with a trailing delimiter run", () => {
+    // A second pass reads the placeholder, which carries no quote and no
+    // separator to stop an unquoted scan before the closer. The first pass
+    // consumes whatever that scan would, so the output never moves again.
+    const inputs = [
+      String.raw`"curl -H \"X-API-Key: LEAK\"TAILMARK\" --next \"safe\""`,
+      String.raw`"curl -H \"X-API-Key: LEAK \"TAILMARK\" --next \"safe\""`,
+      String.raw`"curl -H X-API-Key:\"LEAK\"TAILMARK\" --next \"safe\""`,
+      String.raw`foo\\"X-API-Key: a b" bar`,
+    ];
+    for (const input of inputs) {
+      const once = redactCommandText(input);
+      expect(once).not.toContain("LEAK");
+      expect(redactCommandText(once)).toBe(once);
+      expect(redactDiagnosticText(once)).toBe(once);
+    }
+  });
+
+  it("keeps an empty truncated segment out of the redaction", () => {
+    // A cut that leaves a segment with no bytes hides nothing, so the word ends
+    // before the quote and the quote survives.
+    expect(redactCommandText('X-API-Key: abc"')).toBe(`X-API-Key: ${R}"`);
+    expect(redactCommandText(`X-API-Key: abc'`)).toBe(`X-API-Key: ${R}'`);
+  });
+
+  it("redacts a value that opens with a blank inside an escaped delimiter", () => {
+    // The escaped value delimiter owns its body, so a leading space no longer
+    // leaves the credential in the clear.
+    const output = redactCommandText(String.raw`X-API-Key:\" abc\" tail`);
+    expect(output).not.toContain("abc");
+    expect(output).toBe(String.raw`X-API-Key:\"` + R + String.raw`\" tail`);
+    expect(redactCommandText(output)).toBe(output);
+  });
+});
