@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -685,8 +685,17 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
 
     expect(revalidated.allowed).toBe(false);
-    expect(revalidated.reason).toContain("now has a live");
+    // The refusal has to name which issue is live and what makes it
+    // live. `GET /api/live-runs` is scoped to the caller, so a watchdog run
+    // cannot otherwise see another agent's run on the watched issue, and the
+    // bare "subtree is live" verdict reads as a platform bug.
+    expect(revalidated.reason).toContain("has a live path");
+    expect(revalidated.reason).toContain("WDOG-LIVE-REVALIDATE");
+    expect(revalidated.reason).toContain("active_run");
     expect(revalidated.classification?.state).toBe("live");
+    expect(revalidated.classification).toMatchObject({
+      liveSignals: [{ issueId: sourceId, identifier: "WDOG-LIVE-REVALIDATE", kind: "active_run", status: "running" }],
+    });
   });
 
   it("does not raise a stopped-subtree review while a freshly-created assigned issue's first run is starting", async () => {
@@ -786,6 +795,69 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
     expect(watchdogIssues).toHaveLength(1);
+  });
+
+  // Measured on a live instance: a board comment enqueued an
+  // `issue_commented` wake on the watched issue at 17:24:52.431Z and the
+  // watchdog wake was enqueued 13 ms later, from a liveness snapshot taken
+  // before that run existed. The watchdog then ran for ~9 minutes against a
+  // source issue that was live the whole time, and every repair it attempted
+  // was refused as stale. Nothing about that run could ever have succeeded, so
+  // it must not be woken at all.
+  it("does not wake the watchdog when the source goes live between classification and enqueue", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-ENQUEUE-RACE", status: "in_progress" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    // Reproduce the interleave deterministically: the source issue acquires a
+    // live run at the moment the trigger writes its reusable watchdog issue,
+    // i.e. strictly after the classification that decided to trigger.
+    // DDL cannot carry bind parameters, and these ids are locally generated
+    // UUIDs, so raw interpolation is safe here.
+    await db.execute(sql.raw(`
+      CREATE FUNCTION public.watchdog_enqueue_race() RETURNS trigger AS $fn$
+      BEGIN
+        INSERT INTO heartbeat_runs (company_id, agent_id, status, invocation_source, context_snapshot)
+        VALUES ('${companyId}'::uuid, '${agentId}'::uuid, 'running', 'assignment',
+                jsonb_build_object('issueId', '${sourceId}'));
+        RETURN NEW;
+      END;
+      $fn$ LANGUAGE plpgsql;
+    `));
+    await db.execute(sql.raw(`
+      CREATE TRIGGER watchdog_enqueue_race AFTER INSERT ON issues
+      FOR EACH ROW WHEN (NEW.origin_kind = 'task_watchdog')
+      EXECUTE FUNCTION public.watchdog_enqueue_race();
+    `));
+
+    try {
+      const result = await service.reconcileTaskWatchdogs({ companyId });
+      expect(result).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+      expect(wakes).toHaveLength(0);
+    } finally {
+      await db.execute(sql.raw(
+        "DROP TRIGGER watchdog_enqueue_race ON issues; DROP FUNCTION public.watchdog_enqueue_race();",
+      ));
+    }
+
+    // The review issue was published before the race was observed, so it exists
+    // in `todo` with nobody woken for it. It must not stay pinned to that stop
+    // fingerprint: a pinned artifact reads as an open same-fingerprint review
+    // and would suppress the trigger the stopped state still deserves, forever.
+    const [published] = await db
+      .select({ id: issues.id, originFingerprint: issues.originFingerprint })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
+    expect(published.originFingerprint).toMatch(/^task_watchdog_untriggered:/);
+
+    // Once the racing run is gone, the next pass triggers on the same stopped
+    // state instead of reading its own leftover artifact as a done review.
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const retry = await service.reconcileTaskWatchdogs({ companyId });
+    expect(retry).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
   });
 
   it("handles an armed cutoff when no watchdogs are active", async () => {
