@@ -2890,6 +2890,101 @@ function logIssueListRequest(input: {
   });
 }
 
+const ISSUE_LIST_UUID_FILTER_NAMES = [
+  "participantAgentId",
+  "goalId",
+  "createdByAgentId",
+  "projectId",
+  "workspaceId",
+  "executionWorkspaceId",
+  "parentId",
+  "descendantOf",
+  "labelId",
+] as const;
+
+type IssueUuidFilterName = typeof ISSUE_LIST_UUID_FILTER_NAMES[number];
+
+const ISSUE_COUNT_UUID_FILTER_NAMES = [
+  "participantAgentId",
+  "projectId",
+  "workspaceId",
+  "executionWorkspaceId",
+  "parentId",
+  "descendantOf",
+  "labelId",
+] as const;
+
+type IssueUuidFilterResult<Name extends IssueUuidFilterName> =
+  | { ok: true; filters: Partial<Record<Name, string>> }
+  | { ok: false; error: string };
+
+/**
+ * Validates every UUID-typed query filter at the route boundary so a malformed
+ * value never reaches Postgres as `22P02 invalid input syntax for type uuid`.
+ * Shared by the issue list and issue count routes: the count route reaches the
+ * same service-layer filters, so it needs the identical guard.
+ */
+function parseIssueUuidFilters<Name extends IssueUuidFilterName>(
+  query: Request["query"],
+  names: readonly Name[],
+): IssueUuidFilterResult<Name> {
+  const filters: Partial<Record<Name, string>> = {};
+  for (const name of names) {
+    const rawValue = query[name];
+    if (rawValue === undefined) continue;
+    if (typeof rawValue !== "string") {
+      return { ok: false, error: `${name} must be a UUID` };
+    }
+    const trimmed = rawValue.trim();
+    // An empty value means "filter absent", not "filter malformed". Every query
+    // builder in `services/issues.ts` gates on a falsy filter, so `?projectId=`
+    // has always returned the unfiltered 200. Only non-empty text is validated.
+    if (trimmed.length === 0) continue;
+    if (!isUuidLike(trimmed)) {
+      return { ok: false, error: `${name} must be a UUID` };
+    }
+    filters[name] = trimmed;
+  }
+  const parentIdName = "parentId" as Name;
+  if (names.includes(parentIdName)) {
+    // `parentId ?? parentIssueId` is the long-standing precedence on both routes.
+    // `??` resolves on presence, not on emptiness: a present-but-empty `parentId`
+    // already suppressed the alias, so read the raw query value here rather than
+    // the parsed filter. Only validate the alias when it is the value that will
+    // actually be used — validating a superseded alias would 400 a request that
+    // has always been 200.
+    const rawParentIssueId = query.parentIssueId;
+    if (query[parentIdName] === undefined && rawParentIssueId !== undefined) {
+      if (typeof rawParentIssueId !== "string") {
+        return { ok: false, error: "parentIssueId must be a UUID" };
+      }
+      const trimmedAlias = rawParentIssueId.trim();
+      if (trimmedAlias.length > 0) {
+        if (!isUuidLike(trimmedAlias)) {
+          return { ok: false, error: "parentIssueId must be a UUID" };
+        }
+        filters[parentIdName] = trimmedAlias;
+      }
+    }
+  }
+  return { ok: true, filters };
+}
+
+function parseIssueAssigneeAgentIdFilter(
+  rawValue: unknown,
+): { ok: true; value: string | null | undefined } | { ok: false; error: string } {
+  if (rawValue === undefined) return { ok: true, value: undefined };
+  const rejected = { ok: false as const, error: "assigneeAgentId must be a UUID or 'null'" };
+  if (typeof rawValue !== "string") return rejected;
+  const normalized = rawValue.trim();
+  // Empty means "filter absent" — `services/issues.ts` normalizes `""` to
+  // `undefined` for this filter, and the route did the same before this guard.
+  if (normalized.length === 0) return { ok: true, value: undefined };
+  if (normalized.toLowerCase() === "null") return { ok: true, value: null };
+  if (!isUuidLike(normalized)) return rejected;
+  return { ok: true, value: normalized };
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -6528,8 +6623,13 @@ export function issueRoutes(
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
     const includeLiveDescendantSummary = parseOptionalBooleanQuery(req.query.includeLiveDescendantSummary);
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
-    let assigneeAgentId: string | null | undefined;
     const rawUpdatedSince = req.query.updatedSince as string | undefined;
+    const uuidFilterResult = parseIssueUuidFilters(req.query, ISSUE_LIST_UUID_FILTER_NAMES);
+    if (!uuidFilterResult.ok) {
+      res.status(400).json({ error: uuidFilterResult.error });
+      return;
+    }
+    const uuidFilters = uuidFilterResult.filters;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -6579,23 +6679,12 @@ export function issueRoutes(
       res.status(400).json({ error: "includeLiveDescendantSummary must be true or false when provided" });
       return;
     }
-    if (assigneeAgentFilterRaw !== undefined) {
-      if (typeof assigneeAgentFilterRaw !== "string") {
-        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
-        return;
-      }
-      const normalizedAssigneeAgentFilter = assigneeAgentFilterRaw.trim();
-      if (normalizedAssigneeAgentFilter.length === 0) {
-        assigneeAgentId = undefined;
-      } else if (normalizedAssigneeAgentFilter.toLowerCase() === "null") {
-        assigneeAgentId = null;
-      } else if (isUuidLike(normalizedAssigneeAgentFilter)) {
-        assigneeAgentId = normalizedAssigneeAgentFilter;
-      } else {
-        res.status(422).json({ error: "assigneeAgentId must be a UUID or 'null'" });
-        return;
-      }
+    const assigneeAgentFilterResult = parseIssueAssigneeAgentIdFilter(assigneeAgentFilterRaw);
+    if (!assigneeAgentFilterResult.ok) {
+      res.status(400).json({ error: assigneeAgentFilterResult.error });
+      return;
     }
+    const assigneeAgentId = assigneeAgentFilterResult.value;
     if (rawUpdatedSince !== undefined && !Number.isFinite(new Date(rawUpdatedSince).getTime())) {
       res.status(400).json({ error: "updatedSince must be a valid ISO 8601 timestamp when provided" });
       return;
@@ -6606,17 +6695,19 @@ export function issueRoutes(
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId: uuidFilters.participantAgentId,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      goalId: uuidFilters.goalId,
+      createdByAgentId: uuidFilters.createdByAgentId,
+      projectId: uuidFilters.projectId,
+      workspaceId: uuidFilters.workspaceId,
+      executionWorkspaceId: uuidFilters.executionWorkspaceId,
+      parentId: uuidFilters.parentId,
+      descendantOf: uuidFilters.descendantOf,
+      labelId: uuidFilters.labelId,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -6797,19 +6888,30 @@ export function issueRoutes(
       res.status(400).json({ error: "hasPlanDocument must be true or false when provided" });
       return;
     }
+    const countAssigneeAgentFilter = parseIssueAssigneeAgentIdFilter(req.query.assigneeAgentId);
+    if (!countAssigneeAgentFilter.ok) {
+      res.status(400).json({ error: countAssigneeAgentFilter.error });
+      return;
+    }
+    const countUuidFilterResult = parseIssueUuidFilters(req.query, ISSUE_COUNT_UUID_FILTER_NAMES);
+    if (!countUuidFilterResult.ok) {
+      res.status(400).json({ error: countUuidFilterResult.error });
+      return;
+    }
+    const countUuidFilters = countUuidFilterResult.filters;
 
     const blockedCountFilters = {
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      assigneeAgentId: countAssigneeAgentFilter.value === null ? "null" : countAssigneeAgentFilter.value,
+      participantAgentId: countUuidFilters.participantAgentId,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      projectId: countUuidFilters.projectId,
+      workspaceId: countUuidFilters.workspaceId,
+      executionWorkspaceId: countUuidFilters.executionWorkspaceId,
+      parentId: countUuidFilters.parentId,
+      descendantOf: countUuidFilters.descendantOf,
+      labelId: countUuidFilters.labelId,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,

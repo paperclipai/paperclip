@@ -596,6 +596,8 @@ export interface IssueFilters {
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
+  goalId?: string;
+  createdByAgentId?: string;
   projectId?: string;
   workspaceId?: string;
   executionWorkspaceId?: string;
@@ -4243,11 +4245,39 @@ function assertValidAssigneeAgentFilter(assigneeAgentFilter: string | null | und
   }
 }
 
+function assertValidUuidFilter(name: string, value: string | undefined) {
+  // An empty value means "filter absent" — every query builder below gates on a
+  // falsy filter, and `parseIssueAssigneeAgentFilter` normalizes `""` the same
+  // way. Rejecting it here would disagree with both.
+  //
+  // The exemption is exactly `""`, not "blank after trimming". This function
+  // does not own the value it validates, so a whitespace-only string it waved
+  // through would still reach the query builders, which test the *original*
+  // string for truthiness and compare it against a uuid column — 22P02, the
+  // exact 500 this guard exists to prevent.
+  if (typeof value === "string" && value !== "" && !isUuidLike(value)) {
+    throw unprocessable(`${name} must be a UUID`);
+  }
+}
+
 async function blockedInboxIssueConditions(
   dbOrTx: any,
   companyId: string,
   filters?: IssueFilters,
 ) {
+  // The blocked-inbox branch is reached before svc.list/svc.count run their own
+  // filter asserts, so it has to validate the same set here or a malformed UUID
+  // reaches Postgres as 22P02 and surfaces as a 500.
+  assertValidAssigneeAgentFilter(parseIssueAssigneeAgentFilter(filters?.assigneeAgentId));
+  assertValidUuidFilter("participantAgentId", filters?.participantAgentId);
+  assertValidUuidFilter("goalId", filters?.goalId);
+  assertValidUuidFilter("createdByAgentId", filters?.createdByAgentId);
+  assertValidUuidFilter("projectId", filters?.projectId);
+  assertValidUuidFilter("workspaceId", filters?.workspaceId);
+  assertValidUuidFilter("executionWorkspaceId", filters?.executionWorkspaceId);
+  assertValidUuidFilter("parentId", filters?.parentId);
+  assertValidUuidFilter("descendantOf", filters?.descendantOf);
+  assertValidUuidFilter("labelId", filters?.labelId);
   const conditions = [
     eq(issues.companyId, companyId),
     visibleIssueCondition(),
@@ -4294,6 +4324,8 @@ async function blockedInboxIssueConditions(
   if (touchedByUserId) conditions.push(touchedByUserCondition(companyId, touchedByUserId));
   if (inboxArchivedByUserId) conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
   if (unreadForUserId) conditions.push(unreadForUserCondition(companyId, unreadForUserId));
+  if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
+  if (filters?.createdByAgentId) conditions.push(eq(issues.createdByAgentId, filters.createdByAgentId));
   if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
   if (filters?.workspaceId) {
     conditions.push(or(
@@ -5641,6 +5673,15 @@ export function issueService(db: Db) {
       const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
       assertValidAssigneeAgentFilter(assigneeAgentFilter);
+      assertValidUuidFilter("participantAgentId", filters?.participantAgentId);
+      assertValidUuidFilter("goalId", filters?.goalId);
+      assertValidUuidFilter("createdByAgentId", filters?.createdByAgentId);
+      assertValidUuidFilter("projectId", filters?.projectId);
+      assertValidUuidFilter("workspaceId", filters?.workspaceId);
+      assertValidUuidFilter("executionWorkspaceId", filters?.executionWorkspaceId);
+      assertValidUuidFilter("parentId", filters?.parentId);
+      assertValidUuidFilter("descendantOf", filters?.descendantOf);
+      assertValidUuidFilter("labelId", filters?.labelId);
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
         ? Math.max(1, Math.floor(filters.limit))
         : undefined;
@@ -5720,6 +5761,8 @@ export function issueService(db: Db) {
       if (unreadForUserId) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
+      if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
+      if (filters?.createdByAgentId) conditions.push(eq(issues.createdByAgentId, filters.createdByAgentId));
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.workspaceId) {
         conditions.push(or(
@@ -5904,12 +5947,23 @@ export function issueService(db: Db) {
       else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
       assertValidAssigneeAgentFilter(assigneeAgentFilter);
+      assertValidUuidFilter("participantAgentId", filters?.participantAgentId);
+      assertValidUuidFilter("goalId", filters?.goalId);
+      assertValidUuidFilter("createdByAgentId", filters?.createdByAgentId);
+      assertValidUuidFilter("projectId", filters?.projectId);
+      assertValidUuidFilter("workspaceId", filters?.workspaceId);
+      assertValidUuidFilter("executionWorkspaceId", filters?.executionWorkspaceId);
+      assertValidUuidFilter("parentId", filters?.parentId);
+      assertValidUuidFilter("descendantOf", filters?.descendantOf);
+      assertValidUuidFilter("labelId", filters?.labelId);
       if (assigneeAgentFilter === null) {
         conditions.push(isNull(issues.assigneeAgentId));
       } else if (assigneeAgentFilter) {
         conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
       }
       if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+      if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
+      if (filters?.createdByAgentId) conditions.push(eq(issues.createdByAgentId, filters.createdByAgentId));
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
       if (filters?.workspaceId) {
         conditions.push(or(
