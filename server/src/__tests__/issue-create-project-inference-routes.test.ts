@@ -719,4 +719,198 @@ describeEmbeddedPostgres("issue create project inference", () => {
 
     expect(created.body.projectId).toBeNull();
   });
+
+  async function seedAssignmentProtectedProject(companyId: string) {
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        authorizationPolicy: {
+          assignmentPolicy: { mode: "protected" },
+        },
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      companyId,
+      projectId,
+      name: "shove",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+      isPrimary: true,
+    });
+    return projectId;
+  }
+
+  it("withdraws a service-layer inference when the actor may not assign into the inferred project", async () => {
+    // The HTTP route gates an *assigned* create behind tasks:assign against
+    // the project the issue lands in. A direct caller (plan decomposition,
+    // the runner's create_task tool) never ran that gate, so the backstop has
+    // to run it before attaching its guess — a protected project without an
+    // assignment grant stays out of reach, and the guess is withdrawn.
+    const companyId = await seedCompany();
+    await seedAssignmentProtectedProject(companyId);
+    const creator = await seedAgent(companyId);
+    const assignee = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+      assigneeAgentId: assignee.id,
+    });
+
+    expect(issue.projectId).toBeNull();
+    expect(issue.assigneeAgentId).toBe(assignee.id);
+  });
+
+  it("keeps the inferred project when the actor may assign into it", async () => {
+    // Same shape, but an assignment policy that stays company-default: the
+    // assignment check must not over-withdraw a project the route would have
+    // allowed.
+    const companyId = await seedCompany();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        authorizationPolicy: {
+          assignmentPolicy: { mode: "company_default" },
+        },
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      companyId,
+      projectId,
+      name: "shove",
+      sourceType: "git_repo",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+      isPrimary: true,
+    });
+    const creator = await seedAgent(companyId);
+    const assignee = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+      assigneeAgentId: assignee.id,
+    });
+
+    expect(issue.projectId).toBe(projectId);
+    expect(issue.assigneeAgentId).toBe(assignee.id);
+  });
+
+  it("still infers into an assignment-protected project when the create is unassigned", async () => {
+    // Route parity: tasks:assign only gates creates that carry an assignee.
+    // An unassigned create lands in the protected project the same way the
+    // HTTP route would have allowed it to.
+    const companyId = await seedCompany();
+    const projectId = await seedAssignmentProtectedProject(companyId);
+    const creator = await seedAgent(companyId);
+    const parent = await seedIssue(companyId, null, "Project-less root");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Split out the repro",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+    });
+
+    expect(issue.projectId).toBe(projectId);
+  });
+
+  it("pinProjectId keeps a pinned null resolution over the parent's in-transaction project", async () => {
+    // The routes decide assignment scope and source trust against the project
+    // resolution they computed — including a null one. Pinning null must stop
+    // `create` from re-deriving a project (and its workspace linkage) from the
+    // parent inside the insert transaction, where a concurrent parent move
+    // could otherwise attach a project those decisions never evaluated.
+    const companyId = await seedCompany();
+    const project = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const [workspace] = await db
+      .select()
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.projectId, project.id));
+    const [parent] = await db.insert(issues).values({
+      companyId,
+      title: "Parent that just gained a project",
+      status: "in_progress",
+      priority: "medium",
+      projectId: project.id,
+      projectWorkspaceId: workspace!.id,
+    }).returning();
+
+    const issue = await issueService(db).create(companyId, {
+      title: "Child created against a null resolution",
+      status: "todo",
+      priority: "medium",
+      parentId: parent!.id,
+      projectId: null,
+      pinProjectId: true,
+    });
+
+    expect(issue.projectId).toBeNull();
+    expect(issue.projectWorkspaceId).toBeNull();
+  });
+
+  it("pinProjectId stops createChild from re-deriving the parent's project", async () => {
+    const companyId = await seedCompany();
+    const project = await seedProject(companyId, "actual", {
+      repoUrl: "https://github.com/zannis/actual",
+      cwd: "/repos/actual",
+    });
+    const parent = await seedIssue(companyId, project.id, "Parent inside a project");
+
+    const { issue } = await issueService(db).createChild(parent.id, {
+      title: "Pinned project-less child",
+      status: "todo",
+      priority: "medium",
+      projectId: null,
+      pinProjectId: true,
+    });
+
+    expect(issue.projectId).toBeNull();
+  });
+
+  it("pinProjectId suppresses the service-layer inference backstop", async () => {
+    // A route that pins null already ran the same inference and decided its
+    // authorization questions against the null answer. The backstop re-running
+    // inference inside the transaction would reintroduce exactly the unpinned
+    // window the flag exists to close.
+    const companyId = await seedCompany();
+    await seedProject(companyId, "shove", {
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    const creator = await seedAgent(companyId);
+
+    const issue = await issueService(db).create(companyId, {
+      title: "Pinned in spite of a matching description",
+      description: "Reproduce it in https://github.com/zannis/shove first.",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: creator.id,
+      projectId: null,
+      pinProjectId: true,
+    });
+
+    expect(issue.projectId).toBeNull();
+  });
 });

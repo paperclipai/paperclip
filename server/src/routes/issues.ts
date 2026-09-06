@@ -9272,12 +9272,13 @@ export function issueRoutes(
     const createInput = {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
-      // Pin the project the scope and trust decisions above were made against.
-      // Leaving a parent- or workspace-resolved project out of the input would
-      // let the service re-derive it inside its own transaction, and a
-      // concurrent move of the parent could persist a project that never had
-      // this request's authorization applied.
-      ...(effectiveProjectId != null ? { projectId: effectiveProjectId } : {}),
+      // Pin the project the scope and trust decisions above were made against
+      // — the null resolution included. Leaving any resolution out of the
+      // input would let the service re-derive it inside its own transaction,
+      // and a concurrent move of the parent could persist a project that
+      // never had this request's authorization applied.
+      projectId: effectiveProjectId,
+      pinProjectId: true,
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
       executionPolicy,
@@ -9545,8 +9546,10 @@ export function issueRoutes(
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
       // Same pinning as the create route: persist the project scope and trust
-      // were decided against, never a value the service re-derives later.
-      ...(childProjectId != null ? { projectId: childProjectId } : {}),
+      // were decided against — the null resolution included — never a value
+      // the service re-derives later.
+      projectId: childProjectId,
+      pinProjectId: true,
       id: issueId,
       executionPolicy,
       ...(currentSerializedChild
