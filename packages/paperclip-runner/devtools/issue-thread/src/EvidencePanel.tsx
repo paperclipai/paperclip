@@ -10,7 +10,7 @@ import type {
   CapabilityToolDisposition,
 } from "../../../src/issue-thread/types";
 import type { CapabilityDevtoolsSnapshot } from "../../../src/devtools";
-import { DevtoolsInspector, type CapabilityDevtoolsTab, type EvalInspectorReport } from "./DevtoolsInspector";
+import { DevtoolsInspector, EvalReportInspector, type CapabilityDevtoolsTab, type EvalInspectorReport } from "./DevtoolsInspector";
 import { Icon } from "./Icons";
 import { capabilitySemanticToolDescriptor } from "../../../src/semantic-tools/catalog";
 import {
@@ -392,7 +392,7 @@ export function EvidencePanel(props: EvidencePanelProps) {
       {devtools !== undefined ? (
         <>
           {devtools === null ? (
-            <p className="pit-muted pit-devtools-loading">Loading company state…</p>
+            evalReport ? <EvalReportInspector evalReport={evalReport} /> : <p className="pit-muted pit-devtools-loading">Loading company state…</p>
           ) : (
             <DevtoolsInspector snapshot={devtools} onFork={onForkRevision} tab={devtoolsTab} onTabChange={setDevtoolsTab} evalReport={evalReport} />
           )}

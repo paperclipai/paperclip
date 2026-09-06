@@ -111,12 +111,13 @@ test("keeps publication to the canonical static Evalbook surface", () => {
     "inventory.html",
     "tests/get-context.html",
     "attempts/attempt-01.html",
+    "attempts/attempt-01/index.html",
+    "viewer/assets/index-build.js",
     "campaign.json",
   ]) {
     assert.equal(isPublicProtocolEvalPath(file), true, file);
   }
   for (const file of [
-    "attempts/attempt-01/index.html",
     "runs/attempt/artifact.json",
     "provider-trace.log",
     "../secret",

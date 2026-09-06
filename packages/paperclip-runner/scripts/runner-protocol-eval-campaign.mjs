@@ -11,6 +11,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import {
+  publicChatView,
+  PUBLIC_CHAT_SCHEMA,
+  PUBLIC_CHAT_NOTICE,
+} from "./public-eval-chat.mjs";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const ATTEMPT_FILES = new Set([
@@ -97,7 +102,9 @@ async function maintainedRosterSelection(programRoot) {
       return basename(rosterPath);
     });
   if (selected.length === 0 || new Set(selected).size !== selected.length) {
-    throw new Error("Maintained live campaign must contain unique enabled rosters");
+    throw new Error(
+      "Maintained live campaign must contain unique enabled rosters",
+    );
   }
   return new Set(selected);
 }
@@ -120,8 +127,7 @@ export async function buildProtocolEvalCatalog({
   const programRoot = resolve(evalsRoot, "evals/paperclip-runner");
   const rosterRoot = resolve(programRoot, "rosters");
   const requested = parseRosterSelection(rosterSelection);
-  const selected =
-    requested ?? (await maintainedRosterSelection(programRoot));
+  const selected = requested ?? (await maintainedRosterSelection(programRoot));
   const rosterFiles = (await readdir(rosterRoot, { withFileTypes: true }))
     .filter(
       (entry) =>
@@ -509,7 +515,8 @@ export async function aggregateProtocolEvalCampaign({
   return campaign;
 }
 
-function publicArtifact(artifact) {
+function publicArtifact(artifact, evalCase) {
+  const issueThread = publicChatView(artifact, evalCase);
   const model = artifact.snapshot?.providerModel ?? {};
   const infrastructure = artifact.infrastructureFailure;
   const providerVersion =
@@ -525,12 +532,29 @@ function publicArtifact(artifact) {
     provider: artifact.provider,
     driver: artifact.driver,
     providerVersion,
-    retainedSession: false,
+    retainedSession: null,
     retainedSessionStatus: "redacted from the public report",
     usage: safeUsage(artifact.usage),
-    turn: { status: artifact.turn?.status ?? "failed" },
+    timing: {
+      startedAt:
+        typeof artifact.timing?.startedAt === "string"
+          ? artifact.timing.startedAt
+          : null,
+      finishedAt:
+        typeof artifact.timing?.finishedAt === "string"
+          ? artifact.timing.finishedAt
+          : null,
+      durationMs: Number.isFinite(artifact.timing?.durationMs)
+        ? artifact.timing.durationMs
+        : null,
+    },
+    turn: {
+      status: artifact.turn?.status ?? "failed",
+      turnId: issueThread.turns.at(-1).id,
+    },
     snapshot: {
       createdAt: artifact.snapshot?.createdAt ?? artifact.createdAt,
+      sessionId: "public-report",
       providerModel: {
         id: model.id ?? artifact.requestedModel,
         provider: model.provider ?? artifact.provider,
@@ -539,6 +563,8 @@ function publicArtifact(artifact) {
       evidence: [],
     },
     devtools: { revisions: [] },
+    publication: { schema: PUBLIC_CHAT_SCHEMA, notice: PUBLIC_CHAT_NOTICE },
+    issueThread,
     ...(infrastructure && typeof infrastructure === "object"
       ? {
           infrastructureFailure: {
@@ -622,15 +648,22 @@ export async function sanitizeProtocolEvalRuns({ runsRoot, publicRunsRoot }) {
     await Promise.all([
       writeFile(
         join(destination, "artifact.json"),
-        json(publicArtifact(artifact)),
+        json(publicArtifact(artifact, evalCase)),
         { mode: 0o600 },
       ),
       writeFile(join(destination, "score.json"), json(publicScore(score)), {
         mode: 0o600,
       }),
-      writeFile(join(destination, "case.json"), json(evalCase), {
-        mode: 0o600,
-      }),
+      writeFile(
+        join(destination, "case.json"),
+        json({
+          id: evalCase.id,
+          checks: (evalCase.checks ?? []).map(({ id, kind }) => ({ id, kind })),
+        }),
+        {
+          mode: 0o600,
+        },
+      ),
       writeFile(join(destination, "config.json"), json(publicConfig(config)), {
         mode: 0o600,
       }),

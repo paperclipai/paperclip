@@ -23,6 +23,7 @@ export interface EvalInspectorReport {
   disposition: string;
   passed: boolean;
   checks: EvalAssertion[];
+  publication?: { schema: string; notice: string };
   run: {
     model: string;
     provider: string;
@@ -41,7 +42,7 @@ export interface EvalInspectorReport {
     runnerBuild: string;
     startedAt: string;
     finishedAt: string;
-    durationMs: number;
+    durationMs: number | null;
     initialRevision: number;
     finalRevision: number;
     usage: {
@@ -53,7 +54,7 @@ export interface EvalInspectorReport {
       reasoningTokens: number;
       providerReportedCostNanodollars?: number;
       estimatedCostNanodollars: number;
-      pricingVersion: string;
+      pricingVersion?: string;
     } | null;
   };
 }
@@ -197,6 +198,149 @@ function documentsOf(state: Json): Array<{
   });
 }
 
+export function EvalReportInspector({
+  evalReport,
+}: {
+  evalReport: EvalInspectorReport;
+}) {
+  const isPublic = Boolean(evalReport.publication);
+  return (
+    <div className="pit-devtools-pane pit-eval-inspector">
+      <div className="pit-eval-summary-head">
+        <a href="../../index.html">← Eval suite</a>
+        <strong>
+          {evalReport.passed
+            ? "PASS"
+            : evalReport.disposition.replaceAll("_", " ").toUpperCase()}
+        </strong>
+        <code>{evalReport.attemptId}</code>
+      </div>
+      <dl className="pit-eval-run-facts">
+        <div>
+          <dt>Model</dt>
+          <dd>
+            {evalReport.run.model.startsWith(`${evalReport.run.provider}/`)
+              ? evalReport.run.model
+              : `${evalReport.run.provider}/${evalReport.run.model}`}
+          </dd>
+        </div>
+        <div>
+          <dt>Configuration</dt>
+          <dd>{evalReport.run.configuration}</dd>
+        </div>
+        <div>
+          <dt>Session</dt>
+          <dd>
+            {isPublic
+              ? "Withheld from public replay"
+              : evalReport.run.sessionId}
+          </dd>
+        </div>
+        <div>
+          <dt>Provider session</dt>
+          <dd>
+            {isPublic
+              ? "Withheld from public replay"
+              : (evalReport.run.providerSessionId ?? "unavailable")}
+          </dd>
+        </div>
+        <div>
+          <dt>Driver</dt>
+          <dd>
+            {evalReport.run.driver}
+            {evalReport.run.providerVersion
+              ? ` · ${evalReport.run.providerVersion}`
+              : ""}
+          </dd>
+        </div>
+        {evalReport.run.agentVersion ? (
+          <div>
+            <dt>Agent version</dt>
+            <dd>{evalReport.run.agentVersion}</dd>
+          </div>
+        ) : null}
+        <div>
+          <dt>Retained session</dt>
+          <dd>
+            {isPublic
+              ? "Withheld from public replay"
+              : evalReport.run.retainedSession === true
+                ? (evalReport.run.retainedSessionStatus ?? "retained")
+                : "not applicable"}
+          </dd>
+        </div>
+        <div>
+          <dt>Duration</dt>
+          <dd>
+            {evalReport.run.durationMs == null
+              ? "unavailable"
+              : `${evalReport.run.durationMs} ms`}
+          </dd>
+        </div>
+        <div>
+          <dt>Fixture</dt>
+          <dd>{evalReport.run.fixtureDigest}</dd>
+        </div>
+        <div>
+          <dt>State</dt>
+          <dd>
+            {isPublic
+              ? "Withheld from public replay"
+              : `r${evalReport.run.initialRevision} → r${evalReport.run.finalRevision}`}
+          </dd>
+        </div>
+        <div>
+          <dt>Tokens</dt>
+          <dd>
+            {evalReport.run.usage === null
+              ? "unknown"
+              : `${evalReport.run.usage.inputTokens} in · ${evalReport.run.usage.outputTokens} out · ${evalReport.run.usage.cachedInputTokens} cached`}
+          </dd>
+        </div>
+        <div>
+          <dt>Agent turns</dt>
+          <dd>{evalReport.run.usage?.agentTurns ?? "unknown"}</dd>
+        </div>
+        <div>
+          <dt>Provider requests</dt>
+          <dd>{evalReport.run.usage?.providerRequests ?? "unavailable"}</dd>
+        </div>
+        <div>
+          <dt>Estimated cost</dt>
+          <dd>
+            {evalReport.run.usage === null
+              ? "unknown"
+                  : `$${(evalReport.run.usage.estimatedCostNanodollars / 1_000_000_000).toFixed(6)}${evalReport.run.usage.pricingVersion ? ` · ${evalReport.run.usage.pricingVersion}` : ""}`}
+          </dd>
+        </div>
+        <div>
+          <dt>Provider list cost</dt>
+          <dd>
+            {typeof evalReport.run.usage?.providerReportedCostNanodollars !==
+            "number"
+              ? "unknown"
+              : `$${(evalReport.run.usage.providerReportedCostNanodollars / 1_000_000_000).toFixed(6)}`}
+          </dd>
+        </div>
+        <div>
+          <dt>Runner</dt>
+          <dd>{evalReport.run.runnerPackageDigest}</dd>
+        </div>
+        <div>
+          <dt>Runner build</dt>
+          <dd>{evalReport.run.runnerBuild}</dd>
+        </div>
+        <div>
+          <dt>runnerd</dt>
+          <dd>{evalReport.run.runnerdDigest}</dd>
+        </div>
+      </dl>
+      <h3>Assertions</h3>
+      <EvalAssertions assertions={evalReport.checks} />
+    </div>
+  );
+}
+
 export function DevtoolsInspector({
   snapshot,
   onFork,
@@ -291,6 +435,8 @@ export function DevtoolsInspector({
           className="pit-button"
           type="button"
           onClick={() => onFork(revision)}
+          disabled={evalReport != null}
+          title={evalReport ? "Eval reports are read-only" : undefined}
         >
           <Icon name="branch" /> Fork r{revision}
         </button>
@@ -328,124 +474,7 @@ export function DevtoolsInspector({
         ))}
       </div>
       {tab === "eval" && evalReport ? (
-        <div className="pit-devtools-pane pit-eval-inspector">
-          <div className="pit-eval-summary-head">
-            <a href="../../index.html">← Eval suite</a>
-            <strong>
-              {evalReport.passed
-                ? "PASS"
-                : evalReport.disposition.replaceAll("_", " ").toUpperCase()}
-            </strong>
-            <code>{evalReport.attemptId}</code>
-          </div>
-          <dl className="pit-eval-run-facts">
-            <div>
-              <dt>Model</dt>
-              <dd>
-                {evalReport.run.model.startsWith(`${evalReport.run.provider}/`)
-                  ? evalReport.run.model
-                  : `${evalReport.run.provider}/${evalReport.run.model}`}
-              </dd>
-            </div>
-            <div>
-              <dt>Configuration</dt>
-              <dd>{evalReport.run.configuration}</dd>
-            </div>
-            <div>
-              <dt>Session</dt>
-              <dd>{evalReport.run.sessionId}</dd>
-            </div>
-            <div>
-              <dt>Provider session</dt>
-              <dd>{evalReport.run.providerSessionId ?? "unavailable"}</dd>
-            </div>
-            <div>
-              <dt>Driver</dt>
-              <dd>
-                {evalReport.run.driver}
-                {evalReport.run.providerVersion
-                  ? ` · ${evalReport.run.providerVersion}`
-                  : ""}
-              </dd>
-            </div>
-            {evalReport.run.agentVersion ? (
-              <div>
-                <dt>Agent version</dt>
-                <dd>{evalReport.run.agentVersion}</dd>
-              </div>
-            ) : null}
-            <div>
-              <dt>Retained session</dt>
-              <dd>
-                {evalReport.run.retainedSession === true
-                  ? (evalReport.run.retainedSessionStatus ?? "retained")
-                  : "not applicable"}
-              </dd>
-            </div>
-            <div>
-              <dt>Duration</dt>
-              <dd>{evalReport.run.durationMs} ms</dd>
-            </div>
-            <div>
-              <dt>Fixture</dt>
-              <dd>{evalReport.run.fixtureDigest}</dd>
-            </div>
-            <div>
-              <dt>State</dt>
-              <dd>
-                r{evalReport.run.initialRevision} → r
-                {evalReport.run.finalRevision}
-              </dd>
-            </div>
-            <div>
-              <dt>Tokens</dt>
-              <dd>
-                {evalReport.run.usage === null
-                  ? "unknown"
-                  : `${evalReport.run.usage.inputTokens} in · ${evalReport.run.usage.outputTokens} out · ${evalReport.run.usage.cachedInputTokens} cached`}
-              </dd>
-            </div>
-            <div>
-              <dt>Agent turns</dt>
-              <dd>{evalReport.run.usage?.agentTurns ?? "unknown"}</dd>
-            </div>
-            <div>
-              <dt>Provider requests</dt>
-              <dd>{evalReport.run.usage?.providerRequests ?? "unavailable"}</dd>
-            </div>
-            <div>
-              <dt>Estimated cost</dt>
-              <dd>
-                {evalReport.run.usage === null
-                  ? "unknown"
-                  : `$${(evalReport.run.usage.estimatedCostNanodollars / 1_000_000_000).toFixed(6)} · ${evalReport.run.usage.pricingVersion}`}
-              </dd>
-            </div>
-            <div>
-              <dt>Provider list cost</dt>
-              <dd>
-                {typeof evalReport.run.usage
-                  ?.providerReportedCostNanodollars !== "number"
-                  ? "unknown"
-                  : `$${(evalReport.run.usage.providerReportedCostNanodollars / 1_000_000_000).toFixed(6)}`}
-              </dd>
-            </div>
-            <div>
-              <dt>Runner</dt>
-              <dd>{evalReport.run.runnerPackageDigest}</dd>
-            </div>
-            <div>
-              <dt>Runner build</dt>
-              <dd>{evalReport.run.runnerBuild}</dd>
-            </div>
-            <div>
-              <dt>runnerd</dt>
-              <dd>{evalReport.run.runnerdDigest}</dd>
-            </div>
-          </dl>
-          <h3>Assertions</h3>
-          <EvalAssertions assertions={evalReport.checks} />
-        </div>
+        <EvalReportInspector evalReport={evalReport} />
       ) : null}
       {tab === "timeline" ? (
         <div className="pit-devtools-list">

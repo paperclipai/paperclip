@@ -286,7 +286,7 @@ test("rejects downloaded cells that were not declared by the immutable catalog",
   );
 });
 
-test("public run projection removes provider sessions, traces, transcripts, evidence, and state", async () => {
+test("public run projection removes raw evidence and gives unverified recordings an empty chat view", async () => {
   const { root, config, evalCase } = await fixture();
   const attemptId = "get-task-context-opencode-gha-42-1-attempt-01";
   const source = join(root, "raw-runs", attemptId);
@@ -357,12 +357,14 @@ test("public run projection removes provider sessions, traces, transcripts, evid
   );
   assert.doesNotMatch(
     serialized,
-    /private-session|private transcript|private-turn|issueThread|trace/,
+    /private-session|private transcript|private-turn|"trace":/,
   );
   const artifact = JSON.parse(serialized);
   assert.deepEqual(artifact.snapshot.transcript, []);
   assert.deepEqual(artifact.snapshot.evidence, []);
   assert.deepEqual(artifact.devtools.revisions, []);
+  assert.equal(artifact.issueThread.composer.state, "disabled");
+  assert.equal(artifact.issueThread.turns[0].items[0].kind, "system_notice");
   const score = JSON.parse(
     await readFile(join(root, "public-runs", attemptId, "score.json"), "utf8"),
   );

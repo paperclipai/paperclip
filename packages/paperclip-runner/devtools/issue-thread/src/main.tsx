@@ -4,11 +4,23 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import "./issue-thread.css";
 
+// Hosted Evalbooks use inert JSON plus the same trusted viewer bundle. No
+// inline executable script or network fetch is needed to load an attempt.
+const reportData = document.getElementById("paperclip-eval-report");
+if (reportData !== null) {
+  window.__PAPERCLIP_EVAL_REPORT__ = JSON.parse(
+    reportData.textContent ?? "null",
+  );
+}
+
 // `?capture=1` freezes animation, caret, and smooth scrolling so the
 // screenshot matrix is byte-stable across runs (contract §10.1).
 const params = new URLSearchParams(window.location.search);
 const hashQuery = window.location.hash.split("?")[1] ?? "";
-if (params.get("capture") === "1" || new URLSearchParams(hashQuery).get("capture") === "1") {
+if (
+  params.get("capture") === "1" ||
+  new URLSearchParams(hashQuery).get("capture") === "1"
+) {
   document.documentElement.dataset.capture = "true";
 }
 

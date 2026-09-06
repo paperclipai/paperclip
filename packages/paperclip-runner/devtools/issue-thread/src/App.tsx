@@ -78,6 +78,7 @@ interface EmbeddedEvalCheck {
 }
 
 interface EmbeddedEvalReport {
+  publication?: { schema: string; notice: string };
   attemptId: string;
   caseId: string;
   disposition: string;
@@ -101,7 +102,7 @@ interface EmbeddedEvalReport {
     runnerBuild: string;
     startedAt: string;
     finishedAt: string;
-    durationMs: number;
+    durationMs: number | null;
     initialRevision: number;
     finalRevision: number;
     usage: {
@@ -117,7 +118,7 @@ interface EmbeddedEvalReport {
     } | null;
   };
   view: CapabilityIssueThreadSnapshot;
-  devtools: CapabilityDevtoolsSnapshot;
+  devtools: CapabilityDevtoolsSnapshot | null;
   navigation: { suiteHref: string; previous: { label: string; href: string } | null; next: { label: string; href: string } | null };
 }
 
@@ -491,7 +492,7 @@ export function App() {
         await document.fonts.ready;
       }
       if (cancelled) return;
-      if (scroller !== null) scroller.scrollTop = scroller.scrollHeight;
+      if (scroller !== null) scroller.scrollTop = embeddedEval === null ? scroller.scrollHeight : 0;
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       if (!cancelled) setSettled(true);
     })();
@@ -501,14 +502,14 @@ export function App() {
   }, [snapshot]);
 
   useEffect(() => {
-    if (!panelOpen || snapshot === null || route.mode !== "live") return;
+    if (embeddedEval !== null || !panelOpen || snapshot === null || route.mode !== "live") return;
     if (historicSessionId !== null) return;
     let cancelled = false;
     void capabilityLiveClient.devtools(snapshot.sessionId)
       .then((next) => { if (!cancelled) setDevtools(next); })
       .catch((cause) => { if (!cancelled) setActionError(describe(cause)); });
     return () => { cancelled = true; };
-  }, [historicSessionId, panelOpen, route.mode, snapshot?.renderedAt, snapshot?.sessionId]);
+  }, [embeddedEval, historicSessionId, panelOpen, route.mode, snapshot?.renderedAt, snapshot?.sessionId]);
 
   useEffect(() => {
     if (!chat || snapshot === null || historicSessionId !== null) return;
@@ -1363,7 +1364,7 @@ export function App() {
             >
               <div className="pit-thread">
                 {embeddedEval !== null ? (
-                  <div className="pit-eval-boundary" data-phase="execution"><strong>Eval execution</strong></div>
+                  <div className="pit-eval-boundary" data-phase="execution"><strong>Eval execution</strong>{embeddedEval.publication ? <span>{embeddedEval.publication.notice}</span> : null}</div>
                 ) : null}
                 {snapshot.turns.length === 0 ? (
                   <section className="pit-empty-thread" data-testid="clean-room-empty">
@@ -1404,7 +1405,7 @@ export function App() {
                 {embeddedEval !== null ? (
                   <div className="pit-eval-boundary" data-phase="post-run">
                     <strong>Post-run state</strong>
-                    <span>Final mock control-plane revision {embeddedEval.run.finalRevision}</span>
+                    <span>{embeddedEval.publication ? "Company-state details withheld from public replay" : `Final mock control-plane revision ${embeddedEval.run.finalRevision}`}</span>
                     <EvalAssertions assertions={embeddedEval.checks.filter((check) => check.anchor.kind === "run")} />
                   </div>
                 ) : null}
@@ -1425,7 +1426,7 @@ export function App() {
             ) : null}
           </div>
 
-          <Composer
+          {embeddedEval === null ? <Composer
             model={snapshot.composer}
             sessionId={snapshot.sessionId}
             onSend={send}
@@ -1439,7 +1440,7 @@ export function App() {
                 .getElementById(`interaction-${interactionId}`)
                 ?.scrollIntoView({ block: "center" });
             }}
-          />
+          /> : null}
         </main>
 
         {showPanel && layout === "side" ? (

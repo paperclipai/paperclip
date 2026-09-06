@@ -213,6 +213,11 @@ jobs:
             --max-parallel "$MAX_PARALLEL" \
             --output runner-protocol-eval-catalog.json
 
+      - name: Require the chat-report renderer before paid execution
+        run: |
+          set -euo pipefail
+          python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report --help | grep -q -- --public-viewer
+
       - name: Upload immutable campaign catalog
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -288,6 +293,14 @@ jobs:
             runner-protocol-build.tar.gz.sha256
           retention-days: 1
           compression-level: 0
+          if-no-files-found: error
+
+      - name: Upload canonical viewer for publisher byte verification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-protocol-viewer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/paperclip-runner/dist-issue-thread/
+          retention-days: 30
           if-no-files-found: error
 
   eval_shard_0:
@@ -595,6 +608,8 @@ jobs:
           python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report \
             --runs-root runner-protocol-merged/public-runs \
             --output runner-protocol-merged/public-report \
+            --viewer-root runner-protocol-build/extracted/dist-issue-thread \
+            --public-viewer \
             --inventory .paperclip-evals/evals/paperclip-runner/inventory.json \
             --coverage-matrix .paperclip-evals/evals/paperclip-runner/coverage-matrix.json
           cp runner-protocol-merged/campaign.json runner-protocol-merged/public-report/campaign.json
@@ -602,7 +617,7 @@ jobs:
       - name: Enforce the static public allowlist
         id: public_report
         run: |
-          node --input-type=module -e 'import { validatePublicProtocolEvalReport } from "./packages/paperclip-runner/scripts/publish-runner-protocol-eval-history.mjs"; await validatePublicProtocolEvalReport("runner-protocol-merged/public-report");'
+          node --input-type=module -e 'import { validatePublicProtocolEvalReport } from "./packages/paperclip-runner/scripts/publish-runner-protocol-eval-history.mjs"; await validatePublicProtocolEvalReport("runner-protocol-merged/public-report", { viewerRoot: "runner-protocol-build/extracted/dist-issue-thread" });'
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Add campaign result to the workflow summary
@@ -666,6 +681,12 @@ jobs:
           name: runner-protocol-eval-public-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-public-report
 
+      - name: Download the same-run canonical viewer for byte verification
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-protocol-viewer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runner-protocol-trusted-viewer
+
       - name: Exchange GitHub OIDC identity for scoped AWS credentials
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
         with:
@@ -675,6 +696,7 @@ jobs:
       - name: Publish versioned report and refresh the root index
         env:
           PAPERCLIP_RUNNER_PROTOCOL_EVAL_PUBLIC_REPORT_DIR: ${{ github.workspace }}/runner-protocol-public-report
+          PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR: ${{ github.workspace }}/runner-protocol-trusted-viewer
           RUNNER_PROTOCOL_EVAL_HISTORY_S3_BUCKET: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_S3_BUCKET || vars.RUNNER_E2E_HISTORY_S3_BUCKET }}
           RUNNER_PROTOCOL_EVAL_HISTORY_PREFIX: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_PREFIX || 'runner-protocol-evals' }}
           RUNNER_PROTOCOL_EVAL_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_PUBLIC_BASE_URL || vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}

@@ -1,5 +1,48 @@
 # Direct live Runner protocol evals
 
+## One Evalbook presentation
+
+Every new report uses the canonical Evalbook grid and the existing Runner Lab
+chat viewer for attempt drill-downs. There is no plain-HTML attempt fallback.
+Missing recordings show a notice in the same viewer; missing viewer builds
+fail generation. Build with
+`pnpm --filter @paperclipai/paperclip-runner build:issue-thread` and provide
+`--viewer-root` or `PAPERCLIP_EVAL_VIEWER_ROOT` to the canonical Python renderer.
+
+The Actions artifact contains full evidence. S3 uses the same viewer with a
+closed public DTO: only isolated mock-run conversation text, scrubbed private
+references, named tool outcomes, and checks. Tool arguments/results, reasoning,
+provider identities, and company snapshots stay private. The public notice
+explains these redactions. An unverified isolation boundary yields no public
+conversation, not a guessed reconstruction.
+
+Public attempts use inert JSON and one shared viewer asset directory. The
+publisher verifies each shell and asset against the exact same-run viewer build,
+checks the public payload contract and local links, and rejects other scripts.
+The CSP prohibits network calls, forms and external resources. Supply
+`PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR` to the publisher. The workflow sends
+a viewer-only artifact to that job; raw attempts and provider secrets stay out.
+
+### Refresh a completed report without calling models
+
+Download the aggregate Actions artifact, then:
+
+```sh
+node packages/paperclip-runner/scripts/refresh-runner-protocol-eval-report.mjs \
+  --source /path/to/downloaded-aggregate \
+  --evals-root /path/to/paperclip-evals \
+  --viewer-root packages/paperclip-runner/dist-issue-thread \
+  --output /path/to/new-refresh-directory \
+  --revision chat-v1
+```
+
+Publish the returned `reportRoot` with the normal history publisher. The new ID
+is `gha-RUN-ATTEMPT-report-chat-v1`. Original reports remain immutable; history
+adds a labeled refresh and retains the source campaign, original measurement
+timestamp, renderer digest, and `providerCalls: 0`. Scores and evaluated source
+revisions do not change. This is not a new model qualification run. Future live
+runs create chat reports automatically.
+
 This is the provider-backed, one-turn protocol qualification layer in
 `paperclipai/paperclip-evals/evals/paperclip-runner`. It is intentionally
 separate from both the browser full-stack model E2E and the stress-derived
@@ -149,11 +192,11 @@ read-only Runner issue-thread attempt pages, and raw immutable run records.
 
 Public publishing uses a separate projection and a separate trusted OIDC job.
 The projection retains model/config identity, status, usage totals, and check
-outcomes but removes provider session identifiers, transcripts, semantic-tool
+outcomes and scrubbed mock conversation, but removes provider session identifiers, semantic-tool
 payloads, state revisions, traces, remote profile identities, and raw failure
 text. The same Evalbook `report` command renders that projection, so the public
-grid and test pages have the standard Evalbook layout. The publisher rejects
-scripts, remote resources, symlinks, unknown paths, broken links, raw session
+grid, test pages and chat viewer have the standard Evalbook layout. The publisher rejects
+untrusted scripts, remote resources, symlinks, unknown paths, broken links, raw session
 fields, and credential-shaped values.
 
 S3 publication is additive:

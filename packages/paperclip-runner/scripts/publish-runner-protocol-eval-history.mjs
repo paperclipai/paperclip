@@ -13,13 +13,20 @@ import {
 import { tmpdir } from "node:os";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import {
+  trustedViewerFiles,
+  validatePublicViewerPage,
+} from "./public-eval-viewer.mjs";
 
 const execFileAsync = promisify(execFile);
-const SAFE_CAMPAIGN = /^gha-[1-9][0-9]*-[1-9][0-9]*$/;
+const SAFE_CAMPAIGN =
+  /^gha-[1-9][0-9]*-[1-9][0-9]*(?:-report-[a-z0-9][a-z0-9-]{0,39})?$/;
 const SAFE_REPORT_PATHS = [
   /^(?:index|latest|inventory|real-server)\.html$/,
   /^tests\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.html$/,
   /^attempts\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.html$/,
+  /^attempts\/[A-Za-z0-9][A-Za-z0-9._-]{0,199}\/index\.html$/,
+  /^viewer\/assets\/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:js|css|woff2)$/,
   /^campaign\.json$/,
 ];
 const CREDENTIAL_PATTERNS = [
@@ -136,9 +143,16 @@ function internalHtmlHrefs(content) {
     .filter((href) => href && !href.startsWith("#"));
 }
 
-export async function validatePublicProtocolEvalReport(reportRoot) {
+export async function validatePublicProtocolEvalReport(
+  reportRoot,
+  { viewerRoot } = {},
+) {
   const root = resolve(reportRoot);
   const files = await relativeFiles(root);
+  const hasChat = files.some((file) =>
+    /^attempts\/[^/]+\/index\.html$/.test(file),
+  );
+  const viewer = hasChat ? await trustedViewerFiles(viewerRoot) : null;
   if (!files.includes("index.html") || !files.includes("campaign.json")) {
     throw new Error(
       "Public protocol eval report requires index.html and campaign.json",
@@ -157,21 +171,44 @@ export async function validatePublicProtocolEvalReport(reportRoot) {
         `Public protocol eval file exceeds its size boundary: ${file}`,
       );
     }
+    if (file.startsWith("viewer/")) {
+      const expected = viewer?.files.get(file);
+      if (!expected || !expected.equals(await readFile(absolute)))
+        throw new Error(
+          `Public viewer asset differs from trusted build: ${file}`,
+        );
+      continue;
+    }
     const content = await readFile(absolute, "utf8");
-    for (const pattern of CREDENTIAL_PATTERNS) {
-      if (pattern.test(content))
-        throw new Error(
-          `Public report contains credential/session material: ${file}`,
-        );
+    const richAttempt = /^attempts\/[^/]+\/index\.html$/.test(file);
+    const payload = richAttempt
+      ? validatePublicViewerPage(content, viewer.index)
+      : null;
+    if (!richAttempt) {
+      for (const pattern of CREDENTIAL_PATTERNS) {
+        if (pattern.test(content))
+          throw new Error(
+            `Public report contains credential/session material: ${file}`,
+          );
+      }
+      if (extname(file) !== ".html") continue;
+      for (const pattern of ACTIVE_HTML_PATTERNS) {
+        if (pattern.test(content))
+          throw new Error(
+            `Public report contains active or remote HTML: ${file}`,
+          );
+      }
     }
-    if (extname(file) !== ".html") continue;
-    for (const pattern of ACTIVE_HTML_PATTERNS) {
-      if (pattern.test(content))
-        throw new Error(
-          `Public report contains active or remote HTML: ${file}`,
-        );
-    }
-    for (const href of internalHtmlHrefs(content)) {
+    const navigation = payload
+      ? [
+          payload.navigation?.suiteHref,
+          payload.navigation?.previous?.href,
+          payload.navigation?.next?.href,
+        ].filter(Boolean)
+      : [];
+    for (const href of [...internalHtmlHrefs(content), ...navigation]) {
+      if (typeof href !== "string" || /[?:\\]|^\/|^[a-z]+:/i.test(href))
+        throw new Error(`Unsafe report navigation in ${file}`);
       const clean = href.split("#", 1)[0].split("?", 1)[0];
       const target = resolve(
         root,
@@ -189,6 +226,15 @@ export async function validatePublicProtocolEvalReport(reportRoot) {
       }
     }
   }
+  if (viewer) {
+    for (const file of viewer.files.keys())
+      if (!files.includes(file))
+        throw new Error(`Missing public viewer asset: ${file}`);
+    if (files.some((file) => /^attempts\/[^/]+\.html$/.test(file)))
+      throw new Error(
+        "Chat Evalbook must not mix in legacy plain attempt pages",
+      );
+  }
   const campaign = await loadObject(join(root, "campaign.json"));
   if (
     campaign.schema !== "paperclip.runner-protocol-eval.campaign/v1" ||
@@ -199,11 +245,17 @@ export async function validatePublicProtocolEvalReport(reportRoot) {
   return { files, campaign };
 }
 
-export async function createProtocolEvalBundleManifest(reportRoot, campaignId) {
+export async function createProtocolEvalBundleManifest(
+  reportRoot,
+  campaignId,
+  { viewerRoot } = {},
+) {
   if (!SAFE_CAMPAIGN.test(campaignId))
     throw new Error("Unsafe protocol eval campaign ID");
-  const { files, campaign } =
-    await validatePublicProtocolEvalReport(reportRoot);
+  const { files, campaign } = await validatePublicProtocolEvalReport(
+    reportRoot,
+    { viewerRoot },
+  );
   if (campaign.campaignId !== campaignId)
     throw new Error("Report campaign ID does not match publication target");
   const entries = await Promise.all(
@@ -250,6 +302,9 @@ export function protocolEvalHistoryRecord(campaign, publicRoot) {
     totals: campaign.totals,
     rosters: campaign.rosters,
     source: campaign.source,
+    ...(campaign.reportRevision
+      ? { reportRevision: campaign.reportRevision }
+      : {}),
   };
 }
 
@@ -278,9 +333,7 @@ export function mergeProtocolEvalHistory(history, record) {
   const retained = campaigns.slice(0, MAX_HISTORY_CAMPAIGNS);
   if (
     latestGreen &&
-    !retained.some(
-      (campaign) => campaign.campaignId === latestGreen.campaignId,
-    )
+    !retained.some((campaign) => campaign.campaignId === latestGreen.campaignId)
   ) {
     retained[retained.length - 1] = latestGreen;
   }
@@ -343,7 +396,7 @@ export function renderProtocolEvalHistoryIndex(history) {
                 `${html(roster.model)} · ${roster.passed}/${roster.selected}`,
             )
             .join("<br>");
-          return `<tr><td><a href="${html(campaign.publicUrl)}"><code>${html(campaign.campaignId)}</code></a><small>${html(date(campaign.generatedAt))} UTC</small></td><td><span class="status ${status}">${status}</span></td><td><strong>${html(campaign.totals.passed)}/${html(campaign.totals.selected)}</strong><small>${html(campaign.totals.behaviorFailures)} behavior · ${html(campaign.totals.infrastructureFailures)} infrastructure</small></td><td>${rosters}</td><td><code>${html(campaign.source?.paperclip?.sha?.slice(0, 8) ?? "unknown")}</code><small>evals ${html(campaign.source?.evals?.sha?.slice(0, 8) ?? "unknown")}</small></td><td><a href="${html(campaign.publicUrl)}">Open Evalbook →</a></td></tr>`;
+          return `<tr><td><a href="${html(campaign.publicUrl)}"><code>${html(campaign.campaignId)}</code></a><small>${html(date(campaign.generatedAt))} UTC</small>${campaign.reportRevision ? `<small>Report refresh · no new model calls · source ${html(campaign.reportRevision.sourceCampaignId)}</small>` : ""}</td><td><span class="status ${status}">${status}</span></td><td><strong>${html(campaign.totals.passed)}/${html(campaign.totals.selected)}</strong><small>${html(campaign.totals.behaviorFailures)} behavior · ${html(campaign.totals.infrastructureFailures)} infrastructure</small></td><td>${rosters}</td><td><code>${html(campaign.source?.paperclip?.sha?.slice(0, 8) ?? "unknown")}</code><small>evals ${html(campaign.source?.evals?.sha?.slice(0, 8) ?? "unknown")}</small></td><td><a href="${html(campaign.publicUrl)}">Open Evalbook →</a></td></tr>`;
         })
         .join("")
     : '<tr><td colspan="6" class="empty">No campaigns have been published yet.</td></tr>';
@@ -435,13 +488,20 @@ async function uploadImmutableReport(bucket, prefix, reportRoot) {
   );
 }
 
-export async function publishProtocolEvalHistory({ reportRoot, destination }) {
+export async function publishProtocolEvalHistory({
+  reportRoot,
+  destination,
+  viewerRoot,
+}) {
   const validatedDestination =
     validateProtocolEvalHistoryDestination(destination);
-  const { campaign } = await validatePublicProtocolEvalReport(reportRoot);
+  const { campaign } = await validatePublicProtocolEvalReport(reportRoot, {
+    viewerRoot,
+  });
   const manifest = await createProtocolEvalBundleManifest(
     reportRoot,
     campaign.campaignId,
+    { viewerRoot },
   );
   const temporary = await mkdtemp(
     join(tmpdir(), "runner-protocol-eval-history-"),
@@ -518,6 +578,7 @@ export async function publishProtocolEvalHistory({ reportRoot, destination }) {
 
 async function main() {
   const result = await publishProtocolEvalHistory({
+    viewerRoot: process.env.PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR,
     reportRoot: resolve(
       process.env.PAPERCLIP_RUNNER_PROTOCOL_EVAL_PUBLIC_REPORT_DIR ??
         "runner-protocol-eval-public-report",
