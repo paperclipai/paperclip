@@ -14,6 +14,7 @@ import {
   SelectOption,
   TextInput,
   type ModalElement,
+  type ModalResponse,
   type SelectOptionElement,
 } from "chat";
 
@@ -129,6 +130,27 @@ export type ChatQuestionFormValidationResult =
         "expired" | "invalid_callback" | "invalid_form" | "stale_interaction";
       fieldErrors: Record<string, string>;
     };
+
+const CHAT_QUESTION_FORM_DENIAL_MESSAGE =
+  "This form is no longer authorized. Close it and open the linked Paperclip task.";
+
+/**
+ * Provider callbacks must be acknowledged after Paperclip has durably denied a
+ * stale or unauthorized submission. When the opaque form token is known, keep
+ * the modal open with a safe field-level explanation; otherwise clear the
+ * untrusted view without reflecting any callback details.
+ */
+export function chatQuestionFormDenialResponse(
+  payload?: ChatQuestionFormSubmitTokenPayload | null,
+): ModalResponse {
+  const fieldId = payload?.fields[0]?.fieldId;
+  return fieldId
+    ? {
+        action: "errors",
+        errors: { [fieldId]: CHAT_QUESTION_FORM_DENIAL_MESSAGE },
+      }
+    : { action: "clear" };
+}
 
 function opaqueToken(prefix: string): string {
   return `${prefix}${randomBytes(TOKEN_BYTES).toString("base64url")}`;

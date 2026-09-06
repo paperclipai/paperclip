@@ -25,7 +25,7 @@ vi.mock("@chat-adapter/discord", () => ({
       paperclipCompatibilityRevision:
         config.botToken === "unpatched-discord"
           ? undefined
-          : "paperclip-discord-v3",
+          : "paperclip-discord-v4",
       async ensureRootThread(
         channelId: string,
         messageId: string,
@@ -41,6 +41,20 @@ vi.mock("@chat-adapter/discord", () => ({
         captures.discordGatewayDurations.push(durationMs);
         if (config.botToken === "gateway-start-failure") {
           throw new Error("Gateway failed to start");
+        }
+        if (config.botToken === "gateway-fatal") {
+          await (
+            config.onGatewayEvent as (
+              event: Record<string, unknown>,
+            ) => Promise<void>
+          )({
+            type: "failure",
+            fatal: true,
+            error: { name: "Error", code: 4014 },
+          });
+          const error = new Error("Gateway privileged intent rejected");
+          Object.assign(error, { code: 4014 });
+          throw error;
         }
         options.waitUntil?.(Promise.resolve());
         return new Response("listening");
@@ -392,18 +406,19 @@ describe("Chat SDK endpoint runtime", () => {
   );
 
   it("passes only the Discord application credentials to the adapter and fences guild callbacks", async () => {
-    const runtime = createChatSdkEndpointRuntime(
-      baseOptions({
-        provider: "discord",
-        userName: "paperclip-agent",
-        credentials: {
-          apiUrl: "https://discord.example.test/api/v10",
-          applicationId: "123456789012345678",
-          botToken: "discord-token",
-          guildId: "1457808928258658549",
-        },
-      }),
-    );
+    const onDiscordGatewayEvent = vi.fn();
+    const options = baseOptions({
+      provider: "discord",
+      userName: "paperclip-agent",
+      credentials: {
+        apiUrl: "https://discord.example.test/api/v10",
+        applicationId: "123456789012345678",
+        botToken: "discord-token",
+        guildId: "1457808928258658549",
+      },
+    });
+    options.callbacks.onDiscordGatewayEvent = onDiscordGatewayEvent;
+    const runtime = createChatSdkEndpointRuntime(options);
 
     expect(captures.discordConfigs[0]).toMatchObject({
       apiUrl: "https://discord.example.test/api/v10",
@@ -417,6 +432,9 @@ describe("Chat SDK endpoint runtime", () => {
       expect.any(Function),
     );
     expect(captures.discordConfigs[0]?.shouldCreateThread).toEqual(
+      expect.any(Function),
+    );
+    expect(captures.discordConfigs[0]?.onGatewayEvent).toEqual(
       expect.any(Function),
     );
     expect(
@@ -438,6 +456,38 @@ describe("Chat SDK endpoint runtime", () => {
         content: "Investigate the queue",
       },
     ]);
+    const onGatewayEvent = captures.discordConfigs[0]?.onGatewayEvent as (
+      event: Record<string, unknown>,
+    ) => Promise<void>;
+    await onGatewayEvent({
+      type: "guild_removed",
+      guildId: "999999999999999999",
+    });
+    expect(onDiscordGatewayEvent).not.toHaveBeenCalled();
+    await onGatewayEvent({
+      type: "ready",
+      botUserId: "123456789012345678",
+    });
+    await onGatewayEvent({
+      type: "disconnected",
+      fatal: false,
+      code: 1001,
+    });
+    expect(onDiscordGatewayEvent).toHaveBeenNthCalledWith(1, {
+      endpointId: "endpoint-1",
+      event: {
+        type: "ready",
+        botUserId: "123456789012345678",
+      },
+      provider: "discord",
+      sequence: 1,
+    });
+    expect(onDiscordGatewayEvent).toHaveBeenNthCalledWith(2, {
+      endpointId: "endpoint-1",
+      event: { type: "disconnected", fatal: false, code: 1001 },
+      provider: "discord",
+      sequence: 2,
+    });
   });
 
   it("fails loudly when the pinned Discord patch revision is unavailable", () => {
@@ -477,6 +527,69 @@ describe("Chat SDK endpoint runtime", () => {
     expect(captures.discordGatewayDurations).toHaveLength(1);
   });
 
+  it("keeps a non-owner Discord runtime send-only", async () => {
+    const runtime = createChatSdkEndpointRuntime({
+      ...baseOptions({
+        provider: "discord",
+        userName: "paperclip-agent",
+        credentials: {
+          applicationId: "123456789012345678",
+          botToken: "discord-token",
+          guildId: "1457808928258658549",
+        },
+      }),
+      enableDiscordGateway: false,
+    });
+
+    await runtime.initialize();
+    expect(captures.discordGatewayDurations).toEqual([]);
+    await runtime.shutdown();
+  });
+
+  it("removes each Discord restart-delay abort listener after the timer settles", async () => {
+    vi.useFakeTimers();
+    const addEventListener = vi.spyOn(
+      AbortSignal.prototype,
+      "addEventListener",
+    );
+    const removeEventListener = vi.spyOn(
+      AbortSignal.prototype,
+      "removeEventListener",
+    );
+    try {
+      const runtime = createChatSdkEndpointRuntime(
+        baseOptions({
+          provider: "discord",
+          userName: "paperclip-agent",
+          credentials: {
+            applicationId: "123456789012345678",
+            botToken: "discord-token",
+            guildId: "1457808928258658549",
+          },
+        }),
+      );
+
+      await runtime.initialize();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(captures.discordGatewayDurations.length).toBeGreaterThanOrEqual(2);
+      expect(addEventListener).toHaveBeenCalledWith(
+        "abort",
+        expect.any(Function),
+        { once: true },
+      );
+      expect(removeEventListener).toHaveBeenCalledWith(
+        "abort",
+        expect.any(Function),
+      );
+      await runtime.shutdown();
+    } finally {
+      addEventListener.mockRestore();
+      removeEventListener.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("supervises a failed Discord Gateway start without leaking a rejected task", async () => {
     const runtime = createChatSdkEndpointRuntime(
       baseOptions({
@@ -496,6 +609,30 @@ describe("Chat SDK endpoint runtime", () => {
     );
     await expect(runtime.shutdown()).resolves.toBeUndefined();
     expect(captures.discordGatewayDurations).toHaveLength(1);
+  });
+
+  it("does not restart a Discord Gateway session after a fatal provider failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = createChatSdkEndpointRuntime(
+        baseOptions({
+          provider: "discord",
+          userName: "paperclip-agent",
+          credentials: {
+            applicationId: "123456789012345678",
+            botToken: "gateway-fatal",
+            guildId: "1457808928258658549",
+          },
+        }),
+      );
+
+      await runtime.initialize();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(captures.discordGatewayDurations).toEqual([24 * 60 * 60_000]);
+      await runtime.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("wraps each normalized message route with endpoint and public provider identity", async () => {

@@ -97,6 +97,39 @@ describe("chat provider lifecycle normalization", () => {
     },
   );
 
+  it.each([
+    ["channel_archive", "unavailable"],
+    ["group_archive", "unavailable"],
+    ["channel_unarchive", "available"],
+    ["group_unarchive", "available"],
+    ["channel_rename", "available"],
+    ["group_rename", "available"],
+    ["channel_deleted", "removed"],
+  ] as const)("normalizes Slack %s lifecycle events", (type, availability) => {
+    expect(
+      parseChatProviderLifecycle({
+        provider: "slack",
+        payload: {
+          event_id: `Ev-${type}`,
+          event: {
+            type,
+            event_ts: "1725551003.125000",
+            channel: { id: "C-LIFECYCLE", name: "renamed-channel" },
+          },
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        kind: "resource",
+        providerEventId: `Ev-${type}`,
+        providerResourceId: "C-LIFECYCLE",
+        label: "renamed-channel",
+        availability,
+        metadata: { source: type },
+      }),
+    ]);
+  });
+
   it("turns Slack uninstall and token revocation into endpoint effects", () => {
     for (const type of ["app_uninstalled", "tokens_revoked"]) {
       expect(

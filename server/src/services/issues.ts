@@ -11671,6 +11671,7 @@ export function issueService(db: Db) {
               )
             : (options?.metadata ?? null),
         );
+      let comment: typeof issueComments.$inferSelect | null = null;
       if (createdByRunId) {
         const existing = await dbOrTx
           .select()
@@ -11694,31 +11695,69 @@ export function issueService(db: Db) {
             (rows: Array<typeof issueComments.$inferSelect>) => rows[0] ?? null,
           );
         if (existing) {
-          return redactIssueComment(
-            existing,
-            currentUserRedactionOptions.enabled,
-          );
+          // Heartbeat's presentation resolver can intentionally select the
+          // exact same prose that the agent already wrote while handling an
+          // external-chat continuation. The first write is kept internal so
+          // lifecycle/tool chatter cannot escape; the later, narrowly
+          // authorized presentation must upgrade that one durable comment
+          // instead of returning early and letting the generic completion
+          // milestone win the provider reply slot.
+          const shouldUpgradeExternalAuthorization =
+            authorType === "agent" &&
+            metadata?.authorizationReason ===
+              CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON &&
+            existing.metadata?.authorizationReason !==
+              CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON;
+          if (!shouldUpgradeExternalAuthorization) {
+            return redactIssueComment(
+              existing,
+              currentUserRedactionOptions.enabled,
+            );
+          }
+          comment = await dbOrTx
+            .update(issueComments)
+            .set({
+              // Preserve any structured provenance the provisional comment
+              // carried; the presentation pass only elevates its narrowly
+              // resolved external-publication authorization.
+              metadata: { ...(existing.metadata ?? {}), ...(metadata ?? {}) },
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issueComments.id, existing.id),
+                eq(issueComments.companyId, issue.companyId),
+              ),
+            )
+            .returning()
+            .then(
+              (rows: Array<typeof issueComments.$inferSelect>) =>
+                rows[0] ?? null,
+            );
         }
       }
-      const [comment] = await dbOrTx
-        .insert(issueComments)
-        .values({
-          companyId: issue.companyId,
-          issueId,
-          authorAgentId: actor.agentId ?? null,
-          authorUserId: actor.userId ?? null,
-          onBehalfOfUserId,
-          authorType,
-          createdByRunId,
-          body: redactedBody,
-          presentation,
-          metadata,
-          sourceTrust: options?.sourceTrust ?? null,
-          ...(createdAt && !Number.isNaN(createdAt.getTime())
-            ? { createdAt }
-            : {}),
-        })
-        .returning();
+      if (!comment) {
+        [comment] = await dbOrTx
+          .insert(issueComments)
+          .values({
+            companyId: issue.companyId,
+            issueId,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            onBehalfOfUserId,
+            authorType,
+            createdByRunId,
+            body: redactedBody,
+            presentation,
+            metadata,
+            sourceTrust: options?.sourceTrust ?? null,
+            ...(createdAt && !Number.isNaN(createdAt.getTime())
+              ? { createdAt }
+              : {}),
+          })
+          .returning();
+      }
+      if (!comment) throw new Error("Failed to create issue comment");
 
       const attachmentIds = [...new Set(options?.attachmentIds ?? [])];
       const boundAttachments: Array<{

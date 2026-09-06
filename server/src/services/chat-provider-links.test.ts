@@ -75,6 +75,23 @@ describe("chat provider conversation links", () => {
     expect(channelUrl).toContain("groupId=group-1");
     expect(channelUrl).toContain(`parentMessageId=${rootId}`);
 
+    const canonicalChannelUrl = chatProviderConversationUrl({
+      provider: "microsoft-teams",
+      providerAccountId: "tenant-fallback",
+      threadId: `teams:${encodedConversation}`,
+      providerMessageId: rootId,
+      raw: {
+        channelData: {
+          tenant: { id: "tenant-1" },
+          team: { aadGroupId: "group-1" },
+          channel: { id: channelId },
+        },
+      },
+    });
+    expect(canonicalChannelUrl).toContain(
+      `https://teams.microsoft.com/l/message/${encodeURIComponent(channelId)}/${rootId}`,
+    );
+
     const chatId = "19:chat@thread.v2";
     const encodedChat = Buffer.from(chatId).toString("base64url");
     expect(
@@ -86,6 +103,16 @@ describe("chat provider conversation links", () => {
       }),
     ).toBe(
       `https://teams.microsoft.com/l/message/${encodeURIComponent(chatId)}/175?context=${encodeURIComponent(JSON.stringify({ contextType: "chat" }))}`,
+    );
+
+    expect(
+      chatProviderConversationUrl({
+        provider: "microsoft-teams",
+        threadId: `teams:${encodedChat}:groupChat`,
+        providerMessageId: "176",
+      }),
+    ).toBe(
+      `https://teams.microsoft.com/l/message/${encodeURIComponent(chatId)}/176?context=${encodeURIComponent(JSON.stringify({ contextType: "chat" }))}`,
     );
   });
 

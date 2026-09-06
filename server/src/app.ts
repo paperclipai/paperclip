@@ -1016,6 +1016,7 @@ export async function createApp(
   const reconcileChatChannels = () => {
     if (chatReconciliationInFlight) return chatReconciliationInFlight;
     chatReconciliationInFlight = Promise.all([
+      chatChannels.reconcileProviderRuntimes(),
       chatChannels.processPendingDeliveries(),
       flushChatPublications(),
     ])

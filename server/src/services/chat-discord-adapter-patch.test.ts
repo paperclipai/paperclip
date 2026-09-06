@@ -1,4 +1,5 @@
 import { createDiscordAdapter } from "@chat-adapter/discord";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyChatPublicationError } from "./chat-publication-errors.js";
 
@@ -501,6 +502,17 @@ describe("Paperclip Discord adapter patch", () => {
   it("fails closed when a root-mention thread cannot be created", async () => {
     const { adapter, chat, logger } = harness();
     await adapter.initialize(chat as never);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockImplementation(async () =>
+          Response.json(
+            { code: 10003, message: "Unknown Channel" },
+            { status: 404 },
+          ),
+        ),
+    );
     const createDiscordThread = vi
       .spyOn(
         adapter as unknown as {
@@ -541,6 +553,17 @@ describe("Paperclip Discord adapter patch", () => {
   it("retries root-mention thread creation without creating a channel-level task", async () => {
     const { adapter, chat } = harness();
     await adapter.initialize(chat as never);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockImplementation(async () =>
+          Response.json(
+            { code: 10003, message: "Unknown Channel" },
+            { status: 404 },
+          ),
+        ),
+    );
     const createDiscordThread = vi
       .spyOn(
         adapter as unknown as {
@@ -745,16 +768,12 @@ describe("Paperclip Discord adapter patch", () => {
   it("idempotently recovers an already-created root thread", async () => {
     const { adapter } = harness();
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          code: 160004,
-          message: "A thread has already been created for this message",
-        }),
-        {
-          status: 400,
-          headers: { "content-type": "application/json" },
-        },
-      ),
+      Response.json({
+        id: "message-1",
+        name: "investigate the queue",
+        parent_id: "channel-1",
+        type: 11,
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -766,12 +785,15 @@ describe("Paperclip Discord adapter patch", () => {
       ),
     ).resolves.toMatchObject({ id: "message-1" });
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://discord.com/api/v10/channels/channel-1/messages/message-1/threads",
+      "https://discord.com/api/v10/channels/message-1",
       expect.objectContaining({
-        method: "POST",
+        method: "GET",
         signal: expect.any(AbortSignal),
       }),
     );
+    expect(
+      fetchMock.mock.calls.filter((call) => call[1]?.method === "POST"),
+    ).toHaveLength(0);
   });
 
   it.each([
@@ -1020,5 +1042,140 @@ describe("Paperclip Discord adapter patch", () => {
         threadId: "discord:1457808928258658549:channel-1:root-message-1",
       }),
     );
+  });
+});
+
+type DiscordClientForLifecycleTest = {
+  destroy(): void;
+  emit(event: string, ...args: unknown[]): boolean;
+  login(token?: string): Promise<string>;
+};
+
+const discordRequire = createRequire(
+  import.meta.resolve("@chat-adapter/discord"),
+);
+const { Client, Events } = discordRequire("discord.js") as {
+  Client: { prototype: DiscordClientForLifecycleTest };
+  Events: { Error: string };
+};
+
+describe("pinned Discord Gateway lifecycle patch", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("recovers an accepted root-thread request after its response is lost", async () => {
+    const channelId = "333333333333333333";
+    const messageId = "555555555555555555";
+    const providerFetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        Response.json(
+          { code: 10003, message: "Unknown Channel" },
+          { status: 404 },
+        ),
+      )
+      .mockRejectedValueOnce(new TypeError("response lost after acceptance"))
+      .mockResolvedValueOnce(
+        Response.json({
+          id: messageId,
+          name: "Investigate the queue",
+          parent_id: channelId,
+          type: 11,
+        }),
+      );
+    vi.stubGlobal("fetch", providerFetch);
+    const adapter = createDiscordAdapter({
+      applicationId: "123456789012345678",
+      botToken: "discord-token",
+      webhookVerifier: async () => false,
+    });
+
+    await expect(
+      adapter.ensureRootThread(channelId, messageId, "Investigate the queue"),
+    ).rejects.toThrow("response lost after acceptance");
+    await expect(
+      adapter.ensureRootThread(channelId, messageId, "Investigate the queue"),
+    ).resolves.toMatchObject({
+      id: messageId,
+      parent_id: channelId,
+      type: 11,
+    });
+    expect(providerFetch).toHaveBeenCalledTimes(3);
+    expect(
+      providerFetch.mock.calls.filter((call) => call[1]?.method === "POST"),
+    ).toHaveLength(1);
+  });
+
+  it("observes a Gateway failure while login is still pending", async () => {
+    let client: DiscordClientForLifecycleTest | null = null;
+    vi.spyOn(Client.prototype, "login").mockImplementation(function (
+      this: DiscordClientForLifecycleTest,
+    ) {
+      client = this;
+      return new Promise(() => undefined);
+    });
+    const destroy = vi
+      .spyOn(Client.prototype, "destroy")
+      .mockImplementation(() => undefined);
+    const adapter = createDiscordAdapter({
+      applicationId: "123456789012345678",
+      botToken: "discord-token",
+      onGatewayEvent: vi.fn(async () => undefined),
+      webhookVerifier: async () => false,
+    });
+    await adapter.initialize({} as never);
+    let listener: Promise<unknown> | null = null;
+    await adapter.startGatewayListener(
+      {
+        waitUntil(task) {
+          listener = Promise.resolve(task);
+        },
+      },
+      60_000,
+    );
+    await vi.waitFor(() => expect(client).not.toBeNull());
+    const failure = Object.assign(new Error("Privileged intent rejected"), {
+      code: 4014,
+    });
+    client!.emit(Events.Error, failure);
+
+    await expect(listener).rejects.toBe(failure);
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
+  it("removes the lifetime abort listener on every shutdown path", async () => {
+    vi.spyOn(Client.prototype, "login").mockResolvedValue("discord-token");
+    const destroy = vi
+      .spyOn(Client.prototype, "destroy")
+      .mockImplementation(() => undefined);
+    const adapter = createDiscordAdapter({
+      applicationId: "123456789012345678",
+      botToken: "discord-token",
+      webhookVerifier: async () => false,
+    });
+    await adapter.initialize({} as never);
+    const abort = new AbortController();
+    const removeEventListener = vi.spyOn(abort.signal, "removeEventListener");
+    let listener: Promise<unknown> | null = null;
+    await adapter.startGatewayListener(
+      {
+        waitUntil(task) {
+          listener = Promise.resolve(task);
+        },
+      },
+      60_000,
+      abort.signal,
+    );
+    if (!listener) throw new Error("Expected Discord Gateway listener task");
+    abort.abort();
+
+    await expect(listener).resolves.toBeUndefined();
+    expect(removeEventListener).toHaveBeenCalledWith(
+      "abort",
+      expect.any(Function),
+    );
+    expect(destroy).toHaveBeenCalledOnce();
   });
 });

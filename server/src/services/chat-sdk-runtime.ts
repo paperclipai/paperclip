@@ -129,6 +129,7 @@ export interface ResolvedMicrosoftTeamsChatConfig extends ProviderConfigBase {
 
 export interface ResolvedTelegramChatConfig extends ProviderConfigBase {
   provider: "telegram";
+  maxDownloadBytes?: number;
   credentials: {
     apiUrl?: string;
     botToken: string;
@@ -332,6 +333,34 @@ export interface DiscordRootMentionAdmissionEvent {
   userId: string;
 }
 
+export type DiscordGatewayHealthEvent =
+  | { type: "connecting" }
+  | { type: "ready"; botUserId?: string }
+  | {
+      type: "failure";
+      fatal: boolean;
+      error: {
+        name: string;
+        code?: number | string;
+        status?: number;
+        retryAfter?: number;
+      };
+    }
+  | { type: "disconnected"; fatal: boolean; code?: number }
+  | { type: "guild_removed"; guildId: string }
+  | { type: "guild_available"; guildId: string }
+  | { type: "guild_unavailable"; guildId: string }
+  | {
+      type: "channel_removed";
+      channelId: string;
+      guildId?: string;
+      label?: string;
+    };
+
+export interface DiscordGatewayCallbackEvent extends ChatSdkCallbackEvent<DiscordGatewayHealthEvent> {
+  sequence: number;
+}
+
 /**
  * Provider-neutral callbacks consumed by the Paperclip control-plane service.
  * All provider events have already passed the installed adapter's verifier and
@@ -343,6 +372,9 @@ export interface ChatSdkRuntimeCallbacks {
   onDiscordRootMentionAdmission?(
     event: DiscordRootMentionAdmissionEvent,
   ): Promise<boolean> | boolean;
+  onDiscordGatewayEvent?(
+    event: DiscordGatewayCallbackEvent,
+  ): Promise<void> | void;
   onAction?(event: ChatSdkCallbackEvent<ActionEvent>): Promise<void> | void;
   onMessageDeleted?(
     event: ChatSdkCallbackEvent<MessageDeletedEvent>,
@@ -373,6 +405,8 @@ export interface CreateChatSdkEndpointRuntimeOptions {
   callbacks: ChatSdkRuntimeCallbacks;
   companyId: string;
   concurrency?: ConcurrencyConfig | ConcurrencyStrategy;
+  /** Start Discord's long-lived Gateway listener for the elected owner only. */
+  enableDiscordGateway?: boolean;
   endpointId: string;
   logger?: Logger | "debug" | "error" | "info" | "silent" | "warn";
   maxStateValueBytes?: number;
@@ -474,9 +508,9 @@ interface DiscordChatInternals {
 
 function assertDiscordAdapterCompatibility(adapter: Adapter, chat: Chat): void {
   const discord = adapter as unknown as DiscordAdapterInternals;
-  if (discord.paperclipCompatibilityRevision !== "paperclip-discord-v3") {
+  if (discord.paperclipCompatibilityRevision !== "paperclip-discord-v4") {
     throw new DiscordAdapterCompatibilityError(
-      "Paperclip patch revision paperclip-discord-v3 is unavailable",
+      "Paperclip patch revision paperclip-discord-v4 is unavailable",
     );
   }
   if (typeof discord.startGatewayListener !== "function") {
@@ -517,11 +551,24 @@ interface TeamsAdapterInternals {
   chat?: {
     getState(): {
       get(key: string): Promise<unknown>;
+      set(key: string, value: string, ttlMs?: number): Promise<void>;
     };
   };
-  decodeThreadId?: (threadId: string) => { serviceUrl?: unknown };
+  decodeThreadId?: (threadId: string) => {
+    conversationId?: unknown;
+    serviceUrl?: unknown;
+  };
   openDM?: (userId: string) => Promise<unknown>;
+  paperclipRecordThreadServiceUrl?: (
+    threadId: string,
+    serviceUrl: unknown,
+  ) => Promise<void>;
   [key: string]: unknown;
+}
+
+function teamsConversationRouteStateKey(conversationId: string): string {
+  const baseConversationId = conversationId.replace(/;messageid=[^;]+/i, "");
+  return `teams:serviceUrl:conversation:${Buffer.from(baseConversationId).toString("base64url")}`;
 }
 
 function normalizedTeamsServiceUrl(value: unknown): string {
@@ -576,13 +623,14 @@ function trustedTeamsServiceUrl(
 }
 
 /**
- * The pinned Teams adapter preserves the verified activity serviceUrl in its
- * thread id but its outbound methods use the adapter-wide default API client.
  * Microsoft binds serviceUrl into the authenticated Bot Connector JWT and
- * requires replies to target that matching URL. Scope each outbound call to a
- * fresh API client rooted at that trusted thread URL. A context-local getter
- * keeps simultaneous conversations isolated without forcing unrelated Teams
- * threads through a single network queue.
+ * requires replies to target that matching URL. The URL is mutable routing
+ * state, not conversation identity, so current thread ids omit it. Persist the
+ * latest verified route under the stable conversation id and scope each
+ * outbound call to a fresh API client rooted at that route. Legacy thread ids
+ * that embedded a URL remain readable, but a newer persisted route wins. A
+ * context-local getter keeps simultaneous conversations isolated without
+ * forcing unrelated Teams threads through a single network queue.
  */
 export function scopeMicrosoftTeamsEgress(
   adapter: Adapter,
@@ -655,7 +703,44 @@ export function scopeMicrosoftTeamsEgress(
     operation: () => Promise<T>,
   ): Promise<T> => {
     const decoded = teams.decodeThreadId!(threadId);
-    return await withServiceUrl(decoded.serviceUrl, operation);
+    if (typeof decoded.conversationId !== "string" || !decoded.conversationId) {
+      throw new TeamsServiceUrlValidationError(
+        "Teams destination is missing its conversation identity",
+      );
+    }
+    const persistedServiceUrl = await teams.chat
+      ?.getState()
+      .get(teamsConversationRouteStateKey(decoded.conversationId));
+    return await withServiceUrl(
+      persistedServiceUrl ?? decoded.serviceUrl ?? defaultApi.serviceUrl,
+      operation,
+    );
+  };
+
+  teams.paperclipRecordThreadServiceUrl = async (
+    threadId: string,
+    serviceUrlValue: unknown,
+  ) => {
+    const decoded = teams.decodeThreadId!(threadId);
+    if (typeof decoded.conversationId !== "string" || !decoded.conversationId) {
+      throw new TeamsServiceUrlValidationError(
+        "Teams destination is missing its conversation identity",
+      );
+    }
+    const serviceUrl = trustedTeamsServiceUrl(
+      serviceUrlValue,
+      trustedConfiguredApiUrl,
+    );
+    const state = teams.chat?.getState();
+    if (!state) {
+      throw new TeamsAdapterCompatibilityError(
+        "durable route state is unavailable",
+      );
+    }
+    await state.set(
+      teamsConversationRouteStateKey(decoded.conversationId),
+      serviceUrl,
+    );
   };
 
   for (const methodName of TEAMS_THREAD_SCOPED_METHODS) {
@@ -671,10 +756,14 @@ export function scopeMicrosoftTeamsEgress(
     const cachedServiceUrl = await teams.chat
       ?.getState()
       .get(`teams:serviceUrl:${userId}`);
-    return await withServiceUrl(
-      cachedServiceUrl ?? defaultApi.serviceUrl,
-      async () => await Reflect.apply(originalOpenDM, teams, [userId]),
-    );
+    const serviceUrl = cachedServiceUrl ?? defaultApi.serviceUrl;
+    return await withServiceUrl(serviceUrl, async () => {
+      const threadId = await Reflect.apply(originalOpenDM, teams, [userId]);
+      if (typeof threadId === "string") {
+        await teams.paperclipRecordThreadServiceUrl!(threadId, serviceUrl);
+      }
+      return threadId;
+    });
   };
   return adapter;
 }
@@ -684,6 +773,7 @@ function createProviderAdapter(
   logger: CreateChatSdkEndpointRuntimeOptions["logger"],
   callbacks: ChatSdkRuntimeCallbacks,
   endpointId: string,
+  observeDiscordGatewayFatal?: (fatal: boolean) => void,
 ): Adapter {
   const resolvedLogger = adapterLogger(logger);
   switch (config.provider) {
@@ -743,6 +833,7 @@ function createProviderAdapter(
       return adapter;
     }
     case "discord": {
+      let gatewaySequence = 0;
       const adapterConfig: DiscordAdapterConfig = {
         apiUrl: config.credentials.apiUrl,
         applicationId: config.credentials.applicationId,
@@ -753,6 +844,26 @@ function createProviderAdapter(
         // does not need.
         webhookVerifier: async () => false,
         logger: resolvedLogger,
+        onGatewayEvent: async (event) => {
+          if (
+            "guildId" in event &&
+            (!event.guildId || event.guildId !== config.credentials.guildId)
+          ) {
+            return;
+          }
+          const fatal =
+            ((event.type === "failure" || event.type === "disconnected") &&
+              event.fatal === true) ||
+            event.type === "guild_removed";
+          await callbacks.onDiscordGatewayEvent?.({
+            endpointId,
+            event,
+            provider: "discord",
+            sequence: ++gatewaySequence,
+          });
+          if (fatal) observeDiscordGatewayFatal?.(true);
+          else if (event.type === "ready") observeDiscordGatewayFatal?.(false);
+        },
         shouldCreateThread: async (input) => {
           if (input.guildId !== config.credentials.guildId) return false;
           return (
@@ -781,6 +892,7 @@ function createProviderAdapter(
       const adapterConfig: TelegramAdapterConfig = {
         ...config.credentials,
         logger: resolvedLogger,
+        maxDownloadBytes: config.maxDownloadBytes,
         mentionOnReply: true,
         mode: "webhook",
         nativeStreaming: true,
@@ -1184,8 +1296,10 @@ export class ChatSdkEndpointRuntime {
   private readonly webhookIngressTimeoutMs: number;
   private readonly microsoftTeamsTenantId: string | null;
   private readonly discordGuildId: string | null;
+  private readonly discordGatewayEnabled: boolean;
   private discordGatewayAbort: AbortController | null = null;
   private discordGatewayTask: Promise<void> | null = null;
+  private discordGatewayFatal = false;
 
   constructor(options: CreateChatSdkEndpointRuntimeOptions) {
     this.companyId = options.companyId;
@@ -1202,6 +1316,7 @@ export class ChatSdkEndpointRuntime {
       options.providerConfig.provider === "discord"
         ? options.providerConfig.credentials.guildId
         : null;
+    this.discordGatewayEnabled = options.enableDiscordGateway !== false;
     this.webhookIngressTimeoutMs = Math.max(
       1,
       Math.min(options.webhookIngressTimeoutMs ?? 2_500, 10_000),
@@ -1211,6 +1326,9 @@ export class ChatSdkEndpointRuntime {
       options.logger,
       options.callbacks,
       options.endpointId,
+      (fatal) => {
+        this.discordGatewayFatal = fatal;
+      },
     );
     const durableState = createPaperclipChatSdkState({
       companyId: options.companyId,
@@ -1265,7 +1383,9 @@ export class ChatSdkEndpointRuntime {
 
   async initialize(): Promise<void> {
     await this.chat.initialize();
-    if (this.provider === "discord") this.startDiscordGateway();
+    if (this.provider === "discord" && this.discordGatewayEnabled) {
+      this.startDiscordGateway();
+    }
   }
 
   private startDiscordGateway(): void {
@@ -1295,7 +1415,7 @@ export class ChatSdkEndpointRuntime {
           // alive so a transient start failure cannot become an unhandled
           // rejection that tears down the server.
         }
-        if (abort.signal.aborted) break;
+        if (abort.signal.aborted || this.discordGatewayFatal) break;
         rapidRestartCount =
           Date.now() - sessionStartedAt >= DISCORD_GATEWAY_HEALTHY_SESSION_MS
             ? 0
@@ -1305,16 +1425,18 @@ export class ChatSdkEndpointRuntime {
           DISCORD_GATEWAY_RESTART_MAX_DELAY_MS,
         );
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, restartDelayMs);
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            abort.signal.removeEventListener("abort", finish);
+            resolve();
+          };
+          const timer = setTimeout(finish, restartDelayMs);
           timer.unref?.();
-          abort.signal.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            { once: true },
-          );
+          if (abort.signal.aborted) finish();
+          else abort.signal.addEventListener("abort", finish, { once: true });
         });
       }
     })().finally(() => {
@@ -1417,6 +1539,28 @@ export class ChatSdkEndpointRuntime {
 
   thread(threadId: string): Thread {
     return this.chat.thread(threadId);
+  }
+
+  /**
+   * Persist a Teams activity's authenticated reply route only after the
+   * control plane has accepted the callback under the current runtime and
+   * credential generation. The route is intentionally separate from the
+   * durable provider thread id because Microsoft can move a conversation
+   * between regional Bot Connector service URLs.
+   */
+  async recordMicrosoftTeamsRoute(
+    threadId: string,
+    serviceUrl: unknown,
+  ): Promise<void> {
+    if (this.provider !== "microsoft-teams") return;
+    const recorder = (this.adapter as unknown as TeamsAdapterInternals)
+      .paperclipRecordThreadServiceUrl;
+    if (typeof recorder !== "function") {
+      throw new TeamsAdapterCompatibilityError(
+        "durable route recorder is unavailable",
+      );
+    }
+    await recorder.call(this.adapter, threadId, serviceUrl);
   }
 
   channel(channelId: string): Channel {

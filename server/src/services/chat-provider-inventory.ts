@@ -27,7 +27,12 @@ const REQUIRED_GITHUB_INSTALLATION_PERMISSIONS = {
   metadata: "read",
   pull_requests: "write",
 } as const;
+const SLACK_API_TIMEOUT_MS = 25_000;
 const GITHUB_API_TIMEOUT_MS = 25_000;
+
+function slackRequestSignal(): AbortSignal {
+  return AbortSignal.timeout(SLACK_API_TIMEOUT_MS);
+}
 
 function githubRequestSignal(): AbortSignal {
   return AbortSignal.timeout(GITHUB_API_TIMEOUT_MS);
@@ -68,6 +73,7 @@ export async function listSlackBotChannels(input: {
     if (cursor) url.searchParams.set("cursor", cursor);
     const response = await input.fetch(url, {
       headers: { authorization: `Bearer ${input.botToken}` },
+      signal: slackRequestSignal(),
     });
     const body = await jsonResponse<{
       ok?: boolean;

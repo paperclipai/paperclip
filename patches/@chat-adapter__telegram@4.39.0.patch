@@ -1,15 +1,79 @@
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -53,6 +53,8 @@
+     botToken?: string | (() => string | Promise<string>);
+     /** Logger instance for error reporting. Defaults to ConsoleLogger. */
+     logger?: Logger;
++    /** Maximum bytes buffered for one downloaded Telegram attachment. Defaults to Telegram's 25 MB ceiling. */
++    maxDownloadBytes?: number;
+     /** Optional long-polling configuration for getUpdates flow. */
+     longPolling?: TelegramLongPollingConfig;
+     /**
+@@ -646,6 +648,7 @@
+     protected readonly botTokenProvider: () => Promise<string>;
+     protected readonly staticBotToken?: string;
+     protected readonly apiBaseUrl: string;
++    protected readonly maxDownloadBytes: number;
+     protected readonly secretToken?: string;
+     protected readonly mentionOnReply: boolean;
+     private botIdentityPromise;
 diff --git a/dist/index.js b/dist/index.js
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -770,6 +770,7 @@ function richMessageMedia(message) {
+@@ -771,9 +771,10 @@
  var TELEGRAM_API_BASE = "https://api.telegram.org";
  var TELEGRAM_FILE_LIMIT = 25 * 1024 * 1024;
  var TELEGRAM_FILE_TIMEOUT_MS = 3e4;
+-async function readTelegramFile(response, fileId) {
 +var TELEGRAM_API_TIMEOUT_MS = 45e3;
- async function readTelegramFile(response, fileId) {
++async function readTelegramFile(response, fileId, maxDownloadBytes = TELEGRAM_FILE_LIMIT) {
    const declared = Number(response.headers.get("content-length"));
-   if (Number.isFinite(declared) && declared > TELEGRAM_FILE_LIMIT) {
-@@ -3439,6 +3440,12 @@ var TelegramAdapter = class {
+-  if (Number.isFinite(declared) && declared > TELEGRAM_FILE_LIMIT) {
++  if (Number.isFinite(declared) && declared > maxDownloadBytes) {
+     await response.body?.cancel();
+     throw new NetworkError(
+       "telegram",
+@@ -792,7 +793,7 @@
+       break;
+     }
+     size += value.length;
+-    if (size > TELEGRAM_FILE_LIMIT) {
++    if (size > maxDownloadBytes) {
+       await reader.cancel();
+       throw new NetworkError(
+         "telegram",
+@@ -989,6 +990,7 @@
+   botTokenProvider;
+   staticBotToken;
+   apiBaseUrl;
++  maxDownloadBytes;
+   secretToken;
+   mentionOnReply;
+   botIdentityPromise = null;
+@@ -1037,6 +1039,12 @@
+     this.staticBotToken = typeof botToken === "string" ? botToken : void 0;
+     this.apiBaseUrl = trimTrailingSlashes(
+       config.apiUrl ?? config.apiBaseUrl ?? process.env.TELEGRAM_API_BASE_URL ?? TELEGRAM_API_BASE
++    );
++    this.maxDownloadBytes = this.clampInteger(
++      config.maxDownloadBytes,
++      TELEGRAM_FILE_LIMIT,
++      1,
++      TELEGRAM_FILE_LIMIT
+     );
+     this.secretToken = config.secretToken ?? process.env.TELEGRAM_WEBHOOK_SECRET_TOKEN;
+     this.allowUnverifiedWebhooks = config.allowUnverifiedWebhooks ?? process.env.TELEGRAM_ALLOW_UNVERIFIED_WEBHOOKS === "true";
+@@ -2625,7 +2633,7 @@
+       );
+     }
+     try {
+-      return await readTelegramFile(response, fileId);
++      return await readTelegramFile(response, fileId, this.maxDownloadBytes);
+     } catch (error) {
+       if (error instanceof NetworkError) {
+         throw error;
+@@ -3439,6 +3447,12 @@
    async telegramFetch(method, payload, request) {
      const botToken = this.staticBotToken ?? await this.resolveBotToken();
      const url = `${this.apiBaseUrl}/bot${botToken}/${method}`;
@@ -22,7 +86,7 @@ diff --git a/dist/index.js b/dist/index.js
      let response;
      try {
        response = await fetch(url, {
-@@ -3448,7 +3455,7 @@ var TelegramAdapter = class {
+@@ -3447,7 +3461,7 @@
            "Content-Type": "application/json"
          },
          body: payload instanceof FormData ? payload : JSON.stringify(payload ?? {}),

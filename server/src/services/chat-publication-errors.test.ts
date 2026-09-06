@@ -18,7 +18,11 @@ describe("chat publication error classification", () => {
         }),
         1,
       ),
-    ).toMatchObject({ kind: "retry", retryAfterMs: 42_000 });
+    ).toMatchObject({
+      kind: "retry",
+      retryAfterMs: 42_000,
+      providerRateLimit: true,
+    });
     expect(
       classifyChatPublicationError(
         Object.assign(new Error("telegram flood control"), {
@@ -72,6 +76,39 @@ describe("chat publication error classification", () => {
     ).toMatchObject({ kind: "retry" });
   });
 
+  it("preserves long numeric and HTTP-date provider retry hints", () => {
+    expect(
+      classifyChatPublicationError(
+        providerError("AdapterRateLimitError", "RATE_LIMITED", {
+          retryAfter: 60 * 60,
+        }),
+        4,
+      ),
+    ).toMatchObject({
+      kind: "retry",
+      retryAfterMs: 60 * 60 * 1000,
+      providerRateLimit: true,
+    });
+
+    const now = Date.now();
+    const retryAt = new Date(now + 2 * 60 * 60 * 1000).toUTCString();
+    const result = classifyChatPublicationError(
+      Object.assign(new Error("rate limited"), {
+        status: 429,
+        response: { status: 429, headers: { "retry-after": retryAt } },
+      }),
+      4,
+    );
+    expect(result).toMatchObject({
+      kind: "retry",
+      providerRateLimit: true,
+    });
+    if (result.kind !== "retry") throw new Error("Expected retry");
+    expect(result.retryAfterMs).toBeGreaterThanOrEqual(
+      2 * 60 * 60 * 1000 - 1_500,
+    );
+  });
+
   it("keeps a rejected Slack WebClient 429 under durable outbox retry control", () => {
     expect(
       classifyChatPublicationError(
@@ -84,6 +121,7 @@ describe("chat publication error classification", () => {
     ).toEqual({
       kind: "retry",
       retryAfterMs: 9_000,
+      providerRateLimit: true,
       reason: "slack web api rate limit",
     });
   });
@@ -334,6 +372,50 @@ describe("chat publication error classification", () => {
         1,
       ),
     ).toMatchObject({ kind: "endpoint_attention" });
+  });
+
+  it.each(["is_archived", "channel_is_archived"])(
+    "quarantines a Slack destination rejected with %s",
+    (platformCode) => {
+      expect(
+        classifyChatPublicationError(
+          Object.assign(new Error("Slack rejected the destination"), {
+            code: "slack_webapi_platform_error",
+            data: { error: platformCode },
+          }),
+          1,
+        ),
+      ).toMatchObject({ kind: "resource_unavailable" });
+    },
+  );
+
+  it("fails definite Slack platform rejections without an HTTP status", () => {
+    for (const platformCode of ["invalid_blocks", "unknown_provider_code"]) {
+      expect(
+        classifyChatPublicationError(
+          Object.assign(new Error("Slack rejected the request"), {
+            code: "slack_webapi_platform_error",
+            data: { error: platformCode },
+          }),
+          1,
+        ),
+      ).toMatchObject({ kind: "failed" });
+    }
+  });
+
+  it("finds a structured Slack platform rejection through bounded wrappers", () => {
+    const platformError = Object.assign(new Error("Slack invalid_blocks"), {
+      code: "slack_webapi_platform_error",
+      data: { error: "invalid_blocks" },
+    });
+    const wrapper = Object.assign(new Error("Slack block fallback failed"), {
+      cause: platformError,
+    });
+    platformError.cause = wrapper;
+
+    expect(classifyChatPublicationError(wrapper, 1)).toMatchObject({
+      kind: "failed",
+    });
   });
 
   it.each([

@@ -113,6 +113,38 @@ const PROVIDERS: ProviderCase[] = [
   },
 ];
 
+const PROVIDER_LIFECYCLE_COPY: Record<
+  Provider,
+  { reconnect: string; remove: string }
+> = {
+  slack: {
+    reconnect:
+      "Reconnect verifies or replaces credentials for this same Slack app. It does not reinstall the app or change its workspace or channel membership.",
+    remove: "It does not uninstall the Slack app",
+  },
+  github: {
+    reconnect:
+      "Reconnect verifies this same GitHub App and installation. It does not reinstall the App or change repository access.",
+    remove: "It does not uninstall the GitHub App",
+  },
+  discord: {
+    reconnect:
+      "Reconnect verifies this same Discord application and server installation. It does not add or remove the bot from the server.",
+    remove: "It does not uninstall the bot",
+  },
+  "microsoft-teams": {
+    reconnect:
+      "Reconnect verifies this same Microsoft app, tenant, and bot identity. It does not upload or reinstall the Teams app.",
+    remove: "It does not uninstall the Teams app",
+  },
+  telegram: {
+    reconnect:
+      "Reconnect verifies this same BotFather bot and automatically refreshes its Paperclip webhook and command menu.",
+    remove:
+      "queues durable removal of its Telegram webhook and command menu. After Telegram confirms that cleanup, Paperclip retires the saved token",
+  },
+};
+
 type Seed = {
   companyId: string;
   prefix: string;
@@ -709,9 +741,12 @@ settings:
       - reaction_added
       - reaction_removed
       - channel_archive
+      - group_archive
       - channel_unarchive
+      - group_unarchive
       - channel_deleted
       - channel_rename
+      - group_rename
       - app_uninstalled
       - tokens_revoked
   interactivity:
@@ -998,6 +1033,11 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(
         page.getByRole("heading", { name: provider.setupHeading }),
       ).toBeVisible();
+      await expect(
+        page.getByText(PROVIDER_LIFECYCLE_COPY[provider.provider].reconnect, {
+          exact: false,
+        }),
+      ).toBeVisible();
       await expectSetupRail(page);
       await expectMinimumProviderSetup(page, provider);
       await fillProviderSetup(page, provider);
@@ -1028,7 +1068,7 @@ test.describe.serial("native chat adapter UI", () => {
           saveChangesStep.locator("..").getByRole("listitem"),
         ).toHaveCount(1);
         await expect(saveChangesStep).toHaveText(
-          "Return to App Manifest in Slack and click Save Changes. The copied manifest already contains the event, interaction, and slash-command URLs; saving now lets Slack verify them against the connected signing secret.",
+          "Return to App Manifest in Slack and click Save Changes. The copied manifest already contains the event, interaction, and slash-command URLs. Slack verifies the Events URL when you save; Paperclip records Interactivity and slash command health only after each signed callback is observed.",
         );
         for (const removedManualStep of [
           "Event Subscriptions",
@@ -1255,6 +1295,11 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(
         page.getByRole("button", { name: "Remove connection", exact: true }),
       ).toBeVisible();
+      await expect(
+        page.getByText(PROVIDER_LIFECYCLE_COPY[provider.provider].reconnect, {
+          exact: true,
+        }),
+      ).toBeVisible();
       await page.getByRole("button", { name: "Pause", exact: true }).click();
       await expect(
         page.getByRole("button", { name: "Resume", exact: true }),
@@ -1295,6 +1340,9 @@ test.describe.serial("native chat adapter UI", () => {
       await page.getByRole("button", { name: "Remove connection" }).click();
       const confirmation = page.getByRole("alertdialog");
       await expect(confirmation).toContainText("Remove this connection?");
+      await expect(confirmation).toContainText(
+        PROVIDER_LIFECYCLE_COPY[provider.provider].remove,
+      );
       await confirmation
         .getByRole("button", { name: "Remove connection" })
         .click();

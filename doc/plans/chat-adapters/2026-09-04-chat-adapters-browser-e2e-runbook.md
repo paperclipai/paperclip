@@ -191,6 +191,20 @@ test-results/chat-adapters-live/<run-id>/<provider>/
 
 `result.md` records the Paperclip base SHA, adapter/Chat SDK version, provider app/bot identity, provider tenant/workspace/org identifier in redacted form, endpoint ID, external conversation identifier, task identifier, delivery/publication identifiers, pass/fail for every numbered case, deviations, and cleanup result. It contains no token, signing secret, private key, client secret, cookie, or one-time identity-link URL.
 
+### Provider lifecycle boundary
+
+Reconnect always retains the endpoint's immutable provider bot identity. It revalidates or replaces credentials for that identity; it does not silently install an app, expand provider access, or switch bots. Telegram additionally refreshes its Paperclip webhook and command menu during reconnect.
+
+Removing a connection archives the Paperclip endpoint, stops its runtime, marks retained conversation history `endpoint_removed`, and retires endpoint-owned credentials. It is not a provider uninstall. Slack, GitHub, Discord, and Microsoft resources remain installed or registered until an operator removes them at the provider. Telegram is the one automated provider-cleanup exception: Paperclip durably removes the bot webhook and command menu before retiring the saved token, but the BotFather bot and its chat memberships still remain.
+
+| Provider        | What still exists after **Remove connection**                                                               |
+| --------------- | ----------------------------------------------------------------------------------------------------------- |
+| Slack           | The Slack app installation and any channel memberships                                                      |
+| GitHub          | The GitHub App registration, installations, repository grants, and webhook configuration                    |
+| Discord         | The Discord application and the bot's server installation                                                   |
+| Microsoft Teams | The Entra app registration, Azure Bot, custom Teams app, and team/chat installations                        |
+| Telegram        | The BotFather bot and chat memberships; only Paperclip's webhook and command menu are removed automatically |
+
 ### 3.5 Shared preflight
 
 Before starting a provider run:
@@ -200,7 +214,7 @@ Before starting a provider run:
 3. Confirm the provider installer, Ari, and Jules browser sessions are signed into the intended sandbox accounts.
 4. Confirm the provider test resources contain no production data and that prior run messages/issues can be distinguished by run ID.
 5. Confirm the Paperclip instance is publicly reachable for direct verified webhooks when qualifying Slack, GitHub, Teams, or Telegram. For Discord, confirm outbound HTTPS/WebSocket access to Discord instead. Relay qualification is a separate deployment run described in section 10.
-6. Confirm the connection does not already exist. If it does, remove the stale test connection through the UI and verify its historical tasks remain readable before creating the new connection.
+6. Confirm the connection does not already exist. If it does, remove the stale test connection through the UI and verify its historical tasks remain readable before creating the new connection. Separately inspect the provider installation: Paperclip removal does not uninstall it, except that Telegram webhook/menu cleanup is automatic.
 7. Start browser recording/screenshots before `/apps`; record the Paperclip SHA and current time.
 
 ### 3.6 Human login and credential handoffs

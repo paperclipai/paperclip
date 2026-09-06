@@ -1,5 +1,6 @@
 const DEFAULT_CHUNK_CODE_POINTS = 280;
 const DEFAULT_CHUNK_DELAY_MS = 75;
+export const TELEGRAM_DURABLE_PART_CODE_POINTS = 1_600;
 
 function splitByCodePoints(text: string, size: number): string[] {
   const chunks: string[] = [];
@@ -53,4 +54,27 @@ export async function* streamSafePublicationText(
 
 export function shouldStreamSafePublicationText(text: string): boolean {
   return Array.from(text).length > DEFAULT_CHUNK_CODE_POINTS;
+}
+
+/**
+ * Telegram regular messages accept at most 4,096 UTF-16 code units after
+ * Markdown conversion. At 1,600 source code points, either astral expansion or
+ * MarkdownV2 escaping remains below the provider ceiling. Joining the returned
+ * parts reconstructs the exact safe publication text.
+ */
+export function splitTelegramPublicationText(text: string): string[] {
+  const points = Array.from(text);
+  if (points.length <= TELEGRAM_DURABLE_PART_CODE_POINTS) return [text];
+
+  const parts: string[] = [];
+  for (
+    let offset = 0;
+    offset < points.length;
+    offset += TELEGRAM_DURABLE_PART_CODE_POINTS
+  ) {
+    parts.push(
+      points.slice(offset, offset + TELEGRAM_DURABLE_PART_CODE_POINTS).join(""),
+    );
+  }
+  return parts;
 }

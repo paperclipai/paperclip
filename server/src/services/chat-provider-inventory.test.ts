@@ -55,6 +55,12 @@ describe("chat provider inventory", () => {
       }),
     ]);
     expect(fetch).toHaveBeenCalledTimes(2);
+    for (const call of (fetch as unknown as ReturnType<typeof vi.fn>).mock
+      .calls) {
+      const request = call[1] as RequestInit | undefined;
+      expect(request?.signal).toBeInstanceOf(AbortSignal);
+      expect(request?.signal?.aborted).toBe(false);
+    }
     const secondUrl = String(
       (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[1]?.[0],
     );

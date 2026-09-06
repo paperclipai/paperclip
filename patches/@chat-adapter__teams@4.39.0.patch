@@ -1,8 +1,16 @@
 diff --git a/dist/index.js b/dist/index.js
-index b0383953a27e4426ce544128a26bf3c8d8964b06..7cb10b871875869c4308e2619e334d5253596a09 100644
+index b0383953a27e4426ce544128a26bf3c8d8964b06..9ae852cba707495c3e72b0e07523cb6fca2e197a 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -504,6 +504,52 @@ import {
+@@ -163,7 +163,6 @@ var BridgeHttpAdapter = class {
+   }
+   async dispatch(request, options) {
+     const body = await request.text();
+-    this.logger.debug("Teams webhook raw body", { body });
+     let parsedBody;
+     try {
+       parsedBody = JSON.parse(body);
+@@ -504,6 +503,52 @@ import {
    NetworkError as NetworkError2,
    PermissionError
  } from "@chat-adapter/shared";
@@ -55,7 +63,7 @@ index b0383953a27e4426ce544128a26bf3c8d8964b06..7cb10b871875869c4308e2619e334d52
  function handleTeamsError(error, operation) {
    if (error && typeof error === "object") {
      const err = error;
-@@ -516,7 +562,7 @@ function handleTeamsError(error, operation) {
+@@ -516,7 +561,7 @@ function handleTeamsError(error, operation) {
        );
      }
      if (statusCode === 403 || err.message && typeof err.message === "string" && err.message.toLowerCase().includes("permission")) {
@@ -64,7 +72,52 @@ index b0383953a27e4426ce544128a26bf3c8d8964b06..7cb10b871875869c4308e2619e334d52
      }
      if (statusCode === 404) {
        throw new NetworkError2(
-@@ -1666,6 +1712,7 @@ var TeamsAdapter = class {
+@@ -560,18 +605,15 @@ function encodeThreadId(platformData) {
+   const encodedConversationId = Buffer.from(
+     platformData.conversationId
+   ).toString("base64url");
+-  const encodedServiceUrl = Buffer.from(platformData.serviceUrl).toString(
+-    "base64url"
+-  );
+   const conversationType = platformData.conversationType;
+   const legacyIsDM = !platformData.conversationId.startsWith("19:");
+   const explicitIsDM = conversationType === "personal";
+   const needsConversationType = conversationType !== void 0 && explicitIsDM !== legacyIsDM;
+-  return needsConversationType ? `teams:${encodedConversationId}:${encodedServiceUrl}:${conversationType}` : `teams:${encodedConversationId}:${encodedServiceUrl}`;
++  return needsConversationType ? `teams:${encodedConversationId}:${conversationType}` : `teams:${encodedConversationId}`;
+ }
+ function decodeThreadId(threadId) {
+   const parts = threadId.split(":");
+-  const hasValidPartCount = parts.length === 3 || parts.length === 4;
++  const hasValidPartCount = parts.length >= 2 && parts.length <= 4;
+   if (!hasValidPartCount || parts[0] !== "teams") {
+     throw new ValidationError("teams", `Invalid Teams thread ID: ${threadId}`);
+   }
+@@ -578,13 +620,16 @@ function decodeThreadId(threadId) {
+   const conversationId = Buffer.from(parts[1], "base64url").toString(
+     "utf-8"
+   );
+-  const serviceUrl = Buffer.from(parts[2], "base64url").toString(
+-    "utf-8"
+-  );
+-  const rawConversationType = parts[3];
+-  if (!rawConversationType) {
+-    return { conversationId, serviceUrl };
++  if (!parts[2]) {
++    return { conversationId };
++  }
++  const canonicalConversationType = parseConversationType(parts[2]);
++  if (parts.length === 3 && canonicalConversationType) {
++    return { conversationId, conversationType: canonicalConversationType };
+   }
++  const serviceUrl = Buffer.from(parts[2], "base64url").toString("utf-8");
++  const rawConversationType = parts[3];
++  if (!rawConversationType) return { conversationId, serviceUrl };
+   const conversationType = parseConversationType(rawConversationType);
+   if (!conversationType) {
+     throw new ValidationError(
+@@ -1668,7 +1713,8 @@ var TeamsAdapter = class {
+     this.app = new App({
        ...toAppOptions(config),
        client: {
 -        headers: { "User-Agent": "Vercel.ChatSDK" }
@@ -73,3 +126,16 @@ index b0383953a27e4426ce544128a26bf3c8d8964b06..7cb10b871875869c4308e2619e334d52
        },
        httpServerAdapter: this.bridgeAdapter
      });
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 3f516b01355b28baaebc3d3540f85f22521bd4e4..a40328baaf4ee95a9db394001f4865fc662b6794 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -125,7 +125,7 @@ interface TeamsThreadId {
+     conversationId: string;
+     conversationType?: "channel" | "groupChat" | "personal";
+     replyToId?: string;
+-    serviceUrl: string;
++    serviceUrl?: string;
+ }
+ /** Teams channel context extracted from activity.channelData */
+ interface TeamsChannelContext {

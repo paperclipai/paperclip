@@ -34,8 +34,12 @@ function decodeBase64Url(value: string): string | null {
 
 function teamsConversationLink(input: ProviderLinkInput): string | null {
   const parts = input.threadId.split(":");
-  if (parts[0] !== "teams" || (parts.length !== 3 && parts.length !== 4))
-    return null;
+  // Canonical ids keep the mutable Bot Connector serviceUrl out of identity:
+  //   teams:<conversation>[:<conversationType>]
+  // Keep accepting the pre-canonical route-bearing forms as existing
+  // conversation rows and publications may still contain them:
+  //   teams:<conversation>:<serviceUrl>[:<conversationType>]
+  if (parts[0] !== "teams" || parts.length < 2 || parts.length > 4) return null;
   const encodedConversationId = parts[1];
   if (!encodedConversationId) return null;
   const encoded = decodeBase64Url(encodedConversationId);
@@ -46,8 +50,17 @@ function teamsConversationLink(input: ProviderLinkInput): string | null {
   );
   if (!chatOrChannelId) return null;
   const raw = object(input.raw);
+  const canonicalConversationType =
+    parts.length === 3 &&
+    (parts[2] === "personal" ||
+      parts[2] === "groupChat" ||
+      parts[2] === "channel")
+      ? parts[2]
+      : null;
   const conversationType =
-    parts[3] ?? nestedString(raw, "conversation", "conversationType");
+    parts[3] ??
+    canonicalConversationType ??
+    nestedString(raw, "conversation", "conversationType");
   const messageId =
     encodedRootMessageId ||
     nestedString(raw, "replyToId") ||

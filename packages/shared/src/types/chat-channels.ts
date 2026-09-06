@@ -125,6 +125,25 @@ export interface ChatEndpointBehaviorPolicy {
   allowUnlinkedPeople: boolean;
 }
 
+export const CHAT_CALLBACK_SURFACE_STATUSES = [
+  "current",
+  "stale",
+  "unverified",
+] as const;
+export type ChatCallbackSurfaceStatus =
+  (typeof CHAT_CALLBACK_SURFACE_STATUSES)[number];
+
+export interface ChatEndpointCallbackSurfaceState {
+  status: ChatCallbackSurfaceStatus;
+  observedAt?: string | null;
+}
+
+export interface ChatEndpointCallbackSurfaces {
+  events: ChatEndpointCallbackSurfaceState;
+  interactivity: ChatEndpointCallbackSurfaceState;
+  slashCommands: ChatEndpointCallbackSurfaceState;
+}
+
 export interface ChatEndpointSetupState {
   step: "choose_agent" | "provider_setup" | "test" | "complete";
   /** Server-generated boundary; only provider events at or after this time can complete setup. */
@@ -138,6 +157,10 @@ export interface ChatEndpointSetupState {
   messagingEndpoint?: string | null;
   /** Safe presence signal only; the secret value is returned once by its generation endpoint. */
   webhookSecretConfigured?: boolean;
+  /** Provider callback surfaces observed at the endpoint's current public URL. */
+  callbackSurfaces?: ChatEndpointCallbackSurfaces;
+  /** True when at least one previously observed callback still targets an old public URL. */
+  callbacksNeedUpdate?: boolean;
 }
 
 export interface ChatEndpointSetupSecret {
@@ -289,6 +312,13 @@ export interface SafeChatPublicationPayload {
   attachmentIds?: string[];
   interactionId?: string;
   card?: SafeExternalChatCard;
+  /** Server-managed metadata for a logical publication split into durable messages. */
+  transportPart?: {
+    batchId: string;
+    count: number;
+    index: number;
+    orderKey: string;
+  };
   progressState?:
     | "queued"
     | "working"

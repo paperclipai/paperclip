@@ -25,6 +25,17 @@ describe("chat connector UI contract", () => {
     expect(detail.toLowerCase()).not.toContain("detach");
   });
 
+  it("shows independent Slack callback surfaces and public URL drift", () => {
+    const detail = source("./ChatEndpointDetail.tsx");
+    expect(detail).toContain("Slack callback health");
+    expect(detail).toContain("Events API");
+    expect(detail).toContain("Interactivity");
+    expect(detail).toContain("Slash command");
+    expect(detail).toContain("callbacksNeedUpdate");
+    expect(detail).toContain("Slack callback URLs need an update");
+    expect(detail).toContain("Not observed");
+  });
+
   it("lists every supported provider in the agent channel empty state", () => {
     const panel = source("../../../components/chat/AgentChannelsPanel.tsx");
     expect(panel).toContain(
@@ -56,6 +67,32 @@ describe("chat connector UI contract", () => {
     for (const label of ["Pause", "Resume", "Reconnect", "Remove connection"]) {
       expect(activity).toContain(label);
       expect(settings).not.toContain(label);
+    }
+  });
+
+  it("states the provider boundary for reconnect and removal", () => {
+    const detail = source("./ChatEndpointDetail.tsx");
+    const setup = source("./ChatEndpointSetup.tsx");
+    for (const reconnectCopy of [
+      "does not reinstall the app or change its workspace or channel membership",
+      "does not reinstall the App or change repository access",
+      "does not add or remove the bot from the server",
+      "does not upload or reinstall the Teams app",
+      "automatically refreshes its Paperclip webhook and command menu",
+    ]) {
+      expect(detail).toContain(reconnectCopy);
+      expect(setup).toContain(reconnectCopy);
+    }
+    for (const removalCopy of [
+      "It does not uninstall the Slack app",
+      "It does not uninstall the GitHub App",
+      "It does not uninstall the bot",
+      "It does not uninstall the Teams app",
+      "queues durable removal of its Telegram webhook and command menu",
+      "After Telegram confirms that cleanup, Paperclip retires the saved token",
+      "BotFather bot and its chat memberships remain",
+    ]) {
+      expect(detail).toContain(removalCopy);
     }
   });
 
@@ -146,7 +183,12 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("member_left_channel");
     expect(setup).toContain("channel_left");
     expect(setup).toContain("group_left");
+    expect(setup).toContain("group_archive");
+    expect(setup).toContain("group_unarchive");
+    expect(setup).toContain("group_rename");
     expect(setup).toContain("app_uninstalled");
+    expect(setup).toContain("Paperclip records Interactivity");
+    expect(setup).toContain("command health only after each signed callback");
     expect(setup).toContain("slackBotNameForAgent");
     expect(setup).not.toContain("- im:write");
     expect(setup).toContain("- reactions:write");

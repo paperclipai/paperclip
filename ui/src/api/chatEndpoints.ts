@@ -2,11 +2,7 @@ import { api } from "./client";
 import type { ChatPublicationState } from "@paperclipai/shared";
 
 export type ChatProvider =
-  | "slack"
-  | "github"
-  | "discord"
-  | "microsoft-teams"
-  | "telegram";
+  "slack" | "github" | "discord" | "microsoft-teams" | "telegram";
 export type ChatEndpointStatus =
   | "draft"
   | "verifying"
@@ -131,7 +127,18 @@ export interface ChatEndpoint {
     command?: string | null;
     webhookVerifiedAt?: string | null;
     webhookSecretConfigured?: boolean;
+    callbackSurfaces?: {
+      events: ChatCallbackSurfaceState;
+      interactivity: ChatCallbackSurfaceState;
+      slashCommands: ChatCallbackSurfaceState;
+    };
+    callbacksNeedUpdate?: boolean;
   };
+}
+
+export interface ChatCallbackSurfaceState {
+  status: "current" | "stale" | "unverified";
+  observedAt?: string | null;
 }
 
 export interface ChatEndpointSetupSecret {

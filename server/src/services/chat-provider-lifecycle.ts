@@ -166,9 +166,12 @@ function parseSlackLifecycle(
 
   if (
     type === "channel_archive" ||
+    type === "group_archive" ||
     type === "channel_unarchive" ||
+    type === "group_unarchive" ||
     type === "channel_deleted" ||
-    type === "channel_rename"
+    type === "channel_rename" ||
+    type === "group_rename"
   ) {
     const channelValue = record(event.channel);
     const channelId =
@@ -177,7 +180,7 @@ function parseSlackLifecycle(
     const availability: ChatResourceAvailability =
       type === "channel_deleted"
         ? "removed"
-        : type === "channel_archive"
+        : type === "channel_archive" || type === "group_archive"
           ? "unavailable"
           : "available";
     return [

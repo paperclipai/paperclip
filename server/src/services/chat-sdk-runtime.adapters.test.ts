@@ -1,6 +1,6 @@
 import { createHmac, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { Attachment } from "chat";
+import type { Attachment, Logger } from "chat";
 import {
   createChatSdkEndpointRuntime,
   scopeMicrosoftTeamsEgress,
@@ -21,6 +21,27 @@ const persistence: ChatSdkStatePersistence = {
     return null;
   },
 };
+
+function capturingLogger(entries: unknown[]): Logger {
+  const logger: Logger = {
+    child() {
+      return logger;
+    },
+    debug(message, ...args) {
+      entries.push(["debug", message, ...args]);
+    },
+    error(message, ...args) {
+      entries.push(["error", message, ...args]);
+    },
+    info(message, ...args) {
+      entries.push(["info", message, ...args]);
+    },
+    warn(message, ...args) {
+      entries.push(["warn", message, ...args]);
+    },
+  };
+  return logger;
+}
 
 function memoryPersistence(): ChatSdkStatePersistence {
   const rows = new Map<string, ChatSdkStateRecord>();
@@ -232,6 +253,72 @@ describe("Chat SDK published adapter integration", () => {
       ).toBe(45_000);
     } finally {
       await runtime.shutdown();
+    }
+  });
+
+  it("bounds adapter-owned Slack and Discord webhook fetches", async () => {
+    const providerFetch = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        expect(init?.signal?.aborted).toBe(false);
+        return new Response("", { status: 200 });
+      },
+    );
+    vi.stubGlobal("fetch", providerFetch);
+    const slackRuntime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-slack-fetch-timeout",
+      endpointId: "endpoint-slack-fetch-timeout",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "slack",
+        userName: "paperclip-agent",
+        credentials: { botToken: "xoxb-test", signingSecret: "secret" },
+      },
+    });
+    const discordRuntime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-discord-fetch-timeout",
+      endpointId: "endpoint-discord-fetch-timeout",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "discord",
+        userName: "Paperclip Agent",
+        credentials: {
+          apiUrl: "https://discord.com/api/v10",
+          applicationId: "123456789012345678",
+          botToken: "discord-secret",
+          guildId: "1457808928258658549",
+        },
+      },
+    });
+    try {
+      const slack = slackRuntime.getProviderAdapter() as unknown as {
+        forwardSocketEvent(
+          webhookUrl: string,
+          event: { body: { type: string } },
+        ): Promise<void>;
+        sendToResponseUrl(responseUrl: string, action: "delete"): Promise<void>;
+      };
+      const discord = discordRuntime.getProviderAdapter() as unknown as {
+        forwardGatewayEvent(
+          webhookUrl: string,
+          event: { type: string },
+        ): Promise<void>;
+      };
+      await slack.sendToResponseUrl("https://paperclip.test/slack", "delete");
+      await slack.forwardSocketEvent("https://paperclip.test/slack", {
+        body: { type: "events_api" },
+      });
+      await discord.forwardGatewayEvent("https://paperclip.test/discord", {
+        type: "MESSAGE_CREATE",
+      });
+      expect(providerFetch).toHaveBeenCalledTimes(3);
+    } finally {
+      await Promise.all([slackRuntime.shutdown(), discordRuntime.shutdown()]);
+      vi.unstubAllGlobals();
     }
   });
 
@@ -608,6 +695,231 @@ describe("Chat SDK published adapter integration", () => {
     }
   });
 
+  it.each([
+    { label: "an absent Content-Length", contentLength: undefined },
+    { label: "a misleading small Content-Length", contentLength: "4" },
+  ])(
+    "stops Telegram attachment downloads at Paperclip's byte cap with $label",
+    async ({ contentLength }) => {
+      const providerFetch = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith("/getFile")) {
+          return Response.json({
+            ok: true,
+            result: { file_path: "documents/bounded.bin" },
+          });
+        }
+        if (url.includes("/file/bot")) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]));
+                controller.enqueue(new Uint8Array([4, 5, 6]));
+                controller.close();
+              },
+            }),
+            {
+              status: 200,
+              headers: contentLength
+                ? { "content-length": contentLength }
+                : undefined,
+            },
+          );
+        }
+        throw new Error(`Unexpected Telegram URL: ${url}`);
+      });
+      vi.stubGlobal("fetch", providerFetch);
+      const runtime = createChatSdkEndpointRuntime({
+        callbacks: { onMessage() {} },
+        companyId: `company-telegram-download-${contentLength ?? "absent"}`,
+        endpointId: `endpoint-telegram-download-${contentLength ?? "absent"}`,
+        logger: "silent",
+        persistence,
+        providerConfig: {
+          provider: "telegram",
+          userName: "paperclip_agent_bot",
+          maxDownloadBytes: 5,
+          credentials: {
+            botToken: "123:test",
+            secretToken: "telegram-webhook-secret",
+          },
+        },
+      });
+      try {
+        const message = runtime.parseTelegramCommandMessage({
+          message_id: 15,
+          date: 1_788_700_001,
+          chat: { id: 77112233, type: "private" },
+          from: { id: 77112233, is_bot: false, first_name: "Dotta" },
+          caption: "/task inspect this file",
+          caption_entities: [{ offset: 0, length: 5, type: "bot_command" }],
+          document: {
+            file_id: "telegram-bounded-file",
+            file_name: "bounded.bin",
+            mime_type: "application/octet-stream",
+          },
+        });
+
+        await expect(
+          message!.attachments[0]!.fetchData!(),
+        ).rejects.toMatchObject({
+          name: "NetworkError",
+          message: expect.stringContaining("exceeds the download limit"),
+        });
+        expect(providerFetch).toHaveBeenCalledTimes(2);
+      } finally {
+        await runtime.shutdown();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("sends typed Telegram output through native photo, audio, video, and document methods", async () => {
+    const methods: string[] = [];
+    const providerFetch = vi.fn(
+      async (input: string | URL | Request, _init?: RequestInit) => {
+        const method = new URL(String(input)).pathname.split("/").at(-1)!;
+        methods.push(method);
+        return Response.json({
+          ok: true,
+          result: {
+            message_id: methods.length,
+            date: 1_788_700_002,
+            chat: { id: 77112233, type: "private" },
+          },
+        });
+      },
+    );
+    vi.stubGlobal("fetch", providerFetch);
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-telegram-native-output",
+      endpointId: "endpoint-telegram-native-output",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "telegram",
+        userName: "paperclip_agent_bot",
+        maxDownloadBytes: 10,
+        credentials: {
+          botToken: "123:test",
+          secretToken: "telegram-webhook-secret",
+        },
+      },
+    });
+    try {
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        postMessage(
+          threadId: string,
+          message: {
+            attachments: Array<{
+              data: Buffer;
+              mimeType: string;
+              name: string;
+              type: "audio" | "file" | "image" | "video";
+            }>;
+            markdown: string;
+          },
+        ): Promise<unknown>;
+      };
+      const cases = [
+        ["image", "image/png", "result.png"],
+        ["audio", "audio/mpeg", "result.mp3"],
+        ["video", "video/mp4", "result.mp4"],
+        ["file", "text/plain", "result.txt"],
+      ] as const;
+      for (const [type, mimeType, name] of cases) {
+        await adapter.postMessage("telegram:77112233", {
+          markdown: `Shared ${name}.`,
+          attachments: [{ data: Buffer.from(type), mimeType, name, type }],
+        });
+      }
+
+      expect(methods).toEqual([
+        "sendPhoto",
+        "sendAudio",
+        "sendVideo",
+        "sendDocument",
+      ]);
+      expect(
+        providerFetch.mock.calls.every(
+          ([, init]) => init?.body instanceof FormData,
+        ),
+      ).toBe(true);
+    } finally {
+      await runtime.shutdown();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps a worst-case durable Telegram part lossless after regular-message fallback", async () => {
+    const regularPayloads: Array<{ text?: string }> = [];
+    const providerFetch = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const method = new URL(String(input)).pathname.split("/").at(-1);
+        if (method === "sendRichMessage") {
+          return Response.json(
+            {
+              ok: false,
+              error_code: 400,
+              description: "Bad Request: method not found",
+            },
+            { status: 400 },
+          );
+        }
+        if (method === "sendMessage") {
+          regularPayloads.push(
+            JSON.parse(String(init?.body)) as { text?: string },
+          );
+          return Response.json({
+            ok: true,
+            result: {
+              message_id: 1,
+              date: 1_788_700_003,
+              chat: { id: 77112233, type: "private" },
+            },
+          });
+        }
+        throw new Error(`Unexpected Telegram method: ${method}`);
+      },
+    );
+    vi.stubGlobal("fetch", providerFetch);
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-telegram-durable-part",
+      endpointId: "endpoint-telegram-durable-part",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "telegram",
+        userName: "paperclip_agent_bot",
+        credentials: {
+          botToken: "123:test",
+          secretToken: "telegram-webhook-secret",
+        },
+      },
+    });
+    try {
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        postMessage(
+          threadId: string,
+          message: { markdown: string },
+        ): Promise<unknown>;
+      };
+      const source = "!".repeat(1_600);
+
+      await adapter.postMessage("telegram:77112233", { markdown: source });
+
+      const sentText = regularPayloads[0]?.text;
+      expect(sentText).toBe("\\!".repeat(1_600));
+      expect(sentText!.length).toBeLessThanOrEqual(4_096);
+      expect(sentText!.replaceAll("\\", "")).toBe(source);
+    } finally {
+      await runtime.shutdown();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("parses verified Teams edit, delete, and restore envelopes through the public adapter contract", async () => {
     const runtime = createChatSdkEndpointRuntime({
       callbacks: { onMessage() {} },
@@ -648,9 +960,12 @@ describe("Chat SDK published adapter integration", () => {
     expect(message).toMatchObject({
       id: "teams-message-1",
       text: "Corrected Teams request",
-      threadId: `teams:${Buffer.from(conversationId).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
+      threadId: `teams:${Buffer.from(conversationId).toString("base64url")}`,
       author: { userId: "29:teams-user", fullName: "Teams User" },
     });
+    expect(message?.threadId).not.toContain(
+      Buffer.from(serviceUrl).toString("base64url"),
+    );
     for (const lifecycle of [
       {
         type: "messageDelete",
@@ -970,6 +1285,157 @@ describe("Chat SDK published adapter integration", () => {
     },
   );
 
+  it("preserves safe HTTPS destinations from signed GitHub Markdown comments", async () => {
+    const webhookSecret = "github-link-preservation-secret";
+    const safeLink = "https://example.test/build/42?view=summary";
+    const safeImage =
+      "https://github.com/user-attachments/assets/11111111-2222-3333-4444-555555555555";
+    const existingBareUrl = "https://already-visible.example.test/log.txt";
+    const markdown = [
+      `@paperclip-agent inspect [the build](${safeLink}).`,
+      `![failure.log](${safeImage})`,
+      `Existing URL: ${existingBareUrl}`,
+      "[unsafe](javascript:alert(1))",
+      "![credentialed](https://user:password@example.test/private)",
+    ].join("\n\n");
+    const payload = {
+      action: "created",
+      comment: {
+        id: 4242,
+        body: markdown,
+        created_at: "2026-09-04T12:00:00.000Z",
+        updated_at: "2026-09-04T12:00:00.000Z",
+        user: { id: 101, login: "operator", type: "User" },
+      },
+      issue: { number: 42 },
+      repository: {
+        id: 202,
+        name: "chat-e2e",
+        owner: { id: 303, login: "paperclipai", type: "Organization" },
+      },
+      sender: { id: 101, login: "operator", type: "User" },
+    };
+    const body = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", webhookSecret)
+      .update(body)
+      .digest("hex")}`;
+    const onMessage = vi.fn(async (_event: unknown) => undefined);
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage },
+      companyId: "company-github-links",
+      endpointId: "endpoint-github-links",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "github",
+        userName: "paperclip-agent",
+        credentials: {
+          botUserId: 999,
+          token: "github_pat_test",
+          webhookSecret,
+        },
+      },
+    });
+
+    try {
+      const response = await runtime.handleWebhook(
+        new Request("https://paperclip.test/webhook", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-github-event": "issue_comment",
+            "x-hub-signature-256": signature,
+          },
+          body,
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(onMessage).toHaveBeenCalledTimes(1);
+      const event = onMessage.mock.calls[0]?.[0] as unknown as {
+        message: { text: string };
+      };
+      expect(event.message.text).toContain("the build");
+      expect(event.message.text).toContain(safeLink);
+      expect(event.message.text).toContain(safeImage);
+      expect(event.message.text).toContain(existingBareUrl);
+      expect(event.message.text.split(existingBareUrl)).toHaveLength(2);
+      expect(event.message.text).not.toContain("javascript:");
+      expect(event.message.text).not.toContain(
+        "https://user:password@example.test/private",
+      );
+
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        parseReviewComment(
+          comment: Record<string, unknown>,
+          repository: Record<string, unknown>,
+          prNumber: number,
+          threadId: string,
+        ): { text: string };
+      };
+      const review = adapter.parseReviewComment(
+        payload.comment,
+        payload.repository,
+        42,
+        "github:paperclipai/chat-e2e:42:rc:4242",
+      );
+      expect(review.text).toContain(safeLink);
+      expect(review.text).toContain(safeImage);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("never logs unauthenticated Teams webhook bodies or authorization values", async () => {
+    const bodyMarker = "teams-body-secret-marker-7c6f";
+    const authorizationMarker = "teams-auth-secret-marker-94bd";
+    const logEntries: unknown[] = [];
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-teams-log-boundary",
+      endpointId: "endpoint-teams-log-boundary",
+      logger: capturingLogger(logEntries),
+      persistence,
+      providerConfig: {
+        provider: "microsoft-teams",
+        userName: "Paperclip Agent",
+        credentials: {
+          appId: "00000000-0000-0000-0000-000000000000",
+          appPassword: "teams-secret",
+          appTenantId: "11111111-1111-1111-1111-111111111111",
+          appType: "SingleTenant",
+        },
+      },
+    });
+
+    try {
+      const response = await runtime.handleWebhook(
+        new Request("https://paperclip.test/webhook", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${authorizationMarker}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            id: "forged-activity",
+            type: "message",
+            text: bodyMarker,
+            value: { privateInput: bodyMarker },
+          }),
+        }),
+      );
+
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.status).toBeLessThan(500);
+      const serializedLogs = JSON.stringify(logEntries);
+      expect(serializedLogs).not.toContain(bodyMarker);
+      expect(serializedLogs).not.toContain(authorizationMarker);
+      expect(serializedLogs).not.toContain("Teams webhook raw body");
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it("round-trips credential-free Slack, Teams, and Telegram attachment recovery metadata", () => {
     const cases: Array<{
       attachment: Attachment;
@@ -1241,6 +1707,67 @@ describe("Chat SDK published adapter integration", () => {
     expect(adapter.app.api).toBe(originalApi);
   });
 
+  it("keeps Teams thread identity canonical while the latest durable route wins over legacy URLs", async () => {
+    const state = memoryPersistence();
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-teams-route-refresh",
+      endpointId: "endpoint-teams-route-refresh",
+      logger: "silent",
+      persistence: state,
+      providerConfig: {
+        provider: "microsoft-teams",
+        userName: "Paperclip Agent",
+        credentials: {
+          appId: "00000000-0000-0000-0000-000000000000",
+          appPassword: "secret",
+        },
+      },
+    });
+    await runtime.handleWebhook(
+      new Request("https://paperclip.test/webhook", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "message", text: "initialize" }),
+      }),
+    );
+    const adapter = runtime.getProviderAdapter() as unknown as {
+      app: {
+        activitySender: {
+          send(
+            activity: unknown,
+            reference: { serviceUrl: string },
+          ): Promise<{ id: string }>;
+        };
+      };
+      postMessage(
+        threadId: string,
+        message: { markdown: string },
+      ): Promise<unknown>;
+    };
+    const conversationId =
+      "19:route-refresh@thread.tacv2;messageid=canonical-root";
+    const canonicalThreadId = `teams:${Buffer.from(conversationId).toString("base64url")}`;
+    const staleServiceUrl = "https://smba.trafficmanager.net/amer";
+    const currentServiceUrl = "https://smba.trafficmanager.net/emea";
+    const legacyThreadId = `${canonicalThreadId}:${Buffer.from(staleServiceUrl).toString("base64url")}`;
+    const observedServiceUrls: string[] = [];
+    adapter.app.activitySender.send = async (_activity, reference) => {
+      observedServiceUrls.push(reference.serviceUrl);
+      return { id: `sent-${observedServiceUrls.length}` };
+    };
+
+    await runtime.recordMicrosoftTeamsRoute(
+      canonicalThreadId,
+      currentServiceUrl,
+    );
+    await adapter.postMessage(legacyThreadId, { markdown: "legacy row" });
+    await adapter.postMessage(canonicalThreadId, { markdown: "canonical row" });
+
+    expect(observedServiceUrls).toEqual([currentServiceUrl, currentServiceUrl]);
+    await runtime.shutdown();
+  });
+
   it("scopes direct Teams edit, reaction, and delete calls to signed Microsoft service URLs", async () => {
     const runtime = createChatSdkEndpointRuntime({
       callbacks: { onMessage() {} },
@@ -1258,7 +1785,15 @@ describe("Chat SDK published adapter integration", () => {
       },
     });
     const adapter = runtime.getProviderAdapter() as unknown as {
-      app: { api: unknown };
+      app: {
+        api: unknown;
+        activitySender: {
+          send(
+            activity: unknown,
+            reference: { serviceUrl: string },
+          ): Promise<{ id: string }>;
+        };
+      };
       addReaction: (
         threadId: string,
         messageId: string,
@@ -1361,13 +1896,25 @@ describe("Chat SDK published adapter integration", () => {
       }),
     );
     const adapter = runtime.getProviderAdapter() as unknown as {
-      app: { api: unknown };
+      app: {
+        api: unknown;
+        activitySender: {
+          send(
+            activity: unknown,
+            reference: { serviceUrl: string },
+          ): Promise<{ id: string }>;
+        };
+      };
       chat: {
         getState(): {
-          set(key: string, value: string, ttlMs: number): Promise<void>;
+          set(key: string, value: string, ttlMs?: number): Promise<void>;
         };
       };
       openDM(userId: string): Promise<string>;
+      postMessage(
+        threadId: string,
+        message: { markdown: string },
+      ): Promise<unknown>;
     };
     const amer = "https://smba.trafficmanager.net/amer";
     const gcc = "https://smba.infra.gcc.teams.microsoft.com/teams";
@@ -1405,13 +1952,14 @@ describe("Chat SDK published adapter integration", () => {
         this.conversations = {
           create: async () => {
             observedServiceUrls.push(serviceUrl);
-            if (observedServiceUrls.length === 1) {
+            const index = observedServiceUrls.length;
+            if (index === 1) {
               markFirstObserved();
               await firstBlocked;
-            } else if (observedServiceUrls.length === 2) {
+            } else if (index === 2) {
               markSecondObserved();
             }
-            return { id: `conversation-${observedServiceUrls.length}` };
+            return { id: `conversation-${index}` };
           },
         };
       }
@@ -1428,8 +1976,20 @@ describe("Chat SDK published adapter integration", () => {
     expect(observedServiceUrls).toEqual([amer, gcc]);
     releaseFirst();
     const [amerThread, gccThread] = await Promise.all([first, second]);
-    expect(amerThread).toContain(Buffer.from(amer).toString("base64url"));
-    expect(gccThread).toContain(Buffer.from(gcc).toString("base64url"));
+    expect(amerThread).toBe(
+      `teams:${Buffer.from("conversation-1").toString("base64url")}`,
+    );
+    expect(gccThread).toBe(
+      `teams:${Buffer.from("conversation-2").toString("base64url")}`,
+    );
+    observedServiceUrls.length = 0;
+    adapter.app.activitySender.send = async (_activity, reference) => {
+      observedServiceUrls.push(reference.serviceUrl);
+      return { id: `sent-${observedServiceUrls.length}` };
+    };
+    await adapter.postMessage(amerThread, { markdown: "Americas follow-up" });
+    await adapter.postMessage(gccThread, { markdown: "GCC follow-up" });
+    expect(observedServiceUrls).toEqual([amer, gcc]);
   });
 
   it("restores the Teams API client after a scoped outbound failure", async () => {

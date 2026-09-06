@@ -735,6 +735,24 @@ const chatEndpointSetupResponseSchema = z
     messagingEndpoint: z.string().nullable().optional(),
     webhookVerifiedAt: z.string().datetime().nullable().optional(),
     webhookSecretConfigured: z.boolean().optional(),
+    callbackSurfaces: z
+      .object({
+        events: z.object({
+          status: z.enum(["current", "stale", "unverified"]),
+          observedAt: z.string().datetime().nullable().optional(),
+        }),
+        interactivity: z.object({
+          status: z.enum(["current", "stale", "unverified"]),
+          observedAt: z.string().datetime().nullable().optional(),
+        }),
+        slashCommands: z.object({
+          status: z.enum(["current", "stale", "unverified"]),
+          observedAt: z.string().datetime().nullable().optional(),
+        }),
+      })
+      .strict()
+      .optional(),
+    callbacksNeedUpdate: z.boolean().optional(),
   })
   .strict();
 

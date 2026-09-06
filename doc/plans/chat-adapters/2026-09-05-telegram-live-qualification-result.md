@@ -18,6 +18,8 @@ The working-tree repair now distinguishes first setup from recovery:
 2. Every reconnect preserves pending updates, including a reconnect that changes the public webhook URL.
 3. Endpoint removal continues to delete the webhook without requesting a pending-update drop.
 
+The shipped removal boundary also deletes Paperclip's registered command menu through the same durable maintenance outbox, then retires the saved token. It does not delete the BotFather bot or remove that bot from chats; those remain explicit provider-side cleanup steps.
+
 The focused fresh-database regression passed 1/1, the adjacent reconnect subset passed 5/5, server typecheck passed, and formatting/diff checks passed.
 
 The final working-tree retest then exercised the provider failure mode directly. Telegram updates `75` (`/new`) and `76` (`/task`) were sent while the prior quick-tunnel hostname was dead and therefore remained queued at Telegram. Paperclip restarted on the migrated current source, reconnected the bot to a fresh public origin, and preserved both pending updates. They arrived in provider sequence, processed once each with `attempts=1`, and created only `CHA-91`. The task reached `done`; its working state and exact final `TELEGRAM-FINAL-SOURCE-0906` each published once with no error and shared provider message id `-1004415501660:78`. Telegram Web visibly showed the exact final. This upgrades this specific backlog-preservation path from deterministic-only evidence to one live outage/rotation/replay pass; provider flood control, token revocation, and the rest of the failure matrix remain open.

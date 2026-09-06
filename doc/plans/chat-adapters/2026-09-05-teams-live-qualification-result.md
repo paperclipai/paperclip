@@ -58,7 +58,7 @@ The setup wizard also now provides an exact Entra, Azure Bot, Teams Developer Po
 
 One remaining risk requires real-provider evidence before a production claim: private denial notices use Teams targeted messages. Microsoft moved this feature to general availability on July 30, 2026, although the pinned adapter README still calls it public preview. The local suite proves the adapter call contract, but the denial, removal-from-roster, and bounded-fallback paths still need real-provider validation.
 
-The remaining live matrix is unchanged: installation, real webhook authentication, channel/root/reply ordering, DMs and group chats, reactions, Adaptive Card actions, identity linking, provider revocation, file receipt and publication, reconnect, retry, and cleanup have not run against Microsoft Teams.
+The remaining live matrix is unchanged: installation, real webhook authentication, channel/root/reply ordering, DMs and group chats, reactions, Adaptive Card actions, identity linking, provider revocation, file receipt and publication, reconnect, retry, and cleanup have not run against Microsoft Teams. Paperclip endpoint removal archives the connection and retires its saved client secret; it does not delete the Entra registration or Azure Bot, remove the custom app package, or uninstall that app from teams and chats.
 
 ## Attempted environment
 
@@ -77,7 +77,7 @@ The run stopped before credential entry and before any provider webhook activity
 
 ## Code qualification progress
 
-The committed code serializes Teams turns in FIFO order and stores the Bot Framework `serviceUrl` per external thread and user for deferred thread replies and direct-message creation. Every outbound operation uses an asynchronous context-local API client, so simultaneous conversations in different Microsoft regions cannot overwrite one another's route. The shipped setup is qualified only for Microsoft 365 commercial cloud tenants. Its defensive trust boundary accepts Microsoft-owned Connector host families or an exact explicitly configured API URL because signed activity carries the reply route; accepting a host is not sovereign-cloud qualification. Loopback, attacker-suffix, nonstandard-port, and wrong-path destinations fail before transport, and those local rejections are classified as definite failures rather than ambiguous `delivery_unknown` sends.
+The committed code serializes Teams turns in FIFO order and stores the latest Bot Framework `serviceUrl` as mutable route state per external conversation (plus per user for direct-message creation), outside the durable thread identity. Existing route-bearing thread IDs remain readable, while new IDs are canonical and route-free; a signed activity that arrives through a new regional route therefore continues the same Paperclip task. Every outbound operation uses an asynchronous context-local API client and the latest admitted route, so simultaneous conversations in different Microsoft regions cannot overwrite one another's route. The shipped setup is qualified only for Microsoft 365 commercial cloud tenants. Its defensive trust boundary accepts Microsoft-owned Connector host families or an exact explicitly configured API URL because signed activity carries the reply route; accepting a host is not sovereign-cloud qualification. Loopback, attacker-suffix, nonstandard-port, and wrong-path destinations fail before transport, and those local rejections are classified as definite failures rather than ambiguous `delivery_unknown` sends.
 
 Additional hardening from this cycle is also local-only:
 

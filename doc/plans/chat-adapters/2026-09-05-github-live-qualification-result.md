@@ -102,8 +102,8 @@ The isolated test instance had no sandbox workspace provider. Its automatic low-
 ## Cleanup
 
 - Closed the disposable GitHub issue.
-- Archived the Paperclip chat endpoint, which retired its endpoint-owned secrets.
-- Deleted all four disposable GitHub Apps created while qualifying the provider form and manifest paths.
+- Archived the Paperclip chat endpoint, which retired its endpoint-owned secrets but did not change any GitHub App registration, installation, repository grant, or webhook setting.
+- Separately deleted all four disposable GitHub Apps in GitHub after qualifying the provider form and manifest paths.
 - Deleted the explicitly disposable private repository `paperclip-chat-e2e-enabled`.
 - Stopped the temporary registration server, public relay, and isolated Paperclip process.
 

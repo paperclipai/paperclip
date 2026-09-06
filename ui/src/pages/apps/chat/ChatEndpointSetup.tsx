@@ -509,9 +509,12 @@ settings:
       - reaction_added
       - reaction_removed
       - channel_archive
+      - group_archive
       - channel_unarchive
+      - group_unarchive
       - channel_deleted
       - channel_rename
+      - group_rename
       - app_uninstalled
       - tokens_revoked
   interactivity:
@@ -553,7 +556,7 @@ settings:
           <h1 className="text-xl font-bold">Connect {agentName} to Discord</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {repairing
-              ? "Reconnect the same Discord bot. Leave fields blank to reuse saved credentials."
+              ? "Reconnect verifies this same Discord application and server installation. It does not add or remove the bot from the server. Leave fields blank to reuse saved credentials."
               : "Create one dedicated Discord application and bot for this Paperclip agent."}
           </p>
         </div>
@@ -624,7 +627,7 @@ settings:
           <h1 className="text-xl font-bold">Create {agentName} in Telegram</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {repairing
-              ? "Reconnect the existing bot. Leave the token blank to reuse the saved credential."
+              ? "Reconnect verifies this same BotFather bot and automatically refreshes its Paperclip webhook and command menu. It does not recreate the bot or change its chat memberships. Leave the token blank to reuse the saved credential."
               : "Create a bot with BotFather, then paste the token it gives you."}
           </p>
         </div>
@@ -681,7 +684,7 @@ settings:
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {repairing
-              ? "Reconnect the existing Microsoft app. Leave fields blank to reuse saved credentials."
+              ? "Reconnect verifies this same Microsoft app, tenant, and bot identity. It does not upload or reinstall the Teams app. Leave fields blank to reuse saved credentials."
               : "Use your own Microsoft app credentials for this bot."}
           </p>
         </div>
@@ -880,7 +883,7 @@ settings:
           <h1 className="text-xl font-bold">Create or connect a GitHub App</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {repairing
-              ? "Reconnect the existing App. Leave App ID and private key blank to reuse saved credentials."
+              ? "Reconnect verifies this same GitHub App and installation. It does not reinstall the App or change repository access. Leave App ID and private key blank to reuse saved credentials."
               : "Configure its webhook and permissions, then verify the App with Paperclip."}
           </p>
         </div>
@@ -1083,8 +1086,9 @@ settings:
           <li>
             Return to <strong>App Manifest</strong> in Slack and click{" "}
             <strong>Save Changes</strong>. The copied manifest already contains
-            the event, interaction, and slash-command URLs; saving now lets
-            Slack verify them against the connected signing secret.
+            the event, interaction, and slash-command URLs. Slack verifies the
+            Events URL when you save; Paperclip records Interactivity and slash
+            command health only after each signed callback is observed.
           </li>
         </ol>
         <div className="flex flex-wrap gap-2">
@@ -1107,7 +1111,7 @@ settings:
         <h1 className="text-xl font-bold">Connect a Slack app</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {repairing
-            ? "Reconnect the existing Slack app. Leave credentials blank to reuse the saved values."
+            ? "Reconnect verifies or replaces credentials for this same Slack app. It does not reinstall the app or change its workspace or channel membership. Leave credentials blank to reuse the saved values."
             : "Bring your own Slack app. The manifest requests the scopes Paperclip needs; credentials remain write-only."}
         </p>
       </div>

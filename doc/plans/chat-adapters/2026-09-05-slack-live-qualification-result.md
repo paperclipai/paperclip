@@ -180,8 +180,8 @@ The isolated test instance had no sandbox workspace provider. Its automatic low-
 ## Cleanup
 
 - Archived the disposable private Slack channel.
-- Removed the Paperclip Slack endpoint, retiring its endpoint-owned secrets.
-- Deleted the disposable Slack App, revoking its bot token and signing secret.
+- Removed the Paperclip Slack endpoint, retiring its endpoint-owned secrets. This did not uninstall the Slack app or remove it from channels.
+- Separately deleted the disposable Slack App in Slack, revoking its bot token and signing secret.
 - Stopped the temporary public relay and isolated Paperclip process.
 
 ## Historical local regression evidence

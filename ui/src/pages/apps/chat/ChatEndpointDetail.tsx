@@ -52,6 +52,42 @@ const providerNames: Record<ChatProvider, string> = {
   telegram: "Telegram",
 };
 
+const providerLifecycleGuidance: Record<
+  ChatProvider,
+  { reconnect: string; remove: string }
+> = {
+  slack: {
+    reconnect:
+      "Reconnect verifies or replaces credentials for this same Slack app. It does not reinstall the app or change its workspace or channel membership.",
+    remove:
+      "Paperclip archives the endpoint, stops new ingress, and retires its saved Slack credentials. It does not uninstall the Slack app: the app remains installed, and its bot remains in channels, until you remove them in Slack.",
+  },
+  github: {
+    reconnect:
+      "Reconnect verifies this same GitHub App and installation. It does not reinstall the App or change repository access.",
+    remove:
+      "Paperclip archives the endpoint, stops new ingress, and retires its saved App key and webhook secret. It does not uninstall the GitHub App: the App, its installations, and its webhook settings remain until you remove or update them on GitHub.",
+  },
+  discord: {
+    reconnect:
+      "Reconnect verifies this same Discord application and server installation. It does not add or remove the bot from the server.",
+    remove:
+      "Paperclip archives the endpoint, stops its Paperclip Gateway connection, and retires its saved bot token. It does not uninstall the bot: the bot remains in the Discord server, and the application remains in the Developer Portal, until you remove them there.",
+  },
+  "microsoft-teams": {
+    reconnect:
+      "Reconnect verifies this same Microsoft app, tenant, and bot identity. It does not upload or reinstall the Teams app.",
+    remove:
+      "Paperclip archives the endpoint, stops new ingress, and retires its saved client secret. It does not uninstall the Teams app: the Entra app registration, Azure Bot, custom Teams app, and Teams installations remain until you remove them in Microsoft.",
+  },
+  telegram: {
+    reconnect:
+      "Reconnect verifies this same BotFather bot and automatically refreshes its Paperclip webhook and command menu.",
+    remove:
+      "Paperclip archives the endpoint and queues durable removal of its Telegram webhook and command menu. After Telegram confirms that cleanup, Paperclip retires the saved token. The BotFather bot and its chat memberships remain until you remove them in Telegram.",
+  },
+};
+
 const activityKindLabels: Record<ChatActivityItem["kind"], string> = {
   delivery: "Inbound delivery",
   publication: "Outbound publication",
@@ -716,6 +752,13 @@ function Activity({
   const rows = query.data ?? [];
   const { status, healthMessage, lastError } = endpoint;
   const lifecycleAction = lifecycle.variables;
+  const callbackSurfaceRows = endpoint.setup?.callbackSurfaces
+    ? ([
+        ["Events API", endpoint.setup.callbackSurfaces.events],
+        ["Interactivity", endpoint.setup.callbackSurfaces.interactivity],
+        ["Slash command", endpoint.setup.callbackSurfaces.slashCommands],
+      ] as const)
+    : [];
   return (
     <section className="space-y-5">
       <h2 className="text-lg font-semibold">Connection activity</h2>
@@ -736,68 +779,106 @@ function Activity({
           </div>
         </div>
       )}
+      {endpoint.provider === "slack" && callbackSurfaceRows.length > 0 && (
+        <div
+          className={`rounded-lg border p-3 text-sm ${endpoint.setup?.callbacksNeedUpdate ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/30"}`}
+        >
+          <p className="font-medium">Slack callback health</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {endpoint.setup?.callbacksNeedUpdate
+              ? "Slack callback URLs need an update. Save the current App Manifest, then exercise Events, Interactivity, and the registered command again."
+              : "Paperclip records each callback surface independently after Slack successfully calls it."}
+          </p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            {callbackSurfaceRows.map(([label, surface]) => (
+              <div key={label} className="rounded-md border border-border p-2">
+                <p className="text-xs font-medium">{label}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {surface.status === "current"
+                    ? "Current"
+                    : surface.status === "stale"
+                      ? "Stale URL"
+                      : "Not observed"}
+                </p>
+                {surface.observedAt && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Last observed {formatDate(surface.observedAt)}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {status !== "archived" && (
-        <div className="flex flex-wrap items-center gap-2 border-y border-border py-3">
-          {status === "active" && (
+        <div className="space-y-2 border-y border-border py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {status === "active" && (
+              <Button
+                variant="outline"
+                disabled={lifecycle.isPending}
+                onClick={() => lifecycle.mutate("pause")}
+              >
+                {lifecycle.isPending && lifecycleAction === "pause" ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Pause />
+                )}
+                Pause
+              </Button>
+            )}
+            {status === "paused" && (
+              <Button
+                variant="outline"
+                disabled={lifecycle.isPending}
+                onClick={() => lifecycle.mutate("resume")}
+              >
+                {lifecycle.isPending && lifecycleAction === "resume" ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Play />
+                )}
+                Resume
+              </Button>
+            )}
+            {[
+              "active",
+              "paused",
+              "attention",
+              "revoked",
+              "draft",
+              "verifying",
+            ].includes(status) && (
+              <Button
+                variant="outline"
+                disabled={lifecycle.isPending}
+                onClick={() =>
+                  navigate(
+                    `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}&reconnect=1`,
+                  )
+                }
+              >
+                <RefreshCw />
+                {status === "draft" || status === "verifying"
+                  ? "Finish setup"
+                  : "Reconnect"}
+              </Button>
+            )}
             <Button
-              variant="outline"
+              variant="ghost"
+              className="text-destructive hover:text-destructive"
               disabled={lifecycle.isPending}
-              onClick={() => lifecycle.mutate("pause")}
+              onClick={() => setRemoveOpen(true)}
             >
-              {lifecycle.isPending && lifecycleAction === "pause" ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Pause />
-              )}
-              Pause
+              <Trash2 />
+              Remove connection
             </Button>
+          </div>
+          {status !== "draft" && status !== "verifying" && (
+            <p className="text-xs text-muted-foreground">
+              {providerLifecycleGuidance[endpoint.provider].reconnect}
+            </p>
           )}
-          {status === "paused" && (
-            <Button
-              variant="outline"
-              disabled={lifecycle.isPending}
-              onClick={() => lifecycle.mutate("resume")}
-            >
-              {lifecycle.isPending && lifecycleAction === "resume" ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Play />
-              )}
-              Resume
-            </Button>
-          )}
-          {[
-            "active",
-            "paused",
-            "attention",
-            "revoked",
-            "draft",
-            "verifying",
-          ].includes(status) && (
-            <Button
-              variant="outline"
-              disabled={lifecycle.isPending}
-              onClick={() =>
-                navigate(
-                  `/apps/chat/connect?provider=${endpoint.provider}&purpose=chat&resume=${endpoint.id}&reconnect=1`,
-                )
-              }
-            >
-              <RefreshCw />
-              {status === "draft" || status === "verifying"
-                ? "Finish setup"
-                : "Reconnect"}
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            className="text-destructive hover:text-destructive"
-            disabled={lifecycle.isPending}
-            onClick={() => setRemoveOpen(true)}
-          >
-            <Trash2 />
-            Remove connection
-          </Button>
         </div>
       )}
       <div className="space-y-2">
@@ -971,7 +1052,8 @@ function Activity({
             <AlertDialogDescription>
               {endpoint.assignedAgentName} will stop receiving new work from
               {` ${providerNames[endpoint.provider]}`}. Existing Paperclip tasks
-              remain available.
+              remain available.{" "}
+              {providerLifecycleGuidance[endpoint.provider].remove}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -4,6 +4,7 @@ import { modalToAdaptiveCard } from "@chat-adapter/teams/modals";
 import {
   buildChatQuestionFormModal,
   chatQuestionFormActionRecords,
+  chatQuestionFormDenialResponse,
   claimChatQuestionFormSubmission,
   completeChatQuestionFormSubmission,
   createChatQuestionFormDraft,
@@ -416,6 +417,27 @@ describe("chat question forms", () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  it("acknowledges durable denials without reflecting untrusted callback data", () => {
+    const draft = createChatQuestionFormDraft(interaction())!;
+    const payload = parseChatQuestionFormSubmitTokenPayload(
+      chatQuestionFormActionRecords(draft, {
+        companyId: "22222222-2222-4222-8222-222222222222",
+        endpointId: "44444444-4444-4444-8444-444444444444",
+        conversationId: "55555555-5555-4555-8555-555555555555",
+        publicationId: "66666666-6666-4666-8666-666666666666",
+      })[1]?.payload,
+    )!;
+
+    expect(chatQuestionFormDenialResponse(payload)).toEqual({
+      action: "errors",
+      errors: {
+        [payload.fields[0]!.fieldId]:
+          "This form is no longer authorized. Close it and open the linked Paperclip task.",
+      },
+    });
+    expect(chatQuestionFormDenialResponse()).toEqual({ action: "clear" });
   });
 
   it("claims a submit token atomically and stores no provider answer values", async () => {

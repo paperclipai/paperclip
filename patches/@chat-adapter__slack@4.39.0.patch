@@ -39,3 +39,22 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..6923ca71de57ae9ae8994d4210ef8d87
 +      text: "Paperclip received this command."
 +    });
    }
+@@ -2703,7 +2705,8 @@ var SlackAdapter = class _SlackAdapter {
+           "Content-Type": "application/json",
+           "x-slack-socket-token": this.socketForwardingSecret
+         },
+-        body: JSON.stringify(event)
++        body: JSON.stringify(event),
++        signal: AbortSignal.timeout(45e3)
+       });
+       if (response.ok) {
+         this.logger.debug("Socket event forwarded successfully", {
+@@ -5636,6 +5639,7 @@ var SlackAdapter = class _SlackAdapter {
+       method: "POST",
+       headers: { "Content-Type": "application/json" },
+-      body: JSON.stringify(payload)
++      body: JSON.stringify(payload),
++      signal: AbortSignal.timeout(45e3)
+     });
+     if (!response.ok) {
+       const errorText = await response.text();

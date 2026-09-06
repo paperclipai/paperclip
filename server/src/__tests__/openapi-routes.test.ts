@@ -464,6 +464,13 @@ describe("openapi routes", () => {
     expect(JSON.stringify(endpointResponse)).not.toContain("credentials");
     expect(JSON.stringify(endpointResponse)).not.toContain("privateKey");
     expect(JSON.stringify(endpointResponse)).not.toContain("signingSecret");
+    expect(
+      endpointResponse.properties.setup.properties.callbacksNeedUpdate,
+    ).toEqual({ type: "boolean" });
+    expect(
+      endpointResponse.properties.setup.properties.callbackSurfaces.properties
+        .events.properties.status.enum,
+    ).toEqual(["current", "stale", "unverified"]);
 
     const setup = spec.paths["/api/chat-endpoints/{endpointId}/setup"].post;
     expect(

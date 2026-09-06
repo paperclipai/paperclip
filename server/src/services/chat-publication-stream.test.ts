@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   shouldStreamSafePublicationText,
+  splitTelegramPublicationText,
   streamSafePublicationText,
+  TELEGRAM_DURABLE_PART_CODE_POINTS,
 } from "./chat-publication-stream.js";
 
 describe("safe chat publication streaming", () => {
@@ -36,5 +38,21 @@ describe("safe chat publication streaming", () => {
   it("streams only responses large enough to benefit", () => {
     expect(shouldStreamSafePublicationText("short")).toBe(false);
     expect(shouldStreamSafePublicationText("x".repeat(281))).toBe(true);
+  });
+
+  it("splits Telegram publications losslessly on Unicode code-point boundaries", () => {
+    const source = `${"*".repeat(TELEGRAM_DURABLE_PART_CODE_POINTS)}${"🙂".repeat(
+      TELEGRAM_DURABLE_PART_CODE_POINTS,
+    )}tail`;
+
+    const parts = splitTelegramPublicationText(source);
+
+    expect(parts).toHaveLength(3);
+    expect(parts.join("")).toBe(source);
+    expect(
+      parts.every(
+        (part) => Array.from(part).length <= TELEGRAM_DURABLE_PART_CODE_POINTS,
+      ),
+    ).toBe(true);
   });
 });

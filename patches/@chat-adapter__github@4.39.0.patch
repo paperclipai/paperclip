@@ -1,0 +1,99 @@
+diff --git a/dist/index.js b/dist/index.js
+index 32d5ca33adadd3928983ae76d78949190320cdab..056ab06ceb047e4bb08c2b0dacfd8b2a41540ec1 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -8,7 +8,7 @@ import {
+ } from "@chat-adapter/shared";
+ import { createAppAuth } from "@octokit/auth-app";
+ import { Octokit } from "@octokit/rest";
+-import { ConsoleLogger, convertEmojiPlaceholders, Message } from "chat";
++import { ConsoleLogger, convertEmojiPlaceholders, Message, toPlainText } from "chat";
+ 
+ // src/cards.ts
+ import { renderGfmTable } from "@chat-adapter/shared";
+@@ -144,6 +144,55 @@ var GitHubFormatConverter = class extends BaseFormatConverter {
+   }
+ };
+ 
++// GitHub comments commonly represent uploaded files as Markdown images. The
++// shared plain-text converter preserves their label but drops the destination,
++// which makes the uploaded artifact impossible to recover downstream. Append
++// a bounded set of safe HTTPS destinations without treating them as fetchable
++// attachments or retaining credential-bearing URLs.
++function safeGitHubMarkdownUrl(value) {
++  if (typeof value !== "string" || value.length === 0 || value.length > 2048) {
++    return null;
++  }
++  let parsed;
++  try {
++    parsed = new URL(value);
++  } catch {
++    return null;
++  }
++  if (parsed.protocol !== "https:" || parsed.username || parsed.password) {
++    return null;
++  }
++  return parsed.href;
++}
++function normalizedGitHubCommentText(formatted) {
++  const plainText = toPlainText(formatted);
++  const urls = [];
++  const seen = /* @__PURE__ */ new Set();
++  const stack = [formatted];
++  let visited = 0;
++  while (stack.length > 0 && urls.length < 32 && visited < 1e4) {
++    const node = stack.pop();
++    visited += 1;
++    if (node && typeof node === "object") {
++      if (node.type === "link" || node.type === "image" || node.type === "definition") {
++        const url = safeGitHubMarkdownUrl(node.url);
++        if (url && !seen.has(url)) {
++          seen.add(url);
++          urls.push(url);
++        }
++      }
++      if (Array.isArray(node.children)) {
++        for (let index = node.children.length - 1; index >= 0; index -= 1) {
++          stack.push(node.children[index]);
++        }
++      }
++    }
++  }
++  const missingUrls = urls.filter((url) => !plainText.includes(url));
++  if (missingUrls.length === 0) return plainText;
++  return [plainText, ...missingUrls].filter(Boolean).join("\n");
++}
++
+ // src/index.ts
+ var REVIEW_COMMENT_THREAD_PATTERN = /^([^/]+)\/([^:]+):(\d+):rc:(\d+)$/;
+ var ISSUE_THREAD_PATTERN = /^([^/]+)\/([^:]+):issue:(\d+)$/;
+@@ -677,11 +726,12 @@ var GitHubAdapter = class {
+    */
+   parseIssueComment(comment, repository, prNumber, threadId, threadType = "pr") {
+     const author = this.parseAuthor(comment.user);
++    const formatted = this.formatConverter.toAst(comment.body);
+     return new Message({
+       id: comment.id.toString(),
+       threadId,
+-      text: this.formatConverter.extractPlainText(comment.body),
+-      formatted: this.formatConverter.toAst(comment.body),
++      text: normalizedGitHubCommentText(formatted),
++      formatted,
+       raw: {
+         type: "issue_comment",
+         comment,
+@@ -709,11 +759,12 @@ var GitHubAdapter = class {
+    */
+   parseReviewComment(comment, repository, prNumber, threadId) {
+     const author = this.parseAuthor(comment.user);
++    const formatted = this.formatConverter.toAst(comment.body);
+     return new Message({
+       id: comment.id.toString(),
+       threadId,
+-      text: this.formatConverter.extractPlainText(comment.body),
+-      formatted: this.formatConverter.toAst(comment.body),
++      text: normalizedGitHubCommentText(formatted),
++      formatted,
+       raw: {
+         type: "review_comment",
+         comment,

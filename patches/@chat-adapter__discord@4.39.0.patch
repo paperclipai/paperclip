@@ -1,8 +1,8 @@
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 8cd0ed5..fb7d3cb 100644
+index 8cd0ed50d2c4971cffe75dd86c12764d837ab8cc..a2b135fd06b34f2b53c0cbdec71e48559433ca09 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
-@@ -63,6 +63,20 @@ declare enum DiscordContentFormat {
+@@ -63,6 +63,53 @@ declare enum DiscordContentFormat {
   * to accept the request; throw or return a falsy value to reject it.
   */
  type DiscordWebhookVerifier = (request: Request, body: string) => Promise<unknown> | unknown;
@@ -20,10 +20,52 @@ index 8cd0ed5..fb7d3cb 100644
 +    /** Discord user id that authored the root mention. */
 +    userId: string;
 +}
++type DiscordGatewayEvent = {
++    type: "connecting";
++} | {
++    type: "ready";
++    botUserId?: string;
++} | {
++    type: "failure";
++    fatal: boolean;
++    error: {
++        name: string;
++        code?: number | string;
++        status?: number;
++        retryAfter?: number;
++    };
++} | {
++    type: "disconnected";
++    fatal: boolean;
++    code?: number;
++} | {
++    type: "guild_removed";
++    guildId: string;
++} | {
++    type: "guild_available";
++    guildId: string;
++} | {
++    type: "guild_unavailable";
++    guildId: string;
++} | {
++    type: "channel_removed";
++    channelId: string;
++    guildId?: string;
++    label?: string;
++};
  interface DiscordAdapterConfig {
      /** Override the Discord API base URL. Defaults to DISCORD_API_URL env var or "https://discord.com/api/v10". */
      apiUrl?: string;
-@@ -84,6 +98,8 @@ interface DiscordAdapterConfig {
+@@ -76,6 +123,8 @@ interface DiscordAdapterConfig {
+     interactionFlags?: (context: DiscordInteractionFlagsContext) => DiscordInteractionResponseFlags | undefined;
+     /** Logger instance for error reporting. Defaults to ConsoleLogger. */
+     logger?: Logger;
++    /** Observe ordered Gateway connectivity and resource lifecycle events. */
++    onGatewayEvent?: (event: DiscordGatewayEvent) => void | Promise<void>;
+     /** Role IDs that should trigger mention handlers (in addition to direct user mentions). Defaults to DISCORD_MENTION_ROLE_IDS env var (comma-separated). */
+     mentionRoleIds?: string[];
+     /** Discord application public key for webhook signature verification. Defaults to DISCORD_PUBLIC_KEY env var. */
+@@ -84,6 +133,8 @@ interface DiscordAdapterConfig {
      respondToChannelIds?: string[];
      /** Treat @everyone/@here pings as mentions of the bot. Defaults to false. */
      respondToGlobalMentions?: boolean;
@@ -32,23 +74,32 @@ index 8cd0ed5..fb7d3cb 100644
      /** Override bot username (optional) */
      userName?: string;
      /** Custom webhook verifier used instead of Discord's Ed25519 public key. */
-@@ -534,6 +550,7 @@ interface DiscordFileUpload {
+@@ -534,6 +585,7 @@ interface DiscordFileUpload {
  }
  declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
      readonly name = "discord";
-+    readonly paperclipCompatibilityRevision = "paperclip-discord-v3";
++    readonly paperclipCompatibilityRevision = "paperclip-discord-v4";
      readonly userName: string;
      protected readonly apiBaseUrl: string;
      protected readonly botTokenProvider: () => Promise<string>;
-@@ -547,6 +564,7 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
+@@ -547,12 +599,16 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
      protected readonly respondToChannelIds: string[];
      protected readonly respondToGlobalMentions: boolean;
      protected readonly interactionFlags?: DiscordAdapterConfig["interactionFlags"];
 +    protected readonly shouldCreateThread?: DiscordAdapterConfig["shouldCreateThread"];
      protected chat: ChatInstance | null;
      protected readonly logger: Logger;
++    protected readonly onGatewayEvent?: DiscordAdapterConfig["onGatewayEvent"];
++    private gatewayEventQueue;
      protected readonly formatConverter: DiscordFormatConverter;
-@@ -575,7 +593,7 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
+     protected readonly requestContext: AsyncLocalStorage<DiscordRequestContext>;
+     private readonly threadParentCache;
+     protected static readonly THREAD_PARENT_CACHE_TTL: number;
++    protected notifyGatewayEvent(event: DiscordGatewayEvent): Promise<void>;
+     get botUserId(): string | undefined;
+     protected get applicationId(): string;
+     constructor(config?: DiscordAdapterConfig);
+@@ -575,7 +631,7 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
      /**
       * Handle MESSAGE_COMPONENT interactions (button clicks).
       */
@@ -57,7 +108,7 @@ index 8cd0ed5..fb7d3cb 100644
      /**
       * Handle APPLICATION_COMMAND interactions (slash commands).
       */
-@@ -634,7 +652,12 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
+@@ -634,7 +690,12 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
      /**
       * Create a Discord thread from a message.
       */
@@ -71,11 +122,14 @@ index 8cd0ed5..fb7d3cb 100644
          id: string;
          name: string;
      }>;
-@@ -812 +835 @@ declare function createDiscordAdapter(config?: DiscordAdapterConfig): DiscordAdapter;
+@@ -809,4 +870,4 @@ declare class DiscordAdapter implements Adapter<DiscordThreadId, unknown> {
+  */
+ declare function createDiscordAdapter(config?: DiscordAdapterConfig): DiscordAdapter;
+
 -export { DiscordAdapter, type DiscordAdapterConfig, DiscordComponentType, type DiscordComponentTypeValue, DiscordContentFormat, DiscordFormatConverter, type DiscordInteractionFlagsContext, DiscordInteractionResponseFlag, type DiscordInteractionResponseFlags, DiscordFormatConverter as DiscordMarkdownConverter, DiscordMessageFlag, type DiscordMessageFlagValue, type DiscordMessageFlags, type DiscordThreadId, type DiscordWebhookVerifier, cardToDiscordPayload, cardToFallbackText, createDiscordAdapter, decodeDiscordCustomId, encodeDiscordCustomId };
-+export { DiscordAdapter, type DiscordAdapterConfig, DiscordComponentType, type DiscordComponentTypeValue, DiscordContentFormat, DiscordFormatConverter, type DiscordInteractionFlagsContext, DiscordInteractionResponseFlag, type DiscordInteractionResponseFlags, DiscordFormatConverter as DiscordMarkdownConverter, DiscordMessageFlag, type DiscordMessageFlagValue, type DiscordMessageFlags, type DiscordThreadAdmissionContext, type DiscordThreadId, type DiscordWebhookVerifier, cardToDiscordPayload, cardToFallbackText, createDiscordAdapter, decodeDiscordCustomId, encodeDiscordCustomId };
++export { DiscordAdapter, type DiscordAdapterConfig, DiscordComponentType, type DiscordComponentTypeValue, DiscordContentFormat, DiscordFormatConverter, type DiscordGatewayEvent, type DiscordInteractionFlagsContext, DiscordInteractionResponseFlag, type DiscordInteractionResponseFlags, DiscordFormatConverter as DiscordMarkdownConverter, DiscordMessageFlag, type DiscordMessageFlagValue, type DiscordMessageFlags, type DiscordThreadAdmissionContext, type DiscordThreadId, type DiscordWebhookVerifier, cardToDiscordPayload, cardToFallbackText, createDiscordAdapter, decodeDiscordCustomId, encodeDiscordCustomId };
 diff --git a/dist/index.js b/dist/index.js
-index a42b61d..f017c81 100644
+index a42b61d58aa05c553cad8544090284070973cf0a..47ec7caee95cce5fa949a6dfd4e988c3961e2d59 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -783,6 +783,7 @@ ${tableToAscii(node)}
@@ -95,7 +149,7 @@ index a42b61d..f017c81 100644
      this.name = "DiscordApiError";
      this.status = status;
      this.code = parseDiscordErrorCode(body);
-@@ -808,6 +809,54 @@ function parseDiscordErrorCode(body) {
+@@ -808,6 +809,67 @@ function parseDiscordErrorCode(body) {
    }
    return void 0;
  }
@@ -138,6 +192,19 @@ index a42b61d..f017c81 100644
 +    ...typeof error.retryAfter === "number" && Number.isFinite(error.retryAfter) ? { retryAfter: error.retryAfter } : {}
 +  };
 +}
++var DISCORD_FATAL_GATEWAY_CODES = /* @__PURE__ */ new Set([
++  4004,
++  4013,
++  4014,
++  "TokenInvalid",
++  "DisallowedIntents",
++  "GuildRemoved"
++]);
++function discordGatewayFailureIsFatal(error) {
++  return Boolean(
++    error && typeof error === "object" && "code" in error && DISCORD_FATAL_GATEWAY_CODES.has(error.code)
++  );
++}
 +function discordResponseSummary(response, body) {
 +  const code = parseDiscordErrorCode(body);
 +  const retryAfter = parseDiscordRetryAfter(body);
@@ -150,31 +217,48 @@ index a42b61d..f017c81 100644
  function flatten(text, files, snapshots) {
    const items = [...snapshots];
    return {
-@@ -826,6 +875,7 @@ function normalizeCredentialProvider(value) {
+@@ -826,6 +888,7 @@ function normalizeCredentialProvider(value) {
  }
  var DiscordAdapter = class _DiscordAdapter {
    name = "discord";
-+  paperclipCompatibilityRevision = "paperclip-discord-v3";
++  paperclipCompatibilityRevision = "paperclip-discord-v4";
    userName;
    apiBaseUrl;
    botTokenProvider;
-@@ -839,6 +889,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -839,6 +902,9 @@ var DiscordAdapter = class _DiscordAdapter {
    respondToChannelIds;
    respondToGlobalMentions;
    interactionFlags;
 +  shouldCreateThread;
++  onGatewayEvent;
++  gatewayEventQueue = Promise.resolve();
    chat = null;
    logger;
    formatConverter = new DiscordFormatConverter();
-@@ -900,6 +951,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -900,6 +966,8 @@ var DiscordAdapter = class _DiscordAdapter {
      this.respondToGlobalMentions = config.respondToGlobalMentions ?? false;
      this.contentFormat = contentFormat;
      this.interactionFlags = config.interactionFlags;
 +    this.shouldCreateThread = config.shouldCreateThread;
++    this.onGatewayEvent = config.onGatewayEvent;
      this.logger = config.logger ?? new ConsoleLogger("info").child("discord");
      this.userName = config.userName ?? "bot";
      if (this.publicKey && !HEX_64_PATTERN.test(this.publicKey)) {
-@@ -998,7 +1050,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -924,6 +992,13 @@ var DiscordAdapter = class _DiscordAdapter {
+     }
+     return botToken;
+   }
++  async notifyGatewayEvent(event) {
++    const pending = this.gatewayEventQueue.then(
++      async () => await this.onGatewayEvent?.(event)
++    );
++    this.gatewayEventQueue = pending.catch(() => void 0);
++    await pending;
++  }
+   async resolveApplicationId() {
+     if (this.resolvedApplicationId) {
+       return this.resolvedApplicationId;
+@@ -998,7 +1073,7 @@ var DiscordAdapter = class _DiscordAdapter {
          verified = await this.webhookVerifier(request, body);
        } catch (error) {
          this.logger.warn("Discord webhook verifier rejected the request", {
@@ -183,7 +267,7 @@ index a42b61d..f017c81 100644
          });
          return new Response("Invalid signature", { status: 401 });
        }
-@@ -1047,7 +1099,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1047,7 +1122,7 @@ var DiscordAdapter = class _DiscordAdapter {
        });
      }
      if (interaction.type === InteractionType.MessageComponent) {
@@ -192,7 +276,7 @@ index a42b61d..f017c81 100644
        return this.respondToInteraction({
          type: InteractionResponseType.DeferredUpdateMessage
        });
-@@ -1097,24 +1149,19 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1097,24 +1172,19 @@ var DiscordAdapter = class _DiscordAdapter {
          this.publicKey
        );
        if (!isValid) {
@@ -219,7 +303,7 @@ index a42b61d..f017c81 100644
        });
        return false;
      }
-@@ -1128,7 +1175,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1128,7 +1198,7 @@ var DiscordAdapter = class _DiscordAdapter {
    /**
     * Handle MESSAGE_COMPONENT interactions (button clicks).
     */
@@ -228,7 +312,7 @@ index a42b61d..f017c81 100644
      if (!this.chat) {
        this.logger.warn("Chat instance not initialized, ignoring interaction");
        return;
-@@ -1179,11 +1226,10 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1179,11 +1249,10 @@ var DiscordAdapter = class _DiscordAdapter {
        raw: interaction
      };
      this.logger.debug("Processing Discord button action", {
@@ -241,7 +325,7 @@ index a42b61d..f017c81 100644
    }
    /**
     * Handle APPLICATION_COMMAND interactions (slash commands).
-@@ -1245,7 +1291,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1245,7 +1314,7 @@ var DiscordAdapter = class _DiscordAdapter {
      const { channelId, command, interaction, text, user } = context;
      this.logger.debug("Processing Discord slash command", {
        command,
@@ -250,7 +334,7 @@ index a42b61d..f017c81 100644
        userId: user.id,
        channelId
      });
-@@ -1325,8 +1371,11 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1325,8 +1394,11 @@ var DiscordAdapter = class _DiscordAdapter {
      }
      if (interaction.isMessageComponent()) {
        await interaction.deferUpdate();
@@ -264,7 +348,7 @@ index a42b61d..f017c81 100644
        );
      }
    }
-@@ -1340,7 +1389,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1340,7 +1412,7 @@ var DiscordAdapter = class _DiscordAdapter {
          options: this.normalizeGatewayCommandOptions(interaction.options.data),
          type: interaction.commandType
        },
@@ -273,7 +357,7 @@ index a42b61d..f017c81 100644
        id: interaction.id,
        token: interaction.token,
        type: interaction.type,
-@@ -1359,7 +1408,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1359,7 +1431,7 @@ var DiscordAdapter = class _DiscordAdapter {
          custom_id: interaction.customId,
          values
        },
@@ -282,7 +366,7 @@ index a42b61d..f017c81 100644
        id: interaction.id,
        message: { id: interaction.message.id },
        token: interaction.token,
-@@ -1467,7 +1516,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1467,7 +1539,7 @@ var DiscordAdapter = class _DiscordAdapter {
          }
        } catch (error) {
          this.logger.error("Failed to fetch thread parent", {
@@ -291,7 +375,7 @@ index a42b61d..f017c81 100644
            channelId
          });
        }
-@@ -1478,21 +1527,47 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1478,21 +1550,47 @@ var DiscordAdapter = class _DiscordAdapter {
      );
      const isEveryoneMentioned = this.respondToGlobalMentions && data.mention_everyone === true;
      const isMentioned = isUserMentioned || isRoleMentioned || isEveryoneMentioned || !data.author.bot && this.respondToChannelIds.includes(parentChannelId);
@@ -329,7 +413,7 @@ index a42b61d..f017c81 100644
 +          { event: "thread_admission", messageId: data.id }
 +        );
 +        if (!checked || !admitted) return;
-+      }
+       }
 +      let newThread;
 +      const created = await this.processGatewayWithRetry(
 +        async () => {
@@ -343,7 +427,7 @@ index a42b61d..f017c81 100644
 +      );
 +      if (!created || !newThread) {
 +        return;
-       }
++      }
 +      discordThreadId = newThread.id;
 +      this.logger.debug("Created Discord thread for forwarded mention", {
 +        channelId,
@@ -353,7 +437,7 @@ index a42b61d..f017c81 100644
      }
      const threadId = this.encodeThreadId({
        guildId,
-@@ -1537,7 +1612,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1537,7 +1635,7 @@ var DiscordAdapter = class _DiscordAdapter {
        await this.chat.handleIncomingMessage(this, threadId, chatMessage);
      } catch (error) {
        this.logger.error("Error handling forwarded message", {
@@ -362,7 +446,7 @@ index a42b61d..f017c81 100644
          messageId: data.id
        });
      }
-@@ -1575,7 +1650,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1575,7 +1673,7 @@ var DiscordAdapter = class _DiscordAdapter {
            }
          } catch (error) {
            this.logger.error("Failed to fetch thread parent for reaction", {
@@ -371,7 +455,7 @@ index a42b61d..f017c81 100644
              channelId
            });
          }
-@@ -1590,7 +1665,10 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1590,7 +1688,10 @@ var DiscordAdapter = class _DiscordAdapter {
      const normalizedEmoji = this.normalizeDiscordEmoji(emojiName);
      const userInfo = data.user ?? data.member?.user;
      if (!userInfo) {
@@ -383,7 +467,7 @@ index a42b61d..f017c81 100644
        return;
      }
      const reactionEvent = {
-@@ -1794,12 +1872,12 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1794,12 +1895,12 @@ var DiscordAdapter = class _DiscordAdapter {
    /**
     * Create a Discord thread from a message.
     */
@@ -399,7 +483,7 @@ index a42b61d..f017c81 100644
      });
      try {
        const response = await this.discordFetch(
-@@ -1814,7 +1892,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1814,7 +1915,7 @@ var DiscordAdapter = class _DiscordAdapter {
        const result = await response.json();
        this.logger.debug("Discord API: POST thread response", {
          threadId: result.id,
@@ -408,7 +492,7 @@ index a42b61d..f017c81 100644
        });
        return result;
      } catch (error) {
-@@ -1828,6 +1906,18 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1828,6 +1929,18 @@ var DiscordAdapter = class _DiscordAdapter {
        throw error;
      }
    }
@@ -418,16 +502,16 @@ index a42b61d..f017c81 100644
 +   * durable admission receipt and Discord's thread-creation response.
 +   */
 +  async ensureRootThread(channelId, messageId, content) {
-+    return await this.createDiscordThread(
-+      channelId,
-+      messageId,
-+      this.gatewayThreadName(content)
-+    );
++    try { const response = await this.discordFetch(`/channels/${messageId}`, "GET"); const recovered = await response.json();
++      if (recovered?.id === messageId && recovered?.parent_id === channelId && (recovered?.type === 10 || recovered?.type === 11)) return recovered; throw new NetworkError("discord", "Discord thread recovery returned an unexpected channel");
++    } catch (error) { if (!(error instanceof NetworkError && error.originalError instanceof DiscordApiError && error.originalError.code === 10003)) throw error; }
++    // Discord assigns a message-started thread the source message id.
++    return await this.createDiscordThread(channelId, messageId, this.gatewayThreadName(content));
 +  }
    /**
     * Truncate content to Discord's maximum length.
     */
-@@ -1861,20 +1951,23 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1861,20 +1974,23 @@ var DiscordAdapter = class _DiscordAdapter {
        formData.append(`files[${i}]`, blob, file.filename);
      }
      const response = await fetch(
@@ -457,29 +541,29 @@ index a42b61d..f017c81 100644
        );
      }
      const result = await response.json();
-@@ -1885,10 +1978,16 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1885,22 +2001,29 @@ var DiscordAdapter = class _DiscordAdapter {
      };
    }
    async discordInteractionFetch(path, method, body) {
 -    const response = await fetch(`${DISCORD_API_BASE}${path}`, {
+-      method,
+-      headers: body ? { "Content-Type": "application/json" } : void 0,
+-      body: body ? JSON.stringify(body) : void 0
+-    });
 +    let response;
 +    try {
 +      response = await fetch(`${this.apiBaseUrl}${path}`, {
--      method,
--      headers: body ? { "Content-Type": "application/json" } : void 0,
 +        method,
 +        headers: body ? { "Content-Type": "application/json" } : void 0,
--      body: body ? JSON.stringify(body) : void 0
 +        body: body ? JSON.stringify(body) : void 0,
 +        signal: AbortSignal.timeout(DISCORD_REQUEST_TIMEOUT_MS)
--    });
 +      });
 +    } catch {
 +      throw new NetworkError("discord", "Discord interaction network error");
 +    }
      if (!response.ok) {
        const errorText = await response.text();
-@@ -1896,11 +1990,12 @@ var DiscordAdapter = class _DiscordAdapter {
+       this.logger.error("Discord interaction API error", {
 -        path,
          method,
          status: response.status,
@@ -497,27 +581,27 @@ index a42b61d..f017c81 100644
        );
      }
      return response;
-@@ -1924,9 +2020,15 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -1924,21 +2047,28 @@ var DiscordAdapter = class _DiscordAdapter {
        });
        formData.append(`files[${i}]`, blob, file.filename);
      }
 -    const response = await fetch(`${DISCORD_API_BASE}${path}`, {
+-      method,
+-      body: formData
+-    });
 +    let response;
 +    try {
 +      response = await fetch(`${this.apiBaseUrl}${path}`, {
--      method,
 +        method,
--      body: formData
 +        body: formData,
 +        signal: AbortSignal.timeout(DISCORD_REQUEST_TIMEOUT_MS)
--    });
 +      });
 +    } catch {
 +      throw new NetworkError("discord", "Discord interaction network error");
 +    }
      if (!response.ok) {
        const errorText = await response.text();
-@@ -1934,11 +2031,12 @@ var DiscordAdapter = class _DiscordAdapter {
+       this.logger.error("Discord interaction API error", {
 -        path,
          method,
          status: response.status,
@@ -535,7 +619,7 @@ index a42b61d..f017c81 100644
        );
      }
      return response;
-@@ -2299,7 +2398,8 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2299,19 +2429,20 @@ var DiscordAdapter = class _DiscordAdapter {
      const response = await fetch(url, {
        method,
        headers,
@@ -545,7 +629,7 @@ index a42b61d..f017c81 100644
      });
      if (!response.ok) {
        const errorText = await response.text();
-@@ -2307,11 +2407,11 @@ var DiscordAdapter = class _DiscordAdapter {
+       this.logger.error("Discord API error", {
 -        path,
          method,
          status: response.status,
@@ -562,7 +646,7 @@ index a42b61d..f017c81 100644
          new DiscordApiError(response.status, errorText)
        );
      }
-@@ -2372,7 +2473,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2372,9 +2503,16 @@ var DiscordAdapter = class _DiscordAdapter {
          GatewayIntentBits.GuildMessageReactions,
          GatewayIntentBits.DirectMessageReactions
        ],
@@ -570,8 +654,17 @@ index a42b61d..f017c81 100644
 +      partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User]
      });
      let isShuttingDown = false;
++    let rejectGatewayFailure;
++    const gatewayFailure = new Promise((_resolve, reject) => {
++      rejectGatewayFailure = reject;
++    });
++    const failGateway = (error) => {
++      if (!isShuttingDown) rejectGatewayFailure(error);
++    };
      if (webhookUrl) {
-@@ -2395,7 +2496,7 @@ var DiscordAdapter = class _DiscordAdapter {
+       client.on("raw", async (packet) => {
+         if (isShuttingDown) {
+@@ -2395,7 +2533,7 @@ var DiscordAdapter = class _DiscordAdapter {
                  "Failed to resolve forwarded message channel",
                  {
                    channelId: message.channel_id,
@@ -580,54 +673,147 @@ index a42b61d..f017c81 100644
                  }
                );
                return null;
-@@ -2419,20 +2520,19 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2419,45 +2557,111 @@ var DiscordAdapter = class _DiscordAdapter {
      }
      client.on(Events.ClientReady, () => {
        this.logger.info("Discord Gateway connected", {
 -        username: client.user?.username,
          id: client.user?.id
        });
++      void this.notifyGatewayEvent({
++        type: "ready",
++        ...client.user?.id ? { botUserId: client.user.id } : {}
++      }).catch(failGateway);
      });
      client.on(Events.Error, (error) => {
 -      this.logger.error("Discord Gateway error", { error: String(error) });
 +      this.logger.error("Discord Gateway error", { error: discordErrorSummary(error) });
++      void this.notifyGatewayEvent({
++        type: "failure",
++        fatal: discordGatewayFailureIsFatal(error),
++        error: discordErrorSummary(error)
++      }).then(() => failGateway(error)).catch(failGateway);
++    });
++    client.on(Events.ShardDisconnect, (closeEvent) => {
++      const fatal = DISCORD_FATAL_GATEWAY_CODES.has(closeEvent.code);
++      const error = new Error("Discord Gateway disconnected");
++      error.code = closeEvent.code;
++      void this.notifyGatewayEvent({
++        type: "disconnected",
++        fatal,
++        code: closeEvent.code
++      }).then(() => {
++        if (fatal) failGateway(error);
++      }).catch(failGateway);
++    });
++    client.on(Events.ShardReady, () => {
++      void this.notifyGatewayEvent({ type: "ready" }).catch(failGateway);
++    });
++    client.on(Events.ShardResume, () => {
++      void this.notifyGatewayEvent({ type: "ready" }).catch(failGateway);
++    });
++    client.on(Events.GuildUnavailable, (guild) => {
++      void this.notifyGatewayEvent({
++        type: "guild_unavailable",
++        guildId: guild.id
++      }).catch(failGateway);
++    });
++    client.on(Events.GuildAvailable, (guild) => {
++      void this.notifyGatewayEvent({
++        type: "guild_available",
++        guildId: guild.id
++      }).catch(failGateway);
++    });
++    client.on(Events.GuildDelete, (guild) => {
++      const error = new Error("Discord bot was removed from its configured guild");
++      error.code = "GuildRemoved";
++      void this.notifyGatewayEvent({
++        type: "guild_removed",
++        guildId: guild.id
++      }).then(() => failGateway(error)).catch(failGateway);
++    });
++    client.on(Events.ChannelDelete, (channel) => {
++      void this.notifyGatewayEvent({
++        type: "channel_removed",
++        channelId: channel.id,
++        ...channel.guildId ? { guildId: channel.guildId } : {},
++        ..."name" in channel && typeof channel.name === "string" ? { label: channel.name } : {}
++      }).catch(failGateway);
++    });
++    let lifetimeComplete = false;
++    let lifetimeTimer;
++    let lifetimeAbort;
++    const lifetime = new Promise((resolve) => {
++      const complete = () => {
++        lifetimeComplete = true;
++        resolve();
++      };
++      if (!abortSignal) {
++        lifetimeTimer = setTimeout(complete, durationMs);
++        return;
++      }
++      lifetimeAbort = () => {
++        this.logger.info(
++          "Discord Gateway listener received abort signal (new listener started)"
++        );
++        complete();
++      };
++      if (abortSignal.aborted) lifetimeAbort();
++      else abortSignal.addEventListener("abort", lifetimeAbort, { once: true });
      });
      try {
-       await client.login(await this.resolveBotToken());
-       await new Promise((resolve) => {
+-      await client.login(await this.resolveBotToken());
+-      await new Promise((resolve) => {
 -        const timeout = setTimeout(resolve, durationMs);
-+        const timeout = abortSignal ? void 0 : setTimeout(resolve, durationMs);
-         if (abortSignal) {
-           if (abortSignal.aborted) {
+-        if (abortSignal) {
+-          if (abortSignal.aborted) {
 -            clearTimeout(timeout);
-+            if (timeout) clearTimeout(timeout);
-             resolve();
-             return;
-           }
-@@ -2442,19 +2542,17 @@ var DiscordAdapter = class _DiscordAdapter {
-               this.logger.info(
-                 "Discord Gateway listener received abort signal (new listener started)"
-               );
+-            resolve();
+-            return;
+-          }
+-          abortSignal.addEventListener(
+-            "abort",
+-            () => {
+-              this.logger.info(
+-                "Discord Gateway listener received abort signal (new listener started)"
+-              );
 -              clearTimeout(timeout);
-+              if (timeout) clearTimeout(timeout);
-               resolve();
-             },
-             { once: true }
-           );
-         }
-       });
+-              resolve();
+-            },
+-            { once: true }
+-          );
+-        }
+-      });
 -      this.logger.info(
 -        "Discord Gateway listener duration elapsed, disconnecting"
--      );
++      const login = this.notifyGatewayEvent({ type: "connecting" }).then(
++        async () => await client.login(await this.resolveBotToken())
+       );
++      await Promise.race([login, lifetime, gatewayFailure]);
++      if (!lifetimeComplete) await Promise.race([lifetime, gatewayFailure]);
 +      this.logger.info("Discord Gateway listener stopping");
      } catch (error) {
-       this.logger.error("Discord Gateway listener error", {
+-      this.logger.error("Discord Gateway listener error", {
 -        error: String(error)
-+        error: discordErrorSummary(error)
++      const summary = discordErrorSummary(error);
++      const fatal = discordGatewayFailureIsFatal(error);
++      this.logger.error("Discord Gateway listener error", { error: summary });
++      await this.notifyGatewayEvent({
++        type: "failure",
++        fatal,
++        error: summary
        });
++      throw error;
      } finally {
        isShuttingDown = true;
-@@ -2474,7 +2572,6 @@ var DiscordAdapter = class _DiscordAdapter {
++      if (lifetimeTimer) clearTimeout(lifetimeTimer);
++      if (abortSignal && lifetimeAbort) {
++        abortSignal.removeEventListener("abort", lifetimeAbort);
++      }
+       client.destroy();
+       this.logger.info("Discord Gateway listener stopped");
+     }
+@@ -2474,7 +2678,6 @@ var DiscordAdapter = class _DiscordAdapter {
        if (message.author.bot) {
          this.logger.debug("Ignoring message from bot", {
            authorId: message.author.id,
@@ -635,7 +821,7 @@ index a42b61d..f017c81 100644
            isMe: message.author.id === client.user?.id
          });
          return;
-@@ -2498,11 +2595,36 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2498,11 +2701,36 @@ var DiscordAdapter = class _DiscordAdapter {
          isUserMentioned,
          isRoleMentioned,
          isEveryoneMentioned,
@@ -674,7 +860,7 @@ index a42b61d..f017c81 100644
      client.on(Events.InteractionCreate, async (interaction) => {
        if (isShuttingDown()) {
          this.logger.debug("Ignoring interaction - Gateway is shutting down");
-@@ -2516,7 +2638,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2516,7 +2744,7 @@ var DiscordAdapter = class _DiscordAdapter {
          await this.handleGatewayInteraction(interaction);
        } catch (error) {
          this.logger.error("Error handling Gateway interaction", {
@@ -683,7 +869,7 @@ index a42b61d..f017c81 100644
            interactionId: interaction.id
          });
        }
-@@ -2526,26 +2648,23 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2526,26 +2754,23 @@ var DiscordAdapter = class _DiscordAdapter {
          this.logger.debug("Ignoring reaction - Gateway is shutting down");
          return;
        }
@@ -726,7 +912,7 @@ index a42b61d..f017c81 100644
      });
      client.on(Events.MessageReactionRemove, async (reaction, user) => {
        if (isShuttingDown()) {
-@@ -2554,26 +2673,23 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2554,26 +2779,23 @@ var DiscordAdapter = class _DiscordAdapter {
          );
          return;
        }
@@ -769,7 +955,7 @@ index a42b61d..f017c81 100644
      });
    }
    /**
-@@ -2584,7 +2700,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2584,14 +2806,15 @@ var DiscordAdapter = class _DiscordAdapter {
        const botToken = await this.resolveBotToken();
        this.logger.debug("Forwarding Gateway event to webhook", {
          type: event.type,
@@ -778,7 +964,16 @@ index a42b61d..f017c81 100644
        });
        const response = await fetch(webhookUrl, {
          method: "POST",
-@@ -2603,13 +2719,13 @@ var DiscordAdapter = class _DiscordAdapter {
+         headers: {
+           "Content-Type": "application/json",
+           "x-discord-gateway-token": botToken
+         },
+-        body: JSON.stringify(event)
++        body: JSON.stringify(event),
++        signal: AbortSignal.timeout(DISCORD_REQUEST_TIMEOUT_MS)
+       });
+       if (response.ok) {
+@@ -2603,13 +2825,13 @@ var DiscordAdapter = class _DiscordAdapter {
          this.logger.error("Failed to forward Gateway event", {
            type: event.type,
            status: response.status,
@@ -794,7 +989,7 @@ index a42b61d..f017c81 100644
        });
      }
    }
-@@ -2629,33 +2745,96 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2629,33 +2851,96 @@ var DiscordAdapter = class _DiscordAdapter {
        discordThreadId = channelId;
        parentChannelId = message.channel.parentId;
      }
@@ -841,7 +1036,7 @@ index a42b61d..f017c81 100644
 +          { event: "thread_admission", messageId: message.id }
 +        );
 +        if (!checked || !admitted) return;
-       }
++      }
 +      let newThread;
 +      const created = await this.processGatewayWithRetry(
 +        async () => {
@@ -855,7 +1050,7 @@ index a42b61d..f017c81 100644
 +      );
 +      if (!created || !newThread) {
 +        return;
-+      }
+       }
 +      discordThreadId = newThread.id;
 +      this.logger.debug("Created Discord thread for incoming mention", {
 +        channelId,
@@ -906,7 +1101,7 @@ index a42b61d..f017c81 100644
        id: message.id,
        threadId,
        text: content.text,
-@@ -2684,8 +2863,8 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2684,8 +2969,8 @@ var DiscordAdapter = class _DiscordAdapter {
        ),
        raw: {
          id: message.id,
@@ -917,7 +1112,7 @@ index a42b61d..f017c81 100644
          content: message.content,
          author: {
            id: message.author.id,
-@@ -2696,14 +2875,76 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2696,14 +2981,76 @@ var DiscordAdapter = class _DiscordAdapter {
        // Add isMention flag for the chat handlers
        isMention: isMentioned
      });
@@ -1001,7 +1196,7 @@ index a42b61d..f017c81 100644
    }
    /**
     * Handle a reaction received via the Gateway WebSocket.
-@@ -2716,7 +2957,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2716,7 +3063,7 @@ var DiscordAdapter = class _DiscordAdapter {
      const channelId = reaction.message.channelId;
      const isInThread = reaction.message.channel?.isThread?.();
      let parentChannelId = channelId;
@@ -1010,7 +1205,7 @@ index a42b61d..f017c81 100644
      if (isInThread && reaction.message.channel?.parentId) {
        discordThreadId = channelId;
        parentChannelId = reaction.message.channel.parentId;
-@@ -2751,7 +2992,7 @@ var DiscordAdapter = class _DiscordAdapter {
+@@ -2751,7 +3098,7 @@ var DiscordAdapter = class _DiscordAdapter {
          user_id: user.id
        }
      };

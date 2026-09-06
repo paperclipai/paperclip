@@ -26,3 +26,4 @@ patchedDependencies:
   "@chat-adapter/discord@4.39.0": patches/@chat-adapter__discord@4.39.0.patch
   "@chat-adapter/telegram@4.39.0": patches/@chat-adapter__telegram@4.39.0.patch
   "@chat-adapter/teams@4.39.0": patches/@chat-adapter__teams@4.39.0.patch
+  "@chat-adapter/github@4.39.0": patches/@chat-adapter__github@4.39.0.patch

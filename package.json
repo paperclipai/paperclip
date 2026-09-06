@@ -108,7 +108,8 @@
       "@chat-adapter/telegram@4.39.0": "patches/@chat-adapter__telegram@4.39.0.patch",
       "@chat-adapter/teams@4.39.0": "patches/@chat-adapter__teams@4.39.0.patch",
       "@chat-adapter/slack@4.39.0": "patches/@chat-adapter__slack@4.39.0.patch",
-      "@chat-adapter/discord@4.39.0": "patches/@chat-adapter__discord@4.39.0.patch"
+      "@chat-adapter/discord@4.39.0": "patches/@chat-adapter__discord@4.39.0.patch",
+      "@chat-adapter/github@4.39.0": "patches/@chat-adapter__github@4.39.0.patch"
     },
     "overrides": {
       "rollup": ">=4.59.0",
