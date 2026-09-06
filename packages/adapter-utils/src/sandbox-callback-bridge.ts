@@ -181,6 +181,16 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "DELETE", path: /^\/api\/routine-triggers\/[^/]+$/ },
 ] as const;
 
+// The HTTP/2 bridge carries the request body as raw bytes, so it can admit
+// the two binary attachment routes. The queue transport keeps
+// `DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST`, because its envelope
+// carries a string body only.
+export const HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCallbackBridgeRouteRule[] = [
+  ...DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/issues\/[^/]+\/attachments$/ },
+  { method: "GET", path: /^\/api\/attachments\/[^/]+\/content$/ },
+] as const;
+
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "accept",
   "content-type",
@@ -2474,11 +2484,6 @@ function runHttp2Gateway() {
         return;
       }
       const url = new URL(req.url || "/", "http://127.0.0.1");
-      const contentType = typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "";
-      if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType)) {
-        writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
-        return;
-      }
       const requestBodyBuffer = await readBodyBytes(req);
       let response;
       try {

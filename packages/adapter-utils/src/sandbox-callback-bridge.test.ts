@@ -15,6 +15,7 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   getSandboxCallbackBridgeServerSource,
+  HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
   sandboxCallbackBridgeDirectories,
   syncRemoteTextFileWithHashSkip,
   syncSandboxCallbackBridgeEntrypoint,
@@ -949,6 +950,24 @@ describe("sandbox callback bridge", () => {
     await expect(nonJsonResponse.json()).resolves.toEqual({
       error: "Bridge only accepts JSON request bodies.",
     });
+
+    // The queue transport keeps its 415 gate for the attachment upload path
+    // too: it carries a string envelope only, so it never admits a binary body.
+    const attachmentOctetStreamResponse = await fetch(
+      `${bridge.baseUrl}/api/companies/co-1/issues/issue-1/attachments`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${bridgeToken}`,
+          "content-type": "application/octet-stream",
+        },
+        body: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      },
+    );
+    expect(attachmentOctetStreamResponse.status).toBe(415);
+    await expect(attachmentOctetStreamResponse.json()).resolves.toEqual({
+      error: "Bridge only accepts JSON request bodies.",
+    });
   });
 
   it("returns a 502 when the host response times out", async () => {
@@ -1403,6 +1422,44 @@ describe("sandbox callback bridge", () => {
       { method: "PATCH", path: "/api/secrets/secret-1" },
     ];
     for (const request of denied) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBe(
+        `Route not allowed: ${request.method} ${request.path}`,
+      );
+    }
+
+    // The HTTP/2 route list adds the two binary attachment routes on top of
+    // the documented heartbeat surface.
+    const http2Allowed: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/issues/issue-1/attachments" },
+      { method: "GET", path: "/api/attachments/att-1/content" },
+    ];
+    for (const request of http2Allowed) {
+      expect(
+        authorizeSandboxCallbackBridgeRequestWithRoutes(request, HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST),
+      ).toBeNull();
+    }
+
+    const http2Denied: Array<{ method: string; path: string }> = [
+      // Wrong method for each attachment rule.
+      { method: "GET", path: "/api/companies/co-1/issues/issue-1/attachments" },
+      { method: "POST", path: "/api/attachments/att-1/content" },
+      // Extra path segment for each attachment rule.
+      { method: "POST", path: "/api/companies/co-1/issues/issue-1/attachments/att-1" },
+      { method: "GET", path: "/api/attachments/att-1/content/extra" },
+    ];
+    for (const request of http2Denied) {
+      expect(
+        authorizeSandboxCallbackBridgeRequestWithRoutes(request, HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST),
+      ).toBe(`Route not allowed: ${request.method} ${request.path}`);
+    }
+  });
+
+  it("denies both attachment routes on the default (queue) route list", () => {
+    const attachmentRequests: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/issues/issue-1/attachments" },
+      { method: "GET", path: "/api/attachments/att-1/content" },
+    ];
+    for (const request of attachmentRequests) {
       expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request)).toBe(
         `Route not allowed: ${request.method} ${request.path}`,
       );

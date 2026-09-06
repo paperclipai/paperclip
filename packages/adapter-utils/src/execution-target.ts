@@ -34,6 +34,7 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
   SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
   SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
   sandboxCallbackBridgeDirectories,
@@ -4325,6 +4326,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           const http2Server = createHttp2BridgeServer({
             bridgeToken,
             forwardRequest: http2ForwardRequest,
+            routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
             onGoaway: () => recordHttp2Loss("session_goaway"),
             onSessionError: () => recordHttp2Loss("session_error"),
           });

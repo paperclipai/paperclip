@@ -3204,6 +3204,28 @@ describe("sandbox adapter execution targets", () => {
     });
   }
 
+  // Fixed binary payload for an attachment-content download. Byte 0x89 opens
+  // the PNG signature and is not valid UTF-8 on its own, so a round trip
+  // through a text decode step would corrupt it.
+  const ATTACHMENT_DOWNLOAD_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0x7f]);
+
+  // Build a minimal multipart/form-data request body with one binary file
+  // part, plus the matching `content-type` header value.
+  function buildMultipartAttachmentUpload(fileBytes: Buffer): { body: Buffer; contentType: string } {
+    const boundary = "paperclip-test-boundary";
+    const head = Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="upload.bin"\r\n` +
+        `Content-Type: application/octet-stream\r\n\r\n`,
+      "utf8",
+    );
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+    return {
+      body: Buffer.concat([head, fileBytes, tail]),
+      contentType: `multipart/form-data; boundary=${boundary}`,
+    };
+  }
+
   // Start a host API server that records each forwarded request, so a test can
   // assert the real token and the run id reach the host, or that a rejected
   // request never forwards.
@@ -3243,6 +3265,14 @@ describe("sandbox adapter execution targets", () => {
           headers,
           body: Buffer.concat(chunks),
         });
+        // An attachment-content download answers with a binary body, so a
+        // test can assert the bytes reach the caller unchanged. Every other
+        // route keeps the fixed JSON acknowledgement.
+        if (req.method === "GET" && /^\/api\/attachments\/[^/]+\/content$/.test(req.url ?? "")) {
+          res.writeHead(200, { "content-type": "application/octet-stream" });
+          res.end(ATTACHMENT_DOWNLOAD_BYTES);
+          return;
+        }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
       });
@@ -3305,6 +3335,23 @@ describe("sandbox adapter execution targets", () => {
       expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
       const fallback = counters.find((c) => c.metric === DUPLEX_COUNTER_FALLBACK_TOTAL);
       expect(fallback?.dimensions.fallback_reason).toBe("channel_open_failed");
+
+      // The queue fallback keeps the 415 gate for the attachment upload path:
+      // it never admits a binary body, and it never forwards the request to
+      // the host.
+      const uploadResponse = await fetch(
+        `${bridge!.env.PAPERCLIP_API_URL}/api/companies/co-1/issues/issue-1/attachments`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+            "content-type": "application/octet-stream",
+          },
+          body: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+        },
+      );
+      expect(uploadResponse.status).toBe(415);
+      expect(api.requests).toHaveLength(0);
     } finally {
       await bridge?.stop();
       await api.close();
@@ -3791,6 +3838,39 @@ describe("sandbox adapter execution targets", () => {
         runId: "run-http2-403",
       });
       expect(api.requests[0].headers["x-not-allowed"]).toBeUndefined();
+
+      // The two attachment routes are admitted on the http2 path, and a
+      // binary body reaches the host and returns unchanged in both
+      // directions: no re-encoding step touches the multipart upload or the
+      // binary download.
+      const uploadBytes = Buffer.from([0x00, 0x01, 0xff, 0x7f, 0x80, 0x0d, 0x0a]);
+      const upload = buildMultipartAttachmentUpload(uploadBytes);
+      const uploadResponse = await http2TestRequest(sessionRef.current!, {
+        method: "POST",
+        path: "/api/companies/co-1/issues/issue-1/attachments",
+        headers: {
+          authorization: `Bearer ${bridgeToken}`,
+          "content-type": upload.contentType,
+        },
+        body: upload.body,
+      });
+      expect(uploadResponse.status).toBe(200);
+      expect(api.requests).toHaveLength(2);
+      expect(api.requests[1]).toMatchObject({
+        method: "POST",
+        url: "/api/companies/co-1/issues/issue-1/attachments",
+      });
+      expect(api.requests[1].headers["content-type"]).toBe(upload.contentType);
+      expect(api.requests[1].body.equals(upload.body)).toBe(true);
+
+      const downloadResponse = await http2TestRequest(sessionRef.current!, {
+        method: "GET",
+        path: "/api/attachments/att-1/content",
+        headers: { authorization: `Bearer ${bridgeToken}` },
+      });
+      expect(downloadResponse.status).toBe(200);
+      expect(api.requests).toHaveLength(3);
+      expect(downloadResponse.body.equals(ATTACHMENT_DOWNLOAD_BYTES)).toBe(true);
     } finally {
       sessionRef.current?.close();
       await bridge?.stop();
