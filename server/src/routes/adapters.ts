@@ -50,6 +50,7 @@ import { logger } from "../middleware/logger.js";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
+import { runNpm } from "../lib/npm-exec.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
@@ -338,7 +339,7 @@ export function adapterRoutes(options: {
 
         logger.info({ spec, pluginsDir }, "Installing adapter package via npm");
 
-        await execFileAsync("npm", ["install", "--no-save", spec], {
+        await runNpm(["install", "--no-save", spec], {
           cwd: pluginsDir,
           timeout: 120_000,
         });
@@ -557,7 +558,7 @@ export function adapterRoutes(options: {
     if (externalRecord.packageName && !externalRecord.localPath) {
       try {
         const pluginsDir = getAdapterPluginsDir();
-        await execFileAsync("npm", ["uninstall", externalRecord.packageName], {
+        await runNpm(["uninstall", externalRecord.packageName], {
           cwd: pluginsDir,
           timeout: 60_000,
         });
@@ -673,7 +674,7 @@ export function adapterRoutes(options: {
 
       logger.info({ type, packageName: record.packageName }, "Reinstalling adapter package via npm");
 
-      await execFileAsync("npm", ["install", "--no-save", record.packageName], {
+      await runNpm(["install", "--no-save", record.packageName], {
         cwd: pluginsDir,
         timeout: 120_000,
       });
