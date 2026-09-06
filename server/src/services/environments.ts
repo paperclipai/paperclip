@@ -428,6 +428,28 @@ export function environmentService(db: Db) {
           });
         };
 
+        const refreshAttachedBindings = async (
+          environmentId: string,
+          stockVersion: string,
+          installedStockHash: string,
+          defaultsJson: Record<string, unknown>,
+        ) => {
+          await tx
+            .update(builtInManagedResources)
+            .set({
+              stockVersion,
+              stockHash: installedStockHash,
+              defaultsJson,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(builtInManagedResources.bundleKey, MANAGED_ENVIRONMENT_BUNDLE_KEY),
+              eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
+              eq(builtInManagedResources.resourceKey, MANAGED_ENVIRONMENT_RESOURCE_KEY),
+              eq(builtInManagedResources.resourceId, environmentId),
+            ));
+        };
+
         if (!row) {
           const nameOwner = await tx
             .select()
@@ -629,12 +651,15 @@ export function environmentService(db: Db) {
         }
 
         if (stockStatus === "stock_current") {
+          const hasStaleBinding = matchingBindings.some(
+            (binding) => binding.stockHash !== latestStockHash,
+          );
           await writeBindings(
             row.id,
             input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
             latestStockHash,
             desiredStock,
-            false,
+            hasStaleBinding,
           );
           return {
             environment: toEnvironment(row),
@@ -661,6 +686,12 @@ export function environmentService(db: Db) {
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) throw new Error("Managed sandbox environment changed during reconciliation");
+        await refreshAttachedBindings(
+          updated.id,
+          input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
+          latestStockHash,
+          desiredStock,
+        );
         await writeBindings(
           updated.id,
           input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,

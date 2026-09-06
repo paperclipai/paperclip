@@ -1418,6 +1418,36 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect((await svc.getById(created!.id))?.updatedAt).toEqual(applied?.updatedAt);
   });
 
+  it("refreshes every company binding after a scoped authoritative update", async () => {
+    const companyIds = [await seedCompany("First", "FIRST"), await seedCompany("Second", "SECOND")];
+    const bootEnv = { PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_BACKEND: "job" };
+    await bootstrapExecutionPolicyFromEnv(db, bootEnv);
+    const created = await svc.findKubernetesEnvironment();
+    expect(created).not.toBeNull();
+    const beforeBindings = await db.select().from(builtInManagedResources);
+    const beforeHashes = new Map(beforeBindings.map((binding) => [binding.companyId, binding.stockHash]));
+
+    await svc.update(created!.id, { config: { provider: "kubernetes", runtimeClassName: "operator" } });
+    const desiredConfig = {
+      provider: "kubernetes",
+      inCluster: false,
+      backend: "job" as const,
+      runtimeClassName: "manifest",
+    };
+    await svc.ensureKubernetesEnvironment(companyIds[0]!, desiredConfig, {
+      applyOverOperatorEdits: true,
+    });
+
+    const bindings = await db.select().from(builtInManagedResources);
+    expect(bindings).toHaveLength(2);
+    for (const binding of bindings) {
+      expect(binding.resourceId).toBe(created!.id);
+      expect(binding.stockHash).not.toBe(beforeHashes.get(binding.companyId));
+      expect(binding.defaultsJson).toMatchObject({ config: desiredConfig });
+    }
+    expect(new Set(bindings.map((binding) => binding.stockHash)).size).toBe(1);
+  });
+
   it.each([undefined, "any"])("retains persisted Kubernetes policy when bootstrap mode becomes %j", async (mode) => {
     await seedCompany();
     await bootstrapExecutionPolicyFromEnv(db, { PAPERCLIP_EXECUTION_MODE: "kubernetes" });
