@@ -194,6 +194,49 @@ describe("matchProjectIdByRepoReference", () => {
       }),
     ).toBe("project-shove");
   });
+
+  it("resolves a cwd shared by two projects to null, like a duplicate remote", () => {
+    expect(
+      matchProjectIdByRepoReference({
+        text: "The flake is under /repos/shared/src/index.ts.",
+        workspaces: [
+          { projectId: "project-a", repoUrl: null, cwd: "/repos/shared" },
+          { projectId: "project-b", repoUrl: null, cwd: "/repos/shared" },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it("still resolves duplicate cwd rows that belong to one project", () => {
+    expect(
+      matchProjectIdByRepoReference({
+        text: "The flake is under /repos/shared/src/index.ts.",
+        workspaces: [
+          { projectId: "project-a", repoUrl: null, cwd: "/repos/shared" },
+          { projectId: "project-a", repoUrl: null, cwd: "/repos/shared" },
+        ],
+      }),
+    ).toBe("project-a");
+  });
+
+  it("keeps most-specific-wins, but a tie at that depth is ambiguous", () => {
+    const nested = [
+      { projectId: "project-host", repoUrl: null, cwd: "/repos/host" },
+      { projectId: "project-lib", repoUrl: null, cwd: "/repos/host/vendored/lib" },
+    ];
+    expect(
+      matchProjectIdByRepoReference({
+        text: "The change is in /repos/host/vendored/lib/util.ts only.",
+        workspaces: nested,
+      }),
+    ).toBe("project-lib");
+    expect(
+      matchProjectIdByRepoReference({
+        text: "The change is in /repos/host/vendored/lib/util.ts only.",
+        workspaces: [...nested, { projectId: "project-lib2", repoUrl: null, cwd: "/repos/host/vendored/lib" }],
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("resolveExplicitProjectSelection", () => {

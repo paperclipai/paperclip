@@ -216,14 +216,24 @@ export function matchProjectIdByRepoReference(input: {
   for (const rawPath of collectMatches(ABSOLUTE_PATH_PATTERN, textWithoutRemotes, 1)) {
     const candidate = normalizeAbsolutePath(rawPath);
     if (!candidate) continue;
-    // Most specific checkout wins, so a nested workspace beats its parent.
-    let best: { cwd: string; projectId: string } | null = null;
+    // Most specific checkout wins, so a nested workspace beats its parent. Two
+    // matches of equal length are the *same* cwd (both are prefixes of one
+    // candidate), which the schema permits across projects — accumulate every
+    // owner at that depth so a duplicate resolves to null like a duplicate
+    // remote does, never to whichever row the query returned first.
+    let bestCwdLength = -1;
+    let bestProjectIds = new Set<string>();
     for (const workspace of workspaceCwds) {
       const isMatch = candidate === workspace.cwd || candidate.startsWith(`${workspace.cwd}/`);
       if (!isMatch) continue;
-      if (!best || workspace.cwd.length > best.cwd.length) best = workspace;
+      if (workspace.cwd.length > bestCwdLength) {
+        bestCwdLength = workspace.cwd.length;
+        bestProjectIds = new Set([workspace.projectId]);
+      } else if (workspace.cwd.length === bestCwdLength) {
+        bestProjectIds.add(workspace.projectId);
+      }
     }
-    if (best) matchedProjectIds.add(best.projectId);
+    for (const projectId of bestProjectIds) matchedProjectIds.add(projectId);
   }
 
   return matchedProjectIds.size === 1 ? [...matchedProjectIds][0]! : null;
