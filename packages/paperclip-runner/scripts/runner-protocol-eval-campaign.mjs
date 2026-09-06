@@ -79,13 +79,7 @@ function parseRosterSelection(value) {
 
 async function maintainedRosterSelection(programRoot) {
   const campaignPath = resolve(programRoot, "campaigns/live-direct-full.json");
-  let campaign;
-  try {
-    campaign = await loadObject(campaignPath);
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
+  const campaign = await loadObject(campaignPath);
   if (
     campaign.schema !== "paperclip-runner/live-campaign/v1" ||
     !Array.isArray(campaign.lanes)

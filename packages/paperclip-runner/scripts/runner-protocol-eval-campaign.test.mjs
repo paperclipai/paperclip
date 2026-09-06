@@ -187,6 +187,29 @@ test("all selects the maintained enabled campaign and explicit diagnostics can s
   );
 });
 
+test("all fails closed when the maintained campaign is missing", async () => {
+  const { root, program } = await fixture();
+  await rm(join(program, "campaigns/live-direct-full.json"));
+
+  await assert.rejects(
+    buildProtocolEvalCatalog({
+      evalsRoot: root,
+      campaignId: "gha-42-1",
+    }),
+    /ENOENT/,
+  );
+
+  const diagnostic = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "gha-42-2",
+    rosterSelection: "protocol-live-opencode-model",
+  });
+  assert.deepEqual(
+    diagnostic.rosters.map((roster) => roster.rosterId),
+    ["protocol-live-opencode-model"],
+  );
+});
+
 test("aggregates retained attempts and synthesizes missing cells as infrastructure", async () => {
   const { root, config, evalCase } = await fixture();
   const catalog = await buildProtocolEvalCatalog({
