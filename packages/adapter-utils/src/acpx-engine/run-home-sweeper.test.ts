@@ -249,7 +249,7 @@ describe("run-home sweeper", () => {
       await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
     });
 
-    it("accepts a valid zero-session completion manifest", async () => {
+    it("rejects a zero-session completion manifest when raw JSONL exists", async () => {
       const runId = "run-zero-session-manifest";
       const { runHomeDir, retentionDir } = await buildRunHome({
         companyDir,
@@ -264,6 +264,67 @@ describe("run-home sweeper", () => {
         runId,
         sessionFileCount: 0,
         sessionFiles: [],
+      }), "utf8");
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]).toMatchObject({
+        eligible: false,
+        ineligibleReason: expect.stringMatching(/does not cover the exact raw JSONL set/i),
+      });
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
+
+    it("accepts a valid zero-session completion manifest when no raw JSONL exists", async () => {
+      const runId = "run-valid-zero-session-manifest";
+      const { runHomeDir, retentionDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId,
+        ageHours: 30,
+      });
+      await fs.rm(path.join(runHomeDir, "sessions"), { recursive: true, force: true });
+      const oldMtime = new Date(Date.now() - 30 * 60 * 60 * 1000);
+      await fs.utimes(runHomeDir, oldMtime, oldMtime);
+      await fs.mkdir(path.join(retentionDir, "sessions"), { recursive: true });
+      await fs.writeFile(path.join(retentionDir, "retention-complete.json"), JSON.stringify({
+        schemaVersion: 1,
+        status: "complete",
+        runId,
+        sessionFileCount: 0,
+        sessionFiles: [],
+      }), "utf8");
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]).toMatchObject({
+        eligible: true,
+        deleted: true,
+        retentionProof: "completion_manifest",
+      });
+      await expect(fs.stat(runHomeDir)).rejects.toThrow();
+    });
+
+    it("accepts a completion manifest that exactly covers the raw JSONL set", async () => {
+      const runId = "run-exact-session-manifest";
+      const { runHomeDir, retentionDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId,
+        ageHours: 30,
+      });
+      await fs.mkdir(path.join(retentionDir, "sessions"), { recursive: true });
+      await fs.writeFile(
+        path.join(retentionDir, "sessions", "sessions.jsonl"),
+        '{"type":"session"}\n',
+        "utf8",
+      );
+      await fs.writeFile(path.join(retentionDir, "retention-complete.json"), JSON.stringify({
+        schemaVersion: 1,
+        status: "complete",
+        runId,
+        sessionFileCount: 1,
+        sessionFiles: ["sessions.jsonl"],
       }), "utf8");
 
       const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
@@ -296,7 +357,7 @@ describe("run-home sweeper", () => {
       const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
 
       expect(result.entries[0]?.eligible).toBe(false);
-      expect(result.entries[0]?.ineligibleReason).toMatch(/could not be validated/i);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/does not cover the exact raw JSONL set/i);
       await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
     });
 
@@ -310,7 +371,7 @@ describe("run-home sweeper", () => {
       });
       const externalSessions = path.join(companyDir, "external-manifest-sessions");
       await fs.mkdir(externalSessions, { recursive: true });
-      await fs.writeFile(path.join(externalSessions, "session.jsonl"), '{"type":"session"}\n', "utf8");
+      await fs.writeFile(path.join(externalSessions, "sessions.jsonl"), '{"type":"session"}\n', "utf8");
       await fs.mkdir(retentionDir, { recursive: true });
       await fs.symlink(externalSessions, path.join(retentionDir, "sessions"), "dir");
       await fs.writeFile(path.join(retentionDir, "retention-complete.json"), JSON.stringify({
@@ -318,7 +379,7 @@ describe("run-home sweeper", () => {
         status: "complete",
         runId,
         sessionFileCount: 1,
-        sessionFiles: ["session.jsonl"],
+        sessionFiles: ["sessions.jsonl"],
       }), "utf8");
 
       const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });

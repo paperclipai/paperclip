@@ -183,15 +183,48 @@ async function validateRetentionProof(
     ) {
       return { ok: false, error: "retention completion manifest is invalid" };
     }
+    const manifestPaths = new Set<string>();
+    for (const relativePath of manifest.sessionFiles) {
+      if (
+        typeof relativePath !== "string" ||
+        relativePath.length === 0 ||
+        path.isAbsolute(relativePath) ||
+        manifestPaths.has(relativePath)
+      ) {
+        return { ok: false, error: "retention completion manifest contains an unsafe or duplicate session path" };
+      }
+      manifestPaths.add(relativePath);
+    }
+
+    const rawSessionsDir = path.join(runHomeDir, "sessions");
+    let rawArtifacts = new Map<string, number>();
+    try {
+      const rawSessionsStat = await fs.lstat(rawSessionsDir);
+      if (!rawSessionsStat.isDirectory() || rawSessionsStat.isSymbolicLink()) {
+        return { ok: false, error: "raw sessions path is not a real directory" };
+      }
+      rawArtifacts = await listJsonlArtifacts(rawSessionsDir);
+    } catch (err) {
+      if (!isErrnoException(err, "ENOENT")) {
+        return {
+          ok: false,
+          error: `raw session artifacts could not be inspected: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
+    if (
+      rawArtifacts.size !== manifestPaths.size ||
+      [...rawArtifacts.keys()].some((relativePath) => !manifestPaths.has(relativePath))
+    ) {
+      return { ok: false, error: "retention completion manifest does not cover the exact raw JSONL set" };
+    }
+
     const sessionsDir = path.join(retainedDir, "sessions");
     const sessionsDirStat = await fs.lstat(sessionsDir);
     if (!sessionsDirStat.isDirectory() || sessionsDirStat.isSymbolicLink()) {
       return { ok: false, error: "retained sessions path is not a real directory" };
     }
-    for (const relativePath of manifest.sessionFiles) {
-      if (typeof relativePath !== "string" || relativePath.length === 0 || path.isAbsolute(relativePath)) {
-        return { ok: false, error: "retention completion manifest contains an unsafe session path" };
-      }
+    for (const relativePath of manifestPaths) {
       const artifact = path.resolve(sessionsDir, relativePath);
       if (!isPathBelow(sessionsDir, artifact)) {
         return { ok: false, error: "retention completion manifest contains an unsafe session path" };
