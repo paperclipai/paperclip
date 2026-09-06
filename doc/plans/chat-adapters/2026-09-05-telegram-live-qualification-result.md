@@ -1,16 +1,50 @@
 # Telegram live qualification result — 2026-09-05
 
-> **Status: current-branch core-smoke evidence only, not full release qualification.** The latest live runs proved a clean no-false-duplicate private-chat round trip, deterministic ordering for a same-second `/new` race, and a valid provider receipt reaction for the slash command. The fixes are committed in the current branch, but the runs did not execute every Telegram case in the browser E2E runbook.
+> **Status: broad private-chat live evidence, not full release qualification.** The latest live runs cover task controls, FIFO and burst handling, reactions, edits, a native document, task-generation races, and the repaired interleaved status/final lane. Telegram groups/topics, interactive actions, broader media, revocation/recovery, and other runbook cases remain open.
 
 ## Scope
 
-- Paperclip source reported by the restarted live process after rebase: `1d952088ce20b18e236a256095a0a6513f6363be`
-- Telegram provider-ordering, slash-command receipt, and false internal-drain duplicate fixes are committed in this source.
+- Final locally verified and live-rerun source revision: `6f13ec09e95717c4b3b248d1d8cb9ca4e55754ab`
+- Telegram provider-ordering, slash-command receipt, false internal-drain duplicate, stale-action denial, endpoint-generation fencing, command admission, provider-failure classification, and coherent progress/status/final lane fixes are committed at this revision.
 - Provider: Telegram, dedicated test bot in a private chat
-- Current active Paperclip task: `b2867d3e…` (redacted suffix in this record)
-- Live checkpoint: 2026-09-05 at approximately 21:53 local time
+- Live checkpoint: 2026-09-05 through 2026-09-06
 
 No bot token, webhook secret, cookie, password, or one-time identity-link URL is recorded here.
+
+## Latest live breadth run
+
+### Commands and linear task generations
+
+The live private chat exercised `new`, `status`, and `close` as real Telegram commands. The recorded command deliveries used provider-native `chat_id:message_id` identities, processed with `attempts=1`, and had no redacted error. The task request after `new` returned the exact `telegram-command-prod-a74` response once. A later `status` reported the active task, and `close` closed the linear binding before the next generation.
+
+Telegram commands continue to receive the normal provider receipt reaction because, unlike Slack slash callbacks, Telegram supplies a real message ID. Local regression coverage now asserts that this capability difference survives deferred delivery reconstruction.
+
+### FIFO, bursts, reactions, and edits
+
+The live ledger and provider UI showed:
+
+1. The exact requests `tg-prod-fifo-one` and `tg-prod-fifo-two` were admitted once each and returned their matching final publications in provider order. Each final publication completed in one attempt with no error.
+2. A tighter same-second burst, `tg-prod-rapid-three` followed by `tg-prod-rapid-four`, produced two processed inbound deliveries and two one-attempt final publications in three-then-four order. The two wakes were allowed to coalesce operationally without merging, dropping, or reversing the externally visible results.
+3. Removing and then adding a reaction on provider message `417200359:143` produced one `reaction_removed` and one `reaction_added` delivery. Both processed once with no error.
+4. Editing a source message produced separately auditable `message_updated` deliveries for the provider message, without treating the edit as a duplicate of the original inbound event or starting an unintended replacement task.
+
+### Native file proof
+
+A Telegram document plus “Read the attached file and reply with exactly its Token value” produced one processed direct-message delivery, one stored Paperclip issue attachment, and the exact `chat-upload-a74` final response. Its working and final publications each completed in one attempt, and the final edited the working provider message in place. This proves the tested document path only; photos, audio, video, oversize files, malformed files, and download-failure recovery remain separate cases.
+
+### Queued `new` generation race
+
+The run deliberately put a slow task in one Telegram DM generation, sent another `new`, and then started a new task before the older task finished. The durable state shows distinct consecutive bindings (`CHA-54` and `CHA-55`) on the same Telegram chat. Both inbound requests processed once and both final publications succeeded once. The newer generation returned `telegram-new-generation-a74` before the older generation later returned `telegram-old-generation-a74`; neither final overwrote or attached to the other generation.
+
+This is useful proof of generation isolation, not strict global FIFO across generations. Paperclip intentionally gives each task generation its own provider publication lane, so an older still-running task may finish after a newer one. The current run did not test cancellation of the old run, because `new` defines a new active binding rather than cancellation semantics.
+
+### Delayed-status chronology defect found live
+
+The sequence `new`, a delayed task request, then `status` exposed a provider-visible chronology problem. Status was sampled as `in_progress` and posted after the working placeholder, but the older final response later edited that earlier placeholder in place. Telegram therefore rendered the final answer above a now-stale-looking status message. Every transport operation succeeded, but the resulting conversation was not production-quality.
+
+The final fix makes a task-bound status a durable `task_control` publication in the same conversation FIFO, re-samples authoritative task state at the outbox head, and treats the active run's provider message as one coherent lane. Status edits the open run's queued/working message; the final edits that same provider message again. Once terminal output exists, a later status has no open placeholder and posts separately instead of erasing the final.
+
+The live final-revision rerun used `new`, then `Run sleep 12 then reply exactly tg-status-lane-6f13`, then `status` while `CHA-62` was active. Telegram showed the current `in_progress` state while the run was active and later showed only the final `tg-status-lane-6f13` in that bot-message position. There was no stale `Maya is working…` or `in_progress` sibling. The working, status, and final publication rows all share provider message ID `417200359:199`; each is `published`, `attempts=1`, with no error.
 
 ## Latest false-duplicate regression retest
 
@@ -33,8 +67,9 @@ This proof supersedes the previously observed same-second race. It does not by i
 
 ## Current local regression evidence
 
-- Full chat-channel PostgreSQL integration suite on fresh database `chat_adapters_test_153`: 111/111 passed.
-- This local suite does not replace the remaining live-provider cases.
+- On revision `6f13ec09e`, the full chat-channel PostgreSQL integration suite passed 138/138 on fresh migrated database `chat_adapters_test_173`.
+- Focused chat server tests passed 115/115, the exact Slack/Telegram interleaved-lane regressions passed 2/2, focused UI tests passed 38/38, OpenAPI passed 6/6, server typecheck passed, and the deterministic browser suite passed 4/4.
+- Shared/database/UI typechecks, token gates, and the full workspace build had already passed on the immediate parent before this server-only race fix. Local results do not substitute for the remaining unexecuted live cases.
 
 ## Earlier core-smoke evidence
 
@@ -42,4 +77,13 @@ On the older `e5f3917b7` checkpoint, rapid updates `88` and `89` each produced o
 
 ## Qualification gap
 
-This was not a full Telegram runbook PASS. Group and forum-topic reach, disabled-resource enforcement, linked and unlinked identity governance, the rest of the command vocabulary and inline interactions, file/media handling, user reaction add/remove lifecycle, edits, flood-control recovery, membership loss/recovery, credential rotation, and the complete cleanup/evidence checklist remain unexecuted on this source revision. Telegram remains unqualified for stable release until those live scenarios pass on the release candidate.
+This was not a full Telegram runbook PASS. Private-chat commands, one native document, reaction add/remove, and edits now have live evidence, but the following still do not:
+
+- group reach, privacy-mode behavior, and forum-topic task boundaries;
+- disabled-resource enforcement and linked/unlinked identity governance;
+- native interactive questions/actions, including forged, expired, and repeated taps against the real provider;
+- photos, audio, video, oversize or malformed media, and download-failure handling;
+- flood-control retry, bot blocking or removal from one chat, global token revocation, recovery, and credential rotation; and
+- the complete cleanup and evidence checklist.
+
+Telegram remains unqualified for stable release until those live scenarios pass on the final release-candidate source.

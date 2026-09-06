@@ -1,14 +1,28 @@
 # GitHub live qualification result — 2026-09-05
 
-> **Status: current setup-path regression evidence plus historical core-smoke evidence, not current live release qualification.** The current branch fixes signed setup-ping handling and proves unsigned requests fail closed, but creation/configuration of the real GitHub App is still blocked at GitHub's sudo verification prompt. The older provider round trip below is not a live rerun of the current branch.
+> **Status: current setup-path hardening plus historical core-smoke evidence, not current live release qualification.** No current-branch GitHub webhook/task round trip has run. The setup flow is still blocked at GitHub's six-digit sudo verification prompt, and the older provider round trip below must not be treated as a rerun of the current source.
 
 ## Current-run evidence and blocker
 
-- Current source checkpoint after rebase and final verification: `1d952088ce20b18e236a256095a0a6513f6363be`
-- Setup-ping fix: `4b868d3cb` (`fix: accept signed GitHub setup pings`)
-- GitHub control-plane and runtime hardening is committed in the current branch.
+- Final locally verified source revision: `6f13ec09e95717c4b3b248d1d8cb9ca4e55754ab`
+- Signed setup-ping, one-time secret generation, App-identity, lifecycle, admission, and runtime hardening are committed in the current branch.
 
-The current regression path accepts a correctly signed GitHub setup ping while an unsigned setup ping receives HTTP 401. This closes the setup-probe signature bug without weakening webhook authentication.
+The current endpoint is back in the honest pre-connect state: `draft`, at the provider-setup step, with no App identity, App ID, private key, installation, resource, conversation, delivery, publication, or signed setup ping recorded. This is expected because the GitHub App has not been created yet.
+
+### Pre-connect secret trap found and healed
+
+The live setup attempt exposed a control-plane defect before GitHub credentials existed. Regenerating Paperclip's webhook secret was treated as rotation of a configured App, which moved the endpoint to `attention` and asked the operator to reconnect credentials that had never been supplied. That was a false degraded state, not a provider failure.
+
+The committed fix distinguishes first-time setup from live credential rotation:
+
+1. Paperclip generates a random 32-byte webhook secret server-side, vaults it through endpoint-owned secret references, returns the plaintext once from the board-authenticated setup-secret route, and marks the response `Cache-Control: no-store`.
+2. Normal endpoint reads expose only `webhookSecretConfigured`; they never return the secret. The setup UI presents a read-only one-time copy value, then shows only configured state after refresh.
+3. Generating or replacing a secret before any App identity/App credentials exist keeps—or heals—the endpoint to `draft` / provider setup with unchecked connection health. It clears any verification for the superseded secret but does not pretend a live App was degraded.
+4. Rotating the secret after an App is configured remains fail-closed: it disables the runtime and requires the operator to update GitHub and reconnect.
+5. Every generation is audited as `chat_endpoint.setup_secret_generated` with safe metadata indicating whether the operation was a live rotation; no plaintext secret enters the activity record.
+6. The UI opens GitHub's new-App form for first setup, requires App ID and private key rather than pretending a secret-only endpoint is reusable, and explains the consequence before a real rotation.
+
+The signed setup-ping path also accepts a correctly signed GitHub `ping` before App API credentials exist, records `chat_endpoint.webhook_verified` with only the safe provider delivery ID, and returns 401 for a missing or invalid signature. These are code and local-test results; the current GitHub App has not been created to send that ping.
 
 ## Current hardening
 
@@ -25,9 +39,9 @@ The current working tree adds the following GitHub safety and concurrency behavi
 
 None of these local checks substitutes for exercising the same paths against GitHub's real App registration, installation, webhook redelivery, and suspension UI.
 
-The full chat-channel PostgreSQL integration suite passed 111/111 on fresh database `chat_adapters_test_153`. This strengthens the current working-tree regression evidence but does not change the live-provider blocker or qualification status.
+On revision `6f13ec09e`, the full chat-channel PostgreSQL integration suite passed 138/138 on fresh migrated database `chat_adapters_test_173`; focused chat server tests passed 115/115, focused UI tests passed 38/38, OpenAPI passed 6/6, server typecheck passed, and the deterministic browser suite passed 4/4. Shared/database/UI typechecks, token gates, and the full workspace build had already passed on the immediate parent before the final server-only race fix. These results strengthen the setup-path regression evidence but do not change the live-provider blocker or qualification status.
 
-Actual GitHub App registration and current-build provider delivery remain unexecuted. The signed-in GitHub session is stopped at GitHub's sudo-mode six-digit verification prompt, so no current App credentials, installation, issue/PR/review event, reaction, edit, or publication has been qualified live. That provider verification must be completed before the current live run can continue.
+Actual GitHub App registration and current-build provider delivery remain unexecuted. The signed-in GitHub session is stopped at GitHub's six-digit sudo-mode verification prompt. Until that account challenge is completed, no current App credentials, installation, signed ping, issue/PR/review event, reaction, edit, file fallback, or outbound publication can be qualified live.
 
 ## Historical-run scope
 

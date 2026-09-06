@@ -1,14 +1,53 @@
 # Slack live qualification result — 2026-09-05
 
-> **Status: current-branch partial live evidence plus historical core-smoke evidence, not full release qualification.** The current runs proved successful Slack root interactions, rapid two-message FIFO serialization, reaction delivery, pause/resume behavior, and suppression of a redundant same-run follow-up wake. The older run below remains useful regression evidence. These runs did not execute every Slack case in the browser E2E runbook and are not a full-provider PASS.
+> **Status: broad current-branch live evidence plus historical core-smoke evidence, not full release qualification.** The current runs cover channel roots, DMs, FIFO follow-ups, reactions, edits, pause/resume, the registered Slack command, a command-created thread, native file ingestion, and an interleaved command/status/final race. The receipt, native-thread binding, and stale-progress defects found during the run have all been fixed and retested live. Slack is still not a full-provider PASS because the complete governance, failure-injection, reinstall, and cleanup matrix has not run.
 
-## Current-run evidence
+## Current source and evidence boundary
 
-- Paperclip source reported by the restarted live process after rebase: `1d952088ce20b18e236a256095a0a6513f6363be`
-- The false internal-drain duplicate fix and subsequent chat hardening are committed in this source.
-- Relevant guest-failure UX fix included in that source: `037e57e0d`
-- Live checkpoint: 2026-09-05 from 21:05:49 through 23:58:45 local-provider time
+- Final locally verified and live-rerun source revision: `6f13ec09e95717c4b3b248d1d8cb9ca4e55754ab`
+- The synthetic-command receipt, native thread binding, ordered task-control, and coherent progress/status/final lane fixes are committed at this revision.
+- Live checkpoint: 2026-09-05 through 2026-09-06
+- Current live endpoint: `2782e758-8e1e-47e3-a5aa-6a8359b1c23c`
 - Paperclip issue: `d7f718da-a8da-468e-99a7-79dc337d5cbc`
+
+No bot token, signing secret, webhook URL, cookie, password, or one-time identity-link URL is recorded here.
+
+The sections below deliberately distinguish provider-visible proof from durable database evidence and local-only regression coverage. A successful local test is not reported as a live Slack result.
+
+## Latest live breadth run
+
+The latest live run added the following provider and durable-ledger evidence:
+
+1. A channel root requesting the exact response `slack-prod-root-0906` produced one admitted mention delivery, one Paperclip task, and the exact provider-visible final response.
+2. A normal DM requesting `slack-dm-prod-0906` produced one admitted direct-message delivery and one final response. Editing that source message produced one separate `message_updated` audit delivery and did not wake another agent run.
+3. The registered immutable command was exercised in the real D-prefixed Slack DM. A `status` control and a following `new` control each produced one processed delivery with `attempts=1` and no error after the first receipt fix. The durable normalized record explicitly says those synthetic callbacks do not support a receipt reaction; no task was created merely to acknowledge the controls.
+4. A command task requesting `slack-slash-task-a74` created exactly one `slash_task_start` action, one Slack starter message/thread, and one Paperclip task (`CHA-50`). Its working and final publications each completed in one attempt and shared the same provider message ID, so Slack showed one in-place final response rather than a progress/final duplicate.
+5. A reply in that Slack thread requesting `slack-thread-followup-a74` produced one inbound delivery with `attempts=1` and no error. Because the preceding DM task was already terminal, Paperclip advanced the linear DM binding to its next session generation; that generation produced one working/final pair, again using one provider message ID, and the exact response was visible once.
+6. A native file plus “Read the attached file and reply with exactly its Token value” produced one inbound delivery, one stored Paperclip issue attachment, and one final `chat-upload-a74` publication. The final publication completed in one attempt and replaced its working placeholder in place. This proves the tested Slack file-download and attachment-storage path for that file, not every Slack file type or size boundary.
+7. On the final revision, `/maya-fdhjew Run sleep 12 then reply exactly slack-status-lane-6f13b` created native Slack thread `CHA-61`. While the run was active, `/maya-fdhjew status` replaced the working reply with the current `in_progress` state. The final then replaced that same reply with `slack-status-lane-6f13b`. Slack showed exactly one bot reply beneath `Starting a task…`, not stale working/status siblings. The working, status, and final publication rows all share provider message ID `1788679967.804189`; each is `published`, `attempts=1`, with no error.
+
+### Synthetic-command receipt defects found during the run
+
+The live command work found two related but separate bugs rather than treating the first patch as sufficient:
+
+1. The first real DM `status` callback was represented internally by a deterministic hash because Slack slash callbacks have no native message to react to. The generic receipt path nevertheless sent that hash to Slack as a message timestamp. Slack returned `message_not_found`, leaving the processed delivery with a receipt-reaction error even though the status response itself continued. The fix persists `acknowledgement.receiptReactionSupported=false`, carries it through deferred reconstruction, and skips the reaction. A later live `status` and `new` both processed once with no error, which is live proof for this control-command branch.
+2. The command-task branch had a second synthetic message after posting its real starter message. It still took the generic receipt path, so the otherwise successful `slack-slash-task-a74` delivery recorded the same `message_not_found` receipt error. The follow-up fix marks this branch unsupported too and adds regression coverage that Slack command callbacks never call `addReaction`, while Telegram commands retain their real provider message tuple and still do. The final live `CHA-61` command task and its interleaved status callback both processed in one attempt with no error and `receiptReactionSupported=false`, which is live proof of this second fix.
+
+The earlier diagnostic rows remain preserved as bug evidence. The later clean rows, rather than rewriting history, provide the live regression proof.
+
+### Post-run thread-binding and recovery audit
+
+Reviewing the pinned Slack adapter after the live run exposed a third issue that the earlier fake runtime did not model: a slash command's `Channel` wrapper returns the channel wrapper id after a root post, while Slack's returned message timestamp is the actual native thread root. Treating the wrapper id as the task boundary can make later Paperclip publications appear as new top-level messages instead of replies under `Starting a task…`. The implementation now derives the canonical `slack:<channel>:<message timestamp>` thread id from the confirmed provider message and has a regression whose mock deliberately returns the non-thread channel wrapper id.
+
+The same audit found that DM `status`, `new`, and `close` controls synthesized a base-DM thread id and therefore could not find a task created under the slash starter's native root. Those controls now resolve the most recently active task for that DM and route the synthetic control through its exact native thread binding.
+
+Finally, an ambiguous starter post no longer remains an unactionable Activity row. Paperclip still never replays it automatically. Activity offers an audited **Retry anyway** only when the durable action contains complete reconstruction context, warns that both the starter and Paperclip task can duplicate, and offers **Cancel task start**. The retry revalidates the endpoint, destination, and original principal, serializes against endpoint mutation, and admits at most one concurrent retry. Older incomplete rows are cancel-only. Native thread binding and ordinary command creation were retested live; the deliberately ambiguous starter-recovery branch remains local-only because the provider failure was not injected live.
+
+### Qualification-harness restart incident
+
+The first final-revision command attempt returned Slack's “app did not respond” notice because the restarted local server was accidentally launched against the live database without its existing Paperclip instance home and encryption-key path. Secret resolution failed closed and no task was admitted. Restarting with the original instance home restored credential decryption, after which the same scenario passed. This is not a Slack adapter defect, but it is operational evidence that database restores and process restarts must preserve the Paperclip-generated master key; the database alone is intentionally insufficient.
+
+## Earlier current-run evidence
 
 A signed Slack root message reached the current public tunnel and completed the provider-visible lifecycle: the bot added its receipt reaction, showed a working response, and replaced or completed it with the successful final response in the originating thread.
 
@@ -42,8 +81,9 @@ A post-fix live retest at `04:58:32` sent `slack-no-empty-wake`. Paperclip admit
 
 ## Current local regression evidence
 
-- Full chat-channel PostgreSQL integration suite on fresh database `chat_adapters_test_153`: 111/111 passed.
-- This local suite does not replace the remaining live-provider cases.
+- On revision `6f13ec09e`, the full chat-channel PostgreSQL integration suite passed 138/138 on fresh migrated database `chat_adapters_test_173`.
+- Focused chat server tests passed 115/115, the exact Slack/Telegram interleaved-lane regressions passed 2/2, focused UI tests passed 38/38, OpenAPI passed 6/6, server typecheck passed, and the deterministic browser suite passed 4/4.
+- Shared/database/UI typechecks, token gates, and the full workspace build had already passed on the immediate parent before this server-only race fix. These checks do not replace the remaining live-provider cases.
 
 ## Historical-run scope
 
@@ -89,4 +129,4 @@ The isolated test instance had no sandbox workspace provider. Its automatic low-
 - Deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts`: 4/4 passed.
 - Token gates and `git diff --check`: passed.
 
-This evidence is useful for regression comparison, but it is incomplete release evidence. In particular, the full live runbook's identity-linking and permission-revocation cases, unlinked-participant governance checks, disabled-resource matrix, DM lifecycle, file and rich-interaction paths, provider delete behavior, failure and retry recovery, reinstall/reconnect, and cleanup assertions were not all executed in this run. Slack remains unqualified for stable release until the current source revision passes the complete live runbook.
+This evidence is useful for regression comparison, but it is incomplete release evidence. Identity linking was sufficient for the exercised runs, but the full permission-revocation and unlinked-participant governance matrix was not executed. Disabled-resource behavior, rich actions/modals, provider delete behavior, file type/size rejection, rate limiting and ambiguous-send recovery, uninstall/reinstall, reconnect, and final cleanup assertions also remain incomplete. Slack remains unqualified for stable release until those cases and the complete release-candidate runbook pass.
