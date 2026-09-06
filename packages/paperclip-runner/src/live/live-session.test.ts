@@ -662,6 +662,27 @@ describe("Capability live runnerd and Codex session", () => {
     await service.shutdown(session.id);
   });
 
+  it("passes caller-supplied native system instructions to the provider", async () => {
+    const state = providerState();
+    const service = new CapabilityLiveSessionService({
+      transportFactory: fakeTransportFactory(state),
+      transportOptions: {
+        baseInstructions:
+          "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
+      },
+    });
+    const session = await service.create();
+
+    expect(
+      state.transports[0]?.requests.find(
+        (request) => request.method === "thread/start",
+      )?.params.baseInstructions,
+    ).toBe(
+      "Native instructions\n\nRead-only instruction sibling root: /runtime/instructions",
+    );
+    await service.shutdown(session.id);
+  });
+
   it("attributes Claude Managed sessions to the pinned immutable Agent version", async () => {
     const state = providerState();
     const managedProfiles: Array<Record<string, unknown> | undefined> = [];

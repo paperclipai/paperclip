@@ -937,6 +937,8 @@ export interface CapabilityRunnerdCodexTransportOptions {
   opencodeProxySha256?: string;
   opencodeRuntimeDirectory?: string;
   environment?: NodeJS.ProcessEnv;
+  /** Provider system instructions supplied by a native execution caller. */
+  baseInstructions?: string;
   closeGraceMs?: number;
   onDiagnostic?: (message: string) => void;
   onEvidence?: (evidence: Readonly<CapabilityRunnerdProcessEvidence>) => void;

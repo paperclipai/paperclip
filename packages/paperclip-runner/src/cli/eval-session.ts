@@ -9,6 +9,7 @@ import {
   PAPERCLIP_EXECUTION_PROMPT,
   PAPERCLIP_EXECUTION_PROMPT_REVISION,
   canonicalNativeRuntimeContextDigest,
+  composeNativeSystemInstructions,
   nativeRuntimePromptDigest,
   parseNativeRuntimeContext,
   type NativeRuntimeContextSnapshot,
@@ -139,6 +140,15 @@ export async function prepareEvalRuntimeContext(
     ...context,
     aggregateDigest: canonicalNativeRuntimeContextDigest(context),
   });
+}
+
+export function evalRuntimeSystemInstructions(
+  runtimeContext: NativeRuntimeContextSnapshot,
+): string {
+  return composeNativeSystemInstructions(
+    runtimeContext,
+    EVAL_RUNTIME_INSTRUCTIONS,
+  );
 }
 
 export function evalSessionProviderVersion(
@@ -285,6 +295,7 @@ export async function runEvalSessionCli(
       transportOptions: {
         runnerBinary: runnerdPath,
         runtimeContext,
+        baseInstructions: evalRuntimeSystemInstructions(runtimeContext),
         // The transport performs the provider-specific allowlisting. Supplying
         // the source environment here is still required: without it the
         // isolated Codex home has no credential source and runnerd receives no
