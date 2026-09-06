@@ -190,7 +190,7 @@ import {
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
-import { emitAgentTaskRun } from "./agent-task-run-telemetry.js";
+import { emitAgentTaskRun, emitAgentTaskRunById } from "./agent-task-run-telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
@@ -365,8 +365,6 @@ import {
 } from "./recovery/service.js";
 import {
   createRunDispatch,
-  decideQueuedRunStaleness,
-  decideScheduledRetryGate,
   type PostCommitEffect,
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
@@ -8316,27 +8314,45 @@ export function heartbeatService(
   function applyRunDispatchPostCommitEffects(effects: PostCommitEffect[]) {
     for (const effect of effects) {
       if (effect.kind === "run_queued") {
-        const run = effect.run as typeof heartbeatRuns.$inferSelect;
         publishLiveEvent({
-          companyId: run.companyId,
+          companyId: effect.companyId,
           type: "heartbeat.run.queued",
           payload: {
-            runId: run.id,
-            agentId: run.agentId,
-            invocationSource: run.invocationSource,
-            triggerDetail: run.triggerDetail,
-            wakeupRequestId: run.wakeupRequestId,
+            runId: effect.runId,
+            agentId: effect.agentId,
+            invocationSource: effect.invocationSource,
+            triggerDetail: effect.triggerDetail,
+            wakeupRequestId: effect.wakeupRequestId,
           },
         });
       } else {
-        const run = effect.run as typeof heartbeatRuns.$inferSelect;
         publishLiveEvent({
-          companyId: run.companyId,
+          companyId: effect.companyId,
           type: "heartbeat.run.status",
-          payload: buildHeartbeatRunStatusLiveEventPayload(run),
+          payload: buildHeartbeatRunStatusLiveEventPayload({
+            id: effect.runId,
+            agentId: effect.agentId,
+            status: effect.status,
+            invocationSource: effect.invocationSource,
+            triggerDetail: effect.triggerDetail,
+            error: effect.error,
+            errorCode: effect.errorCode,
+            startedAt: effect.startedAt,
+            finishedAt: effect.finishedAt,
+            resultJson: effect.result,
+          }),
         });
-        publishRunLifecyclePluginEvent(run);
-        emitTerminalAgentTaskRun(run, effect.previousStatus);
+        publishRunLifecyclePluginEventData(effect);
+        if (
+          isHeartbeatRunTerminalStatus(effect.status) &&
+          effect.previousStatus !== effect.status
+        ) {
+          clearHeartbeatRunRuntimeStatus(effect.runId);
+          void emitAgentTaskRunById(db, {
+            runId: effect.runId,
+            companyId: effect.companyId,
+          });
+        }
       }
     }
   }
@@ -10965,6 +10981,34 @@ export function heartbeatService(
   function publishRunLifecyclePluginEvent(
     run: typeof heartbeatRuns.$inferSelect,
   ) {
+    publishRunLifecyclePluginEventData({
+      companyId: run.companyId,
+      runId: run.id,
+      agentId: run.agentId,
+      status: run.status,
+      invocationSource: run.invocationSource,
+      triggerDetail: run.triggerDetail,
+      error: run.error,
+      errorCode: run.errorCode,
+      issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId),
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+    });
+  }
+
+  function publishRunLifecyclePluginEventData(run: {
+    companyId: string;
+    runId: string;
+    agentId: string;
+    status: string;
+    invocationSource: string;
+    triggerDetail: string | null;
+    error: string | null;
+    errorCode: string | null;
+    issueId: string | null;
+    startedAt: Date | null;
+    finishedAt: Date | null;
+  }) {
     const eventType =
       run.status === "running"
         ? "agent.run.started"
@@ -10982,22 +11026,18 @@ export function heartbeatService(
       occurredAt: new Date().toISOString(),
       actorId: run.agentId,
       actorType: "agent",
-      entityId: run.id,
+      entityId: run.runId,
       entityType: "heartbeat_run",
       companyId: run.companyId,
       payload: {
-        runId: run.id,
+        runId: run.runId,
         agentId: run.agentId,
         status: run.status,
         invocationSource: run.invocationSource,
         triggerDetail: run.triggerDetail,
         error: run.error ?? null,
         errorCode: run.errorCode ?? null,
-        issueId:
-          typeof run.contextSnapshot === "object" &&
-          run.contextSnapshot !== null
-            ? ((run.contextSnapshot as Record<string, unknown>).issueId ?? null)
-            : null,
+        issueId: run.issueId,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt
           ? new Date(run.finishedAt).toISOString()
@@ -13436,27 +13476,12 @@ export function heartbeatService(
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
-      const gateFacts = await runDispatch.loadGateFacts(
-        {
-          runId: run.id,
-          companyId: run.companyId,
-          agentId: agent.id,
-          contextSnapshot,
-          scheduledRetryReason: run.scheduledRetryReason,
-          retryReasonOverride: retryReason,
-          wakeupRequestId: run.wakeupRequestId,
-        },
+      const gate = await runDispatch.evaluateScheduledRetryGate({
+        runId: run.id,
+        companyId: run.companyId,
+        retryReasonOverride: retryReason,
         now,
-      );
-      const gate = gateFacts.agentFound
-        ? decideScheduledRetryGate(gateFacts.facts, now)
-        : {
-            allowed: false as const,
-            reason: "Scheduled retry suppressed because the agent no longer exists",
-            errorCode: "agent_not_invokable" as const,
-            issueId: gateFacts.issueId,
-            details: { agentId: agent.id },
-          };
+      });
       if (!gate.allowed) {
         await appendRunEvent(run, {
           eventType: "lifecycle",
@@ -14510,10 +14535,6 @@ export function heartbeatService(
     const promotion = await runDispatch.promoteScheduledRetry({
       runId: updated.id,
       companyId: updated.companyId,
-      agentId: updated.agentId,
-      contextSnapshot: parseObject(updated.contextSnapshot),
-      scheduledRetryReason: updated.scheduledRetryReason,
-      wakeupRequestId: updated.wakeupRequestId,
       now,
     });
     if (promotion.outcome === "promoted") {
@@ -14527,7 +14548,7 @@ export function heartbeatService(
     const scheduledRetry = promotedRow
       ? summarizeIssueScheduledRetryRun(promotedRow)
       : summarizeIssueScheduledRetryRun({
-          run: (promotion.run as typeof heartbeatRuns.$inferSelect | null) ?? updated,
+          run: updated,
           agentName: scheduled.agentName,
         });
 
@@ -15004,12 +15025,6 @@ export function heartbeatService(
       const staleness = await runDispatch.cancelStaleQueuedRun({
         runId: run.id,
         companyId: run.companyId,
-        agentId: run.agentId,
-        issueId,
-        contextSnapshot: context,
-        scheduledRetryReason: run.scheduledRetryReason,
-        wakeupRequestId: run.wakeupRequestId,
-        resultJson: run.resultJson,
         expectedStatus: "queued",
       });
       if (staleness.outcome === "cancelled") {
@@ -17282,12 +17297,6 @@ export function heartbeatService(
           const staleness = await runDispatch.cancelStaleQueuedRun({
             runId: run.id,
             companyId: run.companyId,
-            agentId: run.agentId,
-            issueId,
-            contextSnapshot: context,
-            scheduledRetryReason: run.scheduledRetryReason,
-            wakeupRequestId: run.wakeupRequestId,
-            resultJson: run.resultJson,
             expectedStatus: "running",
           });
           if (staleness.outcome === "cancelled") {
@@ -18848,86 +18857,22 @@ export function heartbeatService(
           issueId,
         });
 
-        const gate = await db.transaction(async (tx) => {
-          const lockedIssue = await tx
-            .select({ executionRunId: issues.executionRunId })
-            .from(issues)
-            .where(
-              and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)),
-            )
-            .for("update")
-            .then((rows) => rows[0] ?? null);
-          const stalenessNow = new Date();
-          const stalenessFacts = await runDispatch.loadStalenessFacts(
-            {
+        const gate = await runDispatch.dispatchResolvedInteractionIfCurrent({
+          runId: run.id,
+          companyId: run.companyId,
+          expectedStatus: "running",
+          dispatch: async (markDispatchStarted) => {
+            await options.afterResolvedInteractionContinuationDispatchCheck?.({
               runId: run.id,
-              companyId: run.companyId,
-              agentId: run.agentId,
               issueId,
-              contextSnapshot: context,
-              scheduledRetryReason: run.scheduledRetryReason,
-            },
-            stalenessNow,
-            tx,
-          );
-          const staleness = decideQueuedRunStaleness(stalenessFacts, stalenessNow);
-          if (staleness.stale) {
-            return { dispatched: false as const, staleness };
-          }
-          if (lockedIssue?.executionRunId !== run.id) {
-            return {
-              dispatched: false as const,
-              staleness: {
-                stale: true as const,
-                errorCode: "issue_execution_lock_changed" as const,
-                reason:
-                  "Cancelled because resolved-interaction continuation no longer owns the issue execution lock before adapter dispatch",
-                details: {
-                  issueId,
-                  expectedExecutionRunId: run.id,
-                  currentExecutionRunId: lockedIssue?.executionRunId ?? null,
-                },
-              },
-            };
-          }
-
-          await options.afterResolvedInteractionContinuationDispatchCheck?.({
-            runId: run.id,
-            issueId,
-          });
-          let dispatchStarted = false;
-          let resolveDispatchStarted!: () => void;
-          const dispatchStartedPromise = new Promise<void>((resolve) => {
-            resolveDispatchStarted = resolve;
-          });
-          const markDispatchStarted = () => {
-            if (dispatchStarted) return;
-            dispatchStarted = true;
-            resolveDispatchStarted();
-          };
-
-          // Keep the issue row locked through the adapter's asynchronous
-          // preparation and release it only once the adapter reports an
-          // actual process spawn. If preparation fails or returns without a
-          // spawn, settling the adapter promise also releases the gate.
-          const resultPromise = dispatch(markDispatchStarted);
-          void resultPromise.then(markDispatchStarted, markDispatchStarted);
-          await dispatchStartedPromise;
-          return { dispatched: true as const, resultPromise };
+            });
+            return dispatch(markDispatchStarted);
+          },
         });
 
         if (gate.dispatched) return gate;
-        const cancelled = await runDispatch.cancelDecidedStaleQueuedRun({
-          runId: run.id,
-          companyId: run.companyId,
-          issueId,
-          wakeupRequestId: run.wakeupRequestId,
-          resultJson: run.resultJson,
-          decision: gate.staleness,
-          expectedStatus: "running",
-        });
-        if (cancelled.outcome === "cancelled") {
-          applyRunDispatchPostCommitEffects(cancelled.postCommitEffects);
+        if (gate.cancellation.outcome === "cancelled") {
+          applyRunDispatchPostCommitEffects(gate.cancellation.postCommitEffects);
         }
         return { dispatched: false };
       };

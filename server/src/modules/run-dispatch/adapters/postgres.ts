@@ -26,7 +26,7 @@ import {
   getIssueContinuationSummaryDocument,
 } from "../../../services/issue-continuation-summary.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
-import { decideScheduledRetryGate } from "../domain/policy.js";
+import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
 import type {
   QueuedRunFacts,
   ReviewParticipantFacts,
@@ -42,26 +42,53 @@ import {
 } from "../domain/wake-context.js";
 import type {
   CancelStaleQueuedRunInput,
-  CancelStaleQueuedRunWriteResult,
-  CancelSuppressedRetryInput,
-  CancelSuppressedRetryResult,
+  DispatchResolvedInteractionInput,
+  DispatchResolvedInteractionOutcome,
   DueRetryRun,
+  EvaluateScheduledRetryGateInput,
   ListDueRetriesInput,
-  LoadGateFactsInput,
-  LoadGateFactsResult,
-  LoadStalenessFactsInput,
-  PromoteDueRetryInput,
-  PromoteDueRetryResult,
   PromoteOrCancelDueRetryInput,
-  QueuedRunReader,
   RunDispatchWriter,
   ScheduledRetryReader,
 } from "../application/ports.js";
 import type {
-  HeartbeatRunRecord,
+  CancelStaleQueuedRunOutcome,
   PostCommitEffect,
   PromoteScheduledRetryOutcome,
 } from "../application/types.js";
+import { RunDispatchApplicationError } from "../application/types.js";
+
+type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
+type LoadGateFactsInput = {
+  runId: string;
+  companyId: string;
+  agentId: string;
+  contextSnapshot: Record<string, unknown>;
+  scheduledRetryReason: string | null;
+  retryReasonOverride?: string | null;
+  wakeupRequestId: string | null;
+};
+type LoadGateFactsResult =
+  | { agentFound: true; facts: ScheduledRetryFacts }
+  | { agentFound: false; issueId: string | null };
+type LoadStalenessFactsInput = {
+  runId: string;
+  companyId: string;
+  agentId: string;
+  issueId: string;
+  contextSnapshot: Record<string, unknown>;
+  scheduledRetryReason: string | null;
+};
+type CancelSuppressedRetryInput = {
+  runId: string;
+  companyId: string;
+  now: Date;
+  reason: string;
+  errorCode: string;
+  issueId: string | null;
+  details: Record<string, unknown>;
+};
+type CancelSuppressedRetryResult = { applied: true; run: HeartbeatRun } | { applied: false };
 
 const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   isInReview: false,
@@ -98,9 +125,40 @@ function buildReviewParticipantFacts(input: {
   };
 }
 
+function queuedEffect(run: HeartbeatRun): PostCommitEffect {
+  return {
+    kind: "run_queued",
+    companyId: run.companyId,
+    runId: run.id,
+    agentId: run.agentId,
+    invocationSource: run.invocationSource,
+    triggerDetail: run.triggerDetail,
+    wakeupRequestId: run.wakeupRequestId,
+  };
+}
+
+function statusEffect(run: HeartbeatRun, previousStatus: string | null): PostCommitEffect {
+  return {
+    kind: "run_status_published",
+    companyId: run.companyId,
+    runId: run.id,
+    agentId: run.agentId,
+    status: run.status,
+    invocationSource: run.invocationSource,
+    triggerDetail: run.triggerDetail,
+    error: run.error,
+    errorCode: run.errorCode,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    result: parseObject(run.resultJson),
+    issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId),
+    previousStatus,
+  };
+}
+
 export function createPostgresRunDispatchAdapter(
   db: Db,
-): ScheduledRetryReader & QueuedRunReader & RunDispatchWriter {
+): ScheduledRetryReader & RunDispatchWriter {
   const budgets = budgetService(db);
   const treeControlSvc = issueTreeControlService(db);
   const issuesSvc = issueService(db);
@@ -110,11 +168,9 @@ export function createPostgresRunDispatchAdapter(
     now: Date,
     tx?: unknown,
   ): Promise<LoadGateFactsResult> {
-    // A caller that passes `tx` already opened a transaction and, for the
-    // promote-or-cancel path, already holds a row lock on the issue below;
-    // every read here then joins that same transaction and sees the locked
-    // row, so the facts this function returns cannot go stale between this
-    // read and the promote-or-cancel write the caller makes from them.
+    // Semantic adapter operations pass their transaction here so the fact
+    // read and the state transition share one unit of work. This helper is
+    // deliberately not exposed through the module's public API.
     const dbOrTx = (tx as Db | undefined) ?? db;
     const budgetsForRead = tx ? budgetService(dbOrTx) : budgets;
     const treeControlForRead = tx ? issueTreeControlService(dbOrTx) : treeControlSvc;
@@ -268,6 +324,42 @@ export function createPostgresRunDispatchAdapter(
     return { agentFound: true, facts };
   }
 
+  async function evaluateScheduledRetryGate(input: EvaluateScheduledRetryGateInput) {
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!run) {
+      throw new RunDispatchApplicationError(
+        "run_not_found",
+        `run-dispatch: run ${input.runId} was not found while evaluating retry eligibility`,
+      );
+    }
+    const factsResult = await loadGateFacts(
+      {
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        contextSnapshot: parseObject(run.contextSnapshot),
+        scheduledRetryReason: run.scheduledRetryReason,
+        retryReasonOverride: input.retryReasonOverride,
+        wakeupRequestId: run.wakeupRequestId,
+      },
+      input.now,
+    );
+    if (!factsResult.agentFound) {
+      return {
+        allowed: false as const,
+        reason: "Scheduled retry suppressed because the agent no longer exists",
+        errorCode: "agent_not_invokable" as const,
+        issueId: factsResult.issueId,
+        details: { agentId: run.agentId },
+      };
+    }
+    return decideScheduledRetryGate(factsResult.facts, input.now);
+  }
+
   async function listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]> {
     const rows = await db
       .select()
@@ -289,10 +381,6 @@ export function createPostgresRunDispatchAdapter(
     return rows.map((row) => ({
       runId: row.id,
       companyId: row.companyId,
-      agentId: row.agentId,
-      contextSnapshot: parseObject(row.contextSnapshot),
-      scheduledRetryReason: row.scheduledRetryReason,
-      wakeupRequestId: row.wakeupRequestId,
     }));
   }
 
@@ -305,7 +393,7 @@ export function createPostgresRunDispatchAdapter(
     const issueId = input.issueId;
     const context = input.contextSnapshot;
 
-    const issue = await dbOrTx
+    const issueQuery = dbOrTx
       .select({
         id: issues.id,
         status: issues.status,
@@ -314,8 +402,10 @@ export function createPostgresRunDispatchAdapter(
         executionState: issues.executionState,
       })
       .from(issues)
-      .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
-      .then((rows) => rows[0] ?? null);
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)));
+    const issue = await (tx ? issueQuery.for("update") : issueQuery).then(
+      (rows) => rows[0] ?? null,
+    );
 
     const wakeCommentId = deriveCommentId(context);
     const isInteractionWake = allowsIssueInteractionWake(
@@ -402,8 +492,11 @@ export function createPostgresRunDispatchAdapter(
 
   async function promoteDueRetryInTx(
     tx: Db,
-    input: PromoteDueRetryInput,
-  ): Promise<PromoteDueRetryResult> {
+    input: PromoteOrCancelDueRetryInput,
+  ): Promise<
+    | { applied: true; run: HeartbeatRun; postCommitEffects: PostCommitEffect[] }
+    | { applied: false }
+  > {
     const [row] = await tx
       .update(heartbeatRuns)
       .set({ status: "queued", updatedAt: input.now })
@@ -433,13 +526,7 @@ export function createPostgresRunDispatchAdapter(
       },
     });
 
-    const run = row as unknown as HeartbeatRunRecord;
-    const postCommitEffects: PostCommitEffect[] = [{ kind: "run_queued", run }];
-    return { applied: true, run, postCommitEffects };
-  }
-
-  async function promoteDueRetry(input: PromoteDueRetryInput): Promise<PromoteDueRetryResult> {
-    return db.transaction((tx) => promoteDueRetryInTx(tx as unknown as Db, input));
+    return { applied: true as const, run: row, postCommitEffects: [queuedEffect(row)] };
   }
 
   async function cancelSuppressedRetryInTx(
@@ -512,24 +599,7 @@ export function createPostgresRunDispatchAdapter(
       },
     });
 
-    return { applied: true, run: row as unknown as HeartbeatRunRecord };
-  }
-
-  async function cancelSuppressedRetry(
-    input: CancelSuppressedRetryInput,
-  ): Promise<CancelSuppressedRetryResult> {
-    const cancelled = await db.transaction((tx) =>
-      cancelSuppressedRetryInTx(tx as unknown as Db, input),
-    );
-
-    if (cancelled.applied) {
-      // Telemetry is best-effort background work; fire it instead of
-      // awaiting it, so a slow telemetry lookup never delays the caller's
-      // return.
-      void emitAgentTaskRun(db, cancelled.run as unknown as typeof heartbeatRuns.$inferSelect);
-    }
-
-    return cancelled;
+    return { applied: true, run: row };
   }
 
   async function promoteOrCancelDueRetry(
@@ -537,16 +607,30 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<PromoteScheduledRetryOutcome> {
     const now = input.now;
 
-    const outcome = await db.transaction(async (tx) => {
+    const transactionResult = await db.transaction(async (tx) => {
+      const run = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (
+        !run ||
+        run.status !== "scheduled_retry" ||
+        !run.scheduledRetryAt ||
+        new Date(run.scheduledRetryAt).getTime() > now.getTime()
+      ) {
+        return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
       const factsResult = await loadGateFacts(
         {
-          runId: input.runId,
-          companyId: input.companyId,
-          agentId: input.agentId,
-          contextSnapshot: input.contextSnapshot,
-          scheduledRetryReason: input.scheduledRetryReason,
-          retryReasonOverride: input.scheduledRetryReason,
-          wakeupRequestId: input.wakeupRequestId,
+          runId: run.id,
+          companyId: run.companyId,
+          agentId: run.agentId,
+          contextSnapshot: parseObject(run.contextSnapshot),
+          scheduledRetryReason: run.scheduledRetryReason,
+          retryReasonOverride: run.scheduledRetryReason,
+          wakeupRequestId: run.wakeupRequestId,
         },
         now,
         tx,
@@ -560,16 +644,18 @@ export function createPostgresRunDispatchAdapter(
           reason: "Scheduled retry suppressed because the agent no longer exists",
           errorCode: "agent_not_invokable",
           issueId: factsResult.issueId,
-          details: { agentId: input.agentId },
+          details: { agentId: run.agentId },
         });
         return cancelled.applied
           ? {
-              outcome: "gate_suppressed" as const,
-              run: cancelled.run,
-              reason: "Scheduled retry suppressed because the agent no longer exists",
-              errorCode: "agent_not_invokable" as const,
+              outcome: {
+                outcome: "gate_suppressed" as const,
+                reason: "Scheduled retry suppressed because the agent no longer exists",
+                errorCode: "agent_not_invokable" as const,
+              },
+              telemetryRun: cancelled.run,
             }
-          : { outcome: "not_promoted" as const, run: null };
+          : { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
 
       const gate = decideScheduledRetryGate(factsResult.facts, now);
@@ -595,12 +681,14 @@ export function createPostgresRunDispatchAdapter(
         });
         return cancelled.applied
           ? {
-              outcome: "gate_suppressed" as const,
-              run: cancelled.run,
-              reason: gate.reason,
-              errorCode: gate.errorCode,
+              outcome: {
+                outcome: "gate_suppressed" as const,
+                reason: gate.reason,
+                errorCode: gate.errorCode,
+              },
+              telemetryRun: cancelled.run,
             }
-          : { outcome: "not_promoted" as const, run: null };
+          : { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
 
       const promoted = await promoteDueRetryInTx(tx as unknown as Db, {
@@ -609,45 +697,45 @@ export function createPostgresRunDispatchAdapter(
         now,
       });
       return promoted.applied
-        ? { outcome: "promoted" as const, run: promoted.run, postCommitEffects: promoted.postCommitEffects }
-        : { outcome: "not_promoted" as const, run: null };
+        ? {
+            outcome: {
+              outcome: "promoted" as const,
+              postCommitEffects: promoted.postCommitEffects,
+            },
+            telemetryRun: null,
+          }
+        : { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
     });
 
     // Telemetry is best-effort background work; fire it only after the
     // transaction above has committed, so a suppressed retry is never
     // published before its cancellation is durable, and never published at
     // all if the transaction rolled back.
-    if (outcome.outcome === "gate_suppressed") {
-      void emitAgentTaskRun(db, outcome.run as unknown as typeof heartbeatRuns.$inferSelect);
+    if (transactionResult.telemetryRun) {
+      void emitAgentTaskRun(db, transactionResult.telemetryRun);
     }
 
-    return outcome;
+    return transactionResult.outcome;
   }
 
-  async function cancelStaleQueuedRun(
-    input: CancelStaleQueuedRunInput,
-  ): Promise<CancelStaleQueuedRunWriteResult> {
-    const now = new Date();
-    const cancelled = await db.transaction(async (tx) => {
-      const existing = await tx
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
-        .then((rows) => rows[0] ?? null);
-      if (!existing) {
-        throw new Error(`run-dispatch: run ${input.runId} disappeared during stale-queued-run cancellation`);
-      }
-
+  async function cancelStaleRunInTx(
+    tx: Db,
+    run: HeartbeatRun,
+    issueId: string,
+    decision: Extract<ReturnType<typeof decideQueuedRunStaleness>, { stale: true }>,
+    expectedStatus: "queued" | "running",
+    now: Date,
+  ): Promise<CancelStaleQueuedRunOutcome> {
       const [row] = await tx
         .update(heartbeatRuns)
         .set({
           status: "cancelled",
           finishedAt: now,
-          error: input.reason,
-          errorCode: input.errorCode,
+          error: decision.reason,
+          errorCode: decision.errorCode,
           resultJson: {
-            ...parseObject(input.resultJson),
-            stopReason: input.errorCode,
+            ...parseObject(run.resultJson),
+            stopReason: decision.errorCode,
             effectiveTimeoutSec: 0,
             timeoutConfigured: false,
             timeoutSource: "stale_queued_run_gate",
@@ -657,25 +745,25 @@ export function createPostgresRunDispatchAdapter(
         })
         .where(
           and(
-            eq(heartbeatRuns.id, input.runId),
-            eq(heartbeatRuns.companyId, input.companyId),
-            eq(heartbeatRuns.status, input.expectedStatus),
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.status, expectedStatus),
           ),
         )
         .returning();
       // A concurrent claimant or canceller already moved the run off
       // `expectedStatus`: the caller's staleness decision lost the race, so
       // this write must not overwrite whatever status won it.
-      if (!row) return null;
+      if (!row) return { outcome: "lost_race" };
 
-      if (input.wakeupRequestId) {
+      if (row.wakeupRequestId) {
         await tx
           .update(agentWakeupRequests)
-          .set({ status: "skipped", finishedAt: now, error: input.reason, updatedAt: now })
+          .set({ status: "skipped", finishedAt: now, error: decision.reason, updatedAt: now })
           .where(
             and(
-              eq(agentWakeupRequests.id, input.wakeupRequestId),
-              eq(agentWakeupRequests.companyId, input.companyId),
+              eq(agentWakeupRequests.id, row.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, row.companyId),
             ),
           );
       }
@@ -690,8 +778,8 @@ export function createPostgresRunDispatchAdapter(
         })
         .where(
           and(
-            eq(issues.companyId, input.companyId),
-            eq(issues.id, input.issueId),
+            eq(issues.companyId, row.companyId),
+            eq(issues.id, issueId),
             eq(issues.executionRunId, row.id),
           ),
         );
@@ -703,28 +791,146 @@ export function createPostgresRunDispatchAdapter(
         eventType: "lifecycle",
         stream: "system",
         level: "warn",
-        message: input.reason,
-        payload: input.details,
+        message: decision.reason,
+        payload: decision.details,
       });
 
-      return row;
-    });
+      return {
+        outcome: "cancelled",
+        reason: decision.reason,
+        errorCode: decision.errorCode,
+        postCommitEffects: [statusEffect(row, expectedStatus)],
+      };
+  }
 
-    if (!cancelled) return { applied: false };
-    const run = cancelled as unknown as HeartbeatRunRecord;
-    const postCommitEffects: PostCommitEffect[] = [
-      { kind: "run_status_published", run, previousStatus: input.expectedStatus },
-    ];
-    return { applied: true, run, postCommitEffects };
+  async function loadCurrentRunForStaleness(
+    tx: Db,
+    input: CancelStaleQueuedRunInput,
+  ): Promise<HeartbeatRun | null> {
+    const run = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!run) {
+      throw new RunDispatchApplicationError(
+        "run_not_found",
+        `run-dispatch: run ${input.runId} disappeared during stale-run validation`,
+      );
+    }
+    return run.status === input.expectedStatus ? run : null;
+  }
+
+  async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    if (!issueId) return { issueId: null, decision: { stale: false as const } };
+    const facts = await loadStalenessFacts(
+      {
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        issueId,
+        contextSnapshot,
+        scheduledRetryReason: run.scheduledRetryReason,
+      },
+      now,
+      tx,
+    );
+    return { issueId, decision: decideQueuedRunStaleness(facts, now) };
+  }
+
+  async function cancelStaleQueuedRun(
+    input: CancelStaleQueuedRunInput,
+  ): Promise<CancelStaleQueuedRunOutcome> {
+    return db.transaction(async (tx) => {
+      const run = await loadCurrentRunForStaleness(tx as unknown as Db, input);
+      if (!run) return { outcome: "lost_race" as const };
+      const { issueId, decision } = await decideCurrentRunStaleness(tx as unknown as Db, run, input.now);
+      if (!decision.stale || !issueId) return { outcome: "not_stale" as const };
+      return cancelStaleRunInTx(
+        tx as unknown as Db,
+        run,
+        issueId,
+        decision,
+        input.expectedStatus,
+        input.now,
+      );
+    });
+  }
+
+  async function dispatchResolvedInteractionIfCurrent<T>(
+    input: DispatchResolvedInteractionInput<T>,
+  ): Promise<DispatchResolvedInteractionOutcome<T>> {
+    return db.transaction(async (tx) => {
+      const run = await loadCurrentRunForStaleness(tx as unknown as Db, input);
+      if (!run) {
+        return { dispatched: false as const, cancellation: { outcome: "lost_race" as const } };
+      }
+      const { issueId, decision: initialDecision } = await decideCurrentRunStaleness(
+        tx as unknown as Db,
+        run,
+        input.now,
+      );
+      const decision =
+        !initialDecision.stale && issueId
+          ? await tx
+              .select({ executionRunId: issues.executionRunId })
+              .from(issues)
+              .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+              .then((rows) => rows[0] ?? null)
+              .then((issue) =>
+                issue?.executionRunId === run.id
+                  ? initialDecision
+                  : {
+                      stale: true as const,
+                      errorCode: "issue_execution_lock_changed" as const,
+                      reason:
+                        "Cancelled because resolved-interaction continuation no longer owns the issue execution lock before adapter dispatch",
+                      details: {
+                        issueId,
+                        expectedExecutionRunId: run.id,
+                        currentExecutionRunId: issue?.executionRunId ?? null,
+                      },
+                    },
+              )
+          : initialDecision;
+
+      if (decision.stale && issueId) {
+        const cancellation = await cancelStaleRunInTx(
+          tx as unknown as Db,
+          run,
+          issueId,
+          decision,
+          input.expectedStatus,
+          input.now,
+        );
+        return { dispatched: false as const, cancellation };
+      }
+
+      let dispatchStarted = false;
+      let resolveDispatchStarted!: () => void;
+      const dispatchStartedPromise = new Promise<void>((resolve) => {
+        resolveDispatchStarted = resolve;
+      });
+      const markDispatchStarted = () => {
+        if (dispatchStarted) return;
+        dispatchStarted = true;
+        resolveDispatchStarted();
+      };
+      const resultPromise = input.dispatch(markDispatchStarted);
+      void resultPromise.then(markDispatchStarted, markDispatchStarted);
+      await dispatchStartedPromise;
+      return { dispatched: true as const, resultPromise };
+    });
   }
 
   return {
-    loadGateFacts,
+    evaluateScheduledRetryGate,
     listDueRetries,
-    loadStalenessFacts,
-    promoteDueRetry,
-    cancelSuppressedRetry,
     cancelStaleQueuedRun,
+    dispatchResolvedInteractionIfCurrent,
     promoteOrCancelDueRetry,
   };
 }

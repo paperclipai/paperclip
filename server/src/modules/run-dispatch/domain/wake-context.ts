@@ -5,7 +5,11 @@
 // independently maintained copy in either file could silently drift out of
 // sync with the other and change only one of the two gates that read it.
 
-import { parseObject } from "../../../adapters/utils.js";
+function parseObject(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;

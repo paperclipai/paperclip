@@ -32,12 +32,14 @@ test("scanModuleBoundaries rejects outward dependencies and module-internal impo
     write("modules/watchdog/domain/policy.ts", [
       'import { eq } from "drizzle-orm";',
       'import { service } from "../../../services/example.js";',
+      'import { parse } from "../../../adapters/utils.js";',
       'import { run } from "../application/run.js";',
     ].join("\n"));
     write(
       "modules/watchdog/application/run.ts",
       [
         'import { adapter } from "../adapters/postgres.js";',
+        'import { parse } from "../../../adapters/application-utils.js";',
         'import { forbidden } from "../../../errors.js";',
         'import db = require("@paperclipai/db");',
       ].join("\n"),
@@ -51,10 +53,21 @@ test("scanModuleBoundaries rejects outward dependencies and module-internal impo
       violations.map(({ specifier, reason }) => ({ specifier, reason })),
       [
         { specifier: "../adapters/postgres.js", reason: "application cannot import concrete adapters" },
+        {
+          specifier: "../../../adapters/application-utils.js",
+          reason: "application cannot import concrete adapters",
+        },
         { specifier: "../../../errors.js", reason: "application cannot import HTTP error helpers" },
         { specifier: "@paperclipai/db", reason: "application cannot import database packages" },
         { specifier: "drizzle-orm", reason: "domain cannot import database packages" },
-        { specifier: "../../../services/example.js", reason: "domain cannot import server services or routes" },
+        {
+          specifier: "../../../services/example.js",
+          reason: "domain cannot import server services, routes, or adapters",
+        },
+        {
+          specifier: "../../../adapters/utils.js",
+          reason: "domain cannot import server services, routes, or adapters",
+        },
         { specifier: "../application/run.js", reason: "domain cannot depend on outer module layers" },
         {
           specifier: "../modules/watchdog/application/run.js",
