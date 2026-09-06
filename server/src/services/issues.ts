@@ -66,7 +66,8 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { lockIssueAncestryForAuthorization } from "./issue-ancestry-locks.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -92,6 +93,9 @@ import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from ".
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
+import { resolveAgentIssueProjectId } from "./issue-project-inference.js";
+import { resolveActorTrustDecisionForIssue } from "./source-trust.js";
+import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -707,8 +711,28 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   skipExecutionWorkspaceInheritance?: boolean;
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
+  /**
+   * The caller resolved the project itself — `projectId` (null included) is
+   * final. The create transaction then derives no project of its own: no
+   * parent or workspace inheritance, no inference backstop. The HTTP routes
+   * set this after deciding assignment scope and source trust against their
+   * resolution, so a concurrent parent move cannot attach a project those
+   * decisions never evaluated.
+   */
+  pinProjectId?: boolean;
   actorRunId?: string | null;
   actorResponsibleUserId?: string | null;
+  /**
+   * The caller's authenticated authorization actor, verbatim. When present,
+   * the inference backstop's tasks:assign decision authorizes THIS principal
+   * — key scope, key id, source, acting agent and responsible user included —
+   * rather than reconstructing an actor from `createdByAgentId`. Callers that
+   * hold real authentication context (HTTP routes, and services acting on a
+   * route actor's behalf) must pass it; the reconstruction fallback exists
+   * only for in-process callers with no authentication context at all, where
+   * the creating agent's own run IS the acting principal.
+   */
+  actorAuthorization?: AuthorizationActor | null;
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
@@ -727,6 +751,10 @@ type AcceptedPlanDecompositionInput = {
   actorAgentId?: string | null;
   actorUserId?: string | null;
   actorRunId?: string | null;
+  // Kept top-level (never on the children) so it stays out of the persisted
+  // `requestedChildren` payload and the request fingerprint: the principal
+  // belongs to the call, not to the requested child set.
+  actorAuthorization?: AuthorizationActor | null;
 };
 type AcceptedPlanDocumentInteraction = {
   id: string;
@@ -6831,7 +6859,11 @@ export function issueService(db: Db) {
       // A child may target another project. Parent workspace identity is only
       // valid inside the parent's project, so do not forward it across that
       // boundary; create() then resolves the target project's own workspaces.
-      const childProjectId = issueData.projectId ?? parent.projectId;
+      // A pinned resolution already consulted the parent at the route — do
+      // not re-derive from a parent row that may have moved since.
+      const childProjectId = issueData.pinProjectId
+        ? issueData.projectId ?? null
+        : issueData.projectId ?? parent.projectId;
       const childInheritsParentProject = childProjectId === parent.projectId;
       const hasExplicitExecutionWorkspaceOverride =
         issueData.executionWorkspaceId !== undefined ||
@@ -7037,6 +7069,7 @@ export function issueService(db: Db) {
 
           const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, {
             ...nextChildInput,
+            actorAuthorization: data.actorAuthorization ?? null,
             executionWorkspaceInheritanceMode: "strategy_only",
           });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
@@ -7166,8 +7199,10 @@ export function issueService(db: Db) {
         skipExecutionWorkspaceInheritance,
         watchdog,
         watchdogActorRunId,
+        pinProjectId,
         actorRunId,
         actorResponsibleUserId,
+        actorAuthorization,
         trustExplicitResponsibleUserId,
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
@@ -7277,7 +7312,7 @@ export function issueService(db: Db) {
           issueData.executionWorkspaceSettings !== undefined;
         if (workspaceInheritanceIssueId) {
           const workspaceSource = await getWorkspaceInheritanceIssue(tx, companyId, workspaceInheritanceIssueId);
-          if (issueData.projectId == null && workspaceSource.projectId) {
+          if (!pinProjectId && issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
           // Workspace linkage is only inheritable inside the source project. A
@@ -7285,9 +7320,13 @@ export function issueService(db: Db) {
           // a Paperclip App parent) must fall through to its own project's
           // default workspaces, otherwise the inherited ids fail the
           // project-match assertions below and the create is impossible without
-          // the caller naming the target workspaces explicitly.
-          const inheritsSourceProject =
-            issueData.projectId == null || issueData.projectId === workspaceSource.projectId;
+          // the caller naming the target workspaces explicitly. A pinned
+          // resolution compares strictly: pinned null against a source that
+          // holds a project is the concurrent-move race, and forwarding the
+          // source's workspace there would smuggle in linkage the pin refused.
+          const inheritsSourceProject = pinProjectId
+            ? (issueData.projectId ?? null) === (workspaceSource.projectId ?? null)
+            : issueData.projectId == null || issueData.projectId === workspaceSource.projectId;
           if (inheritsSourceProject && projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
@@ -7315,13 +7354,163 @@ export function issueService(db: Db) {
             }
           }
         }
-        if (issueData.projectId == null && projectWorkspaceId) {
+        if (!pinProjectId && issueData.projectId == null && projectWorkspaceId) {
           const workspace = await assertValidProjectWorkspace(companyId, null, projectWorkspaceId, tx);
           issueData.projectId = workspace.projectId;
         }
-        if (issueData.projectId == null && executionWorkspaceId) {
+        if (!pinProjectId && issueData.projectId == null && executionWorkspaceId) {
           const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
           issueData.projectId = workspace.projectId;
+        }
+        // Inference backstop for agent creates that never pass through the
+        // HTTP routes (accepted-plan decomposition, the runner's create_task
+        // tool, accepted suggested tasks): once every explicit signal above
+        // has resolved to nothing, infer before the goal and workspace
+        // defaults below read the project. The routes resolve the same answer
+        // earlier so their assignment-scope and source-trust decisions can see
+        // it — when they did, `projectId` arrives explicit and this stays
+        // inert. Reading inside the insert transaction also means a parent
+        // that just gained a project is seen, not a stale snapshot. A pinned
+        // resolution suppresses the backstop outright: the route already ran
+        // this same inference and decided authorization against its answer.
+        if (!pinProjectId && issueData.projectId == null && issueData.createdByAgentId) {
+          const inferredProjectId = await resolveAgentIssueProjectId(tx, companyId, {
+            createdByAgentId: issueData.createdByAgentId,
+            actorRunId: actorRunId ?? null,
+            title: issueData.title,
+            description: issueData.description,
+          });
+          if (inferredProjectId != null) {
+            // No route decided source trust against this project — direct
+            // callers never ran that decision, and a route that did decided it
+            // against no project at all. Re-evaluate the creating agent
+            // against the inferred project before stamping it: a low-trust
+            // verdict rides along as quarantined source trust (never loosening
+            // one the caller already set), and a denial withdraws the guess —
+            // the task stays project-less rather than failing an internal
+            // flow, or worse, settling into a project whose policy rejected it.
+            issueData.id ??= randomUUID();
+            // The trust and assignment decisions below walk the parent
+            // chain through unlocked reads (the low-trust boundary and a
+            // task-bridge key's parent-tree boundary). Pin that chain
+            // first: share locks on the parent and every ancestor keep a
+            // concurrent reparent from moving the subtree out of the
+            // decided boundary between these decisions and the commit.
+            if (issueData.parentId) {
+              await lockIssueAncestryForAuthorization(tx as unknown as Db, companyId, [issueData.parentId], {
+                directParentLockMode: "share",
+              });
+            }
+            const trustDecision = await resolveActorTrustDecisionForIssue({
+              db: tx as unknown as Db,
+              issue: {
+                id: issueData.id,
+                companyId,
+                projectId: inferredProjectId,
+                executionPolicy: issueData.executionPolicy,
+              },
+              actor: {
+                actorType: "agent",
+                actorId: issueData.createdByAgentId,
+                agentId: issueData.createdByAgentId,
+                runId: actorRunId ?? null,
+              },
+            });
+            // The HTTP routes also gate an *assigned* create behind
+            // tasks:assign against the project it lands in. Inference must
+            // not attach a project the creating agent could not have assigned
+            // into through a route — a protected or otherwise restricted
+            // project stays out of reach of direct callers. An assignment
+            // denial withdraws the guess rather than failing the flow: the
+            // assignment itself is what the caller was already doing
+            // project-less, only the project attachment is new.
+            // A task-bridge key is different: tasks:assign is that key's
+            // create boundary — the routes decide it for every task the key
+            // creates, unassigned drafts included — so the decision runs
+            // unconditionally and a denial aborts the create. There is no
+            // independently authorized assignment to fall back to, and
+            // withdrawing the project would still commit a create no
+            // boundary decision ever covered.
+            const actorIsTaskBridgeKey =
+              actorAuthorization?.type === "agent" &&
+              actorAuthorization.source === "agent_key" &&
+              actorAuthorization.keyScope?.kind === "task_bridge";
+            const needsAssignmentCheck =
+              actorIsTaskBridgeKey ||
+              (trustDecision.kind !== "denied" &&
+                Boolean(issueData.assigneeAgentId || issueData.assigneeUserId));
+            let assignmentAllowed = !needsAssignmentCheck;
+            if (needsAssignmentCheck) {
+              // Authorize the caller, not a stand-in: when the caller passed
+              // its authenticated actor, decide against it verbatim so key
+              // scope, key id, source, the acting agent and the responsible
+              // user all constrain this decision exactly as they constrained
+              // the route's own decisions. Reconstruction below is reserved
+              // for in-process callers with no authentication context, where
+              // the creating agent's run is the acting principal by
+              // definition. An authenticated route actor always carries the
+              // responsible user it acts on behalf of (the auth middleware
+              // refuses agent keys without one), and the tasks:assign
+              // decision intersects with that user's own authorization —
+              // so the reconstruction resolves it from the same actor-level
+              // sources the middleware uses: the caller's explicit
+              // responsible user, else the creating agent's run. The
+              // issue-level fallbacks (parent, createdByUserId) stay out —
+              // they describe the issue, not who is acting.
+              let assignmentActor: AuthorizationActor | null = actorAuthorization ?? null;
+              if (!assignmentActor) {
+                let actorOnBehalfOfUserId: string | null = actorResponsibleUserId?.trim() || null;
+                if (!actorOnBehalfOfUserId && actorRunId) {
+                  actorOnBehalfOfUserId = await tx
+                    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+                    .from(heartbeatRuns)
+                    .where(and(
+                      eq(heartbeatRuns.id, actorRunId),
+                      eq(heartbeatRuns.companyId, companyId),
+                      eq(heartbeatRuns.agentId, issueData.createdByAgentId),
+                    ))
+                    .then((rows) => rows[0]?.responsibleUserId?.trim() || null);
+                }
+                assignmentActor = {
+                  type: "agent",
+                  agentId: issueData.createdByAgentId,
+                  companyId,
+                  runId: actorRunId ?? null,
+                  onBehalfOfUserId: actorOnBehalfOfUserId,
+                };
+              }
+              assignmentAllowed = (await authorizationService(tx).decide({
+                actor: assignmentActor,
+                action: "tasks:assign",
+                resource: {
+                  type: "issue",
+                  companyId,
+                  projectId: inferredProjectId,
+                  parentIssueId: issueData.parentId ?? null,
+                  assigneeAgentId: issueData.assigneeAgentId ?? null,
+                  assigneeUserId: issueData.assigneeUserId ?? null,
+                },
+                scope: {
+                  projectId: inferredProjectId,
+                  parentIssueId: issueData.parentId ?? null,
+                  assigneeAgentId: issueData.assigneeAgentId ?? null,
+                  assigneeUserId: issueData.assigneeUserId ?? null,
+                },
+              })).allowed;
+            }
+            if (actorIsTaskBridgeKey && !assignmentAllowed) {
+              throw forbidden(
+                "Task creation denied: this task-bridge key's scope covers neither the inferred project nor the task's parent",
+                { code: "task_bridge_create_boundary_denied" },
+              );
+            }
+            if (trustDecision.kind !== "denied" && assignmentAllowed) {
+              issueData.projectId = inferredProjectId;
+              if (trustDecision.kind === "low_trust_review" && !issueData.sourceTrust) {
+                issueData.sourceTrust = trustDecision.sourceTrust;
+              }
+            }
+          }
         }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         // Cache the project policy lookup for this insert so the default

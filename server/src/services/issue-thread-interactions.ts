@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -40,6 +41,7 @@ import type {
   RejectIssueThreadInteraction,
   SkipIssueThreadInteraction,
   RespondIssueThreadInteraction,
+  SourceTrustMetadata,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
   SubmitIssueThreadInteractionVerdicts,
@@ -70,6 +72,10 @@ import {
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH } from "./trust-preset-resolver.js";
+import { lockIssueAncestryForAuthorization, type LockedIssueAncestryRow } from "./issue-ancestry-locks.js";
+import { resolveActorTrustDecisionForIssue } from "./source-trust.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
@@ -105,6 +111,12 @@ type InteractionActor = {
   runId?: string | null;
   userId?: string | null;
   systemId?: string | null;
+  /**
+   * The resolving caller's authenticated authorization actor, verbatim, for
+   * downstream decisions that must authorize the caller rather than a
+   * reconstructed principal (issue creation's project-inference backstop).
+   */
+  authorization?: AuthorizationActor | null;
   resolverPolicyRestriction?:
     | IssueThreadInteractionCanonicalResolverPolicy
     | IssueThreadInteractionResolverRestriction
@@ -2957,22 +2969,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           .filter((value): value is string => Boolean(value)),
       ])];
 
-      const parentRows = explicitParentIds.length === 0
-        ? []
-        : await db
-          .select({
-            id: issues.id,
-            identifier: issues.identifier,
-            companyId: issues.companyId,
-          })
-          .from(issues)
-          .where(and(eq(issues.companyId, issue.companyId), inArray(issues.id, explicitParentIds)));
-      if (parentRows.length !== explicitParentIds.length) {
-        throw unprocessable("Suggested tasks reference parent issues outside this company or issue tree");
-      }
-
-      const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
       const createdByClientKey = new Map<string, SuggestTasksResultCreatedTask>();
+      const createdProjectByClientKey = new Map<string, string | null>();
       const createdWakeTargets: IssueWakeTarget[] = [];
 
       await db.transaction(async (tx) => {
@@ -2997,12 +2995,165 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           throw interactionAlreadyResolvedError();
         }
 
+        // Lock the pre-existing parents and their ancestry for the
+        // transaction. The project read here feeds the tasks:assign and
+        // source-trust decisions below, and createChild resolves the
+        // landing project from this same row in this same transaction —
+        // an unlocked pre-transaction snapshot let a concurrent parent
+        // move divorce the decided project from the persisted one. The
+        // ancestor chains those decisions walk (a task-bridge key's parent
+        // boundary, a run's low-trust boundary) are pinned by the same
+        // call: parents take exclusive locks, ancestors share locks, all
+        // acquired in one globally sorted pass so overlapping acceptances
+        // cannot deadlock on opposite-order acquisition. Share-locked
+        // ancestors keep concurrent acceptances over the same chain
+        // non-blocking while any reparent queues until this transaction
+        // ends.
+        const lockedAncestry = explicitParentIds.length === 0
+          ? new Map<string, LockedIssueAncestryRow>()
+          : await lockIssueAncestryForAuthorization(tx as unknown as Db, issue.companyId, explicitParentIds, {
+            directParentLockMode: "update",
+            ancestorDepth: actor.agentId ? LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH : 0,
+          });
+        const parentRows = explicitParentIds
+          .map((parentId) => lockedAncestry.get(parentId))
+          .filter((row): row is LockedIssueAncestryRow => Boolean(row));
+        if (parentRows.length !== explicitParentIds.length) {
+          throw unprocessable("Suggested tasks reference parent issues outside this company or issue tree");
+        }
+        const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
+
+        // A task-bridge key's create boundary is enforced through
+        // tasks:assign for every task it creates — the route decides it for
+        // unassigned drafts too. The per-task re-decision below must mirror
+        // that: gate it on the assignee alone and a scoped key can land an
+        // unassigned child in a project no decision ever saw. Nor may it
+        // gate on the parent still carrying a project: a parent that moved
+        // project-less mid-acceptance leaves the child to createChild's
+        // inference backstop, so the key's boundary is re-decided against
+        // the locked parent state unconditionally.
+        const actorIsTaskBridgeKey =
+          actor.authorization?.type === "agent" &&
+          actor.authorization.source === "agent_key" &&
+          actor.authorization.keyScope?.kind === "task_bridge";
+
         for (const task of orderedTasks) {
           const parentIssueId = task.parentClientKey
             ? createdByClientKey.get(task.parentClientKey)?.issueId ?? null
             : task.parentId ?? interaction.payload.defaultParentId ?? issue.id;
           if (!parentIssueId) {
             throw unprocessable(`Unable to resolve parent for suggested task ${task.clientKey}`);
+          }
+
+          // The route's effects check authorized each assigned task against
+          // `task.projectId ?? issue.projectId` before anything existed, so
+          // the parent's own project was invisible to it — whether that
+          // parent was created earlier in this same batch (typically with a
+          // project the inference backstop attached) or is a pre-existing
+          // issue named by `parentId`/`defaultParentId`. Either way the task
+          // inherits that project through ordinary parent inheritance, so it
+          // still needs the decisions the route would have made had it seen
+          // the real landing project.
+          const parentProjectId = task.parentClientKey
+            ? createdProjectByClientKey.get(task.parentClientKey) ?? null
+            : parentById.get(parentIssueId)?.projectId ?? null;
+          const inheritsParentProject =
+            (task.projectId ?? issue.projectId) == null && parentProjectId != null;
+
+          // The routes decide source trust for every create against the
+          // project the issue actually lands in, and the inference backstop
+          // re-evaluates the creating agent when it attaches a project
+          // itself. Parent inheritance is the one remaining path: the project
+          // arrives at createChild explicit, so neither decision ever sees
+          // it. Re-evaluate the resolving actor here and stamp a low-trust
+          // verdict on the child — otherwise a quarantined root's subtasks
+          // land in the very project the quarantine is about, unquarantined.
+          let inheritedProjectChildId: string | null = null;
+          let inheritedProjectSourceTrust: SourceTrustMetadata | null = null;
+          if (actor.agentId && inheritsParentProject) {
+            inheritedProjectChildId = randomUUID();
+            const trustDecision = await resolveActorTrustDecisionForIssue({
+              db: tx as unknown as Db,
+              issue: {
+                id: inheritedProjectChildId,
+                companyId: issue.companyId,
+                projectId: parentProjectId,
+              },
+              actor: {
+                actorType: "agent",
+                actorId: actor.agentId,
+                agentId: actor.agentId,
+                runId: actor.runId ?? null,
+              },
+            });
+            if (trustDecision.kind === "denied") {
+              throw issueThreadInteractionResolutionError(
+                403,
+                "interaction_governed_action_denied",
+                "Suggested-task creation requires independent authorization for every selected task",
+              );
+            }
+            if (trustDecision.kind === "low_trust_review") {
+              inheritedProjectSourceTrust = trustDecision.sourceTrust;
+            }
+          }
+
+          // The project the decision sees is the one the child actually
+          // lands with before any backstop inference: the explicit
+          // pre-create view when it resolved, else the locked parent's
+          // project. Under `inheritsParentProject` the two coincide.
+          const reDecisionProjectId = task.projectId ?? issue.projectId ?? parentProjectId;
+          if (
+            actor.agentId &&
+            (((task.assigneeAgentId || task.assigneeUserId) && inheritsParentProject) ||
+              actorIsTaskBridgeKey)
+          ) {
+            let assignmentActor: AuthorizationActor | null = actor.authorization ?? null;
+            if (!assignmentActor) {
+              const actorOnBehalfOfUserId = actor.runId
+                ? await tx
+                  .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+                  .from(heartbeatRuns)
+                  .where(and(
+                    eq(heartbeatRuns.id, actor.runId),
+                    eq(heartbeatRuns.companyId, issue.companyId),
+                    eq(heartbeatRuns.agentId, actor.agentId),
+                  ))
+                  .then((rows) => rows[0]?.responsibleUserId?.trim() || null)
+                : null;
+              assignmentActor = {
+                type: "agent",
+                agentId: actor.agentId,
+                companyId: issue.companyId,
+                runId: actor.runId ?? null,
+                onBehalfOfUserId: actorOnBehalfOfUserId,
+              };
+            }
+            const assignmentDecision = await authorizationService(tx as unknown as Db).decide({
+              actor: assignmentActor,
+              action: "tasks:assign",
+              resource: {
+                type: "issue",
+                companyId: issue.companyId,
+                projectId: reDecisionProjectId,
+                parentIssueId,
+                assigneeAgentId: task.assigneeAgentId ?? null,
+                assigneeUserId: task.assigneeUserId ?? null,
+              },
+              scope: {
+                projectId: reDecisionProjectId,
+                parentIssueId,
+                assigneeAgentId: task.assigneeAgentId ?? null,
+                assigneeUserId: task.assigneeUserId ?? null,
+              },
+            });
+            if (!assignmentDecision.allowed) {
+              throw issueThreadInteractionResolutionError(
+                403,
+                "interaction_governed_action_denied",
+                "Suggested-task creation requires independent authorization for every selected task",
+              );
+            }
           }
 
           const { issue: createdIssue } = await issueService(tx as unknown as Db).createChild(parentIssueId, {
@@ -3020,11 +3171,22 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             createdByUserId: actor.userId ?? null,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.userId ?? null,
+            // The inference backstop's trust decision reads the run from
+            // actorRunId, not from actorAuthorization — forward the resolving
+            // run so a restricted run's acceptance stays quarantined.
+            actorRunId: actor.runId ?? null,
+            actorAuthorization: actor.authorization ?? null,
+            // The id rides along only when the inherited-project trust
+            // decision above ran, so its sourceTrust points at the issue it
+            // was decided for.
+            ...(inheritedProjectChildId ? { id: inheritedProjectChildId } : {}),
+            ...(inheritedProjectSourceTrust ? { sourceTrust: inheritedProjectSourceTrust } : {}),
           } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
 
           const parentIdentifier = createdByClientKey.get(task.parentClientKey ?? "")?.identifier
             ?? parentById.get(parentIssueId)?.identifier
             ?? null;
+          createdProjectByClientKey.set(task.clientKey, createdIssue.projectId ?? null);
           createdByClientKey.set(task.clientKey, {
             clientKey: task.clientKey,
             issueId: createdIssue.id,

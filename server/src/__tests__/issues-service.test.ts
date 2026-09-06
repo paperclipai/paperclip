@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -7,6 +7,7 @@ import {
   agents,
   companies,
   createDb,
+  type Db,
   documentRevisions,
   documents,
   environments,
@@ -32,6 +33,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { lockIssueAncestryForAuthorization } from "../services/issue-ancestry-locks.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -6367,6 +6369,569 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     const companyIssues = await svc.list(companyId, { parentId: sourceIssueId });
     expect(companyIssues).toHaveLength(2);
   });
+
+  it("decides backstop project inference against the decompose caller's actor", async () => {
+    // Decomposition children are not project-pinned, so the service-layer
+    // inference backstop can attach a project to them. That tasks:assign
+    // decision must be made against the route caller's authenticated actor —
+    // a key scope that cannot assign withdraws the inferred project instead
+    // of being dropped on the way into the service.
+    const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "shove",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Split out the repro",
+          description: "Reproduce it in https://github.com/zannis/shove first.",
+          status: "todo" as const,
+          workMode: "standard" as const,
+          priority: "medium" as const,
+          createdByAgentId: assigneeAgentId,
+          assigneeAgentId,
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+      actorAuthorization: {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId,
+        source: "agent_key",
+        keyScope: { kind: "skill_test", issueId: randomUUID() },
+      },
+    });
+
+    expect(result.newlyCreatedIssues).toHaveLength(1);
+    expect(result.newlyCreatedIssues[0]?.projectId).toBeNull();
+    expect(result.newlyCreatedIssues[0]?.assigneeAgentId).toBe(assigneeAgentId);
+  });
+
+  it("denies a task-bridge key's unassigned create whose scope covers neither the inferred project nor the parent", async () => {
+    // A task-bridge key's create boundary is enforced through tasks:assign
+    // for every task the key creates — the routes decide it for unassigned
+    // drafts too. For that key a denial cannot fall back to "withdraw the
+    // inferred project and create anyway": the decision is the create
+    // boundary itself, and an unassigned create has no independently
+    // authorized assignment to fall back to. A denied decision aborts the
+    // create instead of committing a projectless child no decision covered.
+    const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "shove",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+
+    await expect(svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Split out the repro",
+          description: "Reproduce it in https://github.com/zannis/shove first.",
+          status: "todo" as const,
+          workMode: "standard" as const,
+          priority: "medium" as const,
+          createdByAgentId: assigneeAgentId,
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+      actorAuthorization: {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId,
+        source: "agent_key",
+        keyId: randomUUID(),
+        keyScope: { kind: "task_bridge", projectIds: [randomUUID()] },
+      },
+    })).rejects.toMatchObject({ status: 403 });
+
+    const children = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "Split out the repro")));
+    expect(children).toHaveLength(0);
+  });
+
+  it("keeps backstop inference for a task-bridge key whose scope covers the parent", async () => {
+    // The forced decision must not over-block: a key rooted at the parent
+    // subtree is allowed to create anywhere under it regardless of the
+    // landing project, so the inferred project stands.
+    const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "shove",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+
+    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Split out the repro",
+          description: "Reproduce it in https://github.com/zannis/shove first.",
+          status: "todo" as const,
+          workMode: "standard" as const,
+          priority: "medium" as const,
+          createdByAgentId: assigneeAgentId,
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+      actorAuthorization: {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId,
+        source: "agent_key",
+        keyId: randomUUID(),
+        keyScope: { kind: "task_bridge", parentIssueIds: [sourceIssueId] },
+      },
+    });
+
+    expect(result.newlyCreatedIssues).toHaveLength(1);
+    expect(result.newlyCreatedIssues[0]?.projectId).toBe(projectId);
+  });
+
+  it("locks the parent chain during the backstop decisions so a concurrent ancestor move cannot dodge the bridge boundary", async () => {
+    // The backstop's trust and tasks:assign decisions walk the parent chain
+    // through unlocked reads. Without pinning that chain, a concurrent
+    // transaction can reparent an ancestor between the decision and the
+    // insert's commit, landing the child under a chain the decision never
+    // saw. The create must queue behind the held ancestor row and then
+    // decide against the moved chain. The outsider id is pinned above every
+    // other id so the chase of the moved ancestor stays within the sorted
+    // lock order and reaches the boundary decision; an outsider sorting
+    // below the held ids aborts with a retryable conflict instead, which
+    // the out-of-global-order test below covers.
+    const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const rootIssueId = randomUUID();
+    const midIssueId = randomUUID();
+    const outsiderIssueId = "ffffffff-ffff-4fff-8fff-fffffffffff1";
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "shove",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      title: "Authorized root",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: outsiderIssueId,
+      companyId,
+      title: "Outside the key's boundary",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: midIssueId,
+      companyId,
+      parentId: rootIssueId,
+      title: "Ancestor about to be moved",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db
+      .update(issues)
+      .set({ parentId: midIssueId })
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, sourceIssueId)));
+
+    let holdingLock!: () => void;
+    const lockHeld = new Promise<void>((resolve) => { holdingLock = resolve; });
+    let releaseHold!: () => void;
+    const holdReleased = new Promise<void>((resolve) => { releaseHold = resolve; });
+
+    const ancestorMove = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, midIssueId)))
+        .for("update");
+      holdingLock();
+      await holdReleased;
+      await tx
+        .update(issues)
+        .set({ parentId: outsiderIssueId })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, midIssueId)));
+    });
+    await lockHeld;
+
+    const decomposition = svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Split out the repro",
+          description: "Reproduce it in https://github.com/zannis/shove first.",
+          status: "todo" as const,
+          workMode: "standard" as const,
+          priority: "medium" as const,
+          createdByAgentId: assigneeAgentId,
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+      actorAuthorization: {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId,
+        source: "agent_key",
+        keyId: randomUUID(),
+        keyScope: { kind: "task_bridge", parentIssueIds: [rootIssueId] },
+      },
+    });
+    const decompositionSettled = decomposition.then(
+      () => ({ rejected: null as unknown }),
+      (error: unknown) => ({ rejected: error }),
+    );
+
+    // The create must queue behind the held ancestor row — that wait IS the
+    // fix. Without the chain lock it sails past the held row, walks the
+    // stale chain, and commits the child before the move lands.
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const lockResult = await db.execute(sql`select count(*)::int as waiting from pg_locks where granted = false`);
+      const lockRows = (lockResult as { rows?: Array<{ waiting: number }> }).rows
+        ?? (lockResult as unknown as Array<{ waiting: number }>);
+      if (Number(lockRows[0]?.waiting ?? 0) > 0) break;
+      if (Date.now() > deadline) {
+        releaseHold();
+        await ancestorMove;
+        const settled = await decompositionSettled;
+        throw new Error(
+          `decomposition never queued behind the held ancestor row; settled with: ${String(settled.rejected ?? "success")}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    releaseHold();
+    await ancestorMove;
+
+    const { rejected } = await decompositionSettled;
+    expect(rejected).toMatchObject({ status: 403 });
+
+    const children = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "Split out the repro")));
+    expect(children).toHaveLength(0);
+  }, 30_000);
+
+  it("acquires ancestry authorization locks in globally sorted id order", async () => {
+    // Two transactions locking overlapping ancestor/descendant sets must
+    // take the shared rows in the same relative order, or Postgres resolves
+    // the cycle by aborting one of them. Locking direct parents first and
+    // ancestors bottom-up per parent violated that; the helper's contract
+    // is one sorted pass over the whole set. The returned map preserves
+    // acquisition order.
+    const { companyId } = await seedAcceptedPlanIssue();
+    const rootIssueId = "0aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const midIssueId = "99999999-9999-4999-8999-999999999999";
+    const parentIssueId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      title: "Root with the lowest id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: midIssueId,
+      companyId,
+      parentId: rootIssueId,
+      title: "Ancestor with a mid id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      parentId: midIssueId,
+      title: "Direct parent with the highest id",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const acquisitionOrder = await db.transaction(async (tx) => {
+      const locked = await lockIssueAncestryForAuthorization(tx as unknown as Db, companyId, [parentIssueId], {
+        directParentLockMode: "update",
+      });
+      return [...locked.keys()];
+    });
+
+    expect(acquisitionOrder).toEqual([rootIssueId, midIssueId, parentIssueId]);
+  });
+
+  it("keeps the sorted lock order representation-independent for mixed-case caller ids", async () => {
+    // The uuid column matches any casing, so an uppercase caller id locks
+    // the same row — but uppercase hex sorts before lowercase in raw string
+    // order ('F' < 'a'), so two transactions spelling a shared id
+    // differently would compute opposite acquisition orders: the deadlock
+    // the sorted pass exists to prevent. Ids must be canonicalized before
+    // sorting, and the returned map keyed canonically either way.
+    const { companyId } = await seedAcceptedPlanIssue();
+    const rootIssueId = "abaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    const midIssueId = "bcbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+    const parentIssueId = "fdffffff-ffff-4fff-8fff-fffffffffff1";
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      title: "Root with the lowest canonical id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: midIssueId,
+      companyId,
+      parentId: rootIssueId,
+      title: "Ancestor with a mid canonical id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      parentId: midIssueId,
+      title: "Direct parent whose uppercase form sorts below the ancestors",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const locked = await db.transaction(async (tx) => {
+      return lockIssueAncestryForAuthorization(
+        tx as unknown as Db,
+        companyId,
+        [parentIssueId.toUpperCase()],
+        { directParentLockMode: "update" },
+      );
+    });
+
+    expect([...locked.keys()]).toEqual([rootIssueId, midIssueId, parentIssueId]);
+    expect(locked.get(parentIssueId)?.parentId).toBe(midIssueId);
+  });
+
+  it("aborts instead of chasing an escaped ancestor that would lock out of global order", async () => {
+    // A reparent landing between the unlocked discovery walk and the sorted
+    // lock pass leaves the new ancestor unlocked ("escaped"). Chasing it
+    // when it sorts below an already-held id would acquire locks out of
+    // global order — the deadlock shape the sorted pass exists to prevent —
+    // so the helper must give up with the retryable conflict instead.
+    const { companyId } = await seedAcceptedPlanIssue();
+    const escapedOutsiderId = "00000000-0000-4000-8000-00000000000e";
+    const directParentId = "1aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaae";
+    const ancestorId = "1bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbe";
+    await db.insert(issues).values({
+      id: escapedOutsiderId,
+      companyId,
+      title: "Future ancestor with the lowest id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: ancestorId,
+      companyId,
+      title: "Ancestor about to be reparented",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: directParentId,
+      companyId,
+      parentId: ancestorId,
+      title: "Direct parent",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    let holdingLock!: () => void;
+    const lockHeld = new Promise<void>((resolve) => { holdingLock = resolve; });
+    let releaseHold!: () => void;
+    const holdReleased = new Promise<void>((resolve) => { releaseHold = resolve; });
+
+    // Hold the direct parent so the helper finishes its unlocked discovery
+    // walk and queues on its first lock; commit the reparent before letting
+    // it through, so the locked ancestor row points at the escaped outsider.
+    const ancestorMove = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, directParentId)))
+        .for("update");
+      holdingLock();
+      await holdReleased;
+      await tx
+        .update(issues)
+        .set({ parentId: escapedOutsiderId })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, ancestorId)));
+    });
+    await lockHeld;
+
+    const lockAttempt = db.transaction(async (tx) => {
+      const locked = await lockIssueAncestryForAuthorization(tx as unknown as Db, companyId, [directParentId], {
+        directParentLockMode: "update",
+      });
+      return [...locked.keys()];
+    });
+    const lockAttemptSettled = lockAttempt.then(
+      (keys) => ({ rejected: null as unknown, keys }),
+      (error: unknown) => ({ rejected: error, keys: null }),
+    );
+
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const lockResult = await db.execute(sql`select count(*)::int as waiting from pg_locks where granted = false`);
+      const lockRows = (lockResult as { rows?: Array<{ waiting: number }> }).rows
+        ?? (lockResult as unknown as Array<{ waiting: number }>);
+      if (Number(lockRows[0]?.waiting ?? 0) > 0) break;
+      if (Date.now() > deadline) {
+        releaseHold();
+        await ancestorMove;
+        const settled = await lockAttemptSettled;
+        throw new Error(
+          `lock helper never queued behind the held direct parent; settled with: ${String(settled.rejected ?? settled.keys)}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    releaseHold();
+    await ancestorMove;
+
+    const { rejected } = await lockAttemptSettled;
+    expect(rejected).toMatchObject({ status: 409 });
+  }, 30_000);
+
+  it("chases an escaped ancestor that extends the sorted lock order", async () => {
+    // The same mid-discovery reparent, but the new ancestor sorts above
+    // every already-held id, so the follow-up pass extends the sorted
+    // acquisition sequence and the chase completes.
+    const { companyId } = await seedAcceptedPlanIssue();
+    const escapedOutsiderId = "ffffffff-ffff-4fff-8fff-fffffffffffe";
+    const directParentId = "2aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaae";
+    const ancestorId = "2bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbe";
+    await db.insert(issues).values({
+      id: escapedOutsiderId,
+      companyId,
+      title: "Future ancestor with the highest id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: ancestorId,
+      companyId,
+      title: "Ancestor about to be reparented",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: directParentId,
+      companyId,
+      parentId: ancestorId,
+      title: "Direct parent",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    let holdingLock!: () => void;
+    const lockHeld = new Promise<void>((resolve) => { holdingLock = resolve; });
+    let releaseHold!: () => void;
+    const holdReleased = new Promise<void>((resolve) => { releaseHold = resolve; });
+
+    const ancestorMove = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, directParentId)))
+        .for("update");
+      holdingLock();
+      await holdReleased;
+      await tx
+        .update(issues)
+        .set({ parentId: escapedOutsiderId })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, ancestorId)));
+    });
+    await lockHeld;
+
+    const lockAttempt = db.transaction(async (tx) => {
+      const locked = await lockIssueAncestryForAuthorization(tx as unknown as Db, companyId, [directParentId], {
+        directParentLockMode: "update",
+      });
+      return locked;
+    });
+    const lockAttemptSettled = lockAttempt.then(
+      (locked) => ({ rejected: null as unknown, locked }),
+      (error: unknown) => ({ rejected: error, locked: null }),
+    );
+
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const lockResult = await db.execute(sql`select count(*)::int as waiting from pg_locks where granted = false`);
+      const lockRows = (lockResult as { rows?: Array<{ waiting: number }> }).rows
+        ?? (lockResult as unknown as Array<{ waiting: number }>);
+      if (Number(lockRows[0]?.waiting ?? 0) > 0) break;
+      if (Date.now() > deadline) {
+        releaseHold();
+        await ancestorMove;
+        const settled = await lockAttemptSettled;
+        throw new Error(
+          `lock helper never queued behind the held direct parent; settled with: ${String(settled.rejected ?? "success")}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    releaseHold();
+    await ancestorMove;
+
+    const { rejected, locked } = await lockAttemptSettled;
+    expect(rejected).toBeNull();
+    expect([...locked!.keys()]).toEqual([directParentId, ancestorId, escapedOutsiderId]);
+    expect(locked!.get(ancestorId)?.parentId).toBe(escapedOutsiderId);
+  }, 30_000);
 
   it("rejects a different child set for the same accepted plan fingerprint", async () => {
     const { sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();

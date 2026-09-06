@@ -94,12 +94,23 @@ export function buildPromotedSourceTrust(input: {
   };
 }
 
-export async function resolveActorSourceTrustForIssue(input: {
+export type ActorTrustDecisionForIssue =
+  | { kind: "standard" }
+  | { kind: "denied"; detail: string }
+  | { kind: "low_trust_review"; sourceTrust: SourceTrustMetadata };
+
+/**
+ * The trust verdict itself, with denial as data rather than a thrown 403 —
+ * for callers that must decide what a denial means in their own context
+ * (a route fails the request; the service-layer inference backstop withdraws
+ * its guess instead of failing an internal flow).
+ */
+export async function resolveActorTrustDecisionForIssue(input: {
   db: Db;
   issue: SourceTrustIssueContext;
   actor: SourceTrustActor;
-}): Promise<SourceTrustMetadata | null> {
-  if (input.actor.actorType !== "agent" || !input.actor.agentId) return null;
+}): Promise<ActorTrustDecisionForIssue> {
+  if (input.actor.actorType !== "agent" || !input.actor.agentId) return { kind: "standard" };
 
   const [agent, project, run] = await Promise.all([
     input.db
@@ -135,11 +146,14 @@ export async function resolveActorSourceTrustForIssue(input: {
 
   if (input.actor.runId && (!run || run.agentId !== input.actor.agentId)) {
     // Fail closed: an unknown or mismatched run cannot prove higher trust, so tag the write as quarantined.
-    return buildLowTrustSourceTrust({
-      issueId: input.issue.id,
-      runId: input.actor.runId,
-      agentId: input.actor.agentId,
-    });
+    return {
+      kind: "low_trust_review",
+      sourceTrust: buildLowTrustSourceTrust({
+        issueId: input.issue.id,
+        runId: input.actor.runId,
+        agentId: input.actor.agentId,
+      }),
+    };
   }
 
   const runContext = readObject(run?.contextSnapshot);
@@ -162,12 +176,27 @@ export async function resolveActorSourceTrustForIssue(input: {
   });
 
   if (resolution.kind === "denied") {
-    throw forbidden(resolution.detail);
+    return { kind: "denied", detail: resolution.detail };
   }
-  if (resolution.kind !== "low_trust_review") return null;
-  return buildLowTrustSourceTrust({
-    issueId: input.issue.id,
-    runId: input.actor.runId,
-    agentId: input.actor.agentId,
-  });
+  if (resolution.kind !== "low_trust_review") return { kind: "standard" };
+  return {
+    kind: "low_trust_review",
+    sourceTrust: buildLowTrustSourceTrust({
+      issueId: input.issue.id,
+      runId: input.actor.runId,
+      agentId: input.actor.agentId,
+    }),
+  };
+}
+
+export async function resolveActorSourceTrustForIssue(input: {
+  db: Db;
+  issue: SourceTrustIssueContext;
+  actor: SourceTrustActor;
+}): Promise<SourceTrustMetadata | null> {
+  const decision = await resolveActorTrustDecisionForIssue(input);
+  if (decision.kind === "denied") {
+    throw forbidden(decision.detail);
+  }
+  return decision.kind === "low_trust_review" ? decision.sourceTrust : null;
 }
