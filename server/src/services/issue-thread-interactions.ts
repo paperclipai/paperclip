@@ -74,6 +74,7 @@ import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH } from "./trust-preset-resolver.js";
+import { lockIssueAncestryForAuthorization, type LockedIssueAncestryRow } from "./issue-ancestry-locks.js";
 import { resolveActorTrustDecisionForIssue } from "./source-trust.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -2977,64 +2978,33 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           throw interactionAlreadyResolvedError();
         }
 
-        // Lock the pre-existing parents for the transaction: the project
-        // read here feeds the tasks:assign and source-trust decisions
-        // below, and createChild resolves the landing project from this
-        // same row in this same transaction. An unlocked pre-transaction
-        // snapshot let a concurrent parent move divorce the decided
-        // project from the persisted one.
-        const parentRows = explicitParentIds.length === 0
-          ? []
-          : await tx
-            .select({
-              id: issues.id,
-              identifier: issues.identifier,
-              companyId: issues.companyId,
-              projectId: issues.projectId,
-              parentId: issues.parentId,
-            })
-            .from(issues)
-            .where(and(eq(issues.companyId, issue.companyId), inArray(issues.id, explicitParentIds)))
-            .orderBy(asc(issues.id))
-            .for("update");
+        // Lock the pre-existing parents and their ancestry for the
+        // transaction. The project read here feeds the tasks:assign and
+        // source-trust decisions below, and createChild resolves the
+        // landing project from this same row in this same transaction —
+        // an unlocked pre-transaction snapshot let a concurrent parent
+        // move divorce the decided project from the persisted one. The
+        // ancestor chains those decisions walk (a task-bridge key's parent
+        // boundary, a run's low-trust boundary) are pinned by the same
+        // call: parents take exclusive locks, ancestors share locks, all
+        // acquired in one globally sorted pass so overlapping acceptances
+        // cannot deadlock on opposite-order acquisition. Share-locked
+        // ancestors keep concurrent acceptances over the same chain
+        // non-blocking while any reparent queues until this transaction
+        // ends.
+        const lockedAncestry = explicitParentIds.length === 0
+          ? new Map<string, LockedIssueAncestryRow>()
+          : await lockIssueAncestryForAuthorization(tx as unknown as Db, issue.companyId, explicitParentIds, {
+            directParentLockMode: "update",
+            ancestorDepth: actor.agentId ? LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH : 0,
+          });
+        const parentRows = explicitParentIds
+          .map((parentId) => lockedAncestry.get(parentId))
+          .filter((row): row is LockedIssueAncestryRow => Boolean(row));
         if (parentRows.length !== explicitParentIds.length) {
           throw unprocessable("Suggested tasks reference parent issues outside this company or issue tree");
         }
         const parentById = new Map(parentRows.map((row) => [row.id, row] as const));
-
-        // Locking the direct parents pins the project the decisions read,
-        // but not the ancestry those decisions walk: a task-bridge key's
-        // parent boundary and a run's low-trust boundary both approve a
-        // chain of ancestor rows, and a concurrent transaction reparenting
-        // one of those ancestors touches only the ancestor's own row — no
-        // conflict with the direct-parent lock — so the approved chain
-        // could leave the authorized root between the decision and the
-        // commit. Walk each chain bottom-up, share-locking every ancestor
-        // and reading the next hop from the row just locked, so the chain
-        // the decisions walk is the chain the commit persists. Share locks
-        // let concurrent acceptances over the same chain proceed while
-        // blocking any reparent until this transaction ends.
-        if (actor.agentId) {
-          const lockedChainIds = new Set(parentRows.map((row) => row.id));
-          for (const row of parentRows) {
-            let cursor = row.parentId ?? null;
-            for (
-              let depth = 0;
-              cursor && !lockedChainIds.has(cursor) && depth < LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH;
-              depth += 1
-            ) {
-              const ancestor = await tx
-                .select({ id: issues.id, parentId: issues.parentId })
-                .from(issues)
-                .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, cursor)))
-                .for("share")
-                .then((rows) => rows[0] ?? null);
-              if (!ancestor) break;
-              lockedChainIds.add(ancestor.id);
-              cursor = ancestor.parentId ?? null;
-            }
-          }
-        }
 
         // A task-bridge key's create boundary is enforced through
         // tasks:assign for every task it creates — the route decides it for

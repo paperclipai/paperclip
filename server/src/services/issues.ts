@@ -66,7 +66,8 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { lockIssueAncestryForAuthorization } from "./issue-ancestry-locks.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -7389,6 +7390,17 @@ export function issueService(db: Db) {
             // the task stays project-less rather than failing an internal
             // flow, or worse, settling into a project whose policy rejected it.
             issueData.id ??= randomUUID();
+            // The trust and assignment decisions below walk the parent
+            // chain through unlocked reads (the low-trust boundary and a
+            // task-bridge key's parent-tree boundary). Pin that chain
+            // first: share locks on the parent and every ancestor keep a
+            // concurrent reparent from moving the subtree out of the
+            // decided boundary between these decisions and the commit.
+            if (issueData.parentId) {
+              await lockIssueAncestryForAuthorization(tx as unknown as Db, companyId, [issueData.parentId], {
+                directParentLockMode: "share",
+              });
+            }
             const trustDecision = await resolveActorTrustDecisionForIssue({
               db: tx as unknown as Db,
               issue: {
@@ -7408,22 +7420,25 @@ export function issueService(db: Db) {
             // tasks:assign against the project it lands in. Inference must
             // not attach a project the creating agent could not have assigned
             // into through a route — a protected or otherwise restricted
-            // project stays out of reach of direct callers. Like a trust
-            // denial, an assignment denial withdraws the guess rather than
-            // failing the flow: the assignment itself is what the caller was
-            // already doing project-less, only the project attachment is new.
-            // A task-bridge key forces the decision even for an unassigned
-            // draft: tasks:assign is that key's create boundary — the routes
-            // decide it for every task the key creates — so an inferred
-            // project its scope never covered must withdraw rather than
-            // settle in with no decision ever seeing it.
+            // project stays out of reach of direct callers. An assignment
+            // denial withdraws the guess rather than failing the flow: the
+            // assignment itself is what the caller was already doing
+            // project-less, only the project attachment is new.
+            // A task-bridge key is different: tasks:assign is that key's
+            // create boundary — the routes decide it for every task the key
+            // creates, unassigned drafts included — so the decision runs
+            // unconditionally and a denial aborts the create. There is no
+            // independently authorized assignment to fall back to, and
+            // withdrawing the project would still commit a create no
+            // boundary decision ever covered.
             const actorIsTaskBridgeKey =
               actorAuthorization?.type === "agent" &&
               actorAuthorization.source === "agent_key" &&
               actorAuthorization.keyScope?.kind === "task_bridge";
             const needsAssignmentCheck =
-              trustDecision.kind !== "denied" &&
-              Boolean(issueData.assigneeAgentId || issueData.assigneeUserId || actorIsTaskBridgeKey);
+              actorIsTaskBridgeKey ||
+              (trustDecision.kind !== "denied" &&
+                Boolean(issueData.assigneeAgentId || issueData.assigneeUserId));
             let assignmentAllowed = !needsAssignmentCheck;
             if (needsAssignmentCheck) {
               // Authorize the caller, not a stand-in: when the caller passed
@@ -7482,6 +7497,12 @@ export function issueService(db: Db) {
                   assigneeUserId: issueData.assigneeUserId ?? null,
                 },
               })).allowed;
+            }
+            if (actorIsTaskBridgeKey && !assignmentAllowed) {
+              throw forbidden(
+                "Task creation denied: this task-bridge key's scope covers neither the inferred project nor the task's parent",
+                { code: "task_bridge_create_boundary_denied" },
+              );
             }
             if (trustDecision.kind !== "denied" && assignmentAllowed) {
               issueData.projectId = inferredProjectId;

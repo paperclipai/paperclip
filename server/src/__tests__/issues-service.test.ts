@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -7,6 +7,7 @@ import {
   agents,
   companies,
   createDb,
+  type Db,
   documentRevisions,
   documents,
   environments,
@@ -32,6 +33,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { lockIssueAncestryForAuthorization } from "../services/issue-ancestry-locks.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -6419,14 +6421,14 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     expect(result.newlyCreatedIssues[0]?.assigneeAgentId).toBe(assigneeAgentId);
   });
 
-  it("withdraws backstop inference for a task-bridge key's unassigned create", async () => {
+  it("denies a task-bridge key's unassigned create whose scope covers neither the inferred project nor the parent", async () => {
     // A task-bridge key's create boundary is enforced through tasks:assign
     // for every task the key creates — the routes decide it for unassigned
-    // drafts too. The backstop only ran that decision when the draft had an
-    // assignee, so an unassigned bridge-created task could settle into an
-    // inferred project the key's scope never covered, with no decision ever
-    // seeing that project. The bridge key forces the decision, and a scope
-    // that does not cover the inferred project withdraws the guess.
+    // drafts too. For that key a denial cannot fall back to "withdraw the
+    // inferred project and create anyway": the decision is the create
+    // boundary itself, and an unassigned create has no independently
+    // authorized assignment to fall back to. A denied decision aborts the
+    // create instead of committing a projectless child no decision covered.
     const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
     const projectId = randomUUID();
     await db.insert(projects).values({
@@ -6444,7 +6446,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
       cwd: "/repos/shove",
     });
 
-    const result = await svc.decomposeAcceptedPlan(sourceIssueId, {
+    await expect(svc.decomposeAcceptedPlan(sourceIssueId, {
       acceptedPlanRevisionId,
       children: [
         {
@@ -6465,10 +6467,13 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
         keyId: randomUUID(),
         keyScope: { kind: "task_bridge", projectIds: [randomUUID()] },
       },
-    });
+    })).rejects.toMatchObject({ status: 403 });
 
-    expect(result.newlyCreatedIssues).toHaveLength(1);
-    expect(result.newlyCreatedIssues[0]?.projectId).toBeNull();
+    const children = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "Split out the repro")));
+    expect(children).toHaveLength(0);
   });
 
   it("keeps backstop inference for a task-bridge key whose scope covers the parent", async () => {
@@ -6517,6 +6522,184 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
 
     expect(result.newlyCreatedIssues).toHaveLength(1);
     expect(result.newlyCreatedIssues[0]?.projectId).toBe(projectId);
+  });
+
+  it("locks the parent chain during the backstop decisions so a concurrent ancestor move cannot dodge the bridge boundary", async () => {
+    // The backstop's trust and tasks:assign decisions walk the parent chain
+    // through unlocked reads. Without pinning that chain, a concurrent
+    // transaction can reparent an ancestor between the decision and the
+    // insert's commit, landing the child under a chain the decision never
+    // saw. The create must queue behind the held ancestor row and then
+    // decide against the moved chain.
+    const { companyId, sourceIssueId, acceptedPlanRevisionId, assigneeAgentId } = await seedAcceptedPlanIssue();
+    const rootIssueId = randomUUID();
+    const midIssueId = randomUUID();
+    const outsiderIssueId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "shove",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "shove",
+      repoUrl: "https://github.com/zannis/shove",
+      cwd: "/repos/shove",
+    });
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      title: "Authorized root",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: outsiderIssueId,
+      companyId,
+      title: "Outside the key's boundary",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: midIssueId,
+      companyId,
+      parentId: rootIssueId,
+      title: "Ancestor about to be moved",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db
+      .update(issues)
+      .set({ parentId: midIssueId })
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, sourceIssueId)));
+
+    let holdingLock!: () => void;
+    const lockHeld = new Promise<void>((resolve) => { holdingLock = resolve; });
+    let releaseHold!: () => void;
+    const holdReleased = new Promise<void>((resolve) => { releaseHold = resolve; });
+
+    const ancestorMove = db.transaction(async (tx) => {
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, midIssueId)))
+        .for("update");
+      holdingLock();
+      await holdReleased;
+      await tx
+        .update(issues)
+        .set({ parentId: outsiderIssueId })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, midIssueId)));
+    });
+    await lockHeld;
+
+    const decomposition = svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId,
+      children: [
+        {
+          title: "Split out the repro",
+          description: "Reproduce it in https://github.com/zannis/shove first.",
+          status: "todo" as const,
+          workMode: "standard" as const,
+          priority: "medium" as const,
+          createdByAgentId: assigneeAgentId,
+        },
+      ],
+      actorAgentId: assigneeAgentId,
+      actorAuthorization: {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId,
+        source: "agent_key",
+        keyId: randomUUID(),
+        keyScope: { kind: "task_bridge", parentIssueIds: [rootIssueId] },
+      },
+    });
+    const decompositionSettled = decomposition.then(
+      () => ({ rejected: null as unknown }),
+      (error: unknown) => ({ rejected: error }),
+    );
+
+    // The create must queue behind the held ancestor row — that wait IS the
+    // fix. Without the chain lock it sails past the held row, walks the
+    // stale chain, and commits the child before the move lands.
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const lockResult = await db.execute(sql`select count(*)::int as waiting from pg_locks where granted = false`);
+      const lockRows = (lockResult as { rows?: Array<{ waiting: number }> }).rows
+        ?? (lockResult as unknown as Array<{ waiting: number }>);
+      if (Number(lockRows[0]?.waiting ?? 0) > 0) break;
+      if (Date.now() > deadline) {
+        releaseHold();
+        await ancestorMove;
+        const settled = await decompositionSettled;
+        throw new Error(
+          `decomposition never queued behind the held ancestor row; settled with: ${String(settled.rejected ?? "success")}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    releaseHold();
+    await ancestorMove;
+
+    const { rejected } = await decompositionSettled;
+    expect(rejected).toMatchObject({ status: 403 });
+
+    const children = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.title, "Split out the repro")));
+    expect(children).toHaveLength(0);
+  }, 30_000);
+
+  it("acquires ancestry authorization locks in globally sorted id order", async () => {
+    // Two transactions locking overlapping ancestor/descendant sets must
+    // take the shared rows in the same relative order, or Postgres resolves
+    // the cycle by aborting one of them. Locking direct parents first and
+    // ancestors bottom-up per parent violated that; the helper's contract
+    // is one sorted pass over the whole set. The returned map preserves
+    // acquisition order.
+    const { companyId } = await seedAcceptedPlanIssue();
+    const rootIssueId = "0aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const midIssueId = "99999999-9999-4999-8999-999999999999";
+    const parentIssueId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      title: "Root with the lowest id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: midIssueId,
+      companyId,
+      parentId: rootIssueId,
+      title: "Ancestor with a mid id",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      parentId: midIssueId,
+      title: "Direct parent with the highest id",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const acquisitionOrder = await db.transaction(async (tx) => {
+      const locked = await lockIssueAncestryForAuthorization(tx as unknown as Db, companyId, [parentIssueId], {
+        directParentLockMode: "update",
+      });
+      return [...locked.keys()];
+    });
+
+    expect(acquisitionOrder).toEqual([rootIssueId, midIssueId, parentIssueId]);
   });
 
   it("rejects a different child set for the same accepted plan fingerprint", async () => {
