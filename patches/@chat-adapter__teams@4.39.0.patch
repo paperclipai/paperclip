@@ -64,3 +64,12 @@ index b0383953a27e4426ce544128a26bf3c8d8964b06..7cb10b871875869c4308e2619e334d52
      }
      if (statusCode === 404) {
        throw new NetworkError2(
+@@ -1666,6 +1712,7 @@ var TeamsAdapter = class {
+       ...toAppOptions(config),
+       client: {
+-        headers: { "User-Agent": "Vercel.ChatSDK" }
++        headers: { "User-Agent": "Vercel.ChatSDK" },
++        timeout: 45e3
+       },
+       httpServerAdapter: this.bridgeAdapter
+     });

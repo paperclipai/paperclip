@@ -1,7 +1,7 @@
 # Paperclip Chat Adapters UI Surfaces — v8
 
 Date: 2026-09-04
-Paperclip base: `8430bd897f01dd4b91e0970efffb71b97e5a2685`
+Original planning base: `d593463ab6394cd356bf27448ea28bad8cccf4ec`; release qualification records the exact tested revision separately.
 Review viewer: [`index.html`](./index.html)
 Wireframes: [`wireframes-v8/`](./wireframes-v8/)
 
@@ -24,41 +24,39 @@ The former "How conversations work" screens are removed. Provider-native activat
 
 ## Screen inventory
 
-| ID  | Group           | Surface         | Title                                 | Desktop   | Mobile   |
-| --- | --------------- | --------------- | ------------------------------------- | --------- | -------- |
-| 01  | Start           | Shared          | Connectors                            | 1280×800  | 375×812  |
-| 02  | Start           | Shared          | Choose how to connect                 | 1280×800  | 375×812  |
-| 03  | Start           | Shared          | Which agent do you want to chat with? | 1280×800  | 375×812  |
-| 13  | Slack           | Setup           | Connect a Slack app                   | 1280×800  | 375×812  |
-| 41  | Slack           | Setup           | Try Maya in Slack                     | 1280×800  | 375×944  |
-| 14  | Slack           | Settings        | Slack settings                        | 1280×984  | 375×1072 |
-| 26  | Slack           | Access          | Slack access                          | 1280×880  | 375×920  |
-| 27  | Slack           | Conversations   | Slack conversations                   | 1280×800  | 375×916  |
-| 28  | Slack           | Activity        | Slack activity                        | 1280×1200 | 375×1640 |
-| 16  | GitHub          | Setup           | Create Maya in GitHub                 | 1280×800  | 375×952  |
-| 45  | GitHub          | Setup           | Choose GitHub repositories            | 1280×800  | 375×1000 |
-| 46  | GitHub          | Setup           | Try Maya in GitHub                    | 1280×800  | 375×1000 |
-| 47  | GitHub          | Custom setup    | Connect an existing GitHub App        | 1280×960  | 375×1392 |
-| 17  | GitHub          | Settings        | GitHub settings                       | 1280×816  | 375×896  |
-| 30  | GitHub          | Access          | GitHub access                         | 1280×880  | 375×920  |
-| 31  | GitHub          | Conversations   | GitHub conversations                  | 1280×800  | 375×916  |
-| 32  | GitHub          | Activity        | GitHub activity                       | 1280×1200 | 375×1640 |
-| 19  | Microsoft Teams | Setup           | Create Maya for Microsoft Teams       | 1280×800  | 375×1080 |
-| 49  | Microsoft Teams | Setup           | Install Maya in Microsoft Teams       | 1280×800  | 375×888  |
-| 50  | Microsoft Teams | Setup           | Try Maya in Microsoft Teams           | 1280×800  | 375×1000 |
-| 48  | Microsoft Teams | Setup reference | Microsoft provider setup details      | 1280×1064 | 375×1496 |
-| 20  | Microsoft Teams | Settings        | Microsoft Teams settings              | 1280×1064 | 375×1176 |
-| 34  | Microsoft Teams | Access          | Microsoft Teams access                | 1280×880  | 375×920  |
-| 35  | Microsoft Teams | Conversations   | Microsoft Teams conversations         | 1280×800  | 375×916  |
-| 36  | Microsoft Teams | Activity        | Microsoft Teams activity              | 1280×1200 | 375×1640 |
-| 22  | Telegram        | Setup           | Create Maya in Telegram               | 1280×800  | 375×1128 |
-| 51  | Telegram        | Setup           | Try Maya in Telegram                  | 1280×800  | 375×832  |
-| 23  | Telegram        | Settings        | Telegram settings                     | 1280×984  | 375×1072 |
-| 38  | Telegram        | Access          | Telegram access                       | 1280×880  | 375×920  |
-| 39  | Telegram        | Conversations   | Telegram conversations                | 1280×800  | 375×916  |
-| 40  | Telegram        | Activity        | Telegram activity                     | 1280×1200 | 375×1640 |
-| 11  | Paperclip       | Task            | Externally connected task             | 1280×800  | 375×812  |
-| 12  | Paperclip       | Agent           | Agent Channels                        | 1280×800  | 375×812  |
+| ID | Group | Surface | Title | Desktop | Mobile |
+|---|---|---|---|---|---|
+| 01 | Start | Shared | Connectors | 1280×800 | 375×812 |
+| 02 | Start | Shared | Choose how to connect | 1280×800 | 375×812 |
+| 03 | Start | Shared | Which agent do you want to chat with? | 1280×800 | 375×812 |
+| 13 | Slack | Setup | Connect a Slack app | 1280×800 | 375×812 |
+| 41 | Slack | Setup | Try Maya in Slack | 1280×800 | 375×944 |
+| 14 | Slack | Settings | Slack settings | 1280×984 | 375×1072 |
+| 26 | Slack | Access | Slack access | 1280×880 | 375×920 |
+| 27 | Slack | Conversations | Slack conversations | 1280×800 | 375×916 |
+| 28 | Slack | Activity | Slack activity | 1280×1200 | 375×1640 |
+| 16 | GitHub | Setup | Create or connect a GitHub App | 1280×920 | 375×1312 |
+| 46 | GitHub | Setup | Try Maya in GitHub | 1280×800 | 375×812 |
+| 17 | GitHub | Settings | GitHub settings | 1280×816 | 375×896 |
+| 30 | GitHub | Access | GitHub access | 1280×880 | 375×920 |
+| 31 | GitHub | Conversations | GitHub conversations | 1280×800 | 375×916 |
+| 32 | GitHub | Activity | GitHub activity | 1280×1200 | 375×1640 |
+| 19 | Microsoft Teams | Setup | Create Maya for Microsoft Teams | 1280×800 | 375×1080 |
+| 49 | Microsoft Teams | Setup | Install Maya in Microsoft Teams | 1280×800 | 375×888 |
+| 50 | Microsoft Teams | Setup | Try Maya in Microsoft Teams | 1280×800 | 375×1000 |
+| 48 | Microsoft Teams | Setup | Microsoft provider setup details | 1280×1064 | 375×1496 |
+| 20 | Microsoft Teams | Settings | Microsoft Teams settings | 1280×1064 | 375×1176 |
+| 34 | Microsoft Teams | Access | Microsoft Teams access | 1280×880 | 375×920 |
+| 35 | Microsoft Teams | Conversations | Microsoft Teams conversations | 1280×800 | 375×916 |
+| 36 | Microsoft Teams | Activity | Microsoft Teams activity | 1280×1200 | 375×1640 |
+| 22 | Telegram | Setup | Create Maya in Telegram | 1280×800 | 375×1128 |
+| 51 | Telegram | Setup | Try Maya in Telegram | 1280×800 | 375×832 |
+| 23 | Telegram | Settings | Telegram settings | 1280×984 | 375×1072 |
+| 38 | Telegram | Access | Telegram access | 1280×880 | 375×920 |
+| 39 | Telegram | Conversations | Telegram conversations | 1280×800 | 375×916 |
+| 40 | Telegram | Activity | Telegram activity | 1280×1200 | 375×1640 |
+| 11 | Paperclip | Task | Externally connected task | 1280×800 | 375×812 |
+| 12 | Paperclip | Agent | Agent Channels | 1280×800 | 375×812 |
 
 ## Annotation and action notes
 
@@ -166,66 +164,36 @@ Purpose: Health, deliveries, publications, and repair actions.
 
 Rationale: Diagnostics and conditional repairs live here instead of Settings.
 
-### 16 · Create Maya in GitHub
+### 16 · Create or connect a GitHub App
 
-Purpose: Create or update a dedicated customer-owned GitHub App.
+Purpose: Bring your own dedicated GitHub App and verify it with Paperclip.
 
-1. Paperclip shows the exact webhook URL and generates a 32-byte webhook secret.
-2. The secret is shown once for copying to GitHub and remains write-only afterward.
-3. The operator returns only the App ID and private-key PEM to Paperclip.
-
-Actions:
-
-- **Generate webhook secret:** Creates and stores the secret, then exposes the one-time copy value.
-- **Open GitHub:** Opens GitHub App registration so the operator can set the callback, permissions, and required events.
-- **Connect and verify:** Authenticates with the App ID/private key and rejects missing permissions or events.
-
-Rationale: The customer-owned credential path is complete without depending on an App Manifest exchange.
-
-### 45 · Choose GitHub repositories
-
-Purpose: Install Maya where people should be able to mention it.
-
-1. The screen contains only GitHub's installation decisions.
-2. Repository scope stays in GitHub's native approval UI.
-3. One button begins the complete provider-owned installation step.
+1. The customer-owned App path is the complete shipped setup; no managed App Manifest exchange is required.
+2. Paperclip generates the webhook secret and never returns it from normal endpoint reads.
+3. Grant Metadata read, Issues and Pull requests read/write, plus Issue comment and Pull request review comment events; installation lifecycle events are automatic.
+4. GitHub installation scope and Paperclip repository enablement remain independent reach controls.
 
 Actions:
 
-- **Install in GitHub:** Opens GitHub's App installation page and returns the installation and selected repository IDs to Paperclip.
+- **Generate webhook secret:** Creates and stores the webhook secret, then exposes its one-time copy value.
+- **Open new GitHub App form:** Opens GitHub App registration; GitHub remains the authority for App ownership and repository installation.
+- **Connect and verify:** Authenticates with the App ID and private key, verifies the immutable App identity, required permissions and events, installation, and signed webhook ping.
 
-Rationale: There is no Paperclip form to duplicate GitHub's repository picker.
+Rationale: Bring-your-own App credentials are sufficient to ship and preserve one provider bot identity per Paperclip agent.
 
 ### 46 · Try Maya in GitHub
 
 Purpose: Start one task in an installed repository.
 
-1. The body is only the native GitHub test sequence.
-2. The instructions explain that GitHub's existing issue or pull request is the task boundary.
-3. There is one action: open GitHub and perform the test.
+1. The test uses the real GitHub issue or pull-request conversation boundary.
+2. The first addressed setup repository becomes enabled; other discovered repositories remain disabled.
+3. One external conversation maps to one Paperclip task.
 
 Actions:
 
-- **Open GitHub:** Opens an installed repository while Paperclip waits for the first signed mention to complete setup.
+- **Open GitHub:** Opens an installed repository while Paperclip waits for the first signed mention and follow-up to complete setup.
 
-Rationale: A real mention proves the App installation without a separate verification screen.
-
-### 47 · Connect an existing GitHub App
-
-Purpose: Update the App in GitHub, then provide its identity credentials.
-
-1. The copy control provides the exact values the operator must paste into GitHub.
-2. The instructions list every provider change required for an existing App.
-3. Only App ID and private key return to Paperclip; the generated webhook secret is already stored.
-4. Verification happens as part of Connect rather than on another screen.
-
-Actions:
-
-- **Copy Paperclip webhook settings:** Copies the endpoint URL and generated webhook secret needed in the existing GitHub App settings.
-- **Connect and verify:** Stores the PEM file write-only, authenticates as the App, and verifies webhook, events, and least-privilege permissions.
-- **Back:** Returns to the customer-owned GitHub App setup.
-
-Rationale: New and existing Apps use the same minimal credential path and the same Paperclip-generated webhook secret.
+Rationale: A signed provider round trip proves installation, reach, identity, and conversation continuity.
 
 ### 17 · GitHub settings
 
@@ -270,33 +238,33 @@ Rationale: Diagnostics and conditional repairs live here instead of Settings.
 
 ### 19 · Create Maya for Microsoft Teams
 
-Purpose: Register a customer-owned Entra App and Azure Bot with Microsoft.
+Purpose: Register a customer-owned Entra App and Azure Bot.
 
 1. Paperclip provides the exact public messaging endpoint.
-2. The operator creates the single-tenant Entra App, client secret, Azure Bot, and Teams channel in Microsoft.
-3. Paperclip asks only for Application ID, Directory/Tenant ID, and the client-secret value.
+2. The operator creates the single-tenant Entra App, Azure Bot, and Teams app in Microsoft.
+3. A future helper is optional and cannot gate the customer-owned path or release.
 
 Actions:
 
-- **Copy messaging endpoint:** Copies the public callback for the Azure Bot configuration.
-- **Open Microsoft setup:** Opens the provider-owned registration flow.
+- **Copy messaging endpoint:** Copies the public callback for Azure Bot configuration.
+- **Open Microsoft setup:** Opens Microsoft's provider-owned registration surfaces.
 - **Connect and verify:** Stores the client secret write-only and verifies the tenant and application identity.
 
-Rationale: Bring-your-own credentials are sufficient to ship. A future CLI helper may automate these steps but is optional and cannot gate release.
+Rationale: Bring-your-own credentials are the required portable setup path.
 
 ### 49 · Install Maya in Microsoft Teams
 
-Purpose: Publish or upload the customer-owned Teams app, then add it in Microsoft Teams.
+Purpose: Publish or upload the customer-owned app, then add it in Teams.
 
-1. Teams Developer Portal or equivalent Microsoft tooling owns app creation, packaging, publication, and installation; Paperclip does not generate a package or promise an install link.
-2. The body contains only the actions performed in Microsoft Teams.
-3. Tenant approval is handled by Microsoft's install experience, not another Paperclip choice.
+1. Microsoft owns app creation, packaging, publication, approval, and installation.
+2. Paperclip does not generate a complete Teams package or promise an install link.
+3. Tenant approval remains in Microsoft's install experience.
 
 Actions:
 
-- **Open Teams Developer Portal:** Opens the provider-owned app surface where the operator publishes or downloads the customer-owned app for installation. Tenant policy may route publication or installation to an administrator for approval.
+- **Open Teams Developer Portal:** Opens the provider-owned app surface; tenant policy may require administrator approval.
 
-Rationale: Bring-your-own registration is the required path; Microsoft owns the app artifact and its approval/install flow.
+Rationale: Customer-owned registration is required; Microsoft owns the app artifact and installation.
 
 ### 50 · Try Maya in Microsoft Teams
 
@@ -308,26 +276,26 @@ Purpose: Start one task in a channel post.
 
 Actions:
 
-- **Open Microsoft Teams:** Opens Teams while Paperclip waits for the first authenticated mention and reply to complete setup.
+- **Open Microsoft Teams:** Opens Teams while Paperclip waits for the authenticated mention and reply.
 
-Rationale: The final provider event is the verification; no installation report is shown first.
+Rationale: The final provider event is the verification.
 
 ### 48 · Microsoft provider setup details
 
-Purpose: Create the customer-owned bot and Teams app in Microsoft, then paste the three identity values.
+Purpose: Create the customer-owned bot and app, then paste the three identity values.
 
-1. The copy control provides the one Paperclip value required by Microsoft.
-2. Every instruction is a portal operation the tenant administrator must perform.
-3. The three fields are the minimum identity values Paperclip needs to send as the bot.
-4. Connect verifies the identity; it does not generate a Teams package or install link.
+1. The endpoint is the one Paperclip-specific value required by Microsoft.
+2. Every instruction is a provider portal operation.
+3. The three identity fields are the minimum credentials Paperclip needs.
+4. Connect does not generate a Teams package or install link.
 
 Actions:
 
-- **Copy Paperclip endpoint:** Copies the public messaging endpoint that must be entered on the Azure Bot resource.
+- **Copy Paperclip endpoint:** Copies the public messaging endpoint for the Azure Bot resource.
 - **Connect and verify:** Stores the client secret write-only and verifies Microsoft bot authentication.
 - **Back:** Returns to the primary customer-owned credential setup.
 
-Rationale: Customer-owned registration is the required portable path because Microsoft has no manifest callback equivalent; this is reference detail for that path, not an advanced fallback. A future helper is optional and cannot gate release.
+Rationale: This is reference detail for the required customer-owned path; a future helper remains optional.
 
 ### 20 · Microsoft Teams settings
 

@@ -1,33 +1,61 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="375" height="952" viewBox="0 0 375 952" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="952"/><g data-region="mobile-header"><rect x="0" y="0" width="375" height="56" rx="4" /><text x="16" y="35" font-size="14" fill="#000" stroke="none" font-weight="600">‹  GitHub</text><text x="359" y="35" font-size="12" fill="#666" stroke="none" text-anchor="end">Save &amp; exit</text></g><text x="16" y="80" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
-<line x1="32" y1="104" x2="32" y2="272" />
-<circle cx="32" cy="104" r="16" fill="#000"/>
-<text x="32" y="109" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
-<text x="64" y="109" font-size="14" fill="#000" stroke="none" >Agent selected</text>
-<circle cx="32" cy="160" r="16" fill="#fff"/>
-<text x="32" y="165" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
-<text x="64" y="165" font-size="14" fill="#000" stroke="none" font-weight="700">Create GitHub App</text>
-<circle cx="32" cy="216" r="16" fill="#fff"/>
-<text x="32" y="221" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
-<text x="64" y="221" font-size="14" fill="#666" stroke="none" >Choose repositories</text>
-<circle cx="32" cy="272" r="16" fill="#fff"/>
-<text x="32" y="277" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
-<text x="64" y="277" font-size="14" fill="#666" stroke="none" >Try Maya</text>
-<text x="16" y="368" font-size="20" fill="#000" stroke="none" font-weight="700">Create Maya in GitHub</text>
-<text x="16" y="424" font-size="12" fill="#666" stroke="none" >Create a dedicated GitHub App from Paperclip's</text>
-<text x="16" y="440" font-size="12" fill="#666" stroke="none" >prepared manifest.</text>
-<text x="16" y="512" font-size="20" fill="#000" stroke="none" font-weight="700">Do this</text>
-<circle cx="32" cy="568" r="16" fill="#fff"/>
-<text x="32" y="573" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">1</text>
-<text x="64" y="564" font-size="14" fill="#000" stroke="none" font-weight="600">Choose the owner</text>
-<text x="64" y="588" font-size="12" fill="#666" stroke="none" >Select your personal account or the</text>
-<text x="64" y="604" font-size="12" fill="#666" stroke="none" >organization that should own the App.</text>
-<line x1="64" y1="640" x2="359" y2="640" stroke="#e6e6e6"/>
-<circle cx="32" cy="680" r="16" fill="#fff"/>
-<text x="32" y="685" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
-<text x="64" y="676" font-size="14" fill="#000" stroke="none" font-weight="600">Create the App</text>
-<text x="64" y="700" font-size="12" fill="#666" stroke="none" >Keep the suggested unique name, then</text>
-<text x="64" y="716" font-size="12" fill="#666" stroke="none" >click Create GitHub App.</text>
-<rect x="16" y="800" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="830" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Use an existing GitHub App</text>
-<rect x="16" y="864" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="894" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Create in GitHub</text><g data-region="annotations"><rect x="8" y="64" width="359" height="256" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
-<rect x="8" y="336" width="359" height="440" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="336" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="340" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
-<rect x="8" y="792" width="359" height="128" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="792" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="796" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="1312" viewBox="0 0 375 1312" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="375" height="1312"/><rect x="0" y="0" width="375" height="56" rx="4" />
+<text x="16" y="32" font-size="14" fill="#000" stroke="none" font-weight="600">‹  GitHub setup</text>
+<text x="16" y="88" font-size="20" fill="#000" stroke="none" font-weight="700">Create or connect a GitHub App</text>
+<text x="16" y="116" font-size="12" fill="#666" stroke="none" >Bring your own dedicated GitHub App and verify</text>
+<text x="16" y="132" font-size="12" fill="#666" stroke="none" >it with Paperclip.</text>
+<circle cx="32" cy="176" r="14" fill="#000"/>
+<text x="32" y="181" font-size="12" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
+<text x="56" y="181" font-size="12" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="32" cy="216" r="14" fill="#fff"/>
+<text x="32" y="221" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="56" y="221" font-size="12" fill="#000" stroke="none" font-weight="700">Connect GitHub App</text>
+<circle cx="32" cy="256" r="14" fill="#fff"/>
+<text x="32" y="261" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="56" y="261" font-size="12" fill="#666" stroke="none" >Try Maya</text>
+<text x="16" y="320" font-size="20" fill="#000" stroke="none" font-weight="700">Do this</text>
+<circle cx="32" cy="360" r="14" fill="#fff"/>
+<text x="32" y="365" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<text x="56" y="356" font-size="12" fill="#000" stroke="none" font-weight="600">Generate the webhook secret</text>
+<text x="56" y="376" font-size="12" fill="#666" stroke="none" >Paperclip stores a random 32-byte secret</text>
+<text x="56" y="392" font-size="12" fill="#666" stroke="none" >and shows it once. Paste it with the</text>
+<text x="56" y="408" font-size="12" fill="#666" stroke="none" >Paperclip webhook URL into GitHub and keep</text>
+<text x="56" y="424" font-size="12" fill="#666" stroke="none" >SSL verification enabled.</text>
+<line x1="56" y1="460" x2="359" y2="460" stroke="#e6e6e6"/>
+<circle cx="32" cy="472" r="14" fill="#fff"/>
+<text x="32" y="477" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="56" y="468" font-size="12" fill="#000" stroke="none" font-weight="600">Set minimum permissions and events</text>
+<text x="56" y="488" font-size="12" fill="#666" stroke="none" >Grant Metadata: read, Issues: read and</text>
+<text x="56" y="504" font-size="12" fill="#666" stroke="none" >write, and Pull requests: read and write.</text>
+<text x="56" y="520" font-size="12" fill="#666" stroke="none" >Subscribe only to Issue comment and Pull</text>
+<text x="56" y="536" font-size="12" fill="#666" stroke="none" >request review comment.</text>
+<line x1="56" y1="572" x2="359" y2="572" stroke="#e6e6e6"/>
+<circle cx="32" cy="584" r="14" fill="#fff"/>
+<text x="32" y="589" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="56" y="580" font-size="12" fill="#000" stroke="none" font-weight="600">Create and install the App</text>
+<text x="56" y="600" font-size="12" fill="#666" stroke="none" >Choose the owning user or organization,</text>
+<text x="56" y="616" font-size="12" fill="#666" stroke="none" >keep user authorization off, then install</text>
+<text x="56" y="632" font-size="12" fill="#666" stroke="none" >the App on only the repositories where</text>
+<text x="56" y="648" font-size="12" fill="#666" stroke="none" >people may mention the agent.</text>
+<line x1="56" y1="684" x2="359" y2="684" stroke="#e6e6e6"/>
+<circle cx="32" cy="696" r="14" fill="#fff"/>
+<text x="32" y="701" font-size="12" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
+<text x="56" y="692" font-size="12" fill="#000" stroke="none" font-weight="600">Return the App credentials</text>
+<text x="56" y="712" font-size="12" fill="#666" stroke="none" >Paste the numeric App ID and private-key</text>
+<text x="56" y="728" font-size="12" fill="#666" stroke="none" >PEM into Paperclip. Connect remains</text>
+<text x="56" y="744" font-size="12" fill="#666" stroke="none" >unavailable until GitHub has delivered a</text>
+<text x="56" y="760" font-size="12" fill="#666" stroke="none" >correctly signed webhook ping.</text>
+<line x1="56" y1="796" x2="359" y2="796" stroke="#e6e6e6"/>
+<text x="16" y="808" font-size="12" fill="#000" stroke="none" font-weight="600">Paperclip webhook URL</text>
+<text x="16" y="828" font-size="12" fill="#666" stroke="none" >https://paperclip.example/api/chat-webhooks/…/github</text>
+<text x="16" y="872" font-size="12" fill="#000" stroke="none" font-weight="600">Webhook secret</text>
+<text x="16" y="892" font-size="12" fill="#666" stroke="none" >Generated by Paperclip · shown once</text>
+<text x="16" y="936" font-size="12" fill="#000" stroke="none" font-weight="600">GitHub App ID</text>
+<rect x="16" y="948" width="343" height="40" rx="4" fill="#fff"/>
+<text x="32" y="973" font-size="12" fill="#666" stroke="none" >123456</text>
+<text x="16" y="1008" font-size="12" fill="#000" stroke="none" font-weight="600">Private key (PEM)</text>
+<rect x="16" y="1020" width="343" height="40" rx="4" fill="#fff"/>
+<text x="32" y="1045" font-size="12" fill="#666" stroke="none" >Write-only PEM</text>
+<rect x="16" y="1080" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1112" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Generate webhook secret</text>
+<rect x="16" y="1144" width="343" height="48" rx="4" fill="#fff"/><text x="187.5" y="1176" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="600">Open new GitHub App form</text>
+<rect x="16" y="1208" width="343" height="48" rx="4" fill="#000"/><text x="187.5" y="1240" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Connect and verify</text><g data-region="annotations"><rect x="8" y="64" width="359" height="224" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="64" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="68" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="8" y="288" width="359" height="920" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="8" cy="288" r="8" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="8" y="292" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text></g></svg>

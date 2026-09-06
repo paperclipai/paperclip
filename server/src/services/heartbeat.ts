@@ -259,6 +259,7 @@ import {
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
+import { resolveChatRunPresentationAuthorizationReason } from "./chat-run-publications.js";
 import { projectService } from "./projects.js";
 import {
   authorizationService,
@@ -625,6 +626,7 @@ const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
 const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
   "accepted",
   "answered",
+  "cancelled",
   "rejected",
 ]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
@@ -3291,6 +3293,8 @@ interface WakeupOptions {
     statuses: string[];
     assigneeAgentId: string;
   };
+  /** Keep causally distinct external chat continuations out of an existing run. */
+  allowRunCoalescing?: boolean;
 }
 
 type UsageTotals = {
@@ -22159,10 +22163,22 @@ export function heartbeatService(
               presentationDecision.commentAction === "create" &&
               resolved.text
             ) {
+              // The presentation resolver exposes only the final assistant
+              // surface selected from completed final messages or accepted
+              // semantic results. For an exactly bound external-chat run,
+              // authorize that narrow presentation as the provider reply;
+              // ordinary internal runs retain the private default.
+              const presentationAuthorizationReason =
+                await resolveChatRunPresentationAuthorizationReason(db, {
+                  companyId: livenessRun.companyId,
+                  issueId,
+                  runId: livenessRun.id,
+                });
               const comment = await issuesSvc.addComment(
                 issueId,
                 resolved.text,
                 { agentId: agent.id, runId: livenessRun.id },
+                { authorizationReason: presentationAuthorizationReason },
               );
               presentationDecision = {
                 ...presentationDecision,
@@ -22187,7 +22203,7 @@ export function heartbeatService(
                   bodySnippet: comment.body.slice(0, 120),
                   identifier: issueRef?.identifier ?? null,
                   issueTitle: issueRef?.title ?? null,
-                  authorizationReason: "internal_agent_write",
+                  authorizationReason: presentationAuthorizationReason,
                   source: "run_presentation_resolver",
                   presentationSource: presentationDecision.chosenSource,
                 },
@@ -24892,6 +24908,7 @@ export function heartbeatService(
             : activeExecutionRun;
 
           if (
+            opts.allowRunCoalescing !== false &&
             isSameExecutionAgent &&
             !shouldDeferFollowupWake &&
             !shouldQueueFollowupForRunningWake &&
@@ -24957,7 +24974,7 @@ export function heartbeatService(
               .limit(1)
               .then((rows) => rows[0] ?? null);
 
-            if (existingDeferred) {
+            if (existingDeferred && opts.allowRunCoalescing !== false) {
               const existingDeferredPayload = parseObject(
                 existingDeferred.payload,
               );
@@ -25289,11 +25306,13 @@ export function heartbeatService(
         wakeCommentId,
       });
     const rawCoalescedTarget =
-      sameScopeQueuedRun ??
-      sameScopeScheduledRetryRun ??
-      (shouldQueueFollowupForRunningWake
+      opts.allowRunCoalescing === false
         ? null
-        : (sameScopeRunningRun ?? null));
+        : (sameScopeQueuedRun ??
+          sameScopeScheduledRetryRun ??
+          (shouldQueueFollowupForRunningWake
+            ? null
+            : (sameScopeRunningRun ?? null)));
 
     const coalescedTargetRun = filterZombieCoalesceTarget(
       rawCoalescedTarget,

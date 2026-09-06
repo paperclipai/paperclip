@@ -136,6 +136,7 @@ import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
+import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { enqueueChatRunMilestones } from "./services/chat-run-publications.js";
 import { heartbeatService } from "./services/heartbeat.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
@@ -469,6 +470,8 @@ export async function createApp(
     deferWebhookProcessing: true,
     heartbeat: connectionIntentHeartbeat,
     publicBaseUrl: opts.authPublicBaseUrl,
+    resolveNativeQuestion: (interaction) =>
+      deliverNativeQuestionResponse(db, interaction),
     storage: opts.storageService,
   });
   // Provider-authenticated ingress is intentionally outside the board

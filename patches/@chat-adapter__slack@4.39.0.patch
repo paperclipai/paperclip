@@ -1,0 +1,41 @@
+diff --git a/dist/index.js b/dist/index.js
+index b80888b6d87e8ad429d18cc955c4c5048a55722a..6923ca71de57ae9ae8994d4210ef8d87f7fae996 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -2154,6 +2154,7 @@ var SlackAdapter = class _SlackAdapter {
+     const command = params.get("command") || "";
+     const text = params.get("text") || "";
+     const userId = params.get("user_id") || "";
++    const userName = params.get("user_name") || userId;
+     const channelId = params.get("channel_id") || "";
+     const triggerId = params.get("trigger_id") || void 0;
+     this.logger.debug("Processing Slack slash command", {
+@@ -2163,14 +2164,13 @@ var SlackAdapter = class _SlackAdapter {
+       channelId,
+       triggerId
+     });
+-    const userInfo = await this.lookupUser(userId);
+     const event = {
+       command,
+       text,
+       user: {
+         userId,
+-        userName: userInfo?.displayName ?? userId,
+-        fullName: userInfo?.realName ?? userId,
++        userName,
++        fullName: userName,
+         isBot: false,
+         isMe: false
+       },
+@@ -2179,6 +2179,9 @@ var SlackAdapter = class _SlackAdapter {
+       triggerId,
+       channelId: channelId ? `slack:${channelId}` : ""
+     };
+-    this.chat.processSlashCommand(event, options);
+-    return new Response("", { status: 200 });
++    await this.chat.processSlashCommand(event, options);
++    return Response.json({
++      response_type: "ephemeral",
++      text: "Paperclip received this command."
++    });
+   }

@@ -95,11 +95,30 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain("GCC High");
     expect(setup).toContain("operated by 21Vianet");
     expect(setup).toContain("Client secret value");
+    expect(setup).toContain("Microsoft portal field map");
+    expect(setup).toContain(
+      "Accounts in this organizational directory only (Single tenant)",
+    );
+    expect(setup).toContain("Use existing app registration");
+    expect(setup).toContain("Settings · Configuration");
+    expect(setup).toContain("Configure · App features · Bot");
+    expect(setup).toContain("Configure · Permissions");
+    expect(setup).toContain("Upload an app · Upload a custom app");
+    expect(setup).toContain("Copy manifest settings");
+    expect(setup).toContain("disabled={!credentials.clientId?.trim()}");
+    expect(setup).toContain(
+      "Enter the Application / Client ID above before copying",
+    );
+    expect(setup).toContain("not a complete app package");
     expect(setup).toContain('scopes: ["personal", "team", "groupchat"]');
     expect(setup).toContain("resourceSpecific");
     expect(setup).toContain("ChannelMessage.Read.Group");
     expect(setup).toContain("ChatMessage.Read.Chat");
     expect(setup).toContain("not Microsoft Graph permissions in Entra");
+    expect(setup).toContain("does not use Teams single sign-on");
+    expect(setup).toContain("does not require a");
+    expect(setup).toContain("webApplicationInfo");
+    expect(setup).not.toContain("api://paperclip-chat/");
     expect(setup).toContain("not private channels");
     expect(setup).toContain("native file receipt only in personal chat");
     expect(setup).toContain("issue_comment");
@@ -132,5 +151,32 @@ describe("chat connector UI contract", () => {
     expect(setup).not.toContain("Copy setup command");
     expect(setup).not.toContain("Add {agentName} to Slack");
     expect(setup).not.toContain("Create in GitHub");
+  });
+
+  it("keeps the current GitHub review artifact on the shipped customer-owned App path", () => {
+    const viewer = source("../../../../../doc/plans/chat-adapters/index.html");
+    const generator = source(
+      "../../../../../doc/plans/chat-adapters/generate-wireframes-v8.mjs",
+    );
+    const setupData = source(
+      "../../../../../doc/plans/chat-adapters/setup-wireframe-data-v8.mjs",
+    );
+    const setupWireframe = source(
+      "../../../../../doc/plans/chat-adapters/wireframes-v8/16-github-create.svg",
+    );
+
+    expect(viewer).toContain("Create or connect a GitHub App");
+    expect(viewer).toContain("Generate webhook secret");
+    expect(setupWireframe).toContain("GitHub App ID");
+    expect(setupWireframe).toContain("Private key (PEM)");
+    expect(viewer).toContain("Metadata read");
+    expect(viewer).toContain("Pull request review comment events");
+    expect(viewer).not.toContain('id="s45"');
+    expect(viewer).not.toContain('id="s47"');
+    expect(viewer).not.toContain("Posts Paperclip's App Manifest to GitHub");
+    expect(viewer).not.toContain("credential-free App Manifest path");
+    expect(generator).toContain("./setup-wireframe-data-v8.mjs");
+    expect(generator).not.toContain("./setup-wireframe-data-v6.mjs");
+    expect(setupData).not.toContain('primary: "Create in GitHub"');
   });
 });

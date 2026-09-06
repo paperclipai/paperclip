@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { chatActions } from "@paperclipai/db";
 import type {
@@ -114,8 +114,11 @@ export interface LoadedChatQuestionFormSubmissionToken {
   actionRowId: string;
   conversationId: string;
   interactionId: string;
+  principalId: string | null;
   payload: ChatQuestionFormSubmitTokenPayload;
   publicationId: string;
+  result: Record<string, unknown> | null;
+  status: "issued" | "processed";
 }
 
 export type ChatQuestionFormValidationResult =
@@ -213,7 +216,7 @@ function formKind(
   }
   if (
     question.selectionMode === "single" &&
-    question.allowOther === false &&
+    question.allowOther !== true &&
     freeTextOptions.length === 0
   ) {
     return "single_select";
@@ -804,6 +807,7 @@ export async function loadChatQuestionFormSubmissionToken(
     callbackId: string;
     companyId: string;
     endpointId: string;
+    includeProcessed?: boolean;
   },
 ): Promise<LoadedChatQuestionFormSubmissionToken | null> {
   if (!isChatQuestionFormSubmitActionId(args.callbackId)) return null;
@@ -816,7 +820,9 @@ export async function loadChatQuestionFormSubmissionToken(
         eq(chatActions.endpointId, args.endpointId),
         eq(chatActions.kind, "question_form_submit"),
         eq(chatActions.providerActionId, args.callbackId),
-        eq(chatActions.status, "issued"),
+        args.includeProcessed
+          ? inArray(chatActions.status, ["issued", "processed"])
+          : eq(chatActions.status, "issued"),
       ),
     )
     .then((rows) => rows[0] ?? null);
@@ -826,8 +832,11 @@ export async function loadChatQuestionFormSubmissionToken(
     actionRowId: action.id,
     conversationId: action.conversationId,
     interactionId: payload.interactionId,
+    principalId: action.principalId,
     payload,
     publicationId: payload.publicationId,
+    result: action.result,
+    status: action.status as "issued" | "processed",
   };
 }
 

@@ -756,14 +756,34 @@ async function expectMinimumProviderSetup(page: Page, provider: ProviderCase) {
     await expect(
       page.getByText(/^In Azure, create an Azure Bot/),
     ).toBeVisible();
+    await expect(page.getByText("Microsoft portal field map")).toBeVisible();
+    await expect(
+      page.getByText(/Accounts in this organizational directory only/),
+    ).toBeVisible();
+    await expect(page.getByText(/Use existing app registration/)).toBeVisible();
+    await expect(
+      page.getByText(/Configure · App features · Bot/),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/Upload an app · Upload a custom app/),
+    ).toBeVisible();
     const manifest = await page
-      .getByLabel("Required Teams app manifest settings")
+      .getByLabel("Required Teams app manifest block")
       .inputValue();
     expect(manifest).toContain("ChannelMessage.Read.Group");
     expect(manifest).toContain("ChatMessage.Read.Chat");
     expect(manifest).toContain('"personal"');
     expect(manifest).toContain('"team"');
     expect(manifest).toContain('"groupchat"');
+    expect(manifest).not.toContain("webApplicationInfo");
+    expect(manifest).not.toContain("api://paperclip-chat/");
+    await expect(
+      page.getByRole("button", { name: "Copy manifest settings" }),
+    ).toBeDisabled();
+    await expect(page.getByText(/not a complete app package/)).toBeVisible();
+    await expect(
+      page.getByText(/does not use Teams single sign-on/),
+    ).toBeVisible();
     await expect(
       page.getByRole("link", { name: "Open Microsoft Entra" }),
     ).toHaveAttribute("href", /entra\.microsoft\.com/);

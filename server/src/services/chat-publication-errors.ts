@@ -224,6 +224,7 @@ export function classifyChatPublicationError(
     name === "ResourceNotFoundError" ||
     code === "NOT_FOUND" ||
     status === 404 ||
+    status === 410 ||
     [
       "channel_not_found",
       "message_not_found",
@@ -248,6 +249,15 @@ export function classifyChatPublicationError(
     // any provider request can have been attempted.
     code === "CHAT_ADAPTER_COMPATIBILITY_ERROR"
   ) {
+    return { kind: "failed", reason };
+  }
+
+  // Any remaining 4xx response is a definite provider rejection: the
+  // provider returned an HTTP response and did not accept the operation.
+  // Keep it out of delivery_unknown, which is reserved for requests whose
+  // external side effect cannot be determined. Provider-specific repairable
+  // cases (rate limits, auth, and missing destinations) were handled above.
+  if (status !== undefined && status >= 400 && status < 500) {
     return { kind: "failed", reason };
   }
 

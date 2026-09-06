@@ -19,6 +19,18 @@ export interface GitHubAppInstallationIdentity {
   accountId?: string;
   accountLabel?: string;
   accountType?: string;
+  permissions: Record<string, string>;
+}
+
+const REQUIRED_GITHUB_INSTALLATION_PERMISSIONS = {
+  issues: "write",
+  metadata: "read",
+  pull_requests: "write",
+} as const;
+const GITHUB_API_TIMEOUT_MS = 25_000;
+
+function githubRequestSignal(): AbortSignal {
+  return AbortSignal.timeout(GITHUB_API_TIMEOUT_MS);
 }
 
 async function jsonResponse<T>(
@@ -161,7 +173,7 @@ export async function listGitHubInstallationRepositories(input: {
   };
   const tokenResponse = await input.fetch(
     `https://api.github.com/app/installations/${encodeURIComponent(input.installationId)}/access_tokens`,
-    { method: "POST", headers },
+    { method: "POST", headers, signal: githubRequestSignal() },
   );
   const tokenBody = await jsonResponse<{ token?: string; message?: string }>(
     tokenResponse,
@@ -183,6 +195,7 @@ export async function listGitHubInstallationRepositories(input: {
           authorization: `Bearer ${tokenBody.token}`,
           "x-github-api-version": "2022-11-28",
         },
+        signal: githubRequestSignal(),
       });
       const body = await jsonResponse<{
         repositories?: Array<{
@@ -243,6 +256,7 @@ export async function discoverDedicatedGitHubAppInstallation(input: {
   const installations: Array<{
     id?: number;
     account?: { id?: number; login?: string; name?: string; type?: string };
+    permissions?: Record<string, string>;
     suspended_at?: string | null;
   }> = [];
   for (let page = 1; ; page += 1) {
@@ -256,12 +270,14 @@ export async function discoverDedicatedGitHubAppInstallation(input: {
           authorization: `Bearer ${input.appJwt}`,
           "x-github-api-version": "2022-11-28",
         },
+        signal: githubRequestSignal(),
       },
     );
     const pageInstallations = await jsonResponse<
       Array<{
         id?: number;
         account?: { id?: number; login?: string; name?: string; type?: string };
+        permissions?: Record<string, string>;
         suspended_at?: string | null;
       }>
     >(response, "GitHub");
@@ -283,6 +299,19 @@ export async function discoverDedicatedGitHubAppInstallation(input: {
     );
   }
   const installation = active[0]!;
+  const missingPermissions = Object.entries(
+    REQUIRED_GITHUB_INSTALLATION_PERMISSIONS,
+  )
+    .filter(
+      ([permission, access]) =>
+        installation.permissions?.[permission] !== access,
+    )
+    .map(([permission]) => permission);
+  if (missingPermissions.length > 0) {
+    throw new Error(
+      `GitHub inventory failed: the active installation has not granted the required access for: ${missingPermissions.join(", ")}. Approve the GitHub App permission update, then retry`,
+    );
+  }
   return {
     installationId: String(installation.id),
     accountId: Number.isFinite(installation.account?.id)
@@ -291,5 +320,6 @@ export async function discoverDedicatedGitHubAppInstallation(input: {
     accountLabel:
       installation.account?.login ?? installation.account?.name ?? undefined,
     accountType: installation.account?.type,
+    permissions: installation.permissions ?? {},
   };
 }

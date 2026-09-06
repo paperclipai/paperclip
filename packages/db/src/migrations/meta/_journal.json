@@ -1702,6 +1702,13 @@
       "when": 1788673647823,
       "tag": "0244_tan_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 245,
+      "version": "7",
+      "when": 1788688205087,
+      "tag": "0245_chat_interaction_wakeup_idempotency",
+      "breakpoints": true
     }
   ]
 }

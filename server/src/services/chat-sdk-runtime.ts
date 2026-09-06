@@ -8,6 +8,7 @@ import {
 } from "@chat-adapter/slack";
 import {
   createTeamsAdapter,
+  type TeamsAdapter,
   type TeamsAdapterConfig,
 } from "@chat-adapter/teams";
 import {
@@ -51,6 +52,7 @@ export const CHAT_SDK_VERSION = "4.39.0";
 export const CHAT_SDK_SOURCE_REVISION =
   "51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c";
 const SLACK_WEB_API_TIMEOUT_MS = 45_000;
+const GITHUB_API_TIMEOUT_MS = 25_000;
 
 /** Public Paperclip provider ids. The Teams SDK name remains an internal detail. */
 export type ChatSdkProvider =
@@ -613,7 +615,35 @@ function createProviderAdapter(
         logger: resolvedLogger,
         userName: config.userName,
       } as GitHubAdapterConfig;
-      return createGitHubAdapter(adapterConfig);
+      const adapter = createGitHubAdapter(adapterConfig);
+      // Octokit otherwise delegates to fetch without a deadline. A hung token
+      // exchange or API request could outlive Paperclip's publication lease
+      // and make another worker quarantine a still-running send as ambiguous.
+      // Wrap every request with a fresh deadline instead of creating one at
+      // adapter construction time, which would expire for the whole runtime.
+      adapter.octokit?.hook?.wrap?.("request", async (request, options) => {
+        const timeoutSignal = AbortSignal.timeout(GITHUB_API_TIMEOUT_MS);
+        const existingSignal = options.request?.signal;
+        const signal = existingSignal
+          ? AbortSignal.any([existingSignal, timeoutSignal])
+          : timeoutSignal;
+        let rejectOnAbort!: () => void;
+        const aborted = new Promise<never>((_resolve, reject) => {
+          rejectOnAbort = () =>
+            reject(signal.reason ?? new Error("GitHub API request timed out"));
+          if (signal.aborted) rejectOnAbort();
+          else signal.addEventListener("abort", rejectOnAbort, { once: true });
+        });
+        try {
+          // The race also bounds Octokit's internal installation-token
+          // exchange, which does not inherit the final API request's signal.
+          options.request = { ...options.request, signal };
+          return await Promise.race([request(options), aborted]);
+        } finally {
+          signal.removeEventListener("abort", rejectOnAbort);
+        }
+      });
+      return adapter;
     }
     case "microsoft-teams": {
       const adapterConfig: TeamsAdapterConfig = {
@@ -1081,6 +1111,7 @@ export class ChatSdkEndpointRuntime {
   async handleWebhook(
     request: Request,
     options?: WebhookOptions,
+    responseDeadlineAt?: number,
   ): Promise<Response> {
     const handler = this.chat.webhooks[this.sdkAdapterKey];
     if (!handler) {
@@ -1098,7 +1129,10 @@ export class ChatSdkEndpointRuntime {
       ...(providerUpdateId !== undefined ? { providerUpdateId } : {}),
     };
     const sdkTasks: Promise<unknown>[] = [];
-    const deadlineAt = Date.now() + this.webhookIngressTimeoutMs;
+    const deadlineAt = Math.min(
+      Date.now() + this.webhookIngressTimeoutMs,
+      responseDeadlineAt ?? Number.POSITIVE_INFINITY,
+    );
     const retryableTimeout = () =>
       new Response("Paperclip could not durably accept the event in time", {
         status: 503,
@@ -1203,6 +1237,17 @@ export class ChatSdkEndpointRuntime {
     return (this.adapter as TelegramAdapter).parseMessage(
       raw as TelegramRawMessage,
     );
+  }
+
+  /**
+   * Reuse the pinned Teams parser for verified messageUpdate activities. The
+   * adapter exposes a public parser but does not currently dispatch those
+   * activities through Chat's onMessageUpdated callback.
+   */
+  parseMicrosoftTeamsMessage(raw: unknown): Message | null {
+    if (this.provider !== "microsoft-teams" || !raw || typeof raw !== "object")
+      return null;
+    return (this.adapter as TeamsAdapter).parseMessage(raw);
   }
 
   /**
@@ -1334,10 +1379,11 @@ export class ChatSdkRuntime {
     endpointId: string,
     request: Request,
     options?: WebhookOptions,
+    responseDeadlineAt?: number,
   ): Promise<Response> {
     const runtime = this.endpoints.get(endpointId);
     if (!runtime) throw new ChatSdkEndpointNotRegisteredError(endpointId);
-    return await runtime.handleWebhook(request, options);
+    return await runtime.handleWebhook(request, options, responseDeadlineAt);
   }
 
   async shutdown(): Promise<void> {

@@ -7,13 +7,14 @@
 The evidence boundary is unchanged but is now quantified more precisely:
 
 - The archived endpoint `4e87c64e-7d0b-497d-85d2-6eb8820340fc` is genuine historical transport proof. One GitHub issue mapped to one Paperclip task; two inbound issue comments were recorded; an exact webhook redelivery folded into the existing delivery; and six outbound publications reached GitHub in one attempt each.
+- The repository used for that historical proof was deleted during its authorized cleanup. Its former provider URL now returns HTTP 404, so it cannot be opened as current visual evidence and must not be cited as proof of the present source revision.
 - Four agent runs in that historical task failed closed because the principal was unlinked and the instance had no low-trust isolation environment. That is a Paperclip governance boundary, not a GitHub transport failure, and it must not be presented as successful agent execution.
 - The current draft endpoint whose id begins `a31` contains only a Paperclip-generated webhook secret. It has no verified GitHub App identity, private key, installation, repository, signed ping, conversation, or task.
 - Current setup is stopped at GitHub's **Confirm access** MFA challenge. That is an external account gate, not an implementation defect. Current-source live qualification cannot resume until the account owner completes that challenge and creates/installs the disposable App.
 
 ## Current-run evidence and blocker
 
-- Final locally verified source revision: `6f13ec09e95717c4b3b248d1d8cb9ca4e55754ab`
+- Final locally verified source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
 - Signed setup-ping, one-time secret generation, App-identity, lifecycle, admission, and runtime hardening are committed in the current branch.
 
 The current endpoint is back in the honest pre-connect state: `draft`, at the provider-setup step, with no App identity, App ID, private key, installation, resource, conversation, delivery, publication, or signed setup ping recorded. This is expected because the GitHub App has not been created yet.
@@ -48,7 +49,7 @@ The current working tree adds the following GitHub safety and concurrency behavi
 
 None of these local checks substitutes for exercising the same paths against GitHub's real App registration, installation, webhook redelivery, and suspension UI.
 
-On revision `6f13ec09e`, the full chat-channel PostgreSQL integration suite passed 138/138 on fresh migrated database `chat_adapters_test_173`; focused chat server tests passed 115/115, focused UI tests passed 38/38, OpenAPI passed 6/6, server typecheck passed, and the deterministic browser suite passed 4/4. Shared/database/UI typechecks, token gates, and the full workspace build had already passed on the immediate parent before the final server-only race fix. These results strengthen the setup-path regression evidence but do not change the live-provider blocker or qualification status.
+On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 177/177 on a fresh migrated database; focused shared tests passed 11/11, focused server tests passed 194/194, focused UI tests passed 41/41, and the deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 4/4. Shared, database, server, and UI typechecks all passed. These results strengthen the setup-path regression evidence but do not change the live-provider blocker or qualification status.
 
 Actual GitHub App registration and current-build provider delivery remain unexecuted. The signed-in GitHub session is stopped at GitHub's six-digit sudo-mode verification prompt. Until that account challenge is completed, no current App credentials, installation, signed ping, issue/PR/review event, reaction, edit, file fallback, or outbound publication can be qualified live.
 

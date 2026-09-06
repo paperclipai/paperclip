@@ -117,6 +117,44 @@ describe("chat publication error classification", () => {
     ).toMatchObject({ kind: "endpoint_attention" });
   });
 
+  it("does not call explicit GitHub 4xx rejections ambiguous delivery", () => {
+    for (const status of [400, 409, 422]) {
+      expect(
+        classifyChatPublicationError(
+          Object.assign(new Error("GitHub rejected the comment"), {
+            name: "HttpError",
+            status,
+            response: { status, headers: {} },
+          }),
+          1,
+        ),
+      ).toMatchObject({ kind: "failed" });
+    }
+    expect(
+      classifyChatPublicationError(
+        Object.assign(new Error("GitHub destination is gone"), {
+          name: "HttpError",
+          status: 410,
+          response: { status: 410, headers: {} },
+        }),
+        1,
+      ),
+    ).toMatchObject({ kind: "resource_unavailable" });
+  });
+
+  it("keeps GitHub 5xx responses ambiguous", () => {
+    expect(
+      classifyChatPublicationError(
+        Object.assign(new Error("GitHub internal error"), {
+          name: "HttpError",
+          status: 502,
+          response: { status: 502, headers: {} },
+        }),
+        1,
+      ),
+    ).toMatchObject({ kind: "delivery_unknown" });
+  });
+
   it.each([
     ["AuthenticationError", "AUTH_FAILED"],
     ["PermissionError", "PERMISSION_DENIED"],

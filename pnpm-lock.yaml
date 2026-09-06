@@ -19,9 +19,15 @@ patchedDependencies:
   '@agentclientprotocol/codex-acp@1.6.2':
     hash: jb7mkuk6elgpjomlxcdukdpiyy
     path: patches/@agentclientprotocol__codex-acp@1.6.2.patch
+  '@chat-adapter/slack@4.39.0':
+    hash: yi6nmigxohtnrvur6njcmzxfgm
+    path: patches/@chat-adapter__slack@4.39.0.patch
   '@chat-adapter/teams@4.39.0':
-    hash: iqssmsnyawztp7l6jbdzzpvtky
+    hash: tpw24esitvlghpvnkbhvwo5us4
     path: patches/@chat-adapter__teams@4.39.0.patch
+  '@chat-adapter/telegram@4.39.0':
+    hash: rveujazde7hohq3j4ziw5ejxlq
+    path: patches/@chat-adapter__telegram@4.39.0.patch
   acpx@0.12.0:
     hash: b2ggqg6aj4hdob4whk6vq6jmc4
     path: patches/acpx@0.12.0.patch
@@ -850,13 +856,13 @@ importers:
         version: 4.39.0(zod@4.4.3)
       '@chat-adapter/slack':
         specifier: 4.39.0
-        version: 4.39.0(zod@4.4.3)
+        version: 4.39.0(patch_hash=yi6nmigxohtnrvur6njcmzxfgm)(zod@4.4.3)
       '@chat-adapter/teams':
         specifier: 4.39.0
-        version: 4.39.0(patch_hash=iqssmsnyawztp7l6jbdzzpvtky)(zod@4.4.3)
+        version: 4.39.0(patch_hash=tpw24esitvlghpvnkbhvwo5us4)(zod@4.4.3)
       '@chat-adapter/telegram':
         specifier: 4.39.0
-        version: 4.39.0(zod@4.4.3)
+        version: 4.39.0(patch_hash=rveujazde7hohq3j4ziw5ejxlq)(zod@4.4.3)
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.1
@@ -910,7 +916,7 @@ importers:
         version: link:../packages/skills-catalog
       '@vercel/connect':
         specifier: 0.6.1
-        version: 0.6.1(@chat-adapter/slack@4.39.0(zod@4.4.3))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.4.0))(tsx@4.23.12)))
+        version: 0.6.1(@chat-adapter/slack@4.39.0(patch_hash=yi6nmigxohtnrvur6njcmzxfgm)(zod@4.4.3))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.4.0))(tsx@4.23.12)))
       acpx:
         specifier: 0.13.1
         version: 0.13.1(patch_hash=lzpwjtiaybzoijy455dfycwavu)
@@ -9309,7 +9315,7 @@ snapshots:
       - workflow
       - zod
 
-  '@chat-adapter/slack@4.39.0(zod@4.4.3)':
+  '@chat-adapter/slack@4.39.0(patch_hash=yi6nmigxohtnrvur6njcmzxfgm)(zod@4.4.3)':
     dependencies:
       '@chat-adapter/shared': 4.39.0(zod@4.4.3)
       '@slack/socket-mode': 2.0.7
@@ -9324,7 +9330,7 @@ snapshots:
       - workflow
       - zod
 
-  '@chat-adapter/teams@4.39.0(patch_hash=iqssmsnyawztp7l6jbdzzpvtky)(zod@4.4.3)':
+  '@chat-adapter/teams@4.39.0(patch_hash=tpw24esitvlghpvnkbhvwo5us4)(zod@4.4.3)':
     dependencies:
       '@chat-adapter/shared': 4.39.0(zod@4.4.3)
       '@microsoft/teams.api': 2.0.16
@@ -9339,7 +9345,7 @@ snapshots:
       - workflow
       - zod
 
-  '@chat-adapter/telegram@4.39.0(zod@4.4.3)':
+  '@chat-adapter/telegram@4.39.0(patch_hash=rveujazde7hohq3j4ziw5ejxlq)(zod@4.4.3)':
     dependencies:
       '@chat-adapter/shared': 4.39.0(zod@4.4.3)
       chat: 4.39.0(zod@4.4.3)
@@ -12821,11 +12827,11 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  '@vercel/connect@0.6.1(@chat-adapter/slack@4.39.0(zod@4.4.3))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.4.0))(tsx@4.23.12)))':
+  '@vercel/connect@0.6.1(@chat-adapter/slack@4.39.0(patch_hash=yi6nmigxohtnrvur6njcmzxfgm)(zod@4.4.3))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.4.0))(tsx@4.23.12)))':
     dependencies:
       '@vercel/oidc': 3.8.2
     optionalDependencies:
-      '@chat-adapter/slack': 4.39.0(zod@4.4.3)
+      '@chat-adapter/slack': 4.39.0(patch_hash=yi6nmigxohtnrvur6njcmzxfgm)(zod@4.4.3)
       better-auth: 1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(jsdom@30.0.1(@noble/hashes@2.4.0))(tsx@4.23.12))
 
   '@vercel/oidc@3.8.2':

@@ -1,50 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="1280" height="800"/><g data-region="global-sidebar"><text x="24" y="40" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="72" r="6" fill="#e6e6e6"/><text x="56" y="76" font-size="14" fill="#666" stroke="none" >New Task</text>
-<circle cx="32" cy="120" r="6" fill="#e6e6e6"/><text x="56" y="124" font-size="14" fill="#666" stroke="none" >Search</text>
-<circle cx="32" cy="168" r="6" fill="#e6e6e6"/><text x="56" y="172" font-size="14" fill="#666" stroke="none" >Dashboard</text>
-<circle cx="32" cy="216" r="6" fill="#e6e6e6"/><text x="56" y="220" font-size="14" fill="#666" stroke="none" >Inbox</text>
-<circle cx="32" cy="264" r="6" fill="#e6e6e6"/><text x="56" y="268" font-size="14" fill="#666" stroke="none" >Tasks</text>
-<circle cx="32" cy="312" r="6" fill="#e6e6e6"/><text x="56" y="316" font-size="14" fill="#666" stroke="none" >Projects</text>
-<circle cx="32" cy="360" r="6" fill="#e6e6e6"/><text x="56" y="364" font-size="14" fill="#666" stroke="none" >Routines</text>
-<circle cx="32" cy="408" r="6" fill="#e6e6e6"/><text x="56" y="412" font-size="14" fill="#666" stroke="none" >Artifacts</text>
-<circle cx="32" cy="456" r="6" fill="#e6e6e6"/><text x="56" y="460" font-size="14" fill="#666" stroke="none" >Agents</text>
-<circle cx="32" cy="504" r="6" fill="#e6e6e6"/><text x="56" y="508" font-size="14" fill="#666" stroke="none" >Skills</text>
-<rect x="8" y="536" width="224" height="40" rx="4" fill="#e6e6e6"/><circle cx="32" cy="552" r="6" fill="#e6e6e6"/><text x="56" y="556" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
-<circle cx="32" cy="600" r="6" fill="#e6e6e6"/><text x="56" y="604" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="744" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="768" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="800" /></g><g data-region="topbar"><line x1="240" y1="64" x2="1280" y2="64" /><text x="264" y="40" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  GitHub  ›  Chat with an agent</text><circle cx="1240" cy="32" r="16" fill="#e6e6e6"/></g><text x="264" y="104" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text>
-<text x="264" y="128" font-size="14" fill="#000" stroke="none" font-weight="700">GitHub</text>
-<line x1="520" y1="64" x2="520" y2="800" />
-<line x1="288" y1="152" x2="288" y2="392" />
-<circle cx="288" cy="152" r="16" fill="#000"/>
-<text x="288" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
-<text x="320" y="148" font-size="14" fill="#000" stroke="none" >Agent selected</text>
-<circle cx="288" cy="232" r="16" fill="#000"/>
-<text x="288" y="237" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
-<text x="320" y="228" font-size="14" fill="#000" stroke="none" >Create GitHub App</text>
-<circle cx="288" cy="312" r="16" fill="#000"/>
-<text x="288" y="317" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text>
-<text x="320" y="308" font-size="14" fill="#000" stroke="none" >Choose repositories</text>
-<circle cx="288" cy="392" r="16" fill="#fff"/>
-<text x="288" y="397" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">4</text>
-<text x="320" y="388" font-size="14" fill="#000" stroke="none" font-weight="700">Try Maya</text><text x="560" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Try Maya in GitHub</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5"><rect x="0" y="0" width="1280" height="800"/><g data-region="global-sidebar"><text x="24" y="40" font-size="20" fill="#000" stroke="none" font-weight="700">Paperclip</text><circle cx="32" cy="72" r="6" fill="#e6e6e6"/><text x="56" y="80" font-size="14" fill="#666" stroke="none" >New Task</text>
+<circle cx="32" cy="120" r="6" fill="#e6e6e6"/><text x="56" y="128" font-size="14" fill="#666" stroke="none" >Search</text>
+<circle cx="32" cy="168" r="6" fill="#e6e6e6"/><text x="56" y="176" font-size="14" fill="#666" stroke="none" >Dashboard</text>
+<circle cx="32" cy="216" r="6" fill="#e6e6e6"/><text x="56" y="224" font-size="14" fill="#666" stroke="none" >Inbox</text>
+<circle cx="32" cy="264" r="6" fill="#e6e6e6"/><text x="56" y="272" font-size="14" fill="#666" stroke="none" >Tasks</text>
+<circle cx="32" cy="312" r="6" fill="#e6e6e6"/><text x="56" y="320" font-size="14" fill="#666" stroke="none" >Projects</text>
+<circle cx="32" cy="360" r="6" fill="#e6e6e6"/><text x="56" y="368" font-size="14" fill="#666" stroke="none" >Routines</text>
+<circle cx="32" cy="408" r="6" fill="#e6e6e6"/><text x="56" y="416" font-size="14" fill="#666" stroke="none" >Artifacts</text>
+<circle cx="32" cy="456" r="6" fill="#e6e6e6"/><text x="56" y="464" font-size="14" fill="#666" stroke="none" >Agents</text>
+<circle cx="32" cy="504" r="6" fill="#e6e6e6"/><text x="56" y="512" font-size="14" fill="#666" stroke="none" >Skills</text>
+<rect x="8" y="536" width="224" height="40" rx="4" fill="#e6e6e6"/><circle cx="32" cy="552" r="6" fill="#e6e6e6"/><text x="56" y="560" font-size="14" fill="#000" stroke="none" font-weight="600">Connectors</text>
+<circle cx="32" cy="600" r="6" fill="#e6e6e6"/><text x="56" y="608" font-size="14" fill="#666" stroke="none" >Audit</text><text x="24" y="744" font-size="14" fill="#000" stroke="none" font-weight="600">Acme Company</text><text x="24" y="768" font-size="12" fill="#666" stroke="none" >Dana · Admin</text><line x1="240" y1="0" x2="240" y2="800" /></g><g data-region="topbar"><line x1="240" y1="64" x2="1280" y2="64" /><text x="264" y="40" font-size="14" fill="#666" stroke="none" >CONNECTORS  ›  GitHub  ›  Chat with an agent</text><circle cx="1240" cy="32" r="16" fill="#e6e6e6"/></g><text x="264" y="104" font-size="12" fill="#666" stroke="none" font-weight="700">SETUP</text><line x1="288" y1="152" x2="288" y2="312" /><circle cx="288" cy="152" r="16" fill="#000"/><text x="288" y="157" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text><text x="320" y="148" font-size="14" fill="#000" stroke="none" >Agent selected</text>
+<circle cx="288" cy="232" r="16" fill="#000"/><text x="288" y="237" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="700">✓</text><text x="320" y="228" font-size="14" fill="#000" stroke="none" >Connect GitHub App</text>
+<circle cx="288" cy="312" r="16" fill="#fff"/><text x="288" y="317" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text><text x="320" y="308" font-size="14" fill="#000" stroke="none" font-weight="700">Try Maya</text><line x1="520" y1="64" x2="520" y2="800" /><text x="560" y="112" font-size="28" fill="#000" stroke="none" font-weight="700">Try Maya in GitHub</text>
 <text x="560" y="144" font-size="14" fill="#666" stroke="none" >Start one task in an installed repository.</text>
-
-
-<text x="560" y="200" font-size="20" fill="#000" stroke="none" font-weight="700">Do this</text>
-<circle cx="584" cy="256" r="16" fill="#fff"/>
-<text x="584" y="261" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">1</text>
-<text x="616" y="252" font-size="14" fill="#000" stroke="none" font-weight="600">Open an issue or pull request</text>
-<text x="616" y="276" font-size="12" fill="#666" stroke="none" >Use one of the repositories selected during installation.</text>
+<text x="560" y="192" font-size="20" fill="#000" stroke="none" font-weight="700">Do this</text>
+<circle cx="584" cy="248" r="16" fill="#fff"/>
+<text x="584" y="253" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<text x="616" y="244" font-size="14" fill="#000" stroke="none" font-weight="600">Open an issue or pull request</text>
+<text x="616" y="268" font-size="12" fill="#666" stroke="none" >Use one of the repositories selected in the customer-owned App installation.</text>
 <line x1="616" y1="312" x2="1224" y2="312" stroke="#e6e6e6"/>
-<circle cx="584" cy="352" r="16" fill="#fff"/>
-<text x="584" y="357" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
-<text x="616" y="348" font-size="14" fill="#000" stroke="none" font-weight="600">Mention Maya</text>
-<text x="616" y="372" font-size="12" fill="#666" stroke="none" >Add a comment: “@paperclip-maya help me test this.”</text>
-<line x1="616" y1="408" x2="1224" y2="408" stroke="#e6e6e6"/>
-<circle cx="584" cy="448" r="16" fill="#fff"/>
-<text x="584" y="453" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
-<text x="616" y="444" font-size="14" fill="#000" stroke="none" font-weight="600">Continue</text>
-<text x="616" y="468" font-size="12" fill="#666" stroke="none" >Add another comment in the same issue or pull request to continue the same</text>
-<text x="616" y="484" font-size="12" fill="#666" stroke="none" >Paperclip task.</text>
-
-<rect x="832" y="552" width="392" height="48" rx="4" fill="#000"/><text x="1028" y="582" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open GitHub</text><g data-region="annotations"><rect x="256" y="88" width="248" height="440" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
-<rect x="552" y="160" width="680" height="368" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="160" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="164" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
-<rect x="552" y="536" width="680" height="72" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="536" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="540" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>
+<circle cx="584" cy="336" r="16" fill="#fff"/>
+<text x="584" y="341" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<text x="616" y="332" font-size="14" fill="#000" stroke="none" font-weight="600">Mention Maya</text>
+<text x="616" y="356" font-size="12" fill="#666" stroke="none" >Add a comment that directly mentions the verified GitHub App bot.</text>
+<line x1="616" y1="400" x2="1224" y2="400" stroke="#e6e6e6"/>
+<circle cx="584" cy="424" r="16" fill="#fff"/>
+<text x="584" y="429" font-size="14" fill="#000" stroke="none" text-anchor="middle" font-weight="700">3</text>
+<text x="616" y="420" font-size="14" fill="#000" stroke="none" font-weight="600">Continue the task</text>
+<text x="616" y="444" font-size="12" fill="#666" stroke="none" >Add another comment in the same issue or pull request without repeating the</text>
+<text x="616" y="460" font-size="12" fill="#666" stroke="none" >mention.</text>
+<line x1="616" y1="488" x2="1224" y2="488" stroke="#e6e6e6"/>
+<rect x="560" y="512" width="664" height="48" rx="4" fill="#000"/><text x="892" y="544" font-size="14" fill="#fff" stroke="none" text-anchor="middle" font-weight="600">Open GitHub</text><g data-region="annotations"><rect x="256" y="88" width="248" height="360" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="256" cy="88" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="256" y="92" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">1</text>
+<rect x="552" y="160" width="680" height="352" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="160" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="164" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">2</text>
+<rect x="552" y="496" width="680" height="80" rx="4" fill="none" stroke="#d33" stroke-dasharray="6 4"/><circle cx="552" cy="496" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2"/><text x="552" y="500" font-size="12" fill="#d33" stroke="none" text-anchor="middle" font-weight="700">3</text></g></svg>

@@ -528,10 +528,6 @@ settings:
           isNotificationOnly: false,
         },
       ],
-      webApplicationInfo: {
-        id: teamsClientId,
-        resource: `api://paperclip-chat/${teamsClientId}`,
-      },
       authorization: {
         permissions: {
           resourceSpecific: [
@@ -675,14 +671,98 @@ settings:
         {field("clientId", "Application / Client ID", "text")}
         {field("tenantId", "Directory / Tenant ID", "text")}
         {field("clientSecret", "Client secret value")}
+        <section className="space-y-3 rounded-lg border border-border p-4">
+          <div>
+            <h2 className="text-sm font-semibold">
+              Microsoft portal field map
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Use these exact portal sections and reuse the same Application ID
+              in all three places.
+            </p>
+          </div>
+          <ol className="list-decimal space-y-3 pl-5 text-sm">
+            <li>
+              <strong>Microsoft Entra admin center · App registrations</strong>:
+              select <strong>New registration</strong>, choose{" "}
+              <strong>
+                Accounts in this organizational directory only (Single tenant)
+              </strong>
+              , then select <strong>Register</strong>. Copy{" "}
+              <strong>Application (client) ID</strong> and{" "}
+              <strong>Directory (tenant) ID</strong>. Under{" "}
+              <strong>Certificates &amp; secrets · Client secrets</strong>,
+              select <strong>New client secret</strong> and copy its{" "}
+              <strong>Value</strong>, not its Secret ID.
+            </li>
+            <li>
+              <strong>Azure · Create Azure Bot</strong>: set{" "}
+              <strong>Microsoft App ID</strong> to{" "}
+              <strong>Single Tenant</strong>, set <strong>Creation type</strong>{" "}
+              to <strong>Use existing app registration</strong>, and enter the
+              Application ID and Tenant ID above. After creation, open{" "}
+              <strong>Settings · Configuration</strong> and paste the Paperclip{" "}
+              <strong>Messaging endpoint</strong>; then open{" "}
+              <strong>Settings · Channels</strong> and enable{" "}
+              <strong>Microsoft Teams</strong>.
+            </li>
+            <li>
+              <strong>Teams Developer Portal · Apps</strong>: select{" "}
+              <strong>New app</strong>. Under{" "}
+              <strong>Configure · App features · Bot</strong>, add an existing
+              bot using the same Application ID; enable{" "}
+              <strong>Personal</strong>, <strong>Team</strong>, and{" "}
+              <strong>Group chat</strong> scopes plus file support. Under{" "}
+              <strong>Configure · Permissions</strong>, add the two RSC{" "}
+              <strong>Application</strong> permissions shown below. Complete the
+              required app details and icons, then download the app package.
+            </li>
+            <li>
+              <strong>Microsoft Teams · Apps · Manage your apps</strong>: select{" "}
+              <strong>Upload an app · Upload a custom app</strong>, choose the
+              downloaded package, and install it in each intended personal,
+              group-chat, or team scope. If upload is unavailable, a Teams
+              administrator must enable or approve custom apps.
+            </li>
+          </ol>
+        </section>
         <label className="grid gap-2 text-sm font-medium">
-          Required Teams app manifest settings
+          Required Teams app manifest block
           <Textarea
             className="min-h-80 font-mono text-xs"
             readOnly
             value={teamsManifestSettings}
           />
         </label>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            disabled={!credentials.clientId?.trim()}
+            onClick={() => {
+              void navigator.clipboard
+                .writeText(teamsManifestSettings)
+                .then(() => setManifestCopied(true));
+            }}
+          >
+            {manifestCopied
+              ? "Manifest settings copied"
+              : "Copy manifest settings"}
+          </Button>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Enter the Application / Client ID above before copying so the block
+          contains the real bot identity. This block contains the
+          Paperclip-specific fields to verify in Developer Portal or merge into
+          a complete Teams app manifest. It is not a complete app package;
+          Developer Portal supplies the remaining required metadata and packages
+          the manifest with your app icons.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          Paperclip does not use Teams single sign-on in this release, so this
+          connection does not require a <code>webApplicationInfo</code> manifest
+          entry, an Entra Application ID URI, or delegated Microsoft Graph
+          permissions. Do not add them solely for Paperclip.
+        </p>
         <p className="text-sm text-muted-foreground">
           This release supports personal chats, group chats, and standard team
           channels—not private channels. <code>supportsFiles: true</code>{" "}

@@ -1,12 +1,62 @@
 import { describe, expect, it } from "vitest";
+import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
 import { TelegramAdapter } from "@chat-adapter/telegram";
 import { Actions, Button, Card, CardText } from "chat";
 import {
   createChatQuestionOptionActionToken,
+  nativeChatQuestion,
   TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
   telegramCallbackDataByteLength,
   telegramChatSdkCallbackData,
 } from "./chat-interaction-publications.js";
+
+function closedQuestion(allowOther?: boolean): AskUserQuestionsInteraction {
+  return {
+    id: "11111111-1111-4111-8111-111111111111",
+    companyId: "22222222-2222-4222-8222-222222222222",
+    issueId: "33333333-3333-4333-8333-333333333333",
+    kind: "ask_user_questions",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    resolverPolicy: "human_only",
+    requestedResolverPolicy: "human_only",
+    effectiveResolverPolicy: "human_only",
+    resolverPolicyProvenance: "explicit",
+    effectiveResolverPolicySource: "requested",
+    legacyResolverPolicyAliases: { requested: null, effective: null },
+    createdAt: "2026-09-05T12:00:00.000Z",
+    updatedAt: "2026-09-05T12:00:00.000Z",
+    payload: {
+      version: 1,
+      questions: [
+        {
+          id: "priority",
+          prompt: "Which priority should we use?",
+          selectionMode: "single",
+          required: true,
+          ...(allowOther === undefined ? {} : { allowOther }),
+          options: [
+            { id: "high", label: "High" },
+            { id: "normal", label: "Normal" },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+describe("native chat question eligibility", () => {
+  it("treats an omitted allowOther flag as a closed single-select question", () => {
+    expect(nativeChatQuestion(closedQuestion())).toMatchObject({
+      id: "priority",
+      options: [{ id: "high" }, { id: "normal" }],
+    });
+  });
+
+  it("keeps an explicitly open question on the Paperclip-only response path", () => {
+    expect(nativeChatQuestion(closedQuestion(true))).toBeNull();
+  });
+});
 
 class CapturingTelegramAdapter extends TelegramAdapter {
   readonly requests: Array<{
@@ -52,15 +102,15 @@ describe("Telegram question action payloads", () => {
         title: "Choose one",
         children: [
           CardText("Select a canonical option"),
-          Actions([
-            Button({ id: actionId, label: "High", style: "primary" }),
-          ]),
+          Actions([Button({ id: actionId, label: "High", style: "primary" })]),
         ],
       }),
       fallbackText: "Choose one",
     });
 
-    const send = adapter.requests.find(({ method }) => method === "sendMessage");
+    const send = adapter.requests.find(
+      ({ method }) => method === "sendMessage",
+    );
     expect(send?.payload).toMatchObject({
       reply_markup: {
         inline_keyboard: [

@@ -156,7 +156,10 @@ describe("chat provider inventory", () => {
     expect(fetch).toHaveBeenNthCalledWith(
       1,
       "https://api.github.com/app/installations/44/access_tokens",
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({
+        method: "POST",
+        signal: expect.any(AbortSignal),
+      }),
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
@@ -165,6 +168,7 @@ describe("chat provider inventory", () => {
         headers: expect.objectContaining({
           authorization: "Bearer installation-secret",
         }),
+        signal: expect.any(AbortSignal),
       }),
     );
   });
@@ -175,6 +179,11 @@ describe("chat provider inventory", () => {
         {
           id: 44,
           account: { id: 12, login: "paperclip", type: "Organization" },
+          permissions: {
+            issues: "write",
+            metadata: "read",
+            pull_requests: "write",
+          },
           suspended_at: null,
         },
         {
@@ -191,6 +200,11 @@ describe("chat provider inventory", () => {
       accountId: "12",
       accountLabel: "paperclip",
       accountType: "Organization",
+      permissions: {
+        issues: "write",
+        metadata: "read",
+        pull_requests: "write",
+      },
     });
   });
 
@@ -201,6 +215,11 @@ describe("chat provider inventory", () => {
           {
             id: 144,
             account: { id: 12, login: "paperclip", type: "Organization" },
+            permissions: {
+              issues: "write",
+              metadata: "read",
+              pull_requests: "write",
+            },
             suspended_at: null,
           },
         ]);
@@ -224,7 +243,31 @@ describe("chat provider inventory", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch).toHaveBeenLastCalledWith(
       "https://api.github.com/app/installations?per_page=100&page=2",
-      expect.any(Object),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("rejects an installation whose effective grants lag the App registration", async () => {
+    await expect(
+      discoverDedicatedGitHubAppInstallation({
+        appJwt: "jwt",
+        fetch: vi.fn(async () =>
+          response([
+            {
+              id: 44,
+              account: { id: 12, login: "paperclip" },
+              permissions: {
+                issues: "read",
+                metadata: "read",
+                pull_requests: "write",
+              },
+              suspended_at: null,
+            },
+          ]),
+        ) as unknown as typeof globalThis.fetch,
+      }),
+    ).rejects.toThrow(
+      "active installation has not granted the required access for: issues",
     );
   });
 

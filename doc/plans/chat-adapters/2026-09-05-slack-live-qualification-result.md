@@ -1,6 +1,24 @@
 # Slack live qualification result — 2026-09-05
 
-> **Status: broad current-branch live evidence plus historical core-smoke evidence, not full release qualification.** The current runs cover channel roots, DMs, FIFO follow-ups, reactions, edits, pause/resume, the registered Slack command, a command-created thread, native file ingestion, and an interleaved command/status/final race. The receipt, native-thread binding, and stale-progress defects found during the run have all been fixed and retested live. Slack is still not a full-provider PASS because the complete governance, failure-injection, reinstall, and cleanup matrix has not run.
+> **Status: broad current-branch live evidence plus historical core-smoke evidence, not full release qualification.** The current runs cover channel roots, DMs, FIFO follow-ups, reactions, edits, pause/resume, the registered Slack command, a command-created thread, native inbound and outbound files, disabled-resource enforcement and recovery, an interleaved command/status/final race, and a complete native question-to-continuation round trip. Slack is still missing the complete governance, failure-injection, reinstall, and cleanup matrix.
+
+## 2026-09-06 current-build interactive and reaction closure
+
+The final live retest ran the uncommitted release-candidate working tree based on `77ad5383e` after restarting the server with the same instance home and the current public webhook URL:
+
+- Paperclip updated and Slack verified all three ingress surfaces: Events API, Interactivity, and `/maya-fdhjew`. A fresh direct message returned exact provider-visible response `SLACK-CURRENT-BUILD-0906`, and the registered `/maya-fdhjew status` command returned the current task without creating a task solely for the control.
+- A live question whose optional `allowOther` field was omitted initially degraded to a link-only card. The shared schema defines that field as optional, so omission must mean a closed question unless it is explicitly `true`. After the fix, the same natural request rendered native **Red** and **Blue** controls. Selecting **Red** changed the card to **Answered: Red**, scheduled one continuation, and produced exact provider-visible `SLACK-RETEST-Red`; the generic completion did not race or follow it.
+- A top-level DM reaction initially reached the Slack webhook but was discarded because the SDK supplied `slack:<DM>:<message-ts>` while Paperclip's linear DM binding is `slack:<DM>:`. The first fallback still chose the newest task generation and missed reactions on older linked messages. The final implementation resolves the exact owning generation through the durable message link, keeps the endpoint/reach/principal checks, and permits completed DM generations only for this audit-only event. A final live `+1` add and remove each produced one processed delivery; neither created a comment, task, run, wake, approval, or governed action.
+- Heartbeat's resolved final-assistant presentation is now externalized only when the run has an exact causal chat binding. Ordinary internal runs keep `internal_agent_write`; chat-origin and native-interaction continuation runs receive the narrow `allow_chat_run_presentation` reason. This closes the earlier continuation gap without exposing reasoning, tool traces, or logs.
+
+## 2026-09-06 native file and action follow-up
+
+The latest current-provider checks on revision `77ad5383e3a8badf7b1b0933a7e9c66469186d55` refine the evidence boundary:
+
+- The disabled-resource negative and recovery path passed live. While the Slack resource was disabled in Paperclip, the provider message did not create a task or produce bot work. Restoring the permitted resource allowed a later request through without replacing the endpoint or losing its existing resource identity.
+- The older `CHA-68` attempt is **not** outbound-file proof. Its explicit publication delivered text, but the separately created attachment was not bound to that comment's publication lineage, so Slack never received the intended native file. This exposed an implementation defect in the Paperclip comment/attachment handoff rather than a Slack transport rejection.
+- After the explicit attachment binding fix, fresh task `CHA-71` passed the live outbound-file check. Paperclip bound the attachment to the explicit comment before publication; Slack then received the text followed by the native file, with each durable publication completing in one attempt.
+- On `CHA-70`, selecting **Blue** on the native question card was accepted exactly once, the unselected sibling action expired, and Paperclip scheduled exactly one continuation. That older attempt exposed the missing continuation lineage. The current-build **Red** retest documented above supersedes it: the accepted-state update and exact continuation response both completed without a generic completion.
 
 ## 2026-09-06 final live extension
 
@@ -13,12 +31,12 @@ The active endpoint `2782e758-8e1e-47e3-a5aa-6a8359b1c23c` added the following c
 - `CHA-42` received two replies 144 ms apart. The second run began only after the first succeeded, and each run retained its own coalesced placeholder/final message. Four reaction-add and four reaction-remove callbacks also processed once each.
 - Forty-five provider duplicate callbacks folded into 38 existing delivery rows without duplicate tasks or comments. All 97 earlier publications were `published`; all 44 runs after the isolation configuration succeeded. For the post-`05:00Z` sample, 24 processed inbound events averaged `0.702s` (`p50 0.781s`, `p95 1.146s`, maximum `1.646s`) and 25 publications averaged `0.488s` (`p50 0.315s`, `p95 1.103s`, maximum `1.127s`), all published.
 
-The remaining external-provider gaps are a live outbound file upload and rich modal interaction. Earlier low-trust failures were governance isolation, and two old synthetic-command receipt warnings are preserved pre-fix evidence; neither is a current Slack account gate.
+The outbound-file and tested rich-interaction gaps are now closed. Broader modal/form behavior still needs live coverage. Earlier low-trust failures were governance isolation, and two old synthetic-command receipt warnings are preserved pre-fix evidence; neither is a current Slack account gate.
 
 ## Current source and evidence boundary
 
-- Final locally verified and live-rerun source revision: `6f13ec09e95717c4b3b248d1d8cb9ca4e55754ab`
-- The synthetic-command receipt, native thread binding, ordered task-control, and coherent progress/status/final lane fixes are committed at this revision.
+- Final locally verified and most recently live-rerun source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
+- The synthetic-command receipt, native thread binding, ordered task-control, coherent progress/status/final lane, explicit attachment binding, native-action lifecycle, final-presentation lineage, and top-level DM reaction-generation fixes are present in the tested working tree based on this revision and were rerun live.
 - Live checkpoint: 2026-09-05 through 2026-09-06
 - Current live endpoint: `2782e758-8e1e-47e3-a5aa-6a8359b1c23c`
 - Paperclip issue: `d7f718da-a8da-468e-99a7-79dc337d5cbc`
@@ -94,9 +112,10 @@ A post-fix live retest at `04:58:32` sent `slack-no-empty-wake`. Paperclip admit
 
 ## Current local regression evidence
 
-- On revision `6f13ec09e`, the full chat-channel PostgreSQL integration suite passed 138/138 on fresh migrated database `chat_adapters_test_173`.
-- Focused chat server tests passed 115/115, the exact Slack/Telegram interleaved-lane regressions passed 2/2, focused UI tests passed 38/38, OpenAPI passed 6/6, server typecheck passed, and the deterministic browser suite passed 4/4.
-- Shared/database/UI typechecks, token gates, and the full workspace build had already passed on the immediate parent before this server-only race fix. These checks do not replace the remaining live-provider cases.
+- On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 177/177 on a fresh migrated database.
+- Focused shared tests passed 11/11, focused server tests passed 194/194, and focused UI tests passed 41/41.
+- The deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 4/4, and shared, database, server, and UI typechecks all passed.
+- These deterministic checks support the live continuation and reaction fixes but do not replace the remaining provider cases.
 
 ## Historical-run scope
 
@@ -142,4 +161,4 @@ The isolated test instance had no sandbox workspace provider. Its automatic low-
 - Deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts`: 4/4 passed.
 - Token gates and `git diff --check`: passed.
 
-This evidence is useful for regression comparison, but it is incomplete release evidence. Identity linking was sufficient for the exercised runs, but the full permission-revocation and unlinked-participant governance matrix was not executed. Disabled-resource message enforcement, rich actions/modals, outbound files and file type/size rejection, rate limiting and ambiguous-send recovery, full App uninstall/reinstall, reconnect, and final cleanup assertions remain incomplete. Slack remains unqualified for stable release until those cases and the complete release-candidate runbook pass.
+This evidence is useful for regression comparison, but it is incomplete release evidence. Identity linking was sufficient for the exercised runs, but the full permission-revocation and unlinked-participant governance matrix was not executed. Current live evidence now covers disabled-resource enforcement/recovery, one native outbound-file fixture, and a complete native question continuation. Broader modal behavior, file type/size rejection, rate limiting and ambiguous-send recovery, full App uninstall/reinstall, reconnect, and final cleanup assertions remain incomplete. Slack remains unqualified for stable release until the complete release-candidate runbook passes.

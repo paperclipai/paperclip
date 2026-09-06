@@ -11,6 +11,8 @@ export interface IssueAssignmentWakeupDeps {
       triggerDetail?: WakeupTriggerDetail;
       reason?: string | null;
       payload?: Record<string, unknown> | null;
+      idempotencyKey?: string | null;
+      allowRunCoalescing?: boolean;
       requestedByActorType?: "user" | "agent" | "system";
       requestedByActorId?: string | null;
       contextSnapshot?: Record<string, unknown>;
@@ -55,7 +57,10 @@ export function queueIssueAssignmentWakeup(input: {
       },
     })
     .catch((err) => {
-      logger.warn({ err, issueId: input.issue.id }, "failed to wake assignee on issue assignment");
+      logger.warn(
+        { err, issueId: input.issue.id },
+        "failed to wake assignee on issue assignment",
+      );
       if (input.rethrowOnError) throw err;
       return null;
     });

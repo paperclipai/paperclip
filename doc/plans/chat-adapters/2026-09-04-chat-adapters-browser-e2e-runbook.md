@@ -4,7 +4,7 @@
 
 **Date:** 2026-09-04
 
-**Paperclip source:** `codex/chat-adapters`; every execution records the exact tested SHA. The latest `origin/master` observed while revising this runbook was `8430bd897f01dd4b91e0970efffb71b97e5a2685`.
+**Paperclip source:** `codex/chat-adapters`; every execution records the exact tested SHA and contemporaneous `origin/master` revision in its qualification result. The runbook itself is revision-independent and must not be read as proof for whichever commit happens to be current.
 
 **Applies to:** Slack, GitHub, Microsoft Teams, and Telegram chat connections
 
@@ -283,7 +283,7 @@ Run these assertions within each platform-specific procedure.
 8. Where the provider emits reaction callbacks, add and then remove a reaction on a linked test message. Verify Activity records both events, while the task receives no new comment, wakeup, approval, or governed action.
 9. Send `FAIL <run-id>`, verify the safe failed state, then use the authorized retry action from Activity.
 
-**Pass:** every supported native feature is used. Unsupported features follow the adapter's documented text/link/private fallback. Inputs apply once, queued turns retain order, edits/deletes and reactions remain auditable, reactions are never interpreted as authority, and retry does not duplicate task state or provider output.
+**Pass:** every supported native feature is used. Questions and confirmations follow the adapter's documented text/link/private fallback when native controls are unavailable; richer governance interactions remain Paperclip-only. Inputs apply once, queued turns retain order, edits/deletes and reactions remain auditable, reactions are never interpreted as authority, and retry does not duplicate task state or provider output.
 
 ### C7 — Management surfaces
 
@@ -395,7 +395,7 @@ Capture all shared evidence plus the Slack OAuth scope screen, thread, DM lifecy
 Run before stable release and after any GitHub permission, event, or identity change:
 
 1. In Paperclip, perform C1 and select GitHub → **Chat with an agent**.
-2. On **Create or connect a GitHub App**, copy the Paperclip webhook URL and open GitHub App settings.
+2. On **Create or connect a GitHub App**, copy the Paperclip webhook URL and click **Open new GitHub App form**.
 3. In the sandbox organization, open **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App**.
 4. In Paperclip, click **Generate webhook secret**. Copy the one-time value immediately, then enter the Paperclip webhook URL and generated secret in GitHub with the webhook active and SSL verification enabled. Paperclip must show only the configured state plus **Waiting for GitHub to deliver its signed webhook ping…** after refresh. If **Regenerate webhook secret** is used, update GitHub before expecting another webhook to verify.
 5. Under repository permissions, set **Metadata: read**, **Issues: read and write**, and **Pull requests: read and write**. Leave Contents, Actions, Administration, and organization permissions at **No access**.
@@ -479,13 +479,14 @@ Capture the App permission screen, selected repositories, issue/PR/review conver
 
 Run before stable release and after identity, Teams manifest, or permission changes:
 
-1. In Paperclip, perform C1 and select Microsoft Teams. Keep **Connect Maya to Microsoft Teams** open and copy the displayed Paperclip messaging endpoint.
+1. In Paperclip, perform C1 and select Microsoft Teams. Keep **Connect Maya to Microsoft Teams** open and copy the displayed Paperclip messaging endpoint. Follow the on-screen **Microsoft portal field map** and use **Copy manifest settings** as the Paperclip-specific manifest reference.
    Confirm the setup screen explicitly says that a Microsoft 365 work or school organization is required, that `teams.live.com` personal/free accounts are unsupported, and that this release is commercial-cloud-only.
 2. In the sandbox tenant's Microsoft Entra admin center, create a **single-tenant** app registration. Record its Application (client) ID and Directory (tenant) ID, create one client secret, and keep the secret value available only for immediate entry.
 3. In Azure, create an **Azure Bot** using that existing Application ID and the single-tenant identity type. Set its messaging endpoint to Paperclip's displayed URL and enable its Microsoft Teams channel.
-4. In Teams Developer Portal, create a Teams app for this bot. Add a bot using the same Application ID and enable Personal, Team, and Group chat scopes.
+4. In Teams Developer Portal, select **Apps > New app**. Under **Configure > App features > Bot**, add the existing bot using the same Application ID and enable Personal, Team, and Group chat scopes plus file support. Under **Configure > Permissions**, add the RSC application permissions in the next step. Complete the required app metadata and icons; Paperclip's copied block is a field reference, not a complete app package.
 5. Add the resource-specific permissions required by the shipped manifest: `ChannelMessage.Read.Group` for subscribed channel-thread replies and `ChatMessage.Read.Chat` for group-chat messages. Do not grant tenant-wide directory/history permissions.
-6. Publish the Teams app to the sandbox organization or download and upload its app package according to tenant policy.
+   Paperclip does not use Teams single sign-on in this release. It does not require a `webApplicationInfo` manifest entry, an Entra Application ID URI, or delegated Microsoft Graph permissions; do not add them solely for this connection.
+6. Download the app package, then in Teams use **Apps > Manage your apps > Upload an app > Upload a custom app**, or publish it to the sandbox organization according to tenant policy.
 7. Return to Paperclip. Enter only Application/Client ID, Directory/Tenant ID, and the client-secret value, then click **Verify Microsoft credentials**. Confirm the secret remains masked and is not shown again.
 8. In Teams, open the app installation surface, click **Add**, and install it into `Paperclip Chat E2E` and personal scope when prompted.
 9. In the Enabled channel, create a new post containing `@Maya ECHO <run-id>-SETUP`, then reply beneath it without another mention.
@@ -541,7 +542,7 @@ Run C3, C5, and C6, then verify specifically:
 
 - DM, channel, and group output use bounded post/edit behavior; the current durable webhook pipeline advertises no native Teams streaming;
 - `FORM` uses an Adaptive Card and task module where supported, with server-side reauthorization on submit;
-- native file receipt and upload work only in personal chats; channel and group-chat file references are not ingested without a separate Microsoft Graph connection and use a safe Paperclip-link fallback;
+- file references are not ingested without a separate Microsoft Graph connection, and outbound files use a safe authenticated Paperclip-link fallback on every Teams surface;
 - denials use targeted activity when supported, otherwise DM or concise text plus a Paperclip link;
 - tenant ID plus Entra object ID, not display name/email, determines identity;
 - app removal, consent revocation, or invalid bot identity appears in Activity with the correct repair action.
@@ -654,21 +655,21 @@ Slack Socket Mode and Telegram polling receive separate instance-admin smoke tes
 
 “Automatic” means the richest safe native behavior is used without an endpoint toggle. “Fallback” means the provider visibly receives the documented safe alternative.
 
-| Capability               | Slack                         | GitHub                              | Teams                                            | Telegram                                |
-| ------------------------ | ----------------------------- | ----------------------------------- | ------------------------------------------------ | --------------------------------------- |
-| Root activation          | Native mention                | Mention in issue/PR/review          | Native mention                                   | DM message or group `/task@bot` command |
-| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread     | Channel post thread or chat generation           | Chat generation or forum topic          |
-| Reaction acknowledgement | Automatic                     | Automatic                           | Automatic where supported                        | Automatic where allowed                 |
-| Streaming/progress       | Native stream, else post/edit | Coarse comment edit                 | Bounded post/edit; no native streaming           | Throttled post/edit; optional DM draft  |
-| Rich cards               | Block Kit                     | GFM + Paperclip link                | Adaptive Card                                    | Formatted text/inline keyboard          |
-| Buttons/selections       | Native                        | Fallback link                       | Native card action                               | Inline keyboard                         |
-| Modal/form               | Native modal                  | Fallback link                       | Task module                                      | Sequential prompt/link fallback         |
-| Commands                 | Registered slash command      | Text mention vocabulary only        | Card/message vocabulary                          | `/new`, `/status`, `/close`             |
-| Files                    | Native send/receive           | Inbound URL text + safe output link | Native in personal chat; link fallback elsewhere | Native media/document                   |
-| DM                       | Native                        | Unsupported                         | Personal scope                                   | Native                                  |
-| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link               | Targeted, then DM/text                           | DM, then safe text                      |
-| Edit/delete audit        | Correction/tombstone          | Correction/tombstone                | Correction/tombstone where delivered             | Correction/tombstone where delivered    |
-| Concurrent turns         | Queue by default              | Queue by default                    | Queue by default                                 | Queue by default                        |
+| Capability               | Slack                         | GitHub                              | Teams                                         | Telegram                                |
+| ------------------------ | ----------------------------- | ----------------------------------- | --------------------------------------------- | --------------------------------------- |
+| Root activation          | Native mention                | Mention in issue/PR/review          | Native mention                                | DM message or group `/task@bot` command |
+| Durable boundary         | Slack thread or DM generation | Existing issue/PR/review thread     | Channel post thread or chat generation        | Chat generation or forum topic          |
+| Reaction acknowledgement | Automatic                     | Automatic                           | Automatic where supported                     | Automatic where allowed                 |
+| Streaming/progress       | Native stream, else post/edit | Coarse comment edit                 | Bounded post/edit; no native streaming        | Throttled post/edit; optional DM draft  |
+| Rich cards               | Block Kit                     | GFM + Paperclip link                | Adaptive Card                                 | Formatted text/inline keyboard          |
+| Buttons/selections       | Native                        | Fallback link                       | Native card action                            | Inline keyboard                         |
+| Modal/form               | Native modal                  | Fallback link                       | Task module                                   | Sequential prompt/link fallback         |
+| Commands                 | Registered slash command      | Text mention vocabulary only        | Card/message vocabulary                       | `/new`, `/status`, `/close`             |
+| Files                    | Native send/receive           | Inbound URL text + safe output link | Authenticated Paperclip link on every surface | Native media/document                   |
+| DM                       | Native                        | Unsupported                         | Personal scope                                | Native                                  |
+| Ephemeral/private denial | Ephemeral, then DM/text       | Safe public text/link               | Targeted, then DM/text                        | DM, then safe text                      |
+| Edit/delete audit        | Correction/tombstone          | Correction/tombstone                | Correction/tombstone where delivered          | Correction/tombstone where delivered    |
+| Concurrent turns         | Queue by default              | Queue by default                    | Queue by default                              | Queue by default                        |
 
 A stable adapter fails qualification if it silently omits a supported maximal feature, exposes a feature toggle that should be automatic, claims an unsupported native behavior, or falls back without preserving task identity, authorization, and safe publication.
 

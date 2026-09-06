@@ -85,6 +85,7 @@ describe("chat agent comment publication authorization", () => {
     "paperclip_runner_protocol",
     "allow_visible_issue_write",
     "allow_scoped_agent_write",
+    "allow_chat_run_presentation",
   ])("allows an explicitly authored agent reply with reason %s", (reason) => {
     expect(isExplicitExternalAgentComment(metadata(reason))).toBe(true);
   });

@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { Attachment } from "chat";
 import {
@@ -118,6 +118,208 @@ describe("Chat SDK published adapter integration", () => {
     ).toBe(4);
   });
 
+  it("bounds each GitHub API request with a fresh abort signal", async () => {
+    const providerFetch = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        expect(init?.signal?.aborted).toBe(false);
+        return Response.json({ resources: {} });
+      },
+    );
+    vi.stubGlobal("fetch", providerFetch);
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-github-timeout",
+      endpointId: "endpoint-github-timeout",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "github",
+        userName: "paperclip-agent[bot]",
+        credentials: { token: "github_pat_test", webhookSecret: "secret" },
+      },
+    });
+    try {
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        octokit: { request(route: string): Promise<unknown> };
+      };
+      await adapter.octokit.request("GET /rate_limit");
+      await adapter.octokit.request("GET /rate_limit");
+      expect(providerFetch).toHaveBeenCalledTimes(2);
+      const firstSignal = providerFetch.mock.calls[0]?.[1]?.signal;
+      const secondSignal = providerFetch.mock.calls[1]?.[1]?.signal;
+      expect(firstSignal).not.toBe(secondSignal);
+    } finally {
+      await runtime.shutdown();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("bounds Telegram Bot API calls while preserving a caller abort signal", async () => {
+    const providerFetch = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.signal).toBeInstanceOf(AbortSignal);
+        expect(init?.signal?.aborted).toBe(false);
+        return Response.json({ ok: true, result: { id: 123 } });
+      },
+    );
+    vi.stubGlobal("fetch", providerFetch);
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-telegram-timeout",
+      endpointId: "endpoint-telegram-timeout",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "telegram",
+        userName: "paperclip_agent_bot",
+        credentials: {
+          botToken: "123:test",
+          secretToken: "telegram-webhook-secret",
+        },
+      },
+    });
+    try {
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        telegramFetch(
+          method: string,
+          payload?: Record<string, unknown>,
+          request?: { signal?: AbortSignal },
+        ): Promise<unknown>;
+      };
+      const caller = new AbortController();
+      await adapter.telegramFetch("getMe", {}, { signal: caller.signal });
+      const effectiveSignal = providerFetch.mock.calls[0]?.[1]?.signal;
+      expect(effectiveSignal).not.toBe(caller.signal);
+      caller.abort();
+      expect(effectiveSignal?.aborted).toBe(true);
+    } finally {
+      await runtime.shutdown();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("configures a bounded Teams HTTP client reused by scoped egress", async () => {
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-teams-timeout",
+      endpointId: "endpoint-teams-timeout",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "microsoft-teams",
+        userName: "Paperclip Agent",
+        credentials: {
+          appId: "00000000-0000-0000-0000-000000000000",
+          appPassword: "secret",
+        },
+      },
+    });
+    try {
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        app: {
+          api: {
+            http: {
+              options?: { timeout?: number };
+              http?: { defaults?: { timeout?: number } };
+            };
+          };
+        };
+      };
+      expect(
+        adapter.app.api.http.options?.timeout ??
+          adapter.app.api.http.http?.defaults?.timeout,
+      ).toBe(45_000);
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("refreshes an expired GitHub App installation token before a delayed send", async () => {
+    const start = new Date("2026-09-05T12:00:00.000Z");
+    vi.setSystemTime(start);
+    const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 })
+      .privateKey.export({ type: "pkcs8", format: "pem" })
+      .toString();
+    let tokenExchanges = 0;
+    const commentAuthorizations: string[] = [];
+    const providerFetch = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : String(input);
+        const headers = new Headers(
+          input instanceof Request ? input.headers : init?.headers,
+        );
+        if (url.endsWith("/app/installations/2468/access_tokens")) {
+          tokenExchanges += 1;
+          return Response.json(
+            {
+              token: `ghs-installation-${tokenExchanges}`,
+              expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+              permissions: { issues: "write", pull_requests: "write" },
+              repository_selection: "selected",
+            },
+            { status: 201 },
+          );
+        }
+        if (url.endsWith("/repos/paperclipai/chat-e2e/issues/42/comments")) {
+          commentAuthorizations.push(headers.get("authorization") ?? "");
+          return Response.json(
+            {
+              id: 9_000 + commentAuthorizations.length,
+              body: "safe reply",
+              user: { id: 9001, login: "maya-paperclip[bot]", type: "Bot" },
+            },
+            { status: 201 },
+          );
+        }
+        throw new Error(`Unexpected GitHub provider request: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", providerFetch);
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-github-token-refresh",
+      endpointId: "endpoint-github-token-refresh",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "github",
+        userName: "maya-paperclip[bot]",
+        credentials: {
+          appId: "123456",
+          botUserId: 9001,
+          installationId: 2468,
+          privateKey,
+          webhookSecret: "github-webhook-secret",
+        },
+      },
+    });
+    const adapter = runtime.getProviderAdapter() as unknown as {
+      postMessage(
+        threadId: string,
+        message: { markdown: string },
+      ): Promise<{ id: string }>;
+    };
+    try {
+      await adapter.postMessage("github:paperclipai/chat-e2e:issue:42", {
+        markdown: "first safe reply",
+      });
+      vi.setSystemTime(new Date(start.getTime() + 61 * 60_000));
+      await adapter.postMessage("github:paperclipai/chat-e2e:issue:42", {
+        markdown: "delayed safe reply",
+      });
+
+      expect(tokenExchanges).toBe(2);
+      expect(commentAuthorizations).toHaveLength(2);
+      expect(commentAuthorizations[0]).toContain("ghs-installation-1");
+      expect(commentAuthorizations[1]).toContain("ghs-installation-2");
+    } finally {
+      await runtime.shutdown();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("preserves the pinned Slack Block Kit callback's clicked-message thread id", async () => {
     const signingSecret = "slack-action-signing-secret";
     const onAction = vi.fn();
@@ -151,7 +353,9 @@ describe("Chat SDK published adapter integration", () => {
       actions: [{ action_id: "pcq:blue", value: "interaction-id" }],
       trigger_id: "trigger-id",
     };
-    const body = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+    const body = new URLSearchParams({
+      payload: JSON.stringify(payload),
+    }).toString();
     const timestamp = String(Math.floor(Date.now() / 1_000));
     const signature = `v0=${createHmac("sha256", signingSecret)
       .update(`v0:${timestamp}:${body}`)
@@ -159,15 +363,18 @@ describe("Chat SDK published adapter integration", () => {
     try {
       await runtime.initialize();
       const response = await runtime.handleWebhook(
-        new Request("https://paperclip.example/api/chat-webhooks/public/slack", {
-          method: "POST",
-          headers: {
-            "content-type": "application/x-www-form-urlencoded",
-            "x-slack-request-timestamp": timestamp,
-            "x-slack-signature": signature,
+        new Request(
+          "https://paperclip.example/api/chat-webhooks/public/slack",
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/x-www-form-urlencoded",
+              "x-slack-request-timestamp": timestamp,
+              "x-slack-signature": signature,
+            },
+            body,
           },
-          body,
-        }),
+        ),
       );
       expect(response.status).toBe(200);
       expect(onAction).toHaveBeenCalledWith(
@@ -178,6 +385,96 @@ describe("Chat SDK published adapter integration", () => {
             messageId: "1788.200",
             threadId: "slack:D-PAPERCLIP-DM:1788.200",
             value: "interaction-id",
+          }),
+        }),
+      );
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("acknowledges a signed Slack slash command without a blocking profile lookup", async () => {
+    const signingSecret = "slack-slash-signing-secret";
+    const onSlashCommand = vi.fn(async () => undefined);
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {}, onSlashCommand },
+      companyId: "company-slack-slash-ack",
+      endpointId: "endpoint-slack-slash-ack",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "slack",
+        userName: "paperclip-agent",
+        credentials: {
+          botToken: "xoxb-test",
+          botUserId: "U-PAPERCLIP-BOT",
+          signingSecret,
+        },
+      },
+    });
+    const body = new URLSearchParams({
+      channel_id: "C-PAPERCLIP",
+      command: "/paperclip-agent",
+      team_id: "T-PAPERCLIP",
+      text: "investigate the release",
+      trigger_id: "slash-trigger",
+      user_id: "U-OPERATOR",
+      user_name: "operator",
+    }).toString();
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const signature = `v0=${createHmac("sha256", signingSecret)
+      .update(`v0:${timestamp}:${body}`)
+      .digest("hex")}`;
+    try {
+      await runtime.initialize();
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        _client: { users: { info(input: unknown): Promise<unknown> } };
+      };
+      const usersInfo = vi.fn(
+        async () =>
+          await new Promise<never>(() => {
+            // A regression to the upstream cold lookup would hold the provider
+            // acknowledgement open until Paperclip's webhook deadline.
+          }),
+      );
+      adapter._client.users.info = usersInfo;
+      const response = await Promise.race([
+        runtime.handleWebhook(
+          new Request(
+            "https://paperclip.example/api/chat-webhooks/public/slack",
+            {
+              method: "POST",
+              headers: {
+                "content-type": "application/x-www-form-urlencoded",
+                "x-slack-request-timestamp": timestamp,
+                "x-slack-signature": signature,
+              },
+              body,
+            },
+          ),
+        ),
+        new Promise<"timed_out">((resolve) =>
+          setTimeout(() => resolve("timed_out"), 250),
+        ),
+      ]);
+      expect(response).not.toBe("timed_out");
+      expect((response as Response).status).toBe(200);
+      await expect((response as Response).json()).resolves.toEqual({
+        response_type: "ephemeral",
+        text: "Paperclip received this command.",
+      });
+      expect(usersInfo).not.toHaveBeenCalled();
+      expect(onSlashCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "slack",
+          event: expect.objectContaining({
+            command: "/paperclip-agent",
+            text: "investigate the release",
+            user: expect.objectContaining({
+              userId: "U-OPERATOR",
+              userName: "operator",
+              fullName: "operator",
+            }),
           }),
         }),
       );
@@ -203,7 +500,10 @@ describe("Chat SDK published adapter integration", () => {
         },
       },
     });
-    const uploadV2 = vi.fn(async () => ({ ok: true, files: [{ id: "F-PAPERCLIP" }] }));
+    const uploadV2 = vi.fn(async () => ({
+      ok: true,
+      files: [{ id: "F-PAPERCLIP" }],
+    }));
     const postMessage = vi.fn(async () => ({ ok: true, ts: "1788.301" }));
     try {
       await runtime.initialize();
@@ -214,14 +514,23 @@ describe("Chat SDK published adapter integration", () => {
         };
         postMessage(
           threadId: string,
-          message: { files: Array<{ data: Buffer; filename: string; mimeType: string }>; markdown: string },
+          message: {
+            files: Array<{ data: Buffer; filename: string; mimeType: string }>;
+            markdown: string;
+          },
         ): Promise<{ id: string }>;
       };
       adapter._client.files.uploadV2 = uploadV2;
       adapter._client.chat.postMessage = postMessage;
       const sent = await adapter.postMessage("slack:C-PAPERCLIP:1788.300", {
         markdown: "",
-        files: [{ data: Buffer.from("safe artifact"), filename: "result.txt", mimeType: "text/plain" }],
+        files: [
+          {
+            data: Buffer.from("safe artifact"),
+            filename: "result.txt",
+            mimeType: "text/plain",
+          },
+        ],
       });
       expect(sent.id).toMatch(/^file-/);
       expect(uploadV2).toHaveBeenCalledOnce();
@@ -297,6 +606,52 @@ describe("Chat SDK published adapter integration", () => {
     } finally {
       await runtime.shutdown();
     }
+  });
+
+  it("parses a verified Teams messageUpdate through the public adapter contract", async () => {
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-teams-message-update",
+      endpointId: "endpoint-teams-message-update",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "microsoft-teams",
+        userName: "Paperclip Agent",
+        credentials: {
+          appId: "00000000-0000-4000-8000-000000000511",
+          appPassword: "secret",
+          appTenantId: "00000000-0000-4000-8000-000000000522",
+          appType: "SingleTenant",
+        },
+      },
+    });
+    const conversationId = "19:message-update@thread.tacv2;messageid=root-1";
+    const serviceUrl = "https://smba.trafficmanager.net/amer/";
+    const message = runtime.parseMicrosoftTeamsMessage({
+      id: "teams-message-1",
+      type: "messageUpdate",
+      text: "Corrected Teams request",
+      timestamp: "2026-09-06T14:01:00.000Z",
+      serviceUrl,
+      from: { id: "29:teams-user", name: "Teams User" },
+      conversation: {
+        id: conversationId,
+        conversationType: "channel",
+        tenantId: "00000000-0000-4000-8000-000000000522",
+      },
+      channelData: {
+        eventType: "editMessage",
+        tenant: { id: "00000000-0000-4000-8000-000000000522" },
+      },
+    });
+    expect(message).toMatchObject({
+      id: "teams-message-1",
+      text: "Corrected Teams request",
+      threadId: `teams:${Buffer.from(conversationId).toString("base64url")}:${Buffer.from(serviceUrl).toString("base64url")}`,
+      author: { userId: "29:teams-user", fullName: "Teams User" },
+    });
+    await runtime.shutdown();
   });
 
   it.each([

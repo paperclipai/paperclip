@@ -1,6 +1,20 @@
 # Telegram live qualification result — 2026-09-05
 
-> **Status: broad private-chat and group/topic live evidence, not full release qualification.** The latest live runs cover task controls, FIFO and burst handling, reactions, edits, native documents, task-generation races, the repaired interleaved status/final lane, group/topic isolation, removal/rejoin, and the silent-publication boundary. Interactive actions, broader media boundaries, global token revocation, and other runbook cases remain open.
+> **Status: broad private-chat and group/topic live evidence, not full release qualification.** The latest live runs cover task controls, FIFO and burst handling, reactions, edits, native documents, task-generation races, the repaired interleaved status/final lane, group/topic isolation, removal/rejoin, the silent-publication boundary, and a complete native confirmation-to-continuation round trip. Broader media boundaries, global token revocation, and other runbook cases remain open.
+
+## 2026-09-06 current-build continuation closure
+
+After the public test tunnel changed, Paperclip rotated the bot webhook to the current verified URL using the already-vaulted credential; no token was exposed. The first current-build request then exposed a real shared presentation defect: the exact final comment existed in Paperclip, but Telegram received only `Maya completed this turn.` because heartbeat materialized the final response as an internal comment.
+
+The repaired path now authorizes only the selected final-assistant presentation of an exactly chat-bound run. A fresh request produced exact provider-visible `TG-CURRENT-BUILD-0906-C` instead of a generic completion. A fresh ordinary confirmation then rendered native **Approve** and **Reject** controls; selecting **Approve** edited the card to **Accepted**, scheduled one continuation, and produced exact provider-visible `TG-CONFIRM-CONTINUED-0906`. The final response appeared once, and no generic completion followed it. Raw reasoning, tool events, and internal logs remain in Paperclip.
+
+## 2026-09-06 native confirmation follow-up
+
+The latest current-provider checks on revision `77ad5383e3a8badf7b1b0933a7e9c66469186d55` distinguish the native control from its downstream continuation:
+
+- The older confirmation attempt exposed a link-only fallback gap and is not evidence for native Telegram actions.
+- A fresh confirmation on provider message `521…` displayed native **Yes** and **No** controls in Telegram. Selecting **Yes** was accepted exactly once, the sibling choice expired, and the same provider message was edited to **Accepted** with no buttons left active. Paperclip scheduled exactly one continuation.
+- The continuation run's final comment remained internal because its run lineage was not recognized as originating from the bound external turn. That older attempt exposed the defect. The current-build **Approve** retest documented above supersedes it and completed the native question-to-continuation round trip with exact final output.
 
 ## 2026-09-06 group and boundary extension
 
@@ -14,8 +28,8 @@ The live bot was installed in group `pc-e2e-telegram-0906`; the endpoint remaine
 
 ## Scope
 
-- Final locally verified and live-rerun source revision: `6f13ec09e95717c4b3b248d1d8cb9ca4e55754ab`
-- Telegram provider-ordering, slash-command receipt, false internal-drain duplicate, stale-action denial, endpoint-generation fencing, command admission, provider-failure classification, and coherent progress/status/final lane fixes are committed at this revision.
+- Final locally verified and most recently live-rerun source revision: `77ad5383e3a8badf7b1b0933a7e9c66469186d55`
+- Telegram provider-ordering, slash-command receipt, false internal-drain duplicate, stale-action denial, endpoint-generation fencing, command admission, provider-failure classification, coherent progress/status/final lane, native-confirmation lifecycle, and exact final-presentation lineage fixes are present in the tested working tree based on this revision and were rerun live.
 - Provider: Telegram, dedicated test bot in a private chat
 - Live checkpoint: 2026-09-05 through 2026-09-06
 
@@ -77,9 +91,11 @@ This proof supersedes the previously observed same-second race. It does not by i
 
 ## Current local regression evidence
 
-- On revision `6f13ec09e`, the full chat-channel PostgreSQL integration suite passed 138/138 on fresh migrated database `chat_adapters_test_173`.
-- Focused chat server tests passed 115/115, the exact Slack/Telegram interleaved-lane regressions passed 2/2, focused UI tests passed 38/38, OpenAPI passed 6/6, server typecheck passed, and the deterministic browser suite passed 4/4.
-- Shared/database/UI typechecks, token gates, and the full workspace build had already passed on the immediate parent before this server-only race fix. Local results do not substitute for the remaining unexecuted live cases.
+- Telegram edit lifecycle rows now retain the normalized external actor and revalidate the current identity link and Paperclip membership under lock immediately before creating the lifecycle system comment. A deterministic race revokes the actor's link after the original message is admitted; the later edit is filtered, its text is removed from the durable row, and no task comment is created.
+- On the current verified working tree based on revision `77ad5383e`, the full chat-channel PostgreSQL integration suite passed 177/177 on a fresh migrated database.
+- Focused shared tests passed 11/11, focused server tests passed 194/194, and focused UI tests passed 41/41.
+- The deterministic browser suite `tests/e2e/chat-adapters-ui.spec.ts` passed 4/4, and shared, database, server, and UI typechecks all passed.
+- These deterministic checks support the live continuation fix but do not replace the remaining provider cases.
 
 ## Earlier core-smoke evidence
 
@@ -90,9 +106,9 @@ On the older `e5f3917b7` checkpoint, rapid updates `88` and `89` each produced o
 This was not a full Telegram runbook PASS. Private-chat commands, text documents, group privacy-mode operation, forum-topic boundaries, queue ordering, removal/rejoin, reaction add/remove, edits, and the silent-publication boundary now have live evidence, but the following still do not:
 
 - disabled-resource enforcement and linked/unlinked identity governance;
-- native interactive questions/actions, including forged, expired, and repeated taps against the real provider;
+- forged and expired real-provider actions beyond the tested one-shot native confirmation; native rendering, continuation, sibling expiry, accepted-state edit, and exact final delivery now have live evidence;
 - photos, audio, video, oversize or malformed media, and download-failure handling;
 - flood-control retry, global token revocation, recovery, and credential rotation; and
 - the complete cleanup and evidence checklist.
 
-Telegram remains unqualified for stable release until those live scenarios pass on the final release-candidate source.
+Telegram remains unqualified for stable release until the remaining live scenarios pass on the final release-candidate source.

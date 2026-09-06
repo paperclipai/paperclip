@@ -46,15 +46,20 @@ const webhookSecret = "github-provider-stress-secret";
 function signedGitHubRequest(
   event: "issue_comment" | "pull_request_review_comment",
   payload: Record<string, unknown>,
+  deliveryId?: string,
 ) {
   const body = JSON.stringify(payload);
   const signature = createHmac("sha256", webhookSecret)
     .update(body)
     .digest("hex");
+  const resolvedDeliveryId =
+    deliveryId ??
+    `delivery-${String((payload.comment as { id?: unknown } | undefined)?.id ?? "event")}`;
   return new Request("https://paperclip.example/github", {
     method: "POST",
     headers: {
       "content-type": "application/json",
+      "x-github-delivery": resolvedDeliveryId,
       "x-github-event": event,
       "x-hub-signature-256": `sha256=${signature}`,
     },
@@ -247,5 +252,71 @@ describe("GitHub published adapter stress contract", () => {
       true,
     );
     await runtime.shutdown();
+  });
+
+  it("keeps stable identities across reordered and exactly duplicated raw deliveries", async () => {
+    const deliveries: ChatSdkMessageCallbackEvent[] = [];
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: {
+        onMessage(event) {
+          deliveries.push(event);
+        },
+      },
+      companyId: "company-github-reorder-stress",
+      endpointId: "endpoint-github-reorder-stress",
+      logger: "silent",
+      persistence: memoryPersistence(),
+      providerConfig: {
+        provider: "github",
+        userName: "maya-paperclip[bot]",
+        credentials: {
+          botUserId: 9001,
+          token: "github-token-never-logged",
+          webhookSecret,
+        },
+      },
+    });
+    await runtime.initialize();
+    const newer = commentPayload({
+      body: "@maya-paperclip[bot] newer comment delivered first",
+      commentId: 5102,
+      number: 51,
+    });
+    const older = commentPayload({
+      body: "@maya-paperclip[bot] older root delivered late",
+      commentId: 5101,
+      number: 51,
+    });
+    try {
+      for (const request of [
+        signedGitHubRequest("issue_comment", newer, "github-delivery-5102"),
+        signedGitHubRequest("issue_comment", older, "github-delivery-5101"),
+        signedGitHubRequest("issue_comment", older, "github-delivery-5101"),
+      ]) {
+        expect((await runtime.handleWebhook(request)).status).toBe(200);
+      }
+
+      expect(
+        deliveries.map((delivery) => ({
+          id: delivery.message.id,
+          threadId: delivery.thread.id,
+        })),
+      ).toEqual([
+        {
+          id: "5102",
+          threadId: "github:paperclipai/chat-e2e:issue:51",
+        },
+        {
+          id: "5101",
+          threadId: "github:paperclipai/chat-e2e:issue:51",
+        },
+        {
+          id: "5101",
+          threadId: "github:paperclipai/chat-e2e:issue:51",
+        },
+      ]);
+    } finally {
+      await runtime.shutdown();
+    }
   });
 });

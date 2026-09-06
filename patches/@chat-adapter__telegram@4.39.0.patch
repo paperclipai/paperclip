@@ -1,0 +1,33 @@
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -770,6 +770,7 @@ function richMessageMedia(message) {
+ var TELEGRAM_API_BASE = "https://api.telegram.org";
+ var TELEGRAM_FILE_LIMIT = 25 * 1024 * 1024;
+ var TELEGRAM_FILE_TIMEOUT_MS = 3e4;
++var TELEGRAM_API_TIMEOUT_MS = 45e3;
+ async function readTelegramFile(response, fileId) {
+   const declared = Number(response.headers.get("content-length"));
+   if (Number.isFinite(declared) && declared > TELEGRAM_FILE_LIMIT) {
+@@ -3439,6 +3440,12 @@ var TelegramAdapter = class {
+   async telegramFetch(method, payload, request) {
+     const botToken = this.staticBotToken ?? await this.resolveBotToken();
+     const url = `${this.apiBaseUrl}/bot${botToken}/${method}`;
++    const requestTimeoutMs = method === "getUpdates" && payload && typeof payload === "object" && typeof payload.timeout === "number" ? Math.max(TELEGRAM_API_TIMEOUT_MS, (payload.timeout + 5) * 1e3) : TELEGRAM_API_TIMEOUT_MS;
++    const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
++    const signal = request?.signal ? AbortSignal.any([
++      request.signal,
++      timeoutSignal
++    ]) : timeoutSignal;
+     let response;
+     try {
+       response = await fetch(url, {
+@@ -3448,7 +3455,7 @@ var TelegramAdapter = class {
+           "Content-Type": "application/json"
+         },
+         body: payload instanceof FormData ? payload : JSON.stringify(payload ?? {}),
+-        signal: request?.signal
++        signal
+       });
+     } catch (error) {
+       if (this.isAbortError(error)) {
