@@ -700,6 +700,12 @@ function redactCommandSecretHeaders(
     // a scan would consume makes one pass settle, which the caller's chain
     // requires. Each round starts where the last stopped and the rounds cover
     // disjoint text, so the loop stays linear.
+    //
+    // This rests on `redactedValue` carrying no quote, backslash, whitespace,
+    // backtick or shell metacharacter, which is what makes a scan cross it
+    // rather than stop inside it. Every caller passes `***REDACTED***`. A
+    // placeholder holding any of those bytes would stop one reading and not
+    // another, and the rule's output could move on a second pass.
     for (;;) {
       let grown: number = best.end;
       const consider = (candidate: number) => {
