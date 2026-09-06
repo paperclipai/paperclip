@@ -104,7 +104,9 @@ jobs:
       - name: Generate private eval-repository token
         id: evals_token
         env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GITHUB_APP_ID: ${{ vars.PAPERCLIP_EVALS_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.PAPERCLIP_EVALS_APP_PRIVATE_KEY }}
+          GITHUB_APP_NAME: paperclip-evals
           GH_REPO: paperclipai/paperclip-evals
         run: |
           set -euo pipefail
@@ -176,7 +178,9 @@ jobs:
       - name: Generate private eval-repository token
         id: evals_token
         env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GITHUB_APP_ID: ${{ vars.PAPERCLIP_EVALS_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.PAPERCLIP_EVALS_APP_PRIVATE_KEY }}
+          GITHUB_APP_NAME: paperclip-evals
           GH_REPO: paperclipai/paperclip-evals
         run: |
           set -euo pipefail
@@ -331,7 +335,9 @@ jobs:
       - name: Generate private eval-repository token
         id: evals_token
         env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GITHUB_APP_ID: ${{ vars.PAPERCLIP_EVALS_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.PAPERCLIP_EVALS_APP_PRIVATE_KEY }}
+          GITHUB_APP_NAME: paperclip-evals
           GH_REPO: paperclipai/paperclip-evals
         run: |
           set -euo pipefail
@@ -501,7 +507,9 @@ jobs:
       - name: Generate private eval-repository token
         id: evals_token
         env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          GITHUB_APP_ID: ${{ vars.PAPERCLIP_EVALS_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.PAPERCLIP_EVALS_APP_PRIVATE_KEY }}
+          GITHUB_APP_NAME: paperclip-evals
           GH_REPO: paperclipai/paperclip-evals
         run: |
           set -euo pipefail
