@@ -18,6 +18,25 @@ async function makeTempRoot(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "paperclip-sweeper-test-"));
 }
 
+const terminalAndClosedDeps = {
+  checkOpenHandles: async () => ({ ok: true as const, hasOpenHandles: false }),
+  getRunStatus: async () => ({ ok: true as const, status: "succeeded" }),
+};
+
+async function sweep(
+  opts: { companyDir: string; dryRun: boolean; graceHours: number },
+  deps: NonNullable<Parameters<typeof sweepRunHomes>[1]> = terminalAndClosedDeps,
+) {
+  return sweepRunHomes(
+    {
+      ...opts,
+      paperclipApiBase: "http://paperclip.test",
+      paperclipApiKey: "test-key",
+    },
+    deps,
+  );
+}
+
 /**
  * Build a minimal company-dir fixture:
  *   <companyDir>/acp-engine/agents/<agentId>/codex-run-homes/<runId>/home/
@@ -54,7 +73,7 @@ async function buildRunHome(opts: {
   }
 
   if (opts.withQuarantine) {
-    await fs.writeFile(path.join(runHomeParent, "QUARANTINE"), "", "utf8");
+    await fs.writeFile(path.join(path.dirname(runHomeParent), `${opts.runId}.quarantine`), "", "utf8");
   }
 
   return { runHomeDir, retentionDir };
@@ -81,7 +100,7 @@ describe("run-home sweeper", () => {
         withRetained: true,
       });
 
-      const result = await sweepRunHomes({
+      const result = await sweep({
         companyDir,
         dryRun: true,
         graceHours: 24,
@@ -114,7 +133,7 @@ describe("run-home sweeper", () => {
         withRetained: true,
       });
 
-      const result = await sweepRunHomes({
+      const result = await sweep({
         companyDir,
         dryRun: true,
         graceHours: 24,
@@ -137,7 +156,7 @@ describe("run-home sweeper", () => {
         withRetained: true,
       });
 
-      const result = await sweepRunHomes({
+      const result = await sweep({
         companyDir,
         dryRun: false,
         graceHours: 24,
@@ -164,7 +183,7 @@ describe("run-home sweeper", () => {
         withQuarantine: true, // no retained dir, but QUARANTINE marker present
       });
 
-      const result = await sweepRunHomes({
+      const result = await sweep({
         companyDir,
         dryRun: false,
         graceHours: 24,
@@ -176,6 +195,9 @@ describe("run-home sweeper", () => {
       expect(entry!.deleted).toBe(true);
       const stat = await fs.stat(runHomeDir).catch(() => null);
       expect(stat).toBeNull();
+      await expect(
+        fs.stat(path.join(path.dirname(path.dirname(runHomeDir)), "run-quarantined.quarantine")),
+      ).rejects.toThrow();
     });
   });
 
@@ -189,7 +211,7 @@ describe("run-home sweeper", () => {
         // no withRetained, no withQuarantine
       });
 
-      const result = await sweepRunHomes({
+      const result = await sweep({
         companyDir,
         dryRun: false,
         graceHours: 24,
@@ -216,7 +238,7 @@ describe("run-home sweeper", () => {
         withRetained: true,
       });
 
-      const result = await sweepRunHomes({
+      const result = await sweep({
         companyDir,
         dryRun: false,
         graceHours: 24,
@@ -240,11 +262,95 @@ describe("run-home sweeper", () => {
       // One ineligible (fresh)
       await buildRunHome({ companyDir, agentId: "agent-a", runId: "run-3", ageHours: 1, withRetained: true });
 
-      const result = await sweepRunHomes({ companyDir, dryRun: true, graceHours: 24 });
+      const result = await sweep({ companyDir, dryRun: true, graceHours: 24 });
 
       expect(result.scanned).toBe(3);
       expect(result.eligible).toBe(2);
       expect(result.deleted).toBe(0); // dry-run
+    });
+  });
+
+  describe("fail-closed deletion proof", () => {
+    it("rejects deletion when Paperclip API configuration is absent", async () => {
+      const { runHomeDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId: "run-no-api",
+        ageHours: 30,
+        withRetained: true,
+      });
+
+      const result = await sweepRunHomes({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.eligible).toBe(0);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/API URL and key are required/i);
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
+
+    it("rejects deletion when terminal status cannot be verified", async () => {
+      const { runHomeDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId: "run-status-error",
+        ageHours: 30,
+        withRetained: true,
+      });
+
+      const result = await sweep(
+        { companyDir, dryRun: false, graceHours: 24 },
+        {
+          ...terminalAndClosedDeps,
+          getRunStatus: async () => ({ ok: false as const, error: "HTTP 503" }),
+        },
+      );
+
+      expect(result.eligible).toBe(0);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/could not be verified.*503/i);
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
+
+    it("rejects deletion when the run is not terminal", async () => {
+      const { runHomeDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId: "run-active",
+        ageHours: 30,
+        withRetained: true,
+      });
+
+      const result = await sweep(
+        { companyDir, dryRun: false, graceHours: 24 },
+        {
+          ...terminalAndClosedDeps,
+          getRunStatus: async () => ({ ok: true as const, status: "running" }),
+        },
+      );
+
+      expect(result.eligible).toBe(0);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/non-terminal/i);
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
+
+    it("rejects deletion when the open-handle check fails", async () => {
+      const { runHomeDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId: "run-lsof-error",
+        ageHours: 30,
+        withRetained: true,
+      });
+
+      const result = await sweep(
+        { companyDir, dryRun: false, graceHours: 24 },
+        {
+          ...terminalAndClosedDeps,
+          checkOpenHandles: async () => ({ ok: false as const, error: "lsof unavailable" }),
+        },
+      );
+
+      expect(result.eligible).toBe(0);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/open-handle check failed.*lsof unavailable/i);
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
     });
   });
 });
