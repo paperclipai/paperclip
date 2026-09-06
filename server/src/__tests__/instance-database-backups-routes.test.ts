@@ -27,6 +27,7 @@ function createBackupService(overrides: Partial<InstanceDatabaseBackupService> =
       backupFile: "/tmp/paperclip-20260416.sql.gz",
       sizeBytes: 1234,
       prunedCount: 2,
+      sweptOrphans: [],
       backupDir: "/tmp",
       retention: {
         dailyDays: 7,
@@ -63,6 +64,7 @@ describe("instance database backup routes", () => {
       backupFile: "/tmp/paperclip-20260416.sql.gz",
       sizeBytes: 1234,
       prunedCount: 2,
+      sweptOrphans: [],
       backupDir: "/tmp",
       retention: {
         dailyDays: 7,
