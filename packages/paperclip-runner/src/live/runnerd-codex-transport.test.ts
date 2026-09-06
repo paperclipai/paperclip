@@ -634,9 +634,38 @@ it("derives the ACPX package authority only from the verified dist/cli layout", 
   ).toThrow("ACPX sidecar must use the provider package dist/cli layout");
 });
 
-it("keeps a deployed ACPX package inside its pnpm-owned dependency root", async () => {
+it("keeps a self-rooted pnpm deployment inside its dependency authority", async () => {
   const deploymentRoot = await mkdtemp(
     join(tmpdir(), "paperclip-deployed-provider-root-"),
+  );
+  const deployedPackageRoot = deploymentRoot;
+  await mkdir(join(deployedPackageRoot, "dist", "cli"), { recursive: true });
+  await mkdir(join(deploymentRoot, "node_modules", ".pnpm"), {
+    recursive: true,
+  });
+  try {
+    expect(
+      runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+        join(
+          deployedPackageRoot,
+          "dist",
+          "cli",
+          "acpx-runtime-sidecar.cjs",
+        ),
+        deployedPackageRoot,
+      ),
+    ).toEqual({
+      root: deploymentRoot,
+      manifest: join(deployedPackageRoot, "package.json"),
+    });
+  } finally {
+    await rm(deploymentRoot, { recursive: true, force: true });
+  }
+});
+
+it("keeps a scoped npm-installed package inside its portable dependency root", async () => {
+  const deploymentRoot = await mkdtemp(
+    join(tmpdir(), "paperclip-npm-provider-root-"),
   );
   const deployedPackageRoot = join(
     deploymentRoot,
@@ -645,9 +674,6 @@ it("keeps a deployed ACPX package inside its pnpm-owned dependency root", async 
     "paperclip-runner",
   );
   await mkdir(join(deployedPackageRoot, "dist", "cli"), { recursive: true });
-  await mkdir(join(deploymentRoot, "node_modules", ".pnpm"), {
-    recursive: true,
-  });
   try {
     expect(
       runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
