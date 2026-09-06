@@ -105,6 +105,11 @@ class FakeEndpointRuntime {
     threadId: string;
     messageId: string;
   }> = [];
+  readonly reactions: Array<{
+    threadId: string;
+    messageId: string;
+    emoji: string;
+  }> = [];
   readonly rehydratedAttachmentDescriptors: unknown[] = [];
   private nextPostId = 0;
   postError: Error | null = null;
@@ -148,16 +153,29 @@ class FakeEndpointRuntime {
 
   thread(threadId: string) {
     const channelId = threadId.split(":")[1] ?? threadId;
+    const isTelegramDirectMessage =
+      this.options.providerConfig.provider === "telegram" &&
+      /^\d+$/.test(channelId);
     return {
       id: threadId,
       channelId,
-      isDM: /^D[A-Z0-9-]*$/i.test(channelId),
+      isDM: isTelegramDirectMessage || /^D[A-Z0-9-]*$/i.test(channelId),
       channel: {
         id: channelId,
         name: "command-thread",
       },
       adapter: {
-        addReaction: async () => undefined,
+        addReaction: async (
+          reactionThreadId: string,
+          messageId: string,
+          emoji: string,
+        ) => {
+          this.reactions.push({
+            threadId: reactionThreadId,
+            messageId,
+            emoji,
+          });
+        },
         editMessage: async (
           editedThreadId: string,
           messageId: string,
@@ -5168,6 +5186,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(runtime.endpoints.get(endpoint.id)?.posts[0]?.text).toBe(
       "Send your request to start a new Paperclip task.",
     );
+    // Unlike Slack slash callbacks, Telegram commands retain the provider's
+    // real chat/message tuple and therefore still receive the normal receipt
+    // reaction.
+    expect(runtime.endpoints.get(endpoint.id)?.reactions).toContainEqual({
+      threadId: "telegram:D-TELEGRAM-CONTROL-ORDER",
+      messageId: "77117711:110",
+      emoji: "eyes",
+    });
     await service.shutdown();
   });
 
@@ -8060,6 +8086,156 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(providerRuntime.edits).toHaveLength(2);
   });
 
+  it("keeps a Telegram status reply ordered before a later final answer and refreshes its task state", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service } =
+      await configuredTelegramEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Telegram slash command callback was not registered");
+    }
+    const chatId = "77118899";
+    const thread = makeThread({
+      channelId: chatId,
+      id: `telegram:${chatId}`,
+      isDM: true,
+      name: "Telegram status ordering",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: thread.thread,
+      message: makeMessage({
+        id: `${chatId}:901`,
+        raw: { message_id: 901 },
+        text: "Return one delayed answer",
+        userId: chatId,
+      }),
+      trigger: "direct_message",
+    });
+    const [conversation] = await db
+      .select()
+      .from(chatConversations)
+      .where(eq(chatConversations.endpointId, endpoint.id));
+    await db
+      .update(issues)
+      .set({ status: "in_progress", updatedAt: new Date() })
+      .where(eq(issues.id, conversation.issueId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.assignedAgentId,
+      status: "running",
+      contextSnapshot: await chatWakeContext({
+        endpointId: endpoint.id,
+        issueId: conversation.issueId,
+        provider: "telegram",
+        providerMessageId: `${chatId}:901`,
+      }),
+    });
+    await db.insert(chatPublications).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      conversationId: conversation.id,
+      issueId: conversation.issueId,
+      idempotencyKey: `run:${runId}:working:${endpoint.id}`,
+      payload: { text: "Maya is working…", progressState: "working" },
+      state: "pending",
+    });
+    await service.processPendingPublications();
+
+    await callbacks.onSlashCommand({
+      endpointId: endpoint.id,
+      provider: "telegram",
+      event: {
+        channel: {
+          id: thread.thread.id,
+          name: "Telegram status ordering",
+          isDM: true,
+          post: vi.fn(),
+        } as never,
+        command: "/status",
+        text: "",
+        user: {
+          userId: chatId,
+          userName: "telegram-status-user",
+          fullName: "Telegram Status User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: {
+          message_id: 902,
+          date: Math.floor(Date.now() / 1_000),
+          chat: { id: Number(chatId), type: "private" },
+          from: { id: Number(chatId), is_bot: false },
+          text: "/status",
+          entities: [{ offset: 0, length: 7, type: "bot_command" }],
+        },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    });
+    const providerRuntime = runtime.endpoints.get(endpoint.id);
+    expect(providerRuntime?.posts.map((post) => post.text)).toEqual([
+      "Maya is working…",
+    ]);
+    const statusPublication = (
+      await db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.endpointId, endpoint.id))
+    ).find((publication) =>
+      publication.idempotencyKey.startsWith("control:status:"),
+    );
+    expect(statusPublication).toMatchObject({
+      conversationId: conversation.id,
+      state: "pending",
+      payload: { text: expect.stringMatching(/— in_progress$/) },
+    });
+
+    // Sample again at send time so a status waiting behind an older provider
+    // operation cannot report a state Paperclip has already left.
+    await db
+      .update(issues)
+      .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
+      .where(eq(issues.id, conversation.issueId));
+    await service.processPendingPublications();
+    expect(providerRuntime?.posts.map((post) => post.text)).toEqual([
+      "Maya is working…",
+      expect.stringMatching(/— done$/),
+    ]);
+
+    await issueService(db).addComment(
+      conversation.issueId,
+      "telegram-status-race-final",
+      { agentId: fixture.assignedAgentId, runId },
+      { authorType: "agent" },
+    );
+    await service.processPendingPublications();
+
+    // Once the status is visible, changing the older working placeholder in
+    // place would reorder history visually. Append the final answer instead.
+    expect(providerRuntime?.posts.map((post) => post.text)).toEqual([
+      "Maya is working…",
+      expect.stringMatching(/— done$/),
+      "telegram-status-race-final",
+    ]);
+    expect(providerRuntime?.edits).toEqual([]);
+    const publishedStatus = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.id, statusPublication!.id))
+      .then((rows) => rows[0]);
+    expect(publishedStatus).toMatchObject({
+      state: "published",
+      payload: { text: expect.stringMatching(/— done$/) },
+      providerMessageId: "outbound-2",
+    });
+    await service.shutdown();
+  });
+
   it.each(["slack", "github"] as const)(
     "preserves every %s agent comment after replacing one run placeholder",
     async (provider) => {
@@ -8944,6 +9120,154 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
+  it.each([
+    {
+      label: "a blocked destination",
+      error: Object.assign(
+        new Error("Permission denied: cannot sendMessage in telegram"),
+        {
+          name: "PermissionError",
+          adapter: "telegram",
+          code: "PERMISSION_DENIED",
+          action: "sendMessage",
+        },
+      ),
+      expectedPublicationState: "cancelled",
+      expectedEndpointStatus: "active",
+      expectedConversationState: "unavailable",
+      expectedConnection: {
+        status: "active",
+        enabled: true,
+        healthStatus: "healthy",
+      },
+      expectedResourceAvailability: "unavailable",
+      runtimeRetained: true,
+    },
+    {
+      label: "an invalid bot token",
+      error: Object.assign(new Error("Unauthorized"), {
+        name: "AuthenticationError",
+        adapter: "telegram",
+        code: "AUTH_FAILED",
+      }),
+      expectedPublicationState: "failed",
+      expectedEndpointStatus: "attention",
+      expectedConversationState: "active",
+      expectedConnection: {
+        status: "disabled",
+        enabled: false,
+        healthStatus: "degraded",
+      },
+      expectedResourceAvailability: "available",
+      runtimeRetained: false,
+    },
+  ])(
+    "scopes Telegram publication failure from $label correctly",
+    async ({
+      error,
+      expectedConnection,
+      expectedConversationState,
+      expectedEndpointStatus,
+      expectedPublicationState,
+      expectedResourceAvailability,
+      runtimeRetained,
+    }) => {
+      const fixture = await seedCompany();
+      const { callbacks, endpoint, runtime, service } =
+        await configuredTelegramEndpoint(fixture);
+      const chatId = `-10077${randomUUID().replaceAll("-", "").slice(0, 8)}`;
+      const [resource] = await db
+        .insert(chatEndpointResources)
+        .values({
+          companyId: fixture.companyId,
+          endpointId: endpoint.id,
+          type: "chat",
+          providerResourceId: chatId,
+          label: "Telegram publication errors",
+          availability: "available",
+          enabled: true,
+        })
+        .returning();
+      const groupThread = makeThread({
+        channelId: chatId,
+        id: `telegram:${chatId}`,
+        name: "Telegram publication errors",
+      });
+      await deliverMessage({
+        callbacks,
+        endpointId: endpoint.id,
+        provider: "telegram",
+        thread: groupThread.thread,
+        message: makeMessage({
+          id: `${chatId}:1`,
+          raw: { message_id: 1 },
+          text: "@paperclip create a Telegram publication failure fixture",
+          userId: chatId,
+          mentioned: true,
+        }),
+        trigger: "mention",
+      });
+      await qualifySetupRoundTrip(service, endpoint.id, chatId);
+      await service.test(endpoint.id, "owner-user");
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({
+        status: "active",
+      });
+
+      const [conversation] = await db
+        .select()
+        .from(chatConversations)
+        .where(eq(chatConversations.endpointId, endpoint.id));
+      const comment = await issueService(db).addComment(
+        conversation.issueId,
+        "Safe Telegram provider response",
+        { userId: "owner-user" },
+        { authorType: "user" },
+      );
+      const providerRuntime = runtime.endpoints.get(endpoint.id);
+      if (!providerRuntime) throw new Error("Expected Telegram runtime");
+      providerRuntime.postError = error;
+      await service.publishComment(endpoint.id, conversation.id, comment.id);
+
+      const [publication] = await db
+        .select()
+        .from(chatPublications)
+        .where(eq(chatPublications.commentId, comment.id));
+      expect(publication).toMatchObject({
+        state: expectedPublicationState,
+        attempts: 1,
+        redactedError: error.message,
+        nextAttemptAt: null,
+      });
+      await expect(service.get(endpoint.id)).resolves.toMatchObject({
+        status: expectedEndpointStatus,
+      });
+      await expect(
+        db
+          .select({ state: chatConversations.state })
+          .from(chatConversations)
+          .where(eq(chatConversations.id, conversation.id)),
+      ).resolves.toEqual([{ state: expectedConversationState }]);
+      await expect(
+        db
+          .select({ availability: chatEndpointResources.availability })
+          .from(chatEndpointResources)
+          .where(eq(chatEndpointResources.id, resource.id)),
+      ).resolves.toEqual([{ availability: expectedResourceAvailability }]);
+      await expect(
+        db
+          .select({
+            status: toolConnections.status,
+            enabled: toolConnections.enabled,
+            healthStatus: toolConnections.healthStatus,
+          })
+          .from(toolConnections)
+          .where(eq(toolConnections.id, endpoint.connectionId)),
+      ).resolves.toEqual([expectedConnection]);
+      expect(runtime.endpoints.has(endpoint.id)).toBe(runtimeRetained);
+      await service.shutdown();
+    },
+  );
+
   it("publishes a closed-choice question and resolves only its exact issued action as a linked writer", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service } =
@@ -9105,14 +9429,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const unlinkedAction = actionEvent({
       userId: `U-UNLINKED-${randomUUID()}`,
     });
-    await expect(callbacks.onAction(unlinkedAction)).rejects.toMatchObject({
-      status: 403,
-      message: "This chat action is not a current Paperclip question",
-    });
-    await expect(callbacks.onAction(unlinkedAction)).rejects.toMatchObject({
-      status: 403,
-      message: "This chat action is not a current Paperclip question",
-    });
+    await callbacks.onAction(unlinkedAction);
+    await callbacks.onAction(unlinkedAction);
     expect(channel.postEphemeral).toHaveBeenCalledTimes(1);
     expect(channel.postEphemeral).toHaveBeenCalledWith(
       unlinkedAction.event.user,
@@ -9163,11 +9481,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     channel.postEphemeral.mockRejectedValueOnce(
       new Error("injected Slack ephemeral failure"),
     );
-    await expect(
-      callbacks.onAction(
-        actionEvent({ userId: `U-UNLINKED-FALLBACK-${randomUUID()}` }),
-      ),
-    ).rejects.toMatchObject({ status: 403 });
+    await callbacks.onAction(
+      actionEvent({ userId: `U-UNLINKED-FALLBACK-${randomUUID()}` }),
+    );
     expect(channel.post).toHaveBeenCalledWith(
       "This Paperclip action is no longer available.",
     );
@@ -9181,9 +9497,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           eq(companyMemberships.principalId, linkedUserId),
         ),
       );
-    await expect(callbacks.onAction(actionEvent())).rejects.toMatchObject({
-      status: 403,
-    });
+    await callbacks.onAction(actionEvent());
     await db
       .update(companyMemberships)
       .set({ membershipRole: "operator" })
@@ -9211,18 +9525,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
       trigger: "mention",
     });
-    await expect(
-      callbacks.onAction(actionEvent({ threadId: otherChannel.thread.id })),
-    ).rejects.toMatchObject({ status: 403 });
-    await expect(
-      callbacks.onAction(actionEvent({ messageId: "outbound-forged" })),
-    ).rejects.toMatchObject({ status: 403 });
-    await expect(
-      callbacks.onAction(actionEvent({ actionId: "pcq:forged" })),
-    ).rejects.toMatchObject({ status: 403 });
-    await expect(
-      callbacks.onAction(actionEvent({ value: randomUUID() })),
-    ).rejects.toMatchObject({ status: 403 });
+    await callbacks.onAction(actionEvent({ threadId: otherChannel.thread.id }));
+    await callbacks.onAction(actionEvent({ messageId: "outbound-forged" }));
+    await callbacks.onAction(actionEvent({ actionId: "pcq:forged" }));
+    await callbacks.onAction(actionEvent({ value: randomUUID() }));
 
     await callbacks.onAction(actionEvent());
     const [storedInteraction] = await db
@@ -9290,9 +9596,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
 
-    await expect(callbacks.onAction(actionEvent())).rejects.toMatchObject({
-      status: 403,
-    });
+    await callbacks.onAction(actionEvent());
     expect(
       await db
         .select()
@@ -9515,13 +9819,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           value: interaction.id,
         },
       });
-      await expect(
-        callbacks.onAction(
-          actionEvent(`pcf:${"A".repeat(22)}`) as Parameters<
-            NonNullable<typeof callbacks.onAction>
-          >[0],
-        ),
-      ).rejects.toMatchObject({ status: 403 });
+      await callbacks.onAction(
+        actionEvent(`pcf:${"A".repeat(22)}`) as Parameters<
+          NonNullable<typeof callbacks.onAction>
+        >[0],
+      );
       expect(channel.postEphemeral).toHaveBeenCalledWith(
         modalUser,
         "This action is no longer available. Open the linked Paperclip task or ask an operator to link this account.",
@@ -9627,7 +9929,230 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it("uses compact single-use Telegram action tokens and rejects forged, expired, and oversized callbacks", async () => {
+  it("acknowledges denied Telegram actions after one durable, payload-free notice", async () => {
+    const fixture = await seedCompany();
+    const botId = Number.parseInt(
+      fixture.companyId.replaceAll("-", "").slice(0, 12),
+      16,
+    );
+    const botToken = `${botId}:telegram-denial-webhook-test`;
+    const apiCalls: Array<{ body: string; method: string }> = [];
+    let webhookSecret = "";
+    const telegramFetch = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const method = new URL(String(input)).pathname.split("/").at(-1) ?? "";
+        const body = typeof init?.body === "string" ? init.body : "";
+        apiCalls.push({ body, method });
+        if (method === "getMe") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              result: {
+                id: botId,
+                username: "paperclip_denial_test_bot",
+                first_name: "Paperclip Denial Test",
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (method === "getWebhookInfo") {
+          return new Response(
+            JSON.stringify({ ok: true, result: { url: "" } }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (method === "setWebhook") {
+          webhookSecret = String(
+            (JSON.parse(body) as { secret_token?: unknown }).secret_token ?? "",
+          );
+          return new Response(JSON.stringify({ ok: true, result: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (method === "answerCallbackQuery") {
+          return new Response(JSON.stringify({ ok: true, result: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (method === "sendMessage") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              result: {
+                message_id: 9001,
+                date: Math.floor(Date.now() / 1_000),
+                chat: {
+                  id: 417200359,
+                  type: "private",
+                  first_name: "Telegram User",
+                },
+                text: "This Paperclip action is no longer available.",
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error(`Unexpected Telegram API call: ${method}`);
+      },
+    ) as typeof globalThis.fetch;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = telegramFetch;
+    const service = chatChannelService(db, {
+      fetch: telegramFetch,
+      heartbeat: { wakeup: vi.fn(async () => ({ accepted: true })) },
+      publicBaseUrl: "https://paperclip.example",
+    });
+    try {
+      const endpoint = await service.create(
+        fixture.companyId,
+        { provider: "telegram", assignedAgentId: fixture.assignedAgentId },
+        "owner-user",
+      );
+      await service.configure(
+        endpoint.id,
+        { action: "configure", credentials: { botToken } },
+        "owner-user",
+      );
+      expect(webhookSecret).not.toBe("");
+      await db
+        .update(chatEndpoints)
+        .set({ status: "active" })
+        .where(eq(chatEndpoints.id, endpoint.id));
+
+      const actionId = "pcq:telegram-webhook-secret-token";
+      const callbackData = telegramChatSdkCallbackData(actionId);
+      const providerRequest = (
+        updateId: number,
+        callbackId: string,
+        data = callbackData,
+      ) =>
+        new Request(
+          `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-telegram-bot-api-secret-token": webhookSecret,
+            },
+            body: JSON.stringify({
+              update_id: updateId,
+              callback_query: {
+                id: callbackId,
+                data,
+                from: {
+                  id: 417200359,
+                  is_bot: false,
+                  first_name: "Telegram User",
+                  username: "telegram-user",
+                },
+                message: {
+                  message_id: 444,
+                  date: Math.floor(Date.now() / 1_000),
+                  chat: {
+                    id: 417200359,
+                    type: "private",
+                    first_name: "Telegram User",
+                  },
+                  text: "Choose a priority",
+                },
+              },
+            }),
+          },
+        );
+
+      const first = await service.handleWebhook(
+        endpoint.publicId,
+        "telegram",
+        providerRequest(7001, "denied-callback-1"),
+      );
+      expect(first.status).toBe(200);
+      await expect(first.text()).resolves.toBe("OK");
+
+      const providerRetry = await service.handleWebhook(
+        endpoint.publicId,
+        "telegram",
+        providerRequest(7002, "denied-callback-2"),
+      );
+      expect(providerRetry.status).toBe(200);
+      await expect(providerRetry.text()).resolves.toBe("OK");
+
+      const unrecordedActionId = "pcq:durable-denial-insert-failure";
+      const unrecordedCallbackData =
+        telegramChatSdkCallbackData(unrecordedActionId);
+      const originalInsert = db.insert.bind(db);
+      const insertSpy = vi.spyOn(db, "insert").mockImplementation(((
+        table: unknown,
+      ) => {
+        if (table === chatDeliveries) {
+          throw new Error("injected denied-action persistence failure");
+        }
+        return originalInsert(table as Parameters<typeof originalInsert>[0]);
+      }) as typeof db.insert);
+      let unrecorded: Response;
+      try {
+        unrecorded = await service.handleWebhook(
+          endpoint.publicId,
+          "telegram",
+          providerRequest(
+            7003,
+            "denied-callback-persistence-failure",
+            unrecordedCallbackData,
+          ),
+        );
+      } finally {
+        insertSpy.mockRestore();
+      }
+      expect(unrecorded.status).toBe(503);
+      expect(unrecorded.headers.get("retry-after")).toBe("1");
+
+      const notices = apiCalls.filter(({ method }) => method === "sendMessage");
+      expect(notices).toHaveLength(1);
+      expect(JSON.parse(notices[0]!.body)).toMatchObject({
+        chat_id: "417200359",
+        text: "This Paperclip action is no longer available.",
+      });
+      expect(notices[0]!.body).not.toContain(actionId);
+      expect(notices[0]!.body).not.toContain(callbackData);
+      expect(notices[0]!.body).not.toContain(unrecordedActionId);
+      expect(notices[0]!.body).not.toContain(unrecordedCallbackData);
+      expect(notices[0]!.body).not.toContain(webhookSecret);
+
+      const denials = await db
+        .select()
+        .from(chatDeliveries)
+        .where(
+          and(
+            eq(chatDeliveries.endpointId, endpoint.id),
+            eq(chatDeliveries.eventKind, "action"),
+          ),
+        );
+      expect(denials).toHaveLength(1);
+      expect(denials[0]).toMatchObject({
+        state: "filtered",
+        attempts: 1,
+        redactedError: "External action denied by Paperclip authorization",
+        normalizedEvent: {
+          providerEventId: expect.stringMatching(
+            /^action-denied:[a-f0-9]{64}$/,
+          ),
+          kind: "action",
+          authorization: { outcome: "denied" },
+        },
+      });
+      const serializedDenial = JSON.stringify(denials[0]);
+      expect(serializedDenial).not.toContain(actionId);
+      expect(serializedDenial).not.toContain(callbackData);
+      expect(serializedDenial).not.toContain(webhookSecret);
+    } finally {
+      await service.shutdown();
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("uses compact single-use Telegram action tokens and filters forged, expired, and oversized callbacks", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, service } =
       await configuredTelegramEndpoint(fixture);
@@ -9819,12 +10344,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       actionId: forgedActionId,
       callbackData: telegramChatSdkCallbackData(forgedActionId),
     });
-    await expect(
-      callbacks.onAction(forgedTelegramAction),
-    ).rejects.toMatchObject({
-      status: 403,
-      message: "This chat action is not a current Paperclip question",
-    });
+    await callbacks.onAction(forgedTelegramAction);
     expect(channel.post).toHaveBeenCalledTimes(1);
     expect(channel.post).toHaveBeenCalledWith(
       "This Paperclip action is no longer available.",
@@ -9836,12 +10356,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       telegramChatSdkCallbackData(forgedActionId),
     );
     channel.post.mockClear();
-    await expect(
-      callbacks.onAction(forgedTelegramAction),
-    ).rejects.toMatchObject({
-      status: 403,
-      message: "This chat action is not a current Paperclip question",
-    });
+    await callbacks.onAction(forgedTelegramAction);
     expect(channel.post).not.toHaveBeenCalled();
     const deniedTelegramActions = await db
       .select()
@@ -9891,27 +10406,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       TELEGRAM_CALLBACK_DATA_LIMIT_BYTES + 1,
     );
     expect(Buffer.byteLength(oversizedCallbackData, "utf8")).toBe(65);
-    await expect(
-      callbacks.onAction(
-        actionEvent({
-          actionId: first.action.actionId,
-          callbackData: oversizedCallbackData,
-        }),
-      ),
-    ).rejects.toMatchObject({ status: 403 });
+    await callbacks.onAction(
+      actionEvent({
+        actionId: first.action.actionId,
+        callbackData: oversizedCallbackData,
+      }),
+    );
 
     await db
       .update(chatActions)
       .set({ payload: { ...first.token.payload, optionId: "forged-option" } })
       .where(eq(chatActions.id, first.token.id));
-    await expect(
-      callbacks.onAction(
-        actionEvent({
-          actionId: first.action.actionId,
-          callbackData,
-        }),
-      ),
-    ).rejects.toMatchObject({ status: 403 });
+    await callbacks.onAction(
+      actionEvent({
+        actionId: first.action.actionId,
+        callbackData,
+      }),
+    );
     await db
       .update(chatActions)
       .set({ payload: first.token.payload })
@@ -9935,14 +10446,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         answers: [{ questionId: "priority", optionIds: ["high"] }],
       },
     });
-    await expect(
-      callbacks.onAction(
-        actionEvent({
-          actionId: first.action.actionId,
-          callbackData,
-        }),
-      ),
-    ).rejects.toMatchObject({ status: 403 });
+    await callbacks.onAction(
+      actionEvent({
+        actionId: first.action.actionId,
+        callbackData,
+      }),
+    );
     expect(
       await db
         .select()
@@ -9969,15 +10478,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const expiredCallbackData = telegramChatSdkCallbackData(
       expired.action.actionId,
     );
-    await expect(
-      callbacks.onAction(
-        actionEvent({
-          actionId: expired.action.actionId,
-          callbackData: expiredCallbackData,
-          messageId: expired.publication.providerMessageId!,
-        }),
-      ),
-    ).rejects.toMatchObject({ status: 403 });
+    await callbacks.onAction(
+      actionEvent({
+        actionId: expired.action.actionId,
+        callbackData: expiredCallbackData,
+        messageId: expired.publication.providerMessageId!,
+      }),
+    );
     expect(channel.post).toHaveBeenCalledTimes(1);
     for (const call of channel.post.mock.calls) {
       expect(call).toEqual(["This Paperclip action is no longer available."]);
@@ -10844,7 +11351,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("turns a Slack slash command into a new native thread and one Paperclip task", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
+    const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
     const command = endpoint.setup.command;
     if (!command) throw new Error("Slack endpoint did not expose its command");
@@ -10913,6 +11420,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(issueComments.issueId, conversation.issueId));
     expect(comments.map((comment) => comment.body)).toEqual([
       "investigate the command path",
+    ]);
+    expect(runtime.endpoints.get(endpoint.id)?.reactions).toEqual([]);
+    await expect(
+      db
+        .select({
+          state: chatDeliveries.state,
+          redactedError: chatDeliveries.redactedError,
+          normalizedEvent: chatDeliveries.normalizedEvent,
+        })
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id)),
+    ).resolves.toEqual([
+      {
+        state: "processed",
+        redactedError: null,
+        normalizedEvent: expect.objectContaining({
+          acknowledgement: { receiptReactionSupported: false },
+          message: expect.objectContaining({
+            text: "investigate the command path",
+          }),
+        }),
+      },
     ]);
   });
 
@@ -11185,6 +11714,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(issues)
         .where(eq(issues.companyId, fixture.companyId)),
     ).toHaveLength(issuesBeforeStatus.length);
+    await service.processPendingPublications();
     expect(runtime.endpoints.get(endpoint.id)?.posts.at(-1)?.text).toMatch(
       /— todo$/,
     );
@@ -11236,6 +11766,37 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toHaveLength(0);
     expect(post).not.toHaveBeenCalled();
     expect(postEphemeral).not.toHaveBeenCalled();
+    // Slack slash callbacks have no native message timestamp. Their synthetic
+    // IDs remain durable for dedupe/audit, but must never reach reactions.add.
+    expect(runtime.endpoints.get(endpoint.id)?.reactions).toEqual([]);
+    const controlDeliveries = (
+      await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id))
+    ).filter((delivery) => {
+      const normalized = delivery.normalizedEvent as {
+        message?: { text?: unknown };
+      };
+      return ["/status", "/new", "/close"].includes(
+        String(normalized.message?.text),
+      );
+    });
+    expect(controlDeliveries).toHaveLength(3);
+    expect(controlDeliveries).toEqual(
+      expect.arrayContaining(
+        ["/status", "/new", "/close"].map((text) =>
+          expect.objectContaining({
+            state: "processed",
+            redactedError: null,
+            normalizedEvent: expect.objectContaining({
+              acknowledgement: { receiptReactionSupported: false },
+              message: expect.objectContaining({ text }),
+            }),
+          }),
+        ),
+      ),
+    );
   });
 
   it("returns ephemeral guidance for exact Slack controls in channels without creating tasks or actions", async () => {
@@ -11318,22 +11879,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("keeps Telegram start and unknown commands as terse guidance without creating work", async () => {
     const fixture = await seedCompany();
-    const { callbacks, endpoint, service } =
+    const { callbacks, endpoint, runtime, service, wakeup } =
       await configuredTelegramEndpoint(fixture);
     if (!callbacks.onSlashCommand) {
       throw new Error("Telegram slash command callback was not registered");
     }
-    const post = vi.fn(async () => ({
-      id: `telegram-guidance-${randomUUID()}`,
-      threadId: "telegram:77112233",
-    }));
     const channel = {
-      id: "77112233",
+      id: "telegram:77112233",
       name: "Telegram direct message",
       isDM: true,
-      post,
     } as never;
-    const invoke = async (command: string, text: string) => {
+    const invoke = async (command: string, text: string, messageId: number) => {
       await callbacks.onSlashCommand!({
         endpointId: endpoint.id,
         provider: "telegram",
@@ -11341,7 +11897,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           channel,
           command,
           text,
-          triggerId: `telegram-command-${randomUUID()}`,
           user: {
             userId: "77112233",
             userName: "telegram-user",
@@ -11350,23 +11905,31 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             isMe: false,
             isSystem: false,
           },
-          raw: { message: { text: `${command} ${text}`.trim() } },
+          raw: {
+            message_id: messageId,
+            date: 1_788_620_500 + messageId,
+            chat: { id: 77112233, type: "private" },
+            from: { id: 77112233, is_bot: false },
+            text: `${command} ${text}`.trim(),
+            entities: [
+              { offset: 0, length: command.length, type: "bot_command" },
+            ],
+          },
           adapter: {} as never,
           openModal: async () => undefined,
         },
       });
     };
-    await invoke("/start", "ignored payload");
-    await invoke("/danger", "create an administrator action");
+    await invoke("/start", "ignored payload", 501);
+    await invoke("/danger", "create an administrator action", 502);
 
-    expect(post).toHaveBeenNthCalledWith(
-      1,
+    expect(
+      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
+    ).toEqual([
       "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
-    );
-    expect(post).toHaveBeenNthCalledWith(
-      2,
       "Available commands: /status, /new, and /close.",
-    );
+    ]);
+    expect(wakeup).not.toHaveBeenCalled();
     expect(await service.listConversations(endpoint.id)).toEqual([]);
     expect(
       await db
@@ -11380,6 +11943,480 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(chatActions)
         .where(eq(chatActions.endpointId, endpoint.id)),
     ).toHaveLength(0);
+    const deliveries = await db
+      .select()
+      .from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, endpoint.id));
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerEventId: "telegram:77112233:77112233:501",
+          state: "processed",
+          conversationId: null,
+        }),
+        expect.objectContaining({
+          providerEventId: "telegram:77112233:77112233:502",
+          state: "processed",
+          conversationId: null,
+        }),
+      ]),
+    );
+  });
+
+  it("queues Telegram guidance on the durable publication FIFO when a task is active", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Telegram slash command callback was not registered");
+    }
+    const directMessage = makeThread({
+      channelId: "77112233",
+      id: "telegram:77112233",
+      isDM: true,
+      name: "Telegram direct message",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: directMessage.thread,
+      message: makeMessage({
+        id: "77112233:700",
+        raw: {
+          message_id: 700,
+          date: 1_788_621_200,
+          chat: { id: 77112233, type: "private" },
+        },
+        text: "investigate the durable guidance lane",
+        userId: "77112233",
+      }),
+      trigger: "direct_message",
+    });
+    const slashEvent = {
+      endpointId: endpoint.id,
+      provider: "telegram" as const,
+      event: {
+        channel: {
+          id: "telegram:77112233",
+          name: "Telegram direct message",
+          isDM: true,
+        } as never,
+        command: "/start",
+        text: "",
+        user: {
+          userId: "77112233",
+          userName: "telegram-user",
+          fullName: "Telegram User",
+          isBot: false,
+          isMe: false,
+          isSystem: false,
+        },
+        raw: {
+          message_id: 701,
+          date: 1_788_621_201,
+          chat: { id: 77112233, type: "private" },
+          from: { id: 77112233, is_bot: false },
+          text: "/start",
+          entities: [{ offset: 0, length: 6, type: "bot_command" }],
+        },
+        adapter: {} as never,
+        openModal: async () => undefined,
+      },
+    };
+    await callbacks.onSlashCommand(slashEvent);
+    await callbacks.onSlashCommand(slashEvent);
+
+    expect(runtime.endpoints.get(endpoint.id)?.posts).toEqual([]);
+    const publicationsBeforeDrain = await db
+      .select()
+      .from(chatPublications)
+      .where(eq(chatPublications.endpointId, endpoint.id));
+    expect(publicationsBeforeDrain).toEqual([
+      expect.objectContaining({
+        state: "pending",
+        idempotencyKey: expect.stringMatching(/^control:guidance:/),
+        payload: expect.objectContaining({
+          text: "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
+        }),
+      }),
+    ]);
+
+    await service.processPendingPublications();
+    await service.processPendingPublications();
+    expect(
+      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
+    ).toEqual([
+      "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
+    ]);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(1);
+    expect(
+      await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.companyId, fixture.companyId)),
+    ).toHaveLength(1);
+  });
+
+  it("durably deduplicates Telegram guidance webhook retries and filters disabled DMs", async () => {
+    const fixture = await seedCompany();
+    const botToken = "887766:telegram-guidance-webhook-test";
+    const botId = 887766;
+    const apiCalls: Array<{ body: string; method: string }> = [];
+    const wakeup = vi.fn(async () => ({ accepted: true }));
+    let webhookSecret = "";
+    let nextProviderMessageId = 9_000;
+    const telegramFetch = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const method = new URL(String(input)).pathname.split("/").at(-1) ?? "";
+        const body = typeof init?.body === "string" ? init.body : "";
+        apiCalls.push({ body, method });
+        if (method === "getMe") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              result: {
+                id: botId,
+                username: "paperclip_guidance_test_bot",
+                first_name: "Paperclip Guidance Test",
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (method === "getWebhookInfo") {
+          return new Response(
+            JSON.stringify({ ok: true, result: { url: "" } }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (method === "setWebhook") {
+          webhookSecret = String(
+            (JSON.parse(body) as { secret_token?: unknown }).secret_token ?? "",
+          );
+          return new Response(JSON.stringify({ ok: true, result: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (method === "sendMessage") {
+          const payload = JSON.parse(body) as {
+            chat_id?: string;
+            message_thread_id?: number;
+            text?: string;
+          };
+          nextProviderMessageId += 1;
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              result: {
+                message_id: nextProviderMessageId,
+                date: Math.floor(Date.now() / 1_000),
+                chat: {
+                  id: Number(payload.chat_id),
+                  type: "private",
+                  first_name: "Telegram User",
+                },
+                text: payload.text,
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (method === "sendChatAction" || method === "setMessageReaction") {
+          return new Response(JSON.stringify({ ok: true, result: true }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        throw new Error(`Unexpected Telegram API call: ${method}`);
+      },
+    ) as typeof globalThis.fetch;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = telegramFetch;
+    const service = chatChannelService(db, {
+      fetch: telegramFetch,
+      heartbeat: { wakeup },
+      publicBaseUrl: "https://paperclip.example",
+    });
+    try {
+      const endpoint = await service.create(
+        fixture.companyId,
+        { provider: "telegram", assignedAgentId: fixture.assignedAgentId },
+        "owner-user",
+      );
+      await service.configure(
+        endpoint.id,
+        { action: "configure", credentials: { botToken } },
+        "owner-user",
+      );
+      expect(webhookSecret).not.toBe("");
+      await db
+        .update(chatEndpoints)
+        .set({ status: "active" })
+        .where(eq(chatEndpoints.id, endpoint.id));
+
+      const providerRequest = (input: {
+        command: string;
+        messageId: number;
+        updateId: number;
+      }) =>
+        new Request(
+          `https://paperclip.example/api/chat-webhooks/${endpoint.publicId}/telegram`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-telegram-bot-api-secret-token": webhookSecret,
+            },
+            body: JSON.stringify({
+              update_id: input.updateId,
+              message: {
+                message_id: input.messageId,
+                date: 1_788_620_500 + input.messageId,
+                chat: {
+                  id: 417200359,
+                  type: "private",
+                  first_name: "Telegram User",
+                },
+                from: {
+                  id: 417200359,
+                  is_bot: false,
+                  first_name: "Telegram User",
+                  username: "telegram-user",
+                },
+                text: input.command,
+                entities: [
+                  {
+                    offset: 0,
+                    length: input.command.length,
+                    type: "bot_command",
+                  },
+                ],
+              },
+            }),
+          },
+        );
+      const deliverTwice = async (input: {
+        command: string;
+        messageId: number;
+        updateId: number;
+      }) => {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const response = await service.handleWebhook(
+            endpoint.publicId,
+            "telegram",
+            providerRequest(input),
+          );
+          expect(response.status).toBe(200);
+          await expect(response.text()).resolves.toBe("OK");
+        }
+      };
+
+      await deliverTwice({ command: "/start", messageId: 601, updateId: 7601 });
+      await deliverTwice({
+        command: "/danger",
+        messageId: 602,
+        updateId: 7602,
+      });
+      expect(
+        apiCalls
+          .filter(({ method }) => method === "sendMessage")
+          .map(({ body }) => (JSON.parse(body) as { text?: string }).text),
+      ).toEqual([
+        "Send a message to start work with Maya. Use /status, /new, or /close to manage the active task in this chat.",
+        "Available commands: /status, /new, and /close.",
+      ]);
+
+      await service.update(
+        endpoint.id,
+        { allowDirectMessages: false },
+        "owner-user",
+      );
+      await deliverTwice({ command: "/start", messageId: 603, updateId: 7603 });
+      expect(
+        apiCalls.filter(({ method }) => method === "sendMessage"),
+      ).toHaveLength(2);
+
+      const deliveries = await db
+        .select()
+        .from(chatDeliveries)
+        .where(eq(chatDeliveries.endpointId, endpoint.id));
+      expect(deliveries).toHaveLength(3);
+      for (const messageId of [601, 602]) {
+        expect(deliveries).toContainEqual(
+          expect.objectContaining({
+            providerEventId: `telegram:417200359:417200359:${messageId}`,
+            state: "processed",
+            attempts: 1,
+            conversationId: null,
+            normalizedEvent: expect.objectContaining({
+              deduplication: expect.objectContaining({ duplicateCount: 1 }),
+            }),
+          }),
+        );
+      }
+      expect(deliveries).toContainEqual(
+        expect.objectContaining({
+          providerEventId: "telegram:417200359:417200359:603",
+          state: "filtered",
+          attempts: 1,
+          conversationId: null,
+          redactedError: "Destination is not enabled in Paperclip",
+          normalizedEvent: expect.objectContaining({
+            deduplication: expect.objectContaining({ duplicateCount: 1 }),
+          }),
+        }),
+      );
+      expect(await service.listConversations(endpoint.id)).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(issues)
+          .where(eq(issues.companyId, fixture.companyId)),
+      ).toHaveLength(0);
+      expect(wakeup).not.toHaveBeenCalled();
+    } finally {
+      await service.shutdown();
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("consumes Telegram forum-topic controls without remapping or waking the topic task", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, runtime, service, wakeup } =
+      await configuredTelegramEndpoint(fixture);
+    if (!callbacks.onSlashCommand) {
+      throw new Error("Telegram slash command callback was not registered");
+    }
+    const chatId = "-10077112233";
+    const topicId = 77;
+    const topicThreadId = `telegram:${chatId}:${topicId}`;
+    await db.insert(chatEndpointResources).values({
+      companyId: fixture.companyId,
+      endpointId: endpoint.id,
+      type: "chat",
+      providerResourceId: chatId,
+      label: "Production forum",
+      availability: "available",
+      enabled: true,
+    });
+    const topic = makeThread({
+      channelId: chatId,
+      id: topicThreadId,
+      name: "Production forum",
+    });
+    await deliverMessage({
+      callbacks,
+      endpointId: endpoint.id,
+      provider: "telegram",
+      thread: topic.thread,
+      message: makeMessage({
+        id: `${chatId}:200`,
+        raw: {
+          message_id: 200,
+          message_thread_id: topicId,
+          chat: { id: Number(chatId), type: "supergroup" },
+        },
+        text: "@maya investigate the forum alert",
+        mentioned: true,
+        userId: "77112233",
+      }),
+      trigger: "mention",
+    });
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const [initialConversation] = await service.listConversations(endpoint.id);
+    if (!initialConversation) throw new Error("Expected topic conversation");
+    const invoke = async (
+      command: "/status" | "/new" | "/close",
+      messageId: number,
+    ) => {
+      await callbacks.onSlashCommand!({
+        endpointId: endpoint.id,
+        provider: "telegram",
+        event: {
+          channel: {
+            id: topicThreadId,
+            name: "Production forum topic",
+            isDM: false,
+            post: vi.fn(),
+          } as never,
+          command,
+          text: "",
+          user: {
+            userId: "77112233",
+            userName: "telegram-forum-user",
+            fullName: "Telegram Forum User",
+            isBot: false,
+            isMe: false,
+            isSystem: false,
+          },
+          raw: {
+            message_id: messageId,
+            message_thread_id: topicId,
+            date: 1_788_620_500 + messageId,
+            chat: { id: Number(chatId), type: "supergroup" },
+            from: { id: 77112233, is_bot: false },
+            text: command,
+            entities: [
+              { offset: 0, length: command.length, type: "bot_command" },
+            ],
+          },
+          adapter: {} as never,
+          openModal: async () => undefined,
+        },
+      });
+    };
+
+    await invoke("/status", 201);
+    await service.processPendingPublications();
+    await invoke("/new", 202);
+    await expect(service.listConversations(endpoint.id)).resolves.toEqual([
+      expect.objectContaining({
+        id: initialConversation.id,
+        issueId: initialConversation.issueId,
+        state: "active",
+      }),
+    ]);
+    await invoke("/close", 203);
+
+    const conversations = await service.listConversations(endpoint.id);
+    expect(conversations).toEqual([
+      expect.objectContaining({
+        id: initialConversation.id,
+        issueId: initialConversation.issueId,
+        state: "completed",
+      }),
+    ]);
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.companyId, fixture.companyId)),
+    ).toHaveLength(1);
+    expect(
+      await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, initialConversation.issueId)),
+    ).toEqual([{ body: "@maya investigate the forum alert" }]);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(
+      runtime.endpoints.get(endpoint.id)?.posts.map((post) => post.text),
+    ).toEqual([
+      expect.stringMatching(/— todo$/),
+      expect.stringContaining(
+        "Open a new Telegram forum topic to start a new Paperclip task.",
+      ),
+      "This forum topic is closed. A later message here will continue the same Paperclip task.",
+    ]);
   });
 
   it("keeps successive Telegram DM messages on one active Paperclip task", async () => {

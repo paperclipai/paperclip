@@ -443,6 +443,7 @@ type DeliveryRow = typeof chatDeliveries.$inferSelect;
 type LiveInboundMessage = {
   endpoint: EndpointRow;
   message: Message;
+  receiptReactionSupported: boolean;
   thread: Thread;
   trigger: ChatSdkMessageCallbackEvent["trigger"];
 };
@@ -573,6 +574,19 @@ function linearControlCommand(text: string): "new" | "close" | "status" | null {
     (match?.[1]?.toLowerCase() as "new" | "close" | "status" | undefined) ??
     null
   );
+}
+
+function telegramGuidanceCommand(text: string): "start" | "unknown" | null {
+  const match = /^\/([a-z][\w-]*)(?:@[\w.-]+)?(?:\s|$)/i.exec(text.trim());
+  const command = match?.[1]?.toLowerCase();
+  if (
+    !command ||
+    command === "new" ||
+    command === "close" ||
+    command === "status"
+  )
+    return null;
+  return command === "start" ? "start" : "unknown";
 }
 
 function stableExternalPrincipalId(
@@ -3772,6 +3786,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     runtimeContext?: RuntimeContext,
     providerUpdateId?: number,
     admittedDeliveryId: string | null = null,
+    receiptReactionSupported = true,
   ) {
     // The Telegram adapter currently emits edited_message through the normal
     // message callback with the original message id. Paperclip records that
@@ -3839,6 +3854,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       providerEventId,
       kind: eventKind,
       trigger,
+      acknowledgement: {
+        // Some provider callbacks represent an auditable user command without
+        // a provider message that can receive a reaction. Persist the
+        // distinction so a crash/retry cannot mistake the synthetic ledger id
+        // for a native message id.
+        receiptReactionSupported,
+      },
       principal: {
         externalId: stableExternalPrincipalId(
           endpoint.provider,
@@ -4065,6 +4087,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         thread,
         message,
         trigger,
+        receiptReactionSupported,
       });
       scheduleConversationDrain(
         endpoint.id,
@@ -4307,9 +4330,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         existingConversation = null;
         existingIssue = null;
       }
-      const controlCommand = isLinear
-        ? linearControlCommand(message.text)
-        : null;
+      // Telegram exposes its small command vocabulary in forum topics too.
+      // A forum topic is a native provider thread and therefore stays bound to
+      // one immutable Paperclip task, but the command must still be consumed
+      // as control-plane input instead of becoming a task comment/wakeup.
+      const controlCommand =
+        isLinear || endpoint.provider === "telegram"
+          ? linearControlCommand(message.text)
+          : null;
+      const guidanceCommand =
+        endpoint.provider === "telegram"
+          ? telegramGuidanceCommand(message.text)
+          : null;
       const endpointAllowed =
         endpoint.status === "verifying" || endpoint.status === "active";
       const destinationAllowed = thread.isDM
@@ -4438,18 +4470,96 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // An exact Slack redelivery can therefore never create duplicate
         // guidance or accidentally fall through into task creation.
         await Promise.allSettled([
-          addReceiptReaction({
-            deliveryId: activeDelivery.id,
-            endpoint,
-            message,
-            thread,
-          }),
+          receiptReactionSupported
+            ? addReceiptReaction({
+                deliveryId: activeDelivery.id,
+                endpoint,
+                message,
+                thread,
+              })
+            : Promise.resolve(),
           thread.post("Please include a request after mentioning me."),
         ]);
         return;
       }
 
+      if (guidanceCommand) {
+        const assignedAgentName =
+          guidanceCommand === "start"
+            ? await db
+                .select({ name: agents.name })
+                .from(agents)
+                .where(
+                  and(
+                    eq(agents.companyId, endpoint.companyId),
+                    eq(agents.id, endpoint.assignedAgentId),
+                  ),
+                )
+                .then((rows) => rows[0]?.name ?? "this agent")
+            : null;
+        const responseText =
+          guidanceCommand === "start"
+            ? `Send a message to start work with ${assignedAgentName}. Use /status, /new, or /close to manage the active task in this chat.`
+            : "Available commands: /status, /new, and /close.";
+        const publicationBinding =
+          existingConversation && existingIssue
+            ? { conversation: existingConversation, issue: existingIssue }
+            : null;
+        await db.transaction(async (tx) => {
+          await tx
+            .update(chatEndpoints)
+            .set({ lastEventAt: new Date(), updatedAt: new Date() })
+            .where(eq(chatEndpoints.id, endpoint.id));
+          await tx
+            .update(chatDeliveries)
+            .set({
+              conversationId: existingConversation?.id ?? null,
+              state: "processed",
+              processedAt: new Date(),
+              redactedError: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(chatDeliveries.id, activeDelivery.id));
+          if (publicationBinding) {
+            await tx
+              .insert(chatPublications)
+              .values({
+                companyId: endpoint.companyId,
+                endpointId: endpoint.id,
+                conversationId: publicationBinding.conversation.id,
+                issueId: publicationBinding.issue.id,
+                idempotencyKey: `control:guidance:${activeDelivery.id}`,
+                payload: projectSafeChatPublication({
+                  classification: "external",
+                  source: "task_control",
+                  text: responseText,
+                }),
+                state: "pending",
+              })
+              .onConflictDoNothing();
+          }
+        });
+        await Promise.allSettled([
+          receiptReactionSupported
+            ? addReceiptReaction({
+                deliveryId: activeDelivery.id,
+                endpoint,
+                message,
+                thread,
+              })
+            : Promise.resolve(),
+          addressed && !thread.isDM ? thread.subscribe() : Promise.resolve(),
+        ]);
+        // A task-bound guidance response joins the conversation publication
+        // FIFO. Before a task exists, the processed delivery itself gates the
+        // one direct response so provider redelivery cannot duplicate it.
+        if (!publicationBinding) await thread.post(responseText);
+        return;
+      }
+
       if (controlCommand) {
+        const isTelegramForumTopic =
+          endpoint.provider === "telegram" && surfaceKind === "native_thread";
         const taskLabel = existingIssue
           ? `${existingIssue.identifier}: ${existingIssue.title}`
           : "No task is active in this conversation.";
@@ -4459,11 +4569,27 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               ? `${taskLabel} — ${existingIssue.status}`
               : taskLabel
             : controlCommand === "new"
-              ? "Send your request to start a new Paperclip task."
+              ? isTelegramForumTopic
+                ? existingIssue
+                  ? `${taskLabel} stays bound to this forum topic. Open a new Telegram forum topic to start a new Paperclip task.`
+                  : "Open a new Telegram forum topic to start a new Paperclip task."
+                : "Send your request to start a new Paperclip task."
               : existingConversation
-                ? "This task is closed. Send another message to start a new task."
+                ? isTelegramForumTopic
+                  ? "This forum topic is closed. A later message here will continue the same Paperclip task."
+                  : "This task is closed. Send another message to start a new task."
                 : "No task is active. Send a message to start one.";
-        if (controlCommand !== "status") {
+        const statusBinding =
+          controlCommand === "status" && existingConversation && existingIssue
+            ? { conversation: existingConversation, issue: existingIssue }
+            : null;
+        if (
+          controlCommand !== "status" &&
+          // A native topic cannot be rebound to a second task. /new is
+          // guidance only; /close completes the topic until another message
+          // reopens its existing task.
+          (!isTelegramForumTopic || controlCommand === "close")
+        ) {
           if (existingConversation) {
             await db
               .update(chatConversations)
@@ -4485,17 +4611,42 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               updatedAt: new Date(),
             })
             .where(eq(chatDeliveries.id, activeDelivery.id));
+          if (statusBinding) {
+            await tx
+              .insert(chatPublications)
+              .values({
+                companyId: endpoint.companyId,
+                endpointId: endpoint.id,
+                conversationId: statusBinding.conversation.id,
+                issueId: statusBinding.issue.id,
+                idempotencyKey: `control:status:${activeDelivery.id}`,
+                payload: projectSafeChatPublication({
+                  classification: "external",
+                  source: "task_control",
+                  text: responseText,
+                }),
+                state: "pending",
+              })
+              .onConflictDoNothing();
+          }
         });
         await Promise.allSettled([
-          addReceiptReaction({
-            deliveryId: activeDelivery.id,
-            endpoint,
-            message,
-            thread,
-          }),
+          receiptReactionSupported
+            ? addReceiptReaction({
+                deliveryId: activeDelivery.id,
+                endpoint,
+                message,
+                thread,
+              })
+            : Promise.resolve(),
           addressed && !thread.isDM ? thread.subscribe() : Promise.resolve(),
         ]);
-        await thread.post(responseText);
+        // An active-task status shares the same durable FIFO as progress and
+        // final replies. Posting it directly lets an older working placeholder
+        // be edited into a terminal answer before this later send becomes
+        // visible, leaving a stale-looking status below the final answer.
+        // A no-task reply has no conversation outbox and remains immediate.
+        if (!statusBinding) await thread.post(responseText);
         return;
       }
 
@@ -4773,12 +4924,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // Provider-visible acknowledgement begins only after the task, external
       // comment, durable wakeup request, delivery state, and message link commit.
       await Promise.allSettled([
-        addReceiptReaction({
-          deliveryId: activeDelivery.id,
-          endpoint,
-          message,
-          thread,
-        }),
+        receiptReactionSupported
+          ? addReceiptReaction({
+              deliveryId: activeDelivery.id,
+              endpoint,
+              message,
+              thread,
+            })
+          : Promise.resolve(),
         // Slack implements this through assistant.threads.setStatus, which
         // requires assistant:write. The least-privilege Paperclip manifest
         // deliberately does not request that scope; the coalesced lifecycle
@@ -5023,10 +5176,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     endpointRuntime: ChatSdkEndpointRuntime,
   ): {
     message: Message;
+    receiptReactionSupported: boolean;
     trigger: ChatSdkMessageCallbackEvent["trigger"];
     providerUrl: string | null;
   } | null {
     const normalized = delivery.normalizedEvent as {
+      acknowledgement?: { receiptReactionSupported?: unknown };
       kind?: unknown;
       trigger?: unknown;
       principal?: {
@@ -5095,6 +5250,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             : "subscribed_message";
     return {
       message,
+      // Legacy deliveries all originated from native provider messages and
+      // therefore retain the historical default.
+      receiptReactionSupported:
+        normalized.acknowledgement?.receiptReactionSupported !== false,
       trigger,
       providerUrl:
         typeof normalized.conversation?.providerUrl === "string"
@@ -5206,6 +5365,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               undefined,
               undefined,
               delivery.id,
+              live.receiptReactionSupported,
             );
           } else {
             const endpointRuntime = await runtimeFor(endpoint);
@@ -5236,6 +5396,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               undefined,
               undefined,
               delivery.id,
+              reconstructed.receiptReactionSupported,
             );
           }
         } catch (error) {
@@ -5279,6 +5440,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   async function handleSdkMessage(
     event: ChatSdkMessageCallbackEvent,
     runtimeContext?: RuntimeContext,
+    messageOptions: { receiptReactionSupported?: boolean } = {},
   ) {
     const record = await endpointRecord(event.endpointId);
     if (!record) throw notFound("Chat endpoint not found");
@@ -5293,6 +5455,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         null,
         runtimeContext,
         event.providerUpdateId,
+        null,
+        messageOptions.receiptReactionSupported !== false,
       );
   }
 
@@ -5807,10 +5971,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       conversationId?: string | null;
       principalId?: string | null;
     } = {},
-  ): Promise<never> {
-    const denied = forbidden(
-      "This chat action is not a current Paperclip question",
-    );
+  ): Promise<void> {
     const fingerprint = createHash("sha256")
       .update(
         JSON.stringify([
@@ -5860,6 +6021,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         },
         "could not record denied external chat action",
       );
+      // Provider retries are useful only while the authoritative denial could
+      // not be recorded. Once the filtered delivery exists, a policy denial
+      // is a successfully handled webhook and must not be surfaced as a
+      // callback failure (which the Chat SDK correctly converts to a 503).
+      throw error;
     }
     const actionThread = event.event.thread;
     if (
@@ -5924,7 +6090,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         );
       }
     }
-    throw denied;
   }
 
   async function handleAction(
@@ -6529,10 +6694,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (!record) return;
     const command = event.event.command.toLowerCase().split("@")[0];
     const text = event.event.text.trim();
-    const telegramControl =
-      event.provider === "telegram" &&
-      ["/new", "/close", "/status"].includes(command);
-    if (telegramControl) {
+    if (event.provider === "telegram") {
       const endpointRuntime =
         runtime.get(event.endpointId) ?? (await runtimeFor(record.endpoint));
       const thread = endpointRuntime.thread(event.event.channel.id);
@@ -6574,18 +6736,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           trigger: thread.isDM ? "direct_message" : "mention",
         },
         runtimeContext,
-      );
-      return;
-    }
-    if (event.provider === "telegram") {
-      if (command === "/start") {
-        await event.event.channel.post(
-          `Send a message to start work with ${record.assignedAgentName}. Use /status, /new, or /close to manage the active task in this chat.`,
-        );
-        return;
-      }
-      await event.event.channel.post(
-        "Available commands: /status, /new, and /close.",
       );
       return;
     }
@@ -6707,6 +6857,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           trigger: "direct_message",
         },
         runtimeContext,
+        { receiptReactionSupported: false },
       );
       return;
     }
@@ -6958,6 +7109,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         trigger: "mention",
       },
       runtimeContext,
+      { receiptReactionSupported: false },
     );
   }
 
@@ -9051,6 +9203,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (!currentRunId) return null;
     return db
       .select({
+        id: chatPublications.id,
         commentId: chatPublications.commentId,
         providerMessageId: chatPublications.providerMessageId,
         payload: chatPublications.payload,
@@ -9070,8 +9223,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           ),
         ),
       )
-      .orderBy(desc(chatPublications.createdAt))
-      .then((rows) => {
+      .orderBy(desc(chatPublications.createdAt), desc(chatPublications.id))
+      .then(async (rows) => {
         // Progress updates are one replaceable provider-message lane per run.
         // The first durable agent comment may turn that placeholder into the
         // terminal response, but later comments from the same run are distinct
@@ -9085,14 +9238,65 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           )
         )
           return null;
-        return (
-          rows.find(
-            (row) =>
-              Boolean(row.providerMessageId) &&
-              row.payload.progressState !== undefined,
-          )?.providerMessageId ?? null
+        const replacement = rows.find(
+          (row) =>
+            Boolean(row.providerMessageId) &&
+            row.payload.progressState !== undefined,
         );
+        if (!replacement?.providerMessageId) return null;
+        const latestVisible = await db
+          .select({ id: chatPublications.id })
+          .from(chatPublications)
+          .where(
+            and(
+              eq(chatPublications.companyId, publication.companyId),
+              eq(chatPublications.endpointId, publication.endpointId),
+              eq(chatPublications.conversationId, publication.conversationId),
+              eq(chatPublications.state, "published"),
+              isNotNull(chatPublications.providerMessageId),
+            ),
+          )
+          .orderBy(desc(chatPublications.createdAt), desc(chatPublications.id))
+          .limit(1)
+          .then((visibleRows) => visibleRows[0] ?? null);
+        // Replacing an older placeholder after another provider-visible reply
+        // was posted changes history in place. Telegram and Slack then render
+        // the terminal answer above the intervening reply, which can make a
+        // correctly sampled status appear stale. Only the current tail may be
+        // coalesced; otherwise append the new result normally.
+        return latestVisible?.id === replacement.id
+          ? replacement.providerMessageId
+          : null;
       });
+  }
+
+  async function currentTaskControlPayload(
+    publication: typeof chatPublications.$inferSelect,
+  ): Promise<SafeChatPublicationPayload> {
+    const persisted = publication.payload as SafeChatPublicationPayload;
+    if (!publication.idempotencyKey.startsWith("control:status:")) {
+      return persisted;
+    }
+    const issue = await db
+      .select({
+        identifier: issues.identifier,
+        status: issues.status,
+        title: issues.title,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, publication.companyId),
+          eq(issues.id, publication.issueId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return persisted;
+    return projectSafeChatPublication({
+      classification: "external",
+      source: "task_control",
+      text: `${issue.identifier}: ${issue.title} — ${issue.status}`,
+    });
   }
 
   async function processPendingPublications(limit = 25) {
@@ -9314,7 +9518,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 return;
               }
             }
-            const payload = publication.payload as SafeChatPublicationPayload;
+            // Status is sampled when it reaches the head of the provider lane,
+            // not when the command was admitted. If an already-streaming final
+            // publication won the race, this reply reflects Paperclip's latest
+            // authoritative task state after that earlier send commits.
+            const payload = await currentTaskControlPayload(publication);
             const replaceProviderMessageId = CAPABILITIES[endpoint.provider]
               .messageEdits
               ? await runPublicationToReplace(publication, payload)
@@ -9331,6 +9539,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                 .update(chatPublications)
                 .set({
                   state: "published",
+                  payload,
                   providerMessageId: sent.id,
                   publishedAt: new Date(),
                   redactedError: null,

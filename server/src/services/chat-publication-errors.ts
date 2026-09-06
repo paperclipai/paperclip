@@ -67,6 +67,7 @@ export function classifyChatPublicationError(
     error && typeof error === "object"
       ? (error as {
           name?: unknown;
+          adapter?: unknown;
           code?: unknown;
           retryAfter?: unknown;
           retryAfterMs?: unknown;
@@ -83,6 +84,8 @@ export function classifyChatPublicationError(
         })
       : null;
   const name = typeof value?.name === "string" ? value.name : "";
+  const adapter =
+    typeof value?.adapter === "string" ? value.adapter.toLowerCase() : "";
   const code = typeof value?.code === "string" ? value.code : "";
   const platformCode =
     typeof value?.data?.error === "string" ? value.data.error : "";
@@ -147,6 +150,19 @@ export function classifyChatPublicationError(
       ),
       reason,
     };
+  }
+
+  if (
+    // Telegram uses 403 for destination-local conditions such as a user
+    // blocking the bot or removing it from a chat. Its adapter deliberately
+    // represents those responses as PermissionError while keeping an invalid
+    // bot token as AuthenticationError (401). Quarantine only that
+    // conversation/resource; the same bot may still serve every other chat.
+    adapter === "telegram" &&
+    name === "PermissionError" &&
+    code === "PERMISSION_DENIED"
+  ) {
+    return { kind: "resource_unavailable", reason };
   }
 
   if (

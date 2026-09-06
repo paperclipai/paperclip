@@ -128,6 +128,30 @@ describe("chat publication error classification", () => {
     });
   });
 
+  it("quarantines Telegram 403 destinations without invalidating the bot token", () => {
+    expect(
+      classifyChatPublicationError(
+        providerError("PermissionError", "PERMISSION_DENIED", {
+          adapter: "telegram",
+          action: "sendMessage",
+        }),
+        1,
+      ),
+    ).toEqual({
+      kind: "resource_unavailable",
+      reason: "PermissionError test",
+    });
+
+    expect(
+      classifyChatPublicationError(
+        providerError("AuthenticationError", "AUTH_FAILED", {
+          adapter: "telegram",
+        }),
+        1,
+      ),
+    ).toMatchObject({ kind: "endpoint_attention" });
+  });
+
   it("marks a missing provider destination unavailable", () => {
     expect(
       classifyChatPublicationError(

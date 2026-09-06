@@ -59,25 +59,35 @@ const PUBLICATION_SOURCES = new Set<ExternalChatPublicationSource>([
   "explicit_board_send",
   "safe_milestone",
   "issue_interaction",
+  "task_control",
 ]);
 const CARD_KINDS = new Set<SafeExternalChatCardKind>([
   "status",
   "question",
   "confirmation",
 ]);
-const CARD_ACTION_STYLES = new Set<NonNullable<Extract<
-  SafeExternalChatCardAction,
-  { type: "callback" }
->["style"]>>(["default", "primary", "danger"]);
+const CARD_ACTION_STYLES = new Set<
+  NonNullable<
+    Extract<SafeExternalChatCardAction, { type: "callback" }>["style"]
+  >
+>(["default", "primary", "danger"]);
 const PROGRESS_STATES = new Set<
   NonNullable<SafeChatPublicationPayload["progressState"]>
->(["queued", "working", "waiting_for_input", "approval_needed", "completed", "failed"]);
+>([
+  "queued",
+  "working",
+  "waiting_for_input",
+  "approval_needed",
+  "completed",
+  "failed",
+]);
 
 export type ExternalChatPublicationSource =
   | "agent_comment"
   | "explicit_board_send"
   | "safe_milestone"
-  | "issue_interaction";
+  | "issue_interaction"
+  | "task_control";
 
 export interface ChatPublicationProjectionInput {
   /** A caller must deliberately classify the source as externally visible. */
@@ -128,7 +138,8 @@ function stripHiddenSections(input: string): string {
       hiddenHeadingLevel = null;
     }
 
-    if (HIDDEN_LINE_RE.test(line) || STRUCTURED_LOG_LINE_RE.test(line)) continue;
+    if (HIDDEN_LINE_RE.test(line) || STRUCTURED_LOG_LINE_RE.test(line))
+      continue;
     output.push(line);
   }
 
@@ -185,10 +196,13 @@ export function sanitizeExternalChatUrl(input: string): string | null {
 }
 
 function sanitizeUrls(input: string): string {
-  let output = input.replace(MARKDOWN_LINK_RE, (_match, label: string, href: string) => {
-    const safeUrl = sanitizeExternalChatUrl(href);
-    return safeUrl ? `[${label}](${safeUrl})` : label;
-  });
+  let output = input.replace(
+    MARKDOWN_LINK_RE,
+    (_match, label: string, href: string) => {
+      const safeUrl = sanitizeExternalChatUrl(href);
+      return safeUrl ? `[${label}](${safeUrl})` : label;
+    },
+  );
   output = output.replace(AUTOLINK_RE, (_match, href: string) => {
     const safeUrl = sanitizeExternalChatUrl(href);
     return safeUrl ? `<${safeUrl}>` : "[link removed]";
@@ -207,7 +221,8 @@ function sanitizeCredentialText(input: string): string {
     .replace(KNOWN_CREDENTIAL_RE, "[REDACTED]")
     .replace(
       LABELED_CREDENTIAL_RE,
-      (_match, label: string, separator: string) => `${label}${separator}[REDACTED]`,
+      (_match, label: string, separator: string) =>
+        `${label}${separator}[REDACTED]`,
     )
     .replace(CONNECTION_STRING_RE, "[REDACTED]");
 }
@@ -257,7 +272,9 @@ function projectAttachmentIds(
   for (const id of input) {
     const normalized = id.trim().toLowerCase();
     if (!UUID_RE.test(normalized)) {
-      throw new UnsafeChatPublicationError("External chat attachment ids must be UUIDs");
+      throw new UnsafeChatPublicationError(
+        "External chat attachment ids must be UUIDs",
+      );
     }
     if (!seen.has(normalized)) {
       seen.add(normalized);
@@ -271,7 +288,9 @@ function projectCard(
   input: NonNullable<ChatPublicationProjectionInput["interaction"]>,
 ): { interactionId: string; card: SafeExternalChatCard } {
   if (!SAFE_IDENTIFIER_RE.test(input.id)) {
-    throw new UnsafeChatPublicationError("External chat interaction id is invalid");
+    throw new UnsafeChatPublicationError(
+      "External chat interaction id is invalid",
+    );
   }
   if (!CARD_KINDS.has(input.card.kind)) {
     throw new UnsafeChatPublicationError("External chat card kind is invalid");
@@ -299,10 +318,14 @@ function projectCard(
     );
     if (action.type === "callback") {
       if (!SAFE_IDENTIFIER_RE.test(action.actionId)) {
-        throw new UnsafeChatPublicationError("External chat action id is invalid");
+        throw new UnsafeChatPublicationError(
+          "External chat action id is invalid",
+        );
       }
       if (action.style && !CARD_ACTION_STYLES.has(action.style)) {
-        throw new UnsafeChatPublicationError("External chat action style is invalid");
+        throw new UnsafeChatPublicationError(
+          "External chat action style is invalid",
+        );
       }
       actions.push({
         type: "callback",
@@ -314,7 +337,9 @@ function projectCard(
     }
 
     if (action.type !== "link") {
-      throw new UnsafeChatPublicationError("External chat card action type is invalid");
+      throw new UnsafeChatPublicationError(
+        "External chat card action type is invalid",
+      );
     }
 
     const url = sanitizeExternalChatUrl(action.url);
@@ -341,13 +366,18 @@ function projectCard(
 export function projectSafeChatPublication(
   input: ChatPublicationProjectionInput,
 ): ProjectedSafeChatPublicationPayload {
-  if (input.classification !== "external" || !PUBLICATION_SOURCES.has(input.source)) {
+  if (
+    input.classification !== "external" ||
+    !PUBLICATION_SOURCES.has(input.source)
+  ) {
     throw new UnsafeChatPublicationError(
       "Chat publication source must be explicitly classified for external delivery",
     );
   }
   if (input.progressState && !PROGRESS_STATES.has(input.progressState)) {
-    throw new UnsafeChatPublicationError("External chat progress state is invalid");
+    throw new UnsafeChatPublicationError(
+      "External chat progress state is invalid",
+    );
   }
   const attachmentIds = projectAttachmentIds(input.attachmentIds);
   const interaction = input.interaction ? projectCard(input.interaction) : null;

@@ -119,6 +119,63 @@ describe("Chat SDK published adapter integration", () => {
 
   it.each([
     {
+      status: 403,
+      description: "Forbidden: bot was blocked by the user",
+      expected: { name: "PermissionError", code: "PERMISSION_DENIED" },
+    },
+    {
+      status: 401,
+      description: "Unauthorized",
+      expected: { name: "AuthenticationError", code: "AUTH_FAILED" },
+    },
+  ])(
+    "preserves Telegram Bot API $status as its scoped adapter error",
+    async ({ description, expected, status }) => {
+      const runtime = createChatSdkEndpointRuntime({
+        callbacks: { onMessage() {} },
+        companyId: "company-telegram-errors",
+        endpointId: `endpoint-telegram-${status}`,
+        logger: "silent",
+        persistence,
+        providerConfig: {
+          provider: "telegram",
+          userName: "paperclip_agent_bot",
+          credentials: {
+            botToken: "123:test",
+            secretToken: "telegram-webhook-secret",
+          },
+        },
+      });
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        postMessage(
+          threadId: string,
+          message: { markdown: string },
+        ): Promise<unknown>;
+      };
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () =>
+        new Response(
+          JSON.stringify({ ok: false, error_code: status, description }),
+          {
+            status,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      try {
+        await expect(
+          adapter.postMessage("telegram:77112233", {
+            markdown: "Safe Telegram response",
+          }),
+        ).rejects.toMatchObject({ adapter: "telegram", ...expected });
+      } finally {
+        globalThis.fetch = originalFetch;
+        await runtime.shutdown();
+      }
+    },
+  );
+
+  it.each([
+    {
       provider: "slack",
       providerConfig: {
         provider: "slack" as const,
