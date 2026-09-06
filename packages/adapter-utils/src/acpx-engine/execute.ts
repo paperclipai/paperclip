@@ -1132,6 +1132,7 @@ async function quarantineCodexRunHomeWithoutClose(input: {
     path.dirname(runHomeParent),
     `${path.basename(runHomeParent)}.quarantine`,
   );
+  let quarantineMarkerError: unknown;
   await writeFileAtomically({
     target: quarantineMarker,
     contents: `${JSON.stringify({
@@ -1139,10 +1140,12 @@ async function quarantineCodexRunHomeWithoutClose(input: {
       reason: "runtime_close_unconfirmed",
     })}\n`,
     mode: 0o600,
-  }).catch(() => {});
+  }).catch((markerErr) => {
+    quarantineMarkerError = markerErr;
+  });
   await input.onLog(
     "stderr",
-    `[paperclip] INCIDENT: raw ACPX Codex run home quarantined because runtime close was not confirmed at "${retention.runHome}": ${input.reason}\n`,
+    `[paperclip] INCIDENT: raw ACPX Codex run home quarantined because runtime close was not confirmed at "${retention.runHome}"${quarantineMarkerError ? `, but marker creation at "${quarantineMarker}" also failed: ${quarantineMarkerError instanceof Error ? quarantineMarkerError.message : String(quarantineMarkerError)}` : ` with marker "${quarantineMarker}"`}: ${input.reason}\n`,
   );
 }
 
