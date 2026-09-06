@@ -889,13 +889,31 @@ describe("redactCommandText header scanner matrices", () => {
   ] as const;
   const truncatedTails = [
     ["double", '"TAILMARK'],
-    ["single", "'TAILMARK",],
+    ["single", "'TAILMARK"],
     ["ansi-c", "$'TAILMARK"],
     ["double-escaped-quote", String.raw`"TAIL\"LEAK`],
   ] as const;
+  // Depth-0 output is determinate, so it is pinned exactly, in tail order. A
+  // tail opening on a bare double quote reopens the closer under the depth-0
+  // reading, which wins and drops the closer; a single or ANSI-C tail is
+  // consumed by the delimiter's own reading, which keeps it.
+  const truncatedExpectations: Record<string, readonly string[]> = {
+    "closed-escaped": [
+      String.raw`curl -H X-API-Key:\"` + R,
+      String.raw`curl -H X-API-Key:\"` + R + String.raw`\"`,
+      String.raw`curl -H X-API-Key:\"` + R + String.raw`\"`,
+      String.raw`curl -H X-API-Key:\"` + R,
+    ],
+    "closed-double": Array(4).fill(`curl -H "X-API-Key: ${R}"`),
+    "closed-single": Array(4).fill(`curl -H 'X-API-Key: ${R}'`),
+    "closed-ansi": Array(4).fill(`curl -H $'X-API-Key: ${R}'`),
+    unquoted: Array(4).fill(`curl -H X-API-Key:${R}`),
+  };
 
-  it.each(truncatedRoots)("redacts a truncated tail after a %s root at depths 0-2", (_name, root) => {
-    for (const [, tail] of truncatedTails) {
+  it.each(truncatedRoots)("redacts a truncated tail after a %s root at depths 0-2", (name, root) => {
+    truncatedTails.forEach(([, tail], index) => {
+      // Depth 0: exact.
+      expect(redactCommandText(root + tail)).toBe(truncatedExpectations[name]![index]);
       for (let depth = 0; depth <= 2; depth += 1) {
         const output = redactCommandText(serialize(root + tail, depth));
         expect(output).not.toContain("SECRET");
@@ -903,7 +921,11 @@ describe("redactCommandText header scanner matrices", () => {
         expect(output).not.toContain("LEAK");
         expect(redactCommandText(output)).toBe(output);
       }
-    }
+      // Depths 1 and 2 stay marker-and-stability only: a serialized string cut
+      // inside the header argument loses its outer delimiter under N4, so the
+      // exact output there is a policy artifact of the union, not a fact about
+      // the credential.
+    });
   });
 
   it("loses a truncated escaped-quote tail after a closed escaped value", () => {
@@ -938,10 +960,17 @@ describe("redactCommandText header scanner matrices", () => {
 
   it("redacts an even backslash run before a space or a line end at depths 0-2", () => {
     // These two followers over-redact: the readings disagree about whether the
-    // run escapes what comes next, so the union takes the longer span.
+    // run escapes what comes next, so the union takes the longer span. Depth 0
+    // is determinate and pinned exactly; the serialized rows drop the outer
+    // delimiter under N4, so the exact output there is a union artifact.
     for (const runLength of [2, 4, 6, 8]) {
       const run = "\\".repeat(runLength);
-      for (const base of [`curl -H X-API-Key:SECRET${run} next safe`, `curl -H X-API-Key:SECRET${run}`]) {
+      const followers = [
+        [`curl -H X-API-Key:SECRET${run} next safe`, `curl -H X-API-Key:${R} safe`],
+        [`curl -H X-API-Key:SECRET${run}`, `curl -H X-API-Key:${R}`],
+      ] as const;
+      for (const [base, expected] of followers) {
+        expect(redactCommandText(base)).toBe(expected);
         for (let depth = 0; depth <= 2; depth += 1) {
           const output = redactCommandText(serialize(base, depth));
           expect(output).not.toContain("SECRET");
@@ -955,19 +984,127 @@ describe("redactCommandText header scanner matrices", () => {
     // A second pass reads the placeholder, which carries no quote and no
     // separator to stop an unquoted scan before the closer. The first pass
     // consumes whatever that scan would, so the output never moves again.
-    const inputs = [
-      String.raw`"curl -H \"X-API-Key: LEAK\"TAILMARK\" --next \"safe\""`,
-      String.raw`"curl -H \"X-API-Key: LEAK \"TAILMARK\" --next \"safe\""`,
-      String.raw`"curl -H X-API-Key:\"LEAK\"TAILMARK\" --next \"safe\""`,
-      String.raw`foo\\"X-API-Key: a b" bar`,
-    ];
-    for (const input of inputs) {
+    const rows = [
+      [
+        String.raw`"curl -H \"X-API-Key: LEAK\"TAILMARK\" --next \"safe\""`,
+        String.raw`"curl -H \"X-API-Key: ` + R + String.raw`\""`,
+      ],
+      [
+        String.raw`"curl -H \"X-API-Key: LEAK \"TAILMARK\" --next \"safe\""`,
+        String.raw`"curl -H \"X-API-Key: ` + R + String.raw`\""`,
+      ],
+      [
+        String.raw`"curl -H X-API-Key:\"LEAK\"TAILMARK\" --next \"safe\""`,
+        String.raw`"curl -H X-API-Key:\"` + R + String.raw`\""`,
+      ],
+      [String.raw`foo\\"X-API-Key: a b" bar`, String.raw`foo\\"X-API-Key: ` + R],
+    ] as const;
+    for (const [input, expected] of rows) {
       const once = redactCommandText(input);
       expect(once).not.toContain("LEAK");
+      expect(once).toBe(expected);
       expect(redactCommandText(once)).toBe(once);
       expect(redactDiagnosticText(once)).toBe(once);
     }
   });
+
+  // A single quote and an ANSI-C `$'` are what JSON serialization leaves alone,
+  // so they name no layer: an adjacent double-quoted segment after such an
+  // argument is a further segment of the same shell word at every depth. Bash
+  // reads each decoded row as one word, `X-API-Key: SECRET TAILMARK`.
+  const layerInvariantRoots = [
+    ["single-quoted full-header", `curl -H 'X-API-Key: SECRET'`, `curl -H 'X-API-Key: ${R}'`],
+    ["single-quoted value-only", `curl -H X-API-Key:'SECRET'`, `curl -H X-API-Key:'${R}'`],
+    ["ansi-c full-header", `curl -H $'X-API-Key: SECRET'`, `curl -H $'X-API-Key: ${R}'`],
+    ["ansi-c value-only", `curl -H X-API-Key:$'SECRET'`, `curl -H X-API-Key:$'${R}'`],
+  ] as const;
+  const adjacentDoubleQuoted = ['"TAILMARK"', '" TAILMARK"'] as const;
+
+  it.each(layerInvariantRoots)(
+    "consumes a serialized adjacent segment after a %s argument at depths 0-3",
+    (_name, root, redacted) => {
+      for (const suffix of adjacentDoubleQuoted) {
+        const base = `${root}${suffix} --next safe`;
+        const expectedBase = `${redacted} --next safe`;
+        for (let depth = 0; depth <= 3; depth += 1) {
+          const output = redactCommandText(serialize(base, depth));
+          expect(output).not.toContain("SECRET");
+          expect(output).not.toContain("TAILMARK");
+          expect(output).toBe(serialize(expectedBase, depth));
+          if (depth > 0) expect(parseDepth(output, depth)).toBe(expectedBase);
+          expect(redactCommandText(output)).toBe(output);
+        }
+      }
+    },
+  );
+
+  it.each(layerInvariantRoots)(
+    "consumes an adjacent segment carrying an escaped quote after a %s argument",
+    (_name, root, redacted) => {
+      const base = `${root}${String.raw`"TAIL\"MARK"`} --next safe`;
+      // Depth 0 is determinate. At depth 1 and deeper the tail is scanned at
+      // every layer, because a single quote names none, and a deeper layer
+      // reads this shape as an argument that never closes, so the union runs to
+      // the line end. That is a union artifact, not a fact about the
+      // credential, so these rows assert removal and stability only. Seeding
+      // fewer layers is not available: a tail that opens on plain bytes before
+      // its serialized quote leaks under a depth-0-only tail, which
+      // `808854d9a` demonstrates on
+      // `"curl -H 'X-API-Key: SECRET'TAIL\" MORE\" --next safe"`.
+      expect(redactCommandText(base)).toBe(`${redacted} --next safe`);
+      for (let depth = 0; depth <= 3; depth += 1) {
+        const output = redactCommandText(serialize(base, depth));
+        expect(output).not.toContain("SECRET");
+        expect(output).not.toContain("TAILMARK");
+        expect(output).not.toContain("MARK");
+        expect(redactCommandText(output)).toBe(output);
+      }
+    },
+  );
+
+  it("consumes a serialized adjacent segment that opens after plain bytes", () => {
+    // The tail's serialized quote is not its first byte, so the layer cannot be
+    // read off the tail. Scanning every layer is what covers it.
+    const input = JSON.stringify(
+      `curl -H 'X-API-Key: SECRET'TAIL" MORE" --next safe`,
+    );
+    const output = redactCommandText(input);
+    expect(output).not.toContain("SECRET");
+    expect(output).not.toContain("MORE");
+    expect(output).toBe(JSON.stringify(`curl -H 'X-API-Key: ${R}' --next safe`));
+    expect(redactCommandText(output)).toBe(output);
+  });
+
+  // A backslash-newline is a line continuation: the shell removes it and joins
+  // the next physical line to the same word, so the credential runs on past it.
+  const lineContinuations = [
+    ["an unquoted value", (nl: string) => `curl -H X-API-Key:SECRET\\${nl}TAILMARK --next safe`, `curl -H X-API-Key:${R} --next safe`],
+    ["a closed single-quoted argument", (nl: string) => `curl -H 'X-API-Key: SECRET'\\${nl}TAILMARK --next safe`, `curl -H 'X-API-Key: ${R}' --next safe`],
+    ["a closed double-quoted argument", (nl: string) => `curl -H "X-API-Key: SECRET"\\${nl}TAILMARK --next safe`, `curl -H "X-API-Key: ${R}" --next safe`],
+    ["a closed ANSI-C argument", (nl: string) => `curl -H $'X-API-Key: SECRET'\\${nl}TAILMARK --next safe`, `curl -H $'X-API-Key: ${R}' --next safe`],
+    ["a double-quoted value", (nl: string) => `curl -H "X-API-Key: SECRET\\${nl}TAILMARK" --next safe`, `curl -H "X-API-Key: ${R}" --next safe`],
+    ["the value's first byte", (nl: string) => `curl -H X-API-Key:\\${nl}SECRET --next safe`, `curl -H X-API-Key:${R} --next safe`],
+  ] as const;
+
+  it.each(lineContinuations)(
+    "follows a line continuation after %s",
+    (_name, build, expected) => {
+      for (const newline of ["\n", "\r\n"]) {
+        expect(redactCommandText(build(newline))).toBe(expected);
+        expect(redactCommandText(expected)).toBe(expected);
+        // A serializer writes the continuation as a backslash run and a
+        // two-byte `\n` escape, which the reader carries as an escaped
+        // character, so the word still runs on. The outer delimiter is lost
+        // under N4, so these rows assert removal and stability only.
+        for (let depth = 1; depth <= 2; depth += 1) {
+          const output = redactCommandText(serialize(build(newline), depth));
+          expect(output).not.toContain("SECRET");
+          expect(output).not.toContain("TAILMARK");
+          expect(redactCommandText(output)).toBe(output);
+        }
+      }
+    },
+  );
 
   it("keeps an empty truncated segment out of the redaction", () => {
     // A cut that leaves a segment with no bytes hides nothing, so the word ends
