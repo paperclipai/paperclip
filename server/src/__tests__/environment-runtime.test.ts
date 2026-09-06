@@ -5699,6 +5699,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
       call: vi.fn(async (_pluginId: string, method: string, params: any) => {
         if (method === "environmentAcquireLease") {
           return {
@@ -5964,6 +5965,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
       call: vi.fn(async (_pluginId: string, method: string, params: any) => {
         if (method === "environmentResumeLease") {
           // If the secret gate regresses and the legacy lease is resumed, return
@@ -6040,6 +6042,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       await seedReusablePluginSandboxLease();
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
       call: vi.fn(async (_pluginId: string, method: string, params: any) => {
         if (method === "environmentResumeLease") {
           return {
