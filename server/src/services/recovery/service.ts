@@ -848,6 +848,22 @@ export function recoveryService(
       .then((rows) => Boolean(rows[0]));
   }
 
+  async function hasPendingApprovalCard(companyId: string, issueId: string) {
+    return db
+      .select({ id: approvals.id })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(
+        and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.issueId, issueId),
+          eq(approvals.status, "pending"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
   async function hasPersistedDurableWaitPath(issue: typeof issues.$inferSelect) {
     if (issue.monitorNextCheckAt) return true;
 
@@ -2954,6 +2970,14 @@ export function recoveryService(
         issue.id,
       );
       if (activeRecoveryAction?.ownerType === "board") {
+        result.skipped += 1;
+        continue;
+      }
+
+      // A pending approval card is the same kind of human-owned wait: the issue
+      // is not stalled, it is waiting for someone to answer. Escalating it
+      // buries the card under a recovery issue nobody asked for.
+      if (await hasPendingApprovalCard(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }
