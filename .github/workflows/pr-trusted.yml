@@ -372,6 +372,51 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  http_boundary:
+    name: Bun/Elysia HTTP boundary
+    needs: [gate, policy]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        if: needs.policy.outputs.lockfile_regenerated == '1'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.0'
+
+      - name: Typecheck HTTP boundary
+        run: pnpm --filter @paperclipai/server typecheck:http
+
+      - name: Test HTTP boundary
+        run: pnpm --filter @paperclipai/server test:http
+
   typecheck_release_registry:
     name: Typecheck + Release Registry
     needs: [gate, policy]
@@ -553,7 +598,7 @@ jobs:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity]
+    needs: [gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity, http_boundary]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
 
@@ -566,6 +611,7 @@ jobs:
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           DOCKER_CONTEXT_INTEGRITY_RESULT: ${{ needs.docker_context_integrity.result }}
+          HTTP_BOUNDARY_RESULT: ${{ needs.http_boundary.result }}
         run: |
           test "$POLICY_RESULT" = "success"
           case "$FULL_CI" in
@@ -574,12 +620,14 @@ jobs:
               test "$GENERAL_TESTS_RESULT" = "success"
               test "$BUILD_RESULT" = "success"
               test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"
+              test "$HTTP_BOUNDARY_RESULT" = "success"
               ;;
             false)
               test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"
               test "$GENERAL_TESTS_RESULT" = "skipped"
               test "$BUILD_RESULT" = "skipped"
               test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"
+              test "$HTTP_BOUNDARY_RESULT" = "skipped"
               ;;
             *)
               echo "Invalid full_ci decision: $FULL_CI" >&2
