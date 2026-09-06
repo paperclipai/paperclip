@@ -2428,6 +2428,11 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.exitCode).toBe(0);
     await expect(fs.stat(path.join(stateDir, "codex-run-homes", runId, "home"))).rejects.toThrow();
     await expect(fs.stat(path.join(stateDir, "codex-session-retention", runId, "sessions"))).resolves.toBeDefined();
+    const manifest = JSON.parse(await fs.readFile(
+      path.join(stateDir, "codex-session-retention", runId, "retention-complete.json"),
+      "utf8",
+    )) as { status: string; runId: string; sessionFileCount: number };
+    expect(manifest).toMatchObject({ status: "complete", runId, sessionFileCount: 0 });
     expect(logs.some((entry) => entry.text.includes("Retained 0 sanitized ACPX Codex session JSONL"))).toBe(true);
     expect(logs.every((entry) => !entry.text.includes("INCIDENT"))).toBe(true);
   });
@@ -2496,6 +2501,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(stat).not.toBeNull();
     const quarantineMarker = path.join(stateDir, "codex-run-homes", `${runId}.quarantine`);
     await expect(fs.readFile(quarantineMarker, "utf8")).resolves.toContain("sanitized_session_retention_failed");
+    await expect(fs.stat(path.join(stateDir, "codex-session-retention", runId))).rejects.toThrow();
     expect(logs.some((entry) => entry.stream === "stderr" && entry.text.includes("INCIDENT"))).toBe(true);
     expect(logs.every((entry) => !entry.text.includes("Deleted raw Codex run home"))).toBe(true);
   });
@@ -2562,6 +2568,7 @@ describe("shared ACPX engine runtime behavior", () => {
     await expect(fs.stat(path.dirname(path.dirname(runSessionFile)))).resolves.toBeDefined();
     const quarantineMarker = path.join(stateDir, "codex-run-homes", `${runId}.quarantine`);
     await expect(fs.readFile(quarantineMarker, "utf8")).resolves.toContain("runtime_close_unconfirmed");
+    await expect(fs.stat(path.join(stateDir, "codex-session-retention", runId))).rejects.toThrow();
     expect(logs.some((entry) => entry.text.includes("runtime close was not confirmed"))).toBe(true);
     expect(logs.every((entry) => !entry.text.includes("Deleted raw Codex run home"))).toBe(true);
   });

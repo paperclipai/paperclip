@@ -69,7 +69,7 @@ async function buildRunHome(opts: {
 
   if (opts.withRetained) {
     await fs.mkdir(retentionDir, { recursive: true });
-    await fs.writeFile(path.join(retentionDir, "sessions.jsonl"), "", "utf8");
+    await fs.writeFile(path.join(retentionDir, "sessions.jsonl"), '{"type":"session"}\n', "utf8");
   }
 
   if (opts.withQuarantine) {
@@ -120,6 +120,7 @@ describe("run-home sweeper", () => {
       const entry = result.entries.find((e) => e.runId === "run-old-1");
       expect(entry).toBeDefined();
       expect(entry!.eligible).toBe(true);
+      expect(entry!.retentionProof).toBe("legacy_nonempty_jsonl");
       expect(entry!.deleted).toBeUndefined();
     });
 
@@ -198,6 +199,69 @@ describe("run-home sweeper", () => {
       await expect(
         fs.stat(path.join(path.dirname(path.dirname(runHomeDir)), "run-quarantined.quarantine")),
       ).resolves.toBeDefined();
+    });
+
+    it("rejects an empty retained-session directory", async () => {
+      const { runHomeDir, retentionDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId: "run-empty-retention",
+        ageHours: 30,
+      });
+      await fs.mkdir(retentionDir, { recursive: true });
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]?.eligible).toBe(false);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/no completion manifest or non-empty JSONL/i);
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
+
+    it("rejects a symlinked retained-session counterpart", async () => {
+      const { runHomeDir, retentionDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId: "run-symlink-retention",
+        ageHours: 30,
+      });
+      const externalDir = path.join(companyDir, "external-retention");
+      await fs.mkdir(externalDir, { recursive: true });
+      await fs.writeFile(path.join(externalDir, "session.jsonl"), '{"type":"session"}\n', "utf8");
+      await fs.mkdir(path.dirname(retentionDir), { recursive: true });
+      await fs.symlink(externalDir, retentionDir, "dir");
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]?.eligible).toBe(false);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/not a real directory/i);
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
+
+    it("accepts a valid zero-session completion manifest", async () => {
+      const runId = "run-zero-session-manifest";
+      const { runHomeDir, retentionDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId,
+        ageHours: 30,
+      });
+      await fs.mkdir(path.join(retentionDir, "sessions"), { recursive: true });
+      await fs.writeFile(path.join(retentionDir, "retention-complete.json"), JSON.stringify({
+        schemaVersion: 1,
+        status: "complete",
+        runId,
+        sessionFileCount: 0,
+        sessionFiles: [],
+      }), "utf8");
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]).toMatchObject({
+        eligible: true,
+        deleted: true,
+        retentionProof: "completion_manifest",
+      });
+      await expect(fs.stat(runHomeDir)).rejects.toThrow();
     });
   });
 
