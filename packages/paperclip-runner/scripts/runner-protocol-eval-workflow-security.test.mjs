@@ -8,6 +8,10 @@ const workflowPath = resolve(
   repositoryRoot,
   ".github/workflows/runner-protocol-live-evals.yml",
 );
+const trustedPrWorkflowPath = resolve(
+  repositoryRoot,
+  ".github/workflows/pr-trusted.yml",
+);
 
 test("direct live eval workflow keeps paid execution behind stable actor authorization", async () => {
   const workflow = await readFile(workflowPath, "utf8");
@@ -30,6 +34,19 @@ test("direct live eval workflow keeps paid execution behind stable actor authori
   ].map((match) => match[1]);
   assert.ok(actions.length > 0);
   for (const action of actions) assert.match(action, /^[^@]+@[0-9a-f]{40}$/u);
+});
+
+test("pull request CI builds the canonical Evalbook viewer", async () => {
+  const workflow = await readFile(trustedPrWorkflowPath, "utf8");
+  const buildJob = workflow.slice(
+    workflow.indexOf("  build:"),
+    workflow.indexOf("  verify_serialized_server:"),
+  );
+
+  assert.match(
+    buildJob,
+    /name: Build Runner Evalbook viewer[\s\S]*pnpm --filter @paperclipai\/paperclip-runner build:issue-thread/u,
+  );
 });
 
 test("resolves both repositories immutably and bounds total matrix concurrency", async () => {
