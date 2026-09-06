@@ -1,7 +1,9 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
+import type { CompactionDecision, FirstModelTokenTelemetry, ToolSchemaTelemetry } from "@paperclipai/shared";
+import type { RuntimePromptSectionSelection } from "./context-economy-wiring.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
@@ -74,6 +76,33 @@ export type AdapterExecutionErrorFamily =
   | "refresh_token_expired"
   | "refresh_token_invalidated";
 
+/**
+ * Structured per-run telemetry counters derived from adapter output events.
+ * Persisted on the heartbeat run record for observability, budget
+ * classification, and compaction decisions. Counters are computed deterministically
+ * from the adapter event stream (e.g. OpenCode JSONL); they are never estimated.
+ */
+export interface AdapterRunTelemetry {
+  /** Total tool invocations observed in the run output. */
+  toolCalls: number;
+  /** Tool invocations that ended in error status. */
+  failedToolCalls: number;
+  /** Adapter-reported retry count (e.g. session unknown retry). */
+  retryCount: number;
+  /** Tool invocations classified as search/grep/glob/read. */
+  searchCalls: number;
+  /** Tool invocations classified as file read operations. */
+  fileReads: number;
+  /** Tool invocations classified as file write/edit operations. */
+  fileWrites: number;
+  /** Tool invocations classified as test execution. */
+  testCalls: number;
+  /** Wall-clock ms from first event to first file-write tool call. */
+  timeToFirstWriteMs: number | null;
+  /** Wall-clock ms from first event to first test tool call. */
+  timeToFirstTestMs: number | null;
+}
+
 export interface AdapterExecutionResult {
   exitCode: number | null;
   signal: string | null;
@@ -88,7 +117,7 @@ export interface AdapterExecutionResult {
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
    * execution; "session_cumulative" means they are running totals for the
    * persisted session, and the server must delta consecutive runs. Absent
-   * means unknown — the server applies its legacy session-delta heuristic.
+   * means unknown ÔÇö the server applies its legacy session-delta heuristic.
    */
   usageBasis?: "per_run" | "session_cumulative" | null;
   /**
@@ -120,6 +149,14 @@ export interface AdapterExecutionResult {
    */
   referencedProjectStagingFailures?: Array<{ projectId: string; error: string }>;
   summary?: string | null;
+  /**
+   * Structured per-run telemetry derived from adapter output events. Adapters
+   * that parse structured stdout (e.g. OpenCode JSONL) populate this with
+   * deterministic counters and timestamps; the server persists these into the
+   * heartbeat run record for observability and budget classification. Absent
+   * when the adapter does not emit structured telemetry events.
+   */
+  runTelemetry?: AdapterRunTelemetry | null;
   clearSession?: boolean;
   question?: {
     prompt: string;
@@ -131,6 +168,30 @@ export interface AdapterExecutionResult {
   } | null;
   /** Present only for a persisted native-mode run; legacy adapters omit it. */
   nativeFinalization?: NativeFinalizationResult;
+  /**
+   * Paperclip context-economy diagnostics for this run: narrowed managed-MCP
+   * set, derived tool-schema telemetry, first-model token telemetry, the
+   * Paperclip-controlled prompt-section selection, and the context-budget /
+   * compaction decision. Absent on runs where the control plane did not request
+   * economy instrumentation.
+   */
+  runContextDiagnostics?: RunContextDiagnostics | null;
+}
+
+/**
+ * Structured context-economy diagnostics surfaced on the execution result so the
+ * Paperclip control plane can persist them per run without re-deriving from the
+ * agent runtime.
+ */
+export interface RunContextDiagnostics {
+  mcpNarrowing?: {
+    droppedUnauthorized: string[];
+    droppedInactive: string[];
+  } | null;
+  tools?: ToolSchemaTelemetry | null;
+  firstModelTokens?: FirstModelTokenTelemetry | null;
+  promptSections?: RuntimePromptSectionSelection | null;
+  compaction?: CompactionDecision | null;
 }
 
 export interface AdapterSessionCodec {
@@ -348,7 +409,7 @@ export interface HireApprovedHookResult {
 }
 
 // ---------------------------------------------------------------------------
-// Quota window types — used by adapters that can report provider quota/rate-limit state
+// Quota window types ÔÇö used by adapters that can report provider quota/rate-limit state
 // ---------------------------------------------------------------------------
 
 /** a single rate-limit or usage window returned by a provider quota API */
@@ -381,7 +442,7 @@ export interface ProviderQuotaResult {
 }
 
 // ---------------------------------------------------------------------------
-// Adapter config schema — declarative UI config for external adapters
+// Adapter config schema ÔÇö declarative UI config for external adapters
 // ---------------------------------------------------------------------------
 
 export interface ConfigFieldOption {
@@ -400,7 +461,7 @@ export interface ConfigFieldSchema {
   hint?: string;
   required?: boolean;
   group?: string;
-  /** Optional metadata — not rendered, but available to custom UI logic */
+  /** Optional metadata ÔÇö not rendered, but available to custom UI logic */
   meta?: Record<string, unknown>;
 }
 
@@ -480,7 +541,7 @@ export interface ServerAdapterModule {
    * Optional: return a declarative config schema so the UI can render
    * adapter-specific form fields without shipping React components.
    * Dynamic options (e.g. scanning a profiles directory) should be
-   * resolved inside this method — the caller receives a fully hydrated schema.
+   * resolved inside this method ÔÇö the caller receives a fully hydrated schema.
    */
   getConfigSchema?: () => Promise<AdapterConfigSchema> | AdapterConfigSchema;
 
@@ -489,7 +550,7 @@ export interface ServerAdapterModule {
   //
   // These allow adapter plugins to declare what "local" capabilities they
   // support, replacing hardcoded type lists in the server and UI.
-  // All flags are optional — when undefined, the server falls back to
+  // All flags are optional ÔÇö when undefined, the server falls back to
   // legacy hardcoded lists for built-in adapters.
   // ---------------------------------------------------------------------------
 
