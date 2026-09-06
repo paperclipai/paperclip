@@ -147,7 +147,6 @@ import {
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
-import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
@@ -182,8 +181,12 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { createSecretProposalsService } from "../services/secret-proposals.js";
-import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
+import {
+  executeAcceptedSecretProposalInteraction,
+  readSecretProposalContinuationContext,
+  readSecretProposalInteractionContext,
+  type ApproveInteractionSecretProposal,
+} from "../services/governed-interaction-side-effects.js";
 import {
   buildOnboardingGreeting,
   ONBOARDING_GREETING_AUTHORIZATION_REASON,
@@ -1987,14 +1990,6 @@ function readToolActionExecutionStatus(value: unknown) {
     : null;
 }
 
-function secretProposalExecutionErrorCode(error: unknown) {
-  if (error instanceof HttpError) {
-    const details = readObject(error.details);
-    return readNonEmptyString(details.code) ?? `http_${error.status}`;
-  }
-  return "secret_proposal_execution_failed";
-}
-
 function readToolActionContinuationContext(interaction: {
   status: string;
   payload?: unknown;
@@ -2070,54 +2065,6 @@ function readToolActionContinuationContext(interaction: {
     decision: "accepted",
     executionStatus,
     instructions: `the approved ${toolName} action is ${executionStatus}; do not call the tool again while this approval is being processed.`,
-  };
-}
-
-function readSecretProposalContinuationContext(interaction: {
-  status: string;
-  payload?: unknown;
-  result?: unknown;
-}) {
-  const payload = readObject(interaction.payload);
-  const proposal = readObject(payload.secretProposal);
-  const proposalId = readNonEmptyString(proposal.proposalId);
-  const configPath = readNonEmptyString(proposal.configPath);
-  if (!proposalId || !configPath) return null;
-  const result = readObject(interaction.result);
-  const execution = readObject(result.secretProposal);
-  const executionStatus = readNonEmptyString(execution.status);
-  const errorCode = readNonEmptyString(execution.errorCode);
-  const sourceSecretLabel = readNonEmptyString(proposal.sourceSecretLabel);
-
-  if (interaction.status === "rejected") {
-    return {
-      proposalId,
-      configPath,
-      decision: "rejected",
-      executionStatus: "rejected",
-      instructions: "the secret binding proposal was rejected; do not assume the alias exists.",
-    };
-  }
-  if (interaction.status !== "accepted" || (executionStatus !== "executed" && executionStatus !== "failed")) {
-    return null;
-  }
-  if (executionStatus === "executed") {
-    return {
-      proposalId,
-      configPath,
-      decision: "accepted",
-      executionStatus,
-      ...(sourceSecretLabel ? { sourceSecretLabel } : {}),
-      instructions: `the binding was created at ${configPath}; verify it with GET /api/agents/me/secrets before using it.`,
-    };
-  }
-  return {
-    proposalId,
-    configPath,
-    decision: "accepted",
-    executionStatus,
-    ...(errorCode ? { errorCode } : {}),
-    instructions: "the binding was not created; inspect the failure comment and submit a fresh proposal after fixing the cause.",
   };
 }
 
@@ -2922,20 +2869,13 @@ export function issueRoutes(
       actionRequestId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
-    approveSecretProposal?: (input: {
-      companyId: string;
-      issueId: string;
-      interactionId: string;
-      proposalId: string;
-      actor: { agentId?: string | null; userId?: string | null };
-    }) => Promise<unknown>;
+    approveSecretProposal?: ApproveInteractionSecretProposal;
   } = {},
 ) {
   const router = Router();
   const svc = issueService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const access = accessService(db);
-  const secretProposals = createSecretProposalsService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -12333,6 +12273,52 @@ export function issueRoutes(
       if (!suggestedTaskEffectsAuthorized) return;
 
       const actor = getActorInfo(req);
+      const resolvedByUserId = actor.actorType === "user" ? actor.actorId : "board";
+      if (current.status === "accepted" && readSecretProposalInteractionContext(current)) {
+        const replay = await executeAcceptedSecretProposalInteraction({
+          db,
+          issue,
+          interaction: current,
+          authorizationActor: req.actor,
+          resolvedByUserId,
+          actor: { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null },
+          interactions: interactionSvc,
+          issues: svc,
+          heartbeat,
+          approveSecretProposal: opts.approveSecretProposal,
+        });
+        if (replay.disposition !== "already_terminal") {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "issue.thread_interaction_side_effect_reconciled",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              interactionId: current.id,
+              interactionKind: current.kind,
+              interactionStatus: current.status,
+              sideEffect: "secret_proposal",
+              executionDisposition: replay.disposition,
+            },
+          });
+          await queueResolvedInteractionContinuationWakeup({
+            db,
+            heartbeat,
+            issue,
+            interaction: replay.interaction,
+            actor,
+            source: "issue.interaction.accept.reconcile",
+          });
+        }
+        res.json(replay.interaction);
+        return;
+      }
+
       const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
@@ -12342,9 +12328,6 @@ export function issueRoutes(
       });
       const toolAction = interaction.payload && typeof interaction.payload === "object"
         ? (interaction.payload as { toolAction?: { actionRequestId?: unknown } }).toolAction
-        : null;
-      const secretProposal = interaction.payload && typeof interaction.payload === "object"
-        ? (interaction.payload as { secretProposal?: { proposalId?: unknown; configPath?: unknown } }).secretProposal
         : null;
       let continuationInteraction = interaction;
       if (
@@ -12382,81 +12365,19 @@ export function issueRoutes(
           };
         }
       }
-      if (
-        interaction.kind === "request_confirmation"
-        && interaction.status === "accepted"
-        && typeof secretProposal?.proposalId === "string"
-      ) {
-        const resolvedByUserId = actor.actorType === "user" ? actor.actorId : "board";
-        try {
-          if (opts.approveSecretProposal) {
-            await opts.approveSecretProposal({
-              companyId: issue.companyId,
-              issueId: issue.id,
-              interactionId: interaction.id,
-              proposalId: secretProposal.proposalId,
-              actor: { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null },
-            });
-          } else {
-            const proposal = await secretProposals.getById(issue.companyId, secretProposal.proposalId);
-            if (
-              !proposal
-              || proposal.kind !== "binding"
-              || proposal.originIssueId !== issue.id
-              || proposal.interactionId !== interaction.id
-            ) {
-              throw notFound("Secret proposal not found");
-            }
-            await secretProposals.approve(issue.companyId, proposal.id, {
-              resolvedByUserId,
-              assertCanResolve: (lockedProposal, txDb) => assertCanResolveProposal({
-                db: txDb,
-                actor: req.actor,
-                companyId: issue.companyId,
-                proposal: lockedProposal,
-              }),
-            });
-            await notifySecretProposalResolution({
-              proposal,
-              status: "approved",
-              userId: resolvedByUserId,
-              issues: svc,
-              heartbeat,
-            });
-          }
-          continuationInteraction = await interactionSvc.recordSecretProposalExecutionResult(
-            issue,
-            interaction.id,
-            secretProposal.proposalId,
-            { status: "executed" },
-          );
-        } catch (error) {
-          const errorCode = secretProposalExecutionErrorCode(error);
-          continuationInteraction = await interactionSvc.recordSecretProposalExecutionResult(
-            issue,
-            interaction.id,
-            secretProposal.proposalId,
-            { status: "failed", errorCode },
-          );
-          const recordedResult = readObject(continuationInteraction.result);
-          const recordedSecretProposal = readObject(recordedResult.secretProposal);
-          if (recordedSecretProposal.status !== "executed") {
-            const configPath = typeof secretProposal.configPath === "string" ? secretProposal.configPath : "unknown";
-            try {
-              await svc.addComment(
-                issue.id,
-                `Secret binding execution failed\n\n- Config path: \`${configPath}\`\n- Error code: \`${errorCode}\`\n- Binding created: **no**`,
-                { userId: resolvedByUserId },
-              );
-            } catch (commentError) {
-              logger.warn(
-                { err: commentError, issueId: issue.id, interactionId: interaction.id, errorCode },
-                "failed to post secret proposal execution failure comment",
-              );
-            }
-          }
-        }
-      }
+      const secretProposalExecution = await executeAcceptedSecretProposalInteraction({
+        db,
+        issue,
+        interaction: continuationInteraction,
+        authorizationActor: req.actor,
+        resolvedByUserId,
+        actor: { agentId: actor.agentId, userId: actor.actorType === "user" ? actor.actorId : null },
+        interactions: interactionSvc,
+        issues: svc,
+        heartbeat,
+        approveSecretProposal: opts.approveSecretProposal,
+      });
+      continuationInteraction = secretProposalExecution.interaction as typeof continuationInteraction;
       const continuationWakeIssue = continuationIssue ?? issue;
 
       await logActivity(db, {
