@@ -6892,10 +6892,19 @@ export function issueRoutes(
   });
 
   router.delete("/labels/:labelId", async (req, res) => {
+    // Deleting a label definition cascades (`issue_labels.labelId` is
+    // `ON DELETE CASCADE`) and strips it from every issue that carries it,
+    // company-wide, in one call — including any label a governance control
+    // treats as a declared-identity or audit marker. That is not an
+    // ordinary-privilege act; it is the same class of "erase corroborating
+    // history" action `DELETE /agents/:id` already gates on. See
+    // `assertBoard` immediately below and its twin at the top of
+    // `DELETE /agents/:id` in routes/agents.ts.
+    assertBoard(req);
     const labelId = req.params.labelId as string;
     const existing = await getAccessibleResource(req, res, svc.getLabelById(labelId), "Label not found");
     if (!existing) return;
-    const removed = await svc.deleteLabel(labelId);
+    const { removed, affectedIssueIds } = await svc.deleteLabel(labelId);
     if (!removed) {
       res.status(404).json({ error: "Label not found" });
       return;
@@ -6911,9 +6920,13 @@ export function issueRoutes(
       action: "label.deleted",
       entityType: "label",
       entityId: removed.id,
-      details: { name: removed.name, color: removed.color },
+      // Enumerate what the cascade actually stripped, not just what was
+      // deleted. Before this, the single `label.deleted` row named the label
+      // and nothing else, so the blast radius was not reconstructible from
+      // the log even though the row for the act itself existed.
+      details: { name: removed.name, color: removed.color, issueIds: affectedIssueIds },
     });
-    res.json(removed);
+    res.json({ ...removed, affectedIssueIds });
   });
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
