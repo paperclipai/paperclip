@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
@@ -120,5 +120,22 @@ export async function emitAgentTaskRun(db: Db, run: HeartbeatRun): Promise<void>
       { err, runId: run.id },
       "failed to emit agent.task_run telemetry",
     );
+  }
+}
+
+/** Loads a committed run before emitting telemetry, keeping database rows out of application contracts. */
+export async function emitAgentTaskRunById(
+  db: Db,
+  input: { runId: string; companyId: string },
+): Promise<void> {
+  try {
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (run) await emitAgentTaskRun(db, run);
+  } catch (err) {
+    logger.warn({ err, runId: input.runId }, "failed to load run for agent.task_run telemetry");
   }
 }
