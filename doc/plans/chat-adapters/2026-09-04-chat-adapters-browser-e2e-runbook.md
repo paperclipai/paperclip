@@ -395,16 +395,17 @@ Run before stable release and after any GitHub permission, event, or identity ch
 1. In Paperclip, perform C1 and select GitHub → **Chat with an agent**.
 2. On **Create or connect a GitHub App**, copy the Paperclip webhook URL and open GitHub App settings.
 3. In the sandbox organization, open **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App**.
-4. In Paperclip, click **Generate webhook secret**. Copy the one-time value immediately, then enter the Paperclip webhook URL and generated secret in GitHub with the webhook active and SSL verification enabled. Paperclip must show only the configured state after refresh. If **Regenerate webhook secret** is used, update GitHub before expecting another webhook to verify.
+4. In Paperclip, click **Generate webhook secret**. Copy the one-time value immediately, then enter the Paperclip webhook URL and generated secret in GitHub with the webhook active and SSL verification enabled. Paperclip must show only the configured state plus **Waiting for GitHub to deliver its signed webhook ping…** after refresh. If **Regenerate webhook secret** is used, update GitHub before expecting another webhook to verify.
 5. Under repository permissions, set **Metadata: read**, **Issues: read and write**, and **Pull requests: read and write**. Leave Contents, Actions, Administration, and organization permissions at **No access**.
 6. Subscribe only to the selectable **Issue comment** and **Pull request review comment** events. GitHub sends **Installation** and **Installation repositories** to every GitHub App automatically, so they do not appear as subscription controls. Save the App.
-7. Copy the numeric **App ID** into Paperclip. Under **Private keys**, generate a key, open the downloaded PEM locally, and paste it into Paperclip's write-only private-key field without recording or screenshotting it.
-8. In GitHub, click **Install App**, select the sandbox organization, choose **Only select repositories**, and grant the two test repositories.
-9. Return to Paperclip and click **Connect and verify**. Paperclip must verify the App identity without displaying the secret or private key again.
-10. In `paperclip-chat-e2e-enabled`, open a new issue titled `<run-id> setup`, comment `@<verified-bot-login> ECHO <run-id>-SETUP`, then add an unmentioned follow-up comment.
-11. Return to Paperclip, run the setup test once, and verify Settings opens with the tested repository enabled and the second installation repository disabled.
+7. Return to Paperclip and wait for **GitHub has verified this webhook.** A correctly signed GitHub `ping` must set this state; an unsigned or incorrectly signed `ping` must not. **Connect and verify** remains disabled until this proof arrives.
+8. Copy the numeric **App ID** into Paperclip. Under **Private keys**, generate a key, open the downloaded PEM locally, and paste it into Paperclip's write-only private-key field without recording or screenshotting it.
+9. In GitHub, click **Install App**, select the sandbox organization, choose **Only select repositories**, and grant the two test repositories.
+10. Return to Paperclip and click **Connect and verify**. Paperclip must verify the App identity without displaying the secret or private key again.
+11. In `paperclip-chat-e2e-enabled`, open a new issue titled `<run-id> setup`, comment `@<verified-bot-login> ECHO <run-id>-SETUP`, then add an unmentioned follow-up comment.
+12. Return to Paperclip, run the setup test once, and verify Settings opens with the tested repository enabled and the second installation repository disabled.
 
-**Pass:** Paperclip generates and stores the webhook secret, returns it only once for copying to GitHub, and asks the operator to enter only App ID and private key; least-privilege repository permissions are visible in GitHub; the real issue conversation completes setup; no PAT is used.
+**Pass:** Paperclip generates and stores the webhook secret, returns it only once for copying to GitHub, requires a correctly signed setup ping before credential verification, and asks the operator to enter only App ID and private key; least-privilege repository permissions are visible in GitHub; the real issue conversation completes setup; no PAT is used.
 
 ### G2 — Conditional GitHub App Manifest setup
 
