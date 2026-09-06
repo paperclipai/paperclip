@@ -8,8 +8,8 @@ describe("runner E2E summary links", () => {
         campaignId: "gha-34026735033-1",
         workflowRunUrl:
           "https://github.com/paperclipai/paperclip/actions/runs/34026735033",
-        publicCampaignBaseUrl:
-          "https://reports.example.test/runner-e2e/campaigns",
+        historyPublicBaseUrl: "https://reports.example.test///",
+        historyPrefix: "/runner-e2e/",
       }),
     ).toEqual([
       {
@@ -37,14 +37,16 @@ describe("runner E2E summary links", () => {
       runnerE2ESummaryLinks({
         campaignId: "../other-campaign",
         workflowRunUrl: "https://token@example.test/actions/runs/1",
-        publicCampaignBaseUrl: "http://reports.example.test/campaigns",
+        historyPublicBaseUrl: "http://reports.example.test",
+        historyPrefix: "runner-e2e",
       }),
     ).toEqual([]);
     expect(
       runnerE2ESummaryLinks({
         campaignId: "gha-1-1",
         workflowRunUrl: null,
-        publicCampaignBaseUrl: null,
+        historyPublicBaseUrl: null,
+        historyPrefix: null,
       }),
     ).toEqual([]);
   });

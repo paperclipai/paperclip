@@ -300,8 +300,9 @@ async function main() {
   const summaryLinks = runnerE2ESummaryLinks({
     campaignId: normalized.campaignId,
     workflowRunUrl: normalized.source.workflowRunUrl,
-    publicCampaignBaseUrl:
-      process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_CAMPAIGN_BASE_URL,
+    historyPublicBaseUrl:
+      process.env.PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL,
+    historyPrefix: process.env.PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX,
   });
   const publicCampaignUrl = summaryLinks.find(
     (link) => link.kind === "campaign",

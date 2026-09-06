@@ -1,3 +1,8 @@
+import {
+  runnerE2ECampaignPublicUrl,
+  validateHistoryPublicDestination,
+} from "./history-destination.js";
+
 export interface RunnerE2ESummaryLink {
   kind: "campaign" | "workflow" | "artifacts";
   label: string;
@@ -28,21 +33,25 @@ function safeHttpsUrl(value: string | null | undefined) {
 export function runnerE2ESummaryLinks(input: {
   campaignId: string;
   workflowRunUrl: string | null | undefined;
-  publicCampaignBaseUrl: string | null | undefined;
+  historyPublicBaseUrl: string | null | undefined;
+  historyPrefix: string | null | undefined;
 }): RunnerE2ESummaryLink[] {
   const links: RunnerE2ESummaryLink[] = [];
-  const campaignBase = safeHttpsUrl(input.publicCampaignBaseUrl);
-  if (
-    campaignBase &&
-    /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(input.campaignId)
-  ) {
-    campaignBase.pathname = `${campaignBase.pathname.replace(/\/+$/, "")}/${encodeURIComponent(input.campaignId)}/index.html`;
-    links.push({
-      kind: "campaign",
-      label: "Open the exact interactive campaign report",
-      url: campaignBase.href,
-      note: "available after the history publisher finishes",
-    });
+  if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(input.campaignId)) {
+    try {
+      const destination = validateHistoryPublicDestination({
+        publicBaseUrl: input.historyPublicBaseUrl?.trim() ?? "",
+        prefix: input.historyPrefix?.trim() ?? "",
+      });
+      links.push({
+        kind: "campaign",
+        label: "Open the exact interactive campaign report",
+        url: runnerE2ECampaignPublicUrl(destination, input.campaignId),
+        note: "available after the history publisher finishes",
+      });
+    } catch {
+      // Invalid or absent history configuration must not prevent report merging.
+    }
   }
 
   const workflowRun = safeHttpsUrl(input.workflowRunUrl);

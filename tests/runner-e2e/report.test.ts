@@ -150,8 +150,9 @@ describe("runner E2E report aggregation", () => {
           GITHUB_SERVER_URL: "https://github.com",
           GITHUB_REPOSITORY: "paperclipai/paperclip",
           GITHUB_RUN_ID: "123456",
-          PAPERCLIP_RUNNER_E2E_PUBLIC_CAMPAIGN_BASE_URL:
-            "https://reports.example.test/runner-e2e/campaigns",
+          PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL:
+            "https://reports.example.test/",
+          PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: "/runner-e2e/",
         },
       },
     );

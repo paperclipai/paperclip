@@ -19,6 +19,7 @@ import os from "node:os";
 import { writePublicCampaignSummaryImage } from "./public-summary-image.js";
 import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
 import { renderRunnerHistoryIndex } from "./history-index.js";
+import { validateHistoryDestination } from "./history-destination.js";
 import { PUBLIC_RUNNER_SCREENSHOT_MARKER } from "./screenshot-policy.js";
 import {
   campaignHistoryRecord,
@@ -259,39 +260,7 @@ function json(value: unknown) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-export function validateHistoryDestination(input: {
-  bucket: string;
-  prefix: string;
-  publicBaseUrl: string;
-}) {
-  if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(input.bucket)) {
-    throw new Error("RUNNER_E2E_HISTORY_S3_BUCKET is not a valid bucket name");
-  }
-  const prefix = input.prefix.replace(/^\/+|\/+$/g, "");
-  if (
-    !prefix ||
-    prefix
-      .split("/")
-      .some((segment) => !segment || segment === "." || segment === "..")
-  ) {
-    throw new Error(
-      "RUNNER_E2E_HISTORY_PREFIX must be a safe non-empty key prefix",
-    );
-  }
-  const publicUrl = new URL(input.publicBaseUrl);
-  if (
-    publicUrl.protocol !== "https:" ||
-    publicUrl.username ||
-    publicUrl.password ||
-    publicUrl.search ||
-    publicUrl.hash
-  ) {
-    throw new Error(
-      "RUNNER_E2E_HISTORY_PUBLIC_BASE_URL must be a credential-free HTTPS URL",
-    );
-  }
-  return { prefix, publicBaseUrl: publicUrl.href.replace(/\/$/, "") };
-}
+export { validateHistoryDestination };
 
 async function relativeFiles(
   root: string,
