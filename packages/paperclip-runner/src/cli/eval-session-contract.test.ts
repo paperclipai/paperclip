@@ -1,5 +1,10 @@
+import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import type { CapabilityLiveSessionSnapshot } from "../live/live-session.js";
 import {
   evalSessionUsage,
@@ -8,6 +13,7 @@ import {
 import {
   boundedEvalSessionUsage,
   evalSessionProviderVersion,
+  prepareEvalRuntimeContext,
 } from "./eval-session.js";
 
 function request(overrides: Record<string, unknown> = {}): unknown {
@@ -55,6 +61,30 @@ function agentCoreProfile(overrides: Record<string, unknown> = {}) {
 }
 
 describe("eval-session request contract", () => {
+  it("materializes a production-v3 runtime context for direct live providers", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-eval-context-"));
+    let instructionRoot: string | null = null;
+    try {
+      const context = await prepareEvalRuntimeContext(workspace);
+      instructionRoot = context.instructions.bundle.rootPath;
+      expect(parseNativeRuntimeContext(context)).toEqual(context);
+      expect(context.skills).toEqual([]);
+      expect(context.mcp.assignmentSetId).toBe("paperclip-runner-direct-eval-v1");
+      expect(context.instructions.entryPath).toBe("AGENTS.md");
+      expect(await readFile(
+        join(context.instructions.bundle.rootPath, "AGENTS.md"),
+        "utf8",
+      )).toContain("Paperclip direct live evaluation");
+      expect((await stat(context.instructions.bundle.rootPath)).mode & 0o777)
+        .toBe(0o555);
+    } finally {
+      if (instructionRoot !== null) {
+        await chmod(instructionRoot, 0o700).catch(() => undefined);
+      }
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("normalizes the current local live-session provider contract", () => {
     expect(parseEvalSessionRequest(request())).toMatchObject({
       provider: "codex",

@@ -50,6 +50,12 @@ versions and patched ACP server bytes. Do not replace this step with a fresh
 `patchedDependencies`, so the resulting ACPX executables no longer match their
 qualified digests.
 
+The direct eval CLI also materializes a minimal immutable native runtime
+context in each isolated attempt workspace. This keeps the direct layer on the
+same `paperclip.native-execution-input.v3` contract as production, including
+the AgentCore HarnessSkill upload path, without borrowing any browser E2E
+setup.
+
 `all` is intentionally literal. A disabled driver, missing remote profile, or
 unavailable provider is retained as an infrastructure result; it is not
 silently omitted. In particular, the ACPX Pi roster remains visible while Pi

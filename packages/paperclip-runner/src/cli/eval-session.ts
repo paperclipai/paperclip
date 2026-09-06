@@ -1,9 +1,18 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  NATIVE_RUNTIME_ASSET_SCHEMA,
+  PAPERCLIP_EXECUTION_PROMPT,
+  PAPERCLIP_EXECUTION_PROMPT_REVISION,
+  canonicalNativeRuntimeContextDigest,
+  nativeRuntimePromptDigest,
+  parseNativeRuntimeContext,
+  type NativeRuntimeContextSnapshot,
+} from "../contracts/runtime-context.js";
 import { projectCapabilityDevtools } from "../devtools/index.js";
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import { PAPERCLIP_RUNNER_BUILD_METADATA } from "../evals/build-metadata.js";
@@ -51,6 +60,85 @@ export function parseEvalSessionCliArgs(args: string[]): EvalSessionCliOptions {
 
 async function sha256(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+const EVAL_RUNTIME_INSTRUCTIONS = [
+  "# Paperclip direct live evaluation",
+  "",
+  "Use the provided Paperclip semantic tools to inspect and act on the assigned task.",
+  "Treat the seeded control-plane state as authoritative and keep every action within the requested scope.",
+  "",
+].join("\n");
+
+/** Materializes the minimal immutable v3 context used by production-native providers. */
+export async function prepareEvalRuntimeContext(
+  workingDirectory: string,
+): Promise<NativeRuntimeContextSnapshot> {
+  const contextRoot = await mkdtemp(
+    resolve(workingDirectory, ".paperclip-eval-runtime-context-"),
+  );
+  const instructionRoot = resolve(contextRoot, "instructions");
+  const entryPath = "AGENTS.md";
+  const entry = Buffer.from(EVAL_RUNTIME_INSTRUCTIONS);
+  const entryDigest = createHash("sha256").update(entry).digest("hex");
+  const manifestFiles = [{
+    path: entryPath,
+    sha256: entryDigest,
+    mode: 0o444,
+    size: entry.byteLength,
+  }];
+  const assetDigest = createHash("sha256")
+    .update(JSON.stringify(manifestFiles))
+    .digest("hex");
+  const manifestText = `${JSON.stringify({
+    schema: "paperclip.runtime-asset-manifest.v1",
+    digest: assetDigest,
+    fileCount: manifestFiles.length,
+    totalBytes: entry.byteLength,
+    files: manifestFiles,
+  })}\n`;
+  const manifestDigest = createHash("sha256")
+    .update(manifestText)
+    .digest("hex");
+  await mkdir(instructionRoot, { recursive: true, mode: 0o700 });
+  const entryFile = resolve(instructionRoot, entryPath);
+  await writeFile(entryFile, entry, { flag: "wx", mode: 0o444 });
+  await chmod(entryFile, 0o444);
+  await chmod(instructionRoot, 0o555);
+
+  const semanticCatalogDigest =
+    PAPERCLIP_RUNNER_BUILD_METADATA.semanticCatalog.sha256.replace(
+      /^sha256:/,
+      "",
+    );
+  const context = {
+    prompt: {
+      revision: PAPERCLIP_EXECUTION_PROMPT_REVISION,
+      text: PAPERCLIP_EXECUTION_PROMPT,
+      digest: nativeRuntimePromptDigest(),
+    },
+    instructions: {
+      entryPath,
+      bundle: {
+        schema: NATIVE_RUNTIME_ASSET_SCHEMA,
+        digest: assetDigest,
+        manifestDigest,
+        rootPath: instructionRoot,
+        fileCount: 1,
+        totalBytes: entry.byteLength,
+      },
+    },
+    skills: [],
+    mcp: {
+      assignmentSetId: "paperclip-runner-direct-eval-v1",
+      digest: semanticCatalogDigest,
+      bindingId: null,
+    },
+  } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
+  return parseNativeRuntimeContext({
+    ...context,
+    aggregateDigest: canonicalNativeRuntimeContextDigest(context),
+  });
 }
 
 export function evalSessionProviderVersion(
@@ -189,10 +277,14 @@ export async function runEvalSessionCli(
   const requestedDriver = request.driver ??
     expectedEvalSessionDriver(requestedProvider);
   const requestedProviderVersion = evalSessionProviderVersion(request);
+  const runtimeContext = await prepareEvalRuntimeContext(
+    resolve(request.session.workingDirectory ?? process.cwd()),
+  );
   const service = options.serviceFactory?.(runnerdPath) ??
     new CapabilityLiveSessionService({
       transportOptions: {
         runnerBinary: runnerdPath,
+        runtimeContext,
         // The transport performs the provider-specific allowlisting. Supplying
         // the source environment here is still required: without it the
         // isolated Codex home has no credential source and runnerd receives no
