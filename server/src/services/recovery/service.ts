@@ -277,6 +277,9 @@ function resolveStrandedRecoveryCause(
 ): StrandedRecoveryCause {
   if (explicitCause) return explicitCause;
   if (isProviderQuotaRecovery(latestRun)) return "provider_quota";
+  if (latestRun?.errorCode === WORKSPACE_VALIDATION_FAILED_ERROR_CODE) {
+    return "workspace_validation_failed";
+  }
   if (latestRun?.errorCode === "process_lost") return "process_lost";
   if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
     return "codex_output_inactivity_monitor";
@@ -346,6 +349,12 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "timeout",
 ]);
 
+// A run that fails workspace validation before the adapter launches will fail
+// identically on every requeue — the persisted execution-workspace link, project
+// workspace cwd, or git checkout is structurally wrong, not a transient/lost run.
+// (Mirrors WORKSPACE_VALIDATION_FAILURE_CODE in heartbeat.ts.)
+const WORKSPACE_VALIDATION_FAILED_ERROR_CODE = "workspace_validation_failed";
+
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_invokable",
   "agent_not_found",
@@ -353,6 +362,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "budget_exhausted",
   "issue_paused",
   "issue_dependencies_blocked",
+  WORKSPACE_VALIDATION_FAILED_ERROR_CODE,
 ]);
 
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
@@ -3031,6 +3041,48 @@ export function recoveryService(
         continue;
       }
 
+      // LOOA-700: A terminal `workspace_validation_failed` run is a *permanent*
+      // pre-dispatch failure — the persisted execution-workspace link, project
+      // workspace cwd, or git checkout is structurally invalid, so every requeued
+      // continuation wake dies identically before the adapter launches. Left to the
+      // continuation/interaction/review requeue paths below it re-dispatches every
+      // recovery cycle forever (their retry counters key off *other* error codes, so
+      // the escalation threshold never trips), producing a ~30s error storm that never
+      // self-heals. Escalate to `blocked` once with the repair action recorded instead
+      // of re-dispatching a wake that is guaranteed to fail. The guard keys on the
+      // latest *terminal* run, so a newer queued/successful run (e.g. after the
+      // workspace link is repaired) supersedes it and normal recovery resumes.
+      const workspaceValidationFailedRun =
+        isUnsuccessfulTerminalIssueRun(latestRun) &&
+        latestRun?.errorCode === WORKSPACE_VALIDATION_FAILED_ERROR_CODE
+          ? latestRun
+          : issue.status === "in_review" &&
+              isUnsuccessfulTerminalIssueRun(participantLatestRunForRecovery) &&
+              participantLatestRunForRecovery?.errorCode === WORKSPACE_VALIDATION_FAILED_ERROR_CODE
+            ? participantLatestRunForRecovery
+            : null;
+      if (workspaceValidationFailedRun) {
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: issue.status as StrandedPreviousStatus,
+          latestRun: workspaceValidationFailedRun,
+          recoveryCause: "workspace_validation_failed",
+          comment:
+            "Paperclip detected a permanent `workspace_validation_failed` failure on this issue's " +
+            "continuation run: every requeued run dies before adapter launch because the persisted " +
+            "execution workspace / project workspace link is structurally invalid. Stopping the ~30s " +
+            "requeue loop and moving the issue to `blocked` with the repair action recorded instead of " +
+            "re-dispatching a wake that is guaranteed to fail.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       const adapterFailureClassification = issue.status !== "in_review" && latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
         ? classifyAdapterFailureForRecovery(latestRun, recoveryNow)
         : null;
@@ -3651,6 +3703,7 @@ export function recoveryService(
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
+      notInvokableSkipped: 0,
       notReadySkipped: 0,
       candidateLimitSkipped: 0,
       deferredOrFailed: 0,
@@ -3807,6 +3860,22 @@ export function recoveryService(
 
         if (await isAutomaticRecoverySuppressedByPauseHold(db, companyId, candidate.id, treeControlSvc)) {
           result.pauseHoldSkipped += 1;
+          continue;
+        }
+
+        // LOOA-700: enqueueWakeup rejects with a 409 when the assignee agent is not
+        // invokable (paused/terminated/invalid org chain). Re-attempting the wake every
+        // reconciliation cycle just produces a ~30s "Agent is not invokable" error storm
+        // that never heals — the assignee cannot be woken until its state changes. Skip
+        // non-invokable assignees here; the next cycle re-queries candidates, so the wake
+        // is healed automatically once the agent becomes invokable again.
+        const assigneeAgent = await getAgent(agentId);
+        if (
+          !assigneeAgent ||
+          assigneeAgent.companyId !== companyId ||
+          !(await isAgentInvokable(assigneeAgent))
+        ) {
+          result.notInvokableSkipped += 1;
           continue;
         }
 
