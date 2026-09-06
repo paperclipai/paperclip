@@ -2146,6 +2146,13 @@ export function createToolGatewayService(
       if (!noteId || !body) {
         throw new ToolGatewayHttpError(400, "Parameters noteId and body are required", "invalid_parameters");
       }
+      if (body === "__simulate_execution_failure__") {
+        // Test-only hook: lets tests exercise a genuine post-dispatch
+        // execution failure (the provider call itself failing) as opposed
+        // to a pre-dispatch validation failure, without needing a real
+        // flaky remote server.
+        throw new ToolGatewayHttpError(502, "Simulated remote execution failure", "simulated_execution_failure");
+      }
       return {
         content: JSON.stringify({ noteId, updated: true }),
         data: {
@@ -5692,7 +5699,7 @@ export function createToolGatewayService(
         eq(toolActionRequests.canonicalArgumentsHash, input.argumentsHash),
         eq(toolInvocations.agentId, input.session.agentId),
         eq(toolInvocations.toolName, input.toolName),
-        inArray(toolActionRequests.status, ["pending", "approved", "executing", "rejected", "executed"]),
+        inArray(toolActionRequests.status, ["pending", "approved", "executing", "rejected", "executed", "failed"]),
       ))
       .orderBy(desc(toolActionRequests.createdAt))
       .limit(1);
@@ -5732,6 +5739,19 @@ export function createToolGatewayService(
       await reflectToolActionInteractionLifecycle({ actionRequestId: match.actionRequest.id, status: "expired" });
       return null;
     }
+    // A "failed" row can come from two very different places: a pre-dispatch
+    // validation failure (stale/invalid signature, a legacy pre-execute-on-
+    // approve approval that must stay inert, an approval snapshot that
+    // changed after review, ...) that never reached the provider, or a real
+    // execution attempt that started and then failed (provider error,
+    // timeout, ...). Only the latter represents a decision the human's
+    // approval actually covered. `startedAt` is set immediately before
+    // dispatch and only then, so its absence reliably marks a pre-dispatch
+    // failure. Treat those as no match so the retry recovers through a
+    // fresh approval cycle, same as before this row existed.
+    if (pendingRequest.status === "failed" && !match.invocation.startedAt) {
+      return null;
+    }
     return match;
   }
 
@@ -5762,6 +5782,24 @@ export function createToolGatewayService(
     }
     if (actionRequest.status === "executed") {
       return { matched: true as const, result: storedInvocationResult(invocation), invocationId: invocation.id };
+    }
+    if (actionRequest.status === "failed") {
+      // The human already approved these exact arguments once; the approved
+      // execution attempt failed afterward (bad signature/snapshot, provider
+      // error, timeout, ...). Surface that failure directly instead of
+      // silently creating a brand-new action request + approval card for the
+      // same call, which forces a redundant re-approval of an already-decided
+      // action.
+      throw new ToolGatewayHttpError(
+        502,
+        invocation.errorMessage ?? "Approved tool action failed",
+        invocation.errorCode ?? "tool_execution_failed",
+        {
+          invocationId: invocation.id,
+          actionRequestId: actionRequest.id,
+          instructions: "This exact action was already approved and attempted once, and the attempt failed. Do not retry the same call; it will not create a new approval request. Adjust the arguments or report the failure on the task.",
+        },
+      );
     }
     if (actionRequest.status === "executing") {
       const settled = await waitForActionRequestExecution(actionRequest.id);
