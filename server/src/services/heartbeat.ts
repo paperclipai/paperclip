@@ -365,13 +365,10 @@ import {
 } from "./recovery/service.js";
 import { collectDispositionRepairSourceState } from "./recovery/disposition-repair.js";
 import {
+  createRunDispatch,
   decideQueuedRunStaleness,
   decideScheduledRetryGate,
-  type GateDecision,
-  type QueuedRunFacts,
-  type ReviewParticipantFacts,
-  type ScheduledRetryFacts,
-  type StalenessDecision,
+  type PostCommitEffect,
 } from "../modules/run-dispatch/index.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
@@ -8381,6 +8378,39 @@ export function heartbeatService(
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup, liveRunExecutions });
+  const runDispatch = createRunDispatch(db);
+
+  // Applies the post-commit effects a run-dispatch operation returns, on a
+  // best-effort basis, exactly as this service publishes them for every
+  // other run write. A publish failure never rolls back the write that
+  // already committed.
+  function applyRunDispatchPostCommitEffects(effects: PostCommitEffect[]) {
+    for (const effect of effects) {
+      if (effect.kind === "run_queued") {
+        const run = effect.run as typeof heartbeatRuns.$inferSelect;
+        publishLiveEvent({
+          companyId: run.companyId,
+          type: "heartbeat.run.queued",
+          payload: {
+            runId: run.id,
+            agentId: run.agentId,
+            invocationSource: run.invocationSource,
+            triggerDetail: run.triggerDetail,
+            wakeupRequestId: run.wakeupRequestId,
+          },
+        });
+      } else {
+        const run = effect.run as typeof heartbeatRuns.$inferSelect;
+        publishLiveEvent({
+          companyId: run.companyId,
+          type: "heartbeat.run.status",
+          payload: buildHeartbeatRunStatusLiveEventPayload(run),
+        });
+        publishRunLifecyclePluginEvent(run);
+        emitTerminalAgentTaskRun(run, effect.previousStatus);
+      }
+    }
+  }
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
     const target = parseObject(parseObject(payload).target);
@@ -13337,374 +13367,6 @@ export function heartbeatService(
     };
   }
 
-  function buildReviewParticipantFacts(input: {
-    isInReview: boolean;
-    executionState: ReturnType<typeof parseIssueExecutionState>;
-  }): ReviewParticipantFacts {
-    const currentParticipant = input.executionState?.currentParticipant ?? null;
-    return {
-      isInReview: input.isInReview,
-      hasParticipant: currentParticipant !== null,
-      participantIsAgent: currentParticipant?.type === "agent",
-      participantAgentId:
-        currentParticipant?.type === "agent"
-          ? (currentParticipant.agentId ?? null)
-          : null,
-      currentStageType: input.executionState?.currentStageType ?? null,
-      currentParticipant: currentParticipant as Record<string, unknown> | null,
-    };
-  }
-
-  function classifyRetryReasonKind(
-    retryReason: string | null,
-  ): ScheduledRetryFacts["retryReasonKind"] {
-    if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) {
-      return "max_turn_continuation";
-    }
-    if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) {
-      return "disposition_repair";
-    }
-    return "other";
-  }
-
-  const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
-    isInReview: false,
-    hasParticipant: false,
-    participantIsAgent: false,
-    participantAgentId: null,
-    currentStageType: null,
-    currentParticipant: null,
-  };
-
-  async function evaluateScheduledRetryGate(input: {
-    run: typeof heartbeatRuns.$inferSelect;
-    agent: typeof agents.$inferSelect;
-    contextSnapshot: Record<string, unknown>;
-    retryReason?: string | null;
-    enforceIssueExecutionLock?: boolean;
-  }): Promise<GateDecision> {
-    const { run, agent, contextSnapshot } = input;
-    const retryReason =
-      input.retryReason ??
-      readNonEmptyString(contextSnapshot.retryReason) ??
-      run.scheduledRetryReason ??
-      null;
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
-    const projectId = readNonEmptyString(contextSnapshot.projectId);
-    const retryReasonKind = classifyRetryReasonKind(retryReason);
-
-    const budgetBlock = await budgets.getInvocationBlock(
-      run.companyId,
-      run.agentId,
-      {
-        issueId,
-        projectId,
-      },
-    );
-    const agentInvokability = await getAgentInvokability(agent);
-    const heartbeatWakeOnDemandEnabled = isHeartbeatWakeOnDemandEnabled(agent);
-
-    const issue = issueId
-      ? await db
-          .select({
-            id: issues.id,
-            companyId: issues.companyId,
-            status: issues.status,
-            assigneeAgentId: issues.assigneeAgentId,
-            assigneeUserId: issues.assigneeUserId,
-            executionRunId: issues.executionRunId,
-            executionPolicy: issues.executionPolicy,
-            executionState: issues.executionState,
-            monitorNextCheckAt: issues.monitorNextCheckAt,
-          })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
-
-    const dispositionRepair =
-      issue && retryReasonKind === "disposition_repair"
-        ? await (async () => {
-            const expectedFingerprint = readNonEmptyString(
-              contextSnapshot.dispositionRepairFingerprint,
-            );
-            const sourceState = await collectDispositionRepairSourceState(db, {
-              issue,
-              excludeRunId: run.id,
-              excludeWakeupRequestId: run.wakeupRequestId,
-            });
-            return {
-              expectedFingerprintPresent: expectedFingerprint !== null,
-              fingerprintMatches: sourceState.fingerprint === expectedFingerprint,
-              hasActiveExecutionPath: sourceState.hasActiveExecutionPath,
-              hasDurableWaitingPath: sourceState.hasDurableWaitingPath,
-              expectedFingerprint,
-              currentFingerprint: sourceState.fingerprint,
-              durablePathReason: sourceState.durablePathReason,
-            };
-          })()
-        : null;
-
-    const activePauseHold =
-      issue && issueId
-        ? await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId)
-        : null;
-
-    const dependenciesBlocked =
-      issue && issueId
-        ? await (async () => {
-            const dependencyReadiness = await issuesSvc.listDependencyReadiness(
-              run.companyId,
-              [issueId],
-            );
-            const readiness = dependencyReadiness.get(issueId);
-            return readiness && !readiness.isDependencyReady
-              ? {
-                  unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
-                  unresolvedBlockerCount: readiness.unresolvedBlockerCount,
-                }
-              : null;
-          })()
-        : null;
-
-    const facts: ScheduledRetryFacts = {
-      runId: run.id,
-      runAgentId: run.agentId,
-      issueId,
-      retryReasonKind,
-      enforceIssueExecutionLock: Boolean(input.enforceIssueExecutionLock),
-      budgetBlock: budgetBlock
-        ? {
-            reason: budgetBlock.reason,
-            scopeType: budgetBlock.scopeType,
-            scopeId: budgetBlock.scopeId,
-          }
-        : null,
-      agentInvokable: agentInvokability.invokable,
-      agentInvokabilityDetails: agentInvokability.invokable
-        ? {}
-        : agentInvokability.details,
-      agentInvokabilityInvalidOrgChain: agentInvokability.invokable
-        ? false
-        : agentInvokability.invalidOrgChain,
-      heartbeatWakeOnDemandEnabled,
-      issueFound: issue !== null,
-      issueStatus: issue?.status ?? null,
-      issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
-      issueExecutionRunId: issue?.executionRunId ?? null,
-      isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(
-        retryReason,
-        contextSnapshot,
-      ),
-      reviewParticipant: issue
-        ? buildReviewParticipantFacts({
-            isInReview: issue.status === "in_review",
-            executionState: parseIssueExecutionState(issue.executionState),
-          })
-        : NO_REVIEW_PARTICIPANT,
-      activePauseHold: activePauseHold
-        ? {
-            holdId: activePauseHold.holdId,
-            rootIssueId: activePauseHold.rootIssueId,
-          }
-        : null,
-      dependenciesBlocked,
-      dispositionRepair,
-    };
-
-    return decideScheduledRetryGate(facts, new Date());
-  }
-
-  async function cancelScheduledRetryForGate(
-    run: typeof heartbeatRuns.$inferSelect,
-    gate: Extract<GateDecision, { allowed: false }>,
-    now: Date,
-  ) {
-    const cancelled = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        error: gate.reason,
-        errorCode: gate.errorCode,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(heartbeatRuns.id, run.id),
-          eq(heartbeatRuns.status, "scheduled_retry"),
-          lte(heartbeatRuns.scheduledRetryAt, now),
-        ),
-      )
-      .returning()
-      .then((rows) => rows[0] ?? null);
-
-    if (!cancelled) return null;
-
-    // Telemetry is best-effort background work. Fire it in the background
-    // instead of awaiting it, so a slow telemetry lookup never delays the
-    // wake cancel, the issue lock clear, or this function's return.
-    void emitAgentTaskRun(db, cancelled);
-
-    if (cancelled.wakeupRequestId) {
-      await db
-        .update(agentWakeupRequests)
-        .set({
-          status: "cancelled",
-          finishedAt: now,
-          error: gate.reason,
-          updatedAt: now,
-        })
-        .where(eq(agentWakeupRequests.id, cancelled.wakeupRequestId));
-    }
-
-    if (gate.issueId) {
-      await db
-        .update(issues)
-        .set({
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.companyId, cancelled.companyId),
-            eq(issues.id, gate.issueId),
-            eq(issues.executionRunId, cancelled.id),
-          ),
-        );
-    }
-
-    await appendRunEvent(cancelled, {
-      eventType: "lifecycle",
-      stream: "system",
-      level: "warn",
-      message: gate.reason,
-      payload: {
-        ...gate.details,
-        scheduledRetryAttempt: cancelled.scheduledRetryAttempt,
-        scheduledRetryAt: cancelled.scheduledRetryAt
-          ? new Date(cancelled.scheduledRetryAt).toISOString()
-          : null,
-        scheduledRetryReason: cancelled.scheduledRetryReason,
-      },
-    });
-
-    return cancelled;
-  }
-
-  async function promoteScheduledRetryRun(
-    dueRun: typeof heartbeatRuns.$inferSelect,
-    now: Date,
-  ): Promise<
-    | { outcome: "promoted"; run: typeof heartbeatRuns.$inferSelect }
-    | {
-        outcome: "gate_suppressed";
-        run: typeof heartbeatRuns.$inferSelect;
-        reason: string;
-        errorCode: Extract<GateDecision, { allowed: false }>["errorCode"];
-      }
-    | { outcome: "not_promoted"; run: typeof heartbeatRuns.$inferSelect | null }
-  > {
-    const agent = await getAgent(dueRun.agentId);
-    if (!agent) {
-      const gate = {
-        allowed: false as const,
-        reason: "Scheduled retry suppressed because the agent no longer exists",
-        errorCode: "agent_not_invokable" as const,
-        issueId: readNonEmptyString(
-          parseObject(dueRun.contextSnapshot).issueId,
-        ),
-        details: { agentId: dueRun.agentId },
-      };
-      const cancelled = await cancelScheduledRetryForGate(dueRun, gate, now);
-      return cancelled
-        ? {
-            outcome: "gate_suppressed",
-            run: cancelled,
-            reason: gate.reason,
-            errorCode: gate.errorCode,
-          }
-        : { outcome: "not_promoted", run: null };
-    }
-
-    const contextSnapshot = parseObject(dueRun.contextSnapshot);
-    const gate = await evaluateScheduledRetryGate({
-      run: dueRun,
-      agent,
-      contextSnapshot,
-      retryReason: dueRun.scheduledRetryReason,
-      enforceIssueExecutionLock:
-        dueRun.scheduledRetryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
-    });
-    if (!gate.allowed) {
-      if (
-        gate.errorCode === "issue_not_found" &&
-        dueRun.scheduledRetryReason !== MAX_TURN_CONTINUATION_RETRY_REASON
-      ) {
-        // Preserve legacy transient retry behavior for runs that only carry a
-        // loose task context rather than a persisted issue row.
-      } else {
-        const cancelled = await cancelScheduledRetryForGate(dueRun, gate, now);
-        return cancelled
-          ? {
-              outcome: "gate_suppressed",
-              run: cancelled,
-              reason: gate.reason,
-              errorCode: gate.errorCode,
-            }
-          : { outcome: "not_promoted", run: null };
-      }
-    }
-
-    const promoted = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "queued",
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(heartbeatRuns.id, dueRun.id),
-          eq(heartbeatRuns.status, "scheduled_retry"),
-          lte(heartbeatRuns.scheduledRetryAt, now),
-        ),
-      )
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!promoted) return { outcome: "not_promoted", run: null };
-
-    await appendRunEvent(promoted, {
-      eventType: "lifecycle",
-      stream: "system",
-      level: "info",
-      message:
-        "Scheduled retry became due and was promoted to the queued run pool",
-      payload: {
-        scheduledRetryAttempt: promoted.scheduledRetryAttempt,
-        scheduledRetryAt: promoted.scheduledRetryAt
-          ? new Date(promoted.scheduledRetryAt).toISOString()
-          : null,
-        scheduledRetryReason: promoted.scheduledRetryReason,
-      },
-    });
-
-    publishLiveEvent({
-      companyId: promoted.companyId,
-      type: "heartbeat.run.queued",
-      payload: {
-        runId: promoted.id,
-        agentId: promoted.agentId,
-        invocationSource: promoted.invocationSource,
-        triggerDetail: promoted.triggerDetail,
-        wakeupRequestId: promoted.wakeupRequestId,
-      },
-    });
-
-    return { outcome: "promoted", run: promoted };
-  }
-
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -13845,14 +13507,27 @@ export function heartbeatService(
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
-      const gate = await evaluateScheduledRetryGate({
-        run,
-        agent,
-        contextSnapshot,
-        retryReason,
-        enforceIssueExecutionLock:
-          retryReason === MAX_TURN_CONTINUATION_RETRY_REASON,
-      });
+      const gateFacts = await runDispatch.loadGateFacts(
+        {
+          runId: run.id,
+          companyId: run.companyId,
+          agentId: agent.id,
+          contextSnapshot,
+          scheduledRetryReason: run.scheduledRetryReason,
+          retryReasonOverride: retryReason,
+          wakeupRequestId: run.wakeupRequestId,
+        },
+        now,
+      );
+      const gate = gateFacts.agentFound
+        ? decideScheduledRetryGate(gateFacts.facts, now)
+        : {
+            allowed: false as const,
+            reason: "Scheduled retry suppressed because the agent no longer exists",
+            errorCode: "agent_not_invokable" as const,
+            issueId: gateFacts.issueId,
+            details: { agentId: agent.id },
+          };
       if (!gate.allowed) {
         await appendRunEvent(run, {
           eventType: "lifecycle",
@@ -14723,36 +14398,9 @@ export function heartbeatService(
 
   async function promoteDueScheduledRetries(now = new Date()) {
     const cutoff = await getWorktreeExecutionCutoff();
-    const dueRuns = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.status, "scheduled_retry"),
-          lte(heartbeatRuns.scheduledRetryAt, now),
-          cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
-        ),
-      )
-      .orderBy(
-        asc(heartbeatRuns.scheduledRetryAt),
-        asc(heartbeatRuns.createdAt),
-        asc(heartbeatRuns.id),
-      )
-      .limit(50);
-
-    const promotedRunIds: string[] = [];
-
-    for (const dueRun of dueRuns) {
-      const result = await promoteScheduledRetryRun(dueRun, now);
-      if (result.outcome === "promoted") {
-        promotedRunIds.push(result.run.id);
-      }
-    }
-
-    return {
-      promoted: promotedRunIds.length,
-      runIds: promotedRunIds,
-    };
+    const result = await runDispatch.promoteDueScheduledRetries({ now, cutoff });
+    applyRunDispatchPostCommitEffects(result.postCommitEffects);
+    return { promoted: result.promoted, runIds: result.runIds };
   }
 
   async function getIssueRetryRun(
@@ -14930,7 +14578,18 @@ export function heartbeatService(
       },
     });
 
-    const promotion = await promoteScheduledRetryRun(updated, now);
+    const promotion = await runDispatch.promoteScheduledRetry({
+      runId: updated.id,
+      companyId: updated.companyId,
+      agentId: updated.agentId,
+      contextSnapshot: parseObject(updated.contextSnapshot),
+      scheduledRetryReason: updated.scheduledRetryReason,
+      wakeupRequestId: updated.wakeupRequestId,
+      now,
+    });
+    if (promotion.outcome === "promoted") {
+      applyRunDispatchPostCommitEffects(promotion.postCommitEffects);
+    }
     const promotedRow = await getIssueRetryRun(issue.companyId, issue.id, [
       "queued",
       "running",
@@ -14939,7 +14598,7 @@ export function heartbeatService(
     const scheduledRetry = promotedRow
       ? summarizeIssueScheduledRetryRun(promotedRow)
       : summarizeIssueScheduledRetryRun({
-          run: promotion.run ?? updated,
+          run: (promotion.run as typeof heartbeatRuns.$inferSelect | null) ?? updated,
           agentName: scheduled.agentName,
         });
 
@@ -15410,9 +15069,18 @@ export function heartbeatService(
         return null;
       }
 
-      const staleness = await evaluateQueuedRunStaleness(run, issueId, context);
-      if (staleness.stale) {
-        await cancelRunForStaleIssue(run, issueId, staleness);
+      const staleness = await runDispatch.cancelStaleQueuedRun({
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        issueId,
+        contextSnapshot: context,
+        scheduledRetryReason: run.scheduledRetryReason,
+        wakeupRequestId: run.wakeupRequestId,
+        resultJson: run.resultJson,
+      });
+      if (staleness.outcome === "cancelled") {
+        applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
         logger.info(
           { runId: run.id, issueId, errorCode: staleness.errorCode },
           "claimQueuedRun: cancelled stale queued run",
@@ -15849,178 +15517,6 @@ export function heartbeatService(
         issueId,
         unresolvedBlockerIssueIds,
       },
-    });
-
-    return cancelled;
-  }
-
-  async function evaluateQueuedRunStaleness(
-    run: typeof heartbeatRuns.$inferSelect,
-    issueId: string,
-    context: Record<string, unknown>,
-    dbOrTx: Db = db,
-  ): Promise<StalenessDecision> {
-    const issue = await dbOrTx
-      .select({
-        id: issues.id,
-        status: issues.status,
-        assigneeAgentId: issues.assigneeAgentId,
-        executionRunId: issues.executionRunId,
-        executionState: issues.executionState,
-      })
-      .from(issues)
-      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-      .then((rows) => rows[0] ?? null);
-
-    const wakeCommentId = deriveCommentId(context, null);
-    const isInteractionWake = allowsIssueInteractionWake(context);
-    const resumeIntent =
-      context.resumeIntent === true || context.followUpRequested === true;
-    const wakeReason = readNonEmptyString(context.wakeReason);
-    const retryReason =
-      readNonEmptyString(context.retryReason) ??
-      run.scheduledRetryReason ??
-      null;
-    const interactionResolvedAt = readNonEmptyString(
-      context.interactionResolvedAt,
-    );
-    const hasResolvedInteractionEvidence =
-      interactionResolvedAt !== null &&
-      !Number.isNaN(Date.parse(interactionResolvedAt));
-    const isResolvedInteractionContinuation =
-      isResolvedInteractionContinuationWakeContext(context);
-
-    const continuationParkApplies = Boolean(
-      issue &&
-        issue.status === "in_progress" &&
-        !wakeCommentId &&
-        !hasResolvedInteractionEvidence &&
-        (wakeReason === "issue_continuation_needed" ||
-          retryReason === "issue_continuation_needed"),
-    );
-    let continuationSummaryBody: string | null = null;
-    let continuationParksExecutor = false;
-    if (continuationParkApplies) {
-      const queuedWake = parseObject(context.paperclipWake);
-      const queuedContinuationSummary =
-        readNonEmptyString(
-          parseObject(context.paperclipContinuationSummary).body,
-        ) ??
-        readNonEmptyString(parseObject(queuedWake.continuationSummary).body);
-      const currentContinuationSummary = queuedContinuationSummary
-        ? null
-        : await getIssueContinuationSummaryDocument(dbOrTx, issueId);
-      continuationSummaryBody =
-        queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
-      continuationParksExecutor = continuationSummaryParksExecutor(
-        continuationSummaryBody,
-      );
-    }
-
-    const recoveryActionId = readNonEmptyString(context.recoveryActionId);
-    const isAuthorizedSourceScopedRecovery =
-      issue && wakeReason === "source_scoped_recovery_action" && recoveryActionId
-        ? await dbOrTx
-            .select({ id: issueRecoveryActions.id })
-            .from(issueRecoveryActions)
-            .where(
-              and(
-                eq(issueRecoveryActions.id, recoveryActionId),
-                eq(issueRecoveryActions.companyId, run.companyId),
-                eq(issueRecoveryActions.sourceIssueId, issue.id),
-                eq(issueRecoveryActions.ownerAgentId, run.agentId),
-                inArray(issueRecoveryActions.status, ["active", "escalated"]),
-              ),
-            )
-            .limit(1)
-            .then((rows) => Boolean(rows[0]))
-        : false;
-
-    const facts: QueuedRunFacts = {
-      runId: run.id,
-      runAgentId: run.agentId,
-      issueId,
-      retryReasonKind: classifyRetryReasonKind(retryReason),
-      issueFound: issue !== null,
-      issueStatus: issue?.status ?? null,
-      issueAssigneeAgentId: issue?.assigneeAgentId ?? null,
-      issueExecutionRunId: issue?.executionRunId ?? null,
-      isResolvedInteractionContinuation,
-      isInteractionWake,
-      isAuthorizedSourceScopedRecovery,
-      isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(
-        retryReason,
-        context,
-      ),
-      resumeIntent,
-      wakeCommentIdPresent: Boolean(wakeCommentId),
-      continuationParkApplies,
-      continuationParksExecutor,
-      continuationSummaryBody,
-      wakeReason,
-      retryReason,
-      reviewParticipant: issue
-        ? buildReviewParticipantFacts({
-            isInReview: issue.status === "in_review",
-            executionState:
-              issue.status === "in_review"
-                ? parseIssueExecutionState(issue.executionState)
-                : null,
-          })
-        : NO_REVIEW_PARTICIPANT,
-    };
-
-    return decideQueuedRunStaleness(facts, new Date());
-  }
-
-  async function cancelRunForStaleIssue(
-    run: typeof heartbeatRuns.$inferSelect,
-    issueId: string,
-    staleness: Extract<StalenessDecision, { stale: true }>,
-  ) {
-    const now = new Date();
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: now,
-      error: staleness.reason,
-      errorCode: staleness.errorCode,
-      resultJson: {
-        ...parseObject(run.resultJson),
-        stopReason: staleness.errorCode,
-        effectiveTimeoutSec: 0,
-        timeoutConfigured: false,
-        timeoutSource: "stale_queued_run_gate",
-        timeoutFired: false,
-      },
-    });
-    if (!cancelled) return null;
-
-    await setWakeupStatus(run.wakeupRequestId, "skipped", {
-      finishedAt: now,
-      error: staleness.reason,
-    });
-
-    await db
-      .update(issues)
-      .set({
-        executionRunId: null,
-        executionAgentNameKey: null,
-        executionLockedAt: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(issues.companyId, run.companyId),
-          eq(issues.id, issueId),
-          eq(issues.executionRunId, run.id),
-        ),
-      );
-
-    await appendRunEvent(cancelled, {
-      eventType: "lifecycle",
-      stream: "system",
-      level: "warn",
-      message: staleness.reason,
-      payload: staleness.details,
     });
 
     return cancelled;
@@ -17850,13 +17346,18 @@ export function heartbeatService(
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
         } catch (error) {
           if (!isCheckoutConflictError(error)) throw error;
-          const staleness = await evaluateQueuedRunStaleness(
-            run,
+          const staleness = await runDispatch.cancelStaleQueuedRun({
+            runId: run.id,
+            companyId: run.companyId,
+            agentId: run.agentId,
             issueId,
-            context,
-          );
-          if (staleness.stale) {
-            await cancelRunForStaleIssue(run, issueId, staleness);
+            contextSnapshot: context,
+            scheduledRetryReason: run.scheduledRetryReason,
+            wakeupRequestId: run.wakeupRequestId,
+            resultJson: run.resultJson,
+          });
+          if (staleness.outcome === "cancelled") {
+            applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
             return;
           }
           throw error;
@@ -19422,12 +18923,20 @@ export function heartbeatService(
             )
             .for("update")
             .then((rows) => rows[0] ?? null);
-          const staleness = await evaluateQueuedRunStaleness(
-            run,
-            issueId,
-            context,
-            tx as unknown as Db,
+          const stalenessNow = new Date();
+          const stalenessFacts = await runDispatch.loadStalenessFacts(
+            {
+              runId: run.id,
+              companyId: run.companyId,
+              agentId: run.agentId,
+              issueId,
+              contextSnapshot: context,
+              scheduledRetryReason: run.scheduledRetryReason,
+            },
+            stalenessNow,
+            tx,
           );
+          const staleness = decideQueuedRunStaleness(stalenessFacts, stalenessNow);
           if (staleness.stale) {
             return { dispatched: false as const, staleness };
           }
@@ -19474,7 +18983,15 @@ export function heartbeatService(
         });
 
         if (gate.dispatched) return gate;
-        await cancelRunForStaleIssue(run, issueId, gate.staleness);
+        const cancelled = await runDispatch.cancelDecidedStaleQueuedRun({
+          runId: run.id,
+          companyId: run.companyId,
+          issueId,
+          wakeupRequestId: run.wakeupRequestId,
+          resultJson: run.resultJson,
+          decision: gate.staleness,
+        });
+        applyRunDispatchPostCommitEffects(cancelled.postCommitEffects);
         return { dispatched: false };
       };
       if (!executionTarget || executionTarget.kind === "local") {
