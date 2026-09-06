@@ -2275,7 +2275,7 @@ describe("renderPaperclipWakePrompt", () => {
           instructions:
             "Please focus on edge cases and leave a short risk summary.",
         },
-        allowedActions: ["approve", "request_changes"],
+        allowedActions: ["approve", "request_changes", "stop"],
       },
       fallbackFetchNeeded: false,
     });
