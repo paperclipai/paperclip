@@ -56,6 +56,7 @@ interface RunHomeEntry {
 }
 
 const RETENTION_MANIFEST_NAME = "retention-complete.json";
+const MINIMUM_GRACE_HOURS = 24;
 
 type RetentionProofCheck =
   | { ok: true; proof: "completion_manifest" | "legacy_nonempty_jsonl" }
@@ -104,6 +105,20 @@ async function validateRetentionProof(
   retentionParent: string,
   runId: string,
 ): Promise<RetentionProofCheck> {
+  let retentionParentStat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    retentionParentStat = await fs.lstat(retentionParent);
+  } catch (err) {
+    return {
+      ok: false,
+      error: isErrnoException(err, "ENOENT")
+        ? "no retained session counterpart"
+        : `retention root could not be inspected: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (!retentionParentStat.isDirectory() || retentionParentStat.isSymbolicLink()) {
+    return { ok: false, error: "retention root is not a real directory" };
+  }
   const retainedDir = path.resolve(retentionParent, runId);
   if (!isPathBelow(retentionParent, retainedDir)) {
     return { ok: false, error: "retained-session path escaped the retention root" };
@@ -251,11 +266,17 @@ async function dirSizeBytes(dir: string): Promise<number> {
 async function sweepAgentDir(
   agentDir: string,
   agentId: string,
+  agentsDir: string,
   opts: SweeperOptions,
   deps: SweeperDependencies,
 ): Promise<RunHomeEntry[]> {
+  if (!isPathBelow(agentsDir, agentDir)) return [];
+  const agentStat = await fs.lstat(agentDir).catch(() => null);
+  if (!agentStat?.isDirectory() || agentStat.isSymbolicLink()) return [];
+
   const runHomesParent = path.join(agentDir, "codex-run-homes");
-  if (!(await pathExists(runHomesParent))) return [];
+  const runHomesParentStat = await fs.lstat(runHomesParent).catch(() => null);
+  if (!runHomesParentStat?.isDirectory() || runHomesParentStat.isSymbolicLink()) return [];
 
   const retentionParent = path.join(agentDir, "codex-session-retention");
   const entries: RunHomeEntry[] = [];
@@ -273,12 +294,27 @@ async function sweepAgentDir(
     const runDir = path.join(runHomesParent, runId);
     const runHomeDir = path.join(runDir, "home");
 
-    let stat: Awaited<ReturnType<typeof fs.stat>>;
+    if (!isPathBelow(runHomesParent, runDir) || !isPathBelow(runDir, runHomeDir)) continue;
+    const runDirStat = await fs.lstat(runDir).catch(() => null);
+    if (!runDirStat?.isDirectory() || runDirStat.isSymbolicLink()) continue;
+
+    let stat: Awaited<ReturnType<typeof fs.lstat>>;
     try {
-      stat = await fs.stat(runHomeDir);
+      stat = await fs.lstat(runHomeDir);
     } catch {
       // The raw home is already gone. Remove the wrapper only when it is empty.
       await fs.rmdir(runDir).catch(() => {});
+      continue;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      entries.push({
+        agentId,
+        runId,
+        runHomeDir,
+        ageSecs: (now - stat.mtimeMs) / 1000,
+        eligible: false,
+        ineligibleReason: "run home is not a real directory",
+      });
       continue;
     }
 
@@ -369,8 +405,12 @@ export async function sweepRunHomes(opts: SweeperOptions, deps: SweeperDependenc
   totalBytesReclaimed: number;
   entries: RunHomeEntry[];
 }> {
+  if (!Number.isFinite(opts.graceHours) || opts.graceHours < MINIMUM_GRACE_HOURS) {
+    throw new Error(`graceHours must be at least ${MINIMUM_GRACE_HOURS}`);
+  }
   const agentsDir = path.join(opts.companyDir, "acp-engine", "agents");
-  if (!(await pathExists(agentsDir))) {
+  const agentsDirStat = await fs.lstat(agentsDir).catch(() => null);
+  if (!agentsDirStat?.isDirectory() || agentsDirStat.isSymbolicLink()) {
     return { scanned: 0, eligible: 0, deleted: 0, errors: 0, totalBytesReclaimed: 0, entries: [] };
   }
 
@@ -379,7 +419,7 @@ export async function sweepRunHomes(opts: SweeperOptions, deps: SweeperDependenc
 
   for (const agentId of agentIds) {
     const agentDir = path.join(agentsDir, agentId);
-    const agentEntries = await sweepAgentDir(agentDir, agentId, opts, deps);
+    const agentEntries = await sweepAgentDir(agentDir, agentId, agentsDir, opts, deps);
     allEntries.push(...agentEntries);
   }
 

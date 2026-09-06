@@ -341,6 +341,112 @@ describe("run-home sweeper", () => {
       const stat = await fs.stat(runHomeDir).catch(() => null);
       expect(stat).not.toBeNull();
     });
+
+    it("rejects a configured grace window shorter than the required 24 hours", async () => {
+      await expect(sweep({ companyDir, dryRun: true, graceHours: 23 })).rejects.toThrow(
+        "graceHours must be at least 24",
+      );
+    });
+  });
+
+  describe("filesystem containment", () => {
+    it("does not follow a symlinked agents root", async () => {
+      const externalCompanyDir = await makeTempRoot();
+      try {
+        const { runHomeDir } = await buildRunHome({
+          companyDir: externalCompanyDir,
+          agentId: "external-agent",
+          runId: "run-external-root",
+          ageHours: 30,
+          withRetained: true,
+        });
+        await fs.mkdir(path.join(companyDir, "acp-engine"), { recursive: true });
+        await fs.symlink(
+          path.join(externalCompanyDir, "acp-engine", "agents"),
+          path.join(companyDir, "acp-engine", "agents"),
+          "dir",
+        );
+
+        const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+        expect(result.scanned).toBe(0);
+        await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+      } finally {
+        await fs.rm(externalCompanyDir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not follow a symlinked agent directory", async () => {
+      const externalCompanyDir = await makeTempRoot();
+      try {
+        const { runHomeDir } = await buildRunHome({
+          companyDir: externalCompanyDir,
+          agentId: "external-agent",
+          runId: "run-external",
+          ageHours: 30,
+          withRetained: true,
+        });
+        const agentsDir = path.join(companyDir, "acp-engine", "agents");
+        await fs.mkdir(agentsDir, { recursive: true });
+        await fs.symlink(
+          path.join(externalCompanyDir, "acp-engine", "agents", "external-agent"),
+          path.join(agentsDir, "linked-agent"),
+          "dir",
+        );
+
+        const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+        expect(result.scanned).toBe(0);
+        await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+      } finally {
+        await fs.rm(externalCompanyDir, { recursive: true, force: true });
+      }
+    });
+
+    it("marks a symlinked run home ineligible without touching its target", async () => {
+      const agentDir = path.join(companyDir, "acp-engine", "agents", "agent-1");
+      const runDir = path.join(agentDir, "codex-run-homes", "run-linked-home");
+      const externalHome = path.join(companyDir, "external-home");
+      await fs.mkdir(runDir, { recursive: true });
+      await fs.mkdir(externalHome, { recursive: true });
+      await fs.writeFile(path.join(externalHome, "sentinel"), "keep", "utf8");
+      await fs.symlink(externalHome, path.join(runDir, "home"), "dir");
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]).toMatchObject({
+        eligible: false,
+        ineligibleReason: "run home is not a real directory",
+      });
+      await expect(fs.readFile(path.join(externalHome, "sentinel"), "utf8")).resolves.toBe("keep");
+    });
+
+    it("does not accept retention proof through a symlinked retention root", async () => {
+      const runId = "run-linked-retention-root";
+      const { runHomeDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId,
+        ageHours: 30,
+      });
+      const agentDir = path.join(companyDir, "acp-engine", "agents", "agent-1");
+      const externalRetention = path.join(companyDir, "external-retention-root");
+      await fs.mkdir(path.join(externalRetention, runId), { recursive: true });
+      await fs.writeFile(
+        path.join(externalRetention, runId, "session.jsonl"),
+        '{"type":"session"}\n',
+        "utf8",
+      );
+      await fs.symlink(externalRetention, path.join(agentDir, "codex-session-retention"), "dir");
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]).toMatchObject({
+        eligible: false,
+        ineligibleReason: "retention root is not a real directory",
+      });
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
   });
 
   describe("multi-agent scanning", () => {
