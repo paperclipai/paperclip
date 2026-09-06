@@ -21759,10 +21759,14 @@ export function heartbeatService(
             combinedRuntimeServices.find((service) =>
               readNonEmptyString(service.url),
             )?.url ?? null;
+          const runtimeContextPatch = {
+            paperclipRuntimeServices: context.paperclipRuntimeServices,
+            paperclipRuntimePrimaryUrl: context.paperclipRuntimePrimaryUrl,
+          };
           await db
             .update(heartbeatRuns)
             .set({
-              contextSnapshot: context,
+              contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify(runtimeContextPatch)}::jsonb`,
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
