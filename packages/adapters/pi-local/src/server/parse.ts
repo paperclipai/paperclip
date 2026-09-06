@@ -28,6 +28,17 @@ function extractTextContent(content: string | Array<{ type: string; text?: strin
     .join("");
 }
 
+// Surface model-level failures (stopReason=error, e.g. 402/5xx provider errors) so the
+// harness reports adapter_failed instead of a silent empty success (missing_disposition).
+function recordModelError(result: ParsedPiOutput, message: Record<string, unknown>): void {
+  const stopReason = asString(message.stopReason, "");
+  if (stopReason !== "error") return;
+  const errorMessage = asString(message.errorMessage, "").trim() || "Pi model call failed (stopReason=error).";
+  if (!result.errors.includes(errorMessage)) {
+    result.errors.push(errorMessage);
+  }
+}
+
 export function parsePiJsonl(stdout: string): ParsedPiOutput {
   const result: ParsedPiOutput = {
     sessionId: null,
@@ -71,6 +82,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
         if (lastMessage?.role === "assistant") {
           const content = lastMessage.content as string | Array<{ type: string; text?: string }>;
           result.finalMessage = extractTextContent(content);
+          recordModelError(result, lastMessage);
         }
       }
       continue;
@@ -93,6 +105,7 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
     if (eventType === "turn_end") {
       const message = asRecord(event.message);
       if (message) {
+        recordModelError(result, message);
         const content = message.content as string | Array<{ type: string; text?: string }>;
         const text = extractTextContent(content);
         if (text) {
