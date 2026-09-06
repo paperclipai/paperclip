@@ -14,7 +14,7 @@ on:
         type: string
         required: false
       rosters:
-        description: "Comma-separated live roster IDs/files, or all for the complete direct suite"
+        description: "Comma-separated live roster IDs/files, or all for the maintained enabled direct suite"
         type: string
         default: "all"
         required: false

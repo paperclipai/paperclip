@@ -26,6 +26,7 @@ async function fixture() {
     mkdir(join(program, "rosters"), { recursive: true }),
     mkdir(join(program, "configs"), { recursive: true }),
     mkdir(join(program, "cases"), { recursive: true }),
+    mkdir(join(program, "campaigns"), { recursive: true }),
   ]);
   const config = {
     schema: "paperclip-runner/eval-config/v1",
@@ -64,6 +65,19 @@ async function fixture() {
     writeFile(
       join(program, "rosters/live-opencode-model.json"),
       JSON.stringify(roster),
+    ),
+    writeFile(
+      join(program, "campaigns/live-direct-full.json"),
+      JSON.stringify({
+        schema: "paperclip-runner/live-campaign/v1",
+        lanes: [
+          {
+            id: "opencode-model",
+            executionClass: "default",
+            roster: "../rosters/live-opencode-model.json",
+          },
+        ],
+      }),
     ),
   ]);
   return { root, program, config, evalCase, roster };
@@ -116,6 +130,60 @@ test("catalogs roster plus case cells and emits bounded balanced shards", async 
       maxParallel: 1,
     }),
     /from 2 through 100/,
+  );
+});
+
+test("all selects the maintained enabled campaign and explicit diagnostics can select disabled rosters", async () => {
+  const { root, program, config, evalCase } = await fixture();
+  const disabledRoster = {
+    schema: "paperclip-runner/live-roster/v1",
+    id: "protocol-live-disabled-model",
+    model: config.model,
+    config: "../configs/live-opencode-model.json",
+    cases: [evalCase.id],
+  };
+  await Promise.all([
+    writeFile(
+      join(program, "rosters/live-disabled-model.json"),
+      JSON.stringify(disabledRoster),
+    ),
+    writeFile(
+      join(program, "campaigns/live-direct-full.json"),
+      JSON.stringify({
+        schema: "paperclip-runner/live-campaign/v1",
+        lanes: [
+          {
+            id: "opencode-model",
+            executionClass: "default",
+            roster: "../rosters/live-opencode-model.json",
+          },
+          {
+            id: "disabled-model",
+            executionClass: "disabled",
+            roster: "../rosters/live-disabled-model.json",
+          },
+        ],
+      }),
+    ),
+  ]);
+
+  const maintained = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "gha-42-1",
+  });
+  assert.deepEqual(
+    maintained.rosters.map((roster) => roster.rosterId),
+    ["protocol-live-opencode-model"],
+  );
+
+  const diagnostic = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "gha-42-2",
+    rosterSelection: "protocol-live-disabled-model",
+  });
+  assert.deepEqual(
+    diagnostic.rosters.map((roster) => roster.rosterId),
+    ["protocol-live-disabled-model"],
   );
 });
 
