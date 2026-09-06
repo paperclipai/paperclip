@@ -207,7 +207,11 @@ import {
   readAcceptedPlanConfirmationTarget,
   type IssuePostCommitAction,
 } from "../services/issues.js";
-import { resolveAgentIssueProjectId } from "../services/issue-project-inference.js";
+import {
+  type ExplicitProjectSelectionInput,
+  resolveAgentIssueProjectId,
+  resolveExplicitProjectSelection,
+} from "../services/issue-project-inference.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
@@ -3067,17 +3071,45 @@ export function issueRoutes(
   }
 
   /**
-   * Whether the create request already carries a signal the service turns into a
-   * project on its own: a named project, a parent or inheritance source to copy
-   * it from, or a workspace that belongs to one. Each of those outranks anything
-   * we could infer, so inference only runs when none of them is present.
+   * The project the create request's explicit signals resolve to: a named
+   * project, a parent or inheritance source that has one, or a workspace that
+   * belongs to one. A signal that resolves outranks anything we could infer, so
+   * inference only runs when this answers `null` — a merely *present* signal
+   * that yields nothing (a project-less parent) does not suppress inference;
+   * skipping on presence is how a project-less parent chains `null` to every
+   * descendant. Invalid ids resolve to `null` here; the service still rejects
+   * them before anything is inserted.
    */
-  function hasExplicitIssueProjectCreateSelection(input: Record<string, unknown>) {
-    return input.projectId != null ||
-      input.parentId != null ||
-      input.inheritExecutionWorkspaceFromIssueId != null ||
-      input.projectWorkspaceId != null ||
-      input.executionWorkspaceId != null;
+  function issueProjectCreateSelectionLookups(companyId: string): ExplicitProjectSelectionLookups {
+    return {
+      getIssueProjectId: async (issueId) => {
+        const issue = await svc.getById(issueId);
+        return issue && issue.companyId === companyId ? issue.projectId ?? null : null;
+      },
+      getProjectWorkspaceProjectId: async (projectWorkspaceId) => {
+        const workspace = await db
+          .select({ companyId: projectWorkspaces.companyId, projectId: projectWorkspaces.projectId })
+          .from(projectWorkspaces)
+          .where(eq(projectWorkspaces.id, projectWorkspaceId))
+          .then((rows) => rows[0] ?? null);
+        return workspace && workspace.companyId === companyId ? workspace.projectId ?? null : null;
+      },
+      getExecutionWorkspaceProjectId: async (executionWorkspaceId) => {
+        const workspace = await db
+          .select({ companyId: executionWorkspaces.companyId, projectId: executionWorkspaces.projectId })
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, executionWorkspaceId))
+          .then((rows) => rows[0] ?? null);
+        return workspace && workspace.companyId === companyId ? workspace.projectId ?? null : null;
+      },
+    };
+  }
+
+  function resolveExplicitIssueProjectCreateSelection(
+    companyId: string,
+    input: ExplicitProjectSelectionInput,
+  ) {
+    return resolveExplicitProjectSelection(input, issueProjectCreateSelectionLookups(companyId));
   }
 
   async function resolveRunIssueWorkspaceInheritanceSource(
@@ -9142,7 +9174,8 @@ export function issueRoutes(
     // before the assignment-scope and source-trust decisions below: a project
     // carries its own authorization policy, so both have to see the project the
     // issue is actually going to land in, not the empty one it arrived with.
-    const inferredProjectId = hasExplicitIssueProjectCreateSelection(createBody)
+    const explicitProjectId = await resolveExplicitIssueProjectCreateSelection(companyId, createBody);
+    const inferredProjectId = explicitProjectId != null
       ? null
       : await resolveAgentIssueProjectId(db, companyId, {
         createdByAgentId: actor.agentId,
@@ -9386,8 +9419,35 @@ export function issueRoutes(
       ...sanitizedBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
+    const actor = getActorInfo(req);
+    // Same contract as the create route above: the child's explicit signals —
+    // its own projectId/workspaces plus the parent, which for this route IS the
+    // combined source-issue signal the service consults — outrank inference
+    // only when they resolve to a project. A project-less parent resolves to
+    // nothing and must not chain that emptiness to the child, and the answer
+    // has to exist before the assignment-scope and source-trust decisions read it.
+    const routeLookups = issueProjectCreateSelectionLookups(parent.companyId);
+    const explicitChildProjectId = await resolveExplicitProjectSelection({
+      projectId: createBody.projectId,
+      parentId: parent.id,
+      projectWorkspaceId: createBody.projectWorkspaceId,
+      executionWorkspaceId: createBody.executionWorkspaceId,
+    }, {
+      ...routeLookups,
+      getIssueProjectId: async (issueId) =>
+        issueId === parent.id ? parent.projectId ?? null : routeLookups.getIssueProjectId(issueId),
+    });
+    const inferredChildProjectId = explicitChildProjectId != null
+      ? null
+      : await resolveAgentIssueProjectId(db, parent.companyId, {
+        createdByAgentId: actor.agentId,
+        actorRunId: actor.runId,
+        title: createBody.title,
+        description: createBody.description,
+      });
+    const childProjectId = createBody.projectId ?? inferredChildProjectId ?? parent.projectId ?? null;
     const childAssignmentScope = {
-      projectId: createBody.projectId ?? parent.projectId ?? null,
+      projectId: childProjectId,
       parentIssueId: parent.id,
       assigneeAgentId: createBody.assigneeAgentId ?? null,
       assigneeUserId: createBody.assigneeUserId ?? null,
@@ -9398,7 +9458,6 @@ export function issueRoutes(
     }
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
 
-    const actor = getActorInfo(req);
     const serializationContext = await resolveWatchdogFollowUpSerializationContext(req, parent);
     const currentSerializedChild = serializationContext
       ? await findCurrentSerializedWatchdogChild(parent)
@@ -9412,12 +9471,13 @@ export function issueRoutes(
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
       companyId: parent.companyId,
-      projectId: createBody.projectId ?? parent.projectId ?? null,
+      projectId: childProjectId,
       executionPolicy,
     }, actor);
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
+      ...(inferredChildProjectId ? { projectId: inferredChildProjectId } : {}),
       id: issueId,
       executionPolicy,
       ...(currentSerializedChild

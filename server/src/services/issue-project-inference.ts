@@ -288,6 +288,58 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+export type ExplicitProjectSelectionInput = {
+  projectId?: string | null;
+  parentId?: string | null;
+  inheritExecutionWorkspaceFromIssueId?: string | null;
+  projectWorkspaceId?: string | null;
+  executionWorkspaceId?: string | null;
+};
+
+export type ExplicitProjectSelectionLookups = {
+  /** An issue's project, or `null` when the issue is missing, cross-company or project-less. */
+  getIssueProjectId: (issueId: string) => Promise<string | null>;
+  getProjectWorkspaceProjectId: (projectWorkspaceId: string) => Promise<string | null>;
+  getExecutionWorkspaceProjectId: (executionWorkspaceId: string) => Promise<string | null>;
+};
+
+/**
+ * The project the create request's explicit signals actually resolve to, or
+ * `null` when they resolve to nothing — which is the only case where inference
+ * may run. A present signal that yields no project (a project-less parent) is
+ * not an answer that outranks a guess; there is nothing to rank.
+ *
+ * The walk mirrors `issueService.create`'s own application order, so the gate
+ * answers null exactly when the service would leave the field empty. In
+ * particular the two issue-bearing fields form ONE signal — the service
+ * consults a single source issue, `inheritExecutionWorkspaceFromIssueId`
+ * outranking `parentId`, and does not fall back to the parent's project when
+ * the inherit source has none — so neither does this.
+ *
+ * The returned id only ever gates inference; the actual assignment stays with
+ * the service, so a signal that resolves keeps byte-identical behaviour.
+ */
+export async function resolveExplicitProjectSelection(
+  input: ExplicitProjectSelectionInput,
+  lookups: ExplicitProjectSelectionLookups,
+): Promise<string | null> {
+  if (input.projectId != null) return input.projectId;
+  const sourceIssueId = input.inheritExecutionWorkspaceFromIssueId ?? input.parentId;
+  if (sourceIssueId != null) {
+    const sourceProjectId = await lookups.getIssueProjectId(sourceIssueId);
+    if (sourceProjectId) return sourceProjectId;
+  }
+  if (input.projectWorkspaceId != null) {
+    const workspaceProjectId = await lookups.getProjectWorkspaceProjectId(input.projectWorkspaceId);
+    if (workspaceProjectId) return workspaceProjectId;
+  }
+  if (input.executionWorkspaceId != null) {
+    const workspaceProjectId = await lookups.getExecutionWorkspaceProjectId(input.executionWorkspaceId);
+    if (workspaceProjectId) return workspaceProjectId;
+  }
+  return null;
+}
+
 /**
  * Fallback project for an agent-created issue that has none after every
  * explicit signal (given `projectId`, parent, selected workspace) has been
