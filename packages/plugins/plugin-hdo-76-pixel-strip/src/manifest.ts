@@ -33,7 +33,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.read",
     "plugin.state.write",
     "ui.detailTab.register",
-    "ui.projectSidebarItem.register",
+    "ui.sidebar.register",
   ],
   entrypoints: {
     worker: "./dist/worker.js",

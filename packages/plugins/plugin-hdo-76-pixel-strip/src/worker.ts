@@ -1,4 +1,4 @@
-import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type Agent } from "@paperclipai/plugin-sdk";
 import type {
   AgentRuntimeSnapshot,
   IssueRuntimeSnapshot,
@@ -119,7 +119,7 @@ const plugin = definePlugin({
           ctx.agents.list({ companyId }),
         ]);
         const agents = agentsRaw
-          .filter((a): a is { id: string; displayName?: string | null; status?: string | null } => {
+          .filter((a): a is Agent => {
             return typeof a === "object" && a !== null && typeof (a as { id?: unknown }).id === "string";
           })
           .map(toAgentSnapshot);
