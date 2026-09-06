@@ -16,8 +16,13 @@ const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
     String.raw`]+))`,
   "gi",
 );
-const COMMAND_AUTHORIZATION_BEARER_RE =
-  /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
+// `Authorization: Bearer <value>` is owned by the header rule below. It used to
+// have a rule of its own whose value class stopped at a quote but not at a
+// backslash, so inside a serialized command it consumed the backslash of the
+// escaped closing quote and the stored JSON string no longer parsed. The header
+// rule reads the serialization layer off the delimiter instead, keeps the
+// scheme word, and redacts the whole header word, so a value that itself
+// carries a backslash or an escaped quote is redacted whole rather than cut.
 // A secret-bearing header names a credential in its own header name. The public
 // Paperclip API documents `X-API-Key`, and a run log can also carry `Api-Key`,
 // `X-Auth-Token`, `X-Paperclip-Api-Key`, or a bare `Authorization`. This rule
@@ -71,8 +76,8 @@ const COMMAND_SECRET_HEADER_CANDIDATE_RE = new RegExp(
 // A scheme may also follow the value's own escaped-quote delimiter, as in
 // `Authorization:\"Digest username=...\"`. An optional auth scheme stays in the
 // output: it is not a secret, and it tells a reader which credential form the
-// command used. This also makes the rule agree with the bearer rule above for a
-// well-formed bearer header.
+// command used, and it keeps the output of a well-formed bearer header
+// byte-identical to what the former bearer-only rule produced.
 const COMMAND_SECRET_HEADER_SCHEME_AT_RE = new RegExp(
   String.raw`(?:${COMMAND_AUTH_SCHEMES.join("|")})[ \t]+`,
   "iy",
@@ -842,10 +847,7 @@ export function redactCommandText(
   redactedValue = REDACTED_COMMAND_TEXT_VALUE,
 ): string {
   if (!maybeContainsSecretText(command)) return command;
-  return redactCommandSecretHeaders(
-    command.replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`),
-    redactedValue,
-  )
+  return redactCommandSecretHeaders(command, redactedValue)
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
     .replace(
       COMMAND_ENV_SECRET_ASSIGNMENT_RE,

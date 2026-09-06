@@ -95,6 +95,55 @@ second-line\" status=401`;
   });
 });
 
+describe("redactCommandText bearer headers", () => {
+  const command = 'curl -H "Authorization: Bearer abc" https://example.test';
+  const expected = `curl -H "Authorization: Bearer ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`;
+
+  it("keeps a serialized command parseable after redacting its bearer header", () => {
+    // The former bearer-only rule consumed the backslash of the escaped
+    // closing quote, and the enclosing JSON string stopped parsing.
+    let serialized = command;
+    for (let depth = 1; depth <= 3; depth += 1) {
+      serialized = JSON.stringify(serialized);
+      const output = redactCommandText(serialized);
+      expect(output).not.toContain("abc");
+      expect(redactCommandText(output)).toBe(output);
+      let decoded: string = output;
+      for (let layer = 0; layer < depth; layer += 1) {
+        decoded = JSON.parse(decoded);
+      }
+      expect(decoded).toBe(expected);
+    }
+  });
+
+  it("keeps a serialized JSON object carrying a bearer command parseable", () => {
+    const input = JSON.stringify({ command, cwd: "/tmp" });
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(JSON.parse(output)).toEqual({ command: expected, cwd: "/tmp" });
+  });
+
+  it("redacts a bearer value that carries a backslash whole", () => {
+    const input = String.raw`curl -H "Authorization: Bearer abc\tail" https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).not.toContain("tail");
+    expect(output).toBe(expected);
+  });
+
+  it("redacts a raw bearer value that carries an escaped quote whole", () => {
+    // `abc\"def` is one shell word. Read as a serialized opener with no closer,
+    // the escaped quote runs the value to the end of the line, so the union
+    // takes the following argument too. Over-redaction, never a leak.
+    const input = String.raw`curl -H Authorization: Bearer abc\"def https://example.test`;
+    const output = redactCommandText(input);
+    expect(output).not.toContain("abc");
+    expect(output).not.toContain("def");
+    expect(output).toBe(`curl -H Authorization: Bearer ${REDACTED_COMMAND_TEXT_VALUE}`);
+    expect(redactCommandText(output)).toBe(output);
+  });
+});
+
 describe("redactCommandText header secrets", () => {
   it("redacts a double-quoted X-API-Key header value", () => {
     const input = 'curl -H "X-API-Key: abc" https://example.test/api/agents/me';
@@ -135,8 +184,8 @@ describe("redactCommandText header secrets", () => {
   });
 
   it("keeps the bearer header output byte for byte identical", () => {
-    // The bearer rule already redacted this shape. The header rule keeps the
-    // scheme, so the output must not change.
+    // The former bearer-only rule redacted this shape. The header rule keeps
+    // the scheme, so the output must not change.
     const input = 'curl -H "Authorization: Bearer abc" https://example.test';
     expect(redactCommandText(input)).toBe(
       `curl -H "Authorization: Bearer ${REDACTED_COMMAND_TEXT_VALUE}" https://example.test`,
