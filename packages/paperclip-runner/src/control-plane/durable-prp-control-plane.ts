@@ -28,6 +28,7 @@ import { dirname, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import {
   validatePrpEvent,
   type PrpEvent,
@@ -1983,6 +1984,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_NATIVE_MCP_URL",
   "PAPERCLIP_NATIVE_MCP_TOKEN",
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+  "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
   "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
   "PAPERCLIP_ACPX_PROVIDER_RECOVERY_POLICY",
@@ -2010,6 +2012,7 @@ function runnerEnvironment(
       const value = explicitSource[key];
       if (value !== undefined) environment[key] = value;
     }
+    Object.assign(environment, githubCredentialEnvironment(explicitSource));
   }
   return environment;
 }

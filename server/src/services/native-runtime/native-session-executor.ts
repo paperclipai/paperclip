@@ -7176,15 +7176,25 @@ async function createRunnerdBackendWithinSessionClaim(
         },
       }
     : input.execution;
+  const effectiveRunnerEnvironmentBase: NodeJS.ProcessEnv = {
+    ...(input.runnerEnvironment ?? process.env),
+  };
+  // This authority bit is derived only from the selected execution target.
+  // Never let an agent, environment binding, or host variable disable the
+  // Codex sandbox for a local runner by supplying the same key.
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
   const effectiveRunnerEnvironment: NodeJS.ProcessEnv = remoteRuntimeRoot
     ? {
-        ...(input.runnerEnvironment ?? process.env),
+        ...effectiveRunnerEnvironmentBase,
         HOME: remoteTarget!.remoteCwd,
         CODEX_HOME: posix.join(remoteTarget!.remoteCwd, ".codex"),
         PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
+        ...(remoteTarget!.transport === "sandbox"
+          ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }
+          : {}),
       }
     : {
-        ...(input.runnerEnvironment ?? process.env),
+        ...effectiveRunnerEnvironmentBase,
         PAPERCLIP_WORKSPACE_CWD: input.execution.workspace.cwd,
       };
   const archiveContinuityState = async () => {
