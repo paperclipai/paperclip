@@ -18,6 +18,9 @@ const PAPERCLIP_TOOL_ACTION_SIGNING_SECRET =
 const PLAYWRIGHT_CHANNEL = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
 
 process.env.PAPERCLIP_HOME = PAPERCLIP_HOME;
+// JWT signing is instance-derived. Keep the Playwright worker that mints test
+// tokens on the same instance boundary as the web server that verifies them.
+process.env.PAPERCLIP_INSTANCE_ID = PAPERCLIP_INSTANCE_ID;
 process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
 // Specs that mint agent JWTs in-process (via createLocalAgentJwt) must derive
 // the same per-instance signing key as the webServer, or verification fails

@@ -2,7 +2,11 @@ import { Command } from "commander";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import type { Agent, Company } from "@paperclipai/shared";
-import { createAgentKeySchema, createBoardApiKeySchema } from "@paperclipai/shared";
+import {
+  BOARD_API_KEY_SCOPE_PRESETS,
+  createAgentKeySchema,
+  createBoardApiKeySchema,
+} from "@paperclipai/shared";
 import { loginBoardCli } from "../../client/board-auth.js";
 import { PaperclipApiClient } from "../../client/http.js";
 import { resolveProfile, readContext, setCurrentProfile, upsertProfile } from "../../client/context.js";
@@ -50,6 +54,7 @@ export function registerConnectCommand(program: Command): void {
           handleCommandError(err);
         }
       }),
+    { includeCompany: true },
   );
 }
 
@@ -73,10 +78,25 @@ async function connectWizard(opts: ConnectOptions) {
   console.log(pc.dim(`Checking ${apiBase}/api/health ...`));
   await verifyHealth(apiBase);
 
+  const scopeCompanyId = opts.companyId?.trim() || resolvedProfile.profile.companyId?.trim();
+  if (!scopeCompanyId) {
+    throw new Error(
+      "Board authentication requires a company scope. Pass --company-id or configure a companyId in the selected profile.",
+    );
+  }
+  const loginPreset = BOARD_API_KEY_SCOPE_PRESETS.company_automation;
+
   const boardLogin = await loginBoardCli({
     apiBase,
     requestedAccess: "board",
-    requestedCompanyId: opts.companyId ?? resolvedProfile.profile.companyId ?? null,
+    requestedCompanyId: scopeCompanyId,
+    scopeConfig: {
+      version: 1,
+      kind: "scoped",
+      companyIds: [scopeCompanyId],
+      permissions: [...loginPreset.permissions],
+      instanceCapabilities: [],
+    },
     command: "paperclipai connect",
   });
   const boardApi = new PaperclipApiClient({ apiBase, apiKey: boardLogin.token });
@@ -87,18 +107,25 @@ async function connectWizard(opts: ConnectOptions) {
   const apiKeyEnvVarName = opts.apiKeyEnvVarName?.trim() || "PAPERCLIP_API_KEY";
 
   if (persona === "board") {
-    const company = await chooseCompany(companies, opts.companyId ?? resolvedProfile.profile.companyId, {
-      optional: true,
+    const company = await chooseCompany(companies, scopeCompanyId, {
+      optional: false,
     });
+    if (!company) throw new Error("Company is required for scoped board profiles");
     const tokenName = opts.tokenName?.trim() || `cli-board-${new Date().toISOString()}`;
     const key = await boardApi.post<CreatedBoardKey>("/api/board-api-keys", createBoardApiKeySchema.parse({
       name: tokenName,
-      requestedCompanyId: company?.id ?? null,
+      scopeConfig: {
+        version: 1,
+        kind: "scoped",
+        companyIds: [company.id],
+        permissions: [...loginPreset.permissions],
+        instanceCapabilities: [],
+      },
     }));
     if (!key) throw new Error("Failed to create board token");
     upsertProfile(profileName, {
       apiBase,
-      companyId: company?.id,
+      companyId: company.id,
       persona: "board",
       agentId: "",
       agentName: "",
@@ -114,9 +141,9 @@ async function connectWizard(opts: ConnectOptions) {
       profile: profileName,
       persona: "board",
       apiBase,
-      companyId: company?.id ?? null,
+      companyId: company.id,
       key: publicKeyResult(key),
-      exports: buildExports({ apiBase, companyId: company?.id, agentId: undefined, envName: apiKeyEnvVarName, token: key.token }),
+      exports: buildExports({ apiBase, companyId: company.id, agentId: undefined, envName: apiKeyEnvVarName, token: key.token }),
     };
   }
 

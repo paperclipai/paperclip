@@ -4,28 +4,35 @@ import { boardAuthService } from "./board-auth.js";
 
 describe("boardAuthService touchBoardApiKey", () => {
   it("retries the audit write after a transient failure", async () => {
-    const writes = [Promise.reject(new Error("transient")), Promise.resolve([])];
+    const writes = [
+      Promise.reject(new Error("transient")),
+      Promise.resolve([{ id: "key-1" }]),
+    ];
     const update = vi.fn(() => ({
       set: () => ({
-        where: () => writes.shift(),
+        where: () => ({
+          returning: () => writes.shift(),
+        }),
       }),
     }));
     const service = boardAuthService({ update } as unknown as Db);
 
     await expect(service.touchBoardApiKey("key-1")).rejects.toThrow("transient");
-    await expect(service.touchBoardApiKey("key-1")).resolves.toBeUndefined();
+    await expect(service.touchBoardApiKey("key-1")).resolves.toEqual({ id: "key-1" });
 
     expect(update).toHaveBeenCalledTimes(2);
   });
 
   it("shares one in-flight audit write across concurrent touches", async () => {
     let releaseWrite: (() => void) | undefined;
-    const write = new Promise<void>((resolve) => {
-      releaseWrite = resolve;
+    const write = new Promise<Array<{ id: string }>>((resolve) => {
+      releaseWrite = () => resolve([{ id: "key-1" }]);
     });
     const update = vi.fn(() => ({
       set: () => ({
-        where: () => write,
+        where: () => ({
+          returning: () => write,
+        }),
       }),
     }));
     const service = boardAuthService({ update } as unknown as Db);
