@@ -61,6 +61,29 @@ describe("chatEndpointsApi", () => {
     );
   });
 
+  it("sends only explicitly selected attachment ids with a board message", async () => {
+    mockApi.post.mockResolvedValue({
+      id: "publication-file",
+      state: "published",
+      attempts: 1,
+    });
+    await chatEndpointsApi.publishBoardMessage(
+      "endpoint-1",
+      "conversation-1",
+      "Visible update with file",
+      "client-request-file-1234",
+      ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+    );
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/chat-endpoints/endpoint-1/conversations/conversation-1/publications",
+      {
+        body: "Visible update with file",
+        idempotencyKey: "client-request-file-1234",
+        attachmentIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+      },
+    );
+  });
+
   it("posts provider credentials through the mounted setup action", async () => {
     mockApi.post.mockResolvedValue({ id: "endpoint-1", status: "verifying" });
     await chatEndpointsApi.setup("endpoint-1", {

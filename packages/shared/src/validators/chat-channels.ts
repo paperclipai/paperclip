@@ -138,6 +138,13 @@ export const publishChatBoardMessageSchema = z
   .object({
     body: multilineTextSchema.pipe(z.string().trim().min(1).max(100_000)),
     idempotencyKey: z.string().trim().min(16).max(200),
+    attachmentIds: z
+      .array(z.string().uuid())
+      .max(20)
+      .refine((ids) => new Set(ids).size === ids.length, {
+        message: "Attachment ids must be unique",
+      })
+      .optional(),
   })
   .strict();
 

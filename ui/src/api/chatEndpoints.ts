@@ -289,9 +289,14 @@ export const chatEndpointsApi = {
     conversationId: string,
     body: string,
     idempotencyKey: string,
+    attachmentIds: string[] = [],
   ) =>
     api.post<ChatPublicationSummary>(
       `/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`,
-      { body, idempotencyKey },
+      {
+        body,
+        idempotencyKey,
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+      },
     ),
 };

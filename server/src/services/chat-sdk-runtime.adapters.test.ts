@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import type { Attachment } from "chat";
 import {
   createChatSdkEndpointRuntime,
@@ -115,6 +116,126 @@ describe("Chat SDK published adapter integration", () => {
     expect(
       new Set(runtimes.map((runtime) => runtime.getProviderAdapter())).size,
     ).toBe(4);
+  });
+
+  it("preserves the pinned Slack Block Kit callback's clicked-message thread id", async () => {
+    const signingSecret = "slack-action-signing-secret";
+    const onAction = vi.fn();
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onAction, onMessage() {} },
+      companyId: "company-slack-action-envelope",
+      endpointId: "endpoint-slack-action-envelope",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "slack",
+        userName: "paperclip-agent",
+        credentials: {
+          botToken: "xoxb-test",
+          botUserId: "U-PAPERCLIP-BOT",
+          signingSecret,
+        },
+      },
+    });
+    const payload = {
+      type: "block_actions",
+      team: { id: "T-PAPERCLIP" },
+      user: { id: "U-OPERATOR", username: "operator" },
+      channel: { id: "D-PAPERCLIP-DM" },
+      container: {
+        type: "message",
+        channel_id: "D-PAPERCLIP-DM",
+        message_ts: "1788.200",
+      },
+      message: { ts: "1788.200" },
+      actions: [{ action_id: "pcq:blue", value: "interaction-id" }],
+      trigger_id: "trigger-id",
+    };
+    const body = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const signature = `v0=${createHmac("sha256", signingSecret)
+      .update(`v0:${timestamp}:${body}`)
+      .digest("hex")}`;
+    try {
+      await runtime.initialize();
+      const response = await runtime.handleWebhook(
+        new Request("https://paperclip.example/api/chat-webhooks/public/slack", {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            "x-slack-request-timestamp": timestamp,
+            "x-slack-signature": signature,
+          },
+          body,
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "slack",
+          event: expect.objectContaining({
+            actionId: "pcq:blue",
+            messageId: "1788.200",
+            threadId: "slack:D-PAPERCLIP-DM:1788.200",
+            value: "interaction-id",
+          }),
+        }),
+      );
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("uses one Slack provider call for a file-only publication", async () => {
+    const runtime = createChatSdkEndpointRuntime({
+      callbacks: { onMessage() {} },
+      companyId: "company-slack-file-only",
+      endpointId: "endpoint-slack-file-only",
+      logger: "silent",
+      persistence,
+      providerConfig: {
+        provider: "slack",
+        userName: "paperclip-agent",
+        credentials: {
+          botToken: "xoxb-test",
+          botUserId: "U-PAPERCLIP-BOT",
+          signingSecret: "secret",
+        },
+      },
+    });
+    const uploadV2 = vi.fn(async () => ({ ok: true, files: [{ id: "F-PAPERCLIP" }] }));
+    const postMessage = vi.fn(async () => ({ ok: true, ts: "1788.301" }));
+    try {
+      await runtime.initialize();
+      const adapter = runtime.getProviderAdapter() as unknown as {
+        _client: {
+          chat: { postMessage: typeof postMessage };
+          files: { uploadV2: typeof uploadV2 };
+        };
+        postMessage(
+          threadId: string,
+          message: { files: Array<{ data: Buffer; filename: string; mimeType: string }>; markdown: string },
+        ): Promise<{ id: string }>;
+      };
+      adapter._client.files.uploadV2 = uploadV2;
+      adapter._client.chat.postMessage = postMessage;
+      const sent = await adapter.postMessage("slack:C-PAPERCLIP:1788.300", {
+        markdown: "",
+        files: [{ data: Buffer.from("safe artifact"), filename: "result.txt", mimeType: "text/plain" }],
+      });
+      expect(sent.id).toMatch(/^file-/);
+      expect(uploadV2).toHaveBeenCalledOnce();
+      expect(uploadV2).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel_id: "C-PAPERCLIP",
+          thread_ts: "1788.300",
+          file_uploads: [expect.objectContaining({ filename: "result.txt" })],
+        }),
+      );
+      expect(postMessage).not.toHaveBeenCalled();
+    } finally {
+      await runtime.shutdown();
+    }
   });
 
   it("parses attachments carried by a Telegram slash-command caption", async () => {

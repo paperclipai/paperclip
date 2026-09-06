@@ -96,3 +96,17 @@ Browse/search is the fallback for recovering a workspace file when the issue
 chip or link cannot open it; it is not the preferred deliverable path. Do not
 leave artifact-producing work `in_progress` with only a local path or a
 `Remaining` note.
+
+When the current run was started by an external chat request and the file is
+part of the response intended for that external conversation, bind only the
+specific uploaded attachment IDs to the explicit response comment:
+
+```bash
+npx paperclipai issue comment "$PAPERCLIP_TASK_ID" \
+  --body "The requested file is ready." \
+  --attachment-id "<uploaded-attachment-id>"
+```
+
+Do not infer this from other files on the task or bind every attachment from a
+run. Only IDs explicitly named on the comment are eligible for external
+publication; unbound artifacts remain Paperclip-only.

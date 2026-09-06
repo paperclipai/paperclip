@@ -1,16 +1,21 @@
 import { useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { ExternalLink, Radio } from "lucide-react";
-import type { ChatPublicationState } from "@paperclipai/shared";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ExternalLink, Paperclip, Radio } from "lucide-react";
+import type {
+  ChatPublicationState,
+  IssueAttachment,
+} from "@paperclipai/shared";
 import {
   chatEndpointsApi,
   type ChatProvider,
   type ChatPublicationSummary,
 } from "@/api/chatEndpoints";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
+import { queryKeys } from "@/lib/queryKeys";
 
 const providerNames: Record<ChatProvider, string> = {
   slack: "Slack",
@@ -73,34 +78,51 @@ export function useIssueChatBinding(companyId: string, issueId: string) {
 }
 
 export function ExternallyConnectedTaskBanner({
+  attachments = [],
   companyId,
   issueId,
 }: {
+  attachments?: IssueAttachment[];
   companyId: string;
   issueId: string;
 }) {
   const { binding } = useIssueChatBinding(companyId, issueId);
   const { pushToast } = useToast();
+  const queryClient = useQueryClient();
   const [composing, setComposing] = useState(false);
   const [body, setBody] = useState("");
+  const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<string[]>(
+    [],
+  );
   const [publication, setPublication] = useState<ChatPublicationSummary | null>(
     null,
   );
   const idempotencyKey = useRef<string | null>(null);
   const publish = useMutation({
-    mutationFn: (input: { body: string; idempotencyKey: string }) =>
+    mutationFn: (input: {
+      attachmentIds: string[];
+      body: string;
+      idempotencyKey: string;
+    }) =>
       chatEndpointsApi.publishBoardMessage(
         binding!.endpointId,
         binding!.conversationId,
         input.body,
         input.idempotencyKey,
+        input.attachmentIds,
       ),
     onSuccess: (result) => {
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) }),
+      ]);
       const feedback = publicationFeedback[result.state];
       setPublication(result.state === "published" ? null : result);
       if (result.state === "published") {
         idempotencyKey.current = null;
         setBody("");
+        setSelectedAttachmentIds([]);
         setComposing(false);
       }
       pushToast({
@@ -126,6 +148,9 @@ export function ExternallyConnectedTaskBanner({
       }),
   });
   if (!binding) return null;
+  const selectableAttachments = attachments.filter(
+    (attachment) => attachment.issueCommentId === null,
+  );
   const currentFeedback = publication
     ? publicationFeedback[publication.state]
     : null;
@@ -182,6 +207,47 @@ export function ExternallyConnectedTaskBanner({
             }}
             placeholder="Write only what should be visible in the provider conversation."
           />
+          {selectableAttachments.length > 0 && (
+            <fieldset
+              className="space-y-2 rounded-md border border-border bg-background p-3"
+              disabled={Boolean(publication) || publish.isError}
+            >
+              <legend className="px-1 text-xs font-medium">
+                Include task files
+              </legend>
+              <p className="text-xs text-muted-foreground">
+                Only checked files will be published to the external
+                conversation.
+              </p>
+              <div className="space-y-2">
+                {selectableAttachments.map((attachment) => {
+                  const label =
+                    attachment.originalFilename ?? "Unnamed attachment";
+                  return (
+                    <label
+                      className="flex items-center gap-2 text-xs"
+                      key={attachment.id}
+                    >
+                      <Checkbox
+                        checked={selectedAttachmentIds.includes(attachment.id)}
+                        onCheckedChange={(checked) => {
+                          setSelectedAttachmentIds((current) =>
+                            checked === true
+                              ? [...current, attachment.id]
+                              : current.filter((id) => id !== attachment.id),
+                          );
+                          idempotencyKey.current = null;
+                          publish.reset();
+                        }}
+                      />
+                      <Paperclip className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="truncate">{label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
+          )}
           {publish.isError && !publication && (
             <div
               role="alert"
@@ -231,6 +297,7 @@ export function ExternallyConnectedTaskBanner({
                   variant="ghost"
                   onClick={() => {
                     setPublication(null);
+                    setSelectedAttachmentIds([]);
                     idempotencyKey.current = null;
                     publish.reset();
                   }}
@@ -252,6 +319,7 @@ export function ExternallyConnectedTaskBanner({
               onClick={() => {
                 idempotencyKey.current ??= crypto.randomUUID();
                 publish.mutate({
+                  attachmentIds: selectedAttachmentIds,
                   body: body.trim(),
                   idempotencyKey: idempotencyKey.current,
                 });

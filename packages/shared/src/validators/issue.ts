@@ -725,6 +725,13 @@ export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
 export const addIssueCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
+  attachmentIds: z
+    .array(z.string().uuid())
+    .max(20)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: "Attachment ids must be unique",
+    })
+    .optional(),
   onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),

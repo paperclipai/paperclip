@@ -9121,6 +9121,7 @@ export function issueService(db: Db) {
         authorType?: IssueCommentAuthorType | null;
         presentation?: IssueCommentPresentation | null;
         metadata?: IssueCommentMetadata | null;
+        attachmentIds?: string[];
         authorizationReason?: string | null;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
@@ -9236,6 +9237,98 @@ export function issueService(db: Db) {
         })
         .returning();
 
+      const attachmentIds = [...new Set(options?.attachmentIds ?? [])];
+      const boundAttachments: Array<{
+        id: string;
+        originalFilename: string | null;
+      }> = [];
+      if (attachmentIds.length > 0) {
+        const attachmentRows = await dbOrTx
+          .select({
+            id: issueAttachments.id,
+            issueCommentId: issueAttachments.issueCommentId,
+            createdByAgentId: assets.createdByAgentId,
+            originalFilename: assets.originalFilename,
+          })
+          .from(issueAttachments)
+          .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+          .where(
+            and(
+              eq(issueAttachments.companyId, issue.companyId),
+              eq(issueAttachments.issueId, issueId),
+              inArray(issueAttachments.id, attachmentIds),
+            ),
+          )
+          .for("update");
+        type CommentAttachmentRow = {
+          id: string;
+          issueCommentId: string | null;
+          createdByAgentId: string | null;
+          originalFilename: string | null;
+        };
+        const attachmentById = new Map<string, CommentAttachmentRow>(
+          attachmentRows.map(
+            (attachment: CommentAttachmentRow): [string, CommentAttachmentRow] => [attachment.id, attachment],
+          ),
+        );
+        if (attachmentById.size !== attachmentIds.length) {
+          throw unprocessable("Comment attachments must belong to the same task and company");
+        }
+        if (attachmentRows.some((attachment: { issueCommentId: string | null }) => attachment.issueCommentId !== null)) {
+          throw conflict("Comment attachments are already bound to another comment");
+        }
+        if (actor.agentId) {
+          if (!createdByRunId) {
+            throw unprocessable("Agent comment attachments require the current registered run");
+          }
+          const runAttachmentIds = new Set(
+            await dbOrTx
+              .select({ id: issueWorkProducts.externalId })
+              .from(issueWorkProducts)
+              .where(
+                and(
+                  eq(issueWorkProducts.companyId, issue.companyId),
+                  eq(issueWorkProducts.issueId, issueId),
+                  eq(issueWorkProducts.provider, "paperclip"),
+                  eq(issueWorkProducts.createdByRunId, createdByRunId),
+                  inArray(issueWorkProducts.externalId, attachmentIds),
+                ),
+              )
+              .then((rows: Array<{ id: string | null }>) => rows.flatMap((row) => (row.id ? [row.id] : []))),
+          );
+          if (
+            attachmentRows.some(
+              (attachment: { id: string; createdByAgentId: string | null }) =>
+                attachment.createdByAgentId !== actor.agentId || !runAttachmentIds.has(attachment.id),
+            )
+          ) {
+            throw unprocessable("Agent comment attachments must be uploaded by the same agent and run");
+          }
+        }
+        const attached = await dbOrTx
+          .update(issueAttachments)
+          .set({ issueCommentId: comment.id, updatedAt: new Date() })
+          .where(
+            and(
+              eq(issueAttachments.companyId, issue.companyId),
+              eq(issueAttachments.issueId, issueId),
+              inArray(issueAttachments.id, attachmentIds),
+              isNull(issueAttachments.issueCommentId),
+            ),
+          )
+          .returning({ id: issueAttachments.id });
+        if (attached.length !== attachmentIds.length) {
+          throw conflict("Comment attachments changed before they could be bound");
+        }
+        for (const attachmentId of attachmentIds) {
+          const attachment = attachmentById.get(attachmentId)!;
+          boundAttachments.push({
+            id: attachment.id,
+            originalFilename: attachment.originalFilename,
+          });
+        }
+      }
+
       // Update issue's updatedAt so comment activity is reflected in recency sorting
       await dbOrTx
         .update(issues)
@@ -9253,6 +9346,7 @@ export function issueService(db: Db) {
           issueId,
           createdByRunId,
         );
+        const publicationCreatedAt = new Date();
         for (const binding of bindings) {
           await dbOrTx
             .insert(chatPublications)
@@ -9269,8 +9363,33 @@ export function issueService(db: Db) {
                 text: redactedBody,
               }),
               state: "pending",
+              createdAt: publicationCreatedAt,
+              updatedAt: publicationCreatedAt,
             })
             .onConflictDoNothing();
+          for (const [index, attachment] of boundAttachments.entries()) {
+            const attachmentCreatedAt = new Date(publicationCreatedAt.getTime() + index + 1);
+            await dbOrTx
+              .insert(chatPublications)
+              .values({
+                companyId: binding.companyId,
+                endpointId: binding.endpointId,
+                conversationId: binding.conversationId,
+                issueId,
+                commentId: comment.id,
+                idempotencyKey: `attachment:${attachment.id}:${binding.endpointId}`,
+                payload: projectSafeChatPublication({
+                  classification: "external",
+                  source: "agent_comment",
+                  text: `Shared ${attachment.originalFilename ?? "a file"}.`,
+                  attachmentIds: [attachment.id],
+                }),
+                state: "pending",
+                createdAt: attachmentCreatedAt,
+                updatedAt: attachmentCreatedAt,
+              })
+              .onConflictDoNothing();
+          }
         }
       }
 

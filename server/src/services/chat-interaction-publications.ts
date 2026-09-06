@@ -1,23 +1,16 @@
 import { randomBytes } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import {
-  chatActions,
-  chatConversations,
-  chatEndpoints,
-  chatPublications,
-} from "@paperclipai/db";
+import { chatActions, chatConversations, chatEndpoints, chatPublications } from "@paperclipai/db";
 import type {
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
   IssueThreadInteraction,
+  RequestConfirmationInteraction,
   SafeExternalChatCardAction,
 } from "@paperclipai/shared";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
-import {
-  chatQuestionFormActionRecords,
-  createChatQuestionFormDraft,
-} from "./chat-question-forms.js";
+import { chatQuestionFormActionRecords, createChatQuestionFormDraft } from "./chat-question-forms.js";
 
 const MAX_NATIVE_QUESTION_OPTIONS = 12;
 const QUESTION_ACTION_PREFIX = "pcq:";
@@ -52,35 +45,26 @@ function publicTaskUrl(issueId: string): string | null {
  * and fits Telegram's strict 64-byte callback_data envelope.
  */
 export function createChatQuestionOptionActionToken(): string {
-  return `${QUESTION_ACTION_PREFIX}${randomBytes(
-    QUESTION_ACTION_TOKEN_BYTES,
-  ).toString("base64url")}`;
+  return `${QUESTION_ACTION_PREFIX}${randomBytes(QUESTION_ACTION_TOKEN_BYTES).toString("base64url")}`;
+}
+
+export function createChatConfirmationActionToken(): string {
+  return createChatQuestionOptionActionToken();
 }
 
 /** Mirrors the pinned Chat SDK Telegram adapter's exact wire envelope. */
-export function telegramChatSdkCallbackData(
-  actionId: string,
-  value?: string,
-): string {
+export function telegramChatSdkCallbackData(actionId: string, value?: string): string {
   return `chat:${JSON.stringify({
     a: actionId,
     ...(typeof value === "string" ? { v: value } : {}),
   })}`;
 }
 
-export function telegramCallbackDataByteLength(
-  actionId: string,
-  value?: string,
-): number {
-  return Buffer.byteLength(
-    telegramChatSdkCallbackData(actionId, value),
-    "utf8",
-  );
+export function telegramCallbackDataByteLength(actionId: string, value?: string): number {
+  return Buffer.byteLength(telegramChatSdkCallbackData(actionId, value), "utf8");
 }
 
-export function nativeChatQuestion(
-  interaction: AskUserQuestionsInteraction,
-): AskUserQuestionsQuestion | null {
+export function nativeChatQuestion(interaction: AskUserQuestionsInteraction): AskUserQuestionsQuestion | null {
   if (interaction.payload.questions.length !== 1) return null;
   const question = interaction.payload.questions[0];
   if (
@@ -94,33 +78,41 @@ export function nativeChatQuestion(
   return question;
 }
 
-function textForQuestionInteraction(
-  interaction: AskUserQuestionsInteraction,
-  taskUrl: string | null,
-): string {
-  const lines = [
-    interaction.payload.title ?? interaction.title ?? "Input needed",
-    "",
-  ];
+/**
+ * Telegram can safely render ordinary binary confirmations as inline buttons.
+ * Confirmations that collect a rejection reason or authorize a credential,
+ * connection, or tool side effect stay in Paperclip, where the complete
+ * governed review UI and permission checks are available.
+ */
+export function nativeTelegramConfirmation(interaction: IssueThreadInteraction): RequestConfirmationInteraction | null {
+  if (interaction.kind !== "request_confirmation") return null;
+  if (
+    interaction.payload.rejectRequiresReason === true ||
+    interaction.payload.toolAction !== undefined ||
+    interaction.payload.secretProposal !== undefined ||
+    interaction.payload.connectionAuthorization !== undefined ||
+    interaction.payload.target?.type === "issue_document"
+  ) {
+    return null;
+  }
+  return interaction;
+}
+
+function textForQuestionInteraction(interaction: AskUserQuestionsInteraction, taskUrl: string | null): string {
+  const lines = [interaction.payload.title ?? interaction.title ?? "Input needed", ""];
   for (const question of interaction.payload.questions) {
     lines.push(question.prompt);
     for (const option of question.options) lines.push(`- ${option.label}`);
     lines.push("");
   }
-  lines.push(
-    taskUrl
-      ? `Open the task in Paperclip to respond: ${taskUrl}`
-      : "Open the task in Paperclip to respond.",
-  );
+  lines.push(taskUrl ? `Open the task in Paperclip to respond: ${taskUrl}` : "Open the task in Paperclip to respond.");
   return lines.join("\n");
 }
 
 function genericInteractionText(taskUrl: string | null): string {
   return [
     "This task needs an authorized response in Paperclip.",
-    taskUrl
-      ? `Open the task in Paperclip to respond: ${taskUrl}`
-      : "Open the task in Paperclip to respond.",
+    taskUrl ? `Open the task in Paperclip to respond: ${taskUrl}` : "Open the task in Paperclip to respond.",
   ]
     .filter((value): value is string => Boolean(value))
     .join("\n\n");
@@ -145,10 +137,7 @@ export async function enqueueIssueInteractionChatPublications(
     .from(chatConversations)
     .innerJoin(
       chatEndpoints,
-      and(
-        eq(chatEndpoints.companyId, chatConversations.companyId),
-        eq(chatEndpoints.id, chatConversations.endpointId),
-      ),
+      and(eq(chatEndpoints.companyId, chatConversations.companyId), eq(chatEndpoints.id, chatConversations.endpointId)),
     )
     .where(
       and(
@@ -161,36 +150,37 @@ export async function enqueueIssueInteractionChatPublications(
   if (bindings.length === 0) return [];
 
   const taskUrl = publicTaskUrl(interaction.issueId);
-  const question =
-    interaction.kind === "ask_user_questions"
-      ? nativeChatQuestion(interaction)
-      : null;
+  const question = interaction.kind === "ask_user_questions" ? nativeChatQuestion(interaction) : null;
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
   for (const { conversation, endpoint } of bindings) {
     const formDraft =
       interaction.kind === "ask_user_questions" &&
-      (endpoint.provider === "slack" ||
-        endpoint.provider === "microsoft-teams") &&
+      (endpoint.provider === "slack" || endpoint.provider === "microsoft-teams") &&
       endpoint.capabilities.actions === true &&
       endpoint.capabilities.modals === true
         ? createChatQuestionFormDraft(interaction)
         : null;
-    const supportsCallbacks =
-      formDraft === null &&
-      question !== null &&
-      endpoint.capabilities.actions === true;
-    const actionTokens = supportsCallbacks
+    const supportsCallbacks = formDraft === null && question !== null && endpoint.capabilities.actions === true;
+    const questionActionTokens = supportsCallbacks
       ? question.options.map((option) => ({
           actionId: createChatQuestionOptionActionToken(),
           option,
         }))
       : [];
+    const confirmation =
+      endpoint.provider === "telegram" && endpoint.capabilities.actions === true
+        ? nativeTelegramConfirmation(interaction)
+        : null;
+    const confirmationActionTokens = confirmation
+      ? (["accept", "reject"] as const).map((decision) => ({
+          actionId: createChatConfirmationActionToken(),
+          decision,
+        }))
+      : [];
     if (
       endpoint.provider === "telegram" &&
-      actionTokens.some(
-        ({ actionId }) =>
-          telegramCallbackDataByteLength(actionId) >
-          TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
+      [...questionActionTokens, ...confirmationActionTokens].some(
+        ({ actionId }) => telegramCallbackDataByteLength(actionId) > TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
       )
     ) {
       throw new Error("Generated Telegram question action exceeds 64 bytes");
@@ -205,20 +195,30 @@ export async function enqueueIssueInteractionChatPublications(
           },
         ]
       : supportsCallbacks
-        ? actionTokens.map(({ actionId, option }) => ({
+        ? questionActionTokens.map(({ actionId, option }) => ({
             type: "callback" as const,
             actionId,
             label: option.label,
           }))
-        : taskUrl
-          ? [
-              {
-                type: "link" as const,
-                label: "Open in Paperclip",
-                url: taskUrl,
-              },
-            ]
-          : [];
+        : confirmation
+          ? confirmationActionTokens.map(({ actionId, decision }) => ({
+              type: "callback" as const,
+              actionId,
+              label:
+                decision === "accept"
+                  ? (confirmation.payload.acceptLabel ?? "Accept")
+                  : (confirmation.payload.rejectLabel ?? "Reject"),
+              style: decision === "accept" ? ("primary" as const) : ("danger" as const),
+            }))
+          : taskUrl
+            ? [
+                {
+                  type: "link" as const,
+                  label: "Open in Paperclip",
+                  url: taskUrl,
+                },
+              ]
+            : [];
     const text =
       interaction.kind === "ask_user_questions"
         ? textForQuestionInteraction(interaction, taskUrl)
@@ -232,18 +232,23 @@ export async function enqueueIssueInteractionChatPublications(
         id: interaction.id,
         card: {
           kind:
-            interaction.kind === "ask_user_questions" ? "question" : "status",
+            interaction.kind === "ask_user_questions"
+              ? "question"
+              : interaction.kind === "request_confirmation"
+                ? "confirmation"
+                : "status",
           title:
             interaction.kind === "ask_user_questions"
-              ? (question?.prompt ??
-                interaction.payload.title ??
-                interaction.title ??
-                "Input needed")
-              : "Response needed in Paperclip",
+              ? (question?.prompt ?? interaction.payload.title ?? interaction.title ?? "Input needed")
+              : interaction.kind === "request_confirmation"
+                ? interaction.payload.prompt
+                : "Response needed in Paperclip",
           body:
             interaction.kind === "ask_user_questions"
               ? (question?.helpText ?? undefined)
-              : "Open the task in Paperclip to review and respond.",
+              : interaction.kind === "request_confirmation"
+                ? (interaction.payload.detailsMarkdown ?? undefined)
+                : "Open the task in Paperclip to review and respond.",
           actions,
         },
       },
@@ -271,12 +276,10 @@ export async function enqueueIssueInteractionChatPublications(
           publicationId: publication.id,
         }),
       );
-    } else if (publication && question && actionTokens.length > 0) {
-      const expiresAt = new Date(
-        publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
-      ).toISOString();
+    } else if (publication && question && questionActionTokens.length > 0) {
+      const expiresAt = new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString();
       await db.insert(chatActions).values(
-        actionTokens.map(({ actionId, option }) => ({
+        questionActionTokens.map(({ actionId, option }) => ({
           companyId: interaction.companyId,
           endpointId: endpoint.id,
           conversationId: conversation.id,
@@ -288,6 +291,25 @@ export async function enqueueIssueInteractionChatPublications(
             interactionId: interaction.id,
             questionId: question.id,
             optionId: option.id,
+            expiresAt,
+          },
+          status: "issued",
+        })),
+      );
+    } else if (publication && confirmation && confirmationActionTokens.length > 0) {
+      const expiresAt = new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString();
+      await db.insert(chatActions).values(
+        confirmationActionTokens.map(({ actionId, decision }) => ({
+          companyId: interaction.companyId,
+          endpointId: endpoint.id,
+          conversationId: conversation.id,
+          kind: "confirmation_response",
+          providerActionId: actionId,
+          payload: {
+            version: 1,
+            publicationId: publication.id,
+            interactionId: interaction.id,
+            decision,
             expiresAt,
           },
           status: "issued",
@@ -319,11 +341,9 @@ export async function cancelPendingIssueInteractionChatPublications(
     .where(
       and(
         eq(chatActions.companyId, input.companyId),
-        eq(chatActions.kind, "question_answer"),
+        inArray(chatActions.kind, ["question_answer", "confirmation_response"]),
         eq(chatActions.status, "issued"),
-        inArray(sql<string>`${chatActions.payload}->>'interactionId'`, [
-          ...input.interactionIds,
-        ]),
+        inArray(sql<string>`${chatActions.payload}->>'interactionId'`, [...input.interactionIds]),
       ),
     );
   return db
@@ -339,9 +359,7 @@ export async function cancelPendingIssueInteractionChatPublications(
         eq(chatPublications.companyId, input.companyId),
         eq(chatPublications.issueId, input.issueId),
         inArray(chatPublications.state, ["pending", "retry"]),
-        inArray(sql<string>`${chatPublications.payload}->>'interactionId'`, [
-          ...input.interactionIds,
-        ]),
+        inArray(sql<string>`${chatPublications.payload}->>'interactionId'`, [...input.interactionIds]),
       ),
     )
     .returning();

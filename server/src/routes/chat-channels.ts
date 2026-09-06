@@ -344,6 +344,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
             req.body.body,
             req.body.idempotencyKey,
             userId,
+            req.body.attachmentIds,
           ),
         );
     },

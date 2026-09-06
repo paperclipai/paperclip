@@ -4,6 +4,7 @@ import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { IssueAttachment } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternallyConnectedTaskBanner } from "./ExternallyConnectedTaskBanner";
 
@@ -77,7 +78,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
   let container: HTMLDivElement;
   let root: Root;
 
-  async function renderBanner() {
+  async function renderBanner(attachments: IssueAttachment[] = []) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -85,6 +86,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <ExternallyConnectedTaskBanner
+            attachments={attachments}
             companyId="company-1"
             issueId="issue-1"
           />
@@ -145,6 +147,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
       "conversation-1",
       "Visible board update",
       expect.any(String),
+      [],
     );
     expect(pushToastMock).toHaveBeenCalledWith({
       title: "Sent to channel",
@@ -152,6 +155,66 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
       tone: "success",
     });
     expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("publishes only explicitly checked unbound task files", async () => {
+    mockChatEndpointsApi.publishBoardMessage.mockResolvedValue({
+      id: "publication-file",
+      state: "published",
+      attempts: 1,
+    });
+    const attachment = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      issueId: "issue-1",
+      issueCommentId: null,
+      assetId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      provider: "local_disk",
+      objectKey: "issues/issue-1/result.txt",
+      contentType: "text/plain",
+      byteSize: 12,
+      sha256: "a".repeat(64),
+      originalFilename: "result.txt",
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      contentPath: "/api/attachments/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/content",
+    } satisfies IssueAttachment;
+    await renderBanner([
+      attachment,
+      {
+        ...attachment,
+        id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        issueCommentId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        originalFilename: "already-bound.txt",
+      },
+    ]);
+
+    await act(() => findButton(container, "Send to channel").click());
+    expect(container.textContent).toContain("result.txt");
+    expect(container.textContent).not.toContain("already-bound.txt");
+    const checkbox = container.querySelector('button[role="checkbox"]');
+    if (!checkbox) throw new Error("Attachment checkbox missing");
+    await act(() => (checkbox as HTMLButtonElement).click());
+    const textarea = container.querySelector("textarea");
+    if (!textarea) throw new Error("Board update textarea missing");
+    await act(() => setTextareaValue(textarea, "Send the requested file."));
+    await act(() => {
+      const sendButtons = [...container.querySelectorAll("button")].filter(
+        (button) => button.textContent?.trim() === "Send to channel",
+      );
+      sendButtons.at(-1)?.click();
+    });
+    await flushReact();
+
+    expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledWith(
+      "endpoint-1",
+      "conversation-1",
+      "Send the requested file.",
+      expect.any(String),
+      [attachment.id],
+    );
   });
 
   it.each([

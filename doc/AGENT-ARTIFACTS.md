@@ -79,6 +79,11 @@ When a task produces a user-inspectable deliverable file:
 4. Link the printed attachment URL in the final issue comment.
 5. Then set the final issue status.
 
+For a response that is explicitly intended for an external chat conversation,
+also pass each intended file with `paperclipai issue comment --attachment-id
+<id>`. Paperclip binds only those exact uploaded files to that comment; other
+task attachments remain internal.
+
 Final comments should name and link the uploaded artifact or work product, not
 just the local filesystem path. For workspace-only files, include the work
 product title and recorded relative path. Local paths can be included as
