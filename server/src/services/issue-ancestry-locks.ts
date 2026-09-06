@@ -6,7 +6,7 @@ import { LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH } from "./trust-preset-resolver.js";
 
 export interface LockedIssueAncestryRow {
   id: string;
-  identifier: string;
+  identifier: string | null;
   companyId: string;
   projectId: string | null;
   parentId: string | null;
