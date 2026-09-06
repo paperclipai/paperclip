@@ -2158,6 +2158,24 @@ function tokensMatch(received) {
   return timingSafeEqual(expected, actual);
 }
 
+// Read the bridge token a local caller presented. The gateway accepts two
+// header conventions for the same token. "Authorization: Bearer <token>" is the
+// bridge convention. "X-API-Key: <token>" is the convention the public Paperclip
+// API documents, so an agent that follows those docs sends it first. Both
+// headers carry the same per-run token and both reach the same constant-time
+// comparison in tokensMatch, so the second header removes a needless 401 without
+// widening what the gateway trusts. The header allowlist strips both
+// headers before the gateway forwards a request, so neither one leaves the
+// sandbox. Authorization wins when a caller presents a bearer token in it.
+function readBridgeToken(req) {
+  const auth = req.headers.authorization || "";
+  if (auth.startsWith("Bearer ")) {
+    return auth.slice("Bearer ".length);
+  }
+  const apiKey = req.headers["x-api-key"];
+  return typeof apiKey === "string" ? apiKey : "";
+}
+
 function writeJsonResponse(res, status, body) {
   res.statusCode = status;
   res.setHeader("content-type", "application/json");
@@ -2209,8 +2227,7 @@ async function runFileGateway() {
 
   const server = createServer(async (req, res) => {
     try {
-      const auth = req.headers.authorization || "";
-      const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+      const receivedToken = readBridgeToken(req);
       if (!tokensMatch(receivedToken)) {
         writeJsonResponse(res, 401, { error: "Invalid bridge token." });
         return;
@@ -2463,8 +2480,7 @@ function runHttp2Gateway() {
 
   const server = createServer(async (req, res) => {
     try {
-      const auth = req.headers.authorization || "";
-      const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+      const receivedToken = readBridgeToken(req);
       if (!tokensMatch(receivedToken)) {
         writeJsonResponse(res, 401, { error: "Invalid bridge token." });
         return;
