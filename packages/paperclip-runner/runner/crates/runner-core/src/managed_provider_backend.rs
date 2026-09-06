@@ -43,7 +43,7 @@ const MAX_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const QUALIFIED_CLAUDE_MODEL: &str = "claude-sonnet-5";
 const QUALIFIED_CLAUDE_BETA: &str = "managed-agents-2026-04-01";
 const QUALIFIED_AGENTCORE_MODEL: &str = "global.anthropic.claude-sonnet-4-6";
-const QUALIFIED_AGENTCORE_REVISION: &str = "aws-agentcore-harness-v1";
+const QUALIFIED_AGENTCORE_REVISION: &str = "aws-agentcore-harness-context-v2";
 
 fn initial_event_sequence() -> u64 {
     1

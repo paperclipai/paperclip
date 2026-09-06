@@ -2211,7 +2211,7 @@ mod tests {
             context_bucket: "paperclip-context-test".to_owned(),
             context_prefix: "companies/company-test/profiles/profile-test".to_owned(),
             context_kms_key_arn: "arn:aws:kms:us-east-1:123456789012:key/test".to_owned(),
-            qualification_revision: "aws-agentcore-harness-v1".to_owned(),
+            qualification_revision: "aws-agentcore-harness-context-v2".to_owned(),
             event_expiry_days: 90,
             max_estimated_session_cost_usd: 1.0,
             max_iterations: 8,

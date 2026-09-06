@@ -634,6 +634,34 @@ it("derives the ACPX package authority only from the verified dist/cli layout", 
   ).toThrow("ACPX sidecar must use the provider package dist/cli layout");
 });
 
+it("keeps a deployed ACPX package inside its pnpm-owned dependency root", async () => {
+  const deployedPackageRoot = await mkdtemp(
+    join(tmpdir(), "paperclip-deployed-provider-package-"),
+  );
+  await mkdir(join(deployedPackageRoot, "dist", "cli"), { recursive: true });
+  await mkdir(join(deployedPackageRoot, "node_modules", ".pnpm"), {
+    recursive: true,
+  });
+  try {
+    expect(
+      runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+        join(
+          deployedPackageRoot,
+          "dist",
+          "cli",
+          "acpx-runtime-sidecar.cjs",
+        ),
+        deployedPackageRoot,
+      ),
+    ).toEqual({
+      root: deployedPackageRoot,
+      manifest: join(deployedPackageRoot, "package.json"),
+    });
+  } finally {
+    await rm(deployedPackageRoot, { recursive: true, force: true });
+  }
+});
+
 it("requires a provider-pack authority for remote ACPX artifact hashes", () => {
   expect(() =>
     runnerdLaunchProfileInternals.acpxRunnerLaunchProfile(

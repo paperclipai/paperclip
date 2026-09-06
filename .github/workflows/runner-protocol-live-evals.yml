@@ -268,11 +268,13 @@ jobs:
             --pack-destination "$RUNNER_TEMP/runner-protocol-build/package"
           package="$(find "$RUNNER_TEMP/runner-protocol-build/package" -maxdepth 1 -type f -name '*.tgz' -print -quit)"
           test -f "$package"
-          npm install --prefix "$RUNNER_TEMP/runner-protocol-build/portable" --omit=dev "$package"
+          pnpm --filter @paperclipai/paperclip-runner deploy --prod \
+            "$RUNNER_TEMP/runner-protocol-build/portable"
           cp "$package" "$RUNNER_TEMP/runner-protocol-build/paperclip-runner.tgz"
           cp packages/paperclip-runner/runner/target/debug/paperclip-runnerd "$RUNNER_TEMP/runner-protocol-build/paperclip-runnerd"
           cp -R packages/paperclip-runner/dist-issue-thread "$RUNNER_TEMP/runner-protocol-build/dist-issue-thread"
-          test -f "$RUNNER_TEMP/runner-protocol-build/portable/node_modules/@paperclipai/paperclip-runner/dist/cli/eval-session.js"
+          test -f "$RUNNER_TEMP/runner-protocol-build/portable/dist/cli/eval-session.js"
+          test -d "$RUNNER_TEMP/runner-protocol-build/portable/node_modules/.pnpm"
           test -x "$RUNNER_TEMP/runner-protocol-build/paperclip-runnerd"
           tar --create --gzip --file runner-protocol-build.tar.gz -C "$RUNNER_TEMP/runner-protocol-build" .
           sha256sum runner-protocol-build.tar.gz > runner-protocol-build.tar.gz.sha256
@@ -433,7 +435,7 @@ jobs:
           python3 .paperclip-evals/evals/paperclip-runner/tools/run_live_roster.py run \
             --roster ".paperclip-evals/evals/paperclip-runner/rosters/$ROSTER_FILE" \
             --case "$CASE_ID" \
-            --runner-cli runner-protocol-build/extracted/portable/node_modules/@paperclipai/paperclip-runner/dist/cli/eval-session.js \
+            --runner-cli runner-protocol-build/extracted/portable/dist/cli/eval-session.js \
             --runner-package runner-protocol-build/extracted/paperclip-runner.tgz \
             --runnerd runner-protocol-build/extracted/paperclip-runnerd \
             --runs-root cell-output/runs \

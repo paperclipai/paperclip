@@ -4626,7 +4626,7 @@ registry.registerPath({
       configuration: z.record(z.string(), z.unknown()),
       enabled: z.boolean().optional(),
       retentionAcknowledged: z.boolean().optional(),
-      qualification: z.object({ suite: z.literal("aws-agentcore-harness-v1") }).strict().optional(),
+      qualification: z.object({ suite: z.literal("aws-agentcore-harness-context-v2") }).strict().optional(),
     })),
   },
   responses: {

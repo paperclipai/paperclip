@@ -105,6 +105,15 @@ test("resolves both repositories immutably and bounds total matrix concurrency",
   }
   assert.match(workflow, /matrix_0/u);
   assert.match(workflow, /matrix_1/u);
+  assert.match(
+    workflow,
+    /pnpm --filter @paperclipai\/paperclip-runner deploy --prod/u,
+  );
+  assert.match(
+    workflow,
+    /--runner-cli runner-protocol-build\/extracted\/portable\/dist\/cli\/eval-session\.js/u,
+  );
+  assert.doesNotMatch(workflow, /npm install --prefix/u);
 });
 
 test("publishes only the separately sanitized Evalbook through trusted OIDC code", async () => {
