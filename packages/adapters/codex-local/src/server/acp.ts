@@ -492,6 +492,7 @@ export async function testCodexAcpEnvironment(
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
+  const callerControlsHost = ctx.callerControlsHost !== false;
 
   checks.push({
     code: "codex_engine_selected",
@@ -577,6 +578,23 @@ export async function testCodexAcpEnvironment(
         level: "info",
         message: "OPENAI_API_KEY is set for Codex ACP authentication.",
         detail: `Detected in ${configApiKey ? "adapter config env" : "server environment"}.`,
+      });
+    } else if (!callerControlsHost) {
+      // Hosted multi-tenant. This branch sits directly after the api-key case
+      // deliberately: an API key came from this agent's own config, but every
+      // readiness signal below it is derived from the SERVER's Codex home
+      // (`codexHomeHasUsableAuth(sharedSourceHome)`). On a hosted install that
+      // home belongs to the operator or another tenant, so falling through
+      // would tell this user they are authenticated by someone else's login,
+      // and the final `else` would tell them to run `codex login` on a machine
+      // they have no shell on. Both are dead ends; answer with the one thing
+      // they can act on, and settle the plan question rather than leaving a
+      // subscriber hunting for an option that does not exist.
+      checks.push({
+        code: "codex_acp_credentials_missing",
+        level: "warn",
+        message: "No Codex credentials are configured for this agent.",
+        hint: "Add an OpenAI API key to this agent's credentials. A ChatGPT Plus or Pro plan cannot be used here: it signs in through a local `codex login`, which only works on your own machine.",
       });
     } else if (credentialReadiness.ready && !credentialReadiness.managed) {
       checks.push({

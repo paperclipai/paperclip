@@ -87,6 +87,7 @@ export async function testEnvironment(
   const command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const callerControlsHost = ctx.callerControlsHost !== false;
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const runId = `claude-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -222,6 +223,18 @@ export async function testEnvironment(
       message:
         "CLAUDE_CODE_OAUTH_TOKEN is set. Claude will authenticate with the configured subscription token; no stored login is needed on the execution target.",
       detail: `Detected in ${source}.`,
+    });
+  } else if (!callerControlsHost) {
+    // Hosted multi-tenant: "if Claude is logged in" refers to a host login the
+    // user cannot perform. Unlike Codex, there IS a real subscription route
+    // here, so name it rather than pushing them to an API key: the token is
+    // minted on their own machine and pasted in, which is exactly the thing
+    // they were looking for when they picked this adapter.
+    checks.push({
+      code: "claude_subscription_mode_possible",
+      level: "info",
+      message: "No Claude credentials are configured for this agent yet.",
+      hint: "Add an Anthropic API key, or use your Claude Pro or Max plan by running `claude setup-token` on your own computer and pasting the token it prints.",
     });
   } else if (!targetIsRemote) {
     checks.push({
