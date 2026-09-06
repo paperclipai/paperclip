@@ -1274,7 +1274,8 @@ matches the company and agent directories, and a sanitized retention counterpart
 has proof of completion. New counterparts require a valid
 completion manifest. Legacy counterparts must contain a non-empty retained
 artifact for every JSONL file still present in the raw home. Partial, empty,
-unreadable, or symlinked counterparts fail closed. A quarantine
+unreadable, or symlinked company/ACPX/agent/run-home/retention/session paths
+fail closed. A quarantine
 marker records an incident. It does not permit deletion of the only raw copy.
 
 Review the JSON manifest before you add `--delete`. Keep the default 24-hour

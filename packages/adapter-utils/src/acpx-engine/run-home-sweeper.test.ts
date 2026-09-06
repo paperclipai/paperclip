@@ -480,6 +480,55 @@ describe("run-home sweeper", () => {
   });
 
   describe("filesystem containment", () => {
+    it("does not follow a symlinked company directory", async () => {
+      const externalCompanyDir = await makeTempRoot();
+      const linkedCompanyParent = await makeTempRoot();
+      try {
+        const { runHomeDir } = await buildRunHome({
+          companyDir: externalCompanyDir,
+          agentId: "external-agent",
+          runId: "run-linked-company",
+          ageHours: 30,
+          withRetained: true,
+        });
+        const linkedCompanyDir = path.join(linkedCompanyParent, "linked-company");
+        await fs.symlink(externalCompanyDir, linkedCompanyDir, "dir");
+
+        const result = await sweep({ companyDir: linkedCompanyDir, dryRun: false, graceHours: 24 });
+
+        expect(result.scanned).toBe(0);
+        await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+      } finally {
+        await fs.rm(linkedCompanyParent, { recursive: true, force: true });
+        await fs.rm(externalCompanyDir, { recursive: true, force: true });
+      }
+    });
+
+    it("does not follow a symlinked acp-engine directory", async () => {
+      const externalCompanyDir = await makeTempRoot();
+      try {
+        const { runHomeDir } = await buildRunHome({
+          companyDir: externalCompanyDir,
+          agentId: "external-agent",
+          runId: "run-linked-acp-engine",
+          ageHours: 30,
+          withRetained: true,
+        });
+        await fs.symlink(
+          path.join(externalCompanyDir, "acp-engine"),
+          path.join(companyDir, "acp-engine"),
+          "dir",
+        );
+
+        const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+        expect(result.scanned).toBe(0);
+        await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+      } finally {
+        await fs.rm(externalCompanyDir, { recursive: true, force: true });
+      }
+    });
+
     it("does not follow a symlinked agents root", async () => {
       const externalCompanyDir = await makeTempRoot();
       try {

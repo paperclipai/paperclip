@@ -495,7 +495,21 @@ export async function sweepRunHomes(opts: SweeperOptions, deps: SweeperDependenc
   if (!Number.isFinite(opts.graceHours) || opts.graceHours < MINIMUM_GRACE_HOURS) {
     throw new Error(`graceHours must be at least ${MINIMUM_GRACE_HOURS}`);
   }
-  const agentsDir = path.join(opts.companyDir, "acp-engine", "agents");
+  const companyDirStat = await fs.lstat(opts.companyDir).catch(() => null);
+  if (!companyDirStat?.isDirectory() || companyDirStat.isSymbolicLink()) {
+    return { scanned: 0, eligible: 0, deleted: 0, errors: 0, totalBytesReclaimed: 0, entries: [] };
+  }
+
+  // Validate every configured ancestor before inspecting descendants. lstat on
+  // `acp-engine/agents` alone follows a symlinked `acp-engine` component and can
+  // make an external tree look lexically contained beneath companyDir.
+  const acpEngineDir = path.join(opts.companyDir, "acp-engine");
+  const acpEngineDirStat = await fs.lstat(acpEngineDir).catch(() => null);
+  if (!acpEngineDirStat?.isDirectory() || acpEngineDirStat.isSymbolicLink()) {
+    return { scanned: 0, eligible: 0, deleted: 0, errors: 0, totalBytesReclaimed: 0, entries: [] };
+  }
+
+  const agentsDir = path.join(acpEngineDir, "agents");
   const agentsDirStat = await fs.lstat(agentsDir).catch(() => null);
   if (!agentsDirStat?.isDirectory() || agentsDirStat.isSymbolicLink()) {
     return { scanned: 0, eligible: 0, deleted: 0, errors: 0, totalBytesReclaimed: 0, entries: [] };
