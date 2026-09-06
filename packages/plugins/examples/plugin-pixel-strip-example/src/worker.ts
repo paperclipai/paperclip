@@ -10,9 +10,9 @@ import {
   type PixelSpriteState,
 } from "./pixel-state.js";
 
-const PLUGIN_NAME = "hdo-76-pixel-strip";
+const PLUGIN_NAME = "pixel-strip-example";
 const PLUGIN_HEALTH_MESSAGE =
-  "HDO-76 pixel-strip prototype ready (read-only; no write-back; no timer inference)";
+  "Pixel Strip example ready (read-only; no write-back; no timer inference)";
 
 /**
  * Convert a raw `Issue` from `ctx.issues.list` into the persisted

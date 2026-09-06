@@ -1,5 +1,5 @@
 /**
- * Pure helpers for the HDO-76 vault read-bridge prototype.
+ * Pure helpers for the vault read-bridge example.
  *
  * These helpers compute what the bridge **would** render, given a
  * snapshot of the vault tree. They never read or write the vault

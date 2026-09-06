@@ -9,14 +9,7 @@ describe("manifest", () => {
   });
 
   it("declares a stable plugin id", () => {
-    strictEqual(manifest.id, "paperclip.hdo-76-vault-read-bridge");
-  });
-
-  it("declares the vault root as access: read", () => {
-    ok(manifest.localFolders, "expected localFolders");
-    const vault = manifest.localFolders?.find((f) => f.folderKey === "vault-root");
-    ok(vault, "expected vault-root folder");
-    strictEqual(vault?.access, "read");
+    strictEqual(manifest.id, "paperclip.pixel-strip-example");
   });
 
   it("declares only read-side capabilities", () => {
@@ -35,17 +28,15 @@ describe("manifest", () => {
     }
   });
 
-  it("declares the project detail Vault tab slot", () => {
+  it("declares the project detail tab slot", () => {
     const tab = manifest.ui?.slots.find((s) => s.type === "detailTab");
     ok(tab, "expected detailTab slot");
-    strictEqual(tab?.displayName, "Vault");
     deepStrictEqual(tab?.entityTypes, ["project"]);
   });
 
   it("declares the project sidebar item slot", () => {
     const sidebar = manifest.ui?.slots.find((s) => s.type === "projectSidebarItem");
     ok(sidebar, "expected projectSidebarItem slot");
-    strictEqual(sidebar?.displayName, "Vault");
     deepStrictEqual(sidebar?.entityTypes, ["project"]);
   });
 });

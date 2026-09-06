@@ -1,7 +1,7 @@
 {
-  "name": "@paperclipai/plugin-hdo-76-vault-read-bridge",
+  "name": "@paperclipai/plugin-vault-read-bridge-example",
   "version": "0.1.0",
-  "description": "HDO-76 Phase 2 prototype: one-way read-only bridge from a local Obsidian vault into a project-detail Vault tab on the live Paperclip UI. No write-back, no auto-issue-creation, no outbound HTTP.",
+  "description": "Example plugin: one-way read-only bridge from a local Obsidian vault into a project-detail Vault tab. No write-back, no auto-issue-creation, no outbound HTTP.",
   "type": "module",
   "private": true,
   "exports": {

@@ -5,8 +5,7 @@ import { readFileSync } from "node:fs";
 /**
  * Contract-level lint test: the bridge MUST NOT reference
  * `writeTextAtomic` or `deleteFile` against the vault folder key.
- * This is one of the binding constraints from HDO-76 Phase 1 Note B;
- * the lint runs in this heartbeat and again on every CI gate.
+ * The lint runs in CI on every change.
  *
  * See the plugin README for the write-back prohibition.
  */
@@ -18,7 +17,7 @@ function readSource(url: URL): string {
   return readFileSync(url, "utf8");
 }
 
-describe("vault read-bridge worker", () => {
+describe("vault read-bridge example worker", () => {
   it("never references writeTextAtomic", () => {
     const source = readSource(WORKER_PATH);
     ok(!/writeTextAtomic/.test(source), "worker must not reference writeTextAtomic");
@@ -35,7 +34,7 @@ describe("vault read-bridge worker", () => {
   });
 });
 
-describe("vault read-bridge UI", () => {
+describe("vault read-bridge example UI", () => {
   it("never references writeTextAtomic or deleteFile", () => {
     const source = readSource(UI_PATH);
     ok(!/writeTextAtomic/.test(source), "UI must not reference writeTextAtomic");

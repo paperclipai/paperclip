@@ -3,7 +3,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 /**
  * Stable plugin ID. Used by host registration and event namespacing.
  */
-export const PLUGIN_ID = "paperclip.hdo-76-pixel-strip";
+export const PLUGIN_ID = "paperclip.pixel-strip-example";
 
 /**
  * Slot IDs are stable identifiers; renaming them is a breaking change.
@@ -17,10 +17,10 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: "0.1.0",
-  displayName: "HDO-76 Pixel Strip (Prototype)",
+  displayName: "Pixel Strip Example",
   description:
-    "Read-only project-detail pixel-agent strip. Maps persisted Paperclip runtime state onto the archived HuiDots Pixel-Company visual authority. No animation that implies work, no write-back, no timer-derived activity.",
-  author: "HuiDots CTO (HDO-76)",
+    "Read-only project-detail pixel strip that maps persisted Paperclip runtime state onto semantic sprite states. No animation that implies work, no timer-derived activity, no write-back.",
+  author: "Paperclip examples",
   categories: ["ui"],
   // Read-only capability surface. The plugin never requests any
   // `*.create`, `*.update`, `*.write`, or `*.delete` capability.

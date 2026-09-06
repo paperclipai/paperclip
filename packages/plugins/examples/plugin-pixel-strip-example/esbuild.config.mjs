@@ -3,11 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Build the HDO-76 vault read-bridge plugin.
+ * Build the pixel-strip example plugin.
  *
- * Same shape as the pixel-strip plugin: manifest + UI bundled with
- * esbuild, worker compiled with `tsc`. See the comment in
- * `plugin-hdo-76-pixel-strip/esbuild.config.mjs` for the rationale.
+ * Following the file-browser-example plugin's proven shape, the
+ * worker is compiled with `tsc` and only the manifest and UI bundle
+ * use esbuild. The plugin-sdk is externalised for the manifest
+ * bundle so the host can resolve it at runtime.
  */
 
 const __filename = fileURLToPath(import.meta.url);
@@ -43,5 +44,5 @@ await esbuild.build({
   logLevel: "info",
 });
 
-console.log("vault-read-bridge plugin: manifest + UI bundled into dist/");
+console.log("pixel-strip example: manifest + UI bundled into dist/");
 console.log("worker is compiled by `tsc` — run `pnpm build:tsc` to refresh dist/worker.js");

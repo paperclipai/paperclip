@@ -1,11 +1,11 @@
 /**
- * Sprite-state derivation for the HDO-76 pixel strip prototype.
+ * Sprite-state derivation for the pixel strip example.
  *
  * The state mapping is **the** truth-seam of this plugin. It takes
  * persisted runtime state only — issue status, current assignee,
  * agent heartbeat status, and the existence of pending
  * `ask_user_questions` / `request_confirmation` interactions — and
- * maps it onto the archived HuiDots Pixel-Company visual authority:
+ * maps it onto the five semantic sprite states:
  *
  *   working        -> WORKING          (blue)
  *   waiting        -> WAITING          (amber)

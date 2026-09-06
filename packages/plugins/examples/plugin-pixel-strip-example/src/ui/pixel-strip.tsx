@@ -6,7 +6,7 @@ import { usePluginData } from "@paperclipai/plugin-sdk/ui";
 import type { PixelSpriteState } from "../pixel-state.js";
 import { spriteStateLabel } from "../pixel-state.js";
 
-const PLUGIN_KEY = "paperclip.hdo-76-pixel-strip";
+const PLUGIN_KEY = "paperclip.pixel-strip-example";
 const TAB_SLOT_ID = "pixel-strip-tab";
 
 interface Sprite {

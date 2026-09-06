@@ -10,9 +10,9 @@ import {
 } from "./vault-read.js";
 import { VAULT_ROOT_FOLDER_KEY } from "./manifest.js";
 
-const PLUGIN_NAME = "hdo-76-vault-read-bridge";
+const PLUGIN_NAME = "vault-read-bridge-example";
 const PLUGIN_HEALTH_MESSAGE =
-  "HDO-76 vault read-bridge prototype ready (read-only; no write-back; no auto-issue-creation)";
+  "Vault Read Bridge example ready (read-only; no write-back; no auto-issue-creation)";
 
 interface VaultListingEntry {
   readonly path: string;

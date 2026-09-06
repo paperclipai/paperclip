@@ -3,18 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Build the HDO-76 pixel-strip plugin.
+ * Build the vault read-bridge example plugin.
  *
- * The plugin-sdk's default bundler presets externalise
- * `@paperclipai/plugin-sdk` for the manifest but **bundle** it for
- * the worker. In this heartbeat's environment the SDK's transitive
- * `zod` and `@paperclipai/shared` resolutions fail (the symlinks
- * are missing because pnpm install is broken on this Windows host);
- * following the file-browser-example plugin's proven shape, the
- * worker is therefore compiled with `tsc` and only the UI bundle
- * uses esbuild.
- *
- * The manifest is bundled here. The UI bundle is also bundled here.
+ * Same shape as the pixel-strip example: manifest + UI bundled with
+ * esbuild, worker compiled with `tsc`. See the comment in
+ * `plugin-pixel-strip-example/esbuild.config.mjs` for the rationale.
  */
 
 const __filename = fileURLToPath(import.meta.url);
@@ -50,5 +43,5 @@ await esbuild.build({
   logLevel: "info",
 });
 
-console.log("pixel-strip plugin: manifest + UI bundled into dist/");
+console.log("vault-read-bridge example: manifest + UI bundled into dist/");
 console.log("worker is compiled by `tsc` — run `pnpm build:tsc` to refresh dist/worker.js");

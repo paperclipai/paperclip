@@ -1,8 +1,7 @@
 /**
- * Tests use Node's built-in `node:test` runner so we do not depend on
- * the workspace vitest (which is currently broken in this environment
- * — see the issue summary on the parent ticket). The functions under
- * test are pure and have no external dependencies.
+ * Tests use Node's built-in `node:test` runner so we do not depend
+ * on the workspace vitest. The functions under test are pure and
+ * have no external dependencies.
  */
 
 import { describe, it } from "node:test";

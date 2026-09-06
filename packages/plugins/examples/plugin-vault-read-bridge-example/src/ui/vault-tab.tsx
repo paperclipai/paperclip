@@ -4,7 +4,7 @@ import {
 } from "@paperclipai/plugin-sdk/ui";
 import { usePluginData } from "@paperclipai/plugin-sdk/ui";
 
-const PLUGIN_KEY = "paperclip.hdo-76-vault-read-bridge";
+const PLUGIN_KEY = "paperclip.vault-read-bridge-example";
 const TAB_SLOT_ID = "vault-tab";
 
 interface VaultViewNote {
@@ -68,7 +68,7 @@ export function VaultTab({ context }: PluginDetailTabProps) {
       <div className="rounded-lg border border-border bg-card p-4">
         <h2 className="text-sm font-semibold text-foreground">Vault</h2>
         <p className="mt-1 text-xs text-muted-foreground">
-          Read-only mirror of the local Obsidian vault. The vault is the Owner's human-controlled truth; Paperclip never edits it.
+          Read-only mirror of the local Obsidian vault. The vault is the operator's human-controlled truth; Paperclip never edits it.
         </p>
         <p
           className="mt-2 text-xs"
@@ -91,9 +91,7 @@ export function VaultTab({ context }: PluginDetailTabProps) {
 
       {!reachable ? (
         <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-          The vault root has not been configured for this company. Ask the operator to point the plugin at a folder under
-          <code className="mx-1 rounded bg-muted px-1 py-0.5">HuiDots/Knowledge/ramsey-ai-portfolio-brain/</code>
-          (or any local Obsidian vault root).
+          The vault root has not been configured for this company. Ask the operator to point the plugin at a local Obsidian vault root.
         </div>
       ) : loading ? (
         <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">

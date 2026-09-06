@@ -1,7 +1,7 @@
 {
-  "name": "@paperclipai/plugin-hdo-76-pixel-strip",
+  "name": "@paperclipai/plugin-pixel-strip-example",
   "version": "0.1.0",
-  "description": "HDO-76 Phase 2 prototype: read-only project-detail pixel-agent strip that maps persisted Paperclip runtime state onto archived Pixel-Company visual authority. No animation that implies work, no write-back, no timer-derived activity.",
+  "description": "Example plugin: read-only project-detail pixel strip that maps persisted Paperclip runtime state onto semantic sprite states. No animation that implies work, no timer-derived activity, no write-back.",
   "type": "module",
   "private": true,
   "exports": {

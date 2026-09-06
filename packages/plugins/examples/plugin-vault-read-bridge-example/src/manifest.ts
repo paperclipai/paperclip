@@ -3,7 +3,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 /**
  * Stable plugin ID. Used by host registration and event namespacing.
  */
-export const PLUGIN_ID = "paperclip.hdo-76-vault-read-bridge";
+export const PLUGIN_ID = "paperclip.vault-read-bridge-example";
 
 /**
  * The vault folder key. The bridge declares `access: "read"` for this
@@ -23,10 +23,10 @@ const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: "0.1.0",
-  displayName: "HDO-76 Vault Read Bridge (Prototype)",
+  displayName: "Vault Read Bridge Example",
   description:
-    "One-way read-only bridge from a local Obsidian vault into a project-detail Vault tab. The vault is the Owner's human-controlled truth; Paperclip never edits it. No write-back, no auto-issue-creation, no outbound HTTP.",
-  author: "HuiDots CTO (HDO-76)",
+    "One-way read-only bridge from a local Obsidian vault into a project-detail Vault tab. The vault is the operator's human-controlled truth; Paperclip never edits it. No write-back, no auto-issue-creation, no outbound HTTP.",
+  author: "Paperclip examples",
   categories: ["ui"],
   // Read-only capability surface. The plugin never requests any
   // `*.create`, `*.update`, `*.write`, or `*.delete` capability.
