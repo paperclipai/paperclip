@@ -209,6 +209,7 @@ import {
 } from "../services/issues.js";
 import {
   type ExplicitProjectSelectionInput,
+  type ExplicitProjectSelectionLookups,
   resolveAgentIssueProjectId,
   resolveExplicitProjectSelection,
 } from "../services/issue-project-inference.js";
