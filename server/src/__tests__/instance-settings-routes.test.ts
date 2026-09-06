@@ -738,7 +738,7 @@ describe("instance settings routes", () => {
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ keyboardShortcuts: true });
     });
 
-    it("keeps executionMode writable on self-hosted instances", async () => {
+    it.each(["kubernetes", "any"])("allows an instance admin to set self-hosted executionMode to %j", async (executionMode) => {
       delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
       const app = await createApp({
         type: "board",
@@ -749,10 +749,10 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ executionMode: "kubernetes" });
+        .send({ executionMode });
 
       expect(res.status).toBe(200);
-      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ executionMode: "kubernetes" });
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ executionMode });
     });
   });
 

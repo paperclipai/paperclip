@@ -18658,14 +18658,9 @@ export function heartbeatService(
         let kubernetesEnvironment =
           await environmentsSvc.findKubernetesEnvironment(agent.companyId);
         if (!kubernetesEnvironment) {
-          // Lazy recovery for companies created after the startup bootstrap ran
-          // (the boot hook only provisions environments for companies that exist
-          // at boot). Re-derive the managed-env config from the bootstrap env.
-          // If the process env no longer forces Kubernetes (rollback / config
-          // drift relative to the persisted executionMode setting), skip the
-          // provisioning gracefully: the guard below still refuses local
-          // fallback with the explicit error, instead of crashing here on
-          // undefined config.
+          // An instance booted without companies has no managed environment yet.
+          // Reuse bootstrap config for lazy recovery, but missing or invalid env
+          // must not bypass the persisted policy or permit local fallback.
           let bootstrap: ReturnType<typeof parseExecutionPolicyBootstrapEnv> =
             null;
           let bootstrapSkipReason: string | null = null;
@@ -18684,6 +18679,7 @@ export function heartbeatService(
             await environmentsSvc.ensureKubernetesEnvironment(
               agent.companyId,
               bootstrap.kubernetesConfig,
+              { applyOverOperatorEdits: bootstrap.applyOverOperatorEdits },
             );
             kubernetesEnvironment =
               await environmentsSvc.findKubernetesEnvironment(agent.companyId);

@@ -23,6 +23,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { environmentService } from "../services/environments.ts";
+import { bootstrapExecutionPolicyFromEnv } from "../services/execution-policy-bootstrap.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { evaluateExecutionAllowlist } from "../services/execution-allowlist.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -118,11 +121,12 @@ describeEmbeddedPostgres("environmentService leases", () => {
     return { companyId, agentId, environmentId, runId };
   }
 
-  async function seedCompany(name = "Acme") {
+  async function seedCompany(name = "Acme", issuePrefix = "PAP") {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name,
+      issuePrefix,
       status: "active",
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -1389,6 +1393,294 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(activity.at(-1)?.action).toBe("environment.managed_stock_skipped");
   });
 
+  it("reconciles one instance-wide Kubernetes row across boots and company bindings", async () => {
+    const companyIds = [await seedCompany("First", "FIRST"), await seedCompany("Second", "SECOND")];
+    const bootEnv = { PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_BACKEND: "job" };
+    await bootstrapExecutionPolicyFromEnv(db, bootEnv);
+    const created = await svc.findKubernetesEnvironment();
+    expect(created).not.toBeNull();
+    await svc.update(created!.id, { config: { provider: "kubernetes", runtimeClassName: "operator" } });
+
+    const changedEnv = { ...bootEnv, PAPERCLIP_K8S_RUNTIME_CLASS_NAME: "manifest" };
+    await bootstrapExecutionPolicyFromEnv(db, changedEnv);
+    expect((await svc.getById(created!.id))?.config.runtimeClassName).toBe("operator");
+
+    const authoritativeEnv = { ...changedEnv, PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "true" };
+    await bootstrapExecutionPolicyFromEnv(db, authoritativeEnv);
+    const applied = await svc.getById(created!.id);
+    expect(applied?.config).toEqual({ provider: "kubernetes", inCluster: false, backend: "job", runtimeClassName: "manifest" });
+    const bindings = await db.select().from(builtInManagedResources);
+    expect(bindings.map((binding) => binding.companyId).sort()).toEqual(companyIds.sort());
+    expect(bindings.every((binding) => binding.resourceId === created!.id)).toBe(true);
+    expect(await db.select().from(environments)).toHaveLength(1);
+
+    await bootstrapExecutionPolicyFromEnv(db, authoritativeEnv);
+    expect((await svc.getById(created!.id))?.updatedAt).toEqual(applied?.updatedAt);
+  });
+
+  it("refreshes every company binding after a scoped authoritative update", async () => {
+    const companyIds = [await seedCompany("First", "FIRST"), await seedCompany("Second", "SECOND")];
+    const bootEnv = { PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_BACKEND: "job" };
+    await bootstrapExecutionPolicyFromEnv(db, bootEnv);
+    const created = await svc.findKubernetesEnvironment();
+    expect(created).not.toBeNull();
+    const beforeBindings = await db.select().from(builtInManagedResources);
+    const beforeHashes = new Map(beforeBindings.map((binding) => [binding.companyId, binding.stockHash]));
+
+    await svc.update(created!.id, { config: { provider: "kubernetes", runtimeClassName: "operator" } });
+    const desiredConfig = {
+      provider: "kubernetes",
+      inCluster: false,
+      backend: "job" as const,
+      runtimeClassName: "manifest",
+    };
+    await svc.ensureKubernetesEnvironment(companyIds[0]!, desiredConfig, {
+      applyOverOperatorEdits: true,
+    });
+
+    const bindings = await db.select().from(builtInManagedResources);
+    expect(bindings).toHaveLength(2);
+    for (const binding of bindings) {
+      expect(binding.resourceId).toBe(created!.id);
+      expect(binding.stockHash).not.toBe(beforeHashes.get(binding.companyId));
+      expect(binding.defaultsJson).toMatchObject({ config: desiredConfig });
+    }
+    expect(new Set(bindings.map((binding) => binding.stockHash)).size).toBe(1);
+  });
+
+  it.each([undefined, "any"])("retains persisted Kubernetes policy when bootstrap mode becomes %j", async (mode) => {
+    await seedCompany();
+    await bootstrapExecutionPolicyFromEnv(db, { PAPERCLIP_EXECUTION_MODE: "kubernetes" });
+    const before = await db.select().from(instanceSettings);
+    const environmentBefore = await db.select().from(environments);
+
+    expect(await bootstrapExecutionPolicyFromEnv(db, {
+      PAPERCLIP_EXECUTION_MODE: mode,
+      PAPERCLIP_K8S_CONFIG_AUTHORITATIVE: "true",
+    })).toBeNull();
+    expect(await db.select().from(instanceSettings)).toEqual(before);
+    expect(await db.select().from(environments)).toEqual(environmentBefore);
+    const settings = instanceSettingsService(db);
+    const local = { driver: "local", provider: null };
+    expect(evaluateExecutionAllowlist(await settings.getGeneral(), local).allowed).toBe(false);
+
+    await settings.updateGeneral({ executionMode: "any" });
+    expect((await settings.getGeneral()).executionMode).toBe("any");
+    expect(evaluateExecutionAllowlist(await settings.getGeneral(), local).allowed).toBe(true);
+    expect(await db.select().from(environments)).toEqual(environmentBefore);
+  });
+
+  it("applies the desired config over operator drift when the caller declares it authoritative", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      description: "Managed stock",
+      provider: "daytona",
+      config: { target: "us" },
+      stockVersion: "v1",
+    });
+    await db
+      .update(environments)
+      .set({
+        name: "Operator name",
+        description: "Operator description",
+        config: { provider: "daytona", target: "operator", operatorOnly: true },
+        envVars: { OPERATOR_FLAG: "kept" },
+        metadata: { ...created.environment.metadata, managedSandboxProvider: "operator", operatorNote: "keep me" },
+        updatedAt: new Date("2026-08-06T12:01:00.000Z"),
+      })
+      .where(eq(environments.id, created.environment.id));
+
+    const reconciled = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      description: "Managed stock",
+      provider: "daytona",
+      config: { target: "eu" },
+      stockVersion: "v2",
+      applyOverOperatorEdits: true,
+    });
+    const [binding] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+
+    expect(reconciled).toMatchObject({ action: "updated", stockStatus: "operator_modified", updateAvailable: false });
+    expect(reconciled.environment).toMatchObject({
+      name: "Daytona",
+      description: "Managed stock",
+      envVars: { OPERATOR_FLAG: "kept" },
+      metadata: { managedSandboxProvider: "daytona", operatorNote: "keep me" },
+    });
+    expect(reconciled.environment.config).toEqual({ provider: "daytona", target: "eu" });
+    expect(binding?.stockHash).toBe(reconciled.stockHash);
+    expect(binding?.stockVersion).toBe("v2");
+    expect(binding?.defaultsJson).toMatchObject({ config: reconciled.environment.config });
+    expect(binding?.defaultsJson).not.toHaveProperty("envVars");
+    expect(binding?.defaultsJson.metadata).not.toHaveProperty("operatorNote");
+
+    const again = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      description: "Managed stock",
+      provider: "daytona",
+      config: { target: "eu" },
+      stockVersion: "v2",
+      applyOverOperatorEdits: true,
+    });
+    expect(again).toMatchObject({ action: "unchanged", stockStatus: "stock_current" });
+  });
+
+  it("applies the desired config over a row that predates stock tracking when the caller is authoritative", async () => {
+    const companyId = await seedCompany();
+    const now = new Date();
+    const [legacy] = await db
+      .insert(environments)
+      .values({
+        name: "Daytona",
+        driver: "sandbox",
+        status: "active",
+        config: { provider: "daytona", target: "legacy" },
+        envVars: {},
+        metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+
+    const preserved = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "eu" },
+    });
+    expect(preserved).toMatchObject({ action: "skipped", stockStatus: "operator_modified" });
+    expect(preserved.environment.config).toEqual({ provider: "daytona", target: "legacy" });
+
+    const applied = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "eu" },
+      applyOverOperatorEdits: true,
+    });
+    expect(applied.environment.id).toBe(legacy.id);
+    expect(applied).toMatchObject({ action: "updated", stockStatus: "operator_modified", updateAvailable: false });
+    expect(applied.environment.config).toEqual({ provider: "daytona", target: "eu" });
+  });
+
+  it("replaces Kubernetes operator config only with manifest ownership enabled", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" });
+    const operatorConfig = { provider: "kubernetes", inCluster: true, backend: "job", runtimeClassName: "operator" };
+    await db
+      .update(environments)
+      .set({ config: operatorConfig })
+      .where(eq(environments.id, created.id));
+
+    const preserved = await svc.ensureKubernetesEnvironment(companyId, {
+      inCluster: true,
+      backend: "job",
+      egressAllowFqdns: ["api.anthropic.com"],
+    });
+    expect(preserved.id).toBe(created.id);
+    expect(preserved.config).toEqual(operatorConfig);
+
+    const applied = await svc.ensureKubernetesEnvironment(
+      companyId,
+      { inCluster: true, backend: "job", egressAllowFqdns: ["api.anthropic.com"] },
+      { applyOverOperatorEdits: true },
+    );
+    expect(applied.id).toBe(created.id);
+    expect(applied.config).toEqual({
+      provider: "kubernetes",
+      inCluster: true,
+      backend: "job",
+      egressAllowFqdns: ["api.anthropic.com"],
+    });
+    expect(applied.metadata?.managedKubernetesSandbox).toBe(true);
+  });
+
+  it("leaves a manually archived row alone even when the caller is authoritative", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+      stockVersion: "v1",
+    });
+    await db
+      .update(environments)
+      .set({ status: "archived", config: { provider: "daytona", target: "operator" } })
+      .where(eq(environments.id, created.environment.id));
+
+    const reconciled = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "eu" },
+      stockVersion: "v2",
+      applyOverOperatorEdits: true,
+    });
+
+    expect(reconciled).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+      environment: {
+        status: "archived",
+        config: { provider: "daytona", target: "operator" },
+      },
+    });
+  });
+
+  it("reactivates and updates a reconciler-archived row in one pass when the caller is authoritative", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+      stockVersion: "v1",
+    });
+    await db
+      .update(environments)
+      .set({ config: { provider: "daytona", target: "operator" } })
+      .where(eq(environments.id, created.environment.id));
+    expect((await svc.archiveManagedSandboxEnvironment({ provider: "daytona" }))?.status).toBe("archived");
+
+    const reconciled = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "eu" },
+      stockVersion: "v2",
+      applyOverOperatorEdits: true,
+    });
+
+    expect(reconciled).toMatchObject({ action: "updated", updateAvailable: false });
+    expect(reconciled.environment.status).toBe("active");
+    expect(reconciled.environment.config).toEqual({ provider: "daytona", target: "eu" });
+    expect(reconciled.environment.metadata).not.toHaveProperty("_paperclipManagedArchiveToken");
+    const [binding] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(binding?.stockHash).toBe(reconciled.stockHash);
+    expect(binding?.defaultsJson).toMatchObject({ status: "active", config: reconciled.environment.config });
+    const activity = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .orderBy(activityLog.createdAt);
+    expect(activity.at(-1)).toMatchObject({
+      action: "environment.managed_stock_updated",
+      details: { stockStatus: "operator_modified", providerReactivated: true },
+    });
+  });
+
   it("adopts the managed slot on a provider switch and drops the stale kubernetes marker", async () => {
     const companyId = await seedCompany();
     const kubernetes = await svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" });
@@ -1520,7 +1812,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(restored.stockHash).not.toBe(reactivatedBinding?.stockHash);
   });
 
-  it("preserves an operator archive decision made after provider archival", async () => {
+  it.each([false, true])("preserves a later operator archive with manifest ownership %j", async (applyOverOperatorEdits) => {
     const companyId = await seedCompany();
     const created = await svc.ensureManagedSandboxEnvironment({
       companyId,
@@ -1530,20 +1822,34 @@ describeEmbeddedPostgres("environmentService leases", () => {
     });
     expect((await svc.archiveManagedSandboxEnvironment({ provider: "daytona" }))?.status)
       .toBe("archived");
-    expect((await svc.update(created.environment.id, { status: "archived" }))?.status)
-      .toBe("archived");
+    const operatorArchived = await svc.update(created.environment.id, { status: "archived" });
+    expect(operatorArchived?.status).toBe("archived");
+    expect(operatorArchived?.metadata).not.toHaveProperty("_paperclipManagedArchiveToken");
 
     const reconciled = await svc.ensureManagedSandboxEnvironment({
       companyId,
       name: "Daytona",
       provider: "daytona",
       config: { target: "us" },
+      applyOverOperatorEdits,
     });
     expect(reconciled).toMatchObject({
       action: "skipped",
       stockStatus: "operator_modified",
       updateAvailable: true,
       environment: { status: "archived" },
+    });
+    expect(reconciled.environment.updatedAt).toEqual(operatorArchived?.updatedAt);
+    const nextBoot = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "eu" },
+      applyOverOperatorEdits,
+    });
+    expect(nextBoot).toMatchObject({
+      action: "skipped",
+      environment: { status: "archived", config: { provider: "daytona", target: "us" } },
     });
   });
 
