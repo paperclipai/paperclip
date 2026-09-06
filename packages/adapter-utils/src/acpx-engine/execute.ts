@@ -965,7 +965,20 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
 }
 
 function safePathSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (value.length === 0 || value.length > 128 || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value)) {
+    throw new Error("Run identifier is not a safe path segment");
+  }
+  return value;
+}
+
+function resolveContainedRunPath(root: string, runKey: string, leaf: string): string {
+  const resolvedRoot = path.resolve(root);
+  const candidate = path.resolve(resolvedRoot, runKey, leaf);
+  const relative = path.relative(resolvedRoot, candidate);
+  if (relative.length === 0 || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Run path escaped its configured root");
+  }
+  return candidate;
 }
 
 async function chmodPrivateTree(root: string): Promise<void> {
@@ -1420,10 +1433,18 @@ async function prepareCodexSkillRuntime(input: {
   let retention: CodexSessionRetentionContext | null = null;
   if (input.adapterType === "codex_local") {
     const runKey = safePathSegment(input.runId);
-    const runHome = path.join(input.stateDir, "codex-run-homes", runKey, "home");
+    const runHome = resolveContainedRunPath(
+      path.join(input.stateDir, "codex-run-homes"),
+      runKey,
+      "home",
+    );
     retention = {
       runHome,
-      retainedSessionsDir: path.join(input.stateDir, "codex-session-retention", runKey, "sessions"),
+      retainedSessionsDir: resolveContainedRunPath(
+        path.join(input.stateDir, "codex-session-retention"),
+        runKey,
+        "sessions",
+      ),
     };
     await prepareRunIsolatedCodexHome({
       sourceHome: seededCodexHome,
