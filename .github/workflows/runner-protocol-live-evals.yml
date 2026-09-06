@@ -614,6 +614,18 @@ jobs:
             --coverage-matrix .paperclip-evals/evals/paperclip-runner/coverage-matrix.json
           cp runner-protocol-merged/campaign.json runner-protocol-merged/public-report/campaign.json
 
+      - name: Set up report browser verification
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Verify the actual chat viewer before publication
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm --filter @paperclipai/paperclip-runner exec playwright install --with-deps chromium
+          node packages/paperclip-runner/scripts/verify-runner-evalbook-viewer.mjs --report-root runner-protocol-merged/public-report --screenshots runner-protocol-merged/viewer-proof
+          node packages/paperclip-runner/scripts/verify-runner-evalbook-viewer.mjs --report-root runner-protocol-merged/report
+
       - name: Enforce the static public allowlist
         id: public_report
         run: |

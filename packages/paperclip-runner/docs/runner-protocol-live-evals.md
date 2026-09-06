@@ -23,6 +23,16 @@ The CSP prohibits network calls, forms and external resources. Supply
 `PAPERCLIP_RUNNER_PROTOCOL_EVAL_VIEWER_DIR` to the publisher. The workflow sends
 a viewer-only artifact to that job; raw attempts and provider secrets stay out.
 
+Before uploading, the report job runs the actual built application in Chromium
+against representative passing, failing and missing-recording pages in both
+reports. It checks initial rendering, tool expansion, read-only controls,
+navigation, reload, a narrow viewport and the public no-API-request boundary.
+Run the same check locally with
+`node packages/paperclip-runner/scripts/verify-runner-evalbook-viewer.mjs --report-root /path/to/report`.
+Add `--screenshots /path/to/proof` for visual evidence. Public screenshots are
+retained in the aggregate Actions artifact, not added to the public report's
+closed file allowlist.
+
 ### Refresh a completed report without calling models
 
 Download the aggregate Actions artifact, then:

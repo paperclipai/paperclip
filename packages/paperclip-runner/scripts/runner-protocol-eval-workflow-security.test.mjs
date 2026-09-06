@@ -138,6 +138,14 @@ test("publishes only the separately sanitized Evalbook through trusted OIDC code
   assert.match(report, /Upload publisher-only sanitized Evalbook/u);
   assert.match(
     report,
+    /verify-runner-evalbook-viewer\.mjs --report-root runner-protocol-merged\/public-report/u,
+  );
+  assert.match(
+    report,
+    /verify-runner-evalbook-viewer\.mjs --report-root runner-protocol-merged\/report/u,
+  );
+  assert.match(
+    report,
     /--viewer-root runner-protocol-build\/extracted\/dist-issue-thread\s*\\\n\s*--public-viewer/u,
   );
   assert.equal([...report.matchAll(/--viewer-root /gu)].length, 2);
