@@ -272,22 +272,26 @@ node --check $workerPath
 # Smallest readiness correction: activation failures mark plugins `error`, and
 # loadAll() only loads `ready` plugins — producing "no ready plugins to load".
 # Re-enable the already-installed Telegram plugin without recreating config/secrets.
+# Fail closed: this script must not report PASS unless Telegram is ready.
+function Get-TelegramPluginRecord {
+  param([object[]]$Plugins, [string]$Key)
+  return @($Plugins) | Where-Object {
+    $_.pluginKey -eq $Key -or $_.packageName -eq $Key -or $_.id -eq $Key
+  } | Select-Object -First 1
+}
+
 function Ensure-TelegramPluginReady {
   param([string]$ApiBase, [string]$Key)
+
   try {
     $plugins = Invoke-RestMethod -Uri "$ApiBase/api/plugins" -Method Get -TimeoutSec 15
   } catch {
-    Write-Host "TELEGRAM_PLUGIN_READY_CHECK=SKIPPED (API unreachable: $($_.Exception.Message))"
-    return
+    throw "TELEGRAM_PLUGIN_READY_FAILED: cannot query /api/plugins ($($_.Exception.Message)). Start the existing HuiDots Paperclip task, wait for embedded Postgres (~90s), then re-run apply-installed.ps1. Do not recreate company/DB/secrets."
   }
 
-  $plugin = @($plugins) | Where-Object {
-    $_.pluginKey -eq $Key -or $_.packageName -eq $Key -or $_.id -eq $Key
-  } | Select-Object -First 1
-
+  $plugin = Get-TelegramPluginRecord -Plugins @($plugins) -Key $Key
   if (-not $plugin) {
-    Write-Host "TELEGRAM_PLUGIN_READY_CHECK=MISSING (package on disk; DB record not found — install via Paperclip UI/API, do not recreate company/secrets)"
-    return
+    throw "TELEGRAM_PLUGIN_READY_FAILED: plugin DB record missing for '$Key' (package may be on disk). Install/enable the existing Telegram plugin via Paperclip UI/API without recreating company/secrets, then re-run apply-installed.ps1."
   }
 
   Write-Host "TELEGRAM_PLUGIN_STATUS=$($plugin.status) id=$($plugin.id)"
@@ -296,28 +300,41 @@ function Ensure-TelegramPluginReady {
     return
   }
 
-  if ($plugin.status -in @("error", "disabled", "upgrade_pending")) {
-    $enabled = Invoke-RestMethod -Uri "$ApiBase/api/plugins/$($plugin.id)/enable" -Method Post -TimeoutSec 60
-    Write-Host "TELEGRAM_PLUGIN_READY=ENABLED status=$($enabled.status)"
-    return
-  }
-
-  if ($plugin.status -eq "installed") {
-    # Install route reuses lifecycle.load for existing packages; enable rejects installed.
-    $body = @{ packageName = $Key } | ConvertTo-Json
-    try {
+  try {
+    if ($plugin.status -in @("error", "disabled", "upgrade_pending")) {
+      $enabled = Invoke-RestMethod -Uri "$ApiBase/api/plugins/$($plugin.id)/enable" -Method Post -TimeoutSec 60
+      Write-Host "TELEGRAM_PLUGIN_ENABLE_RESULT status=$($enabled.status)"
+    } elseif ($plugin.status -eq "installed") {
+      # Install route reuses lifecycle.load for existing packages; enable rejects installed.
+      $body = @{ packageName = $Key } | ConvertTo-Json
       $loaded = Invoke-RestMethod -Uri "$ApiBase/api/plugins/install" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 120
-      Write-Host "TELEGRAM_PLUGIN_READY=LOADED status=$($loaded.status)"
-    } catch {
-      Write-Host "TELEGRAM_PLUGIN_READY=INSTALL_LOAD_FAILED $($_.Exception.Message)"
+      Write-Host "TELEGRAM_PLUGIN_LOAD_RESULT status=$($loaded.status)"
+    } else {
+      throw "TELEGRAM_PLUGIN_READY_FAILED: unhandled plugin status '$($plugin.status)' for id=$($plugin.id)"
     }
-    return
+  } catch {
+    if ($_.Exception.Message -like "TELEGRAM_PLUGIN_READY_FAILED:*") { throw }
+    throw "TELEGRAM_PLUGIN_READY_FAILED: enable/load failed for id=$($plugin.id) status=$($plugin.status) ($($_.Exception.Message))"
   }
 
-  Write-Host "TELEGRAM_PLUGIN_READY=UNHANDLED_STATUS $($plugin.status)"
+  try {
+    $pluginsAfter = Invoke-RestMethod -Uri "$ApiBase/api/plugins" -Method Get -TimeoutSec 15
+  } catch {
+    throw "TELEGRAM_PLUGIN_READY_FAILED: enable/load attempted but cannot re-query /api/plugins ($($_.Exception.Message))"
+  }
+
+  $pluginAfter = Get-TelegramPluginRecord -Plugins @($pluginsAfter) -Key $Key
+  if (-not $pluginAfter) {
+    throw "TELEGRAM_PLUGIN_READY_FAILED: plugin DB record missing after enable/load"
+  }
+  if ($pluginAfter.status -ne "ready") {
+    throw "TELEGRAM_PLUGIN_READY_FAILED: resulting status is '$($pluginAfter.status)' (expected ready) for id=$($pluginAfter.id)"
+  }
+
+  Write-Host "TELEGRAM_PLUGIN_READY=READY id=$($pluginAfter.id)"
 }
 
 Ensure-TelegramPluginReady -ApiBase $PaperclipApi.TrimEnd('/') -Key $PluginKey
 
 Write-Host "TELEGRAM_OWNER_DECISION_PATCH=PASS"
-Write-Host "NEXT_ACTION=Restart only the existing 'HuiDots Paperclip' scheduled task, then confirm GET /api/health=200 and plugin status ready."
+Write-Host "NEXT_ACTION=Restart only the existing 'HuiDots Paperclip' scheduled task if workers were mid-run, then confirm GET /api/health=200 and plugin status ready."

@@ -34,7 +34,7 @@ Core fields:
 - env (object, optional): KEY=VALUE environment variables
 
 Operational fields:
-- timeoutSec (number, optional): absolute wall-clock run timeout in seconds (defaults to 1800 / 30 minutes; missing or 0 resolves to that ceiling; set a negative value to opt out)
+- timeoutSec (number, optional): absolute wall-clock run timeout in seconds (defaults to 1800 / 30 minutes; missing, 0, or negative always resolve to that ceiling — pi_local cannot disable the wall clock)
 - silenceTimeoutSec (number, optional): terminate Pi after this many seconds without stdout/stderr output (defaults to 300; set to 0 to disable)
 - graceSec (number, optional): SIGTERM grace period in seconds
 

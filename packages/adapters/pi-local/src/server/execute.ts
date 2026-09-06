@@ -53,8 +53,14 @@ import { appendPiWindowsShellGuidance, resolvePiToolAllowlist } from "./tools.js
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 export const DEFAULT_PI_OUTPUT_SILENCE_TIMEOUT_SEC = 300;
-/** Absolute wall-clock ceiling for pi_local when timeoutSec is missing or 0. */
+/** Absolute wall-clock ceiling for pi_local when timeoutSec is missing, 0, or negative. */
 export const DEFAULT_PI_WALL_TIMEOUT_SEC = 1800;
+
+/** Resolve pi_local wall timeout: missing/0/negative always become the 1800s ceiling. */
+export function resolvePiLocalWallTimeoutSec(configuredTimeoutSec: unknown): number {
+  const configured = asNumber(configuredTimeoutSec, DEFAULT_PI_WALL_TIMEOUT_SEC);
+  return configured > 0 ? configured : DEFAULT_PI_WALL_TIMEOUT_SEC;
+}
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -359,14 +365,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    // Existing agent configs often persist timeoutSec=0 as the UI schema default.
-    // For pi_local that must not mean unlimited: a noisy infinite loop would never
-    // trip the silence watchdog. Coerce missing/zero to the 30-minute wall ceiling.
-    // A negative timeoutSec remains the explicit opt-out (honored by the resolver).
-    const configuredTimeoutSec = asNumber(config.timeoutSec, DEFAULT_PI_WALL_TIMEOUT_SEC);
+    // Existing agent configs often persist timeoutSec=0 (or historically a negative
+    // "disable") as the UI schema default. For pi_local that must never mean
+    // unlimited: a noisy infinite loop would never trip the silence watchdog.
+    // Missing, zero, and negative values all coerce to the 30-minute wall ceiling.
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
-      configuredTimeoutSec === 0 ? DEFAULT_PI_WALL_TIMEOUT_SEC : configuredTimeoutSec,
+      resolvePiLocalWallTimeoutSec(config.timeoutSec),
     );
     const graceSec = asNumber(config.graceSec, 20);
     const silenceTimeoutSec = asNumber(

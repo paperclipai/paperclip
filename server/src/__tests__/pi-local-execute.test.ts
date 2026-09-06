@@ -179,6 +179,15 @@ describe("pi_local execute", () => {
     expect(DEFAULT_PI_WALL_TIMEOUT_SEC).toBe(1800);
   });
 
+  it("resolves missing, zero, and negative timeoutSec to the 1800s Pi wall ceiling", async () => {
+    const { resolvePiLocalWallTimeoutSec } = await import("@paperclipai/adapter-pi-local/server");
+    expect(resolvePiLocalWallTimeoutSec(undefined)).toBe(1800);
+    expect(resolvePiLocalWallTimeoutSec(0)).toBe(1800);
+    expect(resolvePiLocalWallTimeoutSec(-1)).toBe(1800);
+    expect(resolvePiLocalWallTimeoutSec(-3600)).toBe(1800);
+    expect(resolvePiLocalWallTimeoutSec(600)).toBe(600);
+  });
+
   it("fails the run when Pi exhausts automatic retries despite exiting 0", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-execute-"));
     const workspace = path.join(root, "workspace");
