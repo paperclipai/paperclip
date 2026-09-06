@@ -81,6 +81,11 @@ import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
+// Recency window for the open-issue coalescing fallback. Long enough to
+// bridge several hourly cron ticks while an issue sits open with a dead run;
+// measures the issue's last real activity, which dispatch never refreshes, so
+// a stuck issue always escapes the window within 24h.
+const RECENT_OPEN_EXECUTION_ISSUE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
@@ -1559,6 +1564,44 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  // Coalescing fallback: `findLiveExecutionIssue` only sees issues whose
+  // heartbeat run is still live, but run finalization clears
+  // `issues.execution_run_id` (heartbeat.ts terminal promotion), so an open
+  // issue outliving its run becomes invisible to the dispatcher and hourly
+  // routines duplicate themselves. This arm matches a still open issue for
+  // the same routine whose last activity is inside the recency window.
+  // Dispatch must not refresh `updated_at`: real activity (comments, status
+  // changes) keeps the window open, while a stuck issue stops moving and
+  // escapes it within 24h so the routine creates fresh work again.
+  async function findRecentOpenExecutionIssue(
+    routine: typeof routines.$inferSelect,
+    executor: Db = db,
+    dispatchFingerprint?: string | null,
+    origin?: { kind: string; id: string | null },
+  ) {
+    const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
+    const originKind = origin?.kind ?? "routine_execution";
+    const originId = origin?.id ?? routine.id;
+    const recencyCutoff = new Date(Date.now() - RECENT_OPEN_EXECUTION_ISSUE_WINDOW_MS);
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          visibleIssueCondition(),
+          gt(issues.updatedAt, recencyCutoff),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -1850,10 +1893,16 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+        const activeIssue = (await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
-        });
+        }))
+          ?? (input.routine.concurrencyPolicy === "always_enqueue"
+            ? null
+            : await findRecentOpenExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+              kind: issueOriginKind,
+              id: issueOriginId,
+            }));
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
@@ -1917,10 +1966,16 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          const existingIssue = (await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
             kind: issueOriginKind,
             id: issueOriginId,
-          });
+          }))
+            ?? (input.routine.concurrencyPolicy === "always_enqueue"
+              ? null
+              : await findRecentOpenExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+                kind: issueOriginKind,
+                id: issueOriginId,
+              }));
           if (!existingIssue) throw error;
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
