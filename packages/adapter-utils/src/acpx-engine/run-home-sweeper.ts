@@ -125,8 +125,10 @@ async function validateRetentionProof(
   }
 
   const manifestPath = path.join(retainedDir, RETENTION_MANIFEST_NAME);
+  let manifestFound = false;
   try {
     const manifestStat = await fs.lstat(manifestPath);
+    manifestFound = true;
     if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
       return { ok: false, error: "retention completion manifest is not a real file" };
     }
@@ -158,13 +160,13 @@ async function validateRetentionProof(
         return { ok: false, error: "retention completion manifest contains an unsafe session path" };
       }
       const artifactStat = await fs.lstat(artifact);
-      if (!artifactStat.isFile() || artifactStat.isSymbolicLink()) {
-        return { ok: false, error: "retention completion manifest references a missing session artifact" };
+      if (!artifactStat.isFile() || artifactStat.isSymbolicLink() || artifactStat.size === 0) {
+        return { ok: false, error: "retention completion manifest references an invalid session artifact" };
       }
     }
     return { ok: true, proof: "completion_manifest" };
   } catch (err) {
-    if (!isErrnoException(err, "ENOENT")) {
+    if (manifestFound || !isErrnoException(err, "ENOENT")) {
       return {
         ok: false,
         error: `retention completion manifest could not be validated: ${err instanceof Error ? err.message : String(err)}`,

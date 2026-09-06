@@ -263,6 +263,30 @@ describe("run-home sweeper", () => {
       });
       await expect(fs.stat(runHomeDir)).rejects.toThrow();
     });
+
+    it("rejects a completion manifest whose listed artifact is missing", async () => {
+      const runId = "run-missing-manifest-artifact";
+      const { runHomeDir, retentionDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId,
+        ageHours: 30,
+      });
+      await fs.mkdir(path.join(retentionDir, "sessions"), { recursive: true });
+      await fs.writeFile(path.join(retentionDir, "retention-complete.json"), JSON.stringify({
+        schemaVersion: 1,
+        status: "complete",
+        runId,
+        sessionFileCount: 1,
+        sessionFiles: ["missing.jsonl"],
+      }), "utf8");
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]?.eligible).toBe(false);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/could not be validated/i);
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
   });
 
   describe("active/ambiguous home exclusion (AC2c)", () => {
