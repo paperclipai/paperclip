@@ -81,6 +81,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      # For the explicit docker.yml dispatch below.
+      actions: write
 
     steps:
       - name: Checkout repository
@@ -138,6 +140,29 @@ jobs:
           fi
           git push origin "refs/tags/${tag}"
           echo "version=${tag#canary/v}" >> "$GITHUB_OUTPUT"
+
+      # Canary images previously relied on the master-push docker.yml run,
+      # whose single pending concurrency slot gets superseded by every
+      # newer push — on a busy day no canary image publishes at all (five
+      # consecutive canaries shipped npm packages with no cloud image on
+      # 2026-09-06, starving downstream managed deploys for ~18 hours).
+      # Tag pushes made with GITHUB_TOKEN do not fire docker.yml's
+      # triggers, so dispatch the image build at the canary tag
+      # explicitly, exactly like the nightly and beta lanes: the run keys
+      # its concurrency off the tag ref, so no master push can supersede
+      # it, and docker.yml's `type=sha` mapping publishes the
+      # sha-<short> and sha-<short>-cloud images either way.
+      - name: Build Docker images for the canary tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "## Canary published"
+            echo ""
+            echo "- Published canary: \`${{ steps.canary_tag.outputs.version }}\`"
+            echo "- Docker build dispatched at \`canary/v${{ steps.canary_tag.outputs.version }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run docker.yml --ref "refs/tags/canary/v${{ steps.canary_tag.outputs.version }}" --repo "$GITHUB_REPOSITORY"
 
   # The package is already public when this gate runs. A red result leaves the
   # immutable canary in npm, but makes the release workflow visibly fail before
