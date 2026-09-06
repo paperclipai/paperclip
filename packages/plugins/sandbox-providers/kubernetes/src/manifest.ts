@@ -97,6 +97,15 @@ const manifest: PaperclipPluginManifestV1 = {
             minimum: 1,
             description: "Hard ceiling on a single run's wall-clock time (default: 3600).",
           },
+          timeoutMs: {
+            type: "integer",
+            minimum: 1,
+            // Keep in step with HOST_MAX_RPC_TIMEOUT_MS in src/types.ts: paperclip-server
+            // caps every plugin RPC at 15 minutes, so a larger budget cannot take effect.
+            maximum: 900000,
+            description:
+              "RPC budget in milliseconds for lease lifecycle calls (acquire/resume/release/execute). Default 30000 (paperclip-server default). Raise it for clusters where the first dispatch is slow to bootstrap the tenant namespace or pull the runtime image. Capped at 900000 (15 minutes), the ceiling paperclip-server applies to every plugin RPC.",
+          },
           adapterType: {
             type: "string",
             description:
