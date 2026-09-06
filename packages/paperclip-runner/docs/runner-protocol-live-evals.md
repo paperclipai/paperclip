@@ -37,9 +37,13 @@ from the default branch and provide:
   attempt explicitly reports a retryable infrastructure failure.
 
 The authorization job resolves the Paperclip branch to a commit and verifies
-the supplied eval commit before any checkout. A short-lived bot token generated
-from `COMMITPERCLIP_KEY` authorizes each checkout of the private eval repository;
-the token is masked and is never forwarded to a provider process. The workflow
+the supplied eval commit before any checkout. A short-lived installation token
+from the dedicated `paperclip-evals` GitHub App authorizes each checkout of the
+private eval repository; the token is masked and is never forwarded to a
+provider process. The app is installed only on `paperclipai/paperclip-evals`,
+with repository metadata and read-only contents access. The workflow reads its
+numeric App ID from the `PAPERCLIP_EVALS_APP_ID` repository variable and its
+private key from the `PAPERCLIP_EVALS_APP_PRIVATE_KEY` repository secret. It
 uses the same numeric actor
 allowlist, protected `runner-e2e-paid` environment, RunsOn fleet selector, and
 `RUNNER_E2E_MAX_PARALLEL` ceiling as the full-stack E2E workflow. Two balanced
@@ -101,6 +105,11 @@ role admits only the `paperclipai/paperclip` repository's protected
 `runner-e2e-paid` environment as its web-identity subject.
 Scheduled runs additionally require `RUNNER_PROTOCOL_EVAL_NIGHTLY_ENABLED=true`
 and the pinned `RUNNER_PROTOCOL_EVALS_SHA` repository variable.
+
+The dedicated App has no webhook, organization permissions, or repository
+write permissions. Rotate its private key by adding the replacement key to the
+repository secret, proving a workflow authorization/checkout, and only then
+deleting the previous key in the App settings.
 
 ## Reports and history
 

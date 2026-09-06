@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 /**
  * get-bot-token.mjs
- * Generates a short-lived GitHub installation token for the commitperclip app.
- * Reads COMMITPERCLIP_KEY env var (PEM content of private key).
+ * Generates a short-lived GitHub installation token.
+ *
+ * Generic callers set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY. Existing
+ * commitperclip callers may continue to set COMMITPERCLIP_KEY.
  * Prints the token to stdout.
  *
  * Also exports: generateJWT(privateKey), ghFetch(path, token, options)
@@ -11,13 +13,13 @@
 import { createSign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const APP_ID = '3718661';
+const COMMITPERCLIP_APP_ID = '3718661';
 const OWNER_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 const REPO_PATTERN = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
-export function generateJWT(privateKey) {
+export function generateJWT(privateKey, appId = COMMITPERCLIP_APP_ID) {
   const now = Math.floor(Date.now() / 1000);
-  const payload = { iat: now - 10, exp: now + 60, iss: APP_ID };
+  const payload = { iat: now - 10, exp: now + 60, iss: appId };
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const data = `${header}.${body}`;
@@ -59,7 +61,7 @@ export async function ghFetch(path, token, options = {}) {
   }
 }
 
-export async function resolveInstallationId(fetchInstallation, token, repo, owner) {
+export async function resolveInstallationId(fetchInstallation, token, repo, owner, appName = 'GitHub App') {
   if (repo) {
     if (!REPO_PATTERN.test(repo)) {
       throw new Error('ERROR: GH_REPO/GITHUB_REPOSITORY must be in owner/repo format.');
@@ -71,9 +73,7 @@ export async function resolveInstallationId(fetchInstallation, token, repo, owne
 
   const installations = await fetchInstallation('/app/installations', token);
   if (!installations.length) {
-    throw new Error(
-      'ERROR: No installations found for commitperclip. Install URL: https://github.com/apps/commitperclip/installations/new'
-    );
+    throw new Error(`ERROR: No installations found for ${appName}.`);
   }
 
   if (owner) {
@@ -95,23 +95,45 @@ export async function resolveInstallationId(fetchInstallation, token, repo, owne
   }
 
   throw new Error(
-    'ERROR: Multiple commitperclip installations found. Set GH_REPO or GITHUB_REPOSITORY so the correct installation can be selected.'
+    `ERROR: Multiple ${appName} installations found. Set GH_REPO or GITHUB_REPOSITORY so the correct installation can be selected.`
   );
 }
 
+export function resolveAppCredentials(environment) {
+  const explicitAppId = environment.GITHUB_APP_ID;
+  const explicitPrivateKey = environment.GITHUB_APP_PRIVATE_KEY;
+  if (Boolean(explicitAppId) !== Boolean(explicitPrivateKey)) {
+    throw new Error('ERROR: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be set together.');
+  }
+  if (explicitAppId && explicitPrivateKey) {
+    return {
+      appId: explicitAppId,
+      privateKey: explicitPrivateKey,
+      appName: environment.GITHUB_APP_NAME ?? 'GitHub App',
+    };
+  }
+  if (!environment.COMMITPERCLIP_KEY) {
+    throw new Error('ERROR: GITHUB_APP_PRIVATE_KEY or COMMITPERCLIP_KEY env var not set.');
+  }
+  return {
+    appId: COMMITPERCLIP_APP_ID,
+    privateKey: environment.COMMITPERCLIP_KEY,
+    appName: 'commitperclip',
+  };
+}
+
 async function main() {
-  const privateKey = process.env.COMMITPERCLIP_KEY;
-  if (!privateKey) {
-    console.error('ERROR: COMMITPERCLIP_KEY env var not set.');
-    console.error('Add to ~/.bash_profile: export COMMITPERCLIP_KEY="$(cat ~/.config/commitperclip/private-key.pem)"');
+  const { appId, privateKey, appName } = resolveAppCredentials(process.env);
+  if (!/^\d+$/.test(appId)) {
+    console.error('ERROR: GITHUB_APP_ID must be a numeric GitHub App ID.');
     process.exit(1);
   }
 
-  const jwt = generateJWT(privateKey);
+  const jwt = generateJWT(privateKey, appId);
   const repo = process.env.GH_REPO ?? process.env.GITHUB_REPOSITORY;
   const owner = process.env.GITHUB_REPOSITORY_OWNER ?? repo?.split('/')[0];
 
-  const installationId = await resolveInstallationId(ghFetch, jwt, repo, owner);
+  const installationId = await resolveInstallationId(ghFetch, jwt, repo, owner, appName);
 
   const { token } = await ghFetch(
     `/app/installations/${installationId}/access_tokens`,
