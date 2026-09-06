@@ -183,7 +183,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.5",
-    "@vitejs/plugin-react": "^6.1.1",
+    "@vitejs/plugin-react": "^4.7.0",
     "axe-core": "^4.12.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
