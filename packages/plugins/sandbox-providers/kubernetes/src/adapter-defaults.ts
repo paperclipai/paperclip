@@ -9,44 +9,61 @@ export interface AdapterDefaults {
   defaultEnv?: Record<string, string>;
 }
 
+// Each adapter's `envKeys` are the host env vars materialized into the sandbox
+// Job. They include the provider API key AND the provider base URL (e.g.
+// ANTHROPIC_BASE_URL / OPENAI_BASE_URL): the CLIs honor a custom
+// OpenAI-compatible endpoint via that env var, so without it in the allowlist
+// the base URL is stripped and the agent always hits the default public
+// endpoint. Allowing the base-url keys lets operators route a sandbox through
+// a self-hosted / OpenAI-compatible gateway (vLLM, LiteLLM, Bifrost, ...) by
+// setting the corresponding env in the agent's adapterConfig.env.
 const REGISTRY: Record<string, AdapterDefaults> = {
   claude_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:v1",
-    envKeys: ["ANTHROPIC_API_KEY"],
+    envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
     allowFqdns: ["api.anthropic.com"],
     probeCommand: ["claude", "--version"],
   },
   codex_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-codex:v1",
-    envKeys: ["OPENAI_API_KEY"],
+    envKeys: ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE"],
     allowFqdns: ["api.openai.com"],
     probeCommand: ["codex", "--version"],
   },
   gemini_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-gemini:v1",
-    envKeys: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    envKeys: ["GOOGLE_API_KEY", "GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL"],
     allowFqdns: ["generativelanguage.googleapis.com"],
     probeCommand: ["gemini", "--version"],
   },
   cursor_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-cursor:v1",
-    envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+    envKeys: ["CURSOR_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE"],
     allowFqdns: ["api.anthropic.com", "api.openai.com"],
     probeCommand: ["cursor-agent", "--version"],
   },
   opencode_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-opencode:v1",
-    envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
+    envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"],
     allowFqdns: ["api.anthropic.com", "api.openai.com", "openrouter.ai"],
     probeCommand: ["opencode", "--version"],
   },
   pi_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-pi:v1",
-    envKeys: ["ANTHROPIC_API_KEY"],
+    envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"],
     allowFqdns: ["api.anthropic.com"],
     probeCommand: ["pi", "--version"],
   },
 };
+
+// The cursor adapter package's `type` is "cursor" while this registry (and
+// environment configs in the wild) use "cursor_local". Normalize so a per-run
+// adapter hint carrying the package's own type string resolves.
+const ADAPTER_TYPE_ALIASES: Record<string, string> = { cursor: "cursor_local" };
+
+function normalizeAdapterType(adapterType: string): string {
+  return ADAPTER_TYPE_ALIASES[adapterType] ?? adapterType;
+}
 
 export const KNOWN_ADAPTER_TYPES: ReadonlySet<string> = new Set(Object.keys(REGISTRY));
 
@@ -78,6 +95,7 @@ export function getAdapterDefaults(
   adapterType: string,
   registry?: readonly AdapterRegistryEntry[],
 ): AdapterDefaults {
+  adapterType = normalizeAdapterType(adapterType);
   if (registry && registry.length > 0) {
     const entry = registry.find((e) => e.adapterType === adapterType);
     if (!entry) {
@@ -102,7 +120,7 @@ export function resolveRunAdapterType(
   configAdapterType: string,
 ): string {
   const trimmed = typeof runAdapterType === "string" ? runAdapterType.trim() : "";
-  return trimmed.length > 0 ? trimmed : configAdapterType;
+  return trimmed.length > 0 ? normalizeAdapterType(trimmed) : configAdapterType;
 }
 
 /**
