@@ -233,6 +233,48 @@ async function waitForHeartbeatIdle(
   }
 }
 
+// Wraps a Drizzle query-builder chain (e.g. the object returned by
+// `db.select()`) so that whichever call in the chain ends up being the
+// terminal thenable (`.from(...).where(...)`, `.limit(...)`, etc.) has an
+// async side effect spliced in right before it resolves. Used to simulate a
+// concurrent DB write landing in the exact window between a SELECT and a
+// later guarded UPDATE keyed off that SELECT's results -- a race that is
+// otherwise impossible to reproduce deterministically from a single-threaded
+// test without controlling the query builder itself. Drizzle builders return
+// a fresh object per chained call (`.from()` doesn't mutate and return
+// `this`), so the proxy has to follow the chain rather than patching `.then`
+// once on the object `db.select()` itself returns.
+function wrapQueryChainWithConcurrentSideEffect<T extends object>(
+  target: T,
+  // Receives the rows the wrapped query resolved to, so a caller can identify
+  // the query it means to race by what came back rather than by call order.
+  sideEffect: (rows: unknown) => Promise<void>,
+): T {
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      const value = Reflect.get(obj, prop, receiver);
+      if (typeof value !== "function") return value;
+      if (prop === "then") {
+        return (onFulfilled?: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          (value as (...a: unknown[]) => unknown).call(
+            obj,
+            async (rows: unknown) => {
+              await sideEffect(rows);
+              return onFulfilled ? onFulfilled(rows) : rows;
+            },
+            onRejected,
+          );
+      }
+      return (...args: unknown[]) => {
+        const result = (value as (...a: unknown[]) => unknown).apply(obj, args);
+        return result && typeof result === "object"
+          ? wrapQueryChainWithConcurrentSideEffect(result as object, sideEffect)
+          : result;
+      };
+    },
+  }) as T;
+}
+
 async function cancelActiveRunsForCleanup(
   db: ReturnType<typeof createDb>,
   timeoutMs = 3_000,
@@ -4064,6 +4106,248 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
     mockAdapterExecute.mockClear();
+  });
+
+  it("cancels a queued run stuck past the queue-age threshold", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+      includeIssue: false,
+    });
+    const staleCreatedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: staleCreatedAt })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({ maxQueuedAgeMs: 60_000 });
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("queue_expired");
+    expect(run?.error).toContain("waited in queue");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+  });
+
+  it("leaves a fresh queued run untouched by the queue-age reaper", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+      includeIssue: false,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({ maxQueuedAgeMs: 60_000 });
+
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("queued");
+    expect(run?.errorCode).toBeNull();
+  });
+
+  it("does not cancel a queued run that is concurrently claimed between the reaper's select and its cancellation", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+      includeIssue: false,
+    });
+    const staleCreatedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: staleCreatedAt })
+      .where(eq(heartbeatRuns.id, runId));
+
+    // Simulate a concurrent claim: another scheduler pass (or a manual
+    // resume) flips this exact stale-queued run to "running" in the window
+    // between the reaper's SELECT of expired queued runs and its
+    // cancellation UPDATE. The queued -> cancelled transition must be
+    // guarded on the row still being "queued" at UPDATE time, or the reaper
+    // clobbers a run that is now legitimately executing (and cancels its
+    // wakeup and appends a queue_expired event to a run no longer queued).
+    //
+    // Identify the queue-expiry backstop's own select by what it returns
+    // rather than by its position in the call order: reapOrphanedRuns issues a
+    // varying number of selects (native finalization reconciliation, question
+    // cancellation recovery, the "running" activeRuns sweep), so a positional
+    // index silently drifts. The expiredQueuedRuns select is the only
+    // full-row (`db.select()` with no projection) query that returns this
+    // still-queued run, so fire the race exactly once when we see it, right
+    // after it resolves and before the loop reaches this run's cancellation.
+    const originalSelect = db.select.bind(db);
+    let raceInjected = false;
+    const selectSpy = vi.spyOn(db, "select").mockImplementation((...args: unknown[]) => {
+      const builder = (originalSelect as (...a: unknown[]) => object)(...args);
+      if (args.length > 0) return builder;
+      return wrapQueryChainWithConcurrentSideEffect(builder, async (rows: unknown) => {
+        if (raceInjected) return;
+        const returned = Array.isArray(rows) ? (rows as Array<Record<string, unknown>>) : [];
+        if (!returned.some((row) => row?.id === runId && row?.status === "queued")) return;
+        raceInjected = true;
+        await db
+          .update(heartbeatRuns)
+          .set({ status: "running", updatedAt: new Date() })
+          .where(eq(heartbeatRuns.id, runId));
+      });
+    });
+
+    const heartbeat = heartbeatService(db);
+    let result: Awaited<ReturnType<typeof heartbeat.reapOrphanedRuns>>;
+    try {
+      result = await heartbeat.reapOrphanedRuns({ maxQueuedAgeMs: 60_000 });
+    } finally {
+      selectSpy.mockRestore();
+    }
+
+    expect(result.reaped).toBe(0);
+    expect(result.runIds).toEqual([]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+
+    const events = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(events.some((event) => event.message?.includes("waited in queue"))).toBe(false);
+  });
+
+  it("cancels an issue-linked queue-expired run and releases the issue's execution lock via the same-sweep reconciliation", async () => {
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+      // includeIssue defaults to true: the fixture links the issue's
+      // executionRunId (and checkoutRunId) to this run, per the wiring at
+      // seedRunFixture's `includeIssue !== false` branch above.
+    });
+    const staleCreatedAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: staleCreatedAt })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const issueBeforeReap = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueBeforeReap?.status).toBe("in_progress");
+    expect(issueBeforeReap?.executionRunId).toBe(runId);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({ maxQueuedAgeMs: 60_000 });
+
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("queue_expired");
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("cancelled");
+
+    // The queue-expiry backstop itself does not touch the issue: it only
+    // cancels the run and its wakeup (see heartbeat.ts's queue-expired reap
+    // block). The issue's executionRunId lock is expected to still point at
+    // the now-cancelled run until the reconciliation self-heal runs.
+    const issueImmediatelyAfterReap = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueImmediatelyAfterReap?.executionRunId).toBe(runId);
+
+    // Mirror the periodic scheduler sweep order in server/src/index.ts
+    // (reapOrphanedRuns -> promoteDueScheduledRetries -> resumeQueuedRuns ->
+    // reconcileStrandedAssignedIssues) so the self-heal path that owns
+    // releasing the issue lock actually runs.
+    await heartbeat.promoteDueScheduledRetries();
+    await heartbeat.resumeQueuedRuns();
+    const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(reconciled.continuationRequeued).toBe(1);
+    expect(reconciled.issueIds).toEqual([issueId]);
+
+    await waitForHeartbeatIdle(db);
+
+    const replacementRun = await waitForValue(async () =>
+      db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
+        .then((rows) => rows[0] ?? null),
+    );
+    if (!replacementRun) throw new Error("Expected the reconciliation self-heal to queue a replacement run");
+    expect(replacementRun.agentId).toBe(agentId);
+    expect(["queued", "running", "succeeded"]).toContain(replacementRun.status);
+
+    // Terminal pointer state: assert the INVARIANT, not a specific captured
+    // run id. Reconciliation can produce more than one generation of
+    // replacement run under CI timing (e.g. a continuation retry that itself
+    // gets superseded again before the pointer settles), so the live run the
+    // issue ends up pointing at need not be `replacementRun` -- asserting
+    // `[replacementRun.id, null]).toContain(...)` against that single
+    // captured id was the source of the flake in the serialized CI shard
+    // (a later generation's id is neither of those two values). What must
+    // always hold: the stale lock on the now-cancelled run is gone, and
+    // whatever the issue points at next (if anything) is a live run, never
+    // the cancelled one.
+    const issueAfterReconcile = await waitForValue(async () => {
+      const issueRow = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issueRow || issueRow.executionRunId === runId) return null;
+      if (issueRow.executionRunId === null) return issueRow;
+      const pointedRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, issueRow.executionRunId))
+        .then((rows) => rows[0] ?? null);
+      const isLiveReplacement =
+        pointedRun !== null && ["queued", "running", "scheduled_retry"].includes(pointedRun.status);
+      return isLiveReplacement ? issueRow : null;
+    });
+    if (!issueAfterReconcile) {
+      throw new Error(
+        "Expected the issue's executionRunId to move off the cancelled run: either cleared, or " +
+          "pointing at a live (queued/running/scheduled_retry) replacement run",
+      );
+    }
+    expect(issueAfterReconcile.executionRunId).not.toBe(runId);
+    if (issueAfterReconcile.executionRunId !== null) {
+      const pointedRun = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, issueAfterReconcile.executionRunId))
+        .then((rows) => rows[0] ?? null);
+      expect(pointedRun?.status).not.toBe("cancelled");
+      expect(["queued", "running", "scheduled_retry"]).toContain(pointedRun?.status);
+    }
+    expect(issueAfterReconcile.status).not.toBe("blocked");
   });
 
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {
