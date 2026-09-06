@@ -9,6 +9,8 @@ export {
   type DeclineConnectionIntent,
 } from "./connection-intent.js";
 
+export * from "./product-feedback.js";
+
 export {
   nativeFinalizationResultSchema,
   nativeFinalizationResultV1Schema,

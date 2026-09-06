@@ -658,8 +658,11 @@ export function Layout() {
               </div>
             </div>
             <SidebarAccountMenu
+              companyId={selectedCompanyId}
               deploymentMode={health?.deploymentMode}
               forceExpanded={replacesPrimarySidebar}
+              productFeedback={health?.features?.productFeedback}
+              version={health?.version}
             />
           </div>
         ) : (
@@ -681,8 +684,11 @@ export function Layout() {
               )}
             </div>
             <SidebarAccountMenu
+              companyId={selectedCompanyId}
               deploymentMode={health?.deploymentMode}
               forceExpanded={replacesPrimarySidebar}
+              productFeedback={health?.features?.productFeedback}
+              version={health?.version}
             />
           </SidebarShell>
         )}

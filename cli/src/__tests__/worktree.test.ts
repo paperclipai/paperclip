@@ -258,6 +258,9 @@ function buildSourceConfig(): PaperclipConfig {
     telemetry: {
       enabled: true,
     },
+    productFeedback: {
+      enabled: false,
+    },
     storage: {
       provider: "local_disk",
       localDisk: {
@@ -438,6 +441,7 @@ describe("worktree helpers", () => {
     expect(config.database.backup.enabled).toBe(false);
     expect(config.server.port).toBe(3110);
     expect(config.auth.publicBaseUrl).toBe("http://127.0.0.1:3110/");
+    expect(config.productFeedback).toEqual({ enabled: false });
     expect(config.storage.localDisk.baseDir).toBe(
       path.resolve("/tmp/paperclip-worktrees", "instances", "feature-worktree-support", "data", "storage"),
     );

@@ -1721,6 +1721,8 @@ export {
   FEEDBACK_VOTE_VALUES,
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
 } from "./types/feedback.js";
+export * from "./types/product-feedback.js";
+export * from "./validators/product-feedback.js";
 
 export {
   DAILY_RETENTION_PRESETS,

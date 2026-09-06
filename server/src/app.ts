@@ -4,7 +4,13 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
+import {
+  DISABLED_PRODUCT_FEEDBACK_CAPABILITY,
+  derivePaperclipViteHmrPort,
+  type DeploymentExposure,
+  type DeploymentMode,
+  type ProductFeedbackCapability,
+} from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -73,6 +79,8 @@ import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
 import { instanceSettingsService } from "./services/instance-settings.js";
 import { openApiRoutes } from "./routes/openapi.js";
+import { productFeedbackRoutes } from "./routes/product-feedback.js";
+import type { ProductFeedbackRelay } from "./services/product-feedback-relay.js";
 import {
   instanceDatabaseBackupRoutes,
   type InstanceDatabaseBackupService,
@@ -310,6 +318,8 @@ export async function createApp(
     authPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    productFeedback?: ProductFeedbackCapability;
+    productFeedbackRelay?: ProductFeedbackRelay;
     instanceId?: string;
     hostVersion?: string;
     localPluginDir?: string;
@@ -330,6 +340,7 @@ export async function createApp(
   },
 ) {
   const app = express();
+  const productFeedback = opts.productFeedback ?? DISABLED_PRODUCT_FEEDBACK_CAPABILITY;
   app.locals.paperclipDb = db;
   const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
     (req as unknown as { rawBody: Buffer }).rawBody = buf;
@@ -423,10 +434,16 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      productFeedback,
       databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );
   api.use(openApiRoutes());
+  api.use(productFeedbackRoutes({
+    db,
+    capability: productFeedback,
+    relay: opts.productFeedbackRelay,
+  }));
   api.use("/cloud", cloudRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
