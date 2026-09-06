@@ -287,6 +287,34 @@ describe("run-home sweeper", () => {
       expect(result.entries[0]?.ineligibleReason).toMatch(/could not be validated/i);
       await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
     });
+
+    it("rejects a completion manifest whose sessions directory is a symlink", async () => {
+      const runId = "run-symlinked-manifest-sessions";
+      const { runHomeDir, retentionDir } = await buildRunHome({
+        companyDir,
+        agentId: "agent-1",
+        runId,
+        ageHours: 30,
+      });
+      const externalSessions = path.join(companyDir, "external-manifest-sessions");
+      await fs.mkdir(externalSessions, { recursive: true });
+      await fs.writeFile(path.join(externalSessions, "session.jsonl"), '{"type":"session"}\n', "utf8");
+      await fs.mkdir(retentionDir, { recursive: true });
+      await fs.symlink(externalSessions, path.join(retentionDir, "sessions"), "dir");
+      await fs.writeFile(path.join(retentionDir, "retention-complete.json"), JSON.stringify({
+        schemaVersion: 1,
+        status: "complete",
+        runId,
+        sessionFileCount: 1,
+        sessionFiles: ["session.jsonl"],
+      }), "utf8");
+
+      const result = await sweep({ companyDir, dryRun: false, graceHours: 24 });
+
+      expect(result.entries[0]?.eligible).toBe(false);
+      expect(result.entries[0]?.ineligibleReason).toMatch(/sessions path is not a real directory/i);
+      await expect(fs.stat(runHomeDir)).resolves.toBeDefined();
+    });
   });
 
   describe("active/ambiguous home exclusion (AC2c)", () => {

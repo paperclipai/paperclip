@@ -166,6 +166,10 @@ async function validateRetentionProof(
       return { ok: false, error: "retention completion manifest is invalid" };
     }
     const sessionsDir = path.join(retainedDir, "sessions");
+    const sessionsDirStat = await fs.lstat(sessionsDir);
+    if (!sessionsDirStat.isDirectory() || sessionsDirStat.isSymbolicLink()) {
+      return { ok: false, error: "retained sessions path is not a real directory" };
+    }
     for (const relativePath of manifest.sessionFiles) {
       if (typeof relativePath !== "string" || relativePath.length === 0 || path.isAbsolute(relativePath)) {
         return { ok: false, error: "retention completion manifest contains an unsafe session path" };
